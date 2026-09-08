@@ -51,6 +51,7 @@ dependencies = [
  "time",
  "toml",
  "url",
+ "uuid",
  "zeroize",
 ]
 

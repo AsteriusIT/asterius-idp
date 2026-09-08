@@ -32,6 +32,8 @@ jobs:
           - redirect_uri
           - kek_unwrap
           - pkce
+          - pairwise_subject
+          - claim_name
     env:
       SQLX_OFFLINE: "true"
     steps:

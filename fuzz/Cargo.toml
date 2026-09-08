@@ -28,6 +28,9 @@ time = "0.3"
 # oracle and the code under test cannot share a mistake.
 sha2 = "0.10"
 base64 = "0.22"
+# `pairwise_subject` builds local account identifiers by hand so that a case is
+# reproducible from its corpus entry.
+uuid = "1"
 
 [[bin]]
 name = "issuer_parse"
@@ -109,6 +112,20 @@ bench = false
 [[bin]]
 name = "pkce"
 path = "fuzz_targets/pkce.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pairwise_subject"
+path = "fuzz_targets/pairwise_subject.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "claim_name"
+path = "fuzz_targets/claim_name.rs"
 test = false
 doc = false
 bench = false

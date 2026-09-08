@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into subject_identifiers (tenant_id, user_id, sector_identifier, subject)\n             values ($1, $2, $3, $4)\n             on conflict (tenant_id, user_id, sector_identifier) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3441ebfd5a64c9ae1157ee036989e2341dfa097f95fd161a659cc892e2fcac2a"
+}
