@@ -19,7 +19,7 @@ Most identity providers treat high security as an optional profile and AI agents
 - **Backend:** Rust — `axum`, `tokio`, `sqlx`/PostgreSQL, `rustls`, `aws-lc-rs`/`ring`, `josekit`, `argon2`, `webauthn-rs`.
 - **Admin console:** React + TypeScript + Vite, served by the same binary as a first-party same-origin app (it is *not* an OAuth public client).
 - **End-user pages:** `askama` templates, progressive enhancement, no-JS baseline.
-- **Signing:** EdDSA (Ed25519) by default, ES256 for compatibility, PS256 as the RSA option. Passwords: Argon2id. **Passkeys are the primary human credential.**
+- **Signing:** EdDSA (Ed25519) by default, ES256 always on, PS256 as the RSA option — a closed set, with no RS256 and no `none` at any layer ([ADR-0003](docs/adr/0003-signing-algorithm-set.md)). Passwords: Argon2id. **Passkeys are the primary human credential.**
 
 ```
 crates/
@@ -68,7 +68,7 @@ the workspace manifest and inherited with `[lints] workspace = true`.
 
 ## Security posture
 
-- Threat model derived from the FAPI 2.0 Attacker Model (A1–A5) plus agent-specific threats (delegation-chain abuse, confused-deputy MCP servers, approval fatigue). Every control links to a spec clause and a test.
+- [`docs/threat-model.md`](docs/threat-model.md) derives from the FAPI 2.0 Attacker Model (A1, A1a, A2, A3a, A4, A5) plus agent-specific threats (delegation-chain abuse, confused-deputy MCP servers, approval fatigue). Every control links to a spec clause, a bead and a test.
 - No refresh-token rotation (FAPI 2.0 SP §5.3.2.1), authorization codes ≤ 60 s, single-use codes with replay revocation, `jti` replay protection for client assertions and DPoP proofs.
 - `#![forbid(unsafe_code)]` in every crate; constant-time comparison for every secret; opaque credentials stored only as hashes; private keys encrypted at rest.
 - Definition of done for any protocol task: conformance-suite or spec-derived test passes, a fuzz target exists for every new parser/validator, the threat-model note is updated, no new `unsafe` — and generated crypto/parsing code is never "done" until a human has read the RFC.
@@ -103,6 +103,8 @@ open https://localhost:8443/t/demo/.well-known/openid-configuration
 ## Contributing
 
 Contributions are welcome once the foundation epics land. Until then, the most useful help is reviewing the backlog against the specs and opening issues where a MUST is missing or misread.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first; the decision log lives in [`docs/adr/`](docs/adr/).
 
 Ground rules:
 
