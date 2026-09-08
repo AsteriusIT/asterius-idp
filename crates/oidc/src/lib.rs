@@ -7,4 +7,5 @@
 #![forbid(unsafe_code)]
 
 pub mod metadata;
+pub mod pkce;
 pub mod tenancy;

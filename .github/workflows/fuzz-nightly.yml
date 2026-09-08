@@ -31,6 +31,7 @@ jobs:
           - client_metadata_json
           - redirect_uri
           - kek_unwrap
+          - pkce
     env:
       SQLX_OFFLINE: "true"
     steps:

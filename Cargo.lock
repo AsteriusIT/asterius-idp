@@ -76,8 +76,11 @@ name = "asterius-oidc"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
+ "base64",
+ "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "url",
 ]
