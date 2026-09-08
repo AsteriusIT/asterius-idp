@@ -7,12 +7,14 @@
 //! [ADR-0001](../../../docs/adr/0001-modular-monolith.md).
 #![forbid(unsafe_code)]
 
+mod audit;
 mod error;
 mod scope;
 mod sql_audit;
 mod store;
 mod tenants;
 
+pub use audit::{PgAuditSink, VerifiedChain};
 pub use error::to_domain_error;
 pub use scope::TenantScope;
 pub use store::{MIGRATOR, Store};

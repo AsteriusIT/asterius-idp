@@ -6,6 +6,7 @@
 //! never depend on a database driver, an HTTP framework or an async runtime.
 #![forbid(unsafe_code)]
 
+pub mod audit;
 pub mod capabilities;
 pub mod entities;
 pub mod error;
@@ -14,6 +15,7 @@ pub mod issuer;
 pub mod ports;
 pub mod secret;
 
+pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};
 pub use entities::{Tenant, TenantStatus};
 pub use error::DomainError;

@@ -480,9 +480,20 @@ create table audit_events (
     grant_id    uuid,
     request_id  text,
     detail      jsonb       not null default '{}'::jsonb,
+    -- Tamper evidence. Each record hashes its predecessor together with its own
+    -- canonical encoding, so altering one record invalidates every record after
+    -- it. See asterius_domain::audit::chain for the encoding and for what this
+    -- does and does not defend against.
+    previous_hash bytea     not null,
+    event_hash    bytea     not null,
 
-    primary key (tenant_id, event_id)
+    primary key (tenant_id, event_id),
+    constraint audit_events_hashes_are_sha256
+        check (length(previous_hash) = 32 and length(event_hash) = 32)
 );
+
+-- The chain is per tenant, and a hash may appear once.
+create unique index audit_events_hash_unique on audit_events (tenant_id, event_hash);
 
 create index audit_events_recent on audit_events (tenant_id, occurred_at desc);
 create index audit_events_by_actor on audit_events (tenant_id, (actor ->> 'id'), occurred_at desc);
@@ -491,10 +502,29 @@ create index audit_events_by_grant on audit_events (tenant_id, grant_id)
 
 -- Append-only, enforced where it cannot be forgotten. An audit trail that the
 -- application can rewrite is not evidence.
+--
+-- UPDATE is refused unconditionally: there is no legitimate reason to change a
+-- record that has already been written, and the hash chain would not survive it
+-- anyway.
+--
+-- DELETE is refused too, except for the retention job, which announces itself
+-- by setting `asterius.retention` for the duration of its transaction. That is
+-- an escape hatch and it is deliberately a narrow one: it makes deletion an
+-- explicit, greppable act rather than something any query can do by accident or
+-- through a reused code path. It is not a defence against an attacker who
+-- already has arbitrary SQL access — such an attacker can drop the trigger. It
+-- defends against the application rewriting its own history.
 create function audit_events_are_append_only() returns trigger language plpgsql as $$
 begin
+    if tg_op = 'DELETE'
+       and coalesce(current_setting('asterius.retention', true), 'off') = 'on'
+    then
+        return null;
+    end if;
+
     raise exception 'audit_events is append-only (attempted %)', tg_op
-        using errcode = 'restrict_violation';
+        using errcode = 'restrict_violation',
+              hint = 'retention must set asterius.retention = ''on'' for the transaction';
 end;
 $$;
 
