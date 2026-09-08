@@ -210,6 +210,26 @@ pub struct StoredState {
     /// SHA-256 of the token issued with the last rendered form, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub csrf_digest: Option<String>,
+    /// What the user answered, once they have.
+    ///
+    /// Recorded here rather than derived later, because it is the one fact in
+    /// this flow that came from a person: the scopes are what they *granted*,
+    /// which may be fewer than the client asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<StoredDecision>,
+}
+
+/// A consent decision, as it survives between requests.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum StoredDecision {
+    /// Approved, with what was actually granted.
+    Approved {
+        /// The scopes the user allowed, in the order they were offered.
+        scopes: Vec<String>,
+    },
+    /// Refused. Becomes `access_denied` on the way back to the client.
+    Denied,
 }
 
 impl Default for StoredState {
@@ -217,6 +237,7 @@ impl Default for StoredState {
         Self {
             stage: Stage::Login,
             csrf_digest: None,
+            decision: None,
         }
     }
 }
@@ -769,6 +790,7 @@ mod tests {
         let mut state = StoredState {
             stage: Stage::Consent,
             csrf_digest: None,
+            decision: None,
         };
         let token = state.issue_csrf();
         let stored = serde_json::to_value(&state).expect("serialise");

@@ -463,6 +463,7 @@ async fn interaction_show(
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
+    let clients = scope.clients(endpoints.capabilities);
     let passwords = endpoints.passwords(&tenant.id);
     interaction::show(
         InteractionContext {
@@ -473,6 +474,11 @@ async fn interaction_show(
                 .map(|v| v as &dyn asterius_domain::CredentialVerifier),
             sessions: &sessions,
             lifetimes: endpoints.session_lifetimes,
+            // `ast-2vk.8` resolves a display name; until then the consent
+            // screen names the signed-in user only when the session carries
+            // one.
+            username: None,
+            clients: &clients,
             nonce: &nonce,
         },
         &id,
@@ -494,6 +500,7 @@ async fn interaction_submit(
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
+    let clients = scope.clients(endpoints.capabilities);
     let passwords = endpoints.passwords(&tenant.id);
     interaction::submit(
         InteractionContext {
@@ -504,6 +511,11 @@ async fn interaction_submit(
                 .map(|v| v as &dyn asterius_domain::CredentialVerifier),
             sessions: &sessions,
             lifetimes: endpoints.session_lifetimes,
+            // `ast-2vk.8` resolves a display name; until then the consent
+            // screen names the signed-in user only when the session carries
+            // one.
+            username: None,
+            clients: &clients,
             nonce: &nonce,
         },
         &id,

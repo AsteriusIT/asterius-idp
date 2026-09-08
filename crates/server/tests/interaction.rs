@@ -35,7 +35,13 @@ impl FakeStore {
             InteractionRecord {
                 tenant: TenantId::new("demo"),
                 client: ClientId::new("billing"),
-                parameters: serde_json::json!({"redirect_uri": "https://rp.example/cb"}),
+                // What `asterius_server::http::par::serialise` writes, which
+                // is what the consent screen is built from.
+                parameters: serde_json::json!({
+                    "redirect_uri": "https://rp.example/cb",
+                    "scopes": ["openid", "payments"],
+                    "resources": [],
+                }),
                 state,
                 session: None,
                 expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
@@ -226,7 +232,41 @@ fn context<'a>(
         credentials: auth,
         sessions,
         lifetimes: Lifetimes::default(),
+        username: Some("ada"),
+        clients: &FakeClients,
         nonce,
+    }
+}
+
+/// One registered client, enough to describe a request on the consent screen.
+#[derive(Debug)]
+struct FakeClients;
+
+#[async_trait::async_trait]
+impl asterius_domain::ClientRepository for FakeClients {
+    async fn find(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<Option<asterius_domain::Client>, DomainError> {
+        Ok(Some(asterius_domain::Client {
+            tenant: TenantId::new("demo"),
+            id: client_id.clone(),
+            registration: asterius_domain::ClientRegistration::from_json(
+                &serde_json::to_vec(&serde_json::json!({
+                    "client_name": "Billing",
+                    "redirect_uris": ["https://rp.example/cb"],
+                    "grant_types": ["authorization_code"],
+                    "scope": "openid payments",
+                    "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+                }))
+                .expect("serialise"),
+                asterius_domain::Capabilities::default(),
+            )
+            .expect("a valid registration"),
+            status: asterius_domain::ClientStatus::Active,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }))
     }
 }
 
@@ -402,11 +442,18 @@ async fn a_submission_with_the_issued_token_is_accepted() {
     )
     .await;
 
-    // Authenticated, so the interaction moved on. The consent page belongs to
-    // ast-uwv.1, so the stage advanced but has nothing to render yet.
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    // Authenticated, so the interaction moved on and the consent screen is
+    // what comes back.
+    assert_eq!(response.status(), StatusCode::OK);
     let state = store.state().expect("still present");
     assert_eq!(state["stage"], "consent", "the stage did not advance");
+
+    let html = body_of(response).await;
+    assert!(html.contains("would like access"), "{html}");
+    assert!(
+        html.contains("rp.example"),
+        "the consent screen did not name the host: {html}"
+    );
 }
 
 /// One submission per token.
@@ -572,4 +619,148 @@ async fn signing_in_creates_a_session_and_sets_its_cookie() {
         !cookie.contains(&created[0].id_digest),
         "the digest was sent to the browser instead of the id"
     );
+}
+
+// ---- the consent decision (ast-uwv.1) -----------------------------------
+
+/// Sets up an interaction already at the consent stage, with an issued token.
+fn at_consent() -> (InteractionId, FakeStore, String) {
+    let id = InteractionId::generate();
+    let mut state = StoredState {
+        stage: asterius_web::interaction::Stage::Consent,
+        csrf_digest: None,
+        decision: None,
+    };
+    let issued = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    (id, store, issued.expose().to_owned())
+}
+
+async fn submit_decision(
+    id: &InteractionId,
+    store: &FakeStore,
+    body: &str,
+) -> axum::response::Response {
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    submit(
+        context(&tenant, store, &nonce, None, &sessions),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(body.to_owned()),
+        OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn approving_records_the_scopes_that_were_granted() {
+    let (id, store, csrf) = at_consent();
+
+    let response = submit_decision(
+        &id,
+        &store,
+        &format!("csrf={csrf}&decision=allow&scope=openid&scope=payments"),
+    )
+    .await;
+
+    // `ast-gxh.4` turns the decision into a code; until then the stage
+    // advances and stops.
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let state = store.state().expect("present");
+    assert_eq!(state["stage"], "response");
+    assert_eq!(state["decision"]["outcome"], "approved");
+    assert_eq!(
+        state["decision"]["scopes"],
+        serde_json::json!(["openid", "payments"])
+    );
+}
+
+/// The user may grant less than was asked, and the grant records what they
+/// actually agreed to.
+#[tokio::test]
+async fn a_narrowed_approval_records_only_what_was_ticked() {
+    let (id, store, csrf) = at_consent();
+
+    let response = submit_decision(
+        &id,
+        &store,
+        &format!("csrf={csrf}&decision=allow&scope=openid"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let state = store.state().expect("present");
+    assert_eq!(
+        state["decision"]["scopes"],
+        serde_json::json!(["openid"]),
+        "the decision recorded a scope the user unticked"
+    );
+}
+
+/// Deny is a decision, not an error. It takes the same path as an approval.
+#[tokio::test]
+async fn denying_is_recorded_as_a_decision() {
+    let (id, store, csrf) = at_consent();
+
+    let response = submit_decision(&id, &store, &format!("csrf={csrf}&decision=deny")).await;
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let state = store.state().expect("present");
+    assert_eq!(state["stage"], "response", "a denial did not advance");
+    assert_eq!(state["decision"]["outcome"], "denied");
+}
+
+/// `openid` cannot be declined: dropping it would change what the client
+/// receives without telling it.
+#[tokio::test]
+async fn an_approval_that_drops_a_required_scope_is_refused() {
+    let (id, store, csrf) = at_consent();
+
+    let response = submit_decision(
+        &id,
+        &store,
+        &format!("csrf={csrf}&decision=allow&scope=payments"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let state = store.state().expect("present");
+    assert_eq!(state["stage"], "consent", "the stage advanced anyway");
+    assert!(state.get("decision").is_none_or(serde_json::Value::is_null));
+}
+
+/// A form field is a claim by the browser; what this server displayed is the
+/// authority.
+#[tokio::test]
+async fn a_scope_that_was_never_offered_cannot_be_granted() {
+    let (id, store, csrf) = at_consent();
+
+    let response = submit_decision(
+        &id,
+        &store,
+        &format!("csrf={csrf}&decision=allow&scope=openid&scope=admin"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(store.state().expect("present")["stage"], "consent");
+}
+
+#[tokio::test]
+async fn a_submission_with_neither_button_is_refused() {
+    let (id, store, csrf) = at_consent();
+    let response = submit_decision(&id, &store, &format!("csrf={csrf}&scope=openid")).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(store.state().expect("present")["stage"], "consent");
+}
+
+/// A decision needs the token like everything else.
+#[tokio::test]
+async fn a_decision_without_the_issued_token_is_forbidden() {
+    let (id, store, _csrf) = at_consent();
+    let response = submit_decision(&id, &store, "decision=allow&scope=openid").await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(store.state().expect("present")["stage"], "consent");
 }

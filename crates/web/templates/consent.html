@@ -2,19 +2,55 @@
 {% block title %}Authorise {{ client_name }} — {{ tenant_name }}{% endblock %}
 {% block content %}
 <h2>{{ client_name }} would like access</h2>
+
+{# FAPI 2.0 SP §7 names client misidentification as a privacy risk: the name is
+   chosen by whoever registered the client, and "Example Bank" is a name anyone
+   can pick. The host is the part a user can check against where they expected
+   to be, so it is shown next to the name rather than buried. #}
+<p class="muted">You will be returned to <strong>{{ redirect_host }}</strong>.</p>
 <p class="muted">Signed in as {{ username }}.</p>
+
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
 
 <ul class="scopes">
 {% for scope in scopes %}
-  <li>{{ scope.description }} <span class="muted">({{ scope.name }})</span></li>
+  <li>
+    {% if scope.required %}
+      {# Not a disabled checkbox: a disabled input submits nothing, so the
+         value has to travel anyway. A hidden field plus plain text says the
+         same thing to a person and cannot be unticked. #}
+      <input type="hidden" name="scope" value="{{ scope.name }}">
+      {% if let Some(description) = scope.description %}{{ description }}{% else %}{{ scope.name }}{% endif %}
+      <span class="muted">(required)</span>
+    {% else %}
+      <label class="inline">
+        <input type="checkbox" name="scope" value="{{ scope.name }}" checked>
+        {% if let Some(description) = scope.description %}{{ description }}{% else %}{{ scope.name }}{% endif %}
+      </label>
+    {% endif %}
+    <span class="muted">({{ scope.name }})</span>
+  </li>
 {% endfor %}
 </ul>
 
-{# Two buttons, one form, one token. A denial is as much a decision as an
-   approval and needs the same protection: a forged "deny" is a denial of
-   service, and a forged "allow" is a granted authorization. #}
-<form method="post" action="{{ action }}">
-<input type="hidden" name="csrf" value="{{ csrf }}">
+{% if offline_access %}
+<p class="muted">This will let {{ client_name }} act on your behalf later,
+without you present.</p>
+{% endif %}
+
+{% if !resources.is_empty() %}
+<p class="muted">Access applies to:</p>
+<ul class="scopes">
+{% for resource in resources %}
+  <li>{{ resource }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{# Both decisions post under the same token. A denial is as much a decision as
+   an approval: a forged "deny" is a denial of service and a forged "allow" is
+   a granted authorization, so both need the same protection. #}
 <div class="actions">
   <button type="submit" name="decision" value="allow">Allow</button>
   <button type="submit" name="decision" value="deny" class="secondary">Deny</button>

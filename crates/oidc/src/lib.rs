@@ -9,6 +9,7 @@
 pub mod authorize;
 pub mod claims;
 pub mod client_auth;
+pub mod consent;
 pub mod form;
 pub mod metadata;
 pub mod par;

@@ -38,7 +38,12 @@ pub struct ScopeLine {
     /// The scope token, as it appeared in the request.
     pub name: String,
     /// What it means, in the user's language.
-    pub description: String,
+    ///
+    /// `None` renders the bare token. That is deliberately ugly: an
+    /// unexplained scope should look unexplained rather than familiar.
+    pub description: Option<String>,
+    /// Whether the user may untick it and still proceed.
+    pub required: bool,
 }
 
 /// The sign-in page.
@@ -79,8 +84,14 @@ pub struct ConsentPage<'a> {
     pub client_name: &'a str,
     /// Who is signed in, so a user on a shared machine can see it is them.
     pub username: &'a str,
+    /// The host the user will be returned to. See the template.
+    pub redirect_host: &'a str,
     /// What is being asked for.
     pub scopes: Vec<ScopeLine>,
+    /// Whether a refresh token was asked for.
+    pub offline_access: bool,
+    /// RFC 8707 resource indicators named by the request.
+    pub resources: Vec<String>,
     /// Where the form posts to.
     pub action: &'a str,
     /// The synchroniser token for this rendering.
@@ -199,10 +210,14 @@ mod tests {
                 tenant_name: hostile,
                 client_name: hostile,
                 username: hostile,
+                redirect_host: hostile,
                 scopes: vec![ScopeLine {
                     name: (*hostile).to_owned(),
-                    description: (*hostile).to_owned(),
+                    description: Some((*hostile).to_owned()),
+                    required: false,
                 }],
+                offline_access: true,
+                resources: vec![(*hostile).to_owned()],
                 action: "/interaction/x/consent",
                 csrf: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
@@ -310,10 +325,14 @@ mod tests {
                 tenant_name: "Demo",
                 client_name: "Billing",
                 username: "ada",
+                redirect_host: "rp.example",
                 scopes: vec![ScopeLine {
                     name: "openid".into(),
-                    description: "Confirm who you are".into(),
+                    description: Some("Confirm who you are".into()),
+                    required: true,
                 }],
+                offline_access: false,
+                resources: Vec::new(),
                 action: "/x",
                 csrf: "t",
                 nonce_attribute: nonce_attribute(&nonce),
@@ -358,7 +377,10 @@ mod tests {
                 tenant_name: "Demo",
                 client_name: "Billing",
                 username: "ada",
+                redirect_host: "rp.example",
                 scopes: Vec::new(),
+                offline_access: false,
+                resources: Vec::new(),
                 action: "/x",
                 csrf: "the-token",
                 nonce_attribute: nonce_attribute(&nonce),
@@ -383,7 +405,10 @@ mod tests {
             tenant_name: "Demo",
             client_name: "Billing",
             username: "ada",
+            redirect_host: "rp.example",
             scopes: Vec::new(),
+            offline_access: false,
+            resources: Vec::new(),
             action: "/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),
@@ -397,6 +422,144 @@ mod tests {
             1,
             "both decisions must post under one token"
         );
+    }
+
+    fn consent(scopes: Vec<ScopeLine>, offline: bool, resources: Vec<String>) -> String {
+        let nonce = nonce();
+        ConsentPage {
+            locale: "en",
+            tenant_name: "Demo",
+            client_name: "Billing",
+            username: "ada",
+            redirect_host: "rp.example",
+            scopes,
+            offline_access: offline,
+            resources,
+            action: "/interaction/x",
+            csrf: "t",
+            nonce_attribute: nonce_attribute(&nonce),
+        }
+        .render()
+        .expect("render")
+    }
+
+    /// A required scope travels as a hidden field, not a disabled checkbox.
+    ///
+    /// A disabled input submits nothing, so the value would never reach the
+    /// server and `openid` would silently vanish from the grant. The hidden
+    /// field says the same thing to a person and cannot be unticked.
+    #[test]
+    fn a_required_scope_cannot_be_unticked_and_still_submits() {
+        let html = consent(
+            vec![ScopeLine {
+                name: "openid".into(),
+                description: Some("Confirm who you are".into()),
+                required: true,
+            }],
+            false,
+            Vec::new(),
+        );
+        assert!(
+            html.contains(r#"<input type="hidden" name="scope" value="openid">"#),
+            "{html}"
+        );
+        assert!(
+            !html.contains(r#"type="checkbox" name="scope" value="openid""#),
+            "a required scope was rendered as a checkbox: {html}"
+        );
+        assert!(
+            !html.contains("disabled"),
+            "a disabled input submits nothing: {html}"
+        );
+        assert!(html.contains("(required)"), "{html}");
+    }
+
+    /// An optional scope is a ticked checkbox: the user may decline it and
+    /// still proceed, which is what "inadequate choice" in FAPI 2.0 SP §7
+    /// means in practice.
+    #[test]
+    fn an_optional_scope_is_a_checkbox_the_user_can_untick() {
+        let html = consent(
+            vec![ScopeLine {
+                name: "payments".into(),
+                description: Some("See your payment history".into()),
+                required: false,
+            }],
+            false,
+            Vec::new(),
+        );
+        assert!(
+            html.contains(r#"<input type="checkbox" name="scope" value="payments" checked>"#),
+            "{html}"
+        );
+    }
+
+    /// An unexplained scope shows its bare token rather than an invented
+    /// description.
+    #[test]
+    fn a_scope_with_no_description_shows_its_name() {
+        let html = consent(
+            vec![ScopeLine {
+                name: "obscure:thing".into(),
+                description: None,
+                required: false,
+            }],
+            false,
+            Vec::new(),
+        );
+        assert!(html.contains("obscure:thing"), "{html}");
+    }
+
+    /// Acting later, without the user present, is a different thing from
+    /// acting now, and is said so.
+    #[test]
+    fn offline_access_is_spelled_out_when_asked_for() {
+        let with = consent(Vec::new(), true, Vec::new());
+        assert!(with.contains("without you present"), "{with}");
+
+        let without = consent(Vec::new(), false, Vec::new());
+        assert!(!without.contains("without you present"), "{without}");
+    }
+
+    #[test]
+    fn resources_are_listed_only_when_there_are_some() {
+        let with = consent(Vec::new(), false, vec!["https://api.example/".into()]);
+        assert!(with.contains("https://api.example/"), "{with}");
+        assert!(with.contains("Access applies to"), "{with}");
+
+        let without = consent(Vec::new(), false, Vec::new());
+        assert!(!without.contains("Access applies to"), "{without}");
+    }
+
+    /// The name is chosen by whoever registered; the host is not.
+    #[test]
+    fn the_consent_page_names_the_host_the_user_returns_to() {
+        let html = consent(Vec::new(), false, Vec::new());
+        assert!(html.contains("rp.example"), "{html}");
+        assert!(html.contains("returned to"), "{html}");
+    }
+
+    /// No remote assets: the acceptance criterion, and the reason
+    /// `img-src 'self' data:` is in the policy. A client logo fetched from the
+    /// client's own server would tell it exactly when a consent screen was
+    /// shown, and to whom by IP.
+    #[test]
+    fn the_consent_page_loads_nothing_from_anywhere_else() {
+        let html = consent(
+            vec![ScopeLine {
+                name: "openid".into(),
+                description: Some("Confirm who you are".into()),
+                required: true,
+            }],
+            true,
+            vec!["https://api.example/".into()],
+        );
+        for remote in ["<img", "<iframe", "<link", "src=\"http", "url(http"] {
+            assert!(
+                !html.to_lowercase().contains(&remote.to_lowercase()),
+                "the page pulls a remote asset ({remote}): {html}"
+            );
+        }
     }
 
     /// A page saved to disk loses its headers but keeps its meta.

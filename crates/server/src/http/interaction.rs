@@ -32,13 +32,14 @@
 
 use asterius_domain::entities::session::SessionId;
 use asterius_domain::{
-    AuthenticationMethod, CredentialVerifier, InteractionRepository, Lifetimes, Secret, Session,
-    SessionRepository, Tenant,
+    AuthenticationMethod, CredentialVerifier, InteractionRecord, InteractionRepository, Lifetimes,
+    Secret, Session, SessionRepository, Tenant,
 };
+use asterius_oidc::consent::{ConsentRequest, Decision};
 use asterius_web::interaction::{
-    self, CsrfToken, InteractionError, InteractionId, Stage, StoredState,
+    self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
 };
-use asterius_web::pages::{self, ErrorPage, LoginPage, nonce_attribute};
+use asterius_web::pages::{self, ConsentPage, ErrorPage, LoginPage, ScopeLine, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -57,6 +58,16 @@ pub struct InteractionContext<'a> {
     pub sessions: &'a dyn SessionRepository,
     /// How long this tenant's sessions live.
     pub lifetimes: Lifetimes,
+    /// Who is signed in, shown on the consent screen so a user on a shared
+    /// machine can see whose account is about to be granted.
+    pub username: Option<&'a str>,
+    /// This tenant's clients, for the name and metadata the consent screen
+    /// shows.
+    ///
+    /// Read only when the consent stage is actually rendered. Loading a
+    /// registration to draw a form nobody has authenticated for would be work
+    /// an unauthenticated visitor can make this server do.
+    pub clients: &'a dyn asterius_domain::ClientRepository,
     /// The CSP nonce the document middleware drew for this response.
     pub nonce: &'a Nonce,
 }
@@ -74,7 +85,7 @@ pub async fn show(
     headers: &HeaderMap,
     now: OffsetDateTime,
 ) -> Response {
-    let (presented, mut state) = match resume(&context, id, headers, now).await {
+    let (presented, mut state, record) = match resume(&context, id, headers, now).await {
         Ok(resumed) => resumed,
         Err(response) => return *response,
     };
@@ -88,7 +99,66 @@ pub async fn show(
         return *error;
     }
 
-    render(&context, state.stage, &token, id, None)
+    let offer = describe(&context, &record).await;
+    render(&context, state.stage, &token, id, None, offer.as_ref())
+}
+
+/// Builds the consent offer for a request, when one is needed.
+///
+/// Returns `None` for any stage that does not show it, and for a client that
+/// has gone away between the push and now — which renders the error page
+/// rather than a consent screen naming nobody.
+async fn describe(
+    context: &InteractionContext<'_>,
+    record: &InteractionRecord,
+) -> Option<ConsentRequest> {
+    let client = context.clients.find(&record.client).await.ok()??;
+
+    // The redirect URI was validated at push time against this client's
+    // registered set, so its host is one the client actually owns — which is
+    // what makes showing it worth anything (FAPI 2.0 SP §7).
+    let redirect_host = record
+        .parameters
+        .get("redirect_uri")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|uri| url::Url::parse(uri).ok())
+        .and_then(|uri| uri.host_str().map(ToOwned::to_owned))
+        .unwrap_or_default();
+
+    let scopes: std::collections::BTreeSet<String> = record
+        .parameters
+        .get("scopes")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let resources = record
+        .parameters
+        .get("resources")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| v.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(ConsentRequest::new(
+        client.registration.client_name.clone(),
+        redirect_host,
+        &scopes,
+        resources,
+        // Per-tenant scope wording is `ast-ndk.2`. Until then a scope is shown
+        // by name, which is honest: an unexplained scope should look
+        // unexplained.
+        |_| None,
+    ))
 }
 
 /// `POST /interaction/{id}` — take a decision and advance.
@@ -99,7 +169,7 @@ pub async fn submit(
     body: &Bytes,
     now: OffsetDateTime,
 ) -> Response {
-    let (presented, mut state) = match resume(&context, id, headers, now).await {
+    let (presented, mut state, record) = match resume(&context, id, headers, now).await {
         Ok(resumed) => resumed,
         Err(response) => return *response,
     };
@@ -130,11 +200,10 @@ pub async fn submit(
     state.spend_csrf();
 
     match state.stage {
-        Stage::Login => sign_in(&context, &presented, state, id, &form, now).await,
-        // `ast-uwv.1` owns the consent decision and `ast-gxh.4` the response.
-        // Refusing here is honest: the stage exists, the page renders, and the
-        // decision has nowhere to go yet.
-        Stage::StepUp | Stage::Consent | Stage::Response => error_page(
+        Stage::Login => sign_in(&context, &presented, state, id, &form, &record, now).await,
+        Stage::Consent => decide(&context, &presented, state, &form, &record, now).await,
+        // `ast-2vk.7` owns step-up; `ast-gxh.4` turns a decision into a code.
+        Stage::StepUp | Stage::Response => error_page(
             &context,
             StatusCode::NOT_IMPLEMENTED,
             InteractionError::NotAvailable,
@@ -153,6 +222,7 @@ async fn sign_in(
     mut state: StoredState,
     id: &str,
     form: &[(String, String)],
+    record: &InteractionRecord,
     now: OffsetDateTime,
 ) -> Response {
     let field = |name: &str| {
@@ -175,6 +245,7 @@ async fn sign_in(
             &token,
             id,
             Some("Signing in is not available on this server."),
+            None,
         );
     };
 
@@ -229,7 +300,10 @@ async fn sign_in(
                 return *error;
             }
 
-            let mut response = render(context, state.stage, &token, id, None);
+            // Signed in, so the next screen is consent — which needs the
+            // offer.
+            let offer = describe(context, record).await;
+            let mut response = render(context, state.stage, &token, id, None, offer.as_ref());
             set_session_cookie(&mut response, &id_value);
             response
         }
@@ -259,6 +333,102 @@ async fn sign_in(
     }
 }
 
+/// The consent stage: record what the user actually agreed to.
+///
+/// A denial is an ordinary outcome and takes the same path as an approval —
+/// both advance to [`Stage::Response`], where `ast-gxh.4` turns the decision
+/// into either a code or an `access_denied`, through the same validated
+/// redirect URI. Making refusal the harder path would be a consent screen that
+/// does not really offer a choice.
+async fn decide(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    mut state: StoredState,
+    form: &[(String, String)],
+    record: &InteractionRecord,
+    now: OffsetDateTime,
+) -> Response {
+    let Some(offer) = describe(context, record).await else {
+        tracing::error!(tenant = %context.tenant.id, "cannot describe a request at consent");
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+
+    let approved = match form
+        .iter()
+        .find(|(k, _)| k == "decision")
+        .map(|(_, v)| v.as_str())
+    {
+        Some("allow") => true,
+        Some("deny") => false,
+        // Neither button. A form this server did not render, or one a browser
+        // submitted oddly; either way there is no decision to record.
+        _ => {
+            return error_page(
+                context,
+                StatusCode::BAD_REQUEST,
+                InteractionError::CsrfFailed,
+            );
+        }
+    };
+
+    // Every ticked box. Unticked ones are simply absent, which is how an HTML
+    // checkbox declines.
+    let granted: std::collections::BTreeSet<String> = form
+        .iter()
+        .filter(|(k, _)| k == "scope")
+        .map(|(_, v)| v.clone())
+        .collect();
+
+    let decision = match offer.decide(approved, &granted) {
+        Ok(decision) => decision,
+        Err(error) => {
+            // The submission does not correspond to what was displayed. This
+            // is not something a user does by hand.
+            tracing::warn!(
+                %error,
+                tenant = %context.tenant.id,
+                "a consent submission did not match the offer"
+            );
+            return error_page(
+                context,
+                StatusCode::BAD_REQUEST,
+                InteractionError::CsrfFailed,
+            );
+        }
+    };
+
+    state.decision = Some(match &decision {
+        Decision::Approved { scopes } => StoredDecision::Approved {
+            scopes: scopes.iter().cloned().collect(),
+        },
+        Decision::Denied => StoredDecision::Denied,
+    });
+    if !state.stage.may_advance_to(Stage::Response) {
+        return error_page(
+            context,
+            StatusCode::BAD_REQUEST,
+            InteractionError::IllegalTransition,
+        );
+    }
+    state.stage = Stage::Response;
+    state.spend_csrf();
+
+    if let Err(error) = save(context, presented, &state, None, now).await {
+        return *error;
+    }
+
+    // `ast-gxh.4` picks it up from here.
+    error_page(
+        context,
+        StatusCode::NOT_IMPLEMENTED,
+        InteractionError::NotAvailable,
+    )
+}
+
 /// Re-renders the current stage with a message and a fresh token.
 async fn retry(
     context: &InteractionContext<'_>,
@@ -272,7 +442,7 @@ async fn retry(
     if let Err(error) = save(context, presented, &state, None, now).await {
         return *error;
     }
-    render(context, state.stage, &token, id, Some(message))
+    render(context, state.stage, &token, id, Some(message), None)
 }
 
 /// The two-credential check and the record lookup.
@@ -284,7 +454,7 @@ async fn resume(
     id: &str,
     headers: &HeaderMap,
     now: OffsetDateTime,
-) -> Result<(InteractionId, StoredState), Box<Response>> {
+) -> Result<(InteractionId, StoredState, InteractionRecord), Box<Response>> {
     let presented = InteractionId::from_presented(id.to_owned());
     let from_cookie = headers
         .get(header::COOKIE)
@@ -320,7 +490,7 @@ async fn resume(
         .by_interaction(&presented.digest(), now)
         .await
     {
-        Ok(Some(record)) => Ok((presented, StoredState::from_stored(&record.state))),
+        Ok(Some(record)) => Ok((presented, StoredState::from_stored(&record.state), record)),
         // Absent, expired and consumed are one answer.
         Ok(None) => Err(Box::new(error_page(
             context,
@@ -374,6 +544,7 @@ fn render(
     csrf: &CsrfToken,
     id: &str,
     message: Option<&str>,
+    offer: Option<&ConsentRequest>,
 ) -> Response {
     let action = format!("/interaction/{id}");
     match stage {
@@ -389,9 +560,49 @@ fn render(
             })
         })
         .into_response(),
-        // `ast-uwv.1` renders the consent screen from the grant it is asking
-        // about; until that exists there is nothing to show.
-        Stage::Consent | Stage::Response => error_page(
+        Stage::Consent => {
+            let Some(offer) = offer else {
+                // The stage says consent but nothing loaded the request. That
+                // is a wiring fault, not the user's, and rendering an empty
+                // consent screen would ask them to agree to nothing.
+                tracing::error!(
+                    tenant = %context.tenant.id,
+                    "the consent stage was reached with no request loaded"
+                );
+                return error_page(
+                    context,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    InteractionError::NotAvailable,
+                );
+            };
+            Document::render(context.nonce, |nonce| {
+                pages::render(&ConsentPage {
+                    locale: "en",
+                    tenant_name: &context.tenant.display_name,
+                    client_name: &offer.client_name,
+                    username: context.username.unwrap_or_default(),
+                    redirect_host: &offer.redirect_host,
+                    scopes: offer
+                        .scopes
+                        .iter()
+                        .map(|scope| ScopeLine {
+                            name: scope.name.clone(),
+                            description: scope.description.clone(),
+                            required: scope.required,
+                        })
+                        .collect(),
+                    offline_access: offer.offline_access,
+                    resources: offer.resources.iter().cloned().collect(),
+                    action: &action,
+                    csrf: csrf.expose(),
+                    nonce_attribute: nonce_attribute(nonce),
+                })
+            })
+            .into_response()
+        }
+        // `ast-gxh.4` turns a decision into a code and a redirect. Reaching
+        // this stage means one was made and has nowhere to go yet.
+        Stage::Response => error_page(
             context,
             StatusCode::NOT_IMPLEMENTED,
             InteractionError::NotAvailable,
