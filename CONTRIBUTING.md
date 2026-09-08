@@ -39,6 +39,13 @@ These are the same checks CI runs. The pure test suite is deliberately fast —
 sub-second — because a suite that is slow is a suite that gets skipped:
 
 ```sh
+./scripts/check.sh          # everything CI runs, no database needed
+./scripts/check.sh --db     # also starts PostgreSQL and runs the database tests
+```
+
+Individually, in the order they fail fastest:
+
+```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace                 # pure logic, no database

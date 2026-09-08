@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail fast on a warning anywhere, and keep incremental artefacts out of the
+  # cache: they are large and never reused across runners.
+  RUSTFLAGS: -D warnings
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Cheap, parallel checks. These fail in under two minutes and catch most PRs.
+  # -------------------------------------------------------------------------
+  lint:
+    name: fmt, clippy, layering
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      # Offline: clippy must not need a database. The committed .sqlx data is
+      # what makes that possible, and `sqlx-check` below proves it is current.
+      - name: cargo clippy
+        env:
+          SQLX_OFFLINE: "true"
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      # ADR-0001: protocol crates must not reach sqlx, axum, tokio, hyper,
+      # reqwest or askama, directly or transitively. Also asserts
+      # #![forbid(unsafe_code)] on every crate root.
+      - name: ports-and-adapters layering
+        run: ./scripts/check-layering.sh
+
+      # Belt and braces around the forbid attribute: an `unsafe` block that
+      # somehow compiles should still stop the build.
+      - name: no unsafe in first-party code
+        run: |
+          if grep -rn --include='*.rs' -E '\bunsafe\b' crates/ \
+               | grep -v 'forbid(unsafe_code)' \
+               | grep -v '^\s*//' ; then
+            echo "::error::unsafe found in first-party code"
+            exit 1
+          fi
+          echo "no unsafe outside dependencies"
+
+  # -------------------------------------------------------------------------
+  # Tests, against a real PostgreSQL. The database tests are the ones that
+  # prove tenant isolation, so they are not optional in CI even though they
+  # are optional locally.
+  # -------------------------------------------------------------------------
+  test:
+    name: tests (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: asterius
+          POSTGRES_PASSWORD: asterius
+          POSTGRES_DB: asterius
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asterius -d asterius"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://asterius:asterius@localhost:5432/asterius
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,sqlx-cli@0.8.6
+
+      # Acceptance for ast-83p.3: migrations apply to an empty database and are
+      # idempotent on a second run.
+      - name: migrations apply to a fresh database
+        run: |
+          cd crates/store-pg
+          sqlx migrate run
+          sqlx migrate run
+          sqlx migrate info
+
+      - name: cargo test
+        run: cargo nextest run --workspace --all-features
+
+      - name: doctests
+        run: cargo test --workspace --doc
+
+  # -------------------------------------------------------------------------
+  # The committed .sqlx data must match the queries in the tree, or an offline
+  # build (which is what every other job does) silently checks stale SQL.
+  # -------------------------------------------------------------------------
+  sqlx-check:
+    name: sqlx offline data is current
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: asterius
+          POSTGRES_PASSWORD: asterius
+          POSTGRES_DB: asterius
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asterius -d asterius"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://asterius:asterius@localhost:5432/asterius
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli@0.8.6
+      - name: apply migrations
+        run: cd crates/store-pg && sqlx migrate run
+      - name: cargo sqlx prepare --check
+        run: cargo sqlx prepare --check --workspace -- --all-targets
+
+  # -------------------------------------------------------------------------
+  # Supply chain. Advisories move without us touching the tree, so this also
+  # runs on a schedule in audit.yml.
+  # -------------------------------------------------------------------------
+  supply-chain:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # advisories, bans, licenses and sources, per deny.toml.
+      - run: cargo deny check
+
+  # -------------------------------------------------------------------------
+  # Documentation must build without warnings: the ADRs and the threat model
+  # link into rustdoc, and a broken intra-doc link means a stale reference.
+  # -------------------------------------------------------------------------
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps --all-features
+
+  # A single required status check, so branch protection does not have to be
+  # edited every time a job is added.
+  ci:
+    name: CI
+    if: always()
+    needs: [lint, test, sqlx-check, supply-chain, docs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: all jobs succeeded
+        run: |
+          results='${{ toJSON(needs) }}'
+          echo "$results"
+          if grep -qE '"result": *"(failure|cancelled|skipped)"' <<<"$results"; then
+            echo "::error::at least one CI job did not succeed"
+            exit 1
+          fi
