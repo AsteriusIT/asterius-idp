@@ -4,9 +4,9 @@
 //! Protocol crates depend on these traits and never on an implementation.
 
 use crate::{
-    AuthenticationMethod, Client, ClientId, CodeBinding, Consumed, DomainError, Grant,
-    InteractionRecord, Issuer, Participant, PushedRequest, Secret, SectorIdentifier, Session,
-    SessionRevocation, SubjectId, Tenant, TenantId, UserId,
+    AuthenticationMethod, Client, ClientId, ClientStatus, CodeBinding, Consumed, DomainError,
+    Grant, InteractionRecord, Issuer, Participant, PushedRequest, Secret, SectorIdentifier,
+    Session, SessionRevocation, SubjectId, Tenant, TenantId, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -172,6 +172,111 @@ pub trait ClientRegistry: Debug + Send + Sync {
         client: &Client,
         registration_access_token: &[u8; 32],
     ) -> Result<Client, DomainError>;
+}
+
+/// What the RFC 7592 client configuration endpoint needs before it acts.
+///
+/// Deliberately not the client. Authenticating a management request needs two
+/// cheap columns — the digest of the registration access token and whether the
+/// client is suspended — and neither of them is metadata. Reading the whole
+/// registration first would put the endpoint's authentication decision behind
+/// [`ClientMetadata::validate`], so a client whose stored row no longer
+/// satisfies today's profile (an operator turned mTLS off; a column was edited
+/// by hand) could not authenticate — and therefore could not use the one
+/// endpoint that exists to fix or remove it. Failing that way round is worse
+/// than not checking, because the record stays and nobody can reach it.
+///
+/// [`ClientMetadata::validate`]: crate::ClientMetadata::validate
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedClient {
+    /// SHA-256 of the registration access token that manages this client, or
+    /// `None` if it has none.
+    ///
+    /// `None` is not "any token will do": it is a client that was never issued
+    /// a configuration endpoint at all — one created by the admin API or a seed
+    /// script rather than by RFC 7591 registration. OIDC Registration §3.2 says
+    /// an implementation "MUST either return both a Client Configuration
+    /// Endpoint and a Registration Access Token or neither of them", so such a
+    /// client has neither, and every management request for it is refused.
+    ///
+    /// The digest, never the token: see [`crate::credentials`].
+    pub registration_access_token: Option<[u8; 32]>,
+    /// Whether the client is serving or suspended.
+    pub status: ClientStatus,
+}
+
+/// Reads and writes one client's own registration (RFC 7592).
+///
+/// Separate from both [`ClientRepository`] and [`ClientRegistry`], and narrower
+/// than either would be with these methods bolted on. Exactly one caller holds
+/// it — the client configuration endpoint — and it is the only code in the
+/// server that may replace or delete a client on the client's own say-so. A
+/// `replace` on the read port would hand that capability to PAR and the token
+/// endpoint; a `deprovision` on the registration port would hand it to
+/// `POST /register`.
+#[async_trait::async_trait]
+pub trait ClientConfiguration: Debug + Send + Sync {
+    /// What is needed to decide whether a management request may proceed.
+    ///
+    /// Returns `None` when this tenant has no such client. The caller must not
+    /// turn that into a 404: OIDC Registration §4.4 says endpoints "MUST NOT
+    /// return the HTTP 404 Not Found status code" for exactly this case,
+    /// because the answer would enumerate registrations.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. A caller
+    /// must not treat that as `None`: "the database is down" and "no such
+    /// client" are the same to a caller and must not be the same here.
+    async fn managed(&self, client_id: &ClientId) -> Result<Option<ManagedClient>, DomainError>;
+
+    /// Replaces a client's registration metadata wholesale (RFC 7592 §2.2).
+    ///
+    /// A replacement, never a merge. §2.2 is explicit: "Valid values of client
+    /// metadata fields in this request MUST replace, not augment, the values
+    /// previously associated with this client. Omitted fields MUST be treated
+    /// as null or empty values by the server". An implementation that read the
+    /// stored row and filled in what the document left out would keep a client
+    /// on redirect URIs it asked to drop, which is the security bug this rule
+    /// exists to prevent.
+    ///
+    /// What is *not* in the registration document is not the client's to
+    /// change and must survive untouched: the registration access token, the
+    /// per-client resource allow-list (`ast-m9c.6`), the agent profile
+    /// (`ast-lh3.1`), the software statement, the status and the creation time.
+    /// RFC 7592 §2.2 makes the same point about `client_secret` — a client
+    /// "MUST NOT be allowed to overwrite its existing client secret with its
+    /// own chosen value".
+    ///
+    /// Returns the client **as stored**, for the same reason
+    /// [`ClientRegistry::register`] does: RFC 7592 §3 requires the response to
+    /// carry "all registered metadata about this client, including any fields
+    /// provisioned by the authorization server itself".
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the client vanished between the
+    /// authentication and the write. [`DomainError::Invalid`] if the entity
+    /// belongs to another tenant or the stored row does not validate.
+    /// [`DomainError::Storage`] otherwise.
+    async fn replace(&self, client: &Client) -> Result<Client, DomainError>;
+
+    /// Deprovisions a client (RFC 7592 §2.3).
+    ///
+    /// A real delete. §2.3 says a successful delete "will invalidate the
+    /// `client_id`, `client_secret`, and `registration_access_token` for this
+    /// client, thereby preventing the `client_id` from being used at either the
+    /// authorization endpoint or token endpoint", and §5 makes the token part a
+    /// MUST: "If a client is deprovisioned from a server, any outstanding
+    /// registration access token for that client MUST be invalidated at the
+    /// same time." Removing the row does all of that at once, and leaves no
+    /// state in which authentication succeeds but the action cannot.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if no such client exists in this tenant, or a
+    /// storage error.
+    async fn deprovision(&self, client_id: &ClientId) -> Result<(), DomainError>;
 }
 
 /// Stores pushed authorization requests for one tenant.

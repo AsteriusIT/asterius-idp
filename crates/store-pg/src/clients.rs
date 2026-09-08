@@ -31,7 +31,7 @@ use asterius_domain::SigningAlgorithm;
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadata, ClientRegistration, ClientStatus, DomainError,
-    JwksSource, TenantId,
+    JwksSource, ManagedClient, TenantId,
 };
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
@@ -64,6 +64,21 @@ impl asterius_domain::ClientRegistry for PgClientRepository {
         registration_access_token: &[u8; 32],
     ) -> Result<Client, DomainError> {
         Self::register(self, client, registration_access_token).await
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::ClientConfiguration for PgClientRepository {
+    async fn managed(&self, client_id: &ClientId) -> Result<Option<ManagedClient>, DomainError> {
+        Self::managed(self, client_id).await
+    }
+
+    async fn replace(&self, client: &Client) -> Result<Client, DomainError> {
+        Self::replace(self, client).await
+    }
+
+    async fn deprovision(&self, client_id: &ClientId) -> Result<(), DomainError> {
+        Self::delete(self, client_id).await
     }
 }
 
@@ -351,8 +366,183 @@ impl PgClientRepository {
         row.into_entity(&self.tenant, self.capabilities)
     }
 
-    /// Deletes a client and, by cascade, its grants, tokens and pushed
-    /// requests.
+    /// The two columns a management request is authorised against.
+    ///
+    /// Deliberately not [`Self::find`] with an extra field. `find` rebuilds the
+    /// registration document and puts it back through
+    /// [`ClientMetadata::validate`], which is right for every caller that is
+    /// about to *use* the client and wrong for the one caller that is about to
+    /// authenticate a request to change or delete it: a row that no longer
+    /// validates — because an operator turned mTLS off, or because somebody
+    /// edited a column by hand — would fail to load, and RFC 7592's endpoint is
+    /// the only way its owner could have fixed or removed it. So this reads two
+    /// scalar columns and validates nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::Invalid`] if the stored `status` is not one this
+    /// server knows, or a storage error. Never `Ok(None)` for a client that
+    /// exists: the caller distinguishes "no such client" from "cannot tell",
+    /// and answering a management request as though the client were absent when
+    /// the database was merely unreachable would refuse a client that is
+    /// perfectly valid.
+    pub async fn managed(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<Option<ManagedClient>, DomainError> {
+        let row = sqlx::query!(
+            "select status, registration_access_token_hash
+             from clients
+             where tenant_id = $1 and client_id = $2",
+            self.tenant.as_str(),
+            client_id.as_str()
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        row.map(|row| {
+            let status = ClientStatus::parse(&row.status).ok_or_else(|| {
+                DomainError::invalid("status", format!("unknown: {}", row.status))
+            })?;
+            // A column of the wrong width is not a token that happens to be
+            // short: it is a row nothing should authenticate against, so it
+            // becomes "this client has no registration access token" rather
+            // than a comparison against a truncated digest.
+            let registration_access_token = row
+                .registration_access_token_hash
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+            Ok(ManagedClient {
+                registration_access_token,
+                status,
+            })
+        })
+        .transpose()
+    }
+
+    /// Replaces a client's registration metadata (RFC 7592 §2.2).
+    ///
+    /// An `update`, not an upsert: the row must already exist, because the
+    /// caller has just authenticated against it. A `client_id` that vanished in
+    /// between is [`DomainError::NotFound`], never a fresh row — a client
+    /// cannot bring itself back from the dead by updating itself.
+    ///
+    /// **The `set` list is the whole security argument.** It names exactly the
+    /// columns [`ClientRegistration`] can express, and therefore exactly the
+    /// fields RFC 7592 §2.2 lets a client replace. Everything else in the row is
+    /// untouched *by construction* rather than by a check somebody could forget
+    /// to write: `registration_access_token_hash` (the credential that
+    /// authorised this call), `resources` (the per-client audience allow-list,
+    /// which is policy — `ast-m9c.6`), `is_agent` / `agent_owner_sub` /
+    /// `agent_policy` (`ast-lh3.1`), `software_statement`, `status` (a
+    /// suspension is an operator's decision and not a client's), `client_type`
+    /// and `created_at`. `updated_at` moves, because the row's trigger moves it.
+    ///
+    /// Note what is here that [`Self::upsert`] has and this does not:
+    /// `resources`. The admin API may set the allow-list; a client updating
+    /// itself may not, and the difference is a missing column in a statement
+    /// rather than a rule in prose.
+    ///
+    /// `returning` for the same reason [`Self::register`] uses it: RFC 7592 §3
+    /// makes the response "all registered metadata about this client", and the
+    /// only honest source for that is the committed row.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if there is no such client in this tenant,
+    /// [`DomainError::Invalid`] if the entity belongs to another tenant or the
+    /// stored row does not validate, or a storage error.
+    pub async fn replace(&self, client: &Client) -> Result<Client, DomainError> {
+        if client.tenant != self.tenant {
+            return Err(DomainError::invalid(
+                "tenant_id",
+                "does not match the tenant this repository is scoped to",
+            ));
+        }
+        let registration = &client.registration;
+        let lists = ListColumns::of(registration);
+        let (jwks, jwks_uri) = match &registration.jwks {
+            JwksSource::Inline(value) => (Some(value.clone()), None),
+            JwksSource::Uri(uri) => (None, Some(uri.clone())),
+        };
+
+        let row = sqlx::query_as!(
+            Row,
+            "update clients
+             set client_name = $3,
+                 token_endpoint_auth_method = $4,
+                 redirect_uris = $5,
+                 grant_types = $6,
+                 response_types = $7,
+                 scopes = $8,
+                 jwks = $9,
+                 jwks_uri = $10,
+                 id_token_signed_response_alg = $11,
+                 application_type = $12,
+                 subject_type = $13,
+                 sector_identifier_uri = $14,
+                 request_object_signing_alg = $15,
+                 backchannel_authentication_request_signing_alg = $16,
+                 dpop_bound_access_tokens = $17,
+                 tls_client_certificate_bound_access_tokens = $18,
+                 authorization_details_types = $19,
+                 use_mtls_endpoint_aliases = $20
+             where tenant_id = $1 and client_id = $2
+             returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
+                       grant_types, response_types, scopes, resources, jwks, jwks_uri,
+                       id_token_signed_response_alg, application_type, subject_type,
+                       sector_identifier_uri, request_object_signing_alg,
+                       backchannel_authentication_request_signing_alg,
+                       dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
+                       authorization_details_types, use_mtls_endpoint_aliases,
+                       status, created_at, updated_at",
+            self.tenant.as_str(),
+            client.id.as_str(),
+            registration.client_name,
+            registration.token_endpoint_auth_method.as_str(),
+            &lists.redirect_uris,
+            &lists.grant_types,
+            &lists.response_types,
+            &lists.scopes,
+            jwks,
+            jwks_uri.as_deref(),
+            registration.id_token_signed_response_alg.as_str(),
+            registration.application_type.as_str(),
+            registration.subject_type.as_str(),
+            registration.sector_identifier_uri.as_deref(),
+            registration
+                .request_object_signing_alg
+                .map(SigningAlgorithm::as_str),
+            registration
+                .backchannel_authentication_request_signing_alg
+                .map(SigningAlgorithm::as_str),
+            registration.token_binding.is_dpop_bound(),
+            registration.token_binding.is_certificate_bound(),
+            &lists.authorization_details_types,
+            registration.use_mtls_endpoint_aliases,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .ok_or(DomainError::NotFound)?;
+
+        row.into_entity(&self.tenant, self.capabilities)
+    }
+
+    /// Deletes a client and, by cascade, its keys, pushed requests, grants and
+    /// every token hanging off them.
+    ///
+    /// The cascade is the schema's, and it is what makes RFC 7592 §2.3's
+    /// "SHOULD immediately invalidate all existing authorization grants and
+    /// currently active access tokens, all refresh tokens, and all other tokens
+    /// associated with this client" true without a second statement to forget:
+    /// `client_keys` and `auth_requests` reference `(tenant_id, client_id)` on
+    /// delete cascade, `grants` does too, and `authorization_codes` and
+    /// `refresh_tokens` cascade from `grants`.
+    ///
+    /// `audit_events` does not, deliberately: it has no foreign key to
+    /// `clients`, so deprovisioning a client does not erase the record of what
+    /// it did. That is the property an append-only trail exists for.
     ///
     /// # Errors
     ///

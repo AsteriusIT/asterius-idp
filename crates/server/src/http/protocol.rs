@@ -12,6 +12,7 @@
 
 use crate::client_auth::ClientAuthenticator;
 use crate::http::authorize::{self, AuthorizeContext};
+use crate::http::client_configuration::{self, ConfigurationContext};
 use crate::http::dpop::DpopEndpoint;
 use crate::http::interaction::{self, InteractionContext};
 use crate::http::par::{self, PushContext};
@@ -186,6 +187,18 @@ pub fn routes(state: ProtocolState) -> Router {
             .route(
                 Endpoint::Registration.path(),
                 post(client_registration).with_state(Arc::clone(&endpoints)),
+            )
+            // RFC 7592. The URL `POST /register` hands back in
+            // `registration_client_uri`, built from the same registry so the
+            // two cannot drift. No DPoP check: the credential is the
+            // registration access token and there is no client authentication
+            // to bind a proof to.
+            .route(
+                &client_configuration::path(),
+                get(client_configuration_read)
+                    .put(client_configuration_update)
+                    .delete(client_configuration_remove)
+                    .with_state(Arc::clone(&endpoints)),
             )
             .route(
                 "/interaction/{id}",
@@ -403,6 +416,82 @@ async fn client_registration(
         },
         &headers,
         &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// Builds the context the three RFC 7592 handlers share.
+fn configuration_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    clients: &'a asterius_store_pg::PgClientRepository,
+    request_id: &'a crate::http::request_id::RequestId,
+) -> ConfigurationContext<'a> {
+    ConfigurationContext {
+        tenant,
+        clients,
+        configuration: clients,
+        capabilities: endpoints.capabilities,
+        audit: endpoints.audit.as_ref(),
+        request_id: Some(request_id.as_str()),
+    }
+}
+
+/// `GET /register/{client_id}` — RFC 7592 §2.1.
+async fn client_configuration_read(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    Path(client_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    client_configuration::read(
+        &configuration_context(&endpoints, &tenant, &clients, &request_id),
+        &client_id,
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `PUT /register/{client_id}` — RFC 7592 §2.2.
+async fn client_configuration_update(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    Path(client_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    client_configuration::update(
+        &configuration_context(&endpoints, &tenant, &clients, &request_id),
+        &client_id,
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `DELETE /register/{client_id}` — RFC 7592 §2.3.
+async fn client_configuration_remove(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    Path(client_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    client_configuration::remove(
+        &configuration_context(&endpoints, &tenant, &clients, &request_id),
+        &client_id,
+        &headers,
         time::OffsetDateTime::now_utc(),
     )
     .await

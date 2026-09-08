@@ -1,0 +1,173 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update clients\n             set client_name = $3,\n                 token_endpoint_auth_method = $4,\n                 redirect_uris = $5,\n                 grant_types = $6,\n                 response_types = $7,\n                 scopes = $8,\n                 jwks = $9,\n                 jwks_uri = $10,\n                 id_token_signed_response_alg = $11,\n                 application_type = $12,\n                 subject_type = $13,\n                 sector_identifier_uri = $14,\n                 request_object_signing_alg = $15,\n                 backchannel_authentication_request_signing_alg = $16,\n                 dpop_bound_access_tokens = $17,\n                 tls_client_certificate_bound_access_tokens = $18,\n                 authorization_details_types = $19,\n                 use_mtls_endpoint_aliases = $20\n             where tenant_id = $1 and client_id = $2\n             returning client_id, client_name, token_endpoint_auth_method, redirect_uris,\n                       grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                       id_token_signed_response_alg, application_type, subject_type,\n                       sector_identifier_uri, request_object_signing_alg,\n                       backchannel_authentication_request_signing_alg,\n                       dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                       authorization_details_types, use_mtls_endpoint_aliases,\n                       status, created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "token_endpoint_auth_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "redirect_uris",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "grant_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "response_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "resources",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "jwks",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "jwks_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "id_token_signed_response_alg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "application_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "subject_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "sector_identifier_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "request_object_signing_alg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "backchannel_authentication_request_signing_alg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "dpop_bound_access_tokens",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 17,
+        "name": "tls_client_certificate_bound_access_tokens",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 18,
+        "name": "authorization_details_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 19,
+        "name": "use_mtls_endpoint_aliases",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 20,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 21,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 22,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Jsonb",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "TextArray",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "65c6c0507539a938845be32997c8989bbe6fef02c3cbce5d515bad29cf90aac2"
+}

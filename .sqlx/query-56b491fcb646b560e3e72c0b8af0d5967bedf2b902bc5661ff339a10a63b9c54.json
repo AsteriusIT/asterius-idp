@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select status, registration_access_token_hash\n             from clients\n             where tenant_id = $1 and client_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "registration_access_token_hash",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "56b491fcb646b560e3e72c0b8af0d5967bedf2b902bc5661ff339a10a63b9c54"
+}

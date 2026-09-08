@@ -340,7 +340,7 @@ impl Denial {
 /// trimming, no decoding, no length check. [`OpaqueToken::from_presented`]
 /// explains why: every shape check on a presented credential is a second oracle
 /// that answers faster than the real comparison does.
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, credential) = value.split_once(' ')?;
     if !scheme.eq_ignore_ascii_case("Bearer") {
@@ -503,7 +503,12 @@ pub async fn register(
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
         ],
-        Json(response_body(&stored, context.tenant, &token, now)),
+        Json(client_information(
+            &stored,
+            context.tenant,
+            Some(&token),
+            now,
+        )),
     )
         .into_response()
 }
@@ -527,7 +532,13 @@ fn mint_client_id() -> ClientId {
     ClientId::new(format!("{CLIENT_ID_PREFIX}{}", drawn.expose()))
 }
 
-/// The RFC 7591 §3.2.1 client information response.
+/// The RFC 7591 §3.2.1 / RFC 7592 §3 client information response.
+///
+/// One renderer for both endpoints, on purpose: a registration, a read and an
+/// update all return the same document, and two renderers would be two lists of
+/// fields to keep in step — with the one that is read less often being the one
+/// that rots. `token` is `Some` only at the moment the credential is minted;
+/// see the comment on the field for the specification's two readings.
 ///
 /// Rendered from the **stored** registration, which is why `stored` comes back
 /// out of the write rather than being the entity that went in. RFC 7591 §3.2.1
@@ -552,10 +563,10 @@ fn mint_client_id() -> ClientId {
 /// * **`resources`.** The per-client audience allow-list is policy and is not a
 ///   registration metadata field; it is not settable here and `ast-m9c.6` owns
 ///   it. Echoing it would advertise a field a client cannot set.
-fn response_body(
+pub(crate) fn client_information(
     stored: &Client,
     tenant: &Tenant,
-    token: &OpaqueToken,
+    token: Option<&OpaqueToken>,
     now: OffsetDateTime,
 ) -> Value {
     let registration = &stored.registration;
@@ -572,11 +583,9 @@ fn response_body(
         //
         // "Implementations MUST either return both a Client Configuration
         // Endpoint and a Registration Access Token or neither of them." Both,
-        // then. The token is stored as a digest now so that the configuration
-        // endpoint (`ast-m9c.5`) is a pure read when it lands; until it does,
-        // the URI is a 404 rather than a 501, because it is not in the endpoint
-        // registry that mounts the not-yet-built handlers.
-        "registration_access_token": token.expose(),
+        // at registration. The URI is answered by
+        // [`crate::http::client_configuration`], and the token is stored as a
+        // digest so that reading a registration back needs no plaintext copy.
         "registration_client_uri": management_uri(tenant, &stored.id),
 
         // --- client metadata, as registered ---
@@ -625,6 +634,22 @@ fn response_body(
         .as_object_mut()
         .expect("the document above is a JSON object");
 
+    // Present exactly once, when the token is minted. RFC 7592 §3 marks
+    // `registration_access_token` REQUIRED in the client information response,
+    // but the server holds only its digest after this moment, and OIDC
+    // Registration §4.3 is the narrower rule for the read that comes later:
+    // "The Authorization Server need not include the registration_access_token
+    // or registration_client_uri value in this response unless they have been
+    // updated." So a registration carries it and a read does not — see
+    // [`crate::http::client_configuration`] for why re-minting it on every read
+    // would be worse than omitting it.
+    if let Some(token) = token {
+        object.insert(
+            "registration_access_token".to_owned(),
+            json!(token.expose()),
+        );
+    }
+
     // RFC 7591 §2: `jwks` and `jwks_uri` must never both appear. The stored
     // registration can only hold one, so this reproduces that rather than
     // deciding it again.
@@ -667,9 +692,11 @@ fn issued_at(stored: &Client, fallback: OffsetDateTime) -> i64 {
 /// OIDC Registration §4.1 recommends "the Client Registration Endpoint's URL
 /// and the issued Client ID for this Client, with the latter as either a path
 /// parameter or a query parameter", and requires the https scheme. The path
-/// form is used because it is the one `ast-m9c.5` mounts. The scheme is https by
-/// construction: [`asterius_domain::Issuer`] refuses anything else.
-fn management_uri(tenant: &Tenant, client: &ClientId) -> String {
+/// form is used because it is the one [`crate::http::client_configuration`]
+/// serves, and a test there asserts the two agree — a URL handed to a client
+/// that the router does not answer is the worst of both readings. The scheme is
+/// https by construction: [`asterius_domain::Issuer`] refuses anything else.
+pub(crate) fn management_uri(tenant: &Tenant, client: &ClientId) -> String {
     format!(
         "{}{}/{}",
         tenant.issuer.as_str(),
@@ -734,7 +761,7 @@ async fn record(
 }
 
 /// Whether the request body is JSON, ignoring any charset parameter.
-fn is_json(headers: &HeaderMap) -> bool {
+pub(crate) fn is_json(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -758,7 +785,7 @@ fn is_json(headers: &HeaderMap) -> bool {
 /// [`ClientMetadataError`] renders from field names, indexes and fixed text —
 /// never from a value in the document. That property is asserted where it is
 /// established, in `asterius_domain::entities::client`.
-fn metadata_error(failure: &ClientMetadataError) -> Response {
+pub(crate) fn metadata_error(failure: &ClientMetadataError) -> Response {
     error(
         StatusCode::BAD_REQUEST,
         failure.code(),
@@ -795,7 +822,7 @@ fn metadata_error(failure: &ClientMetadataError) -> Response {
 /// those are built from field names, indexes and counts by construction — a
 /// property asserted where it is established, in
 /// `asterius_domain::entities::client`. The test below pins the closed set.
-fn nqschar(description: &str) -> String {
+pub(crate) fn nqschar(description: &str) -> String {
     description
         .chars()
         .filter(|c| matches!(c, '\x20'..='\x21' | '\x23'..='\x5b' | '\x5d'..='\x7e'))
@@ -822,7 +849,7 @@ fn refusal(denial: Denial) -> Response {
 /// request. RFC 7591 §3.2.2 calls it "human-readable ASCII text ... used for
 /// debugging", and every value that reaches it here is a literal or a field
 /// name from a closed set.
-fn error(status: StatusCode, code: &str, description: &str) -> Response {
+pub(crate) fn error(status: StatusCode, code: &str, description: &str) -> Response {
     (
         status,
         [
@@ -1087,7 +1114,8 @@ mod tests {
         };
 
         let token = OpaqueToken::generate();
-        let rendered = response_body(&stored, &tenant(), &token, OffsetDateTime::UNIX_EPOCH);
+        let rendered =
+            client_information(&stored, &tenant(), Some(&token), OffsetDateTime::UNIX_EPOCH);
 
         let round_tripped = ClientRegistration::from_json(
             &serde_json::to_vec(&rendered).expect("serialise"),
@@ -1112,7 +1140,7 @@ mod tests {
             updated_at: OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("instant"),
         };
         let token = OpaqueToken::generate();
-        let body = response_body(&stored, &tenant(), &token, OffsetDateTime::UNIX_EPOCH);
+        let body = client_information(&stored, &tenant(), Some(&token), OffsetDateTime::UNIX_EPOCH);
 
         // RFC 7591 §3.2.1.
         assert_eq!(body["client_id"], json!("c.abc"));
@@ -1167,10 +1195,10 @@ mod tests {
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
         };
-        let body = response_body(
+        let body = client_information(
             &stored,
             &tenant(),
-            &OpaqueToken::generate(),
+            Some(&OpaqueToken::generate()),
             OffsetDateTime::UNIX_EPOCH,
         );
         for absent in [

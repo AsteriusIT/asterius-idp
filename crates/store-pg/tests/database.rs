@@ -5216,3 +5216,569 @@ mod passwords {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The client configuration endpoint (`ast-m9c.5`, RFC 7592)
+// ---------------------------------------------------------------------------
+
+/// What `GET`, `PUT` and `DELETE /register/{client_id}` do to the row.
+///
+/// The endpoint's own rules are unit-tested where they are decided; what only a
+/// database can answer is what a management request does to the table — which
+/// columns an update moves, which it must not, and what a delete takes with it
+/// through the schema's cascades.
+mod client_configuration {
+    use super::*;
+    use asterius_domain::{ClientConfiguration, DomainError, ManagedClient, sha256};
+
+    /// Registers a client with a known registration access token and returns
+    /// the digest that was stored, so a test can assert against the value the
+    /// column holds rather than against one it recomputed.
+    async fn register(pool: &PgPool, tenant: &str, id: &str, token: &str) -> [u8; 32] {
+        let digest = sha256(token.as_bytes());
+        Store::from_pool(pool.clone())
+            .scope(TenantId::new(tenant))
+            .clients(Capabilities::default())
+            .register(&client(tenant, id, &registration_document()), &digest)
+            .await
+            .expect("register");
+        digest
+    }
+
+    fn repo(pool: &PgPool, tenant: &str) -> asterius_store_pg::PgClientRepository {
+        Store::from_pool(pool.clone())
+            .scope(TenantId::new(tenant))
+            .clients(Capabilities::default())
+    }
+
+    db_test! {
+        /// The two columns a management request is authorised against come back
+        /// from the row, and each client's digest answers only for that client.
+        ///
+        /// OIDC Registration §4.1: the client a configuration URL names "MUST be
+        /// matched against the Client to which the Registration Access Token was
+        /// issued". The store's part of that is simply that there is no lookup
+        /// by token at all — `managed` is keyed by `client_id`, so the only
+        /// digest the endpoint can ever compare against is the one belonging to
+        /// the client in the path. This asserts it against the table.
+        async fn a_registration_access_token_is_reachable_only_through_its_own_client(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let alpha = register(&db.pool, "demo", "c.alpha", "alpha-token").await;
+            let beta = register(&db.pool, "demo", "c.beta", "beta-token").await;
+            assert_ne!(alpha, beta);
+
+            let repo = repo(&db.pool, "demo");
+            let managed = repo
+                .managed(&ClientId::new("c.alpha"))
+                .await
+                .expect("read")
+                .expect("present");
+            assert_eq!(
+                managed,
+                ManagedClient {
+                    registration_access_token: Some(alpha),
+                    status: ClientStatus::Active,
+                }
+            );
+            assert_ne!(
+                managed.registration_access_token,
+                Some(beta),
+                "one client's URL served another client's credential"
+            );
+
+            // A client that does not exist is `None`, not an error and not a
+            // guess. The endpoint turns that into the same 401 a wrong token
+            // gets (OIDC Registration §4.4).
+            assert!(
+                repo.managed(&ClientId::new("c.nobody")).await.expect("read").is_none()
+            );
+
+            // A client created by any path other than registration has no
+            // configuration endpoint at all — OIDC Registration §3.2's "both or
+            // neither" — so the column is null and nothing authenticates.
+            repo.upsert(&client("demo", "c.admin", &registration_document()))
+                .await
+                .expect("upsert");
+            let admin = repo
+                .managed(&ClientId::new("c.admin"))
+                .await
+                .expect("read")
+                .expect("present");
+            assert_eq!(admin.registration_access_token, None);
+        }
+    }
+
+    db_test! {
+        /// A client in one tenant is invisible through another tenant's
+        /// configuration endpoint — read, replace and delete alike.
+        ///
+        /// Each tenant is a separate authorization server with its own issuer,
+        /// so a `client_id` means nothing outside its own. Both tenants hold the
+        /// *same* identifier here, which is the case a missing `tenant_id`
+        /// predicate turns into one tenant managing another's client.
+        async fn a_client_is_invisible_through_another_tenants_configuration_endpoint(db) {
+            seed_tenant(&db.pool, "alpha").await;
+            seed_tenant(&db.pool, "beta").await;
+            let alpha_digest = register(&db.pool, "alpha", "c.shared", "alpha-token").await;
+            let beta_digest = register(&db.pool, "beta", "c.shared", "beta-token").await;
+
+            let alpha = repo(&db.pool, "alpha");
+            let beta = repo(&db.pool, "beta");
+
+            // Each tenant sees only its own token for the identifier they share.
+            assert_eq!(
+                alpha.managed(&ClientId::new("c.shared")).await.expect("read")
+                    .expect("present").registration_access_token,
+                Some(alpha_digest)
+            );
+            assert_eq!(
+                beta.managed(&ClientId::new("c.shared")).await.expect("read")
+                    .expect("present").registration_access_token,
+                Some(beta_digest)
+            );
+
+            // An identifier only the other tenant has does not exist here.
+            register(&db.pool, "beta", "c.beta-only", "beta-only-token").await;
+            assert!(
+                alpha.managed(&ClientId::new("c.beta-only")).await.expect("read").is_none(),
+                "another tenant's client was visible"
+            );
+
+            // A replace aimed at the other tenant's client changes nothing and
+            // creates nothing: it is `NotFound`, never an insert.
+            let mut renamed = client("alpha", "c.beta-only", &registration_document());
+            renamed.registration.client_name = "Taken over".to_owned();
+            assert!(
+                matches!(alpha.replace(&renamed).await, Err(DomainError::NotFound)),
+                "a replace reached across tenants"
+            );
+            assert!(alpha.managed(&ClientId::new("c.beta-only")).await.expect("read").is_none());
+            assert_eq!(
+                beta.find(&ClientId::new("c.beta-only")).await.expect("find")
+                    .expect("present").registration.client_name,
+                "Billing",
+                "the other tenant's client was renamed"
+            );
+
+            // And an entity belonging to another tenant cannot be replaced
+            // through this scope even under an identifier this scope holds.
+            let foreign = client("beta", "c.shared", &registration_document());
+            assert!(
+                matches!(
+                    alpha.replace(&foreign).await,
+                    Err(DomainError::Invalid { field: "tenant_id", .. })
+                ),
+                "a foreign entity was written into this tenant"
+            );
+
+            // A delete is scoped the same way.
+            assert!(
+                matches!(
+                    alpha.deprovision(&ClientId::new("c.beta-only")).await,
+                    Err(DomainError::NotFound)
+                )
+            );
+            let survivors: Vec<(String, String)> = sqlx::query_as(
+                "select tenant_id, client_id from clients order by tenant_id, client_id",
+            )
+            .fetch_all(&db.pool)
+            .await
+            .expect("list");
+            assert_eq!(
+                survivors,
+                vec![
+                    ("alpha".to_owned(), "c.shared".to_owned()),
+                    ("beta".to_owned(), "c.beta-only".to_owned()),
+                    ("beta".to_owned(), "c.shared".to_owned()),
+                ]
+            );
+        }
+    }
+
+    db_test! {
+        /// RFC 7592 §2.2, against the row: an update replaces the document and
+        /// leaves everything that is not in it alone.
+        ///
+        /// Two halves, and both are only observable here.
+        ///
+        /// **Omitted fields reset.** "Valid values of client metadata fields in
+        /// this request MUST replace, not augment, the values previously
+        /// associated with this client. Omitted fields MUST be treated as null
+        /// or empty values by the server". The row must not keep a redirect URI
+        /// the client dropped — a preserved one is a live callback its owner
+        /// believes is gone.
+        ///
+        /// **What is not registration metadata survives.** The registration
+        /// access token that authorised the call, the per-client resource
+        /// allow-list (`ast-m9c.6`), the agent profile (`ast-lh3.1`), the
+        /// software statement, the status and the creation time are all in the
+        /// same row and none of them is the client's to set. The `set` list of
+        /// the statement is what makes that true; this is what would notice a
+        /// column being added to it.
+        async fn replacing_a_registration_resets_the_document_and_keeps_the_rest(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let digest = register(&db.pool, "demo", "c.abc", "the-token").await;
+
+            // A rich registration, then the state other stories own written on
+            // top of it the way their own code paths will.
+            let mut rich = registration_document();
+            let object = rich.as_object_mut().expect("object");
+            object.insert("id_token_signed_response_alg".to_owned(), json!("PS256"));
+            object.insert("application_type".to_owned(), json!("native"));
+            object.insert("redirect_uris".to_owned(), json!([
+                "https://rp.example/cb",
+                "https://rp.example/second-cb",
+            ]));
+            object.insert("authorization_details_types".to_owned(), json!(["payment_initiation"]));
+            object.insert("request_object_signing_alg".to_owned(), json!("ES256"));
+            repo.replace(&client("demo", "c.abc", &rich)).await.expect("the first update");
+
+            sqlx::query(
+                "update clients
+                 set resources = array['https://api.example/accounts'],
+                     is_agent = true,
+                     agent_owner_sub = 'alice',
+                     software_statement = '{\"iss\": \"softwarehouse\"}'::jsonb
+                 where tenant_id = 'demo' and client_id = 'c.abc'",
+            )
+            .execute(&db.pool)
+            .await
+            .expect("set the columns other stories own");
+
+            let before = repo.find(&ClientId::new("c.abc")).await.expect("find").expect("present");
+            assert_eq!(before.registration.redirect_uris.len(), 2);
+
+            // A client renaming itself, and saying nothing about anything else.
+            let minimal = json!({
+                "client_name": "Billing, renamed",
+                "redirect_uris": ["https://rp.example/only-cb"],
+                "grant_types": ["authorization_code"],
+                "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+            });
+            let stored = repo
+                .replace(&client("demo", "c.abc", &minimal))
+                .await
+                .expect("the replacement");
+
+            // The value handed back is the committed row, so the assertions can
+            // be made against it — and against a fresh read, which is what a
+            // later request would see.
+            for after in [stored, repo.find(&ClientId::new("c.abc")).await.expect("find").expect("present")] {
+                assert_eq!(after.registration.client_name, "Billing, renamed");
+                assert_eq!(
+                    after.registration.redirect_uris.iter()
+                        .map(asterius_domain::RedirectUri::as_str).collect::<Vec<_>>(),
+                    vec!["https://rp.example/only-cb"],
+                    "a redirect URI the update did not mention survived"
+                );
+                assert_eq!(
+                    after.registration.id_token_signed_response_alg.as_str(),
+                    "EdDSA",
+                    "an omitted algorithm kept its old value"
+                );
+                assert!(after.registration.authorization_details_types.is_empty());
+                assert!(after.registration.request_object_signing_alg.is_none());
+                assert!(after.registration.scopes.is_empty());
+                assert_eq!(after.registration.application_type.as_str(), "web");
+
+                // Not the client's to set, and still there.
+                assert_eq!(
+                    after.registration.resources.iter().map(String::as_str).collect::<Vec<_>>(),
+                    vec!["https://api.example/accounts"],
+                    "an update erased the per-client resource allow-list"
+                );
+                assert_eq!(after.status, ClientStatus::Active);
+                assert_eq!(after.created_at, before.created_at, "an update moved created_at");
+                assert!(after.updated_at >= before.updated_at);
+            }
+
+            let row = sqlx::query(
+                "select registration_access_token_hash, is_agent, agent_owner_sub,
+                        software_statement, client_type
+                 from clients where tenant_id = 'demo' and client_id = 'c.abc'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row");
+            assert_eq!(
+                row.get::<Option<Vec<u8>>, _>("registration_access_token_hash"),
+                Some(digest.to_vec()),
+                "an update rotated or erased the registration access token"
+            );
+            assert!(row.get::<bool, _>("is_agent"), "an update erased the agent flag");
+            assert_eq!(
+                row.get::<Option<String>, _>("agent_owner_sub").as_deref(),
+                Some("alice")
+            );
+            assert!(row.get::<Option<serde_json::Value>, _>("software_statement").is_some());
+            assert_eq!(row.get::<String, _>("client_type"), "confidential");
+        }
+    }
+
+    db_test! {
+        /// `replace` updates; it never creates.
+        ///
+        /// The endpoint authenticates against the row before it writes, so a
+        /// missing row here means the client was deleted in between — by its own
+        /// concurrent `DELETE`, most likely. Inserting would bring it back from
+        /// the dead, with no registration access token and no audit of a
+        /// registration that never happened.
+        async fn replacing_a_client_that_is_not_there_creates_nothing(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let missing = repo.replace(&client("demo", "c.ghost", &registration_document())).await;
+            assert!(matches!(missing, Err(DomainError::NotFound)), "{missing:?}");
+
+            let count: i64 = sqlx::query_scalar("select count(*) from clients")
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
+            assert_eq!(count, 0);
+        }
+    }
+
+    db_test! {
+        /// RFC 7592 §2.3 and §5, against the schema's cascades.
+        ///
+        /// §2.3: a successful delete "will invalidate the `client_id`,
+        /// `client_secret`, and `registration_access_token` for this client,
+        /// thereby preventing the `client_id` from being used at either the
+        /// authorization endpoint or token endpoint", and "If possible, the
+        /// authorization
+        /// server SHOULD immediately invalidate all existing authorization
+        /// grants and currently active access tokens, all refresh tokens, and
+        /// all other tokens associated with this client."
+        ///
+        /// Nothing in the delete path lists those tables, which is the point:
+        /// the foreign keys do it, so a table added later with the same cascade
+        /// is covered without anybody remembering to extend a statement. What
+        /// this test does is name every dependent that exists today and check
+        /// the row count, including the two that cascade at one remove through
+        /// `grants`.
+        ///
+        /// And one thing that must *not* go: `audit_events` has no foreign key
+        /// to `clients`, so deprovisioning a client does not erase the record of
+        /// what it did.
+        async fn deprovisioning_a_client_takes_its_grants_and_tokens_with_it(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            register(&db.pool, "demo", "c.abc", "the-token").await;
+            // A second client, so that "everything is gone" can be told apart
+            // from "everything of this client is gone".
+            register(&db.pool, "demo", "c.other", "another-token").await;
+
+            let grant = "11111111-1111-1111-1111-111111111111";
+            for client_id in ["c.abc", "c.other"] {
+                sqlx::query(
+                    "insert into client_keys (tenant_id, client_id, kid, jwk, expires_at)
+                     values ('demo', $1, 'k1', '{}'::jsonb, now() + interval '1 day')",
+                )
+                .bind(client_id)
+                .execute(&db.pool)
+                .await
+                .expect("seed a client key");
+                sqlx::query(
+                    "insert into auth_requests
+                         (tenant_id, request_uri_hash, client_id, parameters, expires_at)
+                     values ('demo', sha256($1::bytea), $2, '{}'::jsonb,
+                             now() + interval '60 seconds')",
+                )
+                .bind(client_id.as_bytes())
+                .bind(client_id)
+                .execute(&db.pool)
+                .await
+                .expect("seed a pushed request");
+            }
+            sqlx::query(
+                "insert into grants (tenant_id, grant_id, client_id)
+                 values ('demo', $1::uuid, 'c.abc')",
+            )
+            .bind(grant)
+            .execute(&db.pool)
+            .await
+            .expect("seed a grant");
+            sqlx::query(
+                "insert into refresh_tokens
+                     (tenant_id, token_hash, grant_id, client_id, dpop_jkt)
+                 values ('demo', sha256('rt'::bytea), $1::uuid, 'c.abc', 'a-thumbprint')",
+            )
+            .bind(grant)
+            .execute(&db.pool)
+            .await
+            .expect("seed a refresh token");
+            sqlx::query(
+                "insert into authorization_codes
+                     (tenant_id, code_hash, client_id, grant_id, code_challenge, redirect_uri,
+                      issued_at, expires_at)
+                 values ('demo', sha256('code'::bytea), 'c.abc', $1::uuid, 'ch',
+                         'https://rp.example/cb', now(), now() + interval '60 seconds')",
+            )
+            .bind(grant)
+            .execute(&db.pool)
+            .await
+            .expect("seed an authorization code");
+
+            let audit = PgAuditSink::new(db.pool.clone());
+            audit
+                .record(
+                    AuditEvent::new(
+                        TenantId::new("demo"),
+                        EventType::CLIENT_REGISTERED,
+                        Outcome::Success,
+                        Actor::Client(ClientId::new("c.abc")),
+                        OffsetDateTime::now_utc(),
+                    )
+                    .client(ClientId::new("c.abc")),
+                )
+                .await
+                .expect("record");
+
+            repo.deprovision(&ClientId::new("c.abc")).await.expect("deprovision");
+
+            // The client, and with it the only copy of its registration access
+            // token: RFC 7592 §5's MUST, satisfied by the row being gone.
+            assert!(repo.managed(&ClientId::new("c.abc")).await.expect("read").is_none());
+
+            for (table, column) in [
+                ("client_keys", "client_id"),
+                ("auth_requests", "client_id"),
+                ("grants", "client_id"),
+                ("authorization_codes", "client_id"),
+                ("refresh_tokens", "client_id"),
+            ] {
+                let left: i64 = sqlx::query_scalar(&format!(
+                    "select count(*) from {table} where tenant_id = 'demo' and {column} = 'c.abc'"
+                ))
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
+                assert_eq!(left, 0, "{table} kept a row for a deprovisioned client");
+            }
+
+            // The other client kept everything.
+            let others: i64 = sqlx::query_scalar(
+                "select (select count(*) from clients where client_id = 'c.other')
+                      + (select count(*) from client_keys where client_id = 'c.other')
+                      + (select count(*) from auth_requests where client_id = 'c.other')",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+            assert_eq!(others, 3, "deleting one client took another's rows with it");
+
+            // The trail survives. It is the only record left that the client
+            // ever existed, which is exactly why it has no foreign key here.
+            let recorded: i64 = sqlx::query_scalar(
+                "select count(*) from audit_events where tenant_id = 'demo' and client_id = 'c.abc'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+            assert_eq!(recorded, 1, "the audit trail was cascaded away with the client");
+
+            // A second delete is `NotFound`, not a silent success: two racing
+            // DELETEs must not both report having done it.
+            assert!(matches!(
+                repo.deprovision(&ClientId::new("c.abc")).await,
+                Err(DomainError::NotFound)
+            ));
+        }
+    }
+
+    db_test! {
+        /// A client whose stored row no longer validates can still authenticate,
+        /// update itself and delete itself.
+        ///
+        /// This is why `managed` reads two scalar columns instead of loading the
+        /// client. An operator turning mTLS off leaves every `tls_client_auth`
+        /// client unable to load — `find` refuses it, correctly, because it can
+        /// no longer authenticate at the token endpoint. If the *management*
+        /// endpoint went through the same read, the client's owner could neither
+        /// fix the registration nor remove it, and the record would be stranded
+        /// with nobody able to reach it.
+        async fn a_client_whose_row_no_longer_validates_can_still_be_fixed_or_removed(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let mtls_on = Capabilities { mtls: true, ..Capabilities::default() };
+            let digest = sha256(b"the-token");
+
+            let mut document = registration_document();
+            document
+                .as_object_mut()
+                .expect("object")
+                .insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+            Store::from_pool(db.pool.clone())
+                .scope(TenantId::new("demo"))
+                .clients(mtls_on)
+                .register(&client_with("demo", "c.abc", &document, mtls_on), &digest)
+                .await
+                .expect("register while mtls is on");
+
+            // mTLS is off now. The ordinary read refuses the row.
+            let off = repo(&db.pool, "demo");
+            assert!(off.find(&ClientId::new("c.abc")).await.is_err());
+
+            // The management read does not, so the endpoint can still
+            // authenticate the client that owns it.
+            let managed = off
+                .managed(&ClientId::new("c.abc"))
+                .await
+                .expect("the management read must not validate the document")
+                .expect("present");
+            assert_eq!(managed.registration_access_token, Some(digest));
+            assert_eq!(managed.status, ClientStatus::Active);
+
+            // And it can replace the offending document with one this
+            // deployment does accept.
+            let fixed = off
+                .replace(&client("demo", "c.abc", &registration_document()))
+                .await
+                .expect("the client must be able to fix its own registration");
+            assert_eq!(fixed.registration.token_endpoint_auth_method.as_str(), "private_key_jwt");
+            assert!(off.find(&ClientId::new("c.abc")).await.expect("find").is_some());
+
+            // Or, had it chosen to, remove it.
+            off.deprovision(&ClientId::new("c.abc")).await.expect("deprovision");
+            assert!(off.managed(&ClientId::new("c.abc")).await.expect("read").is_none());
+        }
+    }
+
+    db_test! {
+        /// A suspended client is readable through `managed` and refused by the
+        /// endpoint (RFC 7592 §2.1's 403), which needs the status to survive the
+        /// read — and to survive an update, since a client must not be able to
+        /// lift its own suspension by replacing its registration.
+        async fn a_suspended_client_keeps_its_status_through_an_update(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            register(&db.pool, "demo", "c.abc", "the-token").await;
+            sqlx::query(
+                "update clients set status = 'disabled'
+                 where tenant_id = 'demo' and client_id = 'c.abc'",
+            )
+            .execute(&db.pool)
+            .await
+            .expect("suspend");
+
+            assert_eq!(
+                repo.managed(&ClientId::new("c.abc")).await.expect("read").expect("present").status,
+                ClientStatus::Disabled
+            );
+
+            // `Client::status` on the entity is `Active` here, and the statement
+            // does not write the column, so the suspension stands.
+            let mut lifted = client("demo", "c.abc", &registration_document());
+            lifted.status = ClientStatus::Active;
+            let stored = repo.replace(&lifted).await.expect("replace");
+            assert_eq!(
+                stored.status,
+                ClientStatus::Disabled,
+                "a client lifted its own suspension by updating itself"
+            );
+            assert_eq!(
+                repo.managed(&ClientId::new("c.abc")).await.expect("read").expect("present").status,
+                ClientStatus::Disabled
+            );
+        }
+    }
+}
