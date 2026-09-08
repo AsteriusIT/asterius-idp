@@ -63,7 +63,7 @@ impl Store {
     /// slowly: a load balancer that gets no response at all keeps sending
     /// traffic to a replica that cannot serve it. Failing in two seconds is
     /// more useful than being right in thirty.
-    const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+    pub const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
     /// Whether the database answers, within [`Store::PROBE_TIMEOUT`].
     ///

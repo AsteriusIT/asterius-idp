@@ -26,6 +26,10 @@ else
   SQLX_OFFLINE=true run env -u DATABASE_URL cargo test --workspace
 fi
 
+# CI documents the workspace with warnings denied. Without this line the local
+# mirror is not a mirror, and a broken intra-doc link only shows up on a runner.
+RUSTDOCFLAGS="-D warnings" SQLX_OFFLINE=true run cargo doc --workspace --no-deps --all-features
+
 run cargo deny check
 
 printf '\n\033[32mall checks passed\033[0m\n'
