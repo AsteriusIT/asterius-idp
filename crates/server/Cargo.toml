@@ -56,6 +56,7 @@ path = "src/main.rs"
 
 [dev-dependencies]
 base64.workspace = true
+uuid.workspace = true
 asterius-domain.workspace = true
 asterius-web.workspace = true
 asterius-jose.workspace = true

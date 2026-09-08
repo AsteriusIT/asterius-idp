@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update credentials\n                set password_hash = $3\n              where tenant_id = $1 and user_id = $2 and kind = 'password'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7becd530e7007a4e9997bc90fae77a4904f392869255a0ae3832a8c12c46ecf2"
+}

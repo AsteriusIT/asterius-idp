@@ -1,8 +1,8 @@
 //! The `asterius` binary.
 #![forbid(unsafe_code)]
 
-use asterius_domain::ReplayGuard;
 use asterius_domain::ports::TenantRepository as _;
+use asterius_domain::{Argon2Parameters, Lifetimes, ReplayGuard};
 use asterius_domain::{Feature, Tenant, TenantStatus};
 use asterius_jose::LocalKek;
 use asterius_jose::client_keys::ClientKeyCache;
@@ -148,6 +148,14 @@ fn run() -> Result<(), String> {
                 store: store.clone(),
                 capabilities: config.features,
                 par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
+                session_lifetimes: Lifetimes::default().clamped(),
+                // Passwords are the legacy path and passkeys are primary, but
+                // the parameters are checked here rather than at first login:
+                // a deployment configured below the OWASP floor should fail
+                // while somebody is watching, not store weak hashes quietly.
+                // `ast-2vk.15` makes these configurable; the default is the
+                // floor.
+                argon2: Some(Argon2Parameters::default()),
                 dpop,
             })),
         })

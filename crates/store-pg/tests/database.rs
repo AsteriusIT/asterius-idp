@@ -4410,3 +4410,270 @@ mod sessions {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Password verification (ast-2vk.5)
+
+mod passwords {
+    use super::*;
+    use asterius_domain::{Argon2Parameters, CredentialVerifier, Secret};
+    use asterius_store_pg::PgPasswordVerifier;
+
+    /// The floor, so tests cost what a real login costs rather than being fast
+    /// for the wrong reason.
+    fn parameters() -> Argon2Parameters {
+        Argon2Parameters::default()
+    }
+
+    fn verifier(pool: &PgPool, tenant: &str) -> PgPasswordVerifier {
+        PgPasswordVerifier::new(pool.clone(), TenantId::new(tenant), parameters())
+            .expect("build verifier")
+    }
+
+    async fn seed_password_user(
+        pool: &PgPool,
+        tenant: &str,
+        username: &str,
+        password: &str,
+        hash_with: &PgPasswordVerifier,
+    ) -> uuid::Uuid {
+        seed_tenant(pool, tenant).await;
+        let user = uuid::Uuid::new_v4();
+        sqlx::query(
+            "insert into users (tenant_id, user_id, username, status)
+             values ($1, $2, $3, 'active')",
+        )
+        .bind(tenant)
+        .bind(user)
+        .bind(username)
+        .execute(pool)
+        .await
+        .expect("seed user");
+
+        sqlx::query(
+            "insert into credentials (tenant_id, credential_id, user_id, kind, password_hash)
+             values ($1, $2, $3, 'password', $4)",
+        )
+        .bind(tenant)
+        .bind(uuid::Uuid::new_v4())
+        .bind(user)
+        .bind(hash_with.hash_for_storage(password).expect("hash"))
+        .execute(pool)
+        .await
+        .expect("seed credential");
+        user
+    }
+
+    db_test! {
+        /// The right password authenticates; a wrong one does not.
+        async fn a_correct_password_verifies(db) {
+            let verifier = verifier(&db.pool, "demo");
+            let user =
+                seed_password_user(&db.pool, "demo", "ada", "correct horse battery", &verifier)
+                    .await;
+
+            assert_eq!(
+                verifier
+                    .verify("ada", Secret::new("correct horse battery".to_owned()))
+                    .await
+                    .expect("verify"),
+                Some(user)
+            );
+            assert_eq!(
+                verifier
+                    .verify("ada", Secret::new("wrong horse battery".to_owned()))
+                    .await
+                    .expect("verify"),
+                None
+            );
+        }
+    }
+
+    db_test! {
+        /// The unknown-user path runs a real Argon2id verification, so it
+        /// costs what a real one costs.
+        ///
+        /// Timing is measured rather than asserted exactly: the point is that
+        /// the two paths are the same order of magnitude, not that they are
+        /// identical to the nanosecond. A verifier that returned early for an
+        /// unknown user would be tens of times faster and fail this by a mile.
+        async fn an_unknown_user_costs_the_same_as_a_known_one(db) {
+            let verifier = verifier(&db.pool, "demo");
+            seed_password_user(&db.pool, "demo", "ada", "correct horse battery", &verifier).await;
+
+            let time_it = |username: &'static str| {
+                let verifier = &verifier;
+                async move {
+                    let start = std::time::Instant::now();
+                    let _ = verifier
+                        .verify(username, Secret::new("some guess entirely".to_owned()))
+                        .await
+                        .expect("verify");
+                    start.elapsed()
+                }
+            };
+
+            // Warm caches first: the very first Argon2id call in a process
+            // allocates its memory pool and is not representative.
+            let _ = time_it("ada").await;
+
+            let known = time_it("ada").await;
+            let unknown = time_it("nobody-at-all").await;
+
+            let ratio = known.as_secs_f64() / unknown.as_secs_f64().max(f64::MIN_POSITIVE);
+            assert!(
+                (0.25..=4.0).contains(&ratio),
+                "known-user and unknown-user paths differ by {ratio:.1}x \
+                 (known {known:?}, unknown {unknown:?}); the unknown path is \
+                 not doing the work"
+            );
+        }
+    }
+
+    db_test! {
+        /// A disabled account fails like a wrong password, and the check
+        /// happens *after* verification so it costs the same.
+        async fn a_disabled_account_does_not_authenticate(db) {
+            let verifier = verifier(&db.pool, "demo");
+            let user =
+                seed_password_user(&db.pool, "demo", "ada", "correct horse battery", &verifier)
+                    .await;
+
+            sqlx::query("update users set status = 'disabled' where tenant_id = $1 and user_id = $2")
+                .bind("demo")
+                .bind(user)
+                .execute(&db.pool)
+                .await
+                .expect("disable");
+
+            assert_eq!(
+                verifier
+                    .verify("ada", Secret::new("correct horse battery".to_owned()))
+                    .await
+                    .expect("verify"),
+                None,
+                "a disabled account authenticated"
+            );
+        }
+    }
+
+    db_test! {
+        /// Raising the parameters marks old hashes for rehashing, and the
+        /// rehash replaces them.
+        async fn a_weaker_hash_is_rehashed_on_the_next_login(db) {
+            let weak = verifier(&db.pool, "demo");
+            let user = seed_password_user(&db.pool, "demo", "ada", "correct horse", &weak).await;
+
+            let stronger = PgPasswordVerifier::new(
+                db.pool.clone(),
+                TenantId::new("demo"),
+                Argon2Parameters::new(32 * 1024, 3, 1).expect("valid"),
+            )
+            .expect("build");
+
+            let stored: String = sqlx::query_scalar(
+                "select password_hash from credentials where tenant_id = $1 and user_id = $2",
+            )
+            .bind("demo")
+            .bind(user)
+            .fetch_one(&db.pool)
+            .await
+            .expect("read");
+
+            assert!(
+                stronger.should_rehash(&stored),
+                "a hash below the new parameters was not marked for rehashing"
+            );
+            assert!(
+                !weak.should_rehash(&stored),
+                "a hash at the current parameters was marked for rehashing"
+            );
+
+            stronger.rehash(user, "correct horse").await.expect("rehash");
+
+            let after: String = sqlx::query_scalar(
+                "select password_hash from credentials where tenant_id = $1 and user_id = $2",
+            )
+            .bind("demo")
+            .bind(user)
+            .fetch_one(&db.pool)
+            .await
+            .expect("read");
+            assert_ne!(after, stored, "the hash was not replaced");
+            assert!(!stronger.should_rehash(&after));
+            // And it still verifies.
+            assert_eq!(
+                stronger
+                    .verify("ada", Secret::new("correct horse".to_owned()))
+                    .await
+                    .expect("verify"),
+                Some(user)
+            );
+        }
+    }
+
+    db_test! {
+        /// The stored value is an Argon2id PHC string, never the password.
+        async fn the_stored_credential_is_a_hash(db) {
+            let verifier = verifier(&db.pool, "demo");
+            let password = "correct horse battery staple";
+            let user = seed_password_user(&db.pool, "demo", "ada", password, &verifier).await;
+
+            let stored: String = sqlx::query_scalar(
+                "select password_hash from credentials where tenant_id = $1 and user_id = $2",
+            )
+            .bind("demo")
+            .bind(user)
+            .fetch_one(&db.pool)
+            .await
+            .expect("read");
+
+            assert!(stored.starts_with("$argon2id$"), "{stored}");
+            assert!(!stored.contains(password), "the password reached the column");
+            assert!(stored.contains("m=19456"), "not the configured cost: {stored}");
+        }
+    }
+
+    db_test! {
+        /// Two accounts with the same password have different hashes.
+        ///
+        /// Otherwise a leaked database tells an attacker which accounts share
+        /// a password, which is a target list.
+        async fn identical_passwords_hash_differently(db) {
+            let verifier = verifier(&db.pool, "demo");
+            let password = "correct horse battery";
+            seed_password_user(&db.pool, "demo", "ada", password, &verifier).await;
+            seed_password_user(&db.pool, "demo", "grace", password, &verifier).await;
+
+            let hashes: Vec<String> = sqlx::query_scalar(
+                "select password_hash from credentials where tenant_id = $1 order by user_id",
+            )
+            .bind("demo")
+            .fetch_all(&db.pool)
+            .await
+            .expect("read");
+
+            assert_eq!(hashes.len(), 2);
+            assert_ne!(hashes[0], hashes[1], "the salt is not per credential");
+        }
+    }
+
+    db_test! {
+        /// A username in one tenant does not authenticate in another.
+        async fn passwords_do_not_cross_tenants(db) {
+            let demo = verifier(&db.pool, "demo");
+            seed_password_user(&db.pool, "demo", "ada", "correct horse battery", &demo).await;
+            seed_tenant(&db.pool, "other").await;
+            let other = verifier(&db.pool, "other");
+
+            assert_eq!(
+                other
+                    .verify("ada", Secret::new("correct horse battery".to_owned()))
+                    .await
+                    .expect("verify"),
+                None,
+                "a password authenticated at the wrong tenant"
+            );
+        }
+    }
+}

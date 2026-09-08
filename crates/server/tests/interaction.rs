@@ -5,10 +5,11 @@
 //! browser mismatch destroys the interaction rather than re-rendering it.
 
 use asterius_domain::{
-    ClientId, DomainError, InteractionRecord, InteractionRepository, Issuer, Secret, Tenant,
-    TenantId, TenantStatus,
+    AuthenticationMethod, ClientId, CredentialVerifier, DomainError, InteractionRecord,
+    InteractionRepository, Issuer, Lifetimes, Participant, Secret, Session, SessionRepository,
+    SessionRevocation, Tenant, TenantId, TenantStatus,
 };
-use asterius_server::http::interaction::{InteractionContext, UserAuthentication, show, submit};
+use asterius_server::http::interaction::{InteractionContext, show, submit};
 use asterius_web::csp::Nonce;
 use asterius_web::interaction::{COOKIE_NAME, InteractionId, StoredState};
 use axum::body::Bytes;
@@ -115,14 +116,72 @@ impl InteractionRepository for FakeStore {
 struct AlwaysSucceeds;
 
 #[async_trait::async_trait]
-impl UserAuthentication for AlwaysSucceeds {
+impl CredentialVerifier for AlwaysSucceeds {
     async fn verify(
         &self,
-        _tenant: &Tenant,
         _username: &str,
         _password: Secret<String>,
-    ) -> Result<Option<String>, DomainError> {
-        Ok(Some("session-1".to_owned()))
+    ) -> Result<Option<uuid::Uuid>, DomainError> {
+        Ok(Some(uuid::Uuid::from_u128(1)))
+    }
+}
+
+/// Records the sessions a sign-in creates, so a test can see one was made.
+#[derive(Debug, Default)]
+struct FakeSessions(Mutex<Vec<Session>>);
+
+#[async_trait::async_trait]
+impl SessionRepository for FakeSessions {
+    async fn begin(&self, session: &Session) -> Result<(), DomainError> {
+        self.0.lock().expect("lock").push(session.clone());
+        Ok(())
+    }
+    async fn find(&self, _d: &str) -> Result<Option<Session>, DomainError> {
+        Ok(None)
+    }
+    async fn touch(
+        &self,
+        _d: &str,
+        _n: OffsetDateTime,
+        _i: time::Duration,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn rotate(
+        &self,
+        _o: &str,
+        _n: &str,
+        _m: &[AuthenticationMethod],
+        _at: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn revoke(
+        &self,
+        _d: &str,
+        _r: SessionRevocation,
+        _n: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn revoke_all_for_user(
+        &self,
+        _u: uuid::Uuid,
+        _r: SessionRevocation,
+        _n: OffsetDateTime,
+    ) -> Result<u64, DomainError> {
+        Ok(0)
+    }
+    async fn record_participant(
+        &self,
+        _d: &str,
+        _c: &ClientId,
+        _n: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+    async fn participants(&self, _d: &str) -> Result<Vec<Participant>, DomainError> {
+        Ok(Vec::new())
     }
 }
 
@@ -158,12 +217,15 @@ fn context<'a>(
     tenant: &'a Tenant,
     store: &'a FakeStore,
     nonce: &'a Nonce,
-    auth: Option<&'a dyn UserAuthentication>,
+    auth: Option<&'a dyn CredentialVerifier>,
+    sessions: &'a FakeSessions,
 ) -> InteractionContext<'a> {
     InteractionContext {
         tenant,
         requests: store,
-        authentication: auth,
+        credentials: auth,
+        sessions,
+        lifetimes: Lifetimes::default(),
         nonce,
     }
 }
@@ -176,9 +238,10 @@ async fn a_matching_path_and_cookie_render_the_login_page() {
     let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"}));
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
 
     let response = show(
-        context(&tenant, &store, &nonce, None),
+        context(&tenant, &store, &nonce, None, &sessions),
         id.expose(),
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
@@ -200,9 +263,10 @@ async fn a_url_without_the_cookie_does_not_render_a_form() {
     let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"}));
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
 
     let response = show(
-        context(&tenant, &store, &nonce, None),
+        context(&tenant, &store, &nonce, None, &sessions),
         id.expose(),
         &HeaderMap::new(),
         OffsetDateTime::now_utc(),
@@ -228,9 +292,10 @@ async fn a_cookie_for_another_interaction_destroys_this_one() {
     let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"}));
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
 
     let response = show(
-        context(&tenant, &store, &nonce, None),
+        context(&tenant, &store, &nonce, None, &sessions),
         id.expose(),
         &cookie_header(other.expose()),
         OffsetDateTime::now_utc(),
@@ -260,9 +325,10 @@ async fn an_unknown_interaction_is_indistinguishable_from_an_expired_one() {
     let store = FakeStore::default();
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
 
     let response = show(
-        context(&tenant, &store, &nonce, None),
+        context(&tenant, &store, &nonce, None, &sessions),
         id.expose(),
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
@@ -289,6 +355,7 @@ async fn a_submission_without_the_issued_token_is_forbidden() {
     let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
     let auth = AlwaysSucceeds;
 
     for body in [
@@ -297,7 +364,7 @@ async fn a_submission_without_the_issued_token_is_forbidden() {
         "csrf=forged&username=ada&password=hunter2",
     ] {
         let response = submit(
-            context(&tenant, &store, &nonce, Some(&auth)),
+            context(&tenant, &store, &nonce, Some(&auth), &sessions),
             id.expose(),
             &cookie_header(id.expose()),
             &Bytes::from(body),
@@ -320,10 +387,11 @@ async fn a_submission_with_the_issued_token_is_accepted() {
     let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
     let auth = AlwaysSucceeds;
 
     let response = submit(
-        context(&tenant, &store, &nonce, Some(&auth)),
+        context(&tenant, &store, &nonce, Some(&auth), &sessions),
         id.expose(),
         &cookie_header(id.expose()),
         &Bytes::from(format!(
@@ -350,12 +418,13 @@ async fn a_token_cannot_be_submitted_twice() {
     let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
 
     let body = Bytes::from(format!("csrf={}&username=ada", issued.expose()));
 
     // First: accepted, and re-rendered with a message because no password.
     let first = submit(
-        context(&tenant, &store, &nonce, Some(&AlwaysSucceeds)),
+        context(&tenant, &store, &nonce, Some(&AlwaysSucceeds), &sessions),
         id.expose(),
         &cookie_header(id.expose()),
         &body,
@@ -366,7 +435,7 @@ async fn a_token_cannot_be_submitted_twice() {
 
     // Second: the same body, now refused.
     let second = submit(
-        context(&tenant, &store, &nonce, Some(&AlwaysSucceeds)),
+        context(&tenant, &store, &nonce, Some(&AlwaysSucceeds), &sessions),
         id.expose(),
         &cookie_header(id.expose()),
         &body,
@@ -389,9 +458,10 @@ async fn a_server_with_no_authentication_method_refuses_to_sign_anybody_in() {
     let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
 
     let response = submit(
-        context(&tenant, &store, &nonce, None),
+        context(&tenant, &store, &nonce, None, &sessions),
         id.expose(),
         &cookie_header(id.expose()),
         &Bytes::from(format!(
@@ -416,10 +486,11 @@ async fn reloading_the_page_issues_a_fresh_token() {
     let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"}));
     let tenant = tenant();
     let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
 
     let first = body_of(
         show(
-            context(&tenant, &store, &nonce, None),
+            context(&tenant, &store, &nonce, None, &sessions),
             id.expose(),
             &cookie_header(id.expose()),
             OffsetDateTime::now_utc(),
@@ -429,7 +500,7 @@ async fn reloading_the_page_issues_a_fresh_token() {
     .await;
     let second = body_of(
         show(
-            context(&tenant, &store, &nonce, None),
+            context(&tenant, &store, &nonce, None, &sessions),
             id.expose(),
             &cookie_header(id.expose()),
             OffsetDateTime::now_utc(),
@@ -449,5 +520,56 @@ async fn reloading_the_page_issues_a_fresh_token() {
         token_of(&first),
         token_of(&second),
         "two renderings shared a token"
+    );
+}
+
+/// A successful sign-in creates a session and hands the browser its cookie.
+///
+/// The cookie is a fresh id the browser has never held: see
+/// `asterius_domain::entities::session` on why an id it held *before*
+/// authenticating is one an attacker may have planted.
+#[tokio::test]
+async fn signing_in_creates_a_session_and_sets_its_cookie() {
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let issued = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let auth = AlwaysSucceeds;
+
+    let response = submit(
+        context(&tenant, &store, &nonce, Some(&auth), &sessions),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=hunter2",
+            issued.expose()
+        )),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Exactly one session, for the user the verifier returned.
+    let created = sessions.0.lock().expect("lock");
+    assert_eq!(created.len(), 1, "no session was created");
+    assert_eq!(created[0].user, uuid::Uuid::from_u128(1));
+    assert_eq!(created[0].amr, vec![AuthenticationMethod::Password]);
+
+    // The cookie carries every attribute, and the *id*, not the digest.
+    let cookie = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with("__Host-asterius_session="))
+        .expect("no session cookie");
+    for attribute in ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"] {
+        assert!(cookie.contains(attribute), "missing {attribute}: {cookie}");
+    }
+    assert!(
+        !cookie.contains(&created[0].id_digest),
+        "the digest was sent to the browser instead of the id"
     );
 }

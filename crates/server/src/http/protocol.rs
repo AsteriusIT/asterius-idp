@@ -74,6 +74,14 @@ pub struct ClientEndpoints {
     pub capabilities: Capabilities,
     /// How long a `request_uri` lives, already clamped.
     pub par_lifetime: time::Duration,
+    /// How long this deployment's sessions live.
+    pub session_lifetimes: asterius_domain::Lifetimes,
+    /// Argon2id parameters, checked against the floor at startup.
+    ///
+    /// `None` when the deployment has no password method configured, which is
+    /// a legitimate shape — passkeys are primary — and which the login page
+    /// reports rather than failing obscurely.
+    pub argon2: Option<asterius_domain::Argon2Parameters>,
     /// Validates DPoP proofs on every endpoint that takes one.
     ///
     /// Always present: the *decision* about whether proofs are required lives
@@ -82,6 +90,28 @@ pub struct ClientEndpoints {
     /// which this endpoint should skip the check rather than run it and find
     /// nothing.
     pub dpop: Arc<DpopEndpoint>,
+}
+
+impl ClientEndpoints {
+    /// The password verifier for one tenant, when passwords are configured.
+    ///
+    /// Built per request rather than held: it carries a decoy hash computed at
+    /// construction, and one per tenant per process would be a cache with a
+    /// lifetime nobody has thought about. Building it costs one Argon2id hash,
+    /// which is the same order as the verification that follows.
+    fn passwords(
+        &self,
+        tenant: &asterius_domain::TenantId,
+    ) -> Option<asterius_store_pg::PgPasswordVerifier> {
+        let parameters = self.argon2?;
+        asterius_store_pg::PgPasswordVerifier::new(
+            self.store.pool().clone(),
+            tenant.clone(),
+            parameters,
+        )
+        .inspect_err(|error| tracing::error!(%error, "cannot build a password verifier"))
+        .ok()
+    }
 }
 
 impl std::fmt::Debug for ClientEndpoints {
@@ -394,13 +424,17 @@ async fn interaction_show(
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
+    let sessions = scope.sessions();
+    let passwords = endpoints.passwords(&tenant.id);
     interaction::show(
         InteractionContext {
             tenant: &tenant,
             requests: &requests,
-            // `ast-2vk.5` fills this in. Until it does, nobody can sign in and
-            // the login page says so.
-            authentication: None,
+            credentials: passwords
+                .as_ref()
+                .map(|v| v as &dyn asterius_domain::CredentialVerifier),
+            sessions: &sessions,
+            lifetimes: endpoints.session_lifetimes,
             nonce: &nonce,
         },
         &id,
@@ -421,11 +455,17 @@ async fn interaction_submit(
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
+    let sessions = scope.sessions();
+    let passwords = endpoints.passwords(&tenant.id);
     interaction::submit(
         InteractionContext {
             tenant: &tenant,
             requests: &requests,
-            authentication: None,
+            credentials: passwords
+                .as_ref()
+                .map(|v| v as &dyn asterius_domain::CredentialVerifier),
+            sessions: &sessions,
+            lifetimes: endpoints.session_lifetimes,
             nonce: &nonce,
         },
         &id,

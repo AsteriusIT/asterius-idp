@@ -22,6 +22,7 @@ pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};
 pub use credentials::{OpaqueToken, sha256, sha256_hex};
 pub use entities::auth_request::{Consumed, InteractionRecord, PushedRequest};
+pub use entities::password::{AcceptedPassword, Argon2Parameters, ParameterError, PasswordError};
 pub use entities::session::{
     AuthenticationMethod, Lifetimes, Participant, Session, SessionRevocation, SessionStatus,
 };
@@ -37,7 +38,7 @@ pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
 pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, SigningAlgorithm};
 pub use ports::{
-    AuthRequestRepository, ClientRepository, InteractionRepository, ReplayCheck, ReplayGuard,
-    ReplayPurpose, SessionRepository,
+    AuthRequestRepository, ClientRepository, CredentialVerifier, InteractionRepository,
+    ReplayCheck, ReplayGuard, ReplayPurpose, SessionRepository,
 };
 pub use secret::{Secret, ct_eq};

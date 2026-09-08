@@ -24,13 +24,17 @@
 //! # What is not here yet
 //!
 //! Verifying a credential. `ast-2vk.5` (passwords) and `ast-2vk.3`/`ast-2vk.4`
-//! (passkeys) own that, and until one of them lands [`UserAuthentication`] has
+//! (passkeys) own that, and until one of them lands `CredentialVerifier` has
 //! no implementation. The seam is typed rather than stubbed: a deployment with
 //! no authenticator renders the login page and refuses the submission with a
 //! fixed message, which is what a server that cannot sign anybody in should
 //! do. It does not pretend to authenticate.
 
-use asterius_domain::{DomainError, InteractionRepository, Secret, Tenant};
+use asterius_domain::entities::session::SessionId;
+use asterius_domain::{
+    AuthenticationMethod, CredentialVerifier, InteractionRepository, Lifetimes, Secret, Session,
+    SessionRepository, Tenant,
+};
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredState,
 };
@@ -41,41 +45,18 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use time::OffsetDateTime;
 
-/// How a user proves who they are.
-///
-/// One method per implementation; a deployment may register none, in which
-/// case nobody can sign in and the login form says so. That is deliberately
-/// not the same as "sign-in succeeds by default".
-#[async_trait::async_trait]
-pub trait UserAuthentication: Send + Sync {
-    /// Verifies a username and password, returning a session id on success.
-    ///
-    /// The password arrives in a [`Secret`], so it is redacted in `Debug` and
-    /// zeroised on drop — it passes through several frames on its way here and
-    /// each one is a chance to log it.
-    ///
-    /// # Errors
-    ///
-    /// [`DomainError::Storage`] if the credential store could not be reached.
-    /// A *wrong* credential is `Ok(None)`, not an error: it is an ordinary
-    /// outcome, and conflating it with an outage would turn every database
-    /// blip into "your password is wrong".
-    async fn verify(
-        &self,
-        tenant: &Tenant,
-        username: &str,
-        password: Secret<String>,
-    ) -> Result<Option<String>, DomainError>;
-}
-
 /// What the handlers need.
 pub struct InteractionContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
     /// This tenant's interactions.
     pub requests: &'a dyn InteractionRepository,
-    /// How to sign a user in, when this deployment can.
-    pub authentication: Option<&'a dyn UserAuthentication>,
+    /// How to check a credential, when this deployment has a method.
+    pub credentials: Option<&'a dyn CredentialVerifier>,
+    /// Where a successful sign-in becomes a session.
+    pub sessions: &'a dyn SessionRepository,
+    /// How long this tenant's sessions live.
+    pub lifetimes: Lifetimes,
     /// The CSP nonce the document middleware drew for this response.
     pub nonce: &'a Nonce,
 }
@@ -149,77 +130,7 @@ pub async fn submit(
     state.spend_csrf();
 
     match state.stage {
-        Stage::Login => {
-            let Some(authentication) = context.authentication else {
-                // No method is registered, so nobody can sign in. Saying so is
-                // better than a generic failure: the deployment is
-                // misconfigured and an operator needs to know which way.
-                let token = state.issue_csrf();
-                if let Err(error) = save(&context, &presented, &state, None, now).await {
-                    return *error;
-                }
-                return render(
-                    &context,
-                    Stage::Login,
-                    &token,
-                    id,
-                    Some("Signing in is not available on this server."),
-                );
-            };
-
-            let (Some(username), Some(password)) = (field("username"), field("password")) else {
-                return retry(
-                    &context,
-                    &presented,
-                    state,
-                    id,
-                    now,
-                    "Enter a username and password.",
-                )
-                .await;
-            };
-
-            match authentication
-                .verify(context.tenant, username, Secret::new(password.to_owned()))
-                .await
-            {
-                Ok(Some(session)) => {
-                    // `ast-2vk.7` decides whether a step-up is needed; until
-                    // then an authenticated user goes straight to consent.
-                    if state.stage.may_advance_to(Stage::Consent) {
-                        state.stage = Stage::Consent;
-                    }
-                    let token = state.issue_csrf();
-                    if let Err(error) =
-                        save(&context, &presented, &state, Some(&session), now).await
-                    {
-                        return *error;
-                    }
-                    render(&context, state.stage, &token, id, None)
-                }
-                // One message for "no such user" and "wrong password". The
-                // difference is an account-enumeration oracle and nothing else.
-                Ok(None) => {
-                    retry(
-                        &context,
-                        &presented,
-                        state,
-                        id,
-                        now,
-                        "Those details did not match.",
-                    )
-                    .await
-                }
-                Err(error) => {
-                    tracing::error!(%error, tenant = %context.tenant.id, "cannot verify a credential");
-                    error_page(
-                        &context,
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        InteractionError::NotAvailable,
-                    )
-                }
-            }
-        }
+        Stage::Login => sign_in(&context, &presented, state, id, &form, now).await,
         // `ast-uwv.1` owns the consent decision and `ast-gxh.4` the response.
         // Refusing here is honest: the stage exists, the page renders, and the
         // decision has nowhere to go yet.
@@ -228,6 +139,123 @@ pub async fn submit(
             StatusCode::NOT_IMPLEMENTED,
             InteractionError::NotAvailable,
         ),
+    }
+}
+
+/// The login stage: check a credential, start a session, move on.
+///
+/// Its own function because `submit` is the dispatch and this is the only arm
+/// with any depth — and because the clippy line limit is a reasonable proxy for
+/// "this is doing more than one thing".
+async fn sign_in(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    mut state: StoredState,
+    id: &str,
+    form: &[(String, String)],
+    now: OffsetDateTime,
+) -> Response {
+    let field = |name: &str| {
+        form.iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    };
+
+    let Some(credentials) = context.credentials else {
+        // No method is registered, so nobody can sign in. Saying so is
+        // better than a generic failure: the deployment is
+        // misconfigured and an operator needs to know which way.
+        let token = state.issue_csrf();
+        if let Err(error) = save(context, presented, &state, None, now).await {
+            return *error;
+        }
+        return render(
+            context,
+            Stage::Login,
+            &token,
+            id,
+            Some("Signing in is not available on this server."),
+        );
+    };
+
+    let (Some(username), Some(password)) = (field("username"), field("password")) else {
+        return retry(
+            context,
+            presented,
+            state,
+            id,
+            now,
+            "Enter a username and password.",
+        )
+        .await;
+    };
+
+    match credentials
+        .verify(username, Secret::new(password.to_owned()))
+        .await
+    {
+        Ok(Some(user)) => {
+            // A session id the browser has never held before. See
+            // `asterius_domain::entities::session`: an id it held
+            // *before* authenticating is one an attacker may have
+            // planted, and this is the moment that stops mattering.
+            let id_value = SessionId::generate();
+            let session = Session::begin(
+                context.tenant.id.clone(),
+                &id_value,
+                user,
+                vec![AuthenticationMethod::Password],
+                now,
+                context.lifetimes,
+            );
+            if let Err(error) = context.sessions.begin(&session).await {
+                tracing::error!(%error, "cannot start a session");
+                return error_page(
+                    context,
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    InteractionError::NotAvailable,
+                );
+            }
+
+            // `ast-2vk.7` decides whether a step-up is needed; until
+            // then an authenticated user goes straight to consent.
+            if state.stage.may_advance_to(Stage::Consent) {
+                state.stage = Stage::Consent;
+            }
+            let token = state.issue_csrf();
+            if let Err(error) =
+                save(context, presented, &state, Some(&session.id_digest), now).await
+            {
+                return *error;
+            }
+
+            let mut response = render(context, state.stage, &token, id, None);
+            set_session_cookie(&mut response, &id_value);
+            response
+        }
+        // One message for "no such user" and "wrong password". The
+        // verifier already equalises the *timing*; this equalises what
+        // is said. Both halves are needed — identical text with a
+        // measurable delay is still an oracle.
+        Ok(None) => {
+            retry(
+                context,
+                presented,
+                state,
+                id,
+                now,
+                "Those details did not match.",
+            )
+            .await
+        }
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot verify a credential");
+            error_page(
+                context,
+                StatusCode::SERVICE_UNAVAILABLE,
+                InteractionError::NotAvailable,
+            )
+        }
     }
 }
 
@@ -403,6 +431,28 @@ fn error_page(
 /// Adds the header that removes the interaction cookie.
 fn clear(response: &mut Response) {
     if let Ok(value) = interaction::clear_cookie().parse() {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+}
+
+/// Attaches the session cookie after a successful sign-in.
+///
+/// Every attribute matches the interaction cookie's and for the same reasons:
+/// the `__Host-` prefix is browser-enforced (HTTPS, no `Domain`, `Path=/`),
+/// `HttpOnly` keeps it away from script, and `SameSite=Lax` stops a cross-site
+/// POST carrying it while still allowing the top-level navigation a user
+/// arrives by.
+///
+/// No `Max-Age`: it is a session cookie, and the session row's own two clocks
+/// are the authority on lifetime. A cookie that outlived the row would only
+/// produce a confusing sign-in loop.
+fn set_session_cookie(response: &mut Response, id: &SessionId) {
+    let cookie = format!(
+        "{}={}; Secure; HttpOnly; SameSite=Lax; Path=/",
+        asterius_domain::entities::session::COOKIE_NAME,
+        id.expose()
+    );
+    if let Ok(value) = cookie.parse() {
         response.headers_mut().append(header::SET_COOKIE, value);
     }
 }

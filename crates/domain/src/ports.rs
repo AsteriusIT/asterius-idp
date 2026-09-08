@@ -5,7 +5,7 @@
 
 use crate::{
     AuthenticationMethod, Client, ClientId, Consumed, DomainError, InteractionRecord, Issuer,
-    Participant, PushedRequest, Session, SessionRevocation, Tenant, TenantId,
+    Participant, PushedRequest, Secret, Session, SessionRevocation, Tenant, TenantId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -249,6 +249,40 @@ pub trait InteractionRepository: Debug + Send + Sync {
     /// [`DomainError::Storage`] if the delete fails. Absent is not an error —
     /// destroying something already gone is the outcome that was wanted.
     async fn destroy_interaction(&self, interaction_digest: &str) -> Result<(), DomainError>;
+}
+
+/// Verifies a user's credential.
+///
+/// One implementation per method — a password today, a passkey next — so the
+/// interaction handler dispatches rather than branching on a `kind` column.
+///
+/// # Why it returns a user rather than a session
+///
+/// Creating the session is the *handler's* job, because that is where the
+/// cookie is set and where the rotation happens. A verifier that returned a
+/// session would be deciding a browser concern from inside the credential
+/// store.
+#[async_trait::async_trait]
+pub trait CredentialVerifier: Debug + Send + Sync {
+    /// Checks `password` for `username`, returning the user on success.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. A *wrong*
+    /// credential is `Ok(None)`: it is an ordinary outcome, and conflating it
+    /// with an outage turns every database blip into "your password is wrong".
+    ///
+    /// # Timing
+    ///
+    /// An implementation must take the same time whether the user exists or
+    /// not. A verifier that returns early for an unknown username is an
+    /// account-enumeration oracle that no amount of identical error text will
+    /// hide.
+    async fn verify(
+        &self,
+        username: &str,
+        password: Secret<String>,
+    ) -> Result<Option<uuid::Uuid>, DomainError>;
 }
 
 /// Server-side sessions for one tenant.

@@ -214,3 +214,10 @@ path = "fuzz_targets/dpop_proof.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "password_policy"
+path = "fuzz_targets/password_policy.rs"
+test = false
+doc = false
+bench = false

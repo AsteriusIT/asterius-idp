@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select u.user_id, c.password_hash, u.status, c.disabled_at\n               from users u\n               join credentials c\n                 on c.tenant_id = u.tenant_id and c.user_id = u.user_id\n              where u.tenant_id = $1 and u.username = $2 and c.kind = 'password'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "password_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "disabled_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "966d4364c531136fdf2340f6fd65685b583287003879f2ee13b5079e9ea75854"
+}
