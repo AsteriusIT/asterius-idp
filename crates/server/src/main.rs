@@ -2,14 +2,15 @@
 #![forbid(unsafe_code)]
 
 use asterius_domain::ports::TenantRepository as _;
-use asterius_domain::{Feature, Tenant, TenantStatus};
+use asterius_domain::{Feature, SigningAlgorithm, Tenant, TenantStatus};
+use asterius_jose::LocalKeyStore;
+use asterius_server::http::protocol::{self, ProtocolState};
 use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{PgTenantRepository, Store};
-use axum::Router;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -74,9 +75,20 @@ fn run() -> Result<(), String> {
             metrics,
         };
 
-        // No protocol endpoints yet — they arrive with their own stories. What
-        // is wired here is everything every one of them will sit behind.
-        let routes = Router::new().fallback(not_found);
+        // Signing keys. `ast-mxc.3` replaces this with the PostgreSQL-backed
+        // store; until then a tenant's keys live for the life of the process,
+        // which is enough to serve a JWKS and sign with.
+        let keys = Arc::new(LocalKeyStore::new());
+        for tenant in &config.tenants {
+            keys.generate(&tenant.id, SigningAlgorithm::DEFAULT)
+                .map_err(|e| format!("cannot generate a signing key for {}: {e}", tenant.id))?;
+        }
+
+        let routes = protocol::routes(ProtocolState {
+            keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
+            capabilities: config.features,
+        })
+        .fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
 
         serve(&config.server, app, shutdown_signal())

@@ -1,0 +1,108 @@
+{
+  "acr_values_supported": [
+    "urn:mace:incommon:iap:silver"
+  ],
+  "authorization_endpoint": "https://as.example/t/demo/authorize",
+  "authorization_response_iss_parameter_supported": true,
+  "backchannel_logout_session_supported": true,
+  "backchannel_logout_supported": true,
+  "claims_parameter_supported": true,
+  "claims_supported": [
+    "iss",
+    "sub",
+    "aud",
+    "exp",
+    "iat",
+    "auth_time",
+    "nonce",
+    "acr",
+    "amr",
+    "azp",
+    "sid",
+    "name",
+    "preferred_username",
+    "email",
+    "email_verified"
+  ],
+  "code_challenge_methods_supported": [
+    "S256"
+  ],
+  "dpop_signing_alg_values_supported": [
+    "EdDSA",
+    "ES256",
+    "PS256"
+  ],
+  "end_session_endpoint": "https://as.example/t/demo/logout",
+  "grant_types_supported": [
+    "authorization_code",
+    "refresh_token",
+    "client_credentials"
+  ],
+  "id_token_signing_alg_values_supported": [
+    "EdDSA",
+    "ES256",
+    "PS256"
+  ],
+  "introspection_endpoint": "https://as.example/t/demo/introspect",
+  "introspection_endpoint_auth_methods_supported": [
+    "private_key_jwt"
+  ],
+  "issuer": "https://as.example/t/demo",
+  "jwks_uri": "https://as.example/t/demo/jwks",
+  "prompt_values_supported": [
+    "none",
+    "login",
+    "consent",
+    "select_account",
+    "create"
+  ],
+  "pushed_authorization_request_endpoint": "https://as.example/t/demo/par",
+  "registration_endpoint": "https://as.example/t/demo/register",
+  "request_object_signing_alg_values_supported": [
+    "EdDSA",
+    "ES256",
+    "PS256"
+  ],
+  "request_parameter_supported": false,
+  "request_uri_parameter_supported": false,
+  "require_pushed_authorization_requests": true,
+  "response_modes_supported": [
+    "query",
+    "form_post"
+  ],
+  "response_types_supported": [
+    "code"
+  ],
+  "revocation_endpoint": "https://as.example/t/demo/revoke",
+  "revocation_endpoint_auth_methods_supported": [
+    "private_key_jwt"
+  ],
+  "scopes_supported": [
+    "openid",
+    "profile",
+    "email",
+    "offline_access"
+  ],
+  "subject_types_supported": [
+    "public",
+    "pairwise"
+  ],
+  "token_endpoint": "https://as.example/t/demo/token",
+  "token_endpoint_auth_methods_supported": [
+    "private_key_jwt"
+  ],
+  "token_endpoint_auth_signing_alg_values_supported": [
+    "EdDSA",
+    "ES256",
+    "PS256"
+  ],
+  "ui_locales_supported": [
+    "en"
+  ],
+  "userinfo_endpoint": "https://as.example/t/demo/userinfo",
+  "userinfo_signing_alg_values_supported": [
+    "EdDSA",
+    "ES256",
+    "PS256"
+  ]
+}

@@ -1,6 +1,7 @@
 //! HTTP transport: router assembly, middleware and the listener.
 
 pub mod forwarded;
+pub mod protocol;
 pub mod redirect;
 pub mod request_id;
 pub mod security_headers;

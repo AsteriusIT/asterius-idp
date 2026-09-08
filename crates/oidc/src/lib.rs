@@ -6,4 +6,5 @@
 //! standing up a server. Side effects belong to the adapters.
 #![forbid(unsafe_code)]
 
+pub mod metadata;
 pub mod tenancy;
