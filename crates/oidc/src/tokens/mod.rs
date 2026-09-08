@@ -41,6 +41,26 @@
 //! algorithm in the ID token's own JOSE header (OIDC Core §3.1.3.6), so its
 //! claim set is only correct under one algorithm. The builder says which, and
 //! a signer that ignores it produces a token the client will reject.
+//!
+//! That constraint is the second argument of [`asterius_domain::Signer::sign`],
+//! so the whole handover is one expression and neither half can be forgotten:
+//!
+//! ```ignore
+//! signer
+//!     .sign(
+//!         tenant,
+//!         unsigned.required_algorithm(),
+//!         unsigned.typ(),
+//!         unsigned.claims(),
+//!     )
+//!     .await?
+//! ```
+//!
+//! An access token and an ID token in one response are two of those calls with
+//! two different answers, and may be signed by two different keys. That is not
+//! an accident to be tidied up: an access token is verified by a resource
+//! server from the JWKS by `kid`, an ID token by the one client that registered
+//! an algorithm for it.
 
 pub mod access;
 pub mod id_token;

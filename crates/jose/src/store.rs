@@ -5,6 +5,12 @@
 //! is here is the shape those will fill in — a store that can answer "which key
 //! signs for this tenant" and "which key does this `kid` mean", and a signer
 //! that always writes a `kid`, an allow-listed `alg` and an explicit `typ`.
+//!
+//! The signer answers a fourth question, and it is the one that used to be
+//! answered wrongly: "which key signs *this* token". A caller that names an
+//! algorithm gets that algorithm or an error, never a different key — see
+//! [`asterius_domain::Signer::sign`] for why an ID token cannot be signed with
+//! whatever the tenant happens to prefer.
 
 use crate::{JoseError, SigningKey, VerifyingKey, jws};
 use asterius_domain::keys::{
@@ -225,6 +231,7 @@ impl Signer for LocalKeyStore {
     async fn sign(
         &self,
         tenant: &TenantId,
+        algorithm: Option<SigningAlgorithm>,
         typ: &'static str,
         claims: &Value,
     ) -> Result<CompactJws, DomainError> {
@@ -233,12 +240,23 @@ impl Signer for LocalKeyStore {
             .read()
             .map_err(|_| DomainError::invalid("keys", "key store lock is poisoned"))?;
 
-        let stored = keys
-            .get(tenant.as_str())
-            .and_then(|tenant_keys| {
-                // The active key, preferring the default algorithm — a tenant
-                // may hold an active key per algorithm, and EdDSA is what we
-                // sign with unless it is absent.
+        let tenant_keys = keys.get(tenant.as_str());
+        let stored = match algorithm {
+            // A constraint the claims carry. Exactly this algorithm, in
+            // `Active` — a `retiring` key is one this server has stopped
+            // signing with, and reaching for it to satisfy a request would put
+            // a superseded key back into service. There is no second attempt:
+            // the `.or_else` that used to sit under this one is the bug
+            // `ast-a05.12` records.
+            Some(required) => tenant_keys.and_then(|tenant_keys| {
+                tenant_keys
+                    .iter()
+                    .find(|key| key.state == KeyState::Active && key.key.algorithm() == required)
+            }),
+            // No constraint. The active key, preferring the default algorithm —
+            // a tenant may hold an active key per algorithm, and EdDSA is what
+            // we sign with unless it is absent.
+            None => tenant_keys.and_then(|tenant_keys| {
                 tenant_keys
                     .iter()
                     .find(|key| {
@@ -246,8 +264,9 @@ impl Signer for LocalKeyStore {
                             && key.key.algorithm() == SigningAlgorithm::DEFAULT
                     })
                     .or_else(|| tenant_keys.iter().find(|key| key.state == KeyState::Active))
-            })
-            .ok_or_else(|| DomainError::invalid("keys", "no active signing key for this tenant"))?;
+            }),
+        }
+        .ok_or(DomainError::NoSigningKey { algorithm })?;
 
         jws::sign(&stored.key, &stored.kid, typ, claims)
             .map_err(|e| DomainError::invalid("jws", e.to_string()))
@@ -271,7 +290,7 @@ mod tests {
             .expect("generate");
 
         let jws = store
-            .sign(&tenant(), "at+jwt", &json!({"sub": "alice"}))
+            .sign(&tenant(), None, "at+jwt", &json!({"sub": "alice"}))
             .await
             .expect("sign");
 
@@ -297,7 +316,129 @@ mod tests {
     #[tokio::test]
     async fn signing_without_a_key_is_an_error_not_a_panic() {
         let store = LocalKeyStore::new();
-        assert!(store.sign(&tenant(), "at+jwt", &json!({})).await.is_err());
+        assert!(matches!(
+            store.sign(&tenant(), None, "at+jwt", &json!({})).await,
+            Err(DomainError::NoSigningKey { algorithm: None })
+        ));
+    }
+
+    /// The whole of `ast-a05.12`, at the port: a caller that names an algorithm
+    /// gets that algorithm in the JOSE header, whichever other keys the tenant
+    /// holds and whatever the default is.
+    #[tokio::test]
+    async fn a_named_algorithm_is_the_one_in_the_header() {
+        let store = LocalKeyStore::new();
+        for algorithm in SigningAlgorithm::ALL {
+            store.generate(&tenant(), algorithm).expect("generate");
+        }
+
+        for algorithm in SigningAlgorithm::ALL {
+            let jws = store
+                .sign(&tenant(), Some(algorithm), "JWT", &json!({}))
+                .await
+                .expect("sign");
+            let parsed = jws::parse(jws.as_str()).expect("parse");
+            assert_eq!(parsed.claimed_alg(), algorithm.as_str(), "wrong alg header");
+
+            // And the signature really is that key's, not merely a header
+            // saying so: `Unverified::verify` refuses a key of another
+            // algorithm, so a passing verification is the header and the
+            // material agreeing.
+            let verifying = store
+                .verifying_key(&tenant(), &parsed.kid().expect("a kid"))
+                .expect("lookup")
+                .expect("present");
+            assert_eq!(verifying.algorithm(), algorithm);
+            parsed.verify(&verifying).expect("verify");
+        }
+    }
+
+    /// A tenant that holds no key of the algorithm a client registered is
+    /// refused, and specifically: no other key is substituted.
+    ///
+    /// Substituting is what produced `ast-a05.12`. An ID token's `at_hash` is
+    /// computed under the algorithm the claims were built for (OIDC Core
+    /// §3.1.3.6), so a token signed under a different one is one the client
+    /// computes a different hash for and rejects — a login that fails with
+    /// nothing in this server's logs to say why.
+    #[tokio::test]
+    async fn an_algorithm_the_tenant_has_no_key_for_is_refused_not_substituted() {
+        let store = LocalKeyStore::new();
+        store
+            .generate(&tenant(), SigningAlgorithm::EdDsa)
+            .expect("generate");
+
+        for missing in [SigningAlgorithm::Es256, SigningAlgorithm::Ps256] {
+            let error = store
+                .sign(&tenant(), Some(missing), "JWT", &json!({}))
+                .await
+                .expect_err("must refuse rather than sign with EdDSA");
+            assert!(
+                matches!(error, DomainError::NoSigningKey { algorithm } if algorithm == Some(missing)),
+                "{error}"
+            );
+        }
+
+        // The unconstrained call still works: an access token does not care.
+        store
+            .sign(&tenant(), None, "at+jwt", &json!({}))
+            .await
+            .expect("an unconstrained token still signs");
+    }
+
+    /// A superseded key is not a substitute either. After a rotation the old
+    /// key is `retiring` — published so its tokens still verify, but no longer
+    /// what this server signs with — and a request for its algorithm must not
+    /// bring it back into service.
+    #[tokio::test]
+    async fn a_retiring_key_does_not_answer_a_request_for_its_algorithm() {
+        let store = LocalKeyStore::new();
+        let first = store
+            .generate(&tenant(), SigningAlgorithm::Es256)
+            .expect("generate");
+        let second = store
+            .generate(&tenant(), SigningAlgorithm::Es256)
+            .expect("rotate");
+
+        let jws = store
+            .sign(&tenant(), Some(SigningAlgorithm::Es256), "JWT", &json!({}))
+            .await
+            .expect("sign");
+        let kid = jws::parse(jws.as_str()).expect("parse").kid();
+        assert_eq!(kid, Some(second));
+        assert_ne!(kid, Some(first));
+    }
+
+    /// The two halves of one token response are two calls with two answers,
+    /// and nothing couples them: the access token takes the tenant's default,
+    /// the ID token takes the client's registered algorithm.
+    #[tokio::test]
+    async fn an_access_token_and_an_id_token_may_be_signed_differently() {
+        let store = LocalKeyStore::new();
+        store
+            .generate(&tenant(), SigningAlgorithm::EdDsa)
+            .expect("generate");
+        store
+            .generate(&tenant(), SigningAlgorithm::Ps256)
+            .expect("generate");
+
+        let access = store
+            .sign(&tenant(), None, "at+jwt", &json!({}))
+            .await
+            .expect("sign");
+        let id = store
+            .sign(&tenant(), Some(SigningAlgorithm::Ps256), "JWT", &json!({}))
+            .await
+            .expect("sign");
+
+        assert_eq!(
+            jws::parse(access.as_str()).expect("parse").claimed_alg(),
+            SigningAlgorithm::EdDsa.as_str()
+        );
+        assert_eq!(
+            jws::parse(id.as_str()).expect("parse").claimed_alg(),
+            SigningAlgorithm::Ps256.as_str()
+        );
     }
 
     /// A verifier that fetched the JWKS before a rotation must still be able to
@@ -310,7 +451,7 @@ mod tests {
             .generate(&tenant(), SigningAlgorithm::EdDsa)
             .expect("first");
         let old_token = store
-            .sign(&tenant(), "at+jwt", &json!({"v": 1}))
+            .sign(&tenant(), None, "at+jwt", &json!({"v": 1}))
             .await
             .expect("sign");
 
@@ -321,7 +462,7 @@ mod tests {
 
         // New tokens use the new key.
         let new_token = store
-            .sign(&tenant(), "at+jwt", &json!({"v": 2}))
+            .sign(&tenant(), None, "at+jwt", &json!({"v": 2}))
             .await
             .expect("sign");
         assert_eq!(
@@ -379,7 +520,7 @@ mod tests {
 
         // A token from alpha must not verify under any of beta's keys.
         let token = store
-            .sign(&alpha, "at+jwt", &json!({}))
+            .sign(&alpha, None, "at+jwt", &json!({}))
             .await
             .expect("sign");
         for key in store.published_keys(&beta).await.expect("published") {
