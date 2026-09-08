@@ -87,3 +87,10 @@ path = "fuzz_targets/client_metadata_json.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "redirect_uri"
+path = "fuzz_targets/redirect_uri.rs"
+test = false
+doc = false
+bench = false

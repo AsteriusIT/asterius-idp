@@ -13,3 +13,4 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0002](0002-fapi-2-0-as-the-only-mode.md) | FAPI 2.0 is the baseline, not a mode | Accepted |
 | [0003](0003-signing-algorithm-set.md) | Signing algorithms: EdDSA, ES256, PS256; RS256 is non-FAPI | Accepted |
 | [0004](0004-jose-on-aws-lc-rs.md) | JOSE is built on aws-lc-rs, not on a JOSE library | Accepted |
+| [0005](0005-exact-redirect-uri-matching.md) | Redirect URIs match exactly against the registered set, including under PAR | Accepted |

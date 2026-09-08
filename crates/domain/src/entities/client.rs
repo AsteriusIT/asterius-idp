@@ -432,18 +432,72 @@ impl ClientStatus {
 // Redirect URIs
 // ---------------------------------------------------------------------------
 
+/// Why a redirect URI was refused.
+///
+/// Every variant renders as fixed text. The message reaches an RFC 7591 §3.2.2
+/// `error_description` and the audit trail, and the value it describes came off
+/// the network, so no variant carries a byte of it — which is why this is a
+/// fieldless enum rather than the `String` the caller used to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Error)]
+#[non_exhaustive]
+pub enum RedirectUriError {
+    /// The entry was the empty string.
+    #[error("must not be empty")]
+    Empty,
+    /// Longer than [`RedirectUri::MAX_LEN`].
+    #[error("must be at most {} bytes", RedirectUri::MAX_LEN)]
+    TooLong,
+    /// Not parseable as an absolute URI — a relative reference, for instance.
+    #[error("must be an absolute URI")]
+    NotAUrl,
+    /// RFC 6749 §3.1.2 forbids a fragment on the redirection endpoint.
+    #[error("must not contain a fragment component (RFC 6749 §3.1.2)")]
+    HasFragment,
+    /// Credentials in the authority.
+    #[error("must not contain userinfo (user:password@)")]
+    HasUserinfo,
+    /// `https:///cb` and friends: a URL the parser accepts with no authority.
+    #[error("must contain a host")]
+    NoHost,
+    /// A scheme other than `https`, or `http` on a client that is not native.
+    #[error(
+        "scheme must be https; http is admissible only for a loopback redirect on a \
+         client with application_type=native (FAPI 2.0 SP §5.3.2.2 item 8)"
+    )]
+    NotHttps,
+    /// `http` on a native client, but not on a loopback IP literal.
+    #[error(
+        "http is admissible only on 127.0.0.1 or [::1]; `localhost` resolves through \
+         DNS (RFC 8252 §7.3, §8.3)"
+    )]
+    NotLoopback,
+    /// The bytes are not the bytes a URL parser produces for them.
+    #[error(
+        "must already be in normalised form (RFC 3986 §6.2.2): register the URI exactly \
+         as it will be requested, since matching is byte-exact (RFC 9700 §4.1.3)"
+    )]
+    NotNormalised,
+}
+
 /// A registered redirect URI, stored exactly as the client wrote it.
 ///
-/// The bytes are kept unchanged on purpose. RFC 9700 §4.1 requires exact string
-/// matching, so any normalisation applied on the way in — lowercasing a host,
-/// adding a trailing slash, re-encoding a path — silently changes what the
-/// client must send back, and the client finds out at its first authorization
-/// request.
+/// The bytes are kept unchanged on purpose. RFC 9700 §4.1.3 requires the
+/// authorization server to "ensure that the two URIs are equal; see Section
+/// 6.2.1 of \[RFC3986\], Simple String Comparison", so any normalisation applied
+/// on the way in — lowercasing a host, adding a trailing slash, re-encoding a
+/// path — silently changes what the client must send back, and the client finds
+/// out at its first authorization request.
 ///
-/// **This type carries only the checks registration needs.** The comparison
-/// function used at PAR and at the token endpoint, the port-agnostic loopback
-/// match of RFC 8252 §7.3, and the IDN and percent-encoding equivalence traps
-/// are `ast-m9c.7`, which owns redirect-URI matching end to end.
+/// This type owns the comparison as well as the parse. [`is_registered`] is the
+/// single function registration, PAR (`ast-gxh.1`) and the token endpoint
+/// (`ast-a05.2`) all reach; [`parse`] decides what may enter the registered set
+/// in the first place. Keeping both here is deliberate: a second, laxer notion
+/// of "the same redirect URI" somewhere else in the server is exactly the bug
+/// RFC 9700 §4.1 is about. ADR-0005 records why the set is still consulted
+/// under PAR, which RFC 9126 §2.4 would permit us to skip.
+///
+/// [`is_registered`]: RedirectUri::is_registered
+/// [`parse`]: RedirectUri::parse
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RedirectUri(String);
 
@@ -460,26 +514,43 @@ impl RedirectUri {
 
     /// Validates one redirect URI for a client of `application_type`.
     ///
-    /// Returns the reason for a refusal, which never contains the URI.
-    fn parse(raw: &str, application_type: ApplicationType) -> Result<Self, String> {
+    /// This decides **admissibility** — what a client may put in its registered
+    /// set. [`RedirectUri::is_registered`] decides **equivalence** — what
+    /// counts as the same URI later.
+    ///
+    /// The split is not cosmetic, and RFC 8252 §7.3 is why: the loopback port
+    /// "MUST" be allowed to vary per request, so it cannot be settled here
+    /// without either rewriting the registered bytes (which RFC 9700 §4.1.3
+    /// forbids, since the bytes *are* the comparison) or storing a port-shaped
+    /// wildcard (which is a pattern, and patterns are the thing RFC 9700 §4.1.3
+    /// replaced). What *is* settled here is that only a native client may
+    /// register a loopback `http` URI at all; the comparison then varies
+    /// nothing but the port of a URI that already passed through here.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`RedirectUriError`] for the first rule broken. No variant
+    /// contains the rejected URI.
+    // fuzz-target: redirect_uri
+    pub fn parse(raw: &str, application_type: ApplicationType) -> Result<Self, RedirectUriError> {
         if raw.is_empty() {
-            return Err("must not be empty".to_owned());
+            return Err(RedirectUriError::Empty);
         }
         if raw.len() > Self::MAX_LEN {
-            return Err(format!("must be at most {} bytes", Self::MAX_LEN));
+            return Err(RedirectUriError::TooLong);
         }
-        let url = Url::parse(raw).map_err(|_| "must be an absolute URI".to_owned())?;
+        let url = Url::parse(raw).map_err(|_| RedirectUriError::NotAUrl)?;
 
         // RFC 6749 §3.1.2: "The endpoint URI MUST NOT include a fragment
         // component." The fragment never reaches the server, so a client that
         // registers one is registering a URI that cannot be matched.
         if url.fragment().is_some() {
-            return Err("must not contain a fragment component".to_owned());
+            return Err(RedirectUriError::HasFragment);
         }
         // Credentials in the authority end up in the browser's address bar and
         // in every referrer header the callback page emits.
         if !url.username().is_empty() || url.password().is_some() {
-            return Err("must not contain userinfo (user:password@)".to_owned());
+            return Err(RedirectUriError::HasUserinfo);
         }
 
         match url.scheme() {
@@ -488,63 +559,172 @@ impl RedirectUri {
                 // rather than no host at all, so emptiness is checked and not
                 // just presence.
                 if url.host_str().is_none_or(str::is_empty) {
-                    return Err("must contain a host".to_owned());
+                    return Err(RedirectUriError::NoHost);
                 }
             }
-            // FAPI 2.0 SP §5.3.2.2 item 8: no `http` redirect URIs except for a
-            // native client using loopback redirection. RFC 8252 §7.3 defines
-            // that exception, and says to use the IP literal rather than
-            // `localhost`, because `localhost` goes through name resolution and
-            // can be pointed somewhere else by a hosts file or a DNS answer.
+            // FAPI 2.0 SP §5.3.2.2 item 8: an authorization server "shall not
+            // allow redirect URIs that use the "http" scheme except for native
+            // clients that use loopback interface Redirection as described in
+            // Section 7.3 of [RFC8252]". RFC 8252 §8.3 adds that `localhost` is
+            // NOT RECOMMENDED even for that case, because it goes through name
+            // resolution and can be pointed elsewhere by a hosts file, a DNS
+            // answer or a client-side firewall — so only the IP literals pass.
             "http" => {
                 if application_type != ApplicationType::Native {
-                    return Err(
-                        "scheme must be https; http is admissible only for a loopback \
-                         redirect on a client with application_type=native"
-                            .to_owned(),
-                    );
+                    return Err(RedirectUriError::NotHttps);
                 }
                 match url.host() {
                     Some(Host::Ipv4(address)) if address.is_loopback() => {}
                     Some(Host::Ipv6(address)) if address.is_loopback() => {}
-                    _ => {
-                        return Err("http is admissible only on 127.0.0.1 or [::1]; \
-                                    `localhost` resolves through DNS (RFC 8252 §7.3)"
-                            .to_owned());
-                    }
+                    _ => return Err(RedirectUriError::NotLoopback),
                 }
             }
             // A private-use scheme can be claimed by any application on the
             // device (RFC 8252 §7.1), which makes the callback interceptable by
-            // software the user did not install deliberately. ast-m9c.7 settles
-            // whether any of them are ever admissible.
-            _ => return Err("scheme must be https".to_owned()),
+            // software the user did not install deliberately. RFC 8252 §8.4
+            // classes such clients as public clients, and ADR-0002 has none —
+            // so there is no client here a custom scheme could belong to.
+            _ => return Err(RedirectUriError::NotHttps),
         }
 
         // The registered bytes must already be the bytes a URL parser produces.
         //
         // [`Issuer`] takes the other route and normalises, because an operator
         // writes an issuer once in a configuration file. A redirect URI cannot:
-        // it is compared byte for byte (RFC 9700 §4.1), so normalising it would
-        // change what the client has to send, and *not* normalising it lets the
-        // registered string and the URL a browser actually requests drift
-        // apart. `https:///cb` is the sharp example — WHATWG parsing turns the
-        // empty authority into the host `cb`, so a registration that reads as a
-        // path is a callback to a different origin entirely.
+        // it is compared byte for byte (RFC 9700 §4.1.3), so normalising it
+        // would change what the client has to send, and *not* normalising it
+        // lets the registered string and the URL a browser actually requests
+        // drift apart. `https:///cb` is the sharp example — WHATWG parsing
+        // turns the empty authority into the host `cb`, so a registration that
+        // reads as a path is a callback to a different origin entirely. The
+        // same trap in IDN clothing: `https://пример.example/cb` is stored as
+        // punycode by every browser, so registering the Unicode spelling would
+        // register a string no request can ever carry.
         //
         // Refusing is the only option that leaves no gap: nothing is rewritten,
         // and nothing that would have to be rewritten is accepted.
         //
         // [`Issuer`]: crate::Issuer
         if url.as_str() != raw {
-            return Err(
-                "must already be in normalised form (RFC 3986 §6.2.2): register the URI \
-                 exactly as it will be requested, since matching is byte-exact"
-                    .to_owned(),
-            );
+            return Err(RedirectUriError::NotNormalised);
         }
 
         Ok(Self(raw.to_owned()))
+    }
+
+    /// Whether `presented` is one of the `registered` redirect URIs.
+    ///
+    /// **This is the redirect-URI comparison.** Registration checks a new entry
+    /// against the ones already there, PAR (`ast-gxh.1`) checks the pushed
+    /// `redirect_uri` — which FAPI 2.0 SP §5.3.2.2 item 6 requires to be
+    /// present — and the token endpoint (`ast-a05.2`) checks the one presented
+    /// with the code. One function, so the three cannot drift.
+    ///
+    /// An empty registered set never matches. RFC 6749 §3.1.2.3 makes the
+    /// comparison conditional on "if any redirection URIs were registered", and
+    /// the empty set here means the client cannot reach the authorization
+    /// endpoint at all — so the honest answer is no, not "anything goes".
+    #[must_use]
+    pub fn is_registered(
+        registered: &[Self],
+        presented: &str,
+        application_type: ApplicationType,
+    ) -> bool {
+        registered
+            .iter()
+            .any(|uri| uri.matches(presented, application_type))
+    }
+
+    /// Whether `presented` is this redirect URI.
+    ///
+    /// The comparison is RFC 3986 §6.2.1 simple string comparison, as
+    /// RFC 6749 §3.1.2.3 and RFC 9700 §4.1.3 both require. No prefix, no
+    /// pattern, no case folding, no percent-decoding, no IDN equivalence: a
+    /// trailing slash, a different path case, an added query parameter or the
+    /// Unicode spelling of a punycode host are all different URIs.
+    ///
+    /// The single exception is RFC 8252 §7.3, and it is as narrow as the text:
+    /// for a **native** client redirecting to a loopback IP literal over
+    /// `http`, "the authorization server MUST allow any port to be specified at
+    /// the time of the request", because the client takes an ephemeral port
+    /// from the operating system per attempt. RFC 8252 §8.4 states the residue
+    /// exactly — "an exact match is required except for the port URI component"
+    /// — so the port is the only thing this varies. Scheme, host, path and
+    /// query stay byte-exact; anything looser turns the exception into the
+    /// wildcard RFC 9700 §4.1.3 exists to remove.
+    #[must_use]
+    pub fn matches(&self, presented: &str, application_type: ApplicationType) -> bool {
+        // RFC 3986 §6.2.1. This runs first and unconditionally: the registered
+        // side is already canonical, so an equal string is a canonical string,
+        // and the loopback branch below never sees a URI that simply matched.
+        if self.0 == presented {
+            return true;
+        }
+        // The exception belongs to native clients only (FAPI 2.0 SP §5.3.2.2
+        // item 8). A caller that does not know the client is native gets plain
+        // string equality, which is the safe direction to fail in. The `parse`
+        // call further down refuses an `http` URI for a non-native client too;
+        // this is the first of the two gates on the same rule, and it is here
+        // because a reader should not have to find the second one to know that
+        // a web client has no exception.
+        if application_type != ApplicationType::Native {
+            return false;
+        }
+        // Only a registered loopback `http` URI has the exception at all; an
+        // https registration has no `http://` prefix and stops here.
+        let Some((host, rest)) = Self::loopback_parts(&self.0) else {
+            return false;
+        };
+        // The presented URI must be one this server would itself have accepted
+        // for registration. Without that, the port-agnostic branch would be
+        // comparing a string nobody validated, and a non-canonical spelling the
+        // registered side could never have had — `http://127.1/cb`,
+        // `http://[0:0:0:0:0:0:0:1]/cb`, `http://127.0.0.1:8080/a/../cb` —
+        // would reach the split below.
+        if Self::parse(presented, application_type).is_err() {
+            return false;
+        }
+        let Some((presented_host, presented_rest)) = Self::loopback_parts(presented) else {
+            return false;
+        };
+        host == presented_host && rest == presented_rest
+    }
+
+    /// Splits a loopback `http` URI into its host and everything after the
+    /// authority, discarding the port — the one component RFC 8252 §7.3 lets
+    /// vary. Returns `None` for anything that is not of that shape.
+    ///
+    /// This is deliberately lexical rather than a second `Url::parse`. Parsing
+    /// again to compare components would re-introduce normalisation on the
+    /// comparison path, which is where it does the most damage: `..` segments
+    /// resolved at compare time would let `http://127.0.0.1:1/a/../../cb` reach
+    /// a callback registered as `/cb`. Splitting the canonical bytes cannot do
+    /// that, because it never interprets them.
+    fn loopback_parts(uri: &str) -> Option<(&str, &str)> {
+        let after_scheme = uri.strip_prefix("http://")?;
+        // A canonical `http` URL always renders a path, so the authority always
+        // ends at a `/`. `?` and `#` cannot precede it.
+        let authority_end = after_scheme.find('/')?;
+        let (authority, rest) = after_scheme.split_at(authority_end);
+        let host_end = if authority.starts_with('[') {
+            // An IPv6 literal carries `:` inside its brackets, so the port
+            // separator is the one after `]`, never the first one.
+            authority.find(']')? + 1
+        } else {
+            authority.find(':').unwrap_or(authority.len())
+        };
+        let (host, port) = authority.split_at(host_end);
+        // Everything after the host must be a port and nothing else: this is
+        // what stops `127.0.0.1:1@evil.example` from being read as the loopback
+        // host with a strange port.
+        let port_only = match port.strip_prefix(':') {
+            Some(digits) => !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
+            None => port.is_empty(),
+        };
+        if !port_only {
+            return None;
+        }
+        Some((host, rest))
     }
 }
 
@@ -729,6 +909,21 @@ impl ClientRegistration {
     #[must_use]
     pub fn allows(&self, grant: GrantType) -> bool {
         self.grant_types.contains(&grant)
+    }
+
+    /// Whether `presented` is one of this client's registered redirect URIs.
+    ///
+    /// The callers are PAR (`ast-gxh.1`) and the token endpoint (`ast-a05.2`),
+    /// and this exists so that neither of them has to remember to pass the
+    /// application type — forgetting it would silently withdraw the
+    /// RFC 8252 §7.3 loopback exception from every native client, which fails
+    /// closed but breaks them all.
+    ///
+    /// See [`RedirectUri::is_registered`] for what "one of" means, and ADR-0005
+    /// for why the set is consulted at all under PAR.
+    #[must_use]
+    pub fn accepts_redirect_uri(&self, presented: &str) -> bool {
+        RedirectUri::is_registered(&self.redirect_uris, presented, self.application_type)
     }
 }
 
@@ -980,9 +1175,18 @@ impl ClientMetadata {
 
         let mut uris: Vec<RedirectUri> = Vec::with_capacity(raw.len());
         for (index, entry) in raw.iter().enumerate() {
-            let uri = RedirectUri::parse(entry, application_type)
-                .map_err(|reason| ClientMetadataError::RedirectUri { index, reason })?;
-            if uris.contains(&uri) {
+            let uri = RedirectUri::parse(entry, application_type).map_err(|error| {
+                ClientMetadataError::RedirectUri {
+                    index,
+                    reason: error.to_string(),
+                }
+            })?;
+            // The duplicate check is the same comparison the authorization
+            // endpoint will make, not `Vec::contains`: two loopback entries
+            // that differ only in their port are one entry as far as
+            // RFC 8252 §7.3 is concerned, so registering both would put a
+            // second, unreviewed spelling of one callback in the set.
+            if RedirectUri::is_registered(&uris, uri.as_str(), application_type) {
                 return Err(ClientMetadataError::RedirectUri {
                     index,
                     reason: "duplicates an earlier entry".to_owned(),
@@ -1306,6 +1510,17 @@ impl Client {
     #[must_use]
     pub fn allows(&self, grant: GrantType) -> bool {
         self.registration.allows(grant)
+    }
+
+    /// Whether `presented` is one of this client's registered redirect URIs.
+    ///
+    /// Being active is a separate question: a redirect URI is checked before
+    /// the user agent is sent anywhere (RFC 6749 §3.1.2.4 forbids redirecting
+    /// to an invalid one to report the error), and a disabled client fails
+    /// client authentication instead.
+    #[must_use]
+    pub fn accepts_redirect_uri(&self, presented: &str) -> bool {
+        self.registration.accepts_redirect_uri(presented)
     }
 }
 
@@ -1697,6 +1912,9 @@ mod tests {
             ("https://rp.example:443/cb", "the default port is dropped"),
             ("https://rp.example/../cb", "the path is resolved"),
             ("https:///cb", "the empty authority makes `cb` the host"),
+            ("https://пример.example/cb", "the IDN host becomes punycode"),
+            ("https://rp.example/c b", "the space is percent-encoded"),
+            ("https://rp.example/cb\u{0}", "the NUL is dropped"),
         ] {
             let error = rejection(&with("redirect_uris", json!([uri])));
             assert_eq!(
@@ -1732,6 +1950,320 @@ mod tests {
         object.insert("grant_types".to_owned(), json!(["client_credentials"]));
         object.insert("response_types".to_owned(), json!([]));
         assert_eq!(rejection(&document).field(), "redirect_uris");
+    }
+
+    // -----------------------------------------------------------------------
+    // Redirect-URI matching (RFC 6749 §3.1.2.3, RFC 9700 §4.1.3, RFC 8252 §7.3)
+    //
+    // The comparison, rather than the registration check above. It is reached
+    // at registration, at PAR (`ast-gxh.1`) and at the token endpoint
+    // (`ast-a05.2`), so a hole here is a hole in all three.
+    // -----------------------------------------------------------------------
+
+    fn registered(uris: &[&str], application_type: ApplicationType) -> Vec<RedirectUri> {
+        uris.iter()
+            .map(|uri| {
+                RedirectUri::parse(uri, application_type)
+                    .unwrap_or_else(|e| panic!("{uri} should be registrable: {e}"))
+            })
+            .collect()
+    }
+
+    /// RFC 6749 §3.1.2.3: "the authorization server MUST compare the two URIs
+    /// using simple string comparison as defined in [RFC3986] Section 6.2.1",
+    /// and RFC 9700 §4.1.3 removes the alternatives. Each case below is a URI
+    /// that some server somewhere treats as equivalent, and none of them is.
+    #[test]
+    fn a_presented_redirect_uri_that_differs_by_one_byte_does_not_match() {
+        let set = registered(&["https://rp.example/cb"], ApplicationType::Web);
+        assert!(RedirectUri::is_registered(
+            &set,
+            "https://rp.example/cb",
+            ApplicationType::Web
+        ));
+        for (presented, why) in [
+            ("https://rp.example/cb/", "trailing slash"),
+            ("https://rp.example/CB", "path case"),
+            ("https://RP.Example/cb", "host case"),
+            ("HTTPS://rp.example/cb", "scheme case"),
+            ("https://rp.example/cb?x=1", "added query"),
+            ("https://rp.example/cb#f", "added fragment"),
+            ("https://user:pw@rp.example/cb", "userinfo"),
+            ("https://rp.example:443/cb", "explicit default port"),
+            ("https://rp.example/cb/../cb", "a path that resolves to it"),
+            ("https://rp.example/c", "a prefix of it"),
+            ("https://rp.example/cbb", "it as a prefix"),
+            ("https://rp.example.evil/cb", "a longer host"),
+            ("https://evil.example/cb", "another host entirely"),
+            ("http://rp.example/cb", "the http scheme"),
+            ("https://rp.example/%63b", "a percent-encoded path"),
+            ("//rp.example/cb", "a scheme-relative reference"),
+            ("/cb", "a relative reference"),
+            ("", "the empty string"),
+        ] {
+            assert!(
+                !RedirectUri::is_registered(&set, presented, ApplicationType::Web),
+                "matched on {why}: {presented}"
+            );
+            // The same string is not admissible even as a *native* client's
+            // presentation: the loopback exception is about a port, not about
+            // relaxing the comparison.
+            assert!(
+                !RedirectUri::is_registered(&set, presented, ApplicationType::Native),
+                "matched on {why} once the client was native: {presented}"
+            );
+        }
+    }
+
+    /// An IDN host has two spellings and only one of them ever travels: a
+    /// browser sends punycode. Registering the Unicode form is refused (it is
+    /// not the form a URL parser produces), and presenting it does not match
+    /// the punycode registration — RFC 3986 §6.2.1 knows nothing about IDNA.
+    #[test]
+    fn an_idn_host_matches_only_in_the_punycode_form_that_travels() {
+        const UNICODE: &str = "https://пример.example/cb";
+        const PUNYCODE: &str = "https://xn--e1afmkfd.example/cb";
+
+        assert_eq!(
+            RedirectUri::parse(UNICODE, ApplicationType::Web),
+            Err(RedirectUriError::NotNormalised)
+        );
+        let set = registered(&[PUNYCODE], ApplicationType::Web);
+        assert!(RedirectUri::is_registered(
+            &set,
+            PUNYCODE,
+            ApplicationType::Web
+        ));
+        assert!(
+            !RedirectUri::is_registered(&set, UNICODE, ApplicationType::Web),
+            "the Unicode spelling matched a punycode registration"
+        );
+        // And the uppercase punycode spelling, which resolves identically in
+        // DNS, is a different string here too.
+        assert!(!RedirectUri::is_registered(
+            &set,
+            "https://XN--E1AFMKFD.example/cb",
+            ApplicationType::Web
+        ));
+    }
+
+    /// RFC 8252 §7.3: "The authorization server MUST allow any port to be
+    /// specified at the time of the request for loopback IP redirect URIs, to
+    /// accommodate clients that obtain an available ephemeral port from the
+    /// operating system at the time of the request."
+    #[test]
+    fn a_native_clients_loopback_redirect_matches_on_any_port() {
+        for base in ["http://127.0.0.1", "http://[::1]"] {
+            let set = registered(&[&format!("{base}:51004/cb")], ApplicationType::Native);
+            for presented in [
+                format!("{base}/cb"),
+                format!("{base}:1/cb"),
+                format!("{base}:51004/cb"),
+                format!("{base}:65535/cb"),
+            ] {
+                assert!(
+                    RedirectUri::is_registered(&set, &presented, ApplicationType::Native),
+                    "the port was not allowed to vary: {presented}"
+                );
+            }
+        }
+    }
+
+    /// RFC 8252 §8.4 states the residue exactly: "the exception is loopback
+    /// redirects, where an exact match is required except for the port URI
+    /// component". Everything that is not the port stays byte-exact, or the
+    /// exception becomes the wildcard RFC 9700 §4.1.3 exists to remove.
+    #[test]
+    fn the_loopback_exception_varies_the_port_and_nothing_else() {
+        let set = registered(&["http://127.0.0.1:51004/cb"], ApplicationType::Native);
+        for (presented, why) in [
+            ("http://127.0.0.1:51004/CB", "path case"),
+            ("http://127.0.0.1:51004/cb/", "trailing slash"),
+            ("http://127.0.0.1:51004/cb?x=1", "added query"),
+            ("http://127.0.0.1:51004/cb#f", "added fragment"),
+            ("http://127.0.0.1:1/cb/../cb", "a path that resolves to it"),
+            ("http://127.0.0.1:1/a/../cb", "a path that traverses to it"),
+            ("http://[::1]:51004/cb", "the other loopback family"),
+            ("http://127.0.0.2:51004/cb", "another address in 127/8"),
+            (
+                "http://localhost:51004/cb",
+                "localhost, which resolves by DNS",
+            ),
+            ("https://127.0.0.1:51004/cb", "the https scheme"),
+            ("http://127.1:51004/cb", "a short-form IPv4 literal"),
+            (
+                "http://user@127.0.0.1:51004/cb",
+                "userinfo shaped like a port",
+            ),
+            (
+                "http://127.0.0.1:51004@evil.example/cb",
+                "the registered authority moved into the userinfo",
+            ),
+            ("http://127.0.0.1:/cb", "an empty port"),
+            ("http://127.0.0.1:51004", "no path at all"),
+            // RFC 8252 §7.3 allows any *port*, and these are not ports: no
+            // browser can produce either spelling, so a match on one would
+            // only ever come from something hand-built.
+            (
+                "http://127.0.0.1:99999/cb",
+                "a number too large to be a port",
+            ),
+            ("http://127.0.0.1:051004/cb", "a port with a leading zero"),
+        ] {
+            assert!(
+                !RedirectUri::is_registered(&set, presented, ApplicationType::Native),
+                "the loopback exception matched on {why}: {presented}"
+            );
+        }
+    }
+
+    /// FAPI 2.0 SP §5.3.2.2 item 8 gives the exception to native clients only.
+    /// A caller that does not know the client is native gets plain string
+    /// equality, which fails closed.
+    #[test]
+    fn only_a_native_client_gets_the_loopback_port_exception() {
+        let set = registered(&["http://127.0.0.1:51004/cb"], ApplicationType::Native);
+        assert!(RedirectUri::is_registered(
+            &set,
+            "http://127.0.0.1:9999/cb",
+            ApplicationType::Native
+        ));
+        assert!(
+            !RedirectUri::is_registered(&set, "http://127.0.0.1:9999/cb", ApplicationType::Web),
+            "a web client was given the loopback port exception"
+        );
+        // The identical string still matches, because that is not the
+        // exception, it is RFC 3986 §6.2.1.
+        assert!(RedirectUri::is_registered(
+            &set,
+            "http://127.0.0.1:51004/cb",
+            ApplicationType::Web
+        ));
+    }
+
+    /// The port varies for loopback and for nothing else. An https callback on
+    /// a native client keeps its port, because RFC 8252 §7.3 is about a socket
+    /// the operating system hands out on the device, not about ports.
+    #[test]
+    fn an_https_redirect_uri_never_gets_the_port_exception() {
+        let set = registered(&["https://rp.example:8443/cb"], ApplicationType::Native);
+        for presented in [
+            "https://rp.example:9443/cb",
+            "https://rp.example/cb",
+            "https://rp.example:443/cb",
+        ] {
+            assert!(
+                !RedirectUri::is_registered(&set, presented, ApplicationType::Native),
+                "an https port varied: {presented}"
+            );
+        }
+    }
+
+    /// RFC 6749 §3.1.2.3 makes the comparison conditional on "if any
+    /// redirection URIs were registered". An empty set here belongs to a client
+    /// that cannot reach the authorization endpoint at all, so the answer is
+    /// no — never "nothing was registered, so anything goes".
+    #[test]
+    fn an_empty_registered_set_matches_nothing() {
+        for application_type in [ApplicationType::Web, ApplicationType::Native] {
+            assert!(!RedirectUri::is_registered(
+                &[],
+                "https://rp.example/cb",
+                application_type
+            ));
+            assert!(!RedirectUri::is_registered(&[], "", application_type));
+        }
+    }
+
+    /// Every entry is consulted, not only the first: a client with several
+    /// callbacks would otherwise find that only one of them works.
+    #[test]
+    fn every_entry_in_the_registered_set_is_compared() {
+        let set = registered(
+            &[
+                "https://rp.example/cb",
+                "https://rp.example/other",
+                "https://alt.example/cb",
+            ],
+            ApplicationType::Web,
+        );
+        for presented in [
+            "https://rp.example/cb",
+            "https://rp.example/other",
+            "https://alt.example/cb",
+        ] {
+            assert!(RedirectUri::is_registered(
+                &set,
+                presented,
+                ApplicationType::Web
+            ));
+        }
+        assert!(!RedirectUri::is_registered(
+            &set,
+            "https://alt.example/other",
+            ApplicationType::Web
+        ));
+    }
+
+    /// Registration uses the same comparison, so two loopback entries that
+    /// differ only in their port are one registration. Accepting both would put
+    /// a second, unreviewed spelling of one callback in the set and let
+    /// `MAX_REDIRECT_URIS` be filled with port variants of a single URI.
+    #[test]
+    fn two_loopback_uris_that_differ_only_in_their_port_are_one_registration() {
+        let mut document = with(
+            "redirect_uris",
+            json!(["http://127.0.0.1:51004/cb", "http://127.0.0.1:8080/cb"]),
+        );
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert("application_type".to_owned(), json!("native"));
+        assert_eq!(rejection(&document).code(), "invalid_redirect_uri");
+
+        // Different paths on the same loopback host stay two registrations.
+        let mut document = with(
+            "redirect_uris",
+            json!(["http://127.0.0.1:51004/cb", "http://127.0.0.1:8080/other"]),
+        );
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert("application_type".to_owned(), json!("native"));
+        assert_eq!(
+            validate(&document)
+                .expect("two callbacks")
+                .redirect_uris
+                .len(),
+            2
+        );
+    }
+
+    /// The convenience methods must ask the same question as the free
+    /// function; a caller that forgot the application type would silently
+    /// withdraw the loopback exception from every native client.
+    #[test]
+    fn a_client_answers_for_its_own_redirect_uris() {
+        let mut document = with("redirect_uris", json!(["http://127.0.0.1:51004/cb"]));
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert("application_type".to_owned(), json!("native"));
+        let registration = validate(&document).expect("valid native client");
+        assert!(registration.accepts_redirect_uri("http://127.0.0.1:1/cb"));
+        assert!(!registration.accepts_redirect_uri("http://127.0.0.1:1/other"));
+
+        let client = Client {
+            tenant: TenantId::new("demo"),
+            id: ClientId::new("billing"),
+            registration,
+            status: ClientStatus::Disabled,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        // Being disabled is a separate answer, given by client authentication.
+        assert!(client.accepts_redirect_uri("http://127.0.0.1:1/cb"));
+        assert!(!client.accepts_redirect_uri("https://rp.example/cb"));
     }
 
     // -----------------------------------------------------------------------
@@ -2148,6 +2680,54 @@ mod tests {
         "[a-z][a-z0-9_:]{2,10}"
     }
 
+    fn application_type() -> impl Strategy<Value = ApplicationType> {
+        proptest::sample::select(vec![ApplicationType::Web, ApplicationType::Native])
+    }
+
+    /// URI-shaped strings, canonical and not, https and not.
+    ///
+    /// The pieces are chosen so that near-misses are common rather than rare:
+    /// two spellings of the same IPv4 literal, two spellings of the same IDN
+    /// host, a default port that a parser drops, a path that resolves to
+    /// another path. Random bytes would almost never produce a pair that the
+    /// comparison has to keep apart.
+    fn uri_shape() -> impl Strategy<Value = String> {
+        let scheme =
+            proptest::sample::select(vec!["https", "http", "HTTPS", "com.example.app", "ftp"]);
+        let userinfo = proptest::sample::select(vec!["", "user@", "user:pw@"]);
+        let host = proptest::sample::select(vec![
+            "rp.example",
+            "RP.Example",
+            "127.0.0.1",
+            "127.0.0.2",
+            "127.1",
+            "[::1]",
+            "[0:0:0:0:0:0:0:1]",
+            "localhost",
+            "192.168.1.10",
+            "xn--e1afmkfd.example",
+            "пример.example",
+            "",
+        ]);
+        let port = prop_oneof![
+            Just(String::new()),
+            Just(":443".to_owned()),
+            Just(":80".to_owned()),
+            Just(":".to_owned()),
+            (1_u16..=65535).prop_map(|port| format!(":{port}")),
+        ];
+        let path = proptest::sample::select(vec![
+            "", "/", "/cb", "/CB", "/cb/", "/a%2Fb", "/a%2fb", "/../cb", "/a/./b", "/c b",
+        ]);
+        let query = proptest::sample::select(vec!["", "?", "?x=1", "?X=1"]);
+        let fragment = proptest::sample::select(vec!["", "#", "#f"]);
+        (scheme, userinfo, host, port, path, query, fragment).prop_map(
+            |(scheme, userinfo, host, port, path, query, fragment)| {
+                format!("{scheme}://{userinfo}{host}{port}{path}{query}{fragment}")
+            },
+        )
+    }
+
     /// Redirect URIs a client could plausibly register, already normalised.
     fn redirect_uri() -> impl Strategy<Value = String> {
         (
@@ -2356,6 +2936,160 @@ mod tests {
             if ClientRegistration::from_json(&bytes, Capabilities::default()).is_ok() {
                 prop_assert!(ClientRegistration::from_json(&bytes, everything_on()).is_ok());
             }
+        }
+
+        /// **Normalisation is never applied.** The whole design rests on this:
+        /// RFC 9700 §4.1.3 makes the registered bytes the comparison, so a
+        /// parser that rewrote them would change what the client must send,
+        /// and one that kept a form a browser rewrites would compare a string
+        /// no request can carry. Stated both ways — what is accepted comes back
+        /// unchanged, and what a URL parser would rewrite is refused.
+        #[test]
+        fn a_redirect_uri_is_never_normalised_on_the_way_in(
+            raw in uri_shape(),
+            application_type in application_type(),
+        ) {
+            // A refusal is a refusal, never a quiet correction, so there is
+            // nothing to assert on that branch: the only way a rewritten URI
+            // could escape is by being accepted.
+            if let Ok(uri) = RedirectUri::parse(&raw, application_type) {
+                prop_assert_eq!(
+                    uri.as_str(),
+                    raw.as_str(),
+                    "the parser rewrote a redirect URI"
+                );
+                // And the accepted form is a fixed point, so a stored URI put
+                // back through the validator survives (`ast-83p.3`).
+                let again = RedirectUri::parse(uri.as_str(), application_type);
+                prop_assert_eq!(again.as_ref().map(RedirectUri::as_str), Ok(raw.as_str()));
+            }
+            if let Ok(url) = Url::parse(&raw)
+                && url.as_str() != raw
+            {
+                prop_assert!(
+                    RedirectUri::parse(&raw, application_type).is_err(),
+                    "a URI a URL parser rewrites was accepted as registered"
+                );
+            }
+        }
+
+        /// A registered URI matches itself, whatever it is. Reflexivity is not
+        /// free here: the loopback branch splits strings by hand, and a
+        /// splitter that disagreed with the byte-exact branch would break every
+        /// native client on the first request.
+        #[test]
+        fn every_registered_redirect_uri_matches_itself(
+            raw in uri_shape(),
+            application_type in application_type(),
+        ) {
+            let Ok(uri) = RedirectUri::parse(&raw, application_type) else {
+                return Ok(());
+            };
+            prop_assert!(uri.matches(uri.as_str(), application_type));
+            prop_assert!(RedirectUri::is_registered(
+                std::slice::from_ref(&uri),
+                uri.as_str(),
+                application_type,
+            ));
+        }
+
+        /// The only pair of different strings that may match is the
+        /// RFC 8252 §7.3 one: a native client's loopback callback on another
+        /// port. Everything else about the two URIs is byte-equal, which is
+        /// what keeps the exception from being a pattern.
+        #[test]
+        fn a_match_between_different_strings_can_only_be_a_loopback_port(
+            registered_raw in uri_shape(),
+            presented in uri_shape(),
+            application_type in application_type(),
+        ) {
+            let Ok(uri) = RedirectUri::parse(&registered_raw, application_type) else {
+                return Ok(());
+            };
+            if !uri.matches(&presented, application_type) || uri.as_str() == presented {
+                return Ok(());
+            }
+            prop_assert_eq!(application_type, ApplicationType::Native);
+            prop_assert!(uri.as_str().starts_with("http://"));
+            prop_assert!(
+                RedirectUri::parse(&presented, application_type).is_ok(),
+                "a URI that could not be registered was matched: {}",
+                presented
+            );
+            let (host, rest) = RedirectUri::loopback_parts(uri.as_str())
+                .ok_or_else(|| TestCaseError::fail("the registered URI is not loopback"))?;
+            let (presented_host, presented_rest) = RedirectUri::loopback_parts(&presented)
+                .ok_or_else(|| TestCaseError::fail("the presented URI is not loopback"))?;
+            prop_assert_eq!(host, presented_host, "a match crossed to another host");
+            prop_assert_eq!(rest, presented_rest, "a match changed more than the port");
+        }
+
+        /// RFC 8252 §7.3 over the whole port range, rather than the handful of
+        /// ports a table can list: any port matches, and the path it is glued
+        /// to still does not.
+        #[test]
+        fn a_loopback_registration_matches_every_port_but_only_its_own_path(
+            host in proptest::sample::select(vec!["127.0.0.1", "127.0.0.2", "[::1]"]),
+            path in "/[a-z]{1,8}",
+            other_path in "/[a-z]{1,8}",
+            // Port 80 is the `http` default, which a URL parser drops — so it
+            // is not a *spelling* a redirect URI may carry, registered or
+            // presented, and `parse` refuses it either way.
+            registered_port in proptest::option::of(
+                (1_u16..=65535).prop_filter("80 is dropped as the default port", |p| *p != 80)
+            ),
+            presented_port in proptest::option::of(
+                (1_u16..=65535).prop_filter("80 is dropped as the default port", |p| *p != 80)
+            ),
+        ) {
+            let rendered = |port: Option<u16>| {
+                port.map_or_else(String::new, |port| format!(":{port}"))
+            };
+            let base = format!("http://{host}{}{path}", rendered(registered_port));
+            let uri = RedirectUri::parse(&base, ApplicationType::Native)
+                .map_err(|e| TestCaseError::fail(format!("{base}: {e}")))?;
+
+            let same_path = format!("http://{host}{}{path}", rendered(presented_port));
+            prop_assert!(
+                uri.matches(&same_path, ApplicationType::Native),
+                "the port was not allowed to vary: {} against {}",
+                same_path,
+                base
+            );
+            // A web client gets string equality and nothing more, whatever the
+            // registered URI happens to look like.
+            prop_assert_eq!(
+                uri.matches(&same_path, ApplicationType::Web),
+                same_path == base,
+                "a web client was given the loopback port exception"
+            );
+            if other_path != path {
+                let other = format!("http://{host}{}{other_path}", rendered(presented_port));
+                prop_assert!(
+                    !uri.matches(&other, ApplicationType::Native),
+                    "the port exception carried the path with it: {}",
+                    other
+                );
+            }
+        }
+
+        /// No prefix, suffix or containment relation is ever enough. This is
+        /// the attack RFC 9700 §4.1.1 describes, and the reason §4.1.3 replaced
+        /// pattern matching with string equality.
+        #[test]
+        fn extending_or_truncating_a_registered_uri_never_matches_it(
+            base in redirect_uri(),
+            extra in "[a-zA-Z0-9/?=&%._~-]{1,10}",
+            application_type in application_type(),
+        ) {
+            let uri = RedirectUri::parse(&base, application_type)
+                .map_err(|e| TestCaseError::fail(format!("{base}: {e}")))?;
+            let extended = format!("{base}{extra}");
+            let prefixed = format!("{extra}{base}");
+            let truncated = &base[..base.len() - 1];
+            prop_assert!(!uri.matches(&extended, application_type));
+            prop_assert!(!uri.matches(&prefixed, application_type));
+            prop_assert!(!uri.matches(truncated, application_type));
         }
 
         /// The rendered error becomes an RFC 7591 §3.2.2 `error_description`
