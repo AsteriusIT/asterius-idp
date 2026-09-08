@@ -11,13 +11,15 @@
 //! from a document the specification says must contain it.
 
 use crate::client_auth::ClientAuthenticator;
+use crate::http::authorize::{self, AuthorizeContext};
 use crate::http::dpop::DpopEndpoint;
+use crate::http::interaction::{self, InteractionContext};
 use crate::http::par::{self, PushContext};
 use crate::http::token::{self, TokenContext};
 use asterius_domain::{Capabilities, KeyStore, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -123,7 +125,27 @@ pub fn routes(state: ProtocolState) -> Router {
             )
             .route(
                 Endpoint::Token.path(),
-                post(token_endpoint).with_state(endpoints),
+                post(token_endpoint).with_state(Arc::clone(&endpoints)),
+            )
+            // OIDC Core §3.1.2.1 permits GET and POST at the authorization
+            // endpoint, and RFC 9126 §4 says what they carry: `client_id` and
+            // `request_uri`, nothing else that matters.
+            .route(
+                Endpoint::Authorization.path(),
+                get(authorization_endpoint)
+                    .post(authorization_endpoint_form)
+                    .with_state(Arc::clone(&endpoints)),
+            )
+            // The interaction pages. Deliberately not in the endpoint
+            // registry: they are not part of the protocol surface a client
+            // discovers, they are this server's own user interface, and
+            // advertising them would invite a client to link straight into
+            // one.
+            .route(
+                "/interaction/{id}",
+                get(interaction_show)
+                    .post(interaction_submit)
+                    .with_state(endpoints),
             );
     }
 
@@ -135,7 +157,9 @@ pub fn routes(state: ProtocolState) -> Router {
             || (built_clients
                 && matches!(
                     endpoint,
-                    Endpoint::PushedAuthorizationRequest | Endpoint::Token
+                    Endpoint::PushedAuthorizationRequest
+                        | Endpoint::Token
+                        | Endpoint::Authorization
                 ))
         {
             continue;
@@ -309,6 +333,107 @@ async fn token_endpoint(
         DpopEndpoint::supply_nonce(&mut response, binding);
     }
     response
+}
+
+/// `GET /authorize` — RFC 9126 §4.
+async fn authorization_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    let pairs: Vec<(String, String)> =
+        url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+    run_authorize(&endpoints, &tenant, &nonce, &pairs).await
+}
+
+/// `POST /authorize` — the same request, form-encoded.
+async fn authorization_endpoint_form(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    body: axum::body::Bytes,
+) -> Response {
+    let pairs: Vec<(String, String)> = url::form_urlencoded::parse(&body)
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    run_authorize(&endpoints, &tenant, &nonce, &pairs).await
+}
+
+/// The half both verbs share.
+async fn run_authorize(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    nonce: &asterius_web::csp::Nonce,
+    pairs: &[(String, String)],
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let requests = scope.auth_requests();
+    authorize::authorize(
+        AuthorizeContext {
+            tenant,
+            requests: &requests,
+            interactions: &requests,
+            nonce,
+        },
+        pairs,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /interaction/{id}`.
+async fn interaction_show(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Path(id): Path<String>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let requests = scope.auth_requests();
+    interaction::show(
+        InteractionContext {
+            tenant: &tenant,
+            requests: &requests,
+            // `ast-2vk.5` fills this in. Until it does, nobody can sign in and
+            // the login page says so.
+            authentication: None,
+            nonce: &nonce,
+        },
+        &id,
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /interaction/{id}`.
+async fn interaction_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Path(id): Path<String>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let requests = scope.auth_requests();
+    interaction::submit(
+        InteractionContext {
+            tenant: &tenant,
+            requests: &requests,
+            authentication: None,
+            nonce: &nonce,
+        },
+        &id,
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
 }
 
 /// An endpoint that is advertised but not yet built.
