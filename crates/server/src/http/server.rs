@@ -34,8 +34,13 @@ const MAX_HEADER_BYTES: usize = 16 * 1024;
 ///    is not a security header.
 /// 2. **request id** — next, so the id appears on those same error responses
 ///    and an operator can correlate a rejection with a log line.
-/// 3. **timeout** — before any work is done.
-/// 4. **body limit** — 413 rather than reading an unbounded body.
+/// 3. **document security** — the per-response CSP nonce and the header set
+///    that only applies to HTML. It is inside the two above because it does
+///    nothing to a JSON or an empty response, and it is applied to everything
+///    rather than to a list of page routes because that list is the thing that
+///    goes stale: a document served from anywhere is a document.
+/// 4. **timeout** — before any work is done.
+/// 5. **body limit** — 413 rather than reading an unbounded body.
 ///
 /// There is deliberately **no CORS layer**, here or anywhere. FAPI 2.0 SP
 /// §5.2.3 requires the authorization endpoint to be unreachable from a
@@ -50,6 +55,7 @@ pub fn with_middleware(routes: Router, config: &ServerConfig) -> Router {
             StatusCode::REQUEST_TIMEOUT,
             config.request_timeout,
         ))
+        .layer(axum::middleware::from_fn(asterius_web::document::layer))
         .layer(axum::middleware::from_fn(request_id::layer))
         .layer(axum::middleware::from_fn(security_headers::layer))
 }

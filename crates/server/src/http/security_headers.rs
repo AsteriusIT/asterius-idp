@@ -1,10 +1,17 @@
 //! Transport-level security headers.
 //!
 //! The Content-Security-Policy that HTML pages need is a different problem with
-//! a different owner (`ast-ndk.3`): it needs a per-response nonce and it only
-//! applies to documents. What lives here is the set that is correct on *every*
-//! response, including JSON and redirects, and that is therefore safe to apply
-//! once at the outermost layer where it cannot be forgotten.
+//! a different owner: it needs a per-response nonce and it only applies to
+//! documents, so it lives in [`asterius_web::document`] and runs one layer
+//! further in. What lives here is the set that is correct on *every* response,
+//! including JSON and redirects, and that is therefore safe to apply once at
+//! the outermost layer where it cannot be forgotten.
+//!
+//! The two overlap on `X-Content-Type-Options`, `Referrer-Policy` and
+//! `Permissions-Policy`, and the document layer wins on a document: it runs
+//! first on the way out, and the insertions below are conditional. That is the
+//! right way round — a login page needs the WebAuthn delegation this layer
+//! cannot grant a token endpoint.
 
 use axum::extract::Request;
 use axum::http::{HeaderName, HeaderValue, header};
