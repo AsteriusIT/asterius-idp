@@ -4,3 +4,10 @@
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Rust
+/target/
+**/*.rs.bk
+
+# Local environment
+.env

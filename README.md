@@ -23,14 +23,33 @@ Most identity providers treat high security as an optional profile and AI agents
 
 ```
 crates/
-  domain/     entities, ports (KeyStore, Signer, PolicyEngine, Outbox …)
-  oidc/       protocol logic — no I/O, no framework types
-  jose/       key management port + josekit adapter, alg allow-list
-  store-pg/   sqlx adapters, migrations
-  web/        server-rendered pages, CSP, interaction engine
-  admin-api/  OpenAPI-described admin API
-  server/     axum wiring, single binary
+  asterius-domain/     entities, ids, ports (Clock, KeyStore, Signer, repositories, Outbox …)
+  asterius-oidc/       protocol logic — pure functions, no I/O, no framework types
+  asterius-jose/       key management port + JOSE adapter, algorithm allow-list
+  asterius-store-pg/   sqlx adapters, migrations
+  asterius-web/        server-rendered pages, CSP, interaction engine
+  asterius-admin-api/  OpenAPI-described admin API
+  asterius-server/     axum wiring, single `asterius` binary
 ```
+
+**The rule: protocol code talks to the outside world only through ports.**
+`asterius-domain` declares a trait for every outside dependency; `asterius-oidc`
+decides what the protocol requires and never performs I/O. Adapters
+(`asterius-store-pg`, `asterius-jose`, `asterius-server`) implement those traits
+and are chosen once, in the composition root. Consequences:
+
+- a protocol rule is tested against the normative text without a database, a
+  TLS listener or a runtime — which is what keeps the test suite fast enough to
+  run on every edit;
+- the storage engine and the crypto provider can be swapped without touching a
+  line of protocol logic;
+- `scripts/check-layering.sh` fails CI if `asterius-domain` or `asterius-oidc`
+  can reach `sqlx`, `axum`, `tokio`, `hyper`, `reqwest` or `askama` — directly
+  *or transitively*.
+
+Every crate root carries `#![forbid(unsafe_code)]`, enforced by the same script.
+Cross-cutting lints (clippy pedantic, `rust_2018_idioms`) are declared once in
+the workspace manifest and inherited with `[lints] workspace = true`.
 
 ## Standards
 

@@ -1,0 +1,10 @@
+# Domain acronyms and product names that are not code identifiers, so that
+# `clippy::doc_markdown` stops asking for backticks around them.
+doc-valid-idents = [
+    "..",
+    "OpenID", "OAuth", "JOSE", "JWKS", "JWT", "FAPI", "CAEP", "RISC", "CIBA",
+    "PKCE", "DPoP", "PostgreSQL", "JavaScript", "TypeScript", "WebAuthn",
+    "AuthZEN", "MCP", "SCIM", "SAML", "LDAP", "HSTS", "CSRF", "TLS", "mTLS",
+    "PAR", "RAR", "SSF", "HSM", "UserInfo", "EdDSA", "Ed25519", "ES256", "PS256",
+    "RS256", "SHA-256", "Argon2id",
+]

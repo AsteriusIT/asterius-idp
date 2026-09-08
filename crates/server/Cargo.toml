@@ -1,0 +1,31 @@
+[package]
+name = "asterius-server"
+description = "The asterius binary: axum wiring, configuration, process lifecycle."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+asterius-admin-api.workspace = true
+asterius-domain.workspace = true
+asterius-jose.workspace = true
+asterius-oidc.workspace = true
+asterius-store-pg.workspace = true
+asterius-web.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+
+[[bin]]
+name = "asterius"
+path = "src/main.rs"

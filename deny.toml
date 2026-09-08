@@ -1,0 +1,52 @@
+# cargo-deny configuration.
+#
+# Asterius ships a security product: a dependency that is unmaintained, that
+# carries an advisory, or whose licence we cannot honour is a defect, not a
+# warning. CI runs `cargo deny check` on every push.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licences only. Anything copyleft needs an explicit exception and
+# an ADR explaining why the obligation is acceptable for a single binary.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Crates we refuse outright.
+deny = [
+    # OpenSSL: we terminate TLS with rustls and do crypto through aws-lc-rs /
+    # ring, so a linked OpenSSL is always an accident.
+    { crate = "openssl", reason = "use rustls; see ADR-0001" },
+    { crate = "openssl-sys", reason = "use rustls; see ADR-0001" },
+    { crate = "native-tls", reason = "use rustls" },
+    # Unmaintained / superseded time handling.
+    { crate = "chrono", reason = "use the `time` crate; chrono's tz handling has repeatedly carried advisories" },
+]
+skip = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

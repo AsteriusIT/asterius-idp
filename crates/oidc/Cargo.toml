@@ -1,0 +1,20 @@
+[package]
+name = "asterius-oidc"
+description = "OpenID Connect / OAuth 2.0 protocol logic. Pure functions over domain types; no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+asterius-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true

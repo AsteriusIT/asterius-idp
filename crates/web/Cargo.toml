@@ -1,0 +1,21 @@
+[package]
+name = "asterius-web"
+description = "Server-rendered end-user pages (login, consent, errors) and browser security middleware."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+asterius-domain.workspace = true
+asterius-oidc.workspace = true
+axum.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
