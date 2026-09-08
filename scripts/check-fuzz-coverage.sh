@@ -61,7 +61,12 @@ done <<<"$present"
 if [[ "$status" -eq 0 ]]; then
   if rustup toolchain list 2>/dev/null | grep -q '^nightly'; then
     echo "building every fuzz target (nightly)..."
-    if (cd fuzz && cargo +nightly check --bins --quiet); then
+    # `CARGO_BUILD_TARGET` is unset for this build. If the environment points
+    # at a target whose standard library is not installed — a musl triple on a
+    # gnu host, say — this fails with "can't find crate for `core`", which says
+    # nothing about the code under test. The host default is what we want: the
+    # question here is whether the targets compile, not for what.
+    if (cd fuzz && env -u CARGO_BUILD_TARGET cargo +nightly check --bins --quiet); then
       echo "fuzz targets build"
     else
       echo "FUZZ TARGET DOES NOT COMPILE: see the errors above" >&2

@@ -13,27 +13,36 @@ permissions:
   contents: read
 
 jobs:
+  # The target list is read from `fuzz/Cargo.toml` rather than written out
+  # here. It used to be a hand-maintained matrix, and it went stale: eight
+  # targets added over one day of work were never fuzzed overnight, silently,
+  # because nobody remembered to add them in two places. A list that must be
+  # kept in step by hand is a list that is wrong.
+  targets:
+    name: enumerate targets
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          # Only the names inside a [[bin]] block. A bare grep for `name =`
+          # would also pick up [package].name.
+          targets=$(awk '/^\[\[bin\]\]/ { in_bin = 1; next }
+                         in_bin && /^name = / { gsub(/^name = "|"$/, ""); print; in_bin = 0 }' \
+                    fuzz/Cargo.toml | jq -R . | jq -sc .)
+          echo "matrix=$targets" >> "$GITHUB_OUTPUT"
+          echo "will fuzz: $targets"
+
   fuzz:
     name: fuzz ${{ matrix.target }}
+    needs: targets
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - issuer_parse
-          - tenant_route
-          - config_parse
-          - redaction_scan
-          - forwarded_resolve
-          - audit_canonical
-          - jws_parse
-          - jwt_verify
-          - client_metadata_json
-          - redirect_uri
-          - kek_unwrap
-          - pkce
-          - pairwise_subject
-          - claim_name
+        target: ${{ fromJSON(needs.targets.outputs.matrix) }}
     env:
       SQLX_OFFLINE: "true"
     steps:
@@ -51,8 +60,12 @@ jobs:
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
 
+      # Pinned for the same reason as the smoke job in ci.yml: ASan cannot
+      # work against a statically linked libc.
       - name: fuzz for ten minutes
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=600 -print_final_stats=1
+        run: |
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
+            -- -max_total_time=600 -print_final_stats=1
 
       - name: save the corpus
         if: always()

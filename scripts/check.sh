@@ -15,6 +15,7 @@ run cargo fmt --all --check
 SQLX_OFFLINE=true run cargo clippy --workspace --all-targets --all-features -- -D warnings
 run ./scripts/check-layering.sh
 run ./scripts/check-fuzz-coverage.sh
+run ./scripts/check-no-unsafe.sh
 
 if $want_db; then
   run docker compose up -d --wait db

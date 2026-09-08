@@ -53,16 +53,12 @@ jobs:
         run: ./scripts/check-fuzz-coverage.sh
 
       # Belt and braces around the forbid attribute: an `unsafe` block that
-      # somehow compiles should still stop the build.
+      # somehow compiles should still stop the build. A script rather than an
+      # inline grep so that `./scripts/check.sh` runs the same check locally —
+      # this one lived only in CI, which is why a false positive in it was not
+      # caught before the push.
       - name: no unsafe in first-party code
-        run: |
-          if grep -rn --include='*.rs' -E '\bunsafe\b' crates/ \
-               | grep -v 'forbid(unsafe_code)' \
-               | grep -v '^\s*//' ; then
-            echo "::error::unsafe found in first-party code"
-            exit 1
-          fi
-          echo "no unsafe outside dependencies"
+        run: ./scripts/check-no-unsafe.sh
 
   # -------------------------------------------------------------------------
   # Tests, against a real PostgreSQL. The database tests are the ones that
@@ -199,14 +195,21 @@ jobs:
         with:
           tool: cargo-fuzz
 
+      # The target is pinned. AddressSanitizer cannot work against a
+      # statically linked libc — "sanitizer is incompatible with statically
+      # linked libc" — so if anything in the environment defaults the build to
+      # a musl triple (a CARGO_BUILD_TARGET inherited from the runner, say),
+      # every fuzz job fails before it starts. Naming the gnu triple here makes
+      # the job independent of what the runner happens to be configured for.
       - name: build every target
-        run: cargo fuzz build
+        run: cargo fuzz build --target x86_64-unknown-linux-gnu
 
       - name: run each target for 60 s
         run: |
           for target in $(cargo fuzz list); do
             echo "::group::$target"
-            cargo fuzz run "$target" -- -max_total_time=60 -print_final_stats=1
+            cargo fuzz run --target x86_64-unknown-linux-gnu "$target" \
+              -- -max_total_time=60 -print_final_stats=1
             echo "::endgroup::"
           done
 
