@@ -15,6 +15,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 asterius-domain = { path = "../crates/domain" }
+asterius-jose = { path = "../crates/jose" }
 asterius-oidc = { path = "../crates/oidc" }
 asterius-server = { path = "../crates/server" }
 # Needed by the targets themselves: `audit_canonical` builds events with
@@ -60,6 +61,13 @@ bench = false
 [[bin]]
 name = "audit_canonical"
 path = "fuzz_targets/audit_canonical.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jws_parse"
+path = "fuzz_targets/jws_parse.rs"
 test = false
 doc = false
 bench = false

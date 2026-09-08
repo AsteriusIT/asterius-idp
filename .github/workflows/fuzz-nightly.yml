@@ -26,6 +26,7 @@ jobs:
           - redaction_scan
           - forwarded_resolve
           - audit_canonical
+          - jws_parse
     env:
       SQLX_OFFLINE: "true"
     steps:

@@ -95,7 +95,8 @@ what stops it; this bead builds the control and its test.*
 | A1 | G1, G2, G3 | Edits or deletes an audit record to hide what was done | `audit_events` refuses `UPDATE` unconditionally and `DELETE` except for the retention job, which must announce itself for the transaction; each record hashes its predecessor with its own length-prefixed canonical encoding, so an edit or a deletion is detected and located | `ast-83p.11` |
 | A1, A2 | G1 | Reads credentials out of the database after a backup or replica leak | Opaque credentials (codes, refresh tokens, device codes, `auth_req_id`, registration tokens) stored only as SHA-256 digests; passwords as Argon2id; private keys encrypted at rest | `ast-83p.3`, `ast-mxc.3` |
 | A1, A2 | G1 | Guesses a credential | ≥ 128 bits of entropy from the OS CSPRNG for every non-human-handled credential (SP §5.4.1); constant-time comparison | `ast-mxc.6` |
-| A1 | G1 | Downgrades signing to `none` or to an algorithm with a known weakness | Algorithm allow-list at both signing and verification: EdDSA, ES256, PS256. `none` is never accepted; RS256 only under the non-FAPI `compat.rs256` flag | `ast-mxc.1`, ADR-0003 |
+| A1 | G1, G2 | Downgrades signing to `none`, to HMAC with a public key, or to any algorithm the profile excludes | `SigningAlgorithm` is a closed enum with three variants, so `none` and `HS256` are not values that exist. Verification uses the *key's* algorithm and requires the header to agree (RFC 8725 §3.1–3.2); a header naming anything else is refused before a key is fetched | `ast-mxc.1`, ADR-0003, ADR-0004 |
+| A1 | G1 | Substitutes a token minted for one purpose where another is expected | Every issued JWT carries an explicit `typ` (RFC 8725 §3.11) and verification requires the expected one; `crit` headers are refused outright, since we understand none of them | `ast-mxc.1` |
 
 ### 4. Agent-specific threats (G4)
 

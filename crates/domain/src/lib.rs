@@ -12,6 +12,7 @@ pub mod entities;
 pub mod error;
 pub mod ids;
 pub mod issuer;
+pub mod keys;
 pub mod ports;
 pub mod secret;
 
@@ -21,4 +22,5 @@ pub use entities::{Tenant, TenantStatus};
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
+pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, SigningAlgorithm};
 pub use secret::Secret;
