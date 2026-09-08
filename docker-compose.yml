@@ -1,0 +1,25 @@
+# Local development dependencies. `docker compose up -d db` is enough to run
+# the integration tests; the server itself is run from cargo.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: asterius
+      POSTGRES_PASSWORD: asterius
+      POSTGRES_DB: asterius
+    ports:
+      - "127.0.0.1:5433:5432"
+    # Test databases are created and dropped constantly, so durability is not
+    # worth the fsync. Never copy these flags into anything that keeps data.
+    command: >
+      postgres
+      -c fsync=off
+      -c synchronous_commit=off
+      -c full_page_writes=off
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asterius -d asterius"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    tmpfs:
+      - /var/lib/postgresql/data

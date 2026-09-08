@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select tenant_id, issuer, custom_host, display_name, status, created_at, updated_at\n             from tenants\n             where tenant_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tenant_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "issuer",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "custom_host",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "16598626f485fd546cfbf2c8ea7533d628d1aa2f1e6c10af9a1c2b088b6748c5"
+}

@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod capabilities;
+pub mod entities;
 pub mod error;
 pub mod ids;
 pub mod issuer;
@@ -14,6 +15,7 @@ pub mod ports;
 pub mod secret;
 
 pub use capabilities::{Capabilities, Feature};
+pub use entities::{Tenant, TenantStatus};
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId};
 pub use issuer::{Issuer, IssuerError};

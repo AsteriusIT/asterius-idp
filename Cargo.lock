@@ -29,6 +29,7 @@ dependencies = [
 name = "asterius-domain"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
  "thiserror",
@@ -92,6 +93,7 @@ dependencies = [
  "sqlx",
  "thiserror",
  "time",
+ "tokio",
  "tracing",
 ]
 

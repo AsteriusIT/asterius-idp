@@ -46,12 +46,30 @@ cargo test --workspace                 # pure logic, no database
 cargo deny check                       # licences, advisories, bans
 ```
 
-Integration tests need PostgreSQL 16 and run only when `DATABASE_URL` is set:
+Integration tests need PostgreSQL 16 and run only when `DATABASE_URL` is set;
+without it they print a skip line and the suite stays fast.
 
 ```sh
+cp .env.example .env && cp .env crates/store-pg/.env
 docker compose up -d db
-DATABASE_URL=postgres://asterius:asterius@localhost:5432/asterius cargo test --workspace
+cargo test --workspace          # now includes the database tests
 ```
+
+Each database test creates its own PostgreSQL schema, migrates it and works
+inside it, so they run in parallel and share nothing.
+
+`sqlx` checks queries against a live database at compile time. After changing
+any SQL, regenerate the offline data and commit it, or CI (which builds with
+`SQLX_OFFLINE=true` and no database) will fail:
+
+```sh
+cargo sqlx prepare --workspace -- --all-targets
+```
+
+`crates/store-pg/.env` is a workaround, not a convention: sqlx walks every
+ancestor directory looking for `.env`, so a stray `.env` anywhere above the
+repository — a Python virtualenv named `.env`, for instance — breaks the build
+until sqlx finds a readable one first.
 
 ## Architecture rules
 
