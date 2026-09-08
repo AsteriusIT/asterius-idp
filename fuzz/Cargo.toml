@@ -24,6 +24,13 @@ asterius-server = { path = "../crates/server" }
 axum = { version = "0.8", default-features = false }
 serde_json = "1"
 time = "0.3"
+# `pkce` recomputes RFC 7636 §4.2's transformation from primitives, so that the
+# oracle and the code under test cannot share a mistake.
+sha2 = "0.10"
+base64 = "0.22"
+# `pairwise_subject` builds local account identifiers by hand so that a case is
+# reproducible from its corpus entry.
+uuid = "1"
 
 [[bin]]
 name = "issuer_parse"
@@ -112,6 +119,27 @@ bench = false
 [[bin]]
 name = "jwks_uri_target"
 path = "fuzz_targets/jwks_uri_target.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pkce"
+path = "fuzz_targets/pkce.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pairwise_subject"
+path = "fuzz_targets/pairwise_subject.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "claim_name"
+path = "fuzz_targets/claim_name.rs"
 test = false
 doc = false
 bench = false

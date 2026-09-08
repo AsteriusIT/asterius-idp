@@ -55,6 +55,7 @@ dependencies = [
  "thiserror",
  "time",
  "url",
+ "uuid",
  "zeroize",
 ]
 
@@ -67,9 +68,12 @@ dependencies = [
  "asterius-oidc",
  "asterius-server",
  "axum",
+ "base64",
  "libfuzzer-sys",
  "serde_json",
+ "sha2",
  "time",
+ "uuid",
 ]
 
 [[package]]
@@ -93,8 +97,10 @@ name = "asterius-oidc"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
+ "base64",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "url",
 ]

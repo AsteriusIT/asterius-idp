@@ -2,6 +2,7 @@
 
 pub mod client;
 pub mod tenant;
+pub mod user;
 
 pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
@@ -9,3 +10,7 @@ pub use client::{
     TokenEndpointAuthMethod,
 };
 pub use tenant::{Tenant, TenantStatus};
+pub use user::{
+    Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier,
+    SubjectError, User, UserId, UserStatus, derive_subject,
+};

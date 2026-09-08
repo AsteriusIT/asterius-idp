@@ -22,9 +22,10 @@ pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};
 pub use credentials::{OpaqueToken, sha256_hex};
 pub use entities::{
-    ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
-    GrantType, JwksSource, RedirectUri, RedirectUriError, SubjectType, Tenant, TenantStatus,
-    TokenBinding, TokenEndpointAuthMethod,
+    ApplicationType, Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, Client, ClientMetadata,
+    ClientMetadataError, ClientRegistration, ClientStatus, GrantType, JwksSource, PairwiseSalt,
+    RedirectUri, RedirectUriError, SectorIdentifier, SubjectError, SubjectType, Tenant,
+    TenantStatus, TokenBinding, TokenEndpointAuthMethod, User, UserId, UserStatus, derive_subject,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};

@@ -1881,3 +1881,348 @@ db_test! {
         assert!(error.to_string().contains("public_jwk"), "{error}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Users, claims and subject identifiers
+// ---------------------------------------------------------------------------
+
+use asterius_domain::{
+    Claim, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier, SubjectId, User,
+    UserId, UserStatus, derive_subject,
+};
+use asterius_store_pg::PgUserRepository;
+
+fn users(pool: &PgPool, tenant: &str) -> PgUserRepository {
+    PgUserRepository::new(pool.clone(), TenantId::new(tenant))
+}
+
+/// A fixed salt. Constant on purpose: an assertion about which `sub` a sector
+/// sees can only be made against a salt the test still holds.
+fn salt() -> PairwiseSalt {
+    PairwiseSalt::from_bytes([0x5c; PairwiseSalt::LEN])
+}
+
+fn sector(host: &str) -> SectorIdentifier {
+    SectorIdentifier::stored(host).expect("a storable sector")
+}
+
+fn claim_name(raw: &str) -> ClaimName {
+    ClaimName::parse(raw).expect("a claim name")
+}
+
+/// A user carrying one claim of each shape the model can hold: a plain value, a
+/// language-tagged one that another party verified, and a nested object another
+/// issuer asserted.
+fn a_user(tenant: &str, id: UserId, username: &str) -> User {
+    let mut claims = ClaimSet::new();
+    claims.insert(
+        claim_name("name"),
+        Claim::new(serde_json::json!("Alice Example"), ClaimSource::Local).expect("a claim"),
+    );
+    claims.insert(
+        claim_name("family_name#ja-Kana-JP"),
+        Claim::new(serde_json::json!("クドウ"), ClaimSource::Admin)
+            .expect("a claim")
+            .verified(OffsetDateTime::UNIX_EPOCH),
+    );
+    claims.insert(
+        claim_name("address"),
+        Claim::new(
+            serde_json::json!({ "country": "FR", "locality": "Lyon" }),
+            ClaimSource::Issuer(
+                asterius_domain::Issuer::parse("https://op.example").expect("an issuer"),
+            ),
+        )
+        .expect("a claim"),
+    );
+    User {
+        tenant: TenantId::new(tenant),
+        id,
+        username: username.to_owned(),
+        email: Some(format!("{username}@example.test")),
+        email_verified: true,
+        status: UserStatus::Active,
+        claims,
+        created_at: OffsetDateTime::UNIX_EPOCH,
+        updated_at: OffsetDateTime::UNIX_EPOCH,
+    }
+}
+
+db_test! {
+    /// The claim bag is JSONB, so nothing but this round trip says that what
+    /// was stored is what comes back — including a language-tagged name, a
+    /// nested object and a claim another issuer asserted.
+    async fn a_user_round_trips_with_every_shape_of_claim_intact(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert");
+
+        let found = repo.find(alice.id).await.expect("find").expect("present");
+        assert_eq!(found.claims, alice.claims);
+        assert_eq!(found.username, "alice");
+        assert_eq!(found.email.as_deref(), Some("alice@example.test"));
+        assert!(found.email_verified);
+        assert!(found.can_authenticate());
+        // Timestamps come from the database, not from the entity passed in.
+        assert!(found.created_at > OffsetDateTime::UNIX_EPOCH);
+
+        assert_eq!(
+            repo.find_by_username("alice").await.expect("find").expect("present").id,
+            alice.id
+        );
+        assert!(repo.find_by_username("absent").await.expect("find").is_none());
+        assert!(repo.find(UserId::generate()).await.expect("find").is_none());
+    }
+}
+
+db_test! {
+    /// Rows get edited by hand during incidents, and JSONB will hold anything.
+    /// A bag that has grown a `sub` claim is an impersonation primitive the
+    /// moment the claims service projects it, so the row must fail to load.
+    async fn a_claim_bag_edited_into_something_the_model_refuses_fails_to_load(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert");
+
+        for hostile in [
+            r#"{"sub": {"value": "victim", "source": "admin"}}"#,
+            r#"{"email": {"value": "victim@example.test", "source": "admin"}}"#,
+            r#"{"name": {"value": null, "source": "admin"}}"#,
+            r#"{"name": {"value": "x", "source": "whoever"}}"#,
+        ] {
+            sqlx::query("update users set claims = $1::jsonb where tenant_id = 'demo'")
+                .bind(hostile)
+                .execute(&db.pool)
+                .await
+                .expect("tamper");
+            let error = repo
+                .find(alice.id)
+                .await
+                .expect_err("a bag the model refuses must not load");
+            assert!(error.to_string().contains("claims"), "{hostile}: {error}");
+        }
+    }
+}
+
+db_test! {
+    /// OIDC Core §8.1: the calculation is deterministic and the identifier is
+    /// stable, so a relying party's account for a person does not move.
+    async fn one_user_in_one_sector_always_sees_the_same_subject(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert");
+
+        let first = repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("mint");
+        let again = repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("read");
+        assert_eq!(first, again);
+        // And it is the derivation, not something the database invented.
+        assert_eq!(first, derive_subject(&sector("rp.example"), alice.id, &salt()));
+
+        // One row, not two: minting twice must not accumulate identities.
+        let rows: i64 = sqlx::query_scalar(
+            "select count(*) from subject_identifiers where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+        assert_eq!(rows, 1);
+    }
+}
+
+db_test! {
+    /// The whole privacy claim of a pairwise subject (OIDC Core §8): two
+    /// relying parties comparing notes must not be able to tell that they are
+    /// talking about one person.
+    async fn two_sectors_never_see_one_user_under_the_same_subject(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert");
+
+        let here = repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("mint");
+        let there = repo.subject(alice.id, &sector("other.example"), &salt()).await.expect("mint");
+        let public = repo
+            .subject(alice.id, &SectorIdentifier::public(), &salt())
+            .await
+            .expect("mint");
+        assert_ne!(here, there);
+        assert_ne!(here, public);
+        assert_ne!(there, public);
+
+        // Every one of them resolves back to the same person, which is the
+        // property UserInfo depends on.
+        for subject in [&here, &there, &public] {
+            assert_eq!(
+                repo.find_by_subject(subject).await.expect("find").expect("present").id,
+                alice.id
+            );
+        }
+
+        // A public subject lives under the sentinel sector the schema is built
+        // around, so both subject types are one row shape.
+        let sectors: Vec<String> = sqlx::query_scalar(
+            "select sector_identifier from subject_identifiers
+             where tenant_id = 'demo' order by sector_identifier",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read sectors");
+        assert_eq!(sectors, ["", "other.example", "rp.example"]);
+
+        let listed = repo.subjects(alice.id).await.expect("list");
+        assert_eq!(listed.len(), 3);
+        assert!(listed[0].0.is_public());
+    }
+}
+
+db_test! {
+    /// A subject is a relying party's primary key for a person. Two people
+    /// sharing one is the outcome this table exists to make impossible, so the
+    /// database refuses the write rather than the application noticing later.
+    async fn two_users_cannot_be_given_the_same_subject(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        let bob = a_user("demo", UserId::generate(), "bob");
+        repo.upsert(&alice).await.expect("insert alice");
+        repo.upsert(&bob).await.expect("insert bob");
+
+        let alices = repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("mint");
+
+        // The derivation cannot produce a collision, so provoke one the way a
+        // botched import would: write Alice's `sub` against Bob.
+        let clash = sqlx::query(
+            "insert into subject_identifiers (tenant_id, user_id, sector_identifier, subject)
+             values ('demo', $1, 'other.example', $2)",
+        )
+        .bind(bob.id.as_uuid())
+        .bind(alices.as_str())
+        .execute(&db.pool)
+        .await;
+        assert!(clash.is_err(), "two users were given one subject");
+    }
+}
+
+db_test! {
+    /// A repository is scoped to one tenant, and the scope is the tenant. A
+    /// user, a username and a `sub` belonging to another tenant must all be
+    /// unreachable through this handle.
+    async fn a_user_lookup_never_answers_for_another_tenant(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let store = Store::from_pool(db.pool.clone());
+        let alpha_scope = store.scope(TenantId::new("alpha"));
+        let beta_scope = store.scope(TenantId::new("beta"));
+        let alpha = alpha_scope.users();
+        let beta = beta_scope.users();
+        assert_eq!(alpha.tenant().as_str(), "alpha");
+
+        // The same username in both tenants: the unique index is per tenant, so
+        // one tenant's accounts do not constrain another's.
+        let here = a_user("alpha", UserId::generate(), "alice");
+        let there = a_user("beta", UserId::generate(), "alice");
+        alpha.upsert(&here).await.expect("insert into alpha");
+        beta.upsert(&there).await.expect("insert into beta");
+
+        assert!(beta.find(here.id).await.expect("find").is_none());
+        assert_eq!(
+            beta.find_by_username("alice").await.expect("find").expect("present").id,
+            there.id
+        );
+
+        let subject = alpha.subject(here.id, &sector("rp.example"), &salt()).await.expect("mint");
+        assert!(
+            beta.find_by_subject(&subject).await.expect("find").is_none(),
+            "one tenant's subject resolved in another"
+        );
+        // Two tenants derive different subjects for one sector even when they
+        // share a salt, because the local account ids differ.
+        let theirs = beta.subject(there.id, &sector("rp.example"), &salt()).await.expect("mint");
+        assert_ne!(subject, theirs);
+
+        // Writing an entity from another tenant through this handle is a bug in
+        // the caller, not a query to run.
+        assert!(beta.upsert(&here).await.is_err());
+    }
+}
+
+db_test! {
+    /// Deleting a user takes every identity they were known by with it. A row
+    /// that survives its user is a row nobody owns — and, for a `sub`, a
+    /// relying party's account with nothing behind it.
+    async fn deleting_a_user_takes_every_subject_identifier_with_it(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        let bob = a_user("demo", UserId::generate(), "bob");
+        repo.upsert(&alice).await.expect("insert alice");
+        repo.upsert(&bob).await.expect("insert bob");
+        repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("mint");
+        repo.subject(bob.id, &sector("rp.example"), &salt()).await.expect("mint");
+
+        repo.delete(alice.id).await.expect("delete");
+        assert!(repo.find(alice.id).await.expect("find").is_none());
+        assert!(matches!(
+            repo.delete(alice.id).await,
+            Err(asterius_domain::DomainError::NotFound)
+        ));
+
+        let remaining: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "select user_id from subject_identifiers where tenant_id = 'demo'",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read subjects");
+        assert_eq!(remaining, [*bob.id.as_uuid()], "the cascade left an orphan sub");
+    }
+}
+
+db_test! {
+    /// The reason the column is JSONB (`ast-s36.5`, `ast-s36.6`): a claim the
+    /// schema has never heard of is a write, not a migration.
+    async fn a_claim_the_schema_has_never_heard_of_needs_no_migration(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let mut alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert");
+
+        alice.claims.insert(
+            claim_name("https://claims.example/employee_number"),
+            Claim::new(serde_json::json!(42), ClaimSource::Import).expect("a claim"),
+        );
+        alice.claims.insert(
+            claim_name("zoneinfo"),
+            Claim::new(serde_json::json!("Europe/Paris"), ClaimSource::Local).expect("a claim"),
+        );
+        repo.upsert(&alice).await.expect("update");
+
+        let found = repo.find(alice.id).await.expect("find").expect("present");
+        assert_eq!(found.claims, alice.claims);
+        assert_eq!(found.claims.len(), 5);
+        assert_eq!(
+            found.claims.get(&claim_name("zoneinfo")).map(Claim::value),
+            Some(&serde_json::json!("Europe/Paris"))
+        );
+    }
+}
+
+db_test! {
+    /// A user record is not the place to say who somebody is, and a derived
+    /// subject is something the rest of the server can carry: OIDC Core §8 caps
+    /// a `sub` at 255 ASCII characters and it travels in a URL and a JWT.
+    async fn a_user_record_cannot_be_given_a_claim_the_server_issues(db) {
+        seed_tenant(&db.pool, "demo").await;
+        for reserved in ["sub", "iss", "aud", "acr", "cnf", "email", "updated_at"] {
+            assert!(
+                ClaimName::parse(reserved).is_err(),
+                "{reserved} was accepted as a user claim"
+            );
+        }
+        let derived = derive_subject(&sector("rp.example"), UserId::generate(), &salt());
+        assert_eq!(derived.as_str().len(), 43);
+        assert!(SubjectId::new(derived.as_str().to_owned()).as_str().len() <= 255);
+    }
+}

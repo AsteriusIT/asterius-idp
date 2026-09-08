@@ -14,7 +14,16 @@ workspace = true
 
 [dependencies]
 asterius-domain.workspace = true
+# RFC 7636 §4.2's S256 transformation is a SHA-256 and a base64url encode.
+# Neither is cryptography this crate could get wrong quietly, and keeping the
+# transformation next to the clause it implements is worth more than routing a
+# hash through an adapter port.
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 url.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

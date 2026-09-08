@@ -16,6 +16,7 @@ mod scope;
 mod sql_audit;
 mod store;
 mod tenants;
+mod users;
 
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use clients::PgClientRepository;
@@ -25,3 +26,4 @@ pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
 pub use scope::TenantScope;
 pub use store::{MIGRATOR, Store};
 pub use tenants::PgTenantRepository;
+pub use users::PgUserRepository;

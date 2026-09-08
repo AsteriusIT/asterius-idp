@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into users (tenant_id, user_id, username, email, email_verified,\n                                status, claims)\n             values ($1, $2, $3, $4, $5, $6, $7)\n             on conflict (tenant_id, user_id) do update\n             set username = excluded.username,\n                 email = excluded.email,\n                 email_verified = excluded.email_verified,\n                 status = excluded.status,\n                 claims = excluded.claims",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Bool",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "241ef99339504f9d838a8c5fe25252b7afd1fea6b145b8eb97eeac184debf416"
+}

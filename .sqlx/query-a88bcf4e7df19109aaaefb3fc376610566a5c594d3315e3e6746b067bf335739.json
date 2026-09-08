@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select subject from subject_identifiers\n             where tenant_id = $1 and user_id = $2 and sector_identifier = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "subject",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a88bcf4e7df19109aaaefb3fc376610566a5c594d3315e3e6746b067bf335739"
+}

@@ -24,6 +24,9 @@ subtle.workspace = true
 thiserror.workspace = true
 time.workspace = true
 url.workspace = true
+# The local account identifier is a UUID, because it is an input to every
+# pairwise `sub` and must not be enumerable (OIDC Core §8.1).
+uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
