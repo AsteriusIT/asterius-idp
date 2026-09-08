@@ -39,8 +39,13 @@ name = "asterius-domain"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64",
+ "getrandom 0.3.4",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
+ "subtle",
  "thiserror",
  "time",
  "toml",
