@@ -2,6 +2,7 @@
 
 use crate::auth_requests::PgAuthRequestRepository;
 use crate::clients::PgClientRepository;
+use crate::grants::PgGrantRepository;
 use crate::users::PgUserRepository;
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{Capabilities, TenantId};
@@ -50,6 +51,12 @@ impl<'a> TenantScope<'a> {
     #[must_use]
     pub fn auth_requests(&self) -> PgAuthRequestRepository {
         PgAuthRequestRepository::new(self.pool.clone(), self.tenant.clone())
+    }
+
+    /// The grant repository for this tenant.
+    #[must_use]
+    pub fn grants(&self) -> PgGrantRepository {
+        PgGrantRepository::new(self.pool.clone(), self.tenant.clone())
     }
 }
 

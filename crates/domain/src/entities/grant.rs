@@ -1,0 +1,1151 @@
+//! The grant: the revocable unit of authority every token traces back to.
+//!
+//! FAPI 2.0 Security Profile (Final, 22 February 2025) §6.8 "Key Compromise"
+//! item 4, *Credential linking*: "When multiple credentials are issued as part
+//! of the same authorization, it is recommended that their relationship be
+//! explicitly established and recorded. This way, if one credential in a linked
+//! set is compromised, all related credentials can be revoked."
+//!
+//! That is the whole reason this type exists, and it decides its shape. An
+//! authorization produces several credentials — an authorization code, one or
+//! more access tokens, a refresh token, later an exchanged token — and the
+//! thing that must be revocable is the *authorization*, not each credential
+//! individually. So the link is not a nullable convenience column: a token that
+//! exists without a grant is a token nobody can revoke, which is the failure a
+//! revocation mechanism exists to prevent.
+//!
+//! Two consequences run through everything below.
+//!
+//! **A token can only be minted from a grant that permits it.** The one way to
+//! obtain a [`ClaimedGrant`] — the value every issuance path requires — is
+//! [`Grant::claim`], which refuses a grant that is revoked or expired. There is
+//! no constructor, so "issue a token without a grant" and "issue a token from a
+//! revoked grant" are not states a caller can express.
+//!
+//! **The status is computed, never stored.** A grant is `expired` the instant
+//! `expires_at` passes, and no process runs at that instant; a `status` column
+//! would therefore say `active` about a grant that is not, until a sweep got
+//! round to it. [`Grant::status`] derives the answer from the facts — the
+//! revocation stamp, the expiry, and whether a credential was ever claimed — so
+//! it cannot be stale and cannot disagree with the row it came from.
+//!
+//! ## Lifecycle
+//!
+//! Grant Management for OAuth 2.0 (`oauth-v2-grant-management-03`,
+//! Implementer's Draft 1, 9 May 2023) §5.6 "Lifecycle of the grant": "Grant, as
+//! a set of authorized permissions, is created by the AS on authorization
+//! request completion. For the initial authorization flow, a grant should be
+//! considered active when associated tokens have been successfully claimed by
+//! the client. If the tokens haven't been claimed the grant should be deleted
+//! by the AS after a reasonable timeout."
+//!
+//! So the states are [`GrantStatus`], and `pending` is not a synonym for "new":
+//! it means *nobody has taken a credential out of this yet*, which is exactly
+//! the condition under which the draft says to delete it.
+
+use crate::{ClientId, GrantId, SessionId, SubjectId, TenantId, UserId};
+use std::collections::BTreeSet;
+use thiserror::Error;
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// Status
+// ---------------------------------------------------------------------------
+
+/// Where a grant is in its life.
+///
+/// A closed set of four. Free text or an open enum would let a sweep, an
+/// administrator or a future migration invent a fifth state, and every consumer
+/// of a fifth state has to guess whether it may issue a token from it — which
+/// is the one question this type exists to answer without guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GrantStatus {
+    /// Created by an authorization flow, but no credential has been claimed
+    /// from it yet. Grant Management ID1 §5.6: a grant in this state is the one
+    /// the authorization server should delete after a timeout.
+    Pending,
+    /// A credential has been claimed. The grant is authority a live token
+    /// depends on.
+    Active,
+    /// Withdrawn. Terminal: nothing brings a grant back, because the point of
+    /// revocation is that the decision cannot be undone by whoever caused it.
+    Revoked,
+    /// Past `expires_at`. No credential may be minted from it, but a person may
+    /// still revoke it — see [`GrantStatus::may_become`].
+    Expired,
+}
+
+impl GrantStatus {
+    /// Every state, in the order a grant passes through them.
+    pub const ALL: [Self; 4] = [Self::Pending, Self::Active, Self::Revoked, Self::Expired];
+
+    /// The spelling used in a stored value, an audit record and the Grant
+    /// Management query response.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Active => "active",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+        }
+    }
+
+    /// Parses the stored spelling, or `None` for anything else.
+    ///
+    /// There is deliberately no fallback. Every default a reader could pick is
+    /// wrong in one direction: `active` mints tokens from a grant nobody
+    /// vouched for, `revoked` silently cuts off a working integration.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|status| status.as_str() == value)
+    }
+
+    /// Whether a credential may be claimed from a grant in this state.
+    ///
+    /// The only two that qualify are the two that are not endings. A `revoked`
+    /// grant answering "yes" here would make revocation advisory.
+    #[must_use]
+    pub const fn may_issue(self) -> bool {
+        matches!(self, Self::Pending | Self::Active)
+    }
+
+    /// Whether `self -> next` is a transition the lifecycle allows.
+    ///
+    /// Spelled out rather than implied, because the illegal ones are the
+    /// interesting ones:
+    ///
+    /// * `pending -> active` — a credential was claimed (Grant Management ID1
+    ///   §5.6). This is the only way `active` is ever reached.
+    /// * `pending -> revoked`, `active -> revoked`, `expired -> revoked` — a
+    ///   withdrawal. Expiry is allowed to be followed by revocation because
+    ///   expiry ends a grant's authority and not its record: a person revoking
+    ///   a grant that lapsed a minute ago is saying "and never again", and
+    ///   refusing them would be an error message for an action that harms
+    ///   nothing.
+    /// * `pending -> expired`, `active -> expired` — the clock passed
+    ///   `expires_at`.
+    ///
+    /// And the ones that are refused: **`revoked -> anything`**, because a
+    /// revocation that something can undo is not a revocation; `active ->
+    /// pending`, because a claimed credential cannot be unclaimed; `expired ->
+    /// active` and `expired -> pending`, because time does not run backwards
+    /// and nothing here extends an expiry.
+    #[must_use]
+    pub const fn may_become(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Pending, Self::Active | Self::Revoked | Self::Expired)
+                | (Self::Active, Self::Revoked | Self::Expired)
+                | (Self::Expired, Self::Revoked)
+        )
+    }
+}
+
+impl std::fmt::Display for GrantStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Why a grant was withdrawn.
+///
+/// A closed vocabulary rather than the free text the column would hold. Two
+/// reasons: a revocation reason is queried and alerted on, and a trail where
+/// `user_revoked` and `revoked by user` both occur is a trail nobody can query;
+/// and a free-text column next to a grant is somewhere a support tool would
+/// eventually write a ticket number, a user's name or an IP address, none of
+/// which belong in a record kept for as long as this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum RevocationReason {
+    /// The person the grant is about withdrew it — a grants dashboard, or
+    /// Grant Management ID1 §6.5 `DELETE`.
+    UserRevoked,
+    /// The client asked, at the revocation endpoint (RFC 7009 §2.1).
+    ClientRevoked,
+    /// An administrator or an automated policy withdrew it.
+    AdminRevoked,
+    /// An authorization code was presented twice, so everything derived from
+    /// that authorization is suspect (RFC 6749 §10.5).
+    CodeReplayed,
+    /// The browser session the grant was created in ended.
+    SessionEnded,
+    /// A key that signed credentials for this grant is no longer trusted
+    /// (FAPI 2.0 SP §6.8).
+    KeyCompromise,
+    /// Replaced by another grant — Grant Management ID1 §5.2's `replace`, which
+    /// "shall invalidate existing refresh tokens".
+    Superseded,
+}
+
+impl RevocationReason {
+    /// Every reason.
+    pub const ALL: [Self; 7] = [
+        Self::UserRevoked,
+        Self::ClientRevoked,
+        Self::AdminRevoked,
+        Self::CodeReplayed,
+        Self::SessionEnded,
+        Self::KeyCompromise,
+        Self::Superseded,
+    ];
+
+    /// The stored spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserRevoked => "user_revoked",
+            Self::ClientRevoked => "client_revoked",
+            Self::AdminRevoked => "admin_revoked",
+            Self::CodeReplayed => "code_replayed",
+            Self::SessionEnded => "session_ended",
+            Self::KeyCompromise => "key_compromise",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    /// Parses the stored spelling, or `None` for anything else.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|reason| reason.as_str() == value)
+    }
+}
+
+impl std::fmt::Display for RevocationReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Why a grant, or a row claiming to be one, was refused.
+///
+/// Every variant renders as fixed text, or as a value from one of this
+/// module's own closed vocabularies. Nothing here interpolates a scope, a
+/// resource, a claim name or a `jti`: the message reaches an audit record and,
+/// through [`DomainError`](crate::DomainError), an operator's log, and a grant
+/// carries values that came from a client.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum GrantError {
+    /// A credential was asked for from a grant that cannot issue one.
+    #[error("no credential may be claimed from a {0} grant")]
+    NotIssuable(GrantStatus),
+    /// A stored revocation is half-written: a stamp with no reason, or a
+    /// reason with no stamp. Either way the row cannot say whether the grant is
+    /// revoked, and "probably not" is the wrong guess.
+    #[error("revoked_at and revocation_reason must be set together")]
+    IncoherentRevocation,
+    /// The stored `revocation_reason` is not one this server writes.
+    #[error("revocation_reason is not a known reason")]
+    UnknownRevocationReason,
+    /// `expires_at` is at or before `created_at`: a grant that ended before it
+    /// began is a row nobody can reason about.
+    #[error("expires_at must be after created_at")]
+    ExpiryPrecedesCreation,
+    /// A scope token breaks RFC 6749 §3.3's grammar.
+    #[error("a scope token must be printable ASCII other than space, '\"' and '\\'")]
+    ScopeToken,
+    /// Too many scopes, or one that is too long.
+    #[error(
+        "a grant holds at most {} scopes of at most {} bytes",
+        Grant::MAX_SCOPES,
+        Grant::MAX_SCOPE_LEN
+    )]
+    ScopeSize,
+    /// A `resource` is not an absolute URI, or carries a fragment
+    /// (RFC 8707 §2).
+    #[error("a resource must be an absolute URI without a fragment")]
+    Resource,
+    /// Too many resource indicators.
+    #[error("a grant holds at most {} resources", Grant::MAX_RESOURCES)]
+    ResourceSize,
+    /// The `claims` column does not hold a JSON object (OIDC Core §5.5).
+    #[error("claims must be a JSON object")]
+    ClaimsShape,
+    /// The `authorization_details` column does not hold a JSON array
+    /// (RFC 9396 §2).
+    #[error("authorization_details must be a JSON array")]
+    AuthorizationDetailsShape,
+    /// The `actor_chain` column does not hold a JSON array (RFC 8693 §4.1).
+    #[error("actor_chain must be a JSON array")]
+    ActorChainShape,
+    /// A `jti` that cannot be stored, matched or read back.
+    #[error("a jti must be 1 to {} bytes of printable ASCII", Grant::MAX_JTI_LEN)]
+    Jti,
+}
+
+// ---------------------------------------------------------------------------
+// The grant
+// ---------------------------------------------------------------------------
+
+/// One authorization, and everything issued under it.
+///
+/// Deliberately not `#[non_exhaustive]`, for the reason
+/// [`Tenant`](crate::Tenant) gives: adapters build entities from rows, and
+/// sealing the struct would only push them through a constructor taking the
+/// same fields in the same order with less type checking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grant {
+    /// Which tenant's grant this is.
+    pub tenant: TenantId,
+    /// The identifier. A v4 UUID: the column is `uuid`, and
+    /// [`Grant::new`] is the only thing that mints one, so a grant id is never
+    /// a value a client chose.
+    pub id: GrantId,
+    /// The client the authorization was granted to.
+    pub client: ClientId,
+    /// The local account. `None` for a `client_credentials` grant, which is a
+    /// client acting for itself and has no resource owner.
+    pub user: Option<UserId>,
+    /// The `sub` the client sees. `None` for the same reason as `user`.
+    pub subject: Option<SubjectId>,
+    /// The scopes this authorization covers (RFC 6749 §3.3).
+    pub scopes: BTreeSet<String>,
+    /// The OIDC Core §5.5 `claims` request this authorization covers, as a JSON
+    /// object.
+    pub claims: serde_json::Value,
+    /// The RFC 9396 §2 `authorization_details`, as a JSON array. Their
+    /// per-type schemas belong to the RAR story; what is enforced here is that
+    /// the column holds the shape the specification names.
+    pub authorization_details: Vec<serde_json::Value>,
+    /// The RFC 8707 resource indicators this authorization is audience-bound
+    /// to.
+    pub resources: BTreeSet<String>,
+    /// The RFC 8693 §4.1 `act` chain, innermost actor last. Non-empty only for
+    /// a grant reached through token exchange.
+    pub actor_chain: Vec<serde_json::Value>,
+    /// The grant this one was narrowed from, for an exchanged token. A child
+    /// grant is minted at the token endpoint, so it is claimed the moment it
+    /// exists.
+    pub parent: Option<GrantId>,
+    /// The browser session the authorization happened in, when there was one.
+    pub session: Option<SessionId>,
+    /// When the authorization completed.
+    pub created_at: OffsetDateTime,
+    /// When the row last changed. Grant Management ID1 §6.4's
+    /// `last_updated_at`.
+    pub updated_at: OffsetDateTime,
+    /// When the authorization lapses, if it does.
+    pub expires_at: Option<OffsetDateTime>,
+    /// When it was withdrawn.
+    pub revoked_at: Option<OffsetDateTime>,
+    /// Why it was withdrawn. Set exactly when `revoked_at` is.
+    pub revocation_reason: Option<RevocationReason>,
+    /// Whether a credential has ever been claimed from this grant.
+    ///
+    /// **Derived, not stored.** The baseline schema has no column for it, so
+    /// the adapter computes it from the credentials that reference the grant
+    /// and from the two shapes of grant that are minted at the token endpoint
+    /// rather than at the authorization endpoint. That is deliberate as far as
+    /// it goes — a stored flag and the credentials that exist could disagree,
+    /// and the credentials are the truth — but it is not free: see
+    /// `PgGrantRepository::purge_unclaimed` in `asterius-store-pg` for the one
+    /// shape the derivation cannot see, and the single column that would close
+    /// it.
+    pub claimed: bool,
+}
+
+impl Grant {
+    /// The most scopes one grant may hold.
+    ///
+    /// The same bound registration uses. A grant's scopes are a subset of a
+    /// client's, so a larger grant is either a bug or an attempt to make the
+    /// `scope` claim of every access token enormous.
+    pub const MAX_SCOPES: usize = 64;
+    /// The longest a single scope token may be.
+    pub const MAX_SCOPE_LEN: usize = 128;
+    /// The most resource indicators one grant may be bound to.
+    pub const MAX_RESOURCES: usize = 32;
+    /// The longest a `jti` handed to [`LiveAccessToken::new`] may be.
+    ///
+    /// It becomes half of a primary key in `access_token_denylist`; RFC 9068
+    /// §2.2 requires a `jti` on every access token this server issues and
+    /// `ast-a05.3` mints them at 128 bits, so anything approaching this bound
+    /// did not come from here.
+    pub const MAX_JTI_LEN: usize = 255;
+
+    /// Creates a grant for `client`, minting its identifier.
+    ///
+    /// The identifier is drawn here and nowhere else. A grant id appears in the
+    /// Grant Management resource URL (ID1 §6.3) and, by tenant option, as a
+    /// claim in every access token, so it is a v4 UUID rather than anything a
+    /// caller could pass in and accidentally make guessable or reused.
+    ///
+    /// Everything else is a public field: a grant is assembled from an
+    /// authorization request, and a constructor with fourteen parameters would
+    /// be a worse way to say so.
+    #[must_use]
+    pub fn new(tenant: TenantId, client: ClientId, created_at: OffsetDateTime) -> Self {
+        Self {
+            tenant,
+            id: GrantId::new(Uuid::new_v4().to_string()),
+            client,
+            user: None,
+            subject: None,
+            scopes: BTreeSet::new(),
+            claims: serde_json::Value::Object(serde_json::Map::new()),
+            authorization_details: Vec::new(),
+            resources: BTreeSet::new(),
+            actor_chain: Vec::new(),
+            parent: None,
+            session: None,
+            created_at,
+            updated_at: created_at,
+            expires_at: None,
+            revoked_at: None,
+            revocation_reason: None,
+            claimed: false,
+        }
+    }
+
+    /// Where this grant is at `now`.
+    ///
+    /// The precedence is revoked, then expired, then claimed. Revocation wins
+    /// over expiry because a revoked grant that lapsed afterwards is still a
+    /// grant somebody withdrew, and an audit trail that forgets that has lost
+    /// the more important of the two facts.
+    #[must_use]
+    pub fn status(&self, now: OffsetDateTime) -> GrantStatus {
+        if self.revoked_at.is_some() {
+            return GrantStatus::Revoked;
+        }
+        if self.expires_at.is_some_and(|expiry| expiry <= now) {
+            return GrantStatus::Expired;
+        }
+        if self.claimed {
+            GrantStatus::Active
+        } else {
+            GrantStatus::Pending
+        }
+    }
+
+    /// Takes the authority to mint one credential from this grant.
+    ///
+    /// This is the only constructor of [`ClaimedGrant`], and every issuance
+    /// path takes a [`ClaimedGrant`] rather than a [`GrantId`]. So "issue a
+    /// token with no grant" does not compile, and "issue a token from a revoked
+    /// grant" does not run.
+    ///
+    /// # Errors
+    ///
+    /// [`GrantError::NotIssuable`] when the grant is revoked or expired.
+    pub fn claim(&self, now: OffsetDateTime) -> Result<ClaimedGrant, GrantError> {
+        let status = self.status(now);
+        if !status.may_issue() {
+            return Err(GrantError::NotIssuable(status));
+        }
+        Ok(ClaimedGrant {
+            tenant: self.tenant.clone(),
+            grant: self.id.clone(),
+            client: self.client.clone(),
+            subject: self.subject.clone(),
+        })
+    }
+}
+
+/// The authority to mint one credential, and the grant it is minted under.
+///
+/// The point of the type is what it makes impossible. Every issuance path —
+/// authorization code, refresh, `client_credentials`, token exchange, device,
+/// CIBA — takes one of these, so the `grant_id` written next to a credential is
+/// not an argument a caller can leave out, pass `None` for, or invent. It can
+/// only have come from [`Grant::claim`], which read a live grant.
+///
+/// Fields are private and there is no constructor, which is the enforcement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub struct ClaimedGrant {
+    tenant: TenantId,
+    grant: GrantId,
+    client: ClientId,
+    subject: Option<SubjectId>,
+}
+
+impl ClaimedGrant {
+    /// The tenant the credential belongs to.
+    #[must_use]
+    pub const fn tenant(&self) -> &TenantId {
+        &self.tenant
+    }
+
+    /// The grant the credential must record, so that revoking the grant reaches
+    /// it.
+    #[must_use]
+    pub const fn id(&self) -> &GrantId {
+        &self.grant
+    }
+
+    /// The client the credential is issued to.
+    #[must_use]
+    pub const fn client(&self) -> &ClientId {
+        &self.client
+    }
+
+    /// The `sub` the credential carries, or `None` for `client_credentials`.
+    #[must_use]
+    pub const fn subject(&self) -> Option<&SubjectId> {
+        self.subject.as_ref()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Access tokens caught by a cascade
+// ---------------------------------------------------------------------------
+
+/// An access token that is still within its `exp` when its grant is revoked.
+///
+/// Revoking a grant has to reach the access tokens already minted from it, and
+/// a signed JWT cannot be recalled — so its `jti` goes on the denylist until
+/// the moment it would have expired anyway. FAPI 2.0 SP §6.8 item 3 is the
+/// trade this pays for: stateless tokens are cheap to verify and impossible to
+/// withdraw, so the withdrawal has to be made stateful somewhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveAccessToken {
+    jti: String,
+    expires_at: OffsetDateTime,
+}
+
+impl LiveAccessToken {
+    /// Records a live access token, checking that its `jti` can be stored.
+    ///
+    /// The `jti` becomes half of a primary key in a `text` column. A NUL byte
+    /// in it makes PostgreSQL refuse the statement, which would abort the whole
+    /// revocation transaction and leave a grant somebody asked to revoke still
+    /// standing — a rejected write is a worse outcome here than anywhere else,
+    /// because the caller's next move is to report success. An empty `jti`
+    /// stores a row nothing can ever match.
+    ///
+    /// # Errors
+    ///
+    /// [`GrantError::Jti`] when the identifier is empty, longer than
+    /// [`Grant::MAX_JTI_LEN`], or contains anything outside printable ASCII.
+    // fuzz-target: grant_record
+    pub fn new(jti: impl Into<String>, expires_at: OffsetDateTime) -> Result<Self, GrantError> {
+        let jti = jti.into();
+        if jti.is_empty() || jti.len() > Grant::MAX_JTI_LEN {
+            return Err(GrantError::Jti);
+        }
+        if !jti.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+            return Err(GrantError::Jti);
+        }
+        Ok(Self { jti, expires_at })
+    }
+
+    /// The identifier, as it goes onto the denylist.
+    #[must_use]
+    pub fn jti(&self) -> &str {
+        &self.jti
+    }
+
+    /// When the token would have expired on its own, which is when the
+    /// denylist row stops earning its keep.
+    #[must_use]
+    pub const fn expires_at(&self) -> OffsetDateTime {
+        self.expires_at
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The stored row
+// ---------------------------------------------------------------------------
+
+/// A `grants` row, before it is trusted.
+///
+/// Rows get edited by hand during incidents and written by seed scripts, and
+/// three of this table's columns are `jsonb` and two are `text[]` — shapes the
+/// database will hold whatever is put in them. So the guarantee has to come
+/// from here, and it is the same guarantee the client repository makes: **a row
+/// is validated by the same code on the way out as the values were on the way
+/// in.**
+///
+/// The scope grammar is the case worth naming. A grant's scopes are joined with
+/// spaces into the `scope` claim of an access token (RFC 9068 §2.2.3) and into
+/// the `scope` member of a token response (RFC 6749 §5.1). A single stored
+/// scope containing a space therefore *becomes two scopes* at the resource
+/// server, which is a privilege escalation written with one keystroke in a
+/// `psql` session. RFC 6749 §3.3's grammar is what makes that unrepresentable,
+/// and it is checked on the way out because that is the direction the attack
+/// travels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantRecord {
+    /// `grant_id`.
+    pub id: GrantId,
+    /// `client_id`.
+    pub client: ClientId,
+    /// `user_id`.
+    pub user: Option<UserId>,
+    /// `subject`.
+    pub subject: Option<String>,
+    /// `scopes`.
+    pub scopes: Vec<String>,
+    /// `claims`.
+    pub claims: serde_json::Value,
+    /// `authorization_details`.
+    pub authorization_details: serde_json::Value,
+    /// `resources`.
+    pub resources: Vec<String>,
+    /// `actor_chain`.
+    pub actor_chain: serde_json::Value,
+    /// `parent_grant_id`.
+    pub parent: Option<GrantId>,
+    /// `session_id`.
+    pub session: Option<String>,
+    /// `created_at`.
+    pub created_at: OffsetDateTime,
+    /// `updated_at`.
+    pub updated_at: OffsetDateTime,
+    /// `expires_at`.
+    pub expires_at: Option<OffsetDateTime>,
+    /// `revoked_at`.
+    pub revoked_at: Option<OffsetDateTime>,
+    /// `revocation_reason`.
+    pub revocation_reason: Option<String>,
+    /// Whether a credential was ever claimed from this grant. Not a column —
+    /// see [`Grant::claimed`].
+    pub claimed: bool,
+}
+
+impl GrantRecord {
+    /// Turns a row into a grant, or refuses it.
+    ///
+    /// # Errors
+    ///
+    /// A [`GrantError`] naming the first rule the row breaks. No variant
+    /// carries a byte of the row.
+    // fuzz-target: grant_record
+    pub fn validate(self, tenant: &TenantId) -> Result<Grant, GrantError> {
+        // A half-written revocation first: everything after this reads the row
+        // as if it knows whether the grant is live, and it would not.
+        let revocation_reason = match (self.revoked_at, self.revocation_reason.as_deref()) {
+            (Some(_), Some(reason)) => {
+                Some(RevocationReason::parse(reason).ok_or(GrantError::UnknownRevocationReason)?)
+            }
+            (None, None) => None,
+            _ => return Err(GrantError::IncoherentRevocation),
+        };
+
+        if self
+            .expires_at
+            .is_some_and(|expiry| expiry <= self.created_at)
+        {
+            return Err(GrantError::ExpiryPrecedesCreation);
+        }
+
+        let scopes = validate_scopes(&self.scopes)?;
+        let resources = validate_resources(&self.resources)?;
+
+        if !self.claims.is_object() {
+            return Err(GrantError::ClaimsShape);
+        }
+        let serde_json::Value::Array(authorization_details) = self.authorization_details else {
+            return Err(GrantError::AuthorizationDetailsShape);
+        };
+        let serde_json::Value::Array(actor_chain) = self.actor_chain else {
+            return Err(GrantError::ActorChainShape);
+        };
+
+        Ok(Grant {
+            tenant: tenant.clone(),
+            id: self.id,
+            client: self.client,
+            user: self.user,
+            subject: self.subject.map(SubjectId::new),
+            scopes,
+            claims: self.claims,
+            authorization_details,
+            resources,
+            actor_chain,
+            parent: self.parent,
+            session: self.session.map(SessionId::new),
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            expires_at: self.expires_at,
+            revoked_at: self.revoked_at,
+            revocation_reason,
+            claimed: self.claimed,
+        })
+    }
+}
+
+/// RFC 6749 §3.3: `scope = scope-token *( SP scope-token )`, where a
+/// `scope-token` is `1*( %x21 / %x23-5B / %x5D-7E )` — printable ASCII other
+/// than space, `"` and `\`.
+///
+/// The grammar is restated here rather than borrowed from
+/// [`ClientMetadata`](crate::ClientMetadata) because the two are checking
+/// different things at different boundaries: that one parses a space-delimited
+/// string a client sent at registration, this one checks the already-split
+/// array a row holds. A unit test asserts the two agree on every token, which
+/// is what keeps a second implementation from becoming a second rule.
+fn validate_scopes(scopes: &[String]) -> Result<BTreeSet<String>, GrantError> {
+    if scopes.len() > Grant::MAX_SCOPES {
+        return Err(GrantError::ScopeSize);
+    }
+    let mut validated = BTreeSet::new();
+    for scope in scopes {
+        if scope.is_empty() || scope.len() > Grant::MAX_SCOPE_LEN {
+            return Err(GrantError::ScopeSize);
+        }
+        if !scope
+            .bytes()
+            .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
+        {
+            return Err(GrantError::ScopeToken);
+        }
+        validated.insert(scope.clone());
+    }
+    Ok(validated)
+}
+
+/// RFC 8707 §2: a resource indicator "MUST be an absolute URI" and "MUST NOT
+/// include a fragment component".
+///
+/// The value ends up in the `aud` of an access token, which is what a resource
+/// server compares its own identifier against. A relative or fragment-bearing
+/// audience is one that comparison can never match, so a token minted from such
+/// a grant would be a token nothing accepts — and a `resource` that is not a
+/// URI at all is a string somebody put there by hand.
+fn validate_resources(resources: &[String]) -> Result<BTreeSet<String>, GrantError> {
+    if resources.len() > Grant::MAX_RESOURCES {
+        return Err(GrantError::ResourceSize);
+    }
+    let mut validated = BTreeSet::new();
+    for resource in resources {
+        let parsed = url::Url::parse(resource).map_err(|_| GrantError::Resource)?;
+        if parsed.fragment().is_some() || parsed.cannot_be_a_base() {
+            return Err(GrantError::Resource);
+        }
+        validated.insert(resource.clone());
+    }
+    Ok(validated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Capabilities, ClientRegistration};
+    use serde_json::json;
+    use time::Duration;
+
+    fn epoch() -> OffsetDateTime {
+        OffsetDateTime::UNIX_EPOCH
+    }
+
+    fn a_grant() -> Grant {
+        Grant::new(TenantId::new("demo"), ClientId::new("billing"), epoch())
+    }
+
+    fn a_record() -> GrantRecord {
+        GrantRecord {
+            id: GrantId::new("2c1d4b1e-0000-4000-8000-000000000001"),
+            client: ClientId::new("billing"),
+            user: None,
+            subject: Some("sub-1".to_owned()),
+            scopes: vec!["openid".to_owned(), "payments".to_owned()],
+            claims: json!({}),
+            authorization_details: json!([]),
+            resources: vec!["https://api.example/".to_owned()],
+            actor_chain: json!([]),
+            parent: None,
+            session: None,
+            created_at: epoch(),
+            updated_at: epoch(),
+            expires_at: None,
+            revoked_at: None,
+            revocation_reason: None,
+            claimed: false,
+        }
+    }
+
+    // --- the closed vocabularies -------------------------------------------
+
+    /// A status outside the four must not resolve to a status at all: every
+    /// default a reader could pick either mints tokens from a grant nobody
+    /// vouched for, or silently cuts off a working integration.
+    #[test]
+    fn a_status_outside_the_four_does_not_parse() {
+        for status in GrantStatus::ALL {
+            assert_eq!(GrantStatus::parse(status.as_str()), Some(status));
+            assert_eq!(status.to_string(), status.as_str());
+        }
+        for rejected in ["", "ACTIVE", "active ", "deleted", "consumed", "null", "0"] {
+            assert_eq!(GrantStatus::parse(rejected), None, "accepted {rejected:?}");
+        }
+    }
+
+    #[test]
+    fn a_revocation_reason_outside_the_list_does_not_parse() {
+        for reason in RevocationReason::ALL {
+            assert_eq!(RevocationReason::parse(reason.as_str()), Some(reason));
+            assert_eq!(reason.to_string(), reason.as_str());
+        }
+        for rejected in ["", "user", "revoked by user", "USER_REVOKED", "ticket-4711"] {
+            assert_eq!(
+                RevocationReason::parse(rejected),
+                None,
+                "accepted {rejected:?}"
+            );
+        }
+    }
+
+    // --- the state machine --------------------------------------------------
+
+    /// The whole lifecycle in one table. Grant Management ID1 §5.6 gives
+    /// `pending -> active`; the rest is what revocation and expiry mean.
+    #[test]
+    fn the_lifecycle_allows_exactly_these_transitions() {
+        use GrantStatus::{Active, Expired, Pending, Revoked};
+        let legal = [
+            (Pending, Active),
+            (Pending, Revoked),
+            (Pending, Expired),
+            (Active, Revoked),
+            (Active, Expired),
+            (Expired, Revoked),
+        ];
+        for from in GrantStatus::ALL {
+            for to in GrantStatus::ALL {
+                assert_eq!(
+                    from.may_become(to),
+                    legal.contains(&(from, to)),
+                    "{from} -> {to}"
+                );
+            }
+        }
+    }
+
+    /// The one the ticket names. A revocation something can undo is not a
+    /// revocation, so `revoked` has no outgoing edge at all — not even to
+    /// itself.
+    #[test]
+    fn a_revoked_grant_never_becomes_anything_else() {
+        for to in GrantStatus::ALL {
+            assert!(
+                !GrantStatus::Revoked.may_become(to),
+                "revoked -> {to} was allowed"
+            );
+        }
+        assert!(!GrantStatus::Revoked.may_issue());
+        assert!(!GrantStatus::Expired.may_issue());
+        assert!(GrantStatus::Pending.may_issue());
+        assert!(GrantStatus::Active.may_issue());
+    }
+
+    /// Status is a question about a moment, which is why it is a function of
+    /// `now` and not a column. The same row is `active` at one instant and
+    /// `expired` at the next, with nothing written in between.
+    #[test]
+    fn a_grant_expires_without_anybody_writing_a_row() {
+        let mut grant = a_grant();
+        grant.claimed = true;
+        grant.expires_at = Some(epoch() + Duration::minutes(10));
+
+        assert_eq!(grant.status(epoch()), GrantStatus::Active);
+        assert_eq!(
+            grant.status(epoch() + Duration::minutes(9)),
+            GrantStatus::Active
+        );
+        // At the instant of expiry, not after it: `exp` is exclusive.
+        assert_eq!(
+            grant.status(epoch() + Duration::minutes(10)),
+            GrantStatus::Expired
+        );
+    }
+
+    /// Grant Management ID1 §5.6: "a grant should be considered active when
+    /// associated tokens have been successfully claimed by the client."
+    #[test]
+    fn a_grant_is_pending_until_a_credential_is_claimed_from_it() {
+        let mut grant = a_grant();
+        assert_eq!(grant.status(epoch()), GrantStatus::Pending);
+        grant.claimed = true;
+        assert_eq!(grant.status(epoch()), GrantStatus::Active);
+    }
+
+    /// Revocation outranks expiry. A grant that was withdrawn and then lapsed
+    /// is still a grant somebody withdrew, and that is the fact an
+    /// investigation needs.
+    #[test]
+    fn revocation_outranks_expiry() {
+        let mut grant = a_grant();
+        grant.claimed = true;
+        grant.expires_at = Some(epoch() + Duration::minutes(1));
+        grant.revoked_at = Some(epoch());
+        grant.revocation_reason = Some(RevocationReason::UserRevoked);
+        assert_eq!(
+            grant.status(epoch() + Duration::hours(1)),
+            GrantStatus::Revoked
+        );
+    }
+
+    // --- the claim ----------------------------------------------------------
+
+    /// The type-level half of "every token links to a revocable grant": the
+    /// only way to obtain the authority to mint one is to read a live grant.
+    #[test]
+    fn a_claim_carries_the_grant_the_credential_must_record() {
+        let mut grant = a_grant();
+        grant.subject = Some(SubjectId::new("sub-1"));
+        let claimed = grant.claim(epoch()).expect("a fresh grant is claimable");
+
+        assert_eq!(claimed.id(), &grant.id);
+        assert_eq!(claimed.client(), &grant.client);
+        assert_eq!(claimed.tenant(), &grant.tenant);
+        assert_eq!(claimed.subject(), Some(&SubjectId::new("sub-1")));
+    }
+
+    #[test]
+    fn a_revoked_or_expired_grant_refuses_to_be_claimed() {
+        let mut revoked = a_grant();
+        revoked.revoked_at = Some(epoch());
+        revoked.revocation_reason = Some(RevocationReason::UserRevoked);
+        assert_eq!(
+            revoked.claim(epoch()),
+            Err(GrantError::NotIssuable(GrantStatus::Revoked))
+        );
+
+        let mut expired = a_grant();
+        expired.expires_at = Some(epoch() + Duration::seconds(1));
+        assert_eq!(
+            expired.claim(epoch() + Duration::seconds(1)),
+            Err(GrantError::NotIssuable(GrantStatus::Expired))
+        );
+        assert!(expired.claim(epoch()).is_ok(), "refused before its expiry");
+    }
+
+    /// A minted id is a v4 UUID, because the column is `uuid` and because a
+    /// grant id appears in a Grant Management resource URL.
+    #[test]
+    fn a_minted_grant_id_is_a_fresh_uuid() {
+        let first = a_grant();
+        let second = a_grant();
+        assert_ne!(first.id, second.id);
+        let parsed = Uuid::parse_str(first.id.as_str()).expect("a minted id is a UUID");
+        assert_eq!(parsed.get_version_num(), 4);
+    }
+
+    // --- the stored row -----------------------------------------------------
+
+    #[test]
+    fn a_well_formed_row_becomes_a_grant() {
+        let grant = a_record()
+            .validate(&TenantId::new("demo"))
+            .expect("a well-formed row");
+        assert_eq!(grant.tenant, TenantId::new("demo"));
+        assert_eq!(grant.status(epoch()), GrantStatus::Pending);
+        assert_eq!(
+            grant.scopes.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["openid", "payments"]
+        );
+    }
+
+    /// A row that cannot say whether the grant is revoked must not load, and
+    /// "probably not" is the wrong guess: it would put a withdrawn
+    /// authorization back to work.
+    #[test]
+    fn a_half_written_revocation_does_not_load() {
+        let mut stamp_only = a_record();
+        stamp_only.revoked_at = Some(epoch());
+        assert_eq!(
+            stamp_only.validate(&TenantId::new("demo")),
+            Err(GrantError::IncoherentRevocation)
+        );
+
+        let mut reason_only = a_record();
+        reason_only.revocation_reason = Some("user_revoked".to_owned());
+        assert_eq!(
+            reason_only.validate(&TenantId::new("demo")),
+            Err(GrantError::IncoherentRevocation)
+        );
+
+        let mut unknown = a_record();
+        unknown.revoked_at = Some(epoch());
+        unknown.revocation_reason = Some("because I said so".to_owned());
+        assert_eq!(
+            unknown.validate(&TenantId::new("demo")),
+            Err(GrantError::UnknownRevocationReason)
+        );
+    }
+
+    /// The escalation this validator exists for: one stored scope containing a
+    /// space becomes two scopes once it is joined into a `scope` claim.
+    #[test]
+    fn a_scope_that_would_split_in_a_token_is_refused() {
+        for bad in [
+            "payments accounts",
+            "payments\taccounts",
+            "pay\"ments",
+            "pay\\ments",
+            "payments\n",
+            "",
+            "pay ments",
+            "\u{202e}stnemyap",
+        ] {
+            let mut record = a_record();
+            record.scopes = vec![bad.to_owned()];
+            assert!(
+                record.validate(&TenantId::new("demo")).is_err(),
+                "accepted the scope {bad:?}"
+            );
+        }
+
+        let mut too_many = a_record();
+        too_many.scopes = (0..=Grant::MAX_SCOPES).map(|i| format!("s{i}")).collect();
+        assert_eq!(
+            too_many.validate(&TenantId::new("demo")),
+            Err(GrantError::ScopeSize)
+        );
+
+        let mut too_long = a_record();
+        too_long.scopes = vec!["s".repeat(Grant::MAX_SCOPE_LEN + 1)];
+        assert_eq!(
+            too_long.validate(&TenantId::new("demo")),
+            Err(GrantError::ScopeSize)
+        );
+    }
+
+    /// Two implementations of one grammar are two rules waiting to disagree.
+    /// This is the assertion that keeps them honest: registration and the grant
+    /// row must accept exactly the same scope tokens.
+    #[test]
+    fn the_scope_grammar_agrees_with_the_one_registration_uses() {
+        for candidate in [
+            "openid",
+            "payments",
+            "urn:example:scope",
+            "a",
+            "~!#$%&'()*+,-./",
+            "0123456789:;<=>?@",
+            "[]^_`{|}",
+            "openid payments",
+            "open\"id",
+            "open\\id",
+            "open\tid",
+            "",
+        ] {
+            let document = serde_json::to_vec(&json!({
+                "client_name": "Billing",
+                "redirect_uris": ["https://rp.example/cb"],
+                "grant_types": ["authorization_code"],
+                "scope": candidate,
+                "jwks_uri": "https://rp.example/jwks",
+            }))
+            .expect("serialise");
+            // Registration splits on the space, so a candidate containing one
+            // is two valid tokens there and one invalid token here. Every other
+            // difference would be a real disagreement.
+            let registration_accepts =
+                ClientRegistration::from_json(&document, Capabilities::default()).is_ok_and(
+                    |client| client.scopes.len() == 1 && client.scopes.contains(candidate),
+                );
+
+            let mut record = a_record();
+            record.scopes = vec![candidate.to_owned()];
+            let grant_accepts = record.validate(&TenantId::new("demo")).is_ok();
+
+            assert_eq!(
+                registration_accepts, grant_accepts,
+                "registration and the grant row disagree about the scope {candidate:?}"
+            );
+        }
+    }
+
+    /// RFC 8707 §2. A resource that is not an absolute, fragment-free URI is an
+    /// `aud` no resource server can ever match.
+    #[test]
+    fn a_resource_that_is_not_an_absolute_uri_is_refused() {
+        for bad in [
+            "/api",
+            "api.example",
+            "https://api.example/#frag",
+            "https://api.example#",
+            "",
+            "mailto:someone@example.com",
+        ] {
+            let mut record = a_record();
+            record.resources = vec![bad.to_owned()];
+            assert!(
+                record.validate(&TenantId::new("demo")).is_err(),
+                "accepted the resource {bad:?}"
+            );
+        }
+        for good in ["https://api.example/", "https://api.example/v1?x=1"] {
+            let mut record = a_record();
+            record.resources = vec![good.to_owned()];
+            assert!(
+                record.validate(&TenantId::new("demo")).is_ok(),
+                "refused the resource {good:?}"
+            );
+        }
+    }
+
+    /// The three `jsonb` columns the database enforces nothing about. An
+    /// `authorization_details` that is a string would be copied straight into
+    /// an access token as one (RFC 9396 §8.1).
+    #[test]
+    fn a_json_column_holding_the_wrong_shape_does_not_load() {
+        type Break = fn(&mut GrantRecord);
+        let cases: [(Break, GrantError); 6] = [
+            (|r| r.claims = json!([]), GrantError::ClaimsShape),
+            (|r| r.claims = json!("everything"), GrantError::ClaimsShape),
+            (
+                |r| r.authorization_details = json!({}),
+                GrantError::AuthorizationDetailsShape,
+            ),
+            (
+                |r| r.authorization_details = json!(null),
+                GrantError::AuthorizationDetailsShape,
+            ),
+            (|r| r.actor_chain = json!({}), GrantError::ActorChainShape),
+            (|r| r.actor_chain = json!(7), GrantError::ActorChainShape),
+        ];
+        for (break_it, expected) in cases {
+            let mut record = a_record();
+            break_it(&mut record);
+            assert_eq!(record.validate(&TenantId::new("demo")), Err(expected));
+        }
+    }
+
+    #[test]
+    fn a_grant_that_ended_before_it_began_does_not_load() {
+        let mut record = a_record();
+        record.created_at = epoch() + Duration::hours(1);
+        record.expires_at = Some(epoch());
+        assert_eq!(
+            record.validate(&TenantId::new("demo")),
+            Err(GrantError::ExpiryPrecedesCreation)
+        );
+    }
+
+    // --- the denylist entry -------------------------------------------------
+
+    /// A `jti` that PostgreSQL refuses would abort the revocation transaction
+    /// carrying it, so the check happens before the transaction opens.
+    #[test]
+    fn a_jti_that_could_not_be_stored_is_refused_before_the_transaction() {
+        for bad in ["", "with space", "with\0nul", "with\nnewline", "café"] {
+            assert_eq!(
+                LiveAccessToken::new(bad, epoch()).err(),
+                Some(GrantError::Jti),
+                "accepted the jti {bad:?}"
+            );
+        }
+        assert_eq!(
+            LiveAccessToken::new("j".repeat(Grant::MAX_JTI_LEN + 1), epoch()).err(),
+            Some(GrantError::Jti)
+        );
+
+        let token = LiveAccessToken::new("aBc-123_x.y~z", epoch()).expect("a base64url jti");
+        assert_eq!(token.jti(), "aBc-123_x.y~z");
+        assert_eq!(token.expires_at(), epoch());
+    }
+}

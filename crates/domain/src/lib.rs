@@ -23,9 +23,10 @@ pub use capabilities::{Capabilities, Feature};
 pub use credentials::{OpaqueToken, sha256, sha256_hex};
 pub use entities::auth_request::{Consumed, PushedRequest};
 pub use entities::{
-    ApplicationType, Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, Client, ClientMetadata,
-    ClientMetadataError, ClientRegistration, ClientStatus, GrantType, JwksSource, PairwiseSalt,
-    RedirectUri, RedirectUriError, SectorIdentifier, SubjectError, SubjectType, Tenant,
+    ApplicationType, Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client,
+    ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantError,
+    GrantRecord, GrantStatus, GrantType, JwksSource, LiveAccessToken, PairwiseSalt, RedirectUri,
+    RedirectUriError, RevocationReason, SectorIdentifier, SubjectError, SubjectType, Tenant,
     TenantStatus, TokenBinding, TokenEndpointAuthMethod, User, UserId, UserStatus,
 };
 pub use error::DomainError;

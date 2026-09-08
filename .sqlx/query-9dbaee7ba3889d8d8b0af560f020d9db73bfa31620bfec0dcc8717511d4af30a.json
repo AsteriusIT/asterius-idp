@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update grants set revoked_at = $3, revocation_reason = $4\n             where tenant_id = $1 and grant_id = $2 and revoked_at is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9dbaee7ba3889d8d8b0af560f020d9db73bfa31620bfec0dcc8717511d4af30a"
+}

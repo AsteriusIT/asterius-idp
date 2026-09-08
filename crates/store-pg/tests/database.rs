@@ -3036,3 +3036,452 @@ mod auth_requests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Grants and the revocation cascade (ast-uwv.2)
+// ---------------------------------------------------------------------------
+
+mod grants {
+    use super::*;
+    use asterius_domain::{
+        DomainError, Grant, GrantId, GrantStatus, LiveAccessToken, RevocationReason, SessionId,
+        SubjectId,
+    };
+    use asterius_store_pg::PgGrantRepository;
+
+    fn repo(pool: &PgPool, tenant: &str) -> PgGrantRepository {
+        PgGrantRepository::new(pool.clone(), TenantId::new(tenant))
+    }
+
+    /// A tenant and one client for its grants to hang off. `grants` has a
+    /// foreign key to `clients`, which is the schema saying that a grant with
+    /// no client is not a thing.
+    async fn seed_client(pool: &PgPool, tenant: &str, client_id: &str) {
+        seed_tenant(pool, tenant).await;
+        Store::from_pool(pool.clone())
+            .scope(TenantId::new(tenant))
+            .clients(Capabilities::default())
+            .upsert(&client(tenant, client_id, &registration_document()))
+            .await
+            .expect("seed client");
+    }
+
+    /// A grant carrying one value of every shape the row can hold, so that a
+    /// round trip proves something.
+    fn a_grant(tenant: &str, client_id: &str, subject: &str) -> Grant {
+        let mut grant = Grant::new(TenantId::new(tenant), ClientId::new(client_id), epoch());
+        grant.subject = Some(SubjectId::new(subject));
+        grant.user = Some(UserId::generate());
+        grant.scopes = ["openid", "payments"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        grant.resources = ["https://api.example/".to_owned()].into_iter().collect();
+        grant.claims = json!({"id_token": {"acr": {"essential": true}}});
+        grant.authorization_details = vec![json!({"type": "payment_initiation"})];
+        grant.session = Some(SessionId::new("sess-1"));
+        grant
+    }
+
+    /// A refresh token pointing at a grant. Written by hand because the token
+    /// story (`ast-a05.5`) owns the repository that will write it; what these
+    /// tests need is the row a revocation has to reach.
+    async fn insert_refresh_token(pool: &PgPool, tenant: &str, grant: &GrantId, label: &str) {
+        sqlx::query(
+            "insert into refresh_tokens (tenant_id, token_hash, grant_id, client_id, dpop_jkt)
+             values ($1, $2, $3::uuid, 'billing', 'a-thumbprint')",
+        )
+        .bind(tenant)
+        .bind(asterius_domain::sha256(label.as_bytes()).to_vec())
+        .bind(grant.as_str())
+        .execute(pool)
+        .await
+        .expect("insert refresh token");
+    }
+
+    async fn revoked_refresh_tokens(pool: &PgPool, tenant: &str) -> i64 {
+        sqlx::query_scalar(
+            "select count(*) from refresh_tokens
+             where tenant_id = $1 and revoked_at is not null",
+        )
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .expect("count revoked refresh tokens")
+    }
+
+    async fn denylisted(pool: &PgPool, tenant: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "select jti from access_token_denylist where tenant_id = $1 order by jti",
+        )
+        .bind(tenant)
+        .fetch_all(pool)
+        .await
+        .expect("read the denylist")
+    }
+
+    fn access_token(jti: &str, expires_at: OffsetDateTime) -> LiveAccessToken {
+        LiveAccessToken::new(jti, expires_at).expect("a well-formed jti")
+    }
+
+    db_test! {
+        /// Everything the schema can hold comes back exactly as it went in, and
+        /// comes back through the same validation the values passed on the way
+        /// in.
+        async fn a_grant_survives_the_round_trip_through_storage(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let stored = a_grant("demo", "billing", "sub-1");
+            repo.create(&stored).await.expect("create");
+
+            let found = repo.find(&stored.id).await.expect("find").expect("present");
+            assert_eq!(found, stored);
+            assert_eq!(found.status(epoch()), GrantStatus::Pending);
+
+            assert_eq!(
+                repo.list_for_subject(&SubjectId::new("sub-1")).await.expect("list"),
+                vec![found]
+            );
+            assert!(
+                repo.list_for_subject(&SubjectId::new("sub-2")).await.expect("list").is_empty()
+            );
+            assert!(
+                repo.find(&GrantId::new("00000000-0000-4000-8000-000000000000"))
+                    .await
+                    .expect("find")
+                    .is_none()
+            );
+
+            // A grant id is minted, never chosen: a second insert under the
+            // same id is a collision, not an update of the permissions.
+            assert!(
+                matches!(repo.create(&stored).await, Err(DomainError::Conflict(_))),
+                "a grant id was reused as an upsert key"
+            );
+        }
+    }
+
+    db_test! {
+        /// Grant Management ID1 §5.6: "a grant should be considered active when
+        /// associated tokens have been successfully claimed by the client."
+        ///
+        /// The status is derived from the credentials that exist, so writing a
+        /// refresh token is what moves the grant — there is no separate flag to
+        /// forget to set.
+        async fn a_grant_becomes_active_when_a_credential_is_claimed_from_it(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let grant = a_grant("demo", "billing", "sub-1");
+            repo.create(&grant).await.expect("create");
+
+            assert_eq!(
+                repo.find(&grant.id).await.expect("find").expect("present").status(epoch()),
+                GrantStatus::Pending
+            );
+
+            insert_refresh_token(&db.pool, "demo", &grant.id, "rt-1").await;
+
+            assert_eq!(
+                repo.find(&grant.id).await.expect("find").expect("present").status(epoch()),
+                GrantStatus::Active
+            );
+        }
+    }
+
+    db_test! {
+        /// A `client_credentials` grant is minted at the token endpoint at the
+        /// moment its access token is, so it is claimed before it is stored.
+        /// Nothing will ever reference it — no code, no refresh token — and a
+        /// derivation that only looked for those would call it unclaimed and
+        /// collect it while its access token is still live.
+        async fn a_grant_with_no_subject_is_claimed_the_moment_it_exists(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let machine = Grant::new(TenantId::new("demo"), ClientId::new("billing"), epoch());
+            repo.create(&machine).await.expect("create");
+
+            let found = repo.find(&machine.id).await.expect("find").expect("present");
+            assert_eq!(found.status(epoch()), GrantStatus::Active);
+            assert_eq!(
+                repo.purge_unclaimed(epoch() + Duration::days(1)).await.expect("purge"),
+                0,
+                "a client_credentials grant was collected as unclaimed"
+            );
+        }
+    }
+
+    db_test! {
+        /// The acceptance criterion, read back from both tables: revoking a
+        /// grant marks its refresh tokens revoked *and* puts its live access
+        /// tokens on the denylist until their own `exp`.
+        ///
+        /// FAPI 2.0 SP §6.8 item 4: credentials issued under one authorization
+        /// are linked so that they can be revoked together.
+        async fn revoking_a_grant_revokes_its_refresh_tokens_and_denylists_its_access_tokens(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let grant = a_grant("demo", "billing", "sub-1");
+            repo.create(&grant).await.expect("create");
+            insert_refresh_token(&db.pool, "demo", &grant.id, "rt-1").await;
+            insert_refresh_token(&db.pool, "demo", &grant.id, "rt-2").await;
+
+            let now = epoch();
+            let live = [
+                access_token("at-1", now + Duration::minutes(5)),
+                access_token("at-2", now + Duration::minutes(5)),
+                // Already past its own `exp`: a denylist row for it would
+                // protect nothing, because the token fails on `exp` first.
+                access_token("at-expired", now - Duration::seconds(1)),
+            ];
+
+            let outcome = repo
+                .revoke(&grant.id, RevocationReason::UserRevoked, &live, now)
+                .await
+                .expect("revoke");
+            assert_eq!(outcome.refresh_tokens_revoked, 2);
+            assert_eq!(outcome.access_tokens_denylisted, 2);
+            assert_eq!(outcome.revoked_at, now);
+
+            assert_eq!(revoked_refresh_tokens(&db.pool, "demo").await, 2);
+            assert_eq!(denylisted(&db.pool, "demo").await, ["at-1", "at-2"]);
+
+            let found = repo.find(&grant.id).await.expect("find").expect("present");
+            assert_eq!(found.status(now), GrantStatus::Revoked);
+            assert_eq!(found.revocation_reason, Some(RevocationReason::UserRevoked));
+
+            // Revoking again is not a second cascade, and does not say whether
+            // the grant was ever real (Grant Management ID1 §6.6).
+            assert!(matches!(
+                repo.revoke(&grant.id, RevocationReason::UserRevoked, &[], now).await,
+                Err(DomainError::NotFound)
+            ));
+        }
+    }
+
+    db_test! {
+        /// The failure mode a revocation exists to prevent: the refresh token
+        /// revoked, the access token still live, and the caller told it worked.
+        ///
+        /// A trigger makes the denylist insert fail after the refresh tokens
+        /// have already been updated. All three tables must read back exactly
+        /// as they did before the call.
+        async fn a_revocation_that_fails_part_way_revokes_nothing(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let grant = a_grant("demo", "billing", "sub-1");
+            repo.create(&grant).await.expect("create");
+            insert_refresh_token(&db.pool, "demo", &grant.id, "rt-1").await;
+
+            sqlx::query(
+                "create function refuse_the_denylist() returns trigger language plpgsql as $$
+                 begin raise exception 'injected failure'; end; $$",
+            )
+            .execute(&db.pool)
+            .await
+            .expect("create the failure");
+            sqlx::query(
+                "create trigger denylist_refuses before insert on access_token_denylist
+                 for each row execute function refuse_the_denylist()",
+            )
+            .execute(&db.pool)
+            .await
+            .expect("arm the failure");
+
+            let now = epoch();
+            let outcome = repo
+                .revoke(
+                    &grant.id,
+                    RevocationReason::UserRevoked,
+                    &[access_token("at-1", now + Duration::minutes(5))],
+                    now,
+                )
+                .await;
+            assert!(
+                matches!(outcome, Err(DomainError::Storage(_))),
+                "a revocation that could not denylist reported success"
+            );
+
+            assert_eq!(
+                revoked_refresh_tokens(&db.pool, "demo").await,
+                0,
+                "a refresh token was revoked by a revocation that failed"
+            );
+            assert!(denylisted(&db.pool, "demo").await.is_empty());
+            let found = repo.find(&grant.id).await.expect("find").expect("present");
+            assert_eq!(
+                found.status(now),
+                GrantStatus::Active,
+                "the grant was stamped by a revocation that failed"
+            );
+
+            // And with the failure disarmed, the same call does the whole
+            // cascade — so the rollback left the grant revocable, not stuck.
+            sqlx::query("drop trigger denylist_refuses on access_token_denylist")
+                .execute(&db.pool)
+                .await
+                .expect("disarm");
+            let retried = repo
+                .revoke(
+                    &grant.id,
+                    RevocationReason::UserRevoked,
+                    &[access_token("at-1", now + Duration::minutes(5))],
+                    now,
+                )
+                .await
+                .expect("revoke");
+            assert_eq!(retried.refresh_tokens_revoked, 1);
+            assert_eq!(retried.access_tokens_denylisted, 1);
+            assert_eq!(revoked_refresh_tokens(&db.pool, "demo").await, 1);
+            assert_eq!(denylisted(&db.pool, "demo").await, ["at-1"]);
+        }
+    }
+
+    db_test! {
+        /// `revoked -> active` is the transition the lifecycle refuses, and this
+        /// is where refusing it means something: no `ClaimedGrant` means no
+        /// token, and there is no other way to make one.
+        async fn a_revoked_grant_refuses_to_issue_another_credential(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let grant = a_grant("demo", "billing", "sub-1");
+            repo.create(&grant).await.expect("create");
+
+            let now = epoch();
+            let claimed = repo.claim(&grant.id, now).await.expect("a live grant is claimable");
+            assert_eq!(claimed.id(), &grant.id);
+            assert_eq!(claimed.subject(), Some(&SubjectId::new("sub-1")));
+
+            let cascade = repo
+                .revoke(&grant.id, RevocationReason::CodeReplayed, &[], now)
+                .await
+                .expect("revoke");
+            assert_eq!(cascade.refresh_tokens_revoked, 0);
+
+            let refused = repo.claim(&grant.id, now).await;
+            assert!(
+                matches!(refused, Err(DomainError::Invalid { field: "grant_id", .. })),
+                "a revoked grant issued a credential: {refused:?}"
+            );
+            assert_eq!(
+                repo.find(&grant.id).await.expect("find").expect("present").status(now),
+                GrantStatus::Revoked,
+                "a refused claim changed the grant"
+            );
+
+            // An expired grant is refused by the same guard, without a row
+            // having been written at the instant it lapsed.
+            let mut lapsing = a_grant("demo", "billing", "sub-2");
+            lapsing.expires_at = Some(now + Duration::minutes(1));
+            repo.create(&lapsing).await.expect("create");
+            assert!(repo.claim(&lapsing.id, now).await.is_ok());
+            assert!(
+                repo.claim(&lapsing.id, now + Duration::minutes(1)).await.is_err(),
+                "an expired grant issued a credential"
+            );
+        }
+    }
+
+    db_test! {
+        /// Two tenants, one subject spelling, no crossing over — through every
+        /// statement this repository has, including the two that write and the
+        /// one that deletes. A missing `tenant_id` predicate in any of them
+        /// would revoke or collect another customer's authorizations.
+        async fn a_grant_of_one_tenant_is_invisible_to_another(db) {
+            seed_client(&db.pool, "alpha", "billing").await;
+            seed_client(&db.pool, "beta", "billing").await;
+            let alpha = repo(&db.pool, "alpha");
+            let beta = repo(&db.pool, "beta");
+
+            let theirs = a_grant("alpha", "billing", "sub-1");
+            alpha.create(&theirs).await.expect("create");
+            insert_refresh_token(&db.pool, "alpha", &theirs.id, "rt-1").await;
+
+            // Reads.
+            assert!(beta.find(&theirs.id).await.expect("find").is_none());
+            assert!(beta.list_for_subject(&SubjectId::new("sub-1")).await.expect("list").is_empty());
+            assert!(matches!(beta.claim(&theirs.id, epoch()).await, Err(DomainError::NotFound)));
+
+            // Revocation.
+            assert!(matches!(
+                beta.revoke(
+                    &theirs.id,
+                    RevocationReason::AdminRevoked,
+                    &[access_token("at-1", epoch() + Duration::minutes(5))],
+                    epoch(),
+                ).await,
+                Err(DomainError::NotFound)
+            ));
+            assert_eq!(revoked_refresh_tokens(&db.pool, "alpha").await, 0);
+            assert!(denylisted(&db.pool, "alpha").await.is_empty());
+            assert!(denylisted(&db.pool, "beta").await.is_empty());
+
+            // Garbage collection.
+            let unclaimed = a_grant("alpha", "billing", "sub-2");
+            alpha.create(&unclaimed).await.expect("create");
+            assert_eq!(
+                beta.purge_unclaimed(epoch() + Duration::days(1)).await.expect("purge"),
+                0,
+                "one tenant's purge collected another tenant's grant"
+            );
+            assert!(alpha.find(&unclaimed.id).await.expect("find").is_some());
+
+            // A grant cannot be written into another tenant either.
+            assert!(matches!(
+                beta.create(&theirs).await,
+                Err(DomainError::Invalid { field: "tenant_id", .. })
+            ));
+        }
+    }
+
+    db_test! {
+        /// Grant Management ID1 §5.6: "If the tokens haven't been claimed the
+        /// grant should be deleted by the AS after a reasonable timeout."
+        ///
+        /// And the other half, which matters more: a grant somebody *did* claim
+        /// from is never collected, because collecting it would delete the only
+        /// row that can revoke the tokens minted from it.
+        async fn an_unclaimed_grant_is_collected_after_the_timeout_and_a_claimed_one_is_not(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+
+            let abandoned = a_grant("demo", "billing", "sub-1");
+            repo.create(&abandoned).await.expect("create");
+            let claimed = a_grant("demo", "billing", "sub-2");
+            repo.create(&claimed).await.expect("create");
+            insert_refresh_token(&db.pool, "demo", &claimed.id, "rt-1").await;
+
+            // Before the timeout, nothing is collected: an authorization a
+            // client is still on its way to redeem is not abandoned.
+            assert_eq!(
+                repo.purge_unclaimed(epoch() - Duration::seconds(1)).await.expect("purge"),
+                0
+            );
+            assert!(repo.find(&abandoned.id).await.expect("find").is_some());
+
+            assert_eq!(
+                repo.purge_unclaimed(epoch() + Duration::minutes(10)).await.expect("purge"),
+                1
+            );
+            assert!(repo.find(&abandoned.id).await.expect("find").is_none());
+            assert!(
+                repo.find(&claimed.id).await.expect("find").is_some(),
+                "a grant with a live refresh token was collected as unclaimed"
+            );
+
+            // A revoked grant is not collected either: the record of a
+            // withdrawal is the evidence that it happened.
+            let withdrawn = a_grant("demo", "billing", "sub-3");
+            repo.create(&withdrawn).await.expect("create");
+            let withdrawal = repo
+                .revoke(&withdrawn.id, RevocationReason::UserRevoked, &[], epoch())
+                .await
+                .expect("revoke");
+            assert_eq!(withdrawal.access_tokens_denylisted, 0);
+            assert_eq!(
+                repo.purge_unclaimed(epoch() + Duration::minutes(10)).await.expect("purge"),
+                0
+            );
+            assert!(repo.find(&withdrawn.id).await.expect("find").is_some());
+        }
+    }
+}

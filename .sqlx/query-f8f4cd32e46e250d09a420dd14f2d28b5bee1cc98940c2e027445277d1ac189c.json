@@ -1,0 +1,119 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select g.grant_id, g.client_id, g.user_id, g.subject, g.scopes, g.claims,\n                      g.authorization_details, g.resources, g.actor_chain, g.parent_grant_id,\n                      g.session_id, g.created_at, g.updated_at, g.expires_at, g.revoked_at,\n                      g.revocation_reason,\n                      (g.subject is null\n                       or g.parent_grant_id is not null\n                       or exists (select 1 from refresh_tokens r\n                                  where r.tenant_id = g.tenant_id and r.grant_id = g.grant_id)\n                       or exists (select 1 from authorization_codes c\n                                  where c.tenant_id = g.tenant_id and c.grant_id = g.grant_id\n                                    and c.consumed_at is not null)) as \"claimed!\"\n               from grants g\n               where g.tenant_id = $1 and g.subject = $2\n               order by g.created_at desc, g.grant_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "claims",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "authorization_details",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "resources",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "actor_chain",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "session_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "revoked_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "revocation_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "claimed!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "f8f4cd32e46e250d09a420dd14f2d28b5bee1cc98940c2e027445277d1ac189c"
+}
