@@ -5,13 +5,14 @@
 //! that must be on every response whichever grant eventually answers.
 
 use asterius_domain::entities::client::GrantType;
+use asterius_domain::keys::SigningAlgorithm;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientRegistration, ClientRepository, ClientStatus,
     DomainError, Issuer, Tenant, TenantId, TenantStatus,
 };
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
 use asterius_oidc::form::Parameters;
-use asterius_server::http::token::{GrantHandler, MAX_BODY_BYTES, TokenContext, token};
+use asterius_server::http::token::{GrantHandler, MAX_BODY_BYTES, TokenContext, not_issued, token};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -47,6 +48,21 @@ impl GrantHandler for Stub {
             axum::Json(json!({"access_token": "t", "token_type": "DPoP"})),
         )
             .into_response()
+    }
+}
+
+/// A handler that fails the way a real one will: with a [`DomainError`] it
+/// cannot turn into an OAuth error itself.
+struct Failing(DomainError);
+
+#[async_trait::async_trait]
+impl GrantHandler for Failing {
+    fn grant(&self) -> GrantType {
+        GrantType::AuthorizationCode
+    }
+
+    async fn handle(&self, tenant: &Tenant, client: &Client, _params: &Parameters) -> Response {
+        not_issued(tenant, client, &self.0)
     }
 }
 
@@ -337,4 +353,96 @@ async fn unknown_parameters_are_ignored() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+}
+
+// ---- ast-a05.15: a server that cannot sign ------------------------------
+
+/// The tenant holds no key of the algorithm this client registered as
+/// `id_token_signed_response_alg`, so no token can be issued to it — ever,
+/// until an operator acts.
+///
+/// `server_error` and not `temporarily_unavailable`, because the difference
+/// between them is whether coming back helps, and here it does not: OpenID
+/// Connect Dynamic Client Registration 1.0 §2 made this server responsible for
+/// signing under that algorithm when it accepted the registration, and only a
+/// new key or a withdrawn registration changes the answer. Telling a
+/// well-behaved client to retry would put it in a loop that never ends.
+#[tokio::test]
+async fn a_missing_signing_key_is_a_server_error_and_not_a_retry() {
+    for algorithm in SigningAlgorithm::ALL {
+        let handler = Failing(DomainError::NoSigningKey {
+            algorithm: Some(algorithm),
+        });
+        let (status, body, headers) = run_with(
+            &[("grant_type", "authorization_code"), ("code", "abc")],
+            &[&handler],
+            Ok(client(&["authorization_code"])),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "for {algorithm}");
+        assert_eq!(body["error"], "server_error");
+        assert_eq!(body.get("access_token"), None, "a token was issued anyway");
+        assert_eq!(body.get("id_token"), None, "a token was issued anyway");
+        // RFC 6749 §5.1 still applies to the failure.
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    }
+}
+
+/// A tenant holding no keys at all takes the same answer. `None` is a worse
+/// fault than one missing algorithm — the log says so — but from the client's
+/// side it is the same fact and gets the same constant.
+#[tokio::test]
+async fn a_tenant_with_no_keys_at_all_is_the_same_answer_to_the_client() {
+    let handler = Failing(DomainError::NoSigningKey { algorithm: None });
+    let (status, body, _) = run_with(
+        &[("grant_type", "authorization_code"), ("code", "abc")],
+        &[&handler],
+        Ok(client(&["authorization_code"])),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["error"], "server_error");
+}
+
+/// The other side of the split. A store that could not be reached is worth
+/// retrying, so it is the one that says so.
+#[tokio::test]
+async fn a_storage_failure_is_temporary_and_says_so() {
+    let handler = Failing(DomainError::Storage("connection reset".into()));
+    let (status, body, _) = run_with(
+        &[("grant_type", "authorization_code"), ("code", "abc")],
+        &[&handler],
+        Ok(client(&["authorization_code"])),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "temporarily_unavailable");
+}
+
+/// The description is a constant. The client chose the algorithm, so naming it
+/// would disclose nothing — but RFC 6749 §5.2 `error_description` is a
+/// courtesy, and this file's rule is that it never carries request-derived
+/// text. An operator reads the algorithm in the log instead.
+#[tokio::test]
+async fn the_description_never_names_the_algorithm() {
+    for algorithm in SigningAlgorithm::ALL {
+        let handler = Failing(DomainError::NoSigningKey {
+            algorithm: Some(algorithm),
+        });
+        let (_, body, _) = run_with(
+            &[("grant_type", "authorization_code")],
+            &[&handler],
+            Ok(client(&["authorization_code"])),
+        )
+        .await;
+
+        let description = body["error_description"].as_str().expect("a description");
+        assert!(
+            !description.contains(algorithm.as_str()),
+            "{description:?} names {algorithm}"
+        );
+    }
 }

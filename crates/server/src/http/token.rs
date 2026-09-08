@@ -18,9 +18,16 @@
 //! OAuth error: "this server does not implement that yet" is an honest thing
 //! to say, and `unsupported_grant_type` would be a lie about a grant the
 //! discovery document advertises.
+//!
+//! A handler renders its own OAuth errors, because they are statements about
+//! the request it was given and nobody else can make them. What it cannot
+//! render on its own is a failure of the *server*: [`not_issued`] is here for
+//! those, so that "this deployment cannot sign for this client" reads the same
+//! whichever grant hit it.
 
 use asterius_domain::entities::client::GrantType;
-use asterius_domain::{Capabilities, Client, ClientRepository, Tenant};
+use asterius_domain::keys::SigningAlgorithm;
+use asterius_domain::{Capabilities, Client, ClientRepository, DomainError, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
 use asterius_oidc::form::Parameters;
 use asterius_oidc::token::{self, TokenError};
@@ -190,6 +197,68 @@ fn no_store() -> [(header::HeaderName, header::HeaderValue); 2] {
         (header::CACHE_CONTROL, HEADER_NO_STORE),
         (header::PRAGMA, HEADER_NO_CACHE),
     ]
+}
+
+/// The answer when a grant handler could not issue tokens.
+///
+/// A [`DomainError`] reaching here is the server's own fault. Everything a
+/// client can get wrong at this endpoint — an unknown code, a PKCE verifier
+/// that does not match, a `redirect_uri` that is not the one the
+/// authorization request carried — is an RFC 6749 §5.2 `invalid_grant`, which
+/// a handler renders itself because only it knows which check failed. What
+/// reaches this function is the state of the deployment, and §5.2 defines no
+/// code for that; both codes below are §4.1.2.1's, borrowed the way
+/// [`crate::http::client_configuration`] already borrows them.
+///
+/// The split is whether retrying helps.
+///
+/// [`DomainError::NoSigningKey`] says it does not. The tenant holds no active
+/// key of the algorithm this client registered as `id_token_signed_response_alg`
+/// — which OpenID Connect Dynamic Client Registration 1.0 §2 turned into an
+/// obligation on *this server* the moment it accepted that registration.
+/// Nothing the client sends changes it and nothing in the system repairs it
+/// unattended: an operator has to create the key or stop accepting the
+/// registration (`ast-a05.13`). `temporarily_unavailable` would tell a
+/// well-behaved client to come back and fail again, indefinitely, so this is
+/// `server_error` and a 500.
+///
+/// Everything else is read as transient — a store that could not be reached —
+/// and gets `temporarily_unavailable` and a 503, where retrying is the right
+/// thing for the client to do.
+///
+/// Either way it is logged at error level with the tenant, the client and the
+/// algorithm, because nothing else in the system will report it: the client is
+/// handed a constant, and the operator whose configuration is wrong is not the
+/// person making the request.
+pub fn not_issued(tenant: &Tenant, client: &Client, failure: &DomainError) -> Response {
+    let DomainError::NoSigningKey { algorithm } = failure else {
+        tracing::error!(
+            %failure,
+            tenant = %tenant.id,
+            client = %client.id,
+            "a token request could not be served"
+        );
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "temporarily_unavailable",
+            "the token request could not be served",
+        );
+    };
+
+    tracing::error!(
+        tenant = %tenant.id,
+        client = %client.id,
+        // `None` means any active key would have done and the tenant holds
+        // none at all — a worse fault than one missing ES256 key, and it
+        // should not read as the same line.
+        algorithm = algorithm.map_or("none at all", SigningAlgorithm::as_str),
+        "this tenant has no signing key this client can be issued tokens under"
+    );
+    error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "server_error",
+        "this deployment cannot sign tokens for this client",
+    )
 }
 
 /// The client-facing description of a failure.
