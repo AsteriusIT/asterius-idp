@@ -87,6 +87,30 @@ create table clients (
     id_token_signed_response_alg   text        not null default 'EdDSA'
                                    check (id_token_signed_response_alg in
                                           ('EdDSA', 'ES256', 'PS256')),
+    -- OIDC Registration §2 and OIDC Core §8. `subject_type` decides whether a
+    -- client sees a shared `sub` or one derived per sector.
+    application_type               text        not null default 'web'
+                                   check (application_type in ('web', 'native')),
+    subject_type                   text        not null default 'public'
+                                   check (subject_type in ('public', 'pairwise')),
+    sector_identifier_uri          text,
+    -- Optional signing algorithms, from the same allow-list as everything else
+    -- (ADR-0003). Null means the client registered none.
+    request_object_signing_alg     text
+                                   check (request_object_signing_alg in
+                                          ('EdDSA', 'ES256', 'PS256')),
+    backchannel_authentication_request_signing_alg text
+                                   check (backchannel_authentication_request_signing_alg in
+                                          ('EdDSA', 'ES256', 'PS256')),
+    -- What this client's access tokens are bound to. FAPI 2.0 forbids a bearer
+    -- token, so the pair (false, false) is refused here as well as in the
+    -- parser: a row that says "bound to nothing" must not be expressible.
+    dpop_bound_access_tokens       boolean     not null default true,
+    tls_client_certificate_bound_access_tokens boolean not null default false,
+    -- RFC 9396 §9.2: the `authorization_details` types this client may use.
+    authorization_details_types    text[]      not null default '{}',
+    -- FAPI 2.0 SP §5.2.2.1.1.
+    use_mtls_endpoint_aliases      boolean     not null default false,
     -- Agent clients (E11). `agent_owner_sub` is the principal the agent acts
     -- for; it is what makes a delegation chain attributable.
     is_agent                       boolean     not null default false,
@@ -104,7 +128,16 @@ create table clients (
     constraint clients_exactly_one_key_source
         check ((jwks is null) <> (jwks_uri is null)),
     constraint clients_agent_has_owner
-        check (not is_agent or agent_owner_sub is not null)
+        check (not is_agent or agent_owner_sub is not null),
+    -- FAPI 2.0 SP §5.3.2.1: access tokens are always sender-constrained. A
+    -- client bound to neither would be issued bearer tokens, so the row cannot
+    -- exist.
+    constraint clients_tokens_are_sender_constrained
+        check (dpop_bound_access_tokens or tls_client_certificate_bound_access_tokens),
+    -- OIDC Core §8.1: a sector identifier only means anything for a pairwise
+    -- subject.
+    constraint clients_sector_identifier_needs_pairwise
+        check (sector_identifier_uri is null or subject_type = 'pairwise')
 );
 
 create trigger clients_set_updated_at before update on clients

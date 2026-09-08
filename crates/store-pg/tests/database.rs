@@ -129,6 +129,16 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
         "an algorithm name from ADR-0003's allow-list, not a token",
     ),
     (
+        "clients",
+        "dpop_bound_access_tokens",
+        "a boolean saying whether tokens are DPoP-bound (RFC 9449 §12), not a token",
+    ),
+    (
+        "clients",
+        "tls_client_certificate_bound_access_tokens",
+        "a boolean saying whether tokens are certificate-bound (RFC 8705 §3.4), not a token",
+    ),
+    (
         "credentials",
         "credential_id",
         "a row identifier, not the credential",
@@ -962,11 +972,13 @@ db_test! {
 }
 
 db_test! {
-    /// The baseline schema has no column for a certificate-bound client, so the
-    /// repository refuses it by name rather than writing a row that says DPoP.
-    /// A silent downgrade here would move a client off the binding it
-    /// registered with nothing in the record saying so.
-    async fn a_client_the_schema_cannot_represent_is_refused_rather_than_downgraded(db) {
+    /// A client the parser accepts is a client the repository can store. The
+    /// schema originally had no column for the token binding, the subject type
+    /// or the application type, and `upsert` refused rather than writing a row
+    /// that said something else; the columns exist now, so what is asserted is
+    /// the round trip — including that a certificate-bound client does not come
+    /// back on DPoP, which is the downgrade the refusal existed to prevent.
+    async fn a_client_using_every_registrable_field_round_trips(db) {
         seed_tenant(&db.pool, "demo").await;
         let store = Store::from_pool(db.pool.clone());
         let capabilities = Capabilities { mtls: true, ..Capabilities::default() };
@@ -976,23 +988,62 @@ db_test! {
         let object = document.as_object_mut().expect("object");
         object.insert("dpop_bound_access_tokens".to_owned(), json!(false));
         object.insert("tls_client_certificate_bound_access_tokens".to_owned(), json!(true));
-        let certificate_bound = client_with("demo", "billing", &document, capabilities);
-        assert_eq!(certificate_bound.registration.token_binding, TokenBinding::Certificate);
-
-        let error = repo.upsert(&certificate_bound).await.expect_err("no column for it");
-        assert!(
-            matches!(
-                &error,
-                asterius_domain::DomainError::Invalid { field, .. }
-                    if *field == "tls_client_certificate_bound_access_tokens"
-            ),
-            "{error:?}"
+        object.insert("application_type".to_owned(), json!("web"));
+        object.insert("subject_type".to_owned(), json!("pairwise"));
+        object.insert(
+            "sector_identifier_uri".to_owned(),
+            json!("https://rp.example/sector.json"),
         );
-        let count: i64 = sqlx::query_scalar("select count(*) from clients where tenant_id = 'demo'")
-            .fetch_one(&db.pool)
+        object.insert("request_object_signing_alg".to_owned(), json!("ES256"));
+        object.insert("authorization_details_types".to_owned(), json!(["payment_initiation"]));
+        object.insert("use_mtls_endpoint_aliases".to_owned(), json!(true));
+
+        let original = client_with("demo", "billing", &document, capabilities);
+        assert_eq!(original.registration.token_binding, TokenBinding::Certificate);
+        repo.upsert(&original).await.expect("a valid client must be storable");
+
+        let reloaded = repo
+            .find(&asterius_domain::ClientId::new("billing"))
             .await
-            .expect("count");
-        assert_eq!(count, 0, "a client that cannot be represented was written anyway");
+            .expect("read")
+            .expect("present");
+
+        // The binding above all: coming back as DPoP would be the silent
+        // downgrade this test exists to catch.
+        assert_eq!(reloaded.registration.token_binding, TokenBinding::Certificate);
+        assert_eq!(reloaded.registration, original.registration);
+    }
+}
+
+db_test! {
+    /// FAPI 2.0 SP §5.3.2.1: access tokens are always sender-constrained. The
+    /// validator refuses a client bound to neither; so does the table, because
+    /// a row is reachable by paths the validator is not on.
+    async fn the_schema_refuses_a_client_bound_to_neither_dpop_nor_a_certificate(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let unbound = sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks,
+                                  dpop_bound_access_tokens,
+                                  tls_client_certificate_bound_access_tokens)
+             values ('demo', 'bearer', 'Bearer', 'private_key_jwt', '{}'::jsonb, false, false)",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(unbound.is_err(), "the schema accepted a bearer-token client");
+
+        // OIDC Core §8.1: a sector identifier means nothing without a pairwise
+        // subject, so the pair cannot be stored either.
+        let stray_sector = sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks,
+                                  subject_type, sector_identifier_uri)
+             values ('demo', 'public-sector', 'S', 'private_key_jwt', '{}'::jsonb,
+                     'public', 'https://rp.example/sector.json')",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(stray_sector.is_err(), "a sector identifier was stored on a public client");
     }
 }
 

@@ -1,0 +1,155 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select client_id, client_name, token_endpoint_auth_method, redirect_uris,\n                    grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1 and client_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "token_endpoint_auth_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "redirect_uris",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "grant_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "response_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "resources",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "jwks",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "jwks_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "id_token_signed_response_alg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "application_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "subject_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "sector_identifier_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "request_object_signing_alg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "backchannel_authentication_request_signing_alg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 16,
+        "name": "dpop_bound_access_tokens",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 17,
+        "name": "tls_client_certificate_bound_access_tokens",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 18,
+        "name": "authorization_details_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 19,
+        "name": "use_mtls_endpoint_aliases",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 20,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 21,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 22,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "eede7898e85e1fb82baaff63f035ea782dc60b81ef4de577cd21f10388feefb2"
+}
