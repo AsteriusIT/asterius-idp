@@ -1,6 +1,6 @@
 # ADR-0002: FAPI 2.0 is the baseline, not a mode
 
-- **Status:** Accepted
+- **Status:** Accepted (clause table corrected 2026-09-08; see *Corrections*)
 - **Date:** 2026-09-08
 - **Bead:** ast-83p.9
 - **Deciders:** Quentin RODIC
@@ -81,6 +81,19 @@ a route that exists must be advertised.
 | Clause | What it requires | How this decision satisfies it |
 |---|---|---|
 | FAPI 2.0 Attacker Model §7.1 | Goals hold for arbitrary combinations of A1, A1a, A2, A3a, A4, A5 | No client can opt out of the controls the goals depend on |
-| FAPI 2.0 SP §5.3.2.1 | AS requirements: PAR, PKCE S256, sender-constrained tokens, exact redirect matching, no rotation requirement | Implemented unconditionally rather than per client |
+| FAPI 2.0 SP §5.3.2.1 | General AS requirements: confidential clients only (3), sender-constrained tokens (4), client authentication by mTLS or `private_key_jwt` (6), issuer identifier as a string in `aud` (8), no refresh-token rotation (9), authorization-code lifetime (11), JWT timestamp tolerance (13) | Implemented unconditionally rather than per client |
+| FAPI 2.0 SP §5.3.2.2 | Authorization endpoint flows: `response_type=code` (1), PAR required (2, 3, 4), PKCE with `S256` (5), `redirect_uri` in the pushed request (6), `iss` in the authorization response (7), never HTTP 307 (10), `request_uri` under 600 s (12) | Implemented unconditionally rather than per client |
 | FAPI 2.0 SP §5.4.1 | PS256/ES256/EdDSA only; never `none`; ≥128-bit credentials | Algorithm allow-list is global; see ADR-0003 |
 | RFC 9126 §2 | PAR pushes the request server-side and returns a `request_uri` | The only accepted way to start an authorization request |
+
+## Corrections
+
+**2026-09-08.** The clause table attributed PAR, PKCE `S256` and exact redirect
+matching to SP §5.3.2.1. Two of those are §5.3.2.2 — *Authorization endpoint
+flows* — and the third is not a FAPI clause at all: exact redirect matching
+comes from RFC 6749 §3.1.2.3 and RFC 9700 §4.1.3, which is what ADR-0005 cites.
+The row is now two rows, itemised.
+
+The decision this record makes is unchanged; only the citations were wrong. A
+clause table exists to be checked against the specification during conformance
+work, and one that points at the wrong section fails at the only job it has.
