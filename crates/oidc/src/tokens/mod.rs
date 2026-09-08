@@ -15,7 +15,7 @@
 //! So the two builders live side by side, produce disjoint claim sets, and
 //! carry different registered media types (`at+jwt` and `JWT`). Neither one
 //! takes a free-form claim map: what an access token may say is fixed by
-//! [`access`], what an ID token may say is fixed by its own builder, and the only
+//! [`access`], what an ID token may say is fixed by [`id_token`], and the only
 //! claims a *client* can influence are the ones claims resolution already
 //! decided it may have.
 //!
@@ -43,6 +43,7 @@
 //! a signer that ignores it produces a token the client will reject.
 
 pub mod access;
+pub mod id_token;
 
 use asterius_domain::SigningAlgorithm;
 use base64::Engine as _;
@@ -52,6 +53,7 @@ use thiserror::Error;
 use time::Duration;
 
 pub use access::{AccessToken, Audience, Authentication, Confirmation};
+pub use id_token::{IdToken, Session, token_hash};
 
 /// Why a token could not be built.
 ///
@@ -71,8 +73,8 @@ pub enum IssuanceError {
     /// link pointed at another — revocable, and revocable by the wrong person.
     #[error("the claimed grant does not match the grant it was passed with")]
     GrantMismatch,
-    /// The lifetime is zero, negative, or longer than the profile's cap.
-    #[error("a token lifetime must be between 1 and {max} seconds", max = AccessToken::MAX_LIFETIME.whole_seconds())]
+    /// The lifetime is zero, negative, or longer than the builder's cap.
+    #[error("a token lifetime must be positive and no longer than the profile's cap")]
     Lifetime,
     /// `aud` is empty, too large, or holds something that is not a resource
     /// identifier (RFC 8707 §2).
@@ -96,6 +98,30 @@ pub enum IssuanceError {
         AccessToken::MAX_ACTORS
     )]
     ActorChain,
+    /// An ID token was asked for from a grant with no resource owner.
+    ///
+    /// A `client_credentials` grant has nobody to assert anything about, and an
+    /// ID token asserting a *client* would be an authentication assertion about
+    /// a principal that never authenticated.
+    #[error("an ID token needs a subject; this grant has no resource owner")]
+    NoSubject,
+    /// A `nonce` is empty or longer than [`crate::authorize::MAX_NONCE_LEN`].
+    #[error("a nonce must be 1 to {} bytes", crate::authorize::MAX_NONCE_LEN)]
+    Nonce,
+    /// A `sid` is empty, too long, or not printable ASCII.
+    #[error("a sid must be 1 to {} printable ASCII characters", Session::MAX_LEN)]
+    Session,
+    /// Claims resolution offered a claim the authorization server issues about
+    /// the exchange.
+    ///
+    /// Carries the name, which is safe to render: it is a member of the fixed
+    /// [`asterius_domain::ClaimName::SERVER_ISSUED`] list, not a value that
+    /// came from anywhere.
+    #[error("the claim `{0}` is issued by this server and cannot be supplied")]
+    ServerIssuedClaim(&'static str),
+    /// A released claim is not a name a user record may assert at all.
+    #[error("a released claim name must be one claims resolution can produce")]
+    UnreleasableClaim,
     /// The serialised claims set is larger than the builder's guard.
     #[error("the claims set is {size} bytes, limit is {limit}")]
     TooLarge {
@@ -230,6 +256,16 @@ impl std::fmt::Display for JwtId {
 /// warns that a JWT access token's contents are visible to the client; a
 /// second reason to keep it small is that there is less of it to be visible.
 pub(crate) const MAX_ACCESS_TOKEN_CLAIMS_BYTES: usize = 4 * 1024;
+
+/// The same guard for an ID token, which is allowed to be larger.
+///
+/// An ID token carries whatever claims resolution released into it, and a
+/// `claims` parameter naming twenty attributes with language variants is a
+/// legitimate request. It is also delivered once, in a token response, rather
+/// than on every resource call — so the pressure that keeps an access token
+/// small does not apply, and this bound is here to stop a token nothing can
+/// hold rather than to keep one lean.
+pub(crate) const MAX_ID_TOKEN_CLAIMS_BYTES: usize = 8 * 1024;
 
 /// Serialises a claims set and refuses it if it is over the guard.
 pub(crate) fn bounded(claims: Value, limit: usize) -> Result<Value, IssuanceError> {

@@ -221,3 +221,10 @@ path = "fuzz_targets/access_token_claims.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "id_token_claims"
+path = "fuzz_targets/id_token_claims.rs"
+test = false
+doc = false
+bench = false
