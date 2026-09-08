@@ -255,27 +255,70 @@ impl fmt::Display for CompactJws {
 
 /// Signs tokens for one tenant.
 ///
-/// The port is deliberately narrow: a caller says what kind of token it is and
-/// what is in it, and cannot choose the algorithm, the key or the header
-/// beyond that. Every JWT this server issues therefore carries a `kid`, an
-/// allow-listed `alg`, and an explicit `typ` (RFC 8725 §3.11) without any call
-/// site having to remember.
+/// The port is deliberately narrow: a caller says what kind of token it is,
+/// which algorithm the claims commit it to, and what is in it. It cannot
+/// choose the key or the rest of the header. Every JWT this server issues
+/// therefore carries a `kid`, an allow-listed `alg`, and an explicit `typ`
+/// (RFC 8725 §3.11) without any call site having to remember.
 #[async_trait::async_trait]
 pub trait Signer: fmt::Debug + Send + Sync {
-    /// Signs `claims` as a JWT of media type `typ`.
+    /// Signs `claims` as a JWT of media type `typ`, under `algorithm`.
     ///
     /// `typ` is the explicit type header — `at+jwt` for an access token
     /// (RFC 9068 §2.1), `logout+jwt`, `dpop+jwt`, `secevent+jwt`. It is
     /// required, not optional, so that a token minted for one purpose cannot be
     /// presented as another.
     ///
+    /// # Why the algorithm is the caller's to state
+    ///
+    /// For most tokens it does not matter which key signs, so long as the `kid`
+    /// names it. For one it does, and that one is the ID token.
+    ///
+    /// OpenID Connect Dynamic Client Registration 1.0 §2 defines
+    /// `id_token_signed_response_alg` as the "JWS `alg` algorithm \[JWA\]
+    /// REQUIRED for signing the ID Token issued to this Client" — an obligation
+    /// on the *server*, per client, settled at registration. OIDC Core §3.1.3.7
+    /// item 7 is the client half of it: "The `alg` value SHOULD be the default
+    /// of `RS256` or the algorithm sent by the Client in the
+    /// `id_token_signed_response_alg` parameter during Registration."
+    ///
+    /// And §3.1.3.6 makes the claims themselves depend on the answer: `at_hash`
+    /// is taken with "the hash algorithm used in the `alg` Header Parameter of
+    /// the ID Token's JOSE Header". So a claims set built for `ES256` — whose
+    /// `at_hash` is half a SHA-256 digest — and then signed with `EdDSA` is not
+    /// merely signed with an unexpected key. It carries a value the client
+    /// computes differently (half a SHA-512 digest, because Ed25519 is EdDSA
+    /// instantiated with SHA-512 — RFC 8037 §3.1, RFC 8032 §5.1) and is
+    /// entitled to reject.
+    ///
+    /// A signer that chose for itself could not be given that constraint, which
+    /// is why it is a parameter rather than an implementation detail.
+    ///
+    /// `None` means the claims commit to nothing: any active key will do and
+    /// the signer picks. That is the right answer for an access token, which
+    /// says nothing about how it was signed and whose verifier is a resource
+    /// server resolving the key from the published JWKS by `kid`.
+    ///
+    /// `None` is *not* a fallback for a `Some` that cannot be honoured. An
+    /// access token and an ID token issued in the same response are two calls
+    /// with two answers here, and may legitimately be signed under two
+    /// different algorithms by two different keys — one is read by a resource
+    /// server, the other by the client, and nothing requires them to agree.
+    ///
     /// # Errors
     ///
-    /// Returns [`crate::DomainError`] if no active key exists for the tenant or
-    /// if the signing operation fails.
+    /// [`crate::DomainError::NoSigningKey`] if the tenant holds no active key
+    /// of the requested algorithm — or, when `algorithm` is `None`, no active
+    /// key at all. An implementation must never substitute a key of another
+    /// algorithm: that is exactly the wrong-`at_hash` token this parameter
+    /// exists to prevent, and it would surface as a client that cannot log
+    /// anybody in rather than as an error anyone can see.
+    ///
+    /// Returns [`crate::DomainError`] otherwise if the signing operation fails.
     async fn sign(
         &self,
         tenant: &TenantId,
+        algorithm: Option<SigningAlgorithm>,
         typ: &'static str,
         claims: &serde_json::Value,
     ) -> Result<CompactJws, crate::DomainError>;
