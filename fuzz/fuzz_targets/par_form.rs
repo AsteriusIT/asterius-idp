@@ -21,7 +21,8 @@
 use arbitrary::Arbitrary;
 use asterius_domain::Capabilities;
 use asterius_domain::entities::client::ClientRegistration;
-use asterius_oidc::authorize::{AuthorizationError, Parameters, validate};
+use asterius_oidc::authorize::{AuthorizationError, validate};
+use asterius_oidc::form::Parameters;
 use libfuzzer_sys::fuzz_target;
 use serde_json::json;
 use std::sync::OnceLock;

@@ -12,6 +12,7 @@
 
 use crate::client_auth::ClientAuthenticator;
 use crate::http::par::{self, PushContext};
+use crate::http::token::{self, TokenContext};
 use asterius_domain::{Capabilities, KeyStore, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
@@ -93,7 +94,7 @@ impl std::fmt::Debug for ProtocolState {
 pub fn routes(state: ProtocolState) -> Router {
     let capabilities = state.capabilities;
     let built = state.clients.clone();
-    let built_par = built.is_some();
+    let built_clients = built.is_some();
     let mut router = Router::new()
         // OIDC Discovery §4 and RFC 8414 §3. Both forms of the URL are
         // normalised to these paths by the tenancy middleware, so one route
@@ -103,13 +104,18 @@ pub fn routes(state: ProtocolState) -> Router {
         .route(Endpoint::Jwks.path(), get(jwks))
         .with_state(state);
 
-    // The pushed authorization request endpoint, when the deployment has the
-    // database wiring for it. `ast-gxh.1`.
+    // The endpoints that need an authenticated client, when the deployment has
+    // the database wiring for them. `ast-gxh.1`, `ast-a05.1`.
     if let Some(endpoints) = built {
-        router = router.route(
-            Endpoint::PushedAuthorizationRequest.path(),
-            post(pushed_authorization_request).with_state(endpoints),
-        );
+        router = router
+            .route(
+                Endpoint::PushedAuthorizationRequest.path(),
+                post(pushed_authorization_request).with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                Endpoint::Token.path(),
+                post(token_endpoint).with_state(endpoints),
+            );
     }
 
     // Everything else exists but is not built yet. Mounted from the registry so
@@ -117,7 +123,11 @@ pub fn routes(state: ProtocolState) -> Router {
     // rather than a 404.
     for endpoint in Endpoint::enabled(&capabilities) {
         if endpoint == Endpoint::Jwks
-            || (built_par && endpoint == Endpoint::PushedAuthorizationRequest)
+            || (built_clients
+                && matches!(
+                    endpoint,
+                    Endpoint::PushedAuthorizationRequest | Endpoint::Token
+                ))
         {
             continue;
         }
@@ -212,6 +222,50 @@ async fn pushed_authorization_request(
                 .await
         },
         time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /token` — RFC 6749 §3.2.
+///
+/// Wiring only, like the PAR handler: everything that decides anything is in
+/// [`crate::http::token::token`].
+///
+/// No grant handlers are registered yet, so every dispatched grant answers
+/// 501. `ast-a05.2` and its siblings add them without touching this function.
+async fn token_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+
+    let authenticator = Arc::clone(&endpoints.authenticator);
+    let tenant_for_auth = Arc::clone(&tenant);
+    let clients_for_auth = scope.clients(endpoints.capabilities);
+
+    token::token(
+        TokenContext {
+            tenant: &tenant,
+            clients: &clients,
+            capabilities: endpoints.capabilities,
+            grants: &[],
+        },
+        &headers,
+        &body,
+        async |attempt: &Attempt<'_>, rules: &AssertionRules| {
+            authenticator
+                .authenticate(
+                    &tenant_for_auth,
+                    &clients_for_auth,
+                    attempt,
+                    rules,
+                    time::OffsetDateTime::now_utc(),
+                )
+                .await
+        },
     )
     .await
 }

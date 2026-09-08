@@ -25,8 +25,9 @@
 //! and modify, which is exactly what JAR exists to prevent.
 
 use asterius_domain::entities::client::{ClientRegistration, RedirectUri};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
+use crate::form::{Duplicated, Parameters};
 use crate::pkce::{CodeChallenge, PkceError};
 
 /// The only `response_type` this server implements.
@@ -106,6 +107,12 @@ pub enum AuthorizationError {
     /// The `client_id` parameter is not the authenticated client.
     #[error("client_id does not match the authenticated client")]
     ClientMismatch,
+}
+
+impl From<Duplicated> for AuthorizationError {
+    fn from(error: Duplicated) -> Self {
+        Self::DuplicateParameter(error.0)
+    }
 }
 
 impl AuthorizationError {
@@ -201,51 +208,6 @@ pub struct AuthorizationRequest {
     /// Whether `openid` was requested, which is what makes this OIDC rather
     /// than plain OAuth.
     pub openid: bool,
-}
-
-/// The form parameters of a request, with duplicates still visible.
-///
-/// A `HashMap<String, String>` would have already lost the thing RFC 6749 §3.1
-/// asks us to check, so parsing takes the pairs as they arrived.
-#[derive(Debug, Default)]
-pub struct Parameters(BTreeMap<String, Vec<String>>);
-
-impl Parameters {
-    /// Collects `pairs`, keeping repeats so they can be refused.
-    pub fn from_pairs<I, K, V>(pairs: I) -> Self
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
-    {
-        let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (key, value) in pairs {
-            map.entry(key.into()).or_default().push(value.into());
-        }
-        Self(map)
-    }
-
-    /// The single value of `name`, or an error if it appeared twice.
-    fn get(&self, name: &str) -> Result<Option<&str>, AuthorizationError> {
-        match self.0.get(name).map(Vec::as_slice) {
-            None | Some([]) => Ok(None),
-            Some([one]) => Ok(Some(one.as_str())),
-            Some(_) => Err(AuthorizationError::DuplicateParameter(name.to_owned())),
-        }
-    }
-
-    /// Whether `name` was present at all, however many times.
-    fn present(&self, name: &str) -> bool {
-        self.0.get(name).is_some_and(|values| !values.is_empty())
-    }
-
-    /// Every value of a parameter that may legitimately repeat.
-    ///
-    /// RFC 8707 §2 defines `resource` as repeatable, which is the exception
-    /// that makes the general rule worth stating.
-    fn multi(&self, name: &str) -> &[String] {
-        self.0.get(name).map_or(&[], Vec::as_slice)
-    }
 }
 
 /// Validates a pushed authorization request.

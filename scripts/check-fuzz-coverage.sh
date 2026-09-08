@@ -47,6 +47,32 @@ while read -r target; do
   fi
 done <<<"$present"
 
+# A target that does not compile covers nothing, however present its file is.
+#
+# This check exists because the gate above did not catch a real regression: a
+# signature change in `asterius-jose` left `jws_parse.rs` uncompilable for
+# several commits. The `fuzz` crate is excluded from the workspace, so an
+# ordinary `cargo check` never touches it, and the nightly fuzzing job is the
+# only thing that builds it — once a day, long after the change.
+#
+# `cargo-fuzz` needs nightly. When it is absent this reports a skip rather than
+# passing quietly: a gate that cannot say whether it ran is worse than one that
+# says it did not.
+if [[ "$status" -eq 0 ]]; then
+  if rustup toolchain list 2>/dev/null | grep -q '^nightly'; then
+    echo "building every fuzz target (nightly)..."
+    if (cd fuzz && cargo +nightly check --bins --quiet); then
+      echo "fuzz targets build"
+    else
+      echo "FUZZ TARGET DOES NOT COMPILE: see the errors above" >&2
+      echo "  a target that does not build covers nothing" >&2
+      status=1
+    fi
+  else
+    echo "fuzz targets NOT built: no nightly toolchain (install with 'rustup toolchain install nightly')" >&2
+  fi
+fi
+
 if [[ "$status" -eq 0 ]]; then
   echo "fuzz coverage ok: $(wc -l <<<"$declared") parsers, each with a target"
 fi

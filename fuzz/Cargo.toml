@@ -175,3 +175,10 @@ path = "fuzz_targets/par_form.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "token_form"
+path = "fuzz_targets/token_form.rs"
+test = false
+doc = false
+bench = false

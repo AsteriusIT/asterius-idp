@@ -41,15 +41,20 @@ fuzz_target!(|data: &[u8]| {
         unverified.claimed_alg()
     );
 
-    // No key here signed this input, so nothing may verify against one — for
-    // any algorithm and any expected type. A pass here would mean a forged
-    // token had been accepted.
-    let typ = unverified.claimed_typ().to_owned();
+    // Whatever `typ` the token claims, reporting it must not panic and must
+    // not invent one. The *judgement* moved to `verify::Policy`, which is
+    // where the type rules are now tested; here the only claim is that the
+    // header is reported faithfully.
+    let claimed_typ = unverified.claimed_typ().map(ToOwned::to_owned);
+    assert_eq!(unverified.claimed_typ(), claimed_typ.as_deref());
+
+    // No key here signed this input, so nothing may verify against one. A pass
+    // would mean a forged token had been accepted.
     for key in keys() {
         let verifying = key.verifying_key().expect("public key");
         let Ok(parsed) = jws::parse(text) else { return };
         assert!(
-            parsed.verify(&verifying, &typ).is_err(),
+            parsed.verify(&verifying).is_err(),
             "a token this key never signed verified against it"
         );
     }

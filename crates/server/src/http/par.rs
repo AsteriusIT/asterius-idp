@@ -18,6 +18,7 @@
 
 use asterius_domain::{AuthRequestRepository, Client, ClientRepository, PushedRequest, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
+use asterius_oidc::form::Parameters;
 use asterius_oidc::par::MintedRequestUri;
 use asterius_oidc::{authorize, metadata::Endpoint};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -128,7 +129,7 @@ pub async fn push(
 
     // The request itself. Everything the client asked for is checked here,
     // once, while it is still a request and not yet a flow.
-    let parameters = authorize::Parameters::from_pairs(pairs);
+    let parameters = Parameters::from_pairs(pairs);
     let request = match authorize::validate(&parameters, client.id.as_str(), &client.registration) {
         Ok(request) => request,
         Err(failure) => {
