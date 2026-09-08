@@ -1,5 +1,6 @@
 //! HTTP transport: router assembly, middleware and the listener.
 
+pub mod authorize;
 pub mod dpop;
 pub mod forwarded;
 pub mod interaction;
