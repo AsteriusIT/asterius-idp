@@ -24,12 +24,34 @@ bind = "0.0.0.0:9443"
 # "behind_proxy"  — a trusted reverse proxy terminates TLS. Default.
 mode = "terminate_tls"
 
+# Largest request body accepted, in bytes. Default 65536. FAPI 2.0 request
+# bodies are small — a PAR request, a token request, a registration document —
+# so anything larger is either a mistake or an attempt. Over the limit: 413.
+request_body_limit_bytes = 65536
+
+# How long a request may take before it is abandoned with 408. Default 10.
+request_timeout_seconds = 10
+
 [server.tls]
 # Required when mode = "terminate_tls", and rejected otherwise: a deployment
 # that configures certificates while running behind a proxy usually believes it
 # is doing TLS and is not.
+#
+# TLS 1.2 and 1.3 only, with the nine BCP 195 cipher suites listed in
+# crates/server/src/http/tls.rs (FAPI 2.0 SP §5.2.1-5.2.2). There is no knob to
+# widen either set.
 certificate = "/etc/asterius/tls/fullchain.pem"
 private_key = "/etc/asterius/tls/privkey.pem"
+
+# Only meaningful when mode = "behind_proxy", and rejected otherwise.
+#
+# `X-Forwarded-For` and `Forwarded` are assertions any client can make, so they
+# are believed only when the immediate peer is listed here. The resolved client
+# address feeds rate limiting, login abuse protection and the audit trail: a
+# spoofable address means a spoofable rate-limit bucket and an audit record
+# naming the wrong person. Default: loopback only.
+# [server.proxy]
+# trusted_cidrs = ["127.0.0.0/8", "::1/128", "10.42.0.0/16"]
 
 [database]
 # Required. Contains a password, so it is held in a Secret<String> and prints
