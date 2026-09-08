@@ -108,7 +108,9 @@ impl TypRule {
     #[must_use]
     pub fn accepts(&self, claimed: Option<&str>) -> bool {
         match self {
-            Self::Exactly(expected) => claimed.is_some_and(|found| Self::same_type(found, expected)),
+            Self::Exactly(expected) => {
+                claimed.is_some_and(|found| Self::same_type(found, expected))
+            }
             Self::OptionalOneOf(accepted) => match claimed {
                 None => true,
                 Some(found) => accepted
@@ -618,14 +620,16 @@ mod tests {
         );
 
         let (token, resolver) = token_without_typ(SigningAlgorithm::EdDsa, &valid_claims());
-        assert!(verify(&token, &assertion, &resolver, now()).is_ok(), "absent");
+        assert!(
+            verify(&token, &assertion, &resolver, now()).is_ok(),
+            "absent"
+        );
 
         // RFC 7515 §4.1.9 lets a sender omit the `application/` prefix, and
         // RFC 7519 §5.1 only *recommends* upper case, so all of these name the
         // same media type.
         for spelling in ["JWT", "jwt", "Jwt", "application/JWT", "application/jwt"] {
-            let (token, resolver) =
-                token_with(SigningAlgorithm::EdDsa, spelling, &valid_claims());
+            let (token, resolver) = token_with(SigningAlgorithm::EdDsa, spelling, &valid_claims());
             assert!(
                 verify(&token, &assertion, &resolver, now()).is_ok(),
                 "refused {spelling:?}, which is the same media type as JWT"

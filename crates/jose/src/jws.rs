@@ -315,10 +315,7 @@ mod tests {
             let forged_payload = B64.encode(br#"{"sub":"mallory"}"#);
             let forged = format!("{}.{forged_payload}.{}", segments[0], segments[2]);
             assert!(
-                parse(&forged)
-                    .expect("parses")
-                    .verify(&verifying)
-                    .is_err(),
+                parse(&forged).expect("parses").verify(&verifying).is_err(),
                 "{algorithm} accepted a swapped payload"
             );
 
@@ -327,10 +324,7 @@ mod tests {
             signature[0] ^= 0x01;
             let flipped = format!("{}.{}.{}", segments[0], segments[1], B64.encode(&signature));
             assert!(
-                parse(&flipped)
-                    .expect("parses")
-                    .verify(&verifying)
-                    .is_err(),
+                parse(&flipped).expect("parses").verify(&verifying).is_err(),
                 "{algorithm} accepted a flipped signature bit"
             );
         }
