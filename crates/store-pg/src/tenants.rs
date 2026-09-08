@@ -48,6 +48,7 @@ struct Row {
     issuer: String,
     custom_host: Option<String>,
     display_name: String,
+    default_resource: String,
     status: String,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -75,6 +76,7 @@ impl Row {
             issuer,
             custom_host: self.custom_host,
             display_name: self.display_name,
+            default_resource: self.default_resource,
             status,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -87,7 +89,8 @@ impl TenantRepository for PgTenantRepository {
     async fn find_by_id(&self, id: &TenantId) -> Result<Option<Tenant>, DomainError> {
         let row = sqlx::query_as!(
             Row,
-            "select tenant_id, issuer, custom_host, display_name, status, created_at, updated_at
+            "select tenant_id, issuer, custom_host, display_name, default_resource, status,
+                    created_at, updated_at
              from tenants
              where tenant_id = $1",
             id.as_str()
@@ -101,7 +104,8 @@ impl TenantRepository for PgTenantRepository {
     async fn find_by_issuer(&self, issuer: &Issuer) -> Result<Option<Tenant>, DomainError> {
         let row = sqlx::query_as!(
             Row,
-            "select tenant_id, issuer, custom_host, display_name, status, created_at, updated_at
+            "select tenant_id, issuer, custom_host, display_name, default_resource, status,
+                    created_at, updated_at
              from tenants
              where issuer = $1",
             issuer.as_str()
@@ -115,7 +119,8 @@ impl TenantRepository for PgTenantRepository {
     async fn find_by_host(&self, host: &str) -> Result<Option<Tenant>, DomainError> {
         let row = sqlx::query_as!(
             Row,
-            "select tenant_id, issuer, custom_host, display_name, status, created_at, updated_at
+            "select tenant_id, issuer, custom_host, display_name, default_resource, status,
+                    created_at, updated_at
              from tenants
              where custom_host = $1",
             host
@@ -129,7 +134,8 @@ impl TenantRepository for PgTenantRepository {
     async fn list(&self) -> Result<Vec<Tenant>, DomainError> {
         sqlx::query_as!(
             Row,
-            "select tenant_id, issuer, custom_host, display_name, status, created_at, updated_at
+            "select tenant_id, issuer, custom_host, display_name, default_resource, status,
+                    created_at, updated_at
              from tenants
              order by tenant_id"
         )
@@ -153,17 +159,20 @@ impl TenantRepository for PgTenantRepository {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
 
         sqlx::query!(
-            "insert into tenants (tenant_id, issuer, custom_host, display_name, status)
-             values ($1, $2, $3, $4, $5)
+            "insert into tenants
+                 (tenant_id, issuer, custom_host, display_name, default_resource, status)
+             values ($1, $2, $3, $4, $5, $6)
              on conflict (tenant_id) do update
              set issuer = excluded.issuer,
                  custom_host = excluded.custom_host,
                  display_name = excluded.display_name,
+                 default_resource = excluded.default_resource,
                  status = excluded.status",
             tenant.id.as_str(),
             tenant.issuer.as_str(),
             tenant.custom_host.as_deref(),
             tenant.display_name,
+            tenant.default_resource,
             tenant.status.as_str()
         )
         .execute(&mut *transaction)

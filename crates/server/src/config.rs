@@ -130,6 +130,14 @@ pub struct TenantConfig {
     pub id: TenantId,
     /// The tenant's canonical issuer identifier.
     pub issuer: Issuer,
+    /// The `aud` an access token carries when its grant named no resource.
+    ///
+    /// Defaults to the issuer, which is the one resource identifier a tenant
+    /// is always known to own: UserInfo and introspection live under it, so a
+    /// token audienced there is a token for this server's own protected
+    /// resources rather than one every resource server should accept. A
+    /// deployment fronting a separate API sets it explicitly.
+    pub default_resource: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +349,7 @@ struct RawTenant {
     // Kept as a string here so that an invalid issuer becomes an accumulated
     // problem with a key path, rather than a serde error that hides the rest.
     issuer: Option<String>,
+    default_resource: Option<String>,
 }
 
 /// Default listener address.
@@ -735,11 +744,46 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
             );
         }
 
+        // Validated here rather than at first token: an audience that is not
+        // an absolute https URI without a fragment (RFC 8707 §2) is a boot
+        // failure someone is watching, not a signing failure at 3am.
+        let default_resource = match tenant.default_resource {
+            None => None,
+            Some(raw) => match resource_identifier(&raw) {
+                Ok(resource) => Some(resource),
+                Err(reason) => {
+                    errors.problem(format!("tenant[{index}].default_resource"), reason);
+                    None
+                }
+            },
+        };
+
         if let (Some(id), Some(issuer)) = (id, issuer) {
-            tenants.push(TenantConfig { id, issuer });
+            let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
+            tenants.push(TenantConfig {
+                id,
+                issuer,
+                default_resource,
+            });
         }
     }
     tenants
+}
+
+/// Checks a configured default resource against RFC 8707 §2.
+///
+/// The same shape the schema's `default_resource` check enforces and that
+/// `Audience::new` enforces again at issuance. Three statements of one rule is
+/// deliberate: this one names the config key an operator has to fix.
+fn resource_identifier(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw).map_err(|e| e.to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("must be https".to_owned());
+    }
+    if parsed.fragment().is_some() {
+        return Err("must not carry a fragment".to_owned());
+    }
+    Ok(raw.to_owned())
 }
 
 /// Overlays `ASTERIUS__SECTION__KEY` variables onto the parsed table.
@@ -1018,6 +1062,53 @@ mod tests {
                 problems.as_slice()[0].message.contains(expected),
                 "{issuer}: expected {expected:?} in {:?}",
                 problems.as_slice()[0].message
+            );
+        }
+    }
+
+    /// RFC 9068 §3 requires a default resource indicator, and the issuer is
+    /// the one identifier a tenant is always known to own — UserInfo and
+    /// introspection live under it. An operator who names nothing gets that
+    /// rather than a token audienced at nothing.
+    #[test]
+    fn a_tenant_that_names_no_default_resource_is_audienced_at_its_issuer() {
+        let text = "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"demo\"\n\
+                    issuer = \"https://as.example/t/demo\"\n";
+        let config = parse(text).expect("valid");
+        assert_eq!(
+            config.tenants[0].default_resource,
+            "https://as.example/t/demo"
+        );
+    }
+
+    #[test]
+    fn a_declared_default_resource_wins_over_the_issuer() {
+        let text = "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"demo\"\n\
+                    issuer = \"https://as.example/t/demo\"\n\
+                    default_resource = \"https://api.example/v1\"\n";
+        let config = parse(text).expect("valid");
+        assert_eq!(config.tenants[0].default_resource, "https://api.example/v1");
+    }
+
+    /// RFC 8707 §2: a resource identifier is an absolute URI without a
+    /// fragment. Refused at boot, where somebody is watching, rather than at
+    /// the first token request, where the failure is a signing error nobody
+    /// can connect to a configuration key.
+    #[test]
+    fn a_default_resource_that_is_not_a_resource_identifier_is_refused() {
+        for bad in [
+            "http://api.example/",
+            "https://api.example/#frag",
+            "api.example",
+        ] {
+            let text = format!(
+                "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"demo\"\n\
+                 issuer = \"https://as.example/t/demo\"\ndefault_resource = \"{bad}\"\n"
+            );
+            assert_eq!(
+                problems(parse(&text)).paths().collect::<Vec<_>>(),
+                ["tenant[0].default_resource"],
+                "accepted {bad}"
             );
         }
     }

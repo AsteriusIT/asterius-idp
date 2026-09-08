@@ -72,6 +72,7 @@ fn server(capabilities: Capabilities) -> Router {
     let tenant = Tenant {
         id: TenantId::parse("demo").expect("tenant id"),
         issuer: Issuer::parse(ISSUER).expect("issuer"),
+        default_resource: "https://api.example/".to_owned(),
         custom_host: None,
         display_name: "Demo".to_owned(),
         status: TenantStatus::Active,

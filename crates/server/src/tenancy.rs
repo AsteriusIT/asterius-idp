@@ -417,6 +417,7 @@ mod tests {
         Tenant {
             id: TenantId::parse(id).expect("test tenant id"),
             issuer: Issuer::parse(issuer).expect("test issuer"),
+            default_resource: "https://api.example/".to_owned(),
             custom_host: custom_host.map(str::to_owned),
             display_name: id.to_owned(),
             status: TenantStatus::Active,

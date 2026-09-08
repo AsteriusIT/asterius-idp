@@ -14,6 +14,20 @@ pub struct Tenant {
     pub id: TenantId,
     /// The canonical issuer identifier.
     pub issuer: Issuer,
+    /// The resource identifier an access token is audienced at when the grant
+    /// names none of its own.
+    ///
+    /// RFC 9068 §3 requires one: an access token must carry an `aud`, and a
+    /// grant that went through no `resource` parameter (RFC 8707 §2) has
+    /// nothing to put there. Leaving it to the issuance code would mean
+    /// inventing an audience at the moment a token is signed, which is how a
+    /// deployment ends up with tokens every resource server accepts.
+    ///
+    /// Per tenant rather than per deployment, because `aud` is what a resource
+    /// server compares to decide a token was meant for it, and two tenants
+    /// sharing one identifier would give it nothing to tell them apart by
+    /// except `iss`.
+    pub default_resource: String,
     /// A vanity host that resolves to this tenant without a path prefix.
     pub custom_host: Option<String>,
     /// Human-readable name, shown on login and consent pages.

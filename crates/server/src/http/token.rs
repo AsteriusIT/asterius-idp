@@ -199,6 +199,21 @@ fn no_store() -> [(header::HeaderName, header::HeaderValue); 2] {
     ]
 }
 
+/// An RFC 6749 §5.2 error a grant handler decided on.
+///
+/// Every code a *grant* can reach — `invalid_grant`, `invalid_request`,
+/// `invalid_scope` — is a 400. `invalid_client` is the one §5.2 code with its
+/// own status, and a handler never returns it: by the time one runs, the
+/// client has authenticated. So the status is not a parameter, and a handler
+/// cannot accidentally answer a bad code with a 200.
+///
+/// The description is `&'static str` for the reason [`description_for`] gives:
+/// it is written here, never assembled from the request.
+#[must_use]
+pub fn refused(code: &'static str, description: &'static str) -> Response {
+    error(StatusCode::BAD_REQUEST, code, description)
+}
+
 /// The answer when a grant handler could not issue tokens.
 ///
 /// A [`DomainError`] reaching here is the server's own fault. Everything a

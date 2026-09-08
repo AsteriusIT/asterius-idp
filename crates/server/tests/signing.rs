@@ -100,6 +100,7 @@ impl Fixture {
             .upsert(&Tenant {
                 id: tenant.clone(),
                 issuer: Issuer::parse(&format!("https://as.example/t/{id}")).expect("issuer"),
+                default_resource: "https://api.example/".to_owned(),
                 custom_host: None,
                 display_name: "Signing".to_owned(),
                 status: TenantStatus::Active,

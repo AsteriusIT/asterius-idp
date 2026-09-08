@@ -1,5 +1,6 @@
 //! HTTP transport: router assembly, middleware and the listener.
 
+pub mod authorization_code;
 pub mod authorize;
 pub mod client_configuration;
 pub mod dpop;

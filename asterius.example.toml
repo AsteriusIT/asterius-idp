@@ -141,3 +141,18 @@ dpop_nonce = false       # server-issued DPoP nonces (RFC 9449 §8)
 [[tenant]]
 id = "demo"
 issuer = "https://as.example/t/demo"
+
+# The `aud` an access token carries when the authorization request named no
+# `resource` of its own (RFC 8707 §2). RFC 9068 §3 requires the authorization
+# server to supply one: an access token must say which resource server it was
+# minted for, and a token audienced at nothing is a token every resource server
+# has to make its own mind up about.
+#
+# Optional. Defaults to the issuer above, which is the one resource identifier
+# a tenant is always known to own — UserInfo and introspection live under it —
+# so the default means "a token for this server's own protected resources".
+# A deployment fronting a separate API names that API here instead.
+#
+# https, no fragment. Per tenant, not per deployment: `aud` is what a resource
+# server compares to decide a token was meant for it.
+# default_resource = "https://api.example/"

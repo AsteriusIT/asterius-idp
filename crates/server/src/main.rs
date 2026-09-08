@@ -209,6 +209,12 @@ async fn bootstrap_tenants(repository: &PgTenantRepository, config: &Config) -> 
             display_name: existing
                 .as_ref()
                 .map_or_else(|| declared.id.to_string(), |t| t.display_name.clone()),
+            // Config wins, because it is the thing an operator edits. The
+            // stored value is not preserved the way `display_name` is: an
+            // audience that silently outlived the configuration that set it is
+            // how a tenant keeps minting tokens for a resource server that was
+            // decommissioned.
+            default_resource: declared.default_resource.clone(),
             status: existing.as_ref().map_or(TenantStatus::Active, |t| t.status),
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),

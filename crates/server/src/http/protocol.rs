@@ -11,6 +11,7 @@
 //! from a document the specification says must contain it.
 
 use crate::client_auth::ClientAuthenticator;
+use crate::http::authorization_code::AuthorizationCode;
 use crate::http::authorize::{self, AuthorizeContext};
 use crate::http::client_configuration::{self, ConfigurationContext};
 use crate::http::dpop::DpopEndpoint;
@@ -375,12 +376,29 @@ async fn token_endpoint(
     let tenant_for_auth = Arc::clone(&tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
 
+    // The grant handler is built here, per request, rather than held on
+    // `ClientEndpoints`. Two of the things it needs are facts about *this*
+    // request — the instant it arrived and the DPoP key it proved — and
+    // `GrantHandler::handle` receives neither. PAR solved the same problem the
+    // same way, by computing the proof key at the edge and handing it down.
+    let codes = scope.codes();
+    let grants = scope.grants();
+    let sessions = scope.sessions();
+    let authorization_code = AuthorizationCode {
+        codes: &codes,
+        grants: &grants,
+        sessions: &sessions,
+        signer: endpoints.signer.as_ref(),
+        proof_key: binding.as_ref().map(|binding| &binding.jkt),
+        now,
+    };
+
     let mut response = token::token(
         TokenContext {
             tenant: &tenant,
             clients: &clients,
             capabilities: endpoints.capabilities,
-            grants: &[],
+            grants: &[&authorization_code],
         },
         &headers,
         &body,

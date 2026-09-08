@@ -644,6 +644,7 @@ mod tests {
         let tenant = Tenant {
             id: TenantId::new("demo"),
             issuer: asterius_domain::Issuer::parse("https://as.example/t/demo").expect("issuer"),
+            default_resource: "https://api.example/".to_owned(),
             custom_host: None,
             display_name: "demo".to_owned(),
             status: asterius_domain::TenantStatus::Active,

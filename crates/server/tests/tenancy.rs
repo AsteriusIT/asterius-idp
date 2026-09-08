@@ -68,6 +68,7 @@ fn tenant(id: &str, issuer: &str, custom_host: Option<&str>, status: TenantStatu
     Tenant {
         id: TenantId::parse(id).expect("tenant id"),
         issuer: Issuer::parse(issuer).expect("issuer"),
+        default_resource: "https://api.example/".to_owned(),
         custom_host: custom_host.map(str::to_owned),
         display_name: id.to_owned(),
         status,

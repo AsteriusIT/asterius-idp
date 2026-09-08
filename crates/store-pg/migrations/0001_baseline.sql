@@ -45,6 +45,13 @@ create table tenants (
     -- this tenant without the /t/{tenant} path prefix.
     custom_host    text        unique,
     display_name   text        not null,
+    -- The `aud` an access token carries when the grant it came from named no
+    -- resource of its own (RFC 9068 §3, RFC 8707 §2). https and no fragment,
+    -- the same shape RFC 8707 §2 requires of a `resource` parameter, so a
+    -- value that could never be a legitimate audience cannot be stored and
+    -- then discovered at the moment a token is signed.
+    default_resource text      not null
+                               check (default_resource ~ '^https://[^#]*$'),
     status         text        not null default 'active'
                                check (status in ('active', 'disabled')),
     -- Per-tenant policy: lifetimes, ACR rules, rate limits, theming tokens.

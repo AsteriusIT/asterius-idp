@@ -103,6 +103,7 @@ fn tenant(id: &str, issuer: &str) -> Tenant {
     Tenant {
         id: TenantId::new(id),
         issuer: Issuer::parse(issuer).expect("issuer"),
+        default_resource: "https://api.example/".to_owned(),
         custom_host: None,
         display_name: id.to_owned(),
         status: TenantStatus::Active,

@@ -83,6 +83,7 @@ fn tenant(id: &str, issuer: &str) -> Tenant {
     Tenant {
         id: TenantId::new(id),
         issuer: Issuer::parse(issuer).expect("test issuer"),
+        default_resource: "https://api.example/".to_owned(),
         custom_host: None,
         display_name: format!("Tenant {id}"),
         status: TenantStatus::Active,
@@ -294,7 +295,8 @@ db_test! {
     /// prohibition lives in the database rather than in a code review habit.
     async fn audit_events_reject_update_and_delete(db) {
         sqlx::query(
-            "insert into tenants (tenant_id, issuer, display_name) values ('a', 'https://a.example', 'A')",
+            "insert into tenants (tenant_id, issuer, display_name, default_resource)
+             values ('a', 'https://a.example', 'A', 'https://api.example/')",
         )
         .execute(&db.pool)
         .await
@@ -326,7 +328,8 @@ db_test! {
     /// issuing path cannot quietly persist a long-lived code.
     async fn the_schema_refuses_an_authorization_code_that_outlives_sixty_seconds(db) {
         sqlx::query(
-            "insert into tenants (tenant_id, issuer, display_name) values ('a', 'https://a.example', 'A')",
+            "insert into tenants (tenant_id, issuer, display_name, default_resource)
+             values ('a', 'https://a.example', 'A', 'https://api.example/')",
         )
         .execute(&db.pool)
         .await
@@ -510,11 +513,12 @@ const A_JWT: &str = "eyJhbGciOiJFZERTQSIsInR5cCI6ImF0K2p3dCJ9.eyJzdWIiOiJhbGljZS
 
 async fn seed_tenant(pool: &PgPool, id: &str) {
     sqlx::query(
-        "insert into tenants (tenant_id, issuer, display_name)
-         values ($1, $2, $1) on conflict do nothing",
+        "insert into tenants (tenant_id, issuer, display_name, default_resource)
+         values ($1, $2, $1, $3) on conflict do nothing",
     )
     .bind(id)
     .bind(format!("https://as.example/t/{id}"))
+    .bind("https://api.example/")
     .execute(pool)
     .await
     .expect("seed tenant");
