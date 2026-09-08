@@ -148,6 +148,8 @@ fn run() -> Result<(), String> {
                 store: store.clone(),
                 capabilities: config.features,
                 par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
+                registration: config.registration.clone(),
+                audit: Arc::new(PgAuditSink::new(store.pool().clone())),
                 session_lifetimes: Lifetimes::default().clamped(),
                 // Passwords are the legacy path and passkeys are primary, but
                 // the parameters are checked here rather than at first login:

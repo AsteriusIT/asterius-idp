@@ -38,7 +38,7 @@ pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
 pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, SigningAlgorithm};
 pub use ports::{
-    AuthRequestRepository, ClientRepository, CredentialVerifier, InteractionRepository,
-    ReplayCheck, ReplayGuard, ReplayPurpose, SessionRepository,
+    AuthRequestRepository, ClientRegistry, ClientRepository, CredentialVerifier,
+    InteractionRepository, ReplayCheck, ReplayGuard, ReplayPurpose, SessionRepository,
 };
 pub use secret::{Secret, ct_eq};

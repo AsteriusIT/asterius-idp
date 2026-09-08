@@ -7,6 +7,7 @@ pub mod interaction;
 pub mod par;
 pub mod protocol;
 pub mod redirect;
+pub mod register;
 pub mod request_id;
 pub mod security_headers;
 pub mod server;

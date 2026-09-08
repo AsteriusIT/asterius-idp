@@ -244,6 +244,26 @@ fn is_opaque_credential(value: &str) -> bool {
     if !is_base64url(value) {
         return false;
     }
+    // A protocol constant, not a credential.
+    //
+    // OAuth error codes, `grant_type` values and `amr` labels are all
+    // `lowercase_with_underscores`, which is a strict subset of base64url — so
+    // the length and alphabet tests above pass and only the distinct-character
+    // count stands between them and redaction. It is not enough:
+    // `temporarily_unavailable` is 23 characters over 15 distinct, and
+    // `unsupported_grant_type` is 22 over 13. Both were being destroyed in
+    // audit details, which contradicts this module's own promise that "an
+    // error code survives".
+    //
+    // A credential drawn from a CSPRNG over the 64-character base64url
+    // alphabet essentially never lands entirely inside the 27 characters
+    // `[a-z_]`: for the shortest value considered here that is (27/64)^22,
+    // about one in seventy million. Excluding that shape costs nothing real
+    // and fixes every protocol constant at once, including the ones nobody has
+    // written yet.
+    if value.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
+        return false;
+    }
     // Reject things that are merely long and dull: a scope list, a repeated
     // character, an identifier. A real credential uses most of its alphabet.
     distinct_characters(value) >= 12
@@ -276,6 +296,105 @@ fn distinct_characters(value: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// Every OAuth error code this server can emit survives redaction.
+    ///
+    /// Two of these were being destroyed: `temporarily_unavailable` and
+    /// `unsupported_grant_type` both clear the length and distinct-character
+    /// bars. `invalid_client_metadata` survived by a single distinct
+    /// character, which is luck rather than design — hence the shape rule
+    /// rather than a longer list of exceptions.
+    #[test]
+    fn no_protocol_constant_is_mistaken_for_a_credential() {
+        const CODES: &[&str] = &[
+            // RFC 6749 §4.1.2.1 and §5.2
+            "invalid_request",
+            "unauthorized_client",
+            "access_denied",
+            "unsupported_response_type",
+            "invalid_scope",
+            "server_error",
+            "temporarily_unavailable",
+            "invalid_client",
+            "invalid_grant",
+            "unsupported_grant_type",
+            // OIDC Core §3.1.2.6
+            "interaction_required",
+            "login_required",
+            "consent_required",
+            "request_not_supported",
+            "request_uri_not_supported",
+            "registration_not_supported",
+            // RFC 7591 §3.2.2
+            "invalid_redirect_uri",
+            "invalid_client_metadata",
+            "invalid_software_statement",
+            "unapproved_software_statement",
+            // RFC 9449 §5, §8
+            "invalid_dpop_proof",
+            "use_dpop_nonce",
+            // grant types and amr labels travel the same path
+            "authorization_code",
+            "client_credentials",
+            "refresh_token",
+            "urn:ietf:params:oauth:grant-type:token-exchange",
+        ];
+
+        for code in CODES {
+            assert_eq!(
+                redact(code),
+                *code,
+                "the audit trail would store a redaction marker instead of {code}"
+            );
+            assert!(
+                classify(code).is_none(),
+                "{code} was classified as {:?}",
+                classify(code)
+            );
+        }
+    }
+
+    /// The exemption is narrow: anything with an upper-case letter or a digit
+    /// is still a candidate, which is every credential this server mints.
+    #[test]
+    fn the_lower_case_exemption_does_not_let_a_credential_through() {
+        // Real values from the generators, and shapes close to them.
+        for credential in [
+            "dBjftJeZ4CVPmB92K27uhbUJU1p1rwW1gFWFOEjXk",
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+            "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I",
+            // All lower case but with a digit: still a credential shape.
+            "abcdefghijklmnopqrstuvwxyz0123456789abcdef",
+            // All lower case but long and with a hyphen, which `[a-z_]` excludes.
+            "abcdefghijklmnopqrstuvwxyz-abcdefghijklmno",
+        ] {
+            assert!(
+                classify(credential).is_some(),
+                "a credential slipped through: {credential}"
+            );
+            assert_ne!(
+                redact(credential),
+                credential,
+                "{credential} was not redacted"
+            );
+        }
+
+        // And a genuinely random all-lower-case run is the case being accepted
+        // as a residual risk: it is documented in `is_opaque_credential`, and
+        // no generator here produces one.
+        let seen = asterius_domain_probe();
+        assert!(seen, "the generators still produce mixed-case values");
+    }
+
+    /// Every credential generator in this crate produces a value the scanner
+    /// would catch, so the exemption above cannot hide one of ours.
+    fn asterius_domain_probe() -> bool {
+        (0..200).all(|_| {
+            let token = crate::OpaqueToken::generate();
+            let value = token.expose();
+            !value.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+        })
+    }
+
     use super::*;
 
     /// Real shapes, taken from the credentials this server issues and accepts.

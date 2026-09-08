@@ -130,6 +130,49 @@ pub trait ClientRepository: Debug + Send + Sync {
     async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError>;
 }
 
+/// Creates the clients of one tenant.
+///
+/// Separate from [`ClientRepository`] rather than a method on it, because the
+/// two have different readerships: every protocol endpoint reads clients, and
+/// exactly one — dynamic client registration (`ast-m9c.4`) — creates them.
+/// Folding creation into the port that PAR and the token endpoint hold would
+/// hand a write capability to code that has no business having one, and would
+/// make every test double for a read-only endpoint implement a write it never
+/// calls.
+#[async_trait::async_trait]
+pub trait ClientRegistry: Debug + Send + Sync {
+    /// Stores a newly registered client and the digest of the registration
+    /// access token that will manage it.
+    ///
+    /// Creation, never replacement: a caller that reached here has just minted
+    /// an unguessable `client_id`, so a row already under that id is a
+    /// collision and not an update. Silently overwriting would let a repeat of
+    /// the same call retire a live client's keys and redirect URIs.
+    ///
+    /// `registration_access_token` is the SHA-256 digest of the token, never
+    /// the token: see [`crate::credentials`] for why the bare digest is the
+    /// right at-rest form for a value with this much entropy, and why storing
+    /// the token itself would put a bearer credential in every backup.
+    ///
+    /// Returns the client **as stored**. RFC 7591 §3.2.1 requires the response
+    /// to carry the metadata the server actually registered — including values
+    /// it defaulted or replaced — so the caller renders its response from what
+    /// comes back here rather than from what it sent, and cannot describe a
+    /// client that does not exist.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the `client_id` is already taken, or if the
+    /// tenant does not exist. [`DomainError::Invalid`] if the entity belongs to
+    /// another tenant or the store refuses it. [`DomainError::Storage`]
+    /// otherwise.
+    async fn register(
+        &self,
+        client: &Client,
+        registration_access_token: &[u8; 32],
+    ) -> Result<Client, DomainError>;
+}
+
 /// Stores pushed authorization requests for one tenant.
 ///
 /// Tenant-scoped, like the other repositories: a `request_uri` issued by one

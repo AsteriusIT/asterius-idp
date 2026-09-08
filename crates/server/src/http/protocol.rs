@@ -15,6 +15,7 @@ use crate::http::authorize::{self, AuthorizeContext};
 use crate::http::dpop::DpopEndpoint;
 use crate::http::interaction::{self, InteractionContext};
 use crate::http::par::{self, PushContext};
+use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::token::{self, TokenContext};
 use asterius_domain::{Capabilities, KeyStore, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
@@ -74,6 +75,10 @@ pub struct ClientEndpoints {
     pub capabilities: Capabilities,
     /// How long a `request_uri` lives, already clamped.
     pub par_lifetime: time::Duration,
+    /// Who may register a client, and how.
+    pub registration: RegistrationPolicy,
+    /// Where registration decisions are recorded.
+    pub audit: Arc<dyn asterius_domain::AuditSink>,
     /// How long this deployment's sessions live.
     pub session_lifetimes: asterius_domain::Lifetimes,
     /// Argon2id parameters, checked against the floor at startup.
@@ -171,6 +176,12 @@ pub fn routes(state: ProtocolState) -> Router {
             // discovers, they are this server's own user interface, and
             // advertising them would invite a client to link straight into
             // one.
+            // RFC 7591. No DPoP check: there is no client authentication at
+            // this endpoint and no client yet to bind a proof to.
+            .route(
+                Endpoint::Registration.path(),
+                post(client_registration).with_state(Arc::clone(&endpoints)),
+            )
             .route(
                 "/interaction/{id}",
                 get(interaction_show)
@@ -190,6 +201,7 @@ pub fn routes(state: ProtocolState) -> Router {
                     Endpoint::PushedAuthorizationRequest
                         | Endpoint::Token
                         | Endpoint::Authorization
+                        | Endpoint::Registration
                 ))
         {
             continue;
@@ -363,6 +375,32 @@ async fn token_endpoint(
         DpopEndpoint::supply_nonce(&mut response, binding);
     }
     response
+}
+
+/// `POST /register` — RFC 7591 §3.
+async fn client_registration(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    register::register(
+        RegisterContext {
+            tenant: &tenant,
+            clients: &clients,
+            capabilities: endpoints.capabilities,
+            policy: &endpoints.registration,
+            audit: endpoints.audit.as_ref(),
+            request_id: Some(request_id.as_str()),
+        },
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
 }
 
 /// `GET /authorize` — RFC 9126 §4.

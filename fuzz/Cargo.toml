@@ -125,6 +125,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "initial_access_token"
+path = "fuzz_targets/initial_access_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "interaction_cookie"
 path = "fuzz_targets/interaction_cookie.rs"
 test = false

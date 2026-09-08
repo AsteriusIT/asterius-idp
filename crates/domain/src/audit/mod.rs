@@ -219,6 +219,36 @@ impl Detail {
         self
     }
 
+    /// Records a value drawn from a closed set this server owns.
+    ///
+    /// The `&'static str` bound is the whole point, and it is doing real work:
+    /// a value that must live for the program's lifetime cannot have arrived in
+    /// a request, so there is nothing here to redact. That makes this the right
+    /// home for an OAuth error code, a policy name, a grant type — the closed
+    /// vocabularies that are the most useful thing in a trail and the most
+    /// annoying thing to lose.
+    ///
+    /// And they were being lost. [`Self::text`] runs [`redaction::redact`],
+    /// whose heuristic is deliberately biased towards false positives: it
+    /// classifies any run of 22 or more `base64url` characters using twelve or
+    /// more distinct ones as a credential. `temporarily_unavailable` is 23
+    /// characters over 15 distinct, so recording it through `text` stored
+    /// `[REDACTED:credential:…]` — exactly the outcome `redact`'s own
+    /// documentation promises does not happen to "a client name, an error code
+    /// or a scope list". Tightening the scanner to spare that one string would
+    /// weaken it for every caller; giving a compile-time constant a route that
+    /// does not need scanning costs nobody anything.
+    ///
+    /// Use [`Self::text`] for anything a request could have influenced, even
+    /// indirectly. The bound will not stop you — `&'static str` can be leaked
+    /// from a `String` — but it makes doing so a deliberate act.
+    #[must_use]
+    pub fn label(mut self, key: &str, value: &'static str) -> Self {
+        self.0
+            .insert(key.to_owned(), DetailValue::Text(value.to_owned()));
+        self
+    }
+
     /// Records a number.
     #[must_use]
     pub fn number(mut self, key: &str, value: i64) -> Self {

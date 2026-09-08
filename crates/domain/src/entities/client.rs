@@ -925,6 +925,32 @@ impl ClientRegistration {
     pub fn accepts_redirect_uri(&self, presented: &str) -> bool {
         RedirectUri::is_registered(&self.redirect_uris, presented, self.application_type)
     }
+
+    /// The `response_types` this registration implies.
+    ///
+    /// Derived, never stored as an independent fact. RFC 7591 §2.1 ties
+    /// `response_types` to `grant_types`, and [`ClientMetadata::validate`]
+    /// refuses a document where the two disagree — so a registration carrying
+    /// its own copy would be a second place for the same answer to live, and
+    /// the two would eventually differ.
+    ///
+    /// There are exactly two callers and they must not diverge: the storage
+    /// adapter writing the `response_types` column, and dynamic client
+    /// registration echoing the stored registration back (RFC 7591 §3.2.1). If
+    /// the renderer and the writer computed this separately, a client could be
+    /// told it registered `["code"]` while the row said otherwise.
+    #[must_use]
+    pub fn response_types(&self) -> &'static [&'static str] {
+        if self
+            .grant_types
+            .iter()
+            .any(|grant| grant.uses_the_authorization_endpoint())
+        {
+            &Self::RESPONSE_TYPES
+        } else {
+            &[]
+        }
+    }
 }
 
 impl ClientMetadata {
