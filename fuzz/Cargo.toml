@@ -200,3 +200,10 @@ path = "fuzz_targets/interaction_cookie.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "claims_request"
+path = "fuzz_targets/claims_request.rs"
+test = false
+doc = false
+bench = false
