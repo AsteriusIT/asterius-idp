@@ -97,7 +97,7 @@ Not yet — there is no runnable release. When there is, the goal is:
 
 ```sh
 docker compose up          # PostgreSQL + Asterius + seeded tenant
-open https://localhost:8443/t/demo/.well-known/openid-configuration
+open https://localhost:9443/t/demo/.well-known/openid-configuration
 ```
 
 ## Contributing

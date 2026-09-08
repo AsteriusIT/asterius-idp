@@ -257,7 +257,13 @@ struct RawTenant {
     issuer: Option<String>,
 }
 
-const DEFAULT_BIND: &str = "0.0.0.0:8443";
+/// Default listener address.
+///
+/// Not 8443: that is the port `tailscale serve` binds to proxy a local app,
+/// and colliding with it means the server will not start on a machine that is
+/// doing something entirely reasonable. 9443 keeps the "TLS on a high port"
+/// convention without the clash.
+const DEFAULT_BIND: &str = "0.0.0.0:9443";
 const DEFAULT_MAX_CONNECTIONS: u32 = 16;
 
 // ---------------------------------------------------------------------------
@@ -545,7 +551,7 @@ mod tests {
     #[test]
     fn minimal_configuration_is_accepted_with_defaults() {
         let config = parse(MINIMAL).expect("minimal config should be valid");
-        assert_eq!(config.server.bind.to_string(), "0.0.0.0:8443");
+        assert_eq!(config.server.bind.to_string(), "0.0.0.0:9443");
         assert_eq!(config.server.mode, TransportMode::BehindProxy);
         assert!(config.server.tls.is_none());
         assert_eq!(config.database.max_connections, 16);

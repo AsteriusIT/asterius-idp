@@ -4,15 +4,20 @@
 # ASTERIUS__<SECTION>__<KEY>, upper-cased, with `__` between path segments:
 #
 #   ASTERIUS__DATABASE__URL=postgres://asterius:secret@db:5432/asterius
-#   ASTERIUS__SERVER__BIND=0.0.0.0:8443
+#   ASTERIUS__SERVER__BIND=0.0.0.0:9443
 #   ASTERIUS__FEATURES__SSF=true
 #
 # Unknown keys are a startup error, not a warning: a typo in a security flag
 # must never be silently ignored.
 
 [server]
-# Address to listen on. Default: "0.0.0.0:8443".
-bind = "0.0.0.0:8443"
+# Address to listen on. Default: "0.0.0.0:9443".
+#
+# Deliberately not 8443. `tailscale serve` binds that port on a node's Tailscale
+# addresses to proxy a local app, which is a common enough development setup
+# that shipping a default which collides with it would waste everyone's first
+# ten minutes.
+bind = "0.0.0.0:9443"
 
 # "terminate_tls" — this process owns the TLS listener (rustls, TLS 1.2/1.3,
 #                   BCP 195 suites only). Requires [server.tls].
