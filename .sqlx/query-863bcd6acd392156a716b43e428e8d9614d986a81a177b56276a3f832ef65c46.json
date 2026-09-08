@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into jti_replay (tenant_id, purpose, subject, jti_hash, expires_at)\n             values ($1, $2, $3, $4, $5)\n             on conflict (tenant_id, purpose, subject, jti_hash) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "863bcd6acd392156a716b43e428e8d9614d986a81a177b56276a3f832ef65c46"
+}

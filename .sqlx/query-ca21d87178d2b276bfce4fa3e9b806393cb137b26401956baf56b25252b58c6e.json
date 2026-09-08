@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from jti_replay where tenant_id = $1 and expires_at <= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ca21d87178d2b276bfce4fa3e9b806393cb137b26401956baf56b25252b58c6e"
+}

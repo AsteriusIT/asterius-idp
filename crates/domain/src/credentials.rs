@@ -182,7 +182,23 @@ impl fmt::Display for OpaqueToken {
 /// at least 128 bits of entropy, so there is no candidate set to precompute.
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    hex::encode(sha256(bytes))
+}
+
+/// SHA-256 of `bytes`, raw.
+///
+/// The same digest as [`sha256_hex`] without the hex, for the columns that are
+/// `bytea` rather than `text`. Which of the two a table uses is a storage
+/// choice; going through hex to reach bytes would be a round trip with a
+/// failure case that cannot happen and still has to be handled.
+///
+/// Unlike [`sha256_hex`], this is also used on values the *client* chose — a
+/// `jti`, for instance — where the digest is doing something different: not
+/// protecting a secret, but bounding an attacker-controlled string to a fixed
+/// width before it becomes part of a primary key.
+#[must_use]
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
 }
 
 #[cfg(test)]

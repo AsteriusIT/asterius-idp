@@ -5,6 +5,7 @@
 //! router.
 #![forbid(unsafe_code)]
 
+pub mod client_auth;
 pub mod config;
 pub mod http;
 pub mod observability;

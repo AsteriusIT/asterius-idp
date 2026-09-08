@@ -20,7 +20,7 @@ mod secret_audit;
 
 pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};
-pub use credentials::{OpaqueToken, sha256_hex};
+pub use credentials::{OpaqueToken, sha256, sha256_hex};
 pub use entities::{
     ApplicationType, Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, Client, ClientMetadata,
     ClientMetadataError, ClientRegistration, ClientStatus, GrantType, JwksSource, PairwiseSalt,
@@ -31,4 +31,5 @@ pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
 pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, SigningAlgorithm};
+pub use ports::{ClientRepository, ReplayCheck, ReplayGuard, ReplayPurpose};
 pub use secret::{Secret, ct_eq};

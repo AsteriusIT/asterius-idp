@@ -2226,3 +2226,209 @@ db_test! {
         assert!(SubjectId::new(derived.as_str().to_owned()).as_str().len() <= 255);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Single-use `jti` enforcement (ast-m9c.2)
+
+mod replay {
+    use super::*;
+    use asterius_domain::{ReplayCheck, ReplayGuard, ReplayPurpose};
+    use asterius_store_pg::PgReplayGuard;
+
+    fn later() -> OffsetDateTime {
+        OffsetDateTime::now_utc() + time::Duration::minutes(5)
+    }
+
+    db_test! {
+        /// RFC 7523 §3 item 7. The whole defence in one assertion: a captured
+        /// assertion is a bearer credential, and this is what stops it being
+        /// spent twice.
+        async fn a_jti_can_be_claimed_once(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+            let tenant = TenantId::new("demo");
+
+            assert_eq!(
+                guard.claim(&tenant, ReplayPurpose::ClientAssertion, "billing", "jti-1", later())
+                    .await
+                    .expect("first claim"),
+                ReplayCheck::FirstUse
+            );
+            assert_eq!(
+                guard.claim(&tenant, ReplayPurpose::ClientAssertion, "billing", "jti-1", later())
+                    .await
+                    .expect("second claim"),
+                ReplayCheck::Replay
+            );
+        }
+    }
+
+    db_test! {
+        /// The namespace is per client, not per tenant.
+        ///
+        /// A shared namespace would let any registered client burn likely
+        /// `jti` values — "1", a guessable UUID — and deny service to every
+        /// other client in the tenant. RFC 7523 §3 item 7 scopes uniqueness to
+        /// the issuer of the assertion, which is the client.
+        async fn two_clients_may_choose_the_same_jti(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+            let tenant = TenantId::new("demo");
+
+            for client in ["billing", "reporting"] {
+                assert_eq!(
+                    guard.claim(&tenant, ReplayPurpose::ClientAssertion, client, "1", later())
+                        .await
+                        .expect("claim"),
+                    ReplayCheck::FirstUse,
+                    "{client} was denied a jti another client had used"
+                );
+            }
+        }
+    }
+
+    db_test! {
+        /// Two tenants, and two purposes, are likewise separate namespaces.
+        async fn tenants_and_purposes_do_not_share_a_namespace(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_tenant(&db.pool, "other").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+
+            for tenant in ["demo", "other"] {
+                for purpose in [ReplayPurpose::ClientAssertion, ReplayPurpose::DpopProof] {
+                    assert_eq!(
+                        guard.claim(&TenantId::new(tenant), purpose, "billing", "shared", later())
+                            .await
+                            .expect("claim"),
+                        ReplayCheck::FirstUse,
+                        "{tenant}/{} collided with another namespace", purpose.as_str()
+                    );
+                }
+            }
+        }
+    }
+
+    db_test! {
+        /// The property the whole design rests on: the check and the record are
+        /// one statement, so concurrent replays cannot both win.
+        ///
+        /// A read followed by a write would pass every test above and fail this
+        /// one — which is exactly the race an attacker replaying a captured
+        /// assertion is trying to hit.
+        async fn concurrent_claims_of_one_jti_yield_exactly_one_first_use(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let guard = std::sync::Arc::new(PgReplayGuard::new(db.pool.clone()));
+            let expires = later();
+
+            let attempts: Vec<_> = (0..16)
+                .map(|_| {
+                    let guard = guard.clone();
+                    tokio::spawn(async move {
+                        guard
+                            .claim(
+                                &TenantId::new("demo"),
+                                ReplayPurpose::ClientAssertion,
+                                "billing",
+                                "contested",
+                                expires,
+                            )
+                            .await
+                            .expect("claim")
+                    })
+                })
+                .collect();
+
+            let mut first_uses = 0;
+            for attempt in attempts {
+                if attempt.await.expect("task") == ReplayCheck::FirstUse {
+                    first_uses += 1;
+                }
+            }
+            assert_eq!(
+                first_uses, 1,
+                "16 concurrent claims of one jti produced {first_uses} first uses"
+            );
+        }
+    }
+
+    db_test! {
+        /// Retention drops what has expired, and only for the tenant asked.
+        async fn purging_removes_expired_rows_of_one_tenant_only(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_tenant(&db.pool, "other").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+            let now = OffsetDateTime::now_utc();
+            let past = now - time::Duration::minutes(1);
+
+            for tenant in ["demo", "other"] {
+                let t = TenantId::new(tenant);
+                // Seeding: the verdict is not the point here, the row is.
+                let _ = guard
+                    .claim(&t, ReplayPurpose::ClientAssertion, "billing", "stale", past)
+                    .await
+                    .expect("stale");
+                let _ = guard
+                    .claim(&t, ReplayPurpose::ClientAssertion, "billing", "live", later())
+                    .await
+                    .expect("live");
+            }
+
+            let removed = guard
+                .purge_expired(&TenantId::new("demo"), now)
+                .await
+                .expect("purge");
+            assert_eq!(removed, 1, "purged something other than the one stale row");
+
+            // The purged value is claimable again; the live one is not.
+            assert_eq!(
+                guard.claim(&TenantId::new("demo"), ReplayPurpose::ClientAssertion, "billing", "stale", later())
+                    .await
+                    .expect("claim"),
+                ReplayCheck::FirstUse
+            );
+            assert_eq!(
+                guard.claim(&TenantId::new("demo"), ReplayPurpose::ClientAssertion, "billing", "live", later())
+                    .await
+                    .expect("claim"),
+                ReplayCheck::Replay
+            );
+            // The other tenant was not touched.
+            assert_eq!(
+                guard.claim(&TenantId::new("other"), ReplayPurpose::ClientAssertion, "billing", "stale", later())
+                    .await
+                    .expect("claim"),
+                ReplayCheck::Replay,
+                "purging one tenant removed another tenant's rows"
+            );
+        }
+    }
+
+    db_test! {
+        /// The client-chosen `jti` is stored as a digest, not as itself.
+        async fn the_stored_identifier_is_a_digest_not_the_clients_string(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+            let jti = "a-very-recognisable-value";
+            let _ = guard
+                .claim(&TenantId::new("demo"), ReplayPurpose::ClientAssertion, "billing", jti, later())
+                .await
+                .expect("claim");
+
+            let stored: Vec<u8> = sqlx::query_scalar(
+                "select jti_hash from jti_replay where tenant_id = $1 and subject = $2",
+            )
+            .bind("demo")
+            .bind("billing")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read back");
+
+            assert_eq!(stored.len(), 32, "not a SHA-256 digest");
+            assert_eq!(stored, asterius_domain::sha256(jti.as_bytes()));
+            assert!(
+                !String::from_utf8_lossy(&stored).contains(jti),
+                "the client's own string reached the column"
+            );
+        }
+    }
+}

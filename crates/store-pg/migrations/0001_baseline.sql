@@ -442,16 +442,23 @@ create index access_token_denylist_expiring on access_token_denylist (expires_at
 -- Single-use enforcement for `jti` values in client assertions and DPoP
 -- proofs. Keyed by digest because the `jti` is chosen by the client and can be
 -- arbitrarily long.
+--
+-- `subject` is who chose the value: the `client_id` for a client assertion,
+-- the key thumbprint for a DPoP proof. It is part of the key because RFC 7523
+-- §3 item 7 scopes `jti` uniqueness to the *issuer* of the assertion, which is
+-- the client. A key of (tenant, purpose, jti_hash) alone would put every
+-- client in one namespace, so a registered client could burn likely `jti`
+-- values -- "1", "2", a guessable UUID -- and deny service to the others.
 create table jti_replay (
     tenant_id  text        not null,
     purpose    text        not null
                check (purpose in ('client_assertion', 'dpop_proof')),
+    subject    text        not null,
     jti_hash   bytea       not null,
-    client_id  text,
     seen_at    timestamptz not null default now(),
     expires_at timestamptz not null,
 
-    primary key (tenant_id, purpose, jti_hash)
+    primary key (tenant_id, purpose, subject, jti_hash)
 );
 
 create index jti_replay_expiring on jti_replay (expires_at);

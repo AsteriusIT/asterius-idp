@@ -49,6 +49,13 @@ pub struct PgClientRepository {
     capabilities: Capabilities,
 }
 
+#[async_trait::async_trait]
+impl asterius_domain::ClientRepository for PgClientRepository {
+    async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError> {
+        Self::find(self, client_id).await
+    }
+}
+
 impl TenantScoped for PgClientRepository {
     fn tenant(&self) -> &TenantId {
         &self.tenant

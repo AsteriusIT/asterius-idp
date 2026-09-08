@@ -14,6 +14,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+# `derive(Arbitrary)`, so a target can take a structured input rather than
+# spending its budget teaching a byte string to be JSON.
+arbitrary = { version = "1", features = ["derive"] }
 asterius-domain = { path = "../crates/domain" }
 asterius-jose = { path = "../crates/jose" }
 asterius-oidc = { path = "../crates/oidc" }
@@ -140,6 +143,13 @@ bench = false
 [[bin]]
 name = "claim_name"
 path = "fuzz_targets/claim_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_assertion"
+path = "fuzz_targets/client_assertion.rs"
 test = false
 doc = false
 bench = false
