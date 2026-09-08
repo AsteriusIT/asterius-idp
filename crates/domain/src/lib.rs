@@ -6,9 +6,15 @@
 //! never depend on a database driver, an HTTP framework or an async runtime.
 #![forbid(unsafe_code)]
 
+pub mod capabilities;
 pub mod error;
 pub mod ids;
+pub mod issuer;
 pub mod ports;
+pub mod secret;
 
+pub use capabilities::{Capabilities, Feature};
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId};
+pub use issuer::{Issuer, IssuerError};
+pub use secret::Secret;

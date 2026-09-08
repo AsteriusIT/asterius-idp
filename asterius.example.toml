@@ -1,0 +1,60 @@
+# Asterius configuration.
+#
+# Every key below can be overridden from the environment as
+# ASTERIUS__<SECTION>__<KEY>, upper-cased, with `__` between path segments:
+#
+#   ASTERIUS__DATABASE__URL=postgres://asterius:secret@db:5432/asterius
+#   ASTERIUS__SERVER__BIND=0.0.0.0:8443
+#   ASTERIUS__FEATURES__SSF=true
+#
+# Unknown keys are a startup error, not a warning: a typo in a security flag
+# must never be silently ignored.
+
+[server]
+# Address to listen on. Default: "0.0.0.0:8443".
+bind = "0.0.0.0:8443"
+
+# "terminate_tls" — this process owns the TLS listener (rustls, TLS 1.2/1.3,
+#                   BCP 195 suites only). Requires [server.tls].
+# "behind_proxy"  — a trusted reverse proxy terminates TLS. Default.
+mode = "terminate_tls"
+
+[server.tls]
+# Required when mode = "terminate_tls", and rejected otherwise: a deployment
+# that configures certificates while running behind a proxy usually believes it
+# is doing TLS and is not.
+certificate = "/etc/asterius/tls/fullchain.pem"
+private_key = "/etc/asterius/tls/privkey.pem"
+
+[database]
+# Required. Contains a password, so it is held in a Secret<String> and prints
+# as [REDACTED] wherever the configuration is logged.
+url = "postgres://asterius:asterius@localhost:5432/asterius"
+max_connections = 16
+
+# Optional capabilities. Everything is off unless switched on here, and what is
+# switched on is exactly what appears in the discovery metadata and on /readyz.
+#
+# There is no RS256 flag. ADR-0003 removed it: FAPI 2.0 SP §5.4.1 permits only
+# PS256, ES256 and EdDSA, and no client that needs RS256 could satisfy the rest
+# of the profile anyway.
+[features]
+mtls = false             # RFC 8705 client auth and certificate-bound tokens
+grant_management = false # Grant Management for OAuth 2.0 (Implementer's Draft)
+ciba = false             # CIBA Core 1.0, poll and ping
+device_flow = false      # RFC 8628 device authorization grant
+token_exchange = false   # RFC 8693 with delegation chains
+ssf = false              # Shared Signals Framework transmitter, CAEP/RISC
+authzen = false          # AuthZEN Authorization API 1.0
+dpop_nonce = false       # server-issued DPoP nonces (RFC 9449 §8)
+
+# One table per tenant. A tenant is an issuer.
+#
+# The issuer must be an https URL with no query and no fragment (RFC 8414 §2,
+# OIDC Discovery §3). It is normalised once at startup — scheme and host
+# lower-cased, a default :443 dropped, a trailing slash removed — and the
+# canonical form is what appears in every `iss` claim, so two tenants cannot
+# claim the same issuer under two spellings.
+[[tenant]]
+id = "demo"
+issuer = "https://as.example/t/demo"

@@ -5,5 +5,9 @@
 //! router.
 #![forbid(unsafe_code)]
 
+pub mod config;
+
+pub use config::{Config, ConfigError};
+
 /// The version of the running server, as reported by metadata and `/healthz`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
