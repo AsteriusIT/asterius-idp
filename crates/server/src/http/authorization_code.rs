@@ -97,6 +97,17 @@ impl std::fmt::Debug for AuthorizationCode<'_> {
     }
 }
 
+/// What the session the grant was made in contributes to the tokens.
+///
+/// The two travel together because they come from one row and mean nothing
+/// apart: `auth_time`, `acr` and `amr` say *when and how* the person
+/// authenticated, and `sid` names the session they did it in.
+struct SessionFacts {
+    authentication: Authentication,
+    /// The session's public identifier, never its lookup digest.
+    sid: String,
+}
+
 /// Why a redemption stopped.
 enum Failure {
     /// The client can act on it: an RFC 6749 §5.2 code and its description.
@@ -219,7 +230,7 @@ impl AuthorizationCode<'_> {
         }
         let claimed = self.grants.claim(&binding.grant_id, self.now).await?;
 
-        let authentication = self.authentication(&grant).await?;
+        let session = self.authentication(&grant).await?;
 
         // RFC 9068 §3: an access token must name a resource. `of_grant` is
         // `None` until resource indicators land (`ast-gxh.7`), and the tenant's
@@ -251,7 +262,7 @@ impl AuthorizationCode<'_> {
             JwtId::generate(),
             self.now,
         )
-        .authenticated_by(authentication.clone())
+        .authenticated_by(session.authentication.clone())
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
 
@@ -274,7 +285,7 @@ impl AuthorizationCode<'_> {
                     tenant,
                     client,
                     &claimed,
-                    &authentication,
+                    &session,
                     access_token.as_str(),
                     binding.nonce.as_deref(),
                 )
@@ -367,7 +378,7 @@ impl AuthorizationCode<'_> {
     /// uses for step-up decisions and that this server cannot stand behind. A
     /// grant whose session has gone is a server-side inconsistency, so it is
     /// reported as one rather than papered over.
-    async fn authentication(&self, grant: &Grant) -> Result<Authentication, Failure> {
+    async fn authentication(&self, grant: &Grant) -> Result<SessionFacts, Failure> {
         let digest = grant.session.as_ref().ok_or_else(|| {
             Failure::Server(DomainError::invalid(
                 "grant",
@@ -381,14 +392,19 @@ impl AuthorizationCode<'_> {
             ))
         })?;
 
-        Ok(Authentication {
-            authenticated_at: session.authenticated_at,
-            acr: session.acr.clone(),
-            amr: session
-                .amr
-                .iter()
-                .map(|method| method.as_str().to_owned())
-                .collect(),
+        Ok(SessionFacts {
+            authentication: Authentication {
+                authenticated_at: session.authenticated_at,
+                acr: session.acr.clone(),
+                amr: session
+                    .amr
+                    .iter()
+                    .map(|method| method.as_str().to_owned())
+                    .collect(),
+            },
+            // Not `id_digest`: that is the lookup key and it is rewritten on
+            // every rotation. See `Session::public_sid` (`ast-o4u.5`).
+            sid: session.public_sid.clone(),
         })
     }
 
@@ -401,16 +417,16 @@ impl AuthorizationCode<'_> {
     /// to whichever key it would otherwise reach for — a tenant with no key of
     /// that algorithm refuses (`ast-a05.12`, `ast-a05.14`).
     ///
-    /// `sid` is not set. `Grant::session` holds the digest the session store
-    /// looks rows up by, and publishing it to a relying party would hand out a
-    /// lookup key as a side effect of issuing a token; an opaque identifier
-    /// distinct from the digest is `ast-o4u.4`.
+    /// `sid` is the session's `public_sid`, never its `id_digest`: the digest
+    /// is the lookup key the session store takes, and it is rewritten on every
+    /// rotation, while OIDC Back-Channel Logout 1.0 §2.4 needs a value a
+    /// relying party can still recognise afterwards (`ast-o4u.5`).
     async fn sign_id_token(
         &self,
         tenant: &Tenant,
         client: &Client,
         claimed: &asterius_domain::ClaimedGrant,
-        authentication: &Authentication,
+        session: &SessionFacts,
         access_token: &str,
         nonce: Option<&str>,
     ) -> Result<String, Failure> {
@@ -418,7 +434,7 @@ impl AuthorizationCode<'_> {
             &tenant.issuer,
             claimed,
             client.registration.id_token_signed_response_alg,
-            authentication.clone(),
+            session.authentication.clone(),
             access_token,
             self.now,
         );
@@ -427,6 +443,12 @@ impl AuthorizationCode<'_> {
         if let Some(nonce) = nonce {
             builder = builder.with_nonce(nonce);
         }
+        builder = builder.for_session(
+            asterius_oidc::tokens::id_token::Session::new(&asterius_domain::SessionId::new(
+                session.sid.clone(),
+            ))
+            .map_err(|e| Failure::Server(DomainError::invalid("sid", e.to_string())))?,
+        );
         let unsigned = builder
             .build()
             .map_err(|e| Failure::Server(DomainError::invalid("id_token", e.to_string())))?;

@@ -184,6 +184,12 @@ impl Fixture {
     /// tokens, so it is not optional scaffolding — a grant without one cannot
     /// produce an honest ID token.
     async fn grant(&self, scopes: &[&str]) -> Grant {
+        let (session, user) = self.session().await;
+        self.grant_in(scopes, &session, user).await
+    }
+
+    /// A user and the session they authenticated in.
+    async fn session(&self) -> (Session, UserId) {
         let user = UserId::generate();
         let user_id = *user.as_uuid();
         PgUserRepository::new(
@@ -218,7 +224,11 @@ impl Fixture {
             .begin(&session)
             .await
             .expect("store the session");
+        (session, user)
+    }
 
+    /// A grant naming an existing session.
+    async fn grant_in(&self, scopes: &[&str], session: &Session, user: UserId) -> Grant {
         let grant = Grant {
             tenant: self.tenant.id.clone(),
             id: GrantId::new(uuid::Uuid::new_v4().to_string()),
@@ -383,7 +393,9 @@ db_test! {
     async fn a_valid_redemption_issues_both_tokens(fixture) {
         let client = fixture.client().await;
         let pkce = Pkce::generate();
-        let grant = fixture.grant(&["openid", "profile"]).await;
+        let (session, user) = fixture.session().await;
+        let session_digest = session.id_digest.clone();
+        let grant = fixture.grant_in(&["openid", "profile"], &session, user).await;
         let jkt = thumbprint(1);
         let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
 
@@ -427,6 +439,58 @@ db_test! {
         assert_eq!(id_token["amr"], json!(["swk"]));
         // §3.1.3.6, and the binding between the two halves of this response.
         assert!(id_token["at_hash"].is_string(), "at_hash is missing");
+        // OIDC Back-Channel Logout 1.0 §2.4. The session's public identifier,
+        // and emphatically not the digest the session store looks rows up by
+        // (`ast-o4u.5`): handing a relying party that would publish an
+        // internal key as a side effect of issuing a token.
+        let sid = id_token["sid"].as_str().expect("sid is missing");
+        assert_ne!(
+            sid, session_digest,
+            "the ID token published the session lookup digest as its sid"
+        );
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// Rotating the session id must not change `sid`.
+    ///
+    /// Rotation is the fixation defence — a new cookie value at every
+    /// privilege change — but it is the same login and the same thing a
+    /// relying party would later be asked to log out. A `sid` that moved with
+    /// the digest would make one session look like several to an RP, and would
+    /// leave back-channel logout (`ast-o4u.1`) naming a session nobody
+    /// recognises.
+    async fn the_sid_survives_a_session_rotation(fixture) {
+        let (session, _) = fixture.session().await;
+        let sessions = fixture.sessions();
+
+        let rotated_id = SessionId::generate();
+        sessions
+            .rotate(
+                &session.id_digest,
+                &rotated_id.digest(),
+                &[AuthenticationMethod::Password],
+                fixture.now + time::Duration::minutes(1),
+            )
+            .await
+            .expect("rotate the session");
+
+        let after = sessions
+            .find(&rotated_id.digest())
+            .await
+            .expect("read")
+            .expect("the rotated session");
+
+        assert_ne!(
+            after.id_digest, session.id_digest,
+            "the rotation did not change the lookup digest, so this proves nothing"
+        );
+        assert_eq!(
+            after.public_sid, session.public_sid,
+            "the sid changed when the session id rotated"
+        );
 
         fixture.tear_down().await;
     }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select session_id, user_id, created_at, authenticated_at, last_seen_at,\n                    expires_at, idle_expires_at, acr, amr, revoked_at, revocation_reason\n               from sessions\n              where tenant_id = $1 and session_id = $2",
+  "query": "select session_id, public_sid, user_id, created_at, authenticated_at,\n                    last_seen_at, expires_at, idle_expires_at, acr, amr,\n                    revoked_at, revocation_reason\n               from sessions\n              where tenant_id = $1 and session_id = $2",
   "describe": {
     "columns": [
       {
@@ -10,51 +10,56 @@
       },
       {
         "ordinal": 1,
+        "name": "public_sid",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
         "name": "user_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "authenticated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "last_seen_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "idle_expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "acr",
         "type_info": "Text"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "amr",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "revoked_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "revocation_reason",
         "type_info": "Text"
       }
@@ -73,11 +78,12 @@
       false,
       false,
       false,
+      false,
       true,
       false,
       true,
       true
     ]
   },
-  "hash": "0db4fc22ddba2bedf752610bff2a85c18d99ee66e2b721b6bdae823389bc0cf3"
+  "hash": "7341a19589192def9a426a5e5b12a0ecac10e0f81a8fc11bd69a13bbe6ba77d4"
 }

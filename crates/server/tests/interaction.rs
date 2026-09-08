@@ -244,6 +244,7 @@ impl FakeSessions {
         let session = Session {
             tenant: TenantId::new("demo"),
             id_digest: digest.to_owned(),
+            public_sid: "sid-for-a-test-session".to_owned(),
             user,
             created_at: now,
             authenticated_at: now,

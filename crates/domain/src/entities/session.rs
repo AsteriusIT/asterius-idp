@@ -227,6 +227,27 @@ pub struct Session {
     pub tenant: TenantId,
     /// The digest of the id. The id itself lives only in the browser.
     pub id_digest: String,
+    /// The identifier this session is known by *outside* the server: the `sid`
+    /// claim of an ID Token and of a Logout Token (OIDC Back-Channel Logout
+    /// 1.0 §2.4, OIDC Session Management §5).
+    ///
+    /// Separate from [`Session::id_digest`] for two reasons, and either alone
+    /// would be enough.
+    ///
+    /// The digest is a *lookup key*: it is what
+    /// [`crate::ports::SessionRepository::find`] takes, so a relying party
+    /// handed it would hold the value that names this row. Publishing an
+    /// internal key as a side effect of issuing a token is the kind of thing
+    /// that is harmless until the day some other code path accepts it.
+    ///
+    /// And the digest *changes*. Rotating the session id is the session
+    /// fixation defence — a new cookie value at every privilege change — but
+    /// it is the same login, the same person and the same thing an RP would
+    /// later be asked to log out. A `sid` that changed underneath a relying
+    /// party would make one session look like several, and would leave
+    /// back-channel logout naming a session nobody recognises. So this is
+    /// generated once, at [`Session::begin`], and rotation does not touch it.
+    pub public_sid: String,
     /// Who is signed in.
     pub user: uuid::Uuid,
     /// When the session began.
@@ -266,6 +287,11 @@ impl Session {
         Self {
             tenant,
             id_digest: id.digest(),
+            // 256 bits, the same as the session id itself. It is not a
+            // credential — holding it authenticates nobody — but it is handed
+            // to every relying party the user signs in to, so it must not be
+            // guessable from one RP to another's.
+            public_sid: OpaqueToken::generate_bits::<ID_BITS>().expose().to_owned(),
             user,
             created_at: now,
             authenticated_at: now,

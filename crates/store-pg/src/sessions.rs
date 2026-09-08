@@ -68,11 +68,13 @@ impl SessionRepository for PgSessionRepository {
         let amr: Vec<String> = session.amr.iter().map(|m| m.as_str().to_owned()).collect();
         sqlx::query!(
             "insert into sessions
-                 (tenant_id, session_id, user_id, created_at, authenticated_at,
-                  last_seen_at, expires_at, idle_expires_at, acr, amr)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 (tenant_id, session_id, public_sid, user_id, created_at,
+                  authenticated_at, last_seen_at, expires_at, idle_expires_at,
+                  acr, amr)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
             self.tenant.as_str(),
             session.id_digest,
+            session.public_sid,
             session.user,
             session.created_at,
             session.authenticated_at,
@@ -95,8 +97,9 @@ impl SessionRepository for PgSessionRepository {
 
     async fn find(&self, id_digest: &str) -> Result<Option<Session>, DomainError> {
         let row = sqlx::query!(
-            "select session_id, user_id, created_at, authenticated_at, last_seen_at,
-                    expires_at, idle_expires_at, acr, amr, revoked_at, revocation_reason
+            "select session_id, public_sid, user_id, created_at, authenticated_at,
+                    last_seen_at, expires_at, idle_expires_at, acr, amr,
+                    revoked_at, revocation_reason
                from sessions
               where tenant_id = $1 and session_id = $2",
             self.tenant.as_str(),
@@ -109,6 +112,7 @@ impl SessionRepository for PgSessionRepository {
         Ok(row.map(|row| Session {
             tenant: self.tenant.clone(),
             id_digest: row.session_id,
+            public_sid: row.public_sid,
             user: row.user_id,
             created_at: row.created_at,
             authenticated_at: row.authenticated_at,

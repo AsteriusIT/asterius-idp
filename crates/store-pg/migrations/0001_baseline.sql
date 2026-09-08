@@ -352,6 +352,11 @@ create unique index credentials_by_passkey_id
 create table sessions (
     tenant_id             text        not null,
     session_id            text        not null,
+    -- The `sid` claim (OIDC Back-Channel Logout 1.0 §2.4). Deliberately not
+    -- `session_id`: that column is the lookup key and it is *rewritten* on
+    -- every rotation, while a relying party's `sid` has to survive one — a
+    -- rotation is a new cookie for the same login, not a new session.
+    public_sid            text        not null,
     user_id               uuid        not null,
     created_at            timestamptz not null default now(),
     -- `auth_time` as it will appear in the ID Token.
@@ -369,6 +374,10 @@ create table sessions (
     revocation_reason     text,
 
     primary key (tenant_id, session_id),
+    -- Back-channel logout arrives carrying a `sid` and nothing else, so this
+    -- is the index that resolves it — and unique, because two sessions
+    -- answering to one `sid` would make that lookup ambiguous.
+    unique (tenant_id, public_sid),
     foreign key (tenant_id, user_id)
         references users (tenant_id, user_id) on delete cascade
 );
