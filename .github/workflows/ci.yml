@@ -179,10 +179,50 @@ jobs:
   # on its own — the value is that a change which makes a parser panic on its
   # own seed corpus fails here rather than at 3am. The long runs are nightly,
   # in fuzz-nightly.yml.
+  #
+  # One job per target, for three reasons, all of them learned the hard way.
+  #
+  # It used to be a `for` loop, and at 31 targets it took 35 minutes while no
+  # other job took more than three — the pipeline *was* this job. The loop also
+  # grew by a minute for every parser added, and `check-fuzz-coverage.sh`
+  # requires a target per parser, so that growth was structural rather than
+  # something to keep an eye on.
+  #
+  # Worse, a loop stops at the first failure. When `access_token_claims` broke,
+  # `csp_form_action` and `id_token_claims` were never reached, and both turned
+  # out to be broken too — for an unknown length of time, because nothing had
+  # ever run them. `fail-fast: false` below is the fix for that: every target
+  # reports, so one red target cannot hide another.
+  #
+  # The targets are enumerated rather than listed, for the reason
+  # fuzz-nightly.yml already records: a hand-maintained matrix goes stale.
   # -------------------------------------------------------------------------
-  fuzz:
-    name: fuzz smoke
+  fuzz-targets:
+    name: enumerate fuzz targets
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          # Only the names inside a [[bin]] block. A bare grep for `name = `
+          # would also pick up [package].name. Read from Cargo.toml rather than
+          # `cargo fuzz list` so this job needs no toolchain and no build.
+          targets=$(awk '/^\[\[bin\]\]/ { in_bin = 1; next }
+                         in_bin && /^name = / { gsub(/^name = "|"$/, ""); print; in_bin = 0 }' \
+                    fuzz/Cargo.toml | jq -R . | jq -sc .)
+          echo "matrix=$targets" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    needs: fuzz-targets
+    runs-on: ubuntu-latest
+    strategy:
+      # Never stop at the first failure: see above.
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-targets.outputs.matrix) }}
     env:
       SQLX_OFFLINE: "true"
     steps:
@@ -195,29 +235,35 @@ jobs:
         with:
           tool: cargo-fuzz
 
+      # Read-only, and shared with fuzz-nightly.yml's key. A minute against a
+      # corpus the night before spent ten minutes building is worth much more
+      # than a minute from nothing: the interesting inputs are replayed first,
+      # so a change that breaks one of them fails here immediately. Nothing is
+      # saved back — a 60 s run has nothing to add, and writing would race the
+      # nightly job that does.
+      - name: restore the corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+
       # The target is pinned. AddressSanitizer cannot work against a
       # statically linked libc — "sanitizer is incompatible with statically
       # linked libc" — so if anything in the environment defaults the build to
       # a musl triple (a CARGO_BUILD_TARGET inherited from the runner, say),
       # every fuzz job fails before it starts. Naming the gnu triple here makes
       # the job independent of what the runner happens to be configured for.
-      - name: build every target
-        run: cargo fuzz build --target x86_64-unknown-linux-gnu
-
-      - name: run each target for 60 s
+      - name: fuzz for 60 s
         run: |
-          for target in $(cargo fuzz list); do
-            echo "::group::$target"
-            cargo fuzz run --target x86_64-unknown-linux-gnu "$target" \
-              -- -max_total_time=60 -print_final_stats=1
-            echo "::endgroup::"
-          done
+          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
+            -- -max_total_time=60 -print_final_stats=1
 
       - name: upload any crash that was found
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-artifacts
+          name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/
           if-no-files-found: ignore
 
@@ -226,7 +272,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [lint, test, sqlx-check, supply-chain, docs, fuzz]
+    needs: [lint, test, sqlx-check, supply-chain, docs, fuzz-targets, fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: all jobs succeeded
