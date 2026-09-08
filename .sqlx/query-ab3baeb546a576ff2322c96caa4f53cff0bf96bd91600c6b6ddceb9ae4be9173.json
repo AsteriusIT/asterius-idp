@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from clients where tenant_id = $1 and client_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ab3baeb546a576ff2322c96caa4f53cff0bf96bd91600c6b6ddceb9ae4be9173"
+}

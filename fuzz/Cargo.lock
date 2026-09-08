@@ -65,6 +65,7 @@ dependencies = [
  "asterius-server",
  "axum",
  "libfuzzer-sys",
+ "serde_json",
  "time",
 ]
 

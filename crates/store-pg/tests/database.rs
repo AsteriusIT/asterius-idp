@@ -776,3 +776,328 @@ db_test! {
         sink.verify_chain(&TenantId::new("demo")).await.expect("should still verify");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Clients
+// ---------------------------------------------------------------------------
+
+use asterius_domain::{
+    Capabilities, Client, ClientId, ClientRegistration, ClientStatus, TokenBinding,
+};
+use serde_json::json;
+
+/// A registration document that says only what it must.
+fn registration_document() -> serde_json::Value {
+    json!({
+        "client_name": "Billing",
+        "redirect_uris": ["https://rp.example/cb"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "scope": "openid payments",
+        "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+    })
+}
+
+fn client(tenant: &str, id: &str, document: &serde_json::Value) -> Client {
+    client_with(tenant, id, document, Capabilities::default())
+}
+
+fn client_with(
+    tenant: &str,
+    id: &str,
+    document: &serde_json::Value,
+    capabilities: Capabilities,
+) -> Client {
+    Client {
+        tenant: TenantId::new(tenant),
+        id: ClientId::new(id),
+        registration: ClientRegistration::from_json(
+            &serde_json::to_vec(document).expect("serialise"),
+            capabilities,
+        )
+        .expect("the document should be a valid registration"),
+        status: ClientStatus::Active,
+        created_at: OffsetDateTime::UNIX_EPOCH,
+        updated_at: OffsetDateTime::UNIX_EPOCH,
+    }
+}
+
+db_test! {
+    /// Everything the schema can hold comes back exactly as it went in. The
+    /// redirect URIs in particular: matching is byte-exact (RFC 9700 §4.1), so
+    /// a round trip that changes one byte breaks every authorization request
+    /// the client makes.
+    async fn a_registration_survives_the_round_trip_through_storage(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+
+        let registered = client("demo", "billing", &registration_document());
+        repo.upsert(&registered).await.expect("insert");
+
+        let found = repo
+            .find(&ClientId::new("billing"))
+            .await
+            .expect("find")
+            .expect("present");
+        assert_eq!(found.registration, registered.registration);
+        assert_eq!(found.id, registered.id);
+        assert!(found.is_active());
+        // Timestamps come from the database, not from the entity we passed in.
+        assert!(found.created_at > OffsetDateTime::UNIX_EPOCH);
+
+        assert_eq!(repo.list().await.expect("list").len(), 1);
+        assert!(repo.find(&ClientId::new("absent")).await.expect("find").is_none());
+        repo.delete(&ClientId::new("billing")).await.expect("delete");
+        assert!(repo.find(&ClientId::new("billing")).await.expect("find").is_none());
+        assert!(
+            matches!(
+                repo.delete(&ClientId::new("billing")).await,
+                Err(asterius_domain::DomainError::NotFound)
+            ),
+            "deleting twice should report the second as missing"
+        );
+    }
+}
+
+db_test! {
+    /// Two tenants, one `client_id`, no crossing over. A repository scoped to
+    /// one tenant must not see the other's row even when the identifier is the
+    /// same — which is exactly the case a missing `tenant_id` predicate breaks.
+    async fn a_scoped_lookup_never_returns_another_tenants_client(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let store = Store::from_pool(db.pool.clone());
+
+        let mut beta_document = registration_document();
+        beta_document
+            .as_object_mut()
+            .expect("object")
+            .insert("redirect_uris".to_owned(), json!(["https://beta.example/cb"]));
+
+        store
+            .scope(TenantId::new("alpha"))
+            .clients(Capabilities::default())
+            .upsert(&client("alpha", "billing", &registration_document()))
+            .await
+            .expect("alpha");
+        store
+            .scope(TenantId::new("beta"))
+            .clients(Capabilities::default())
+            .upsert(&client("beta", "billing", &beta_document))
+            .await
+            .expect("beta");
+
+        let alpha = store.scope(TenantId::new("alpha")).clients(Capabilities::default());
+        let found = alpha.find(&ClientId::new("billing")).await.expect("find").expect("present");
+        assert_eq!(found.tenant, TenantId::new("alpha"));
+        assert_eq!(
+            found.registration.redirect_uris[0].as_str(),
+            "https://rp.example/cb",
+            "the lookup returned the other tenant's row"
+        );
+        assert_eq!(alpha.list().await.expect("list").len(), 1);
+
+        // And an entity belonging to another tenant cannot be written through
+        // this scope at all.
+        let wrong = alpha.upsert(&client("beta", "billing", &beta_document)).await;
+        assert!(
+            matches!(
+                wrong,
+                Err(asterius_domain::DomainError::Invalid { field: "tenant_id", .. })
+            ),
+            "a foreign entity was written into this tenant: {wrong:?}"
+        );
+    }
+}
+
+db_test! {
+    /// Rows get edited by hand during incidents. A row that no longer describes
+    /// a client this profile would accept must fail to load rather than quietly
+    /// become one — here a redirect URI changed to plain http, which is not
+    /// something the schema can express a check for.
+    async fn a_row_edited_into_a_weaker_client_refuses_to_load(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        repo.upsert(&client("demo", "billing", &registration_document())).await.expect("insert");
+
+        sqlx::query(
+            "update clients set redirect_uris = '{http://rp.example/cb}'
+             where tenant_id = 'demo' and client_id = 'billing'",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("tamper");
+
+        let error = repo
+            .find(&ClientId::new("billing"))
+            .await
+            .expect_err("an http redirect URI must not load");
+        assert!(error.to_string().contains("redirect_uris"), "{error}");
+        assert!(repo.list().await.is_err(), "list accepted what find refused");
+    }
+}
+
+db_test! {
+    /// ADR-0002's "no ambiguity" rule, in the schema: exactly one key source.
+    /// A client with both is a client whose keys depend on which code path
+    /// looked; a client with neither cannot authenticate at all.
+    async fn the_schema_refuses_a_client_with_two_key_sources_or_none(db) {
+        seed_tenant(&db.pool, "demo").await;
+        for (id, jwks, jwks_uri) in [
+            ("both", "'{}'::jsonb", "'https://rp.example/jwks'"),
+            ("neither", "null", "null"),
+        ] {
+            let statement = format!(
+                "insert into clients (tenant_id, client_id, client_name,
+                                      token_endpoint_auth_method, jwks, jwks_uri)
+                 values ('demo', '{id}', 'C', 'private_key_jwt', {jwks}, {jwks_uri})"
+            );
+            assert!(
+                sqlx::query(&statement).execute(&db.pool).await.is_err(),
+                "clients_exactly_one_key_source did not fire for {id}"
+            );
+        }
+    }
+}
+
+db_test! {
+    /// The baseline schema has no column for a certificate-bound client, so the
+    /// repository refuses it by name rather than writing a row that says DPoP.
+    /// A silent downgrade here would move a client off the binding it
+    /// registered with nothing in the record saying so.
+    async fn a_client_the_schema_cannot_represent_is_refused_rather_than_downgraded(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let capabilities = Capabilities { mtls: true, ..Capabilities::default() };
+        let repo = store.scope(TenantId::new("demo")).clients(capabilities);
+
+        let mut document = registration_document();
+        let object = document.as_object_mut().expect("object");
+        object.insert("dpop_bound_access_tokens".to_owned(), json!(false));
+        object.insert("tls_client_certificate_bound_access_tokens".to_owned(), json!(true));
+        let certificate_bound = client_with("demo", "billing", &document, capabilities);
+        assert_eq!(certificate_bound.registration.token_binding, TokenBinding::Certificate);
+
+        let error = repo.upsert(&certificate_bound).await.expect_err("no column for it");
+        assert!(
+            matches!(
+                &error,
+                asterius_domain::DomainError::Invalid { field, .. }
+                    if *field == "tls_client_certificate_bound_access_tokens"
+            ),
+            "{error:?}"
+        );
+        let count: i64 = sqlx::query_scalar("select count(*) from clients where tenant_id = 'demo'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+        assert_eq!(count, 0, "a client that cannot be represented was written anyway");
+    }
+}
+
+db_test! {
+    /// The same row carries state other stories own — the agent profile
+    /// (`ast-lh3.1`) and the registration access token (`ast-m9c.4`). Updating
+    /// the metadata must not erase it, or re-registering a client would silently
+    /// revoke its management credential.
+    async fn updating_a_registration_leaves_columns_other_stories_own_alone(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        repo.upsert(&client("demo", "agent", &registration_document())).await.expect("insert");
+
+        sqlx::query(
+            "update clients
+             set is_agent = true,
+                 agent_owner_sub = 'alice',
+                 registration_access_token_hash = repeat('\\001', 32)::bytea
+             where tenant_id = 'demo' and client_id = 'agent'",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("set the columns other stories own");
+
+        let mut renamed = client("demo", "agent", &registration_document());
+        renamed.registration.client_name = "Renamed".to_owned();
+        repo.upsert(&renamed).await.expect("update");
+
+        let row = sqlx::query(
+            "select client_name, is_agent, agent_owner_sub, registration_access_token_hash
+             from clients where tenant_id = 'demo' and client_id = 'agent'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read back");
+        assert_eq!(row.get::<String, _>("client_name"), "Renamed");
+        assert!(row.get::<bool, _>("is_agent"), "the agent flag was erased");
+        assert_eq!(row.get::<Option<String>, _>("agent_owner_sub").as_deref(), Some("alice"));
+        assert_eq!(
+            row.get::<Option<Vec<u8>>, _>("registration_access_token_hash"),
+            Some(vec![1_u8; 32]),
+            "the registration access token was erased by a metadata update"
+        );
+    }
+}
+
+db_test! {
+    /// A client registered for an mTLS method on a deployment that has since
+    /// turned the flag off cannot authenticate any more, so it must not load as
+    /// though it could.
+    async fn a_client_needing_a_disabled_feature_refuses_to_load(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let mtls_on = Capabilities { mtls: true, ..Capabilities::default() };
+
+        let mut document = registration_document();
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+
+        store
+            .scope(TenantId::new("demo"))
+            .clients(mtls_on)
+            .upsert(&client_with("demo", "billing", &document, mtls_on))
+            .await
+            .expect("insert");
+
+        assert!(
+            store
+                .scope(TenantId::new("demo"))
+                .clients(mtls_on)
+                .find(&ClientId::new("billing"))
+                .await
+                .expect("find")
+                .is_some()
+        );
+        let error = store
+            .scope(TenantId::new("demo"))
+            .clients(Capabilities::default())
+            .find(&ClientId::new("billing"))
+            .await
+            .expect_err("mtls is off now");
+        assert!(error.to_string().contains("mtls"), "{error}");
+    }
+}
+
+db_test! {
+    /// Only the key-authenticated shapes reach storage. The schema's check is
+    /// the last line of the rule the validator enforces first, so that a row
+    /// inserted by a seed script or by hand cannot create a secret-based client
+    /// the validator would have refused.
+    async fn the_schema_refuses_a_secret_based_authentication_method(db) {
+        seed_tenant(&db.pool, "demo").await;
+        for method in ["client_secret_basic", "client_secret_post", "client_secret_jwt", "none"] {
+            let inserted = sqlx::query(
+                "insert into clients (tenant_id, client_id, client_name,
+                                      token_endpoint_auth_method, jwks)
+                 values ('demo', $1, 'C', $1, '{}'::jsonb)",
+            )
+            .bind(method)
+            .execute(&db.pool)
+            .await;
+            assert!(inserted.is_err(), "the schema accepted {method}");
+        }
+    }
+}

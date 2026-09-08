@@ -27,6 +27,7 @@ jobs:
           - forwarded_resolve
           - audit_canonical
           - jws_parse
+          - client_metadata_json
     env:
       SQLX_OFFLINE: "true"
     steps:

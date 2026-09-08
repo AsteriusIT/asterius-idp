@@ -1,0 +1,2383 @@
+//! The client entity, and the validating parser that produces it.
+//!
+//! FAPI 2.0 SP §5.3.2.1 item 3: an authorization server "shall only support
+//! confidential clients". ADR-0002 makes that unconditional — there is no
+//! per-client profile to fall back to — which decides the shape of everything
+//! below: **a weaker value is rejected, never replaced with a safe one.**
+//!
+//! Quietly upgrading a registration would leave the operator's records saying
+//! one thing and the server doing another. A client registered with
+//! `client_secret_basic` and silently stored as `private_key_jwt` cannot
+//! authenticate at all, and the first anyone hears of it is a production
+//! `invalid_client` that the registration record contradicts.
+//!
+//! The same reasoning applies to the defaults. RFC 7591 §2's defaults are the
+//! 2015 OAuth defaults; where one of them names something this server does not
+//! implement, the default here is the FAPI value and the RFC's value is an
+//! error. Each such deviation is marked at the point where it is taken.
+
+use crate::capabilities::{Capabilities, Feature};
+use crate::keys::SigningAlgorithm;
+use crate::{ClientId, TenantId};
+use serde::Deserialize;
+use std::collections::BTreeSet;
+use thiserror::Error;
+use time::OffsetDateTime;
+use url::{Host, Url};
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Why a client registration document was rejected.
+///
+/// The rendered message goes into the RFC 7591 §3.2.2 `error_description` and
+/// into the audit trail, so **no variant interpolates a value taken from the
+/// document** — only field names, indexes and counts. An `error_description`
+/// that echoes its input is a reflection primitive in a response that some
+/// deployments log verbatim, and a registration document is one of the few
+/// places a caller can put a credential by mistake.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[non_exhaustive]
+pub enum ClientMetadataError {
+    /// The bytes are not a JSON object, or a field has the wrong JSON type.
+    #[error("malformed registration document: {kind} at line {line}, column {column}")]
+    Malformed {
+        /// `syntax`, `type`, `eof` or `io` — `serde_json`'s classification.
+        kind: &'static str,
+        /// Line the parser stopped on, 1-based.
+        line: usize,
+        /// Column the parser stopped on, 1-based.
+        column: usize,
+    },
+    /// A field this profile requires is absent or empty.
+    #[error("{field} is required")]
+    Missing {
+        /// The metadata field, in its wire spelling.
+        field: &'static str,
+    },
+    /// A field carries a value this profile does not permit.
+    #[error("{field}: {reason}")]
+    Rejected {
+        /// The metadata field, in its wire spelling.
+        field: &'static str,
+        /// Why, in fixed text. Never contains a value from the document.
+        reason: String,
+    },
+    /// A redirect URI was rejected. RFC 7591 §3.2.2 gives this its own code,
+    /// because a client that gets `invalid_client_metadata` back has no way to
+    /// tell that the redirect URI was the problem.
+    #[error("redirect_uris[{index}]: {reason}")]
+    RedirectUri {
+        /// Which entry, counting from zero.
+        index: usize,
+        /// Why, in fixed text. Never contains the URI itself.
+        reason: String,
+    },
+}
+
+impl ClientMetadataError {
+    /// The RFC 7591 §3.2.2 error code the registration endpoint returns.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::RedirectUri { .. } => "invalid_redirect_uri",
+            _ => "invalid_client_metadata",
+        }
+    }
+
+    /// The metadata field that was rejected, in its wire spelling.
+    #[must_use]
+    pub const fn field(&self) -> &'static str {
+        match self {
+            Self::Malformed { .. } => "<document>",
+            Self::Missing { field } | Self::Rejected { field, .. } => field,
+            Self::RedirectUri { .. } => "redirect_uris",
+        }
+    }
+
+    fn rejected(field: &'static str, reason: impl Into<String>) -> Self {
+        Self::Rejected {
+            field,
+            reason: reason.into(),
+        }
+    }
+
+    fn needs(field: &'static str, feature: Feature) -> Self {
+        Self::rejected(
+            field,
+            format!("requires the `{feature}` feature, which this deployment has not enabled"),
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Closed value sets
+// ---------------------------------------------------------------------------
+
+/// How a client authenticates at the token endpoint and every other endpoint
+/// that requires client authentication.
+///
+/// The set is closed, and closed is the point: `client_secret_basic`,
+/// `client_secret_post`, `client_secret_jwt` and `none` are not variants, so no
+/// amount of configuration can produce a client that authenticates with a
+/// shared secret or not at all (FAPI 2.0 SP §5.3.2.1 items 3 and 6, ADR-0002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TokenEndpointAuthMethod {
+    /// Asymmetric client assertion (OIDC Core §9). The default here.
+    PrivateKeyJwt,
+    /// mTLS with a certificate issued by a trusted CA (RFC 8705 §2.1).
+    TlsClientAuth,
+    /// mTLS with a self-signed certificate matched against the client's own
+    /// JWKS (RFC 8705 §2.2).
+    SelfSignedTlsClientAuth,
+}
+
+impl TokenEndpointAuthMethod {
+    /// Every permitted method, in the order metadata should advertise them.
+    pub const ALL: [Self; 3] = [
+        Self::PrivateKeyJwt,
+        Self::TlsClientAuth,
+        Self::SelfSignedTlsClientAuth,
+    ];
+
+    /// RFC 7591 §2 defaults this to `client_secret_basic`. That value does not
+    /// exist here, so the default is the profile's floor instead — a client
+    /// that says nothing gets the strongest method, not the historical one.
+    pub const DEFAULT: Self = Self::PrivateKeyJwt;
+
+    /// The wire spelling, as it appears in client metadata.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PrivateKeyJwt => "private_key_jwt",
+            Self::TlsClientAuth => "tls_client_auth",
+            Self::SelfSignedTlsClientAuth => "self_signed_tls_client_auth",
+        }
+    }
+
+    /// Parses a `token_endpoint_auth_method` value.
+    ///
+    /// Returns `None` for everything outside the allow-list, which is the whole
+    /// job: `client_secret_basic`, `client_secret_post`, `client_secret_jwt`
+    /// and `none` all land here.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.as_str() == value)
+    }
+
+    /// Whether this method needs mTLS at the transport (RFC 8705 §2).
+    #[must_use]
+    pub const fn requires_mtls(self) -> bool {
+        matches!(self, Self::TlsClientAuth | Self::SelfSignedTlsClientAuth)
+    }
+}
+
+impl std::fmt::Display for TokenEndpointAuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A grant type a client may use.
+///
+/// Absent by construction: `implicit`, `password`, and anything else that
+/// returns a token to a front channel or takes a user's password
+/// (ADR-0002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GrantType {
+    /// RFC 6749 §4.1, always through PAR (RFC 9126) here.
+    AuthorizationCode,
+    /// RFC 6749 §6. Not rotated; sender-constrained instead (SP §5.3.2.1).
+    RefreshToken,
+    /// RFC 6749 §4.4.
+    ClientCredentials,
+    /// RFC 8693 §2.1.
+    TokenExchange,
+    /// RFC 8628 §3.4.
+    DeviceCode,
+    /// CIBA Core 1.0 §10.1.
+    Ciba,
+}
+
+impl GrantType {
+    /// Every permitted grant type.
+    pub const ALL: [Self; 6] = [
+        Self::AuthorizationCode,
+        Self::RefreshToken,
+        Self::ClientCredentials,
+        Self::TokenExchange,
+        Self::DeviceCode,
+        Self::Ciba,
+    ];
+
+    /// RFC 7591 §2's default for `grant_types`.
+    pub const DEFAULT: [Self; 1] = [Self::AuthorizationCode];
+
+    /// The wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthorizationCode => "authorization_code",
+            Self::RefreshToken => "refresh_token",
+            Self::ClientCredentials => "client_credentials",
+            Self::TokenExchange => "urn:ietf:params:oauth:grant-type:token-exchange",
+            Self::DeviceCode => "urn:ietf:params:oauth:grant-type:device_code",
+            Self::Ciba => "urn:openid:params:grant-type:ciba",
+        }
+    }
+
+    /// Parses a `grant_types` entry. `None` for anything outside the set.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|g| g.as_str() == value)
+    }
+
+    /// The feature flag this grant needs, if any.
+    ///
+    /// Registering a client for a grant the deployment cannot perform produces
+    /// a client that fails at first use with an error that points at the
+    /// client rather than at the flag. ADR-0002's rule — a flag that is off
+    /// must not be advertised — is applied here too: it is refused at
+    /// registration.
+    #[must_use]
+    pub const fn required_feature(self) -> Option<Feature> {
+        match self {
+            Self::AuthorizationCode | Self::RefreshToken | Self::ClientCredentials => None,
+            Self::TokenExchange => Some(Feature::TokenExchange),
+            Self::DeviceCode => Some(Feature::DeviceFlow),
+            Self::Ciba => Some(Feature::Ciba),
+        }
+    }
+
+    /// Whether this grant reaches the authorization endpoint, and therefore
+    /// needs a registered redirect URI (RFC 7591 §2.1).
+    #[must_use]
+    pub const fn uses_the_authorization_endpoint(self) -> bool {
+        matches!(self, Self::AuthorizationCode)
+    }
+}
+
+impl std::fmt::Display for GrantType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// OIDC Registration §2 `application_type`. Decides one thing here: whether a
+/// loopback redirect URI over `http` is admissible (RFC 8252 §7.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApplicationType {
+    /// Runs on a server the operator controls. The default, per OIDC
+    /// Registration §2.
+    #[default]
+    Web,
+    /// Runs on the end user's device.
+    Native,
+}
+
+impl ApplicationType {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Web => "web",
+            Self::Native => "native",
+        }
+    }
+
+    /// Parses an `application_type` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "web" => Some(Self::Web),
+            "native" => Some(Self::Native),
+            _ => None,
+        }
+    }
+}
+
+/// OIDC Core §8 subject identifier type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubjectType {
+    /// The same `sub` for every client. The default.
+    #[default]
+    Public,
+    /// A `sub` per sector, so two clients cannot correlate a user by it.
+    Pairwise,
+}
+
+impl SubjectType {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Pairwise => "pairwise",
+        }
+    }
+
+    /// Parses a `subject_type` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "public" => Some(Self::Public),
+            "pairwise" => Some(Self::Pairwise),
+            _ => None,
+        }
+    }
+}
+
+/// How a client's access tokens are bound to a key it holds.
+///
+/// There is no `Neither` variant, and that is the point: FAPI 2.0 SP §5.3.2.1
+/// requires sender-constrained access tokens, so "this client gets bearer
+/// tokens" is not a state this type can hold. RFC 9449 §12
+/// (`dpop_bound_access_tokens`) and RFC 8705 §3.4
+/// (`tls_client_certificate_bound_access_tokens`) are the two ways in; the
+/// pair `false, false` is the one combination the parser refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TokenBinding {
+    /// DPoP proof of possession (RFC 9449). The default.
+    #[default]
+    Dpop,
+    /// mTLS certificate binding (RFC 8705 §3), for a client that presents a
+    /// certificate anyway and has no DPoP implementation.
+    Certificate,
+    /// Both. A token is usable only by a caller holding the DPoP key *and*
+    /// presenting the certificate.
+    DpopAndCertificate,
+}
+
+impl TokenBinding {
+    /// Whether tokens for this client carry a `cnf.jkt` (RFC 9449 §6).
+    #[must_use]
+    pub const fn is_dpop_bound(self) -> bool {
+        matches!(self, Self::Dpop | Self::DpopAndCertificate)
+    }
+
+    /// Whether tokens for this client carry a `cnf.x5t#S256` (RFC 8705 §3.1).
+    #[must_use]
+    pub const fn is_certificate_bound(self) -> bool {
+        matches!(self, Self::Certificate | Self::DpopAndCertificate)
+    }
+
+    /// Builds the binding from the two RFC booleans, or explains the refusal.
+    fn from_flags(dpop: bool, certificate: bool) -> Result<Self, ClientMetadataError> {
+        match (dpop, certificate) {
+            (true, false) => Ok(Self::Dpop),
+            (false, true) => Ok(Self::Certificate),
+            (true, true) => Ok(Self::DpopAndCertificate),
+            // The only refusal: a client asking for tokens bound to nothing.
+            // Such a token is a bearer token, and a bearer token stolen from a
+            // log or a proxy is usable by whoever finds it (Attacker Model
+            // §7.7, A5).
+            (false, false) => Err(ClientMetadataError::rejected(
+                "dpop_bound_access_tokens",
+                "may only be false when tls_client_certificate_bound_access_tokens is true; \
+                 this server does not issue bearer access tokens",
+            )),
+        }
+    }
+}
+
+/// Where a client's public keys come from.
+///
+/// RFC 7591 §2: "The `jwks_uri` and `jwks` parameters MUST NOT both be present
+/// in the same request or response." The `clients_exactly_one_key_source` check
+/// in the baseline schema says the same thing, and adds that one of them must
+/// be there: a confidential client with no key material cannot authenticate,
+/// so a row without either is a row that describes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JwksSource {
+    /// Keys given inline at registration.
+    Inline(serde_json::Value),
+    /// Keys fetched from the client. The fetch, its cache and its SSRF guard
+    /// belong to `ast-mxc.5`; all that is checked here is the URL's shape.
+    Uri(String),
+}
+
+/// Whether a client answers requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClientStatus {
+    /// Serving.
+    #[default]
+    Active,
+    /// Suspended. Every request it makes fails client authentication.
+    Disabled,
+}
+
+impl ClientStatus {
+    /// The value as stored in the database.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Parses the stored value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Redirect URIs
+// ---------------------------------------------------------------------------
+
+/// A registered redirect URI, stored exactly as the client wrote it.
+///
+/// The bytes are kept unchanged on purpose. RFC 9700 §4.1 requires exact string
+/// matching, so any normalisation applied on the way in — lowercasing a host,
+/// adding a trailing slash, re-encoding a path — silently changes what the
+/// client must send back, and the client finds out at its first authorization
+/// request.
+///
+/// **This type carries only the checks registration needs.** The comparison
+/// function used at PAR and at the token endpoint, the port-agnostic loopback
+/// match of RFC 8252 §7.3, and the IDN and percent-encoding equivalence traps
+/// are `ast-m9c.7`, which owns redirect-URI matching end to end.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct RedirectUri(String);
+
+impl RedirectUri {
+    /// The longest redirect URI accepted. Long enough for any real callback,
+    /// short enough that a registration cannot be used to store a payload.
+    pub const MAX_LEN: usize = 2048;
+
+    /// The URI, byte for byte as registered.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Validates one redirect URI for a client of `application_type`.
+    ///
+    /// Returns the reason for a refusal, which never contains the URI.
+    fn parse(raw: &str, application_type: ApplicationType) -> Result<Self, String> {
+        if raw.is_empty() {
+            return Err("must not be empty".to_owned());
+        }
+        if raw.len() > Self::MAX_LEN {
+            return Err(format!("must be at most {} bytes", Self::MAX_LEN));
+        }
+        let url = Url::parse(raw).map_err(|_| "must be an absolute URI".to_owned())?;
+
+        // RFC 6749 §3.1.2: "The endpoint URI MUST NOT include a fragment
+        // component." The fragment never reaches the server, so a client that
+        // registers one is registering a URI that cannot be matched.
+        if url.fragment().is_some() {
+            return Err("must not contain a fragment component".to_owned());
+        }
+        // Credentials in the authority end up in the browser's address bar and
+        // in every referrer header the callback page emits.
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err("must not contain userinfo (user:password@)".to_owned());
+        }
+
+        match url.scheme() {
+            "https" => {
+                // `Url` accepts `https:///path` and reports an empty host
+                // rather than no host at all, so emptiness is checked and not
+                // just presence.
+                if url.host_str().is_none_or(str::is_empty) {
+                    return Err("must contain a host".to_owned());
+                }
+            }
+            // FAPI 2.0 SP §5.3.2.2 item 8: no `http` redirect URIs except for a
+            // native client using loopback redirection. RFC 8252 §7.3 defines
+            // that exception, and says to use the IP literal rather than
+            // `localhost`, because `localhost` goes through name resolution and
+            // can be pointed somewhere else by a hosts file or a DNS answer.
+            "http" => {
+                if application_type != ApplicationType::Native {
+                    return Err(
+                        "scheme must be https; http is admissible only for a loopback \
+                         redirect on a client with application_type=native"
+                            .to_owned(),
+                    );
+                }
+                match url.host() {
+                    Some(Host::Ipv4(address)) if address.is_loopback() => {}
+                    Some(Host::Ipv6(address)) if address.is_loopback() => {}
+                    _ => {
+                        return Err("http is admissible only on 127.0.0.1 or [::1]; \
+                                    `localhost` resolves through DNS (RFC 8252 §7.3)"
+                            .to_owned());
+                    }
+                }
+            }
+            // A private-use scheme can be claimed by any application on the
+            // device (RFC 8252 §7.1), which makes the callback interceptable by
+            // software the user did not install deliberately. ast-m9c.7 settles
+            // whether any of them are ever admissible.
+            _ => return Err("scheme must be https".to_owned()),
+        }
+
+        // The registered bytes must already be the bytes a URL parser produces.
+        //
+        // [`Issuer`] takes the other route and normalises, because an operator
+        // writes an issuer once in a configuration file. A redirect URI cannot:
+        // it is compared byte for byte (RFC 9700 §4.1), so normalising it would
+        // change what the client has to send, and *not* normalising it lets the
+        // registered string and the URL a browser actually requests drift
+        // apart. `https:///cb` is the sharp example — WHATWG parsing turns the
+        // empty authority into the host `cb`, so a registration that reads as a
+        // path is a callback to a different origin entirely.
+        //
+        // Refusing is the only option that leaves no gap: nothing is rewritten,
+        // and nothing that would have to be rewritten is accepted.
+        //
+        // [`Issuer`]: crate::Issuer
+        if url.as_str() != raw {
+            return Err(
+                "must already be in normalised form (RFC 3986 §6.2.2): register the URI \
+                 exactly as it will be requested, since matching is byte-exact"
+                    .to_owned(),
+            );
+        }
+
+        Ok(Self(raw.to_owned()))
+    }
+}
+
+impl std::fmt::Display for RedirectUri {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The registration document, as received
+// ---------------------------------------------------------------------------
+
+/// A client registration document, exactly as it arrived.
+///
+/// Every field is optional because RFC 7591 §2 makes every field optional; the
+/// question of which combinations are admissible is [`ClientMetadata::validate`]
+/// and not serde's. Unknown members are ignored rather than refused, which is
+/// what RFC 7591 §3.2.1 expects of an authorization server that does not
+/// implement an extension.
+///
+/// Deliberately not `#[non_exhaustive]`: the storage adapter rebuilds this
+/// document from a row and puts it back through [`ClientMetadata::validate`],
+/// so that a row is checked by the same code that checked the registration.
+/// Sealing the struct would force that path through a builder instead, with
+/// less type checking and a second place for a field to be forgotten.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ClientMetadata {
+    /// Human-readable name, shown on the consent screen.
+    pub client_name: Option<String>,
+    /// OIDC Registration §2. `web` or `native`.
+    pub application_type: Option<String>,
+    /// RFC 7591 §2.
+    pub token_endpoint_auth_method: Option<String>,
+    /// RFC 7591 §2.
+    pub redirect_uris: Option<Vec<String>>,
+    /// RFC 7591 §2.
+    pub grant_types: Option<Vec<String>>,
+    /// RFC 7591 §2.
+    pub response_types: Option<Vec<String>>,
+    /// RFC 7591 §2, space-delimited per RFC 6749 §3.3.
+    pub scope: Option<String>,
+    /// RFC 7591 §2. Mutually exclusive with `jwks_uri`.
+    pub jwks: Option<serde_json::Value>,
+    /// RFC 7591 §2. Mutually exclusive with `jwks`.
+    pub jwks_uri: Option<String>,
+    /// OIDC Registration §2.
+    pub id_token_signed_response_alg: Option<String>,
+    /// OIDC Registration §2.
+    pub request_object_signing_alg: Option<String>,
+    /// CIBA Core 1.0 §4.
+    pub backchannel_authentication_request_signing_alg: Option<String>,
+    /// OIDC Registration §2.
+    pub subject_type: Option<String>,
+    /// OIDC Registration §2, OIDC Core §8.1.
+    pub sector_identifier_uri: Option<String>,
+    /// RFC 9126 §6.
+    pub require_pushed_authorization_requests: Option<bool>,
+    /// RFC 9449 §12.
+    pub dpop_bound_access_tokens: Option<bool>,
+    /// RFC 8705 §3.4.
+    pub tls_client_certificate_bound_access_tokens: Option<bool>,
+    /// RFC 9396 §9.2.
+    pub authorization_details_types: Option<Vec<String>>,
+    /// FAPI 2.0 SP §5.2.2.1.1, RFC 8705 §5.
+    pub use_mtls_endpoint_aliases: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// The registration document, validated
+// ---------------------------------------------------------------------------
+
+/// Client metadata that has been through [`ClientMetadata::validate`].
+///
+/// Every field here is a typed value the rest of the server may rely on without
+/// re-checking: the auth method is one this deployment implements, the grant
+/// types are enabled, the redirect URIs are https (or loopback on a native
+/// client), the algorithms are on ADR-0003's list, and the access tokens are
+/// bound to something.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientRegistration {
+    /// Shown on the consent screen.
+    pub client_name: String,
+    /// OIDC Registration §2.
+    pub application_type: ApplicationType,
+    /// How the client authenticates.
+    pub token_endpoint_auth_method: TokenEndpointAuthMethod,
+    /// Registered callbacks, in the order registered, compared byte-exactly.
+    pub redirect_uris: Vec<RedirectUri>,
+    /// What the client may ask for at the token endpoint.
+    pub grant_types: BTreeSet<GrantType>,
+    /// Scopes the client may request, from RFC 7591 §2's `scope` string.
+    pub scopes: BTreeSet<String>,
+    /// Resource indicators (RFC 8707) this client may name. Not settable from
+    /// a registration document: the per-client audience allow-list is policy,
+    /// and `ast-m9c.6` owns it.
+    pub resources: BTreeSet<String>,
+    /// Where the client's keys come from.
+    pub jwks: JwksSource,
+    /// OIDC Registration §2.
+    pub id_token_signed_response_alg: SigningAlgorithm,
+    /// OIDC Registration §2. `None` means the client registered no request
+    /// objects; JAR is `ast-s36.1` and is not implemented.
+    pub request_object_signing_alg: Option<SigningAlgorithm>,
+    /// CIBA Core 1.0 §4. `None` unless the client registered one.
+    pub backchannel_authentication_request_signing_alg: Option<SigningAlgorithm>,
+    /// OIDC Core §8.
+    pub subject_type: SubjectType,
+    /// OIDC Core §8.1. Required when `subject_type` is pairwise and the
+    /// redirect URIs span more than one host.
+    pub sector_identifier_uri: Option<String>,
+    /// What the client's access tokens are bound to.
+    pub token_binding: TokenBinding,
+    /// RFC 9396 §9.2. Which `authorization_details` types the client may use.
+    pub authorization_details_types: BTreeSet<String>,
+    /// FAPI 2.0 SP §5.2.2.1.1.
+    pub use_mtls_endpoint_aliases: bool,
+}
+
+impl ClientRegistration {
+    /// The only `response_types` value this server accepts (ADR-0002: no
+    /// implicit flow, no hybrid flow, so `code` is the only response type that
+    /// exists).
+    pub const RESPONSE_TYPES: [&'static str; 1] = ["code"];
+
+    /// RFC 9126 §6 `require_pushed_authorization_requests`, which is `true` for
+    /// every client and cannot be set otherwise. PAR is the only way to start
+    /// an authorization request (ADR-0002), so there is nothing for a `false`
+    /// to select.
+    pub const REQUIRE_PUSHED_AUTHORIZATION_REQUESTS: bool = true;
+
+    /// The most redirect URIs one client may register.
+    pub const MAX_REDIRECT_URIS: usize = 32;
+    /// The most scopes one client may register.
+    pub const MAX_SCOPES: usize = 64;
+    /// The longest a single scope token may be.
+    pub const MAX_SCOPE_LEN: usize = 128;
+    /// The most `authorization_details` types one client may register.
+    pub const MAX_AUTHORIZATION_DETAILS_TYPES: usize = 32;
+    /// The longest a client name may be.
+    pub const MAX_CLIENT_NAME_LEN: usize = 200;
+
+    /// Parses and validates a registration document.
+    ///
+    /// This is the entry point every caller reaches: dynamic client
+    /// registration (`ast-m9c.4`), the admin API and the seed scripts all go
+    /// through it, so there is one definition of an acceptable client rather
+    /// than one per caller.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientMetadataError`], whose [`code`] is the RFC 7591 §3.2.2
+    /// error code to return.
+    ///
+    /// [`code`]: ClientMetadataError::code
+    // fuzz-target: client_metadata_json
+    pub fn from_json(
+        document: &[u8],
+        capabilities: Capabilities,
+    ) -> Result<Self, ClientMetadataError> {
+        let metadata: ClientMetadata = serde_json::from_slice(document).map_err(|error| {
+            // The message is deliberately dropped: `serde_json` renders the
+            // offending value into it ("invalid type: string \"…\""), and that
+            // value came from the network. The position is enough to fix a
+            // document and carries nothing back out.
+            ClientMetadataError::Malformed {
+                kind: match error.classify() {
+                    serde_json::error::Category::Io => "io",
+                    serde_json::error::Category::Syntax => "syntax",
+                    serde_json::error::Category::Data => "type",
+                    serde_json::error::Category::Eof => "eof",
+                },
+                line: error.line(),
+                column: error.column(),
+            }
+        })?;
+        metadata.validate(capabilities)
+    }
+
+    /// Whether the client may use `grant`.
+    #[must_use]
+    pub fn allows(&self, grant: GrantType) -> bool {
+        self.grant_types.contains(&grant)
+    }
+}
+
+impl ClientMetadata {
+    /// Validates the document against the FAPI 2.0 profile and this
+    /// deployment's capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientMetadataError`] describing the first rule broken. The
+    /// order the rules run in is fixed rather than incidental: a document that
+    /// breaks several of them must always be told about the same one, or two
+    /// callers submitting the same document get two different diagnoses.
+    pub fn validate(
+        &self,
+        capabilities: Capabilities,
+    ) -> Result<ClientRegistration, ClientMetadataError> {
+        let token_endpoint_auth_method = self.auth_method(capabilities)?;
+        let application_type = self.application_type()?;
+        let grant_types = self.grant_types(capabilities)?;
+        self.check_response_types(&grant_types)?;
+        let redirect_uris = self.redirect_uris(application_type, &grant_types)?;
+        let jwks = self.jwks()?;
+        let (subject_type, sector_identifier_uri) = self.subject(&redirect_uris)?;
+        let token_binding = self.token_binding(capabilities)?;
+
+        self.check_par()?;
+        let use_mtls_endpoint_aliases = self.mtls_endpoint_aliases(capabilities)?;
+
+        Ok(ClientRegistration {
+            client_name: self.client_name()?,
+            application_type,
+            token_endpoint_auth_method,
+            redirect_uris,
+            grant_types,
+            scopes: self.scopes()?,
+            resources: BTreeSet::new(),
+            jwks,
+            id_token_signed_response_alg: match &self.id_token_signed_response_alg {
+                Some(raw) => signing_algorithm("id_token_signed_response_alg", raw)?,
+                None => SigningAlgorithm::DEFAULT,
+            },
+            request_object_signing_alg: self
+                .request_object_signing_alg
+                .as_deref()
+                .map(|raw| signing_algorithm("request_object_signing_alg", raw))
+                .transpose()?,
+            backchannel_authentication_request_signing_alg: self
+                .backchannel_authentication_request_signing_alg
+                .as_deref()
+                .map(|raw| signing_algorithm("backchannel_authentication_request_signing_alg", raw))
+                .transpose()?,
+            subject_type,
+            sector_identifier_uri,
+            token_binding,
+            authorization_details_types: self.authorization_details_types()?,
+            use_mtls_endpoint_aliases,
+        })
+    }
+
+    fn client_name(&self) -> Result<String, ClientMetadataError> {
+        const FIELD: &str = "client_name";
+        let name = self.client_name.as_deref().unwrap_or_default().trim();
+        if name.is_empty() {
+            // RFC 7591 §2 makes every field optional, and this is the one place
+            // this server insists. The name is what the consent screen asks the
+            // user to authorise; a client with no name produces a prompt that
+            // names nobody, which is the shape a consent-phishing client wants.
+            return Err(ClientMetadataError::Missing { field: FIELD });
+        }
+        if name.chars().count() > ClientRegistration::MAX_CLIENT_NAME_LEN {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                format!(
+                    "must be at most {} characters",
+                    ClientRegistration::MAX_CLIENT_NAME_LEN
+                ),
+            ));
+        }
+        // The name is rendered on the consent screen. Escaping is the template
+        // layer's job, but escaping does not help against a right-to-left
+        // override, which reorders the *displayed* text without changing a byte
+        // of the markup — "Bank of Acme" and a reversed run of the same
+        // characters look identical to the user being asked to consent.
+        if let Some(bad) = name
+            .chars()
+            .find(|c| c.is_control() || matches!(c, '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                format!(
+                    "must not contain control or bidirectional formatting characters (U+{:04X})",
+                    u32::from(bad)
+                ),
+            ));
+        }
+        Ok(name.to_owned())
+    }
+
+    fn auth_method(
+        &self,
+        capabilities: Capabilities,
+    ) -> Result<TokenEndpointAuthMethod, ClientMetadataError> {
+        const FIELD: &str = "token_endpoint_auth_method";
+        let Some(raw) = self.token_endpoint_auth_method.as_deref() else {
+            return Ok(TokenEndpointAuthMethod::DEFAULT);
+        };
+        // The rejected value is not echoed: it is one of the few fields a
+        // caller mistakenly fills with a secret-bearing method name next to the
+        // secret itself.
+        let method = TokenEndpointAuthMethod::parse(raw).ok_or_else(|| {
+            ClientMetadataError::rejected(
+                FIELD,
+                "must be private_key_jwt, tls_client_auth or self_signed_tls_client_auth; \
+                 this server has no client secrets and does not accept unauthenticated \
+                 clients (FAPI 2.0 SP §5.3.2.1 item 3)",
+            )
+        })?;
+        if method.requires_mtls() && !capabilities.is_enabled(Feature::Mtls) {
+            return Err(ClientMetadataError::needs(FIELD, Feature::Mtls));
+        }
+        Ok(method)
+    }
+
+    fn application_type(&self) -> Result<ApplicationType, ClientMetadataError> {
+        match self.application_type.as_deref() {
+            None => Ok(ApplicationType::default()),
+            Some(raw) => ApplicationType::parse(raw).ok_or_else(|| {
+                ClientMetadataError::rejected("application_type", "must be `web` or `native`")
+            }),
+        }
+    }
+
+    fn grant_types(
+        &self,
+        capabilities: Capabilities,
+    ) -> Result<BTreeSet<GrantType>, ClientMetadataError> {
+        const FIELD: &str = "grant_types";
+        let Some(raw) = self.grant_types.as_deref() else {
+            return Ok(GrantType::DEFAULT.into_iter().collect());
+        };
+        if raw.is_empty() {
+            return Err(ClientMetadataError::Missing { field: FIELD });
+        }
+        let mut grants = BTreeSet::new();
+        for entry in raw {
+            let grant = GrantType::parse(entry).ok_or_else(|| {
+                ClientMetadataError::rejected(
+                    FIELD,
+                    "contains a grant type this server does not implement; the set is \
+                     authorization_code, refresh_token, client_credentials, token-exchange, \
+                     device_code and ciba",
+                )
+            })?;
+            if let Some(feature) = grant.required_feature()
+                && !capabilities.is_enabled(feature)
+            {
+                return Err(ClientMetadataError::needs(FIELD, feature));
+            }
+            if !grants.insert(grant) {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    "must not repeat a grant type",
+                ));
+            }
+        }
+        Ok(grants)
+    }
+
+    /// RFC 7591 §2.1: `code` and `authorization_code` correspond, and a server
+    /// "SHOULD take steps to ensure that a client cannot register itself into
+    /// an inconsistent state".
+    ///
+    /// Here the correspondence is exact in both directions. `["code"]` is the
+    /// only non-empty value this server accepts, because there is no implicit
+    /// or hybrid flow for the other values to name (ADR-0002). An empty list is
+    /// how a client that never reaches the authorization endpoint — a
+    /// `client_credentials` client — says so, and RFC 7591 §2.1's table has no
+    /// response type for that grant.
+    fn check_response_types(
+        &self,
+        grants: &BTreeSet<GrantType>,
+    ) -> Result<(), ClientMetadataError> {
+        const FIELD: &str = "response_types";
+        let uses_authorization_code = grants.contains(&GrantType::AuthorizationCode);
+        let requests_code = match self.response_types.as_deref() {
+            // RFC 7591 §2's default is ["code"], which is consistent with the
+            // default grant_types. A client that named grant_types explicitly
+            // and left response_types out gets the default read the same way.
+            None => true,
+            Some([]) => false,
+            Some([only]) if only == ClientRegistration::RESPONSE_TYPES[0] => true,
+            Some(_) => {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    "must be [\"code\"]; there is no implicit or hybrid flow here",
+                ));
+            }
+        };
+
+        match (!requests_code, uses_authorization_code) {
+            (false, false) => Err(ClientMetadataError::rejected(
+                FIELD,
+                "is [\"code\"] but grant_types does not contain authorization_code \
+                 (RFC 7591 §2.1)",
+            )),
+            (true, true) => Err(ClientMetadataError::rejected(
+                FIELD,
+                "is empty but grant_types contains authorization_code (RFC 7591 §2.1)",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn redirect_uris(
+        &self,
+        application_type: ApplicationType,
+        grants: &BTreeSet<GrantType>,
+    ) -> Result<Vec<RedirectUri>, ClientMetadataError> {
+        const FIELD: &str = "redirect_uris";
+        let needed = grants.iter().any(|g| g.uses_the_authorization_endpoint());
+        let raw = self.redirect_uris.as_deref().unwrap_or_default();
+
+        if raw.is_empty() {
+            if needed {
+                return Err(ClientMetadataError::Missing { field: FIELD });
+            }
+            return Ok(Vec::new());
+        }
+        if !needed {
+            // Dead configuration on a client that cannot reach the
+            // authorization endpoint. It is refused rather than ignored because
+            // adding `authorization_code` later would activate a callback list
+            // nobody reviewed at the time it was added.
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                "must be absent unless grant_types contains authorization_code",
+            ));
+        }
+        if raw.len() > ClientRegistration::MAX_REDIRECT_URIS {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                format!(
+                    "must contain at most {} entries",
+                    ClientRegistration::MAX_REDIRECT_URIS
+                ),
+            ));
+        }
+
+        let mut uris: Vec<RedirectUri> = Vec::with_capacity(raw.len());
+        for (index, entry) in raw.iter().enumerate() {
+            let uri = RedirectUri::parse(entry, application_type)
+                .map_err(|reason| ClientMetadataError::RedirectUri { index, reason })?;
+            if uris.contains(&uri) {
+                return Err(ClientMetadataError::RedirectUri {
+                    index,
+                    reason: "duplicates an earlier entry".to_owned(),
+                });
+            }
+            uris.push(uri);
+        }
+        Ok(uris)
+    }
+
+    fn jwks(&self) -> Result<JwksSource, ClientMetadataError> {
+        match (&self.jwks, &self.jwks_uri) {
+            // RFC 7591 §2: "The jwks_uri and jwks parameters MUST NOT both be
+            // present in the same request or response."
+            (Some(_), Some(_)) => Err(ClientMetadataError::rejected(
+                "jwks",
+                "must not be given together with jwks_uri (RFC 7591 §2)",
+            )),
+            // Every client here is confidential and authenticates with a key,
+            // whether a client assertion or a certificate matched against its
+            // JWKS, so a client with no key source is a client that cannot
+            // authenticate. The schema says the same thing in
+            // `clients_exactly_one_key_source`.
+            (None, None) => Err(ClientMetadataError::Missing { field: "jwks_uri" }),
+            (Some(jwks), None) => {
+                // Shape only. Whether the keys are usable — `kty`, `use`, the
+                // RSA ≥ 2048 and EC ≥ 224 floors of FAPI 2.0 SP §5.4.1 — is
+                // `ast-mxc.5`, which is also where they are turned into
+                // verifiers.
+                let keys = jwks
+                    .get("keys")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| {
+                        ClientMetadataError::rejected(
+                            "jwks",
+                            "must be a JSON object with a `keys` array (RFC 7517 §5)",
+                        )
+                    })?;
+                if keys.is_empty() || !keys.iter().all(serde_json::Value::is_object) {
+                    return Err(ClientMetadataError::rejected(
+                        "jwks",
+                        "`keys` must be a non-empty array of JWK objects (RFC 7517 §5)",
+                    ));
+                }
+                Ok(JwksSource::Inline(jwks.clone()))
+            }
+            (None, Some(uri)) => {
+                https_url("jwks_uri", uri)?;
+                Ok(JwksSource::Uri(uri.clone()))
+            }
+        }
+    }
+
+    fn subject(
+        &self,
+        redirect_uris: &[RedirectUri],
+    ) -> Result<(SubjectType, Option<String>), ClientMetadataError> {
+        const FIELD: &str = "sector_identifier_uri";
+        let subject_type = match self.subject_type.as_deref() {
+            None => SubjectType::default(),
+            Some(raw) => SubjectType::parse(raw).ok_or_else(|| {
+                ClientMetadataError::rejected("subject_type", "must be `public` or `pairwise`")
+            })?,
+        };
+
+        let sector = self.sector_identifier_uri.as_deref().map(str::trim);
+        match (subject_type, sector) {
+            (SubjectType::Public, Some(_)) => {
+                // The sector identifier is only consulted when computing a
+                // pairwise `sub` (OIDC Core §8.1). Stored against a public
+                // client it is a value nothing reads — until someone flips
+                // `subject_type` and it silently starts deciding identifiers.
+                Err(ClientMetadataError::rejected(
+                    FIELD,
+                    "is only meaningful when subject_type is pairwise",
+                ))
+            }
+            (SubjectType::Public, None) => Ok((subject_type, None)),
+            (SubjectType::Pairwise, Some(uri)) => {
+                // Fetching the document and checking that it lists every
+                // registered redirect URI (OIDC Registration §5) is I/O, and
+                // belongs with the other outbound fetches in `ast-mxc.5`.
+                https_url(FIELD, uri)?;
+                Ok((subject_type, Some(uri.to_owned())))
+            }
+            (SubjectType::Pairwise, None) => {
+                // OIDC Core §8.1: without a sector_identifier_uri the sector is
+                // the host of the registered redirect URI, so more than one
+                // host leaves the identifier undefined.
+                let mut hosts = BTreeSet::new();
+                for uri in redirect_uris {
+                    if let Ok(url) = Url::parse(uri.as_str())
+                        && let Some(host) = url.host_str()
+                    {
+                        hosts.insert(host.to_owned());
+                    }
+                }
+                if hosts.len() > 1 {
+                    return Err(ClientMetadataError::Missing { field: FIELD });
+                }
+                Ok((subject_type, None))
+            }
+        }
+    }
+
+    fn token_binding(
+        &self,
+        capabilities: Capabilities,
+    ) -> Result<TokenBinding, ClientMetadataError> {
+        const CERT_FIELD: &str = "tls_client_certificate_bound_access_tokens";
+        // RFC 9449 §12 gives this a default of false. Here the default is true:
+        // FAPI 2.0 SP §5.3.2.1 requires sender-constrained access tokens, and a
+        // client that says nothing must not end up with the weaker of the two
+        // readings.
+        let dpop = self.dpop_bound_access_tokens.unwrap_or(true);
+        let certificate = self
+            .tls_client_certificate_bound_access_tokens
+            .unwrap_or(false);
+        if certificate && !capabilities.is_enabled(Feature::Mtls) {
+            return Err(ClientMetadataError::needs(CERT_FIELD, Feature::Mtls));
+        }
+        TokenBinding::from_flags(dpop, certificate)
+    }
+
+    /// RFC 9126 §6 defaults `require_pushed_authorization_requests` to false.
+    /// PAR is the only way to start an authorization request here (ADR-0002),
+    /// so `false` is not a weaker setting, it is a request for a code path that
+    /// does not exist — and answering it with a silent `true` would leave the
+    /// client's own record claiming otherwise.
+    fn check_par(&self) -> Result<(), ClientMetadataError> {
+        if self.require_pushed_authorization_requests == Some(false) {
+            return Err(ClientMetadataError::rejected(
+                "require_pushed_authorization_requests",
+                "must be true; the authorization endpoint accepts only a request_uri \
+                 obtained from the pushed authorization request endpoint (RFC 9126 §2)",
+            ));
+        }
+        Ok(())
+    }
+
+    fn mtls_endpoint_aliases(
+        &self,
+        capabilities: Capabilities,
+    ) -> Result<bool, ClientMetadataError> {
+        const FIELD: &str = "use_mtls_endpoint_aliases";
+        let requested = self.use_mtls_endpoint_aliases.unwrap_or(false);
+        if requested && !capabilities.is_enabled(Feature::Mtls) {
+            return Err(ClientMetadataError::needs(FIELD, Feature::Mtls));
+        }
+        Ok(requested)
+    }
+
+    /// RFC 6749 §3.3: `scope = scope-token *( SP scope-token )`, where a
+    /// `scope-token` is `1*( %x21 / %x23-5B / %x5D-7E )` — printable ASCII
+    /// without space, `"` or `\`.
+    fn scopes(&self) -> Result<BTreeSet<String>, ClientMetadataError> {
+        const FIELD: &str = "scope";
+        let Some(raw) = self.scope.as_deref() else {
+            return Ok(BTreeSet::new());
+        };
+        let mut scopes = BTreeSet::new();
+        // Splitting on a single space, not on whitespace: a tab or a newline in
+        // a scope string is a character the grammar does not allow, and reading
+        // it as a separator would accept a document the grammar rejects.
+        for token in raw.split(' ').filter(|t| !t.is_empty()) {
+            if token.len() > ClientRegistration::MAX_SCOPE_LEN {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    format!(
+                        "a scope token must be at most {} bytes",
+                        ClientRegistration::MAX_SCOPE_LEN
+                    ),
+                ));
+            }
+            if !token
+                .bytes()
+                .all(|b| matches!(b, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
+            {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    "a scope token may only contain printable ASCII other than space, \
+                     '\"' and '\\' (RFC 6749 §3.3)",
+                ));
+            }
+            if !scopes.insert(token.to_owned()) {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    "must not repeat a scope",
+                ));
+            }
+            if scopes.len() > ClientRegistration::MAX_SCOPES {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    format!(
+                        "must contain at most {} scopes",
+                        ClientRegistration::MAX_SCOPES
+                    ),
+                ));
+            }
+        }
+        Ok(scopes)
+    }
+
+    /// RFC 9396 §9.2. Which types are meaningful is a per-tenant policy
+    /// question (`ast-m9c.6`); what is checked here is that the list is a set
+    /// of non-empty names.
+    fn authorization_details_types(&self) -> Result<BTreeSet<String>, ClientMetadataError> {
+        const FIELD: &str = "authorization_details_types";
+        let Some(raw) = self.authorization_details_types.as_deref() else {
+            return Ok(BTreeSet::new());
+        };
+        if raw.len() > ClientRegistration::MAX_AUTHORIZATION_DETAILS_TYPES {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                format!(
+                    "must contain at most {} entries",
+                    ClientRegistration::MAX_AUTHORIZATION_DETAILS_TYPES
+                ),
+            ));
+        }
+        let mut types = BTreeSet::new();
+        for entry in raw {
+            let name = entry.trim();
+            if name.is_empty() || name.chars().any(char::is_control) {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    "each entry must be a non-empty name without control characters",
+                ));
+            }
+            if !types.insert(name.to_owned()) {
+                return Err(ClientMetadataError::rejected(
+                    FIELD,
+                    "must not repeat a type",
+                ));
+            }
+        }
+        Ok(types)
+    }
+}
+
+/// Parses an `alg` from client metadata against ADR-0003's allow-list.
+///
+/// `none` fails here like any other unknown name, because it is not a variant
+/// of [`SigningAlgorithm`] — which is what makes "the client picked the
+/// algorithm used to check its own credentials" unrepresentable rather than
+/// merely tested for (RFC 8725 §3.1–3.2).
+fn signing_algorithm(
+    field: &'static str,
+    raw: &str,
+) -> Result<SigningAlgorithm, ClientMetadataError> {
+    SigningAlgorithm::parse(raw).ok_or_else(|| {
+        ClientMetadataError::rejected(
+            field,
+            "must be EdDSA, ES256 or PS256 (FAPI 2.0 SP §5.4.1); `none` and RS256 are \
+             not accepted",
+        )
+    })
+}
+
+/// Checks a metadata URL that Asterius will later dereference or compare.
+fn https_url(field: &'static str, raw: &str) -> Result<(), ClientMetadataError> {
+    let url = Url::parse(raw)
+        .map_err(|_| ClientMetadataError::rejected(field, "must be an absolute URL"))?;
+    if url.scheme() != "https" {
+        return Err(ClientMetadataError::rejected(field, "scheme must be https"));
+    }
+    // `Url` accepts `https:///jwks` and reports an empty host rather than none.
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(ClientMetadataError::rejected(field, "must contain a host"));
+    }
+    if url.fragment().is_some() {
+        return Err(ClientMetadataError::rejected(
+            field,
+            "must not contain a fragment component",
+        ));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// The aggregate
+// ---------------------------------------------------------------------------
+
+/// A registered client.
+///
+/// Deliberately not `#[non_exhaustive]`, for the same reason as [`Tenant`]:
+/// adapters build entities from rows, and a sealed struct would only push every
+/// adapter through a constructor taking the same fields in the same order, with
+/// less type checking.
+///
+/// [`Tenant`]: crate::Tenant
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Client {
+    /// The tenant that owns this client. A `client_id` is unique within a
+    /// tenant and means nothing outside it.
+    pub tenant: TenantId,
+    /// The `client_id`.
+    pub id: ClientId,
+    /// The validated metadata.
+    pub registration: ClientRegistration,
+    /// Whether the client answers requests.
+    pub status: ClientStatus,
+    /// When the client was registered.
+    pub created_at: OffsetDateTime,
+    /// When the registration was last modified.
+    pub updated_at: OffsetDateTime,
+}
+
+impl Client {
+    /// Whether this client may authenticate and be issued tokens.
+    ///
+    /// A disabled client fails client authentication rather than being told it
+    /// is disabled: the distinction is only useful to somebody probing which
+    /// `client_id` values exist.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.status == ClientStatus::Active
+    }
+
+    /// Whether the client may use `grant`.
+    #[must_use]
+    pub fn allows(&self, grant: GrantType) -> bool {
+        self.registration.allows(grant)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn caps(mtls: bool) -> Capabilities {
+        Capabilities {
+            mtls,
+            ..Capabilities::default()
+        }
+    }
+
+    fn everything_on() -> Capabilities {
+        Capabilities {
+            mtls: true,
+            grant_management: true,
+            ciba: true,
+            device_flow: true,
+            token_exchange: true,
+            ssf: true,
+            authzen: true,
+            dpop_nonce: true,
+        }
+    }
+
+    /// The smallest document this server accepts.
+    fn minimal() -> serde_json::Value {
+        json!({
+            "client_name": "Billing",
+            "redirect_uris": ["https://rp.example/cb"],
+            "jwks": {"keys": [{"kty": "OKP"}]},
+        })
+    }
+
+    fn validate(document: &serde_json::Value) -> Result<ClientRegistration, ClientMetadataError> {
+        validate_with(document, caps(false))
+    }
+
+    fn validate_with(
+        document: &serde_json::Value,
+        capabilities: Capabilities,
+    ) -> Result<ClientRegistration, ClientMetadataError> {
+        ClientRegistration::from_json(
+            serde_json::to_vec(document).expect("serialise").as_slice(),
+            capabilities,
+        )
+    }
+
+    /// A document built from [`minimal`] with `field` set to `value`.
+    fn with(field: &str, value: serde_json::Value) -> serde_json::Value {
+        let mut document = minimal();
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert(field.to_owned(), value);
+        document
+    }
+
+    fn without(field: &str) -> serde_json::Value {
+        let mut document = minimal();
+        document.as_object_mut().expect("object").remove(field);
+        document
+    }
+
+    fn rejection(document: &serde_json::Value) -> ClientMetadataError {
+        validate(document).expect_err("should have been rejected")
+    }
+
+    // -----------------------------------------------------------------------
+    // The happy path, and the defaults
+    // -----------------------------------------------------------------------
+
+    /// A document that says only what it must settles everything else by
+    /// omission, and every omission lands on the FAPI value rather than on the
+    /// RFC's historical one.
+    #[test]
+    fn a_client_that_registers_nothing_optional_gets_the_profile_defaults() {
+        let client = validate(&minimal()).expect("minimal document is valid");
+        assert_eq!(
+            client.token_endpoint_auth_method,
+            TokenEndpointAuthMethod::PrivateKeyJwt,
+            "RFC 7591 §2's client_secret_basic default must not survive here"
+        );
+        assert_eq!(client.application_type, ApplicationType::Web);
+        assert_eq!(
+            client.grant_types,
+            BTreeSet::from([GrantType::AuthorizationCode])
+        );
+        assert_eq!(client.subject_type, SubjectType::Public);
+        assert_eq!(
+            client.id_token_signed_response_alg,
+            SigningAlgorithm::EdDsa,
+            "ADR-0003 makes EdDSA the default"
+        );
+        assert_eq!(client.request_object_signing_alg, None);
+        assert!(!client.use_mtls_endpoint_aliases);
+        assert_eq!(
+            client.token_binding,
+            TokenBinding::Dpop,
+            "RFC 9449 §12 defaults dpop_bound_access_tokens to false; the profile does not"
+        );
+        assert!(client.token_binding.is_dpop_bound());
+        const { assert!(ClientRegistration::REQUIRE_PUSHED_AUTHORIZATION_REQUESTS) };
+    }
+
+    /// RFC 7591 §3.2.1: an authorization server ignores registration metadata
+    /// it does not implement rather than refusing the registration.
+    #[test]
+    fn unknown_metadata_fields_are_ignored_rather_than_refused() {
+        let document = with("software_version", json!("4.2"));
+        assert!(validate(&document).is_ok());
+        let document = with("logo_uri", json!("https://rp.example/logo.png"));
+        assert!(validate(&document).is_ok());
+    }
+
+    /// Validation must not depend on anything but its inputs: the admin API,
+    /// the registration endpoint and the seed scripts have to agree.
+    #[test]
+    fn validating_the_same_document_twice_gives_the_same_answer() {
+        for document in [minimal(), with("scope", json!("openid profile"))] {
+            assert_eq!(validate(&document), validate(&document));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Client authentication (FAPI 2.0 SP §5.3.2.1 items 3 and 6)
+    // -----------------------------------------------------------------------
+
+    /// FAPI 2.0 SP §5.3.2.1 item 3: "shall only support confidential clients".
+    /// A shared secret is not a confidential-client credential this server has,
+    /// and `none` is a public client by another name, so every one of them is
+    /// an `invalid_client_metadata` rather than a downgrade.
+    #[test]
+    fn no_client_can_register_a_secret_based_or_absent_authentication_method() {
+        for method in [
+            "client_secret_basic",
+            "client_secret_post",
+            "client_secret_jwt",
+            "none",
+            "None",
+            "private_key_jwt ",
+            "PRIVATE_KEY_JWT",
+            "",
+        ] {
+            let error = rejection(&with("token_endpoint_auth_method", json!(method)));
+            assert_eq!(error.code(), "invalid_client_metadata", "{method}");
+            assert_eq!(error.field(), "token_endpoint_auth_method", "{method}");
+            assert!(
+                !error.to_string().contains(method) || method.is_empty(),
+                "the rejected value was echoed back: {error}"
+            );
+        }
+    }
+
+    /// The mTLS methods exist only where the deployment has switched mTLS on.
+    /// Registering one against a deployment that cannot terminate mTLS produces
+    /// a client that can never authenticate.
+    #[test]
+    fn the_mtls_authentication_methods_are_refused_unless_the_flag_is_on() {
+        for method in ["tls_client_auth", "self_signed_tls_client_auth"] {
+            let document = with("token_endpoint_auth_method", json!(method));
+            let error = validate_with(&document, caps(false)).expect_err("mtls is off");
+            assert_eq!(error.code(), "invalid_client_metadata");
+            assert!(error.to_string().contains("mtls"), "{error}");
+
+            let accepted = validate_with(&document, caps(true)).expect("mtls is on");
+            assert_eq!(
+                accepted.token_endpoint_auth_method,
+                TokenEndpointAuthMethod::parse(method).expect("known method")
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Grant and response types (RFC 7591 §2.1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn the_only_response_type_is_code() {
+        for value in [
+            json!(["token"]),
+            json!(["id_token"]),
+            json!(["code", "id_token"]),
+            json!(["code id_token"]),
+            json!(["code", "code"]),
+            json!(["CODE"]),
+        ] {
+            let error = rejection(&with("response_types", value.clone()));
+            assert_eq!(error.field(), "response_types", "{value}");
+            assert_eq!(error.code(), "invalid_client_metadata", "{value}");
+        }
+        assert!(validate(&with("response_types", json!(["code"]))).is_ok());
+    }
+
+    /// RFC 7591 §2.1: `code` and `authorization_code` correspond, and the
+    /// server must not let a client register itself into an inconsistent state.
+    #[test]
+    fn response_types_and_grant_types_must_agree_in_both_directions() {
+        // code without authorization_code
+        let error = rejection(&with("grant_types", json!(["client_credentials"])));
+        assert_eq!(error.field(), "response_types");
+
+        // authorization_code without code
+        let mut document = minimal();
+        let object = document.as_object_mut().expect("object");
+        object.insert("grant_types".to_owned(), json!(["authorization_code"]));
+        object.insert("response_types".to_owned(), json!([]));
+        let error = rejection(&document);
+        assert_eq!(error.field(), "response_types");
+
+        // A client that reaches no authorization endpoint says so with an empty
+        // response_types, which RFC 7591 §2.1's table agrees with.
+        let mut machine = minimal();
+        let object = machine.as_object_mut().expect("object");
+        object.insert("grant_types".to_owned(), json!(["client_credentials"]));
+        object.insert("response_types".to_owned(), json!([]));
+        object.remove("redirect_uris");
+        let client = validate(&machine).expect("a client_credentials client is valid");
+        assert!(client.redirect_uris.is_empty());
+        assert!(!client.allows(GrantType::AuthorizationCode));
+    }
+
+    #[test]
+    fn grant_types_outside_the_profile_are_refused() {
+        for value in [
+            "implicit",
+            "password",
+            "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "urn:ietf:params:oauth:grant-type:saml2-bearer",
+            "authorization_code ",
+            "",
+        ] {
+            let error = rejection(&with("grant_types", json!([value, "authorization_code"])));
+            assert_eq!(error.field(), "grant_types", "{value}");
+        }
+        assert_eq!(
+            rejection(&with("grant_types", json!([]))).field(),
+            "grant_types"
+        );
+        assert_eq!(
+            rejection(&with(
+                "grant_types",
+                json!(["authorization_code", "authorization_code"])
+            ))
+            .field(),
+            "grant_types"
+        );
+    }
+
+    /// A grant behind a flag that is off is a grant the server cannot perform.
+    /// Registering it produces a client that fails at first use, pointing at
+    /// the client rather than at the flag.
+    #[test]
+    fn a_grant_type_behind_a_disabled_flag_is_refused_at_registration() {
+        for (grant, feature) in [
+            (
+                "urn:ietf:params:oauth:grant-type:token-exchange",
+                Feature::TokenExchange,
+            ),
+            (
+                "urn:ietf:params:oauth:grant-type:device_code",
+                Feature::DeviceFlow,
+            ),
+            ("urn:openid:params:grant-type:ciba", Feature::Ciba),
+        ] {
+            let document = with("grant_types", json!(["authorization_code", grant]));
+            let error =
+                validate_with(&document, Capabilities::default()).expect_err("the flag is off");
+            assert_eq!(error.field(), "grant_types");
+            assert!(error.to_string().contains(feature.as_str()), "{error}");
+
+            let accepted = validate_with(&document, everything_on()).expect("the flag is on");
+            assert!(accepted.allows(GrantType::parse(grant).expect("known grant")));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Redirect URIs — the part of ast-m9c.7 registration needs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_client_using_the_authorization_endpoint_must_register_a_redirect_uri() {
+        let error = rejection(&without("redirect_uris"));
+        assert_eq!(error.field(), "redirect_uris");
+        assert_eq!(error.code(), "invalid_client_metadata");
+        assert_eq!(
+            rejection(&with("redirect_uris", json!([]))).field(),
+            "redirect_uris"
+        );
+    }
+
+    /// FAPI 2.0 SP §5.3.2.2 item 8 and RFC 9700 §4.1: https only, exact match,
+    /// no room for a URI that resolves somewhere the operator did not intend.
+    #[test]
+    fn redirect_uris_are_https_and_carry_nothing_that_breaks_an_exact_match() {
+        for (uri, why) in [
+            ("http://rp.example/cb", "plain http on a web client"),
+            ("http://localhost:8080/cb", "localhost resolves through DNS"),
+            (
+                "http://127.0.0.1:8080/cb",
+                "loopback needs application_type=native",
+            ),
+            ("https://rp.example/cb#f", "fragment"),
+            ("https://user:pw@rp.example/cb", "userinfo"),
+            ("com.example.app:/oauth", "private-use scheme"),
+            ("/cb", "relative reference"),
+            ("https:///cb", "no host"),
+            ("", "empty"),
+        ] {
+            let error = rejection(&with("redirect_uris", json!([uri])));
+            assert_eq!(
+                error.code(),
+                "invalid_redirect_uri",
+                "accepted {why}: {uri}"
+            );
+            assert_eq!(error.field(), "redirect_uris");
+            assert!(
+                !error.to_string().contains("rp.example"),
+                "echoed the URI: {error}"
+            );
+        }
+    }
+
+    /// RFC 8252 §7.3: a native client may redirect to the loopback interface
+    /// over http, because there is no transport to protect on a socket that
+    /// never leaves the machine. Nothing else gains that exception.
+    #[test]
+    fn loopback_http_is_admissible_only_for_a_native_client() {
+        for uri in [
+            "http://127.0.0.1/cb",
+            "http://127.0.0.1:51004/cb",
+            "http://[::1]:51004/cb",
+        ] {
+            let mut document = with("redirect_uris", json!([uri]));
+            assert_eq!(
+                rejection(&document).code(),
+                "invalid_redirect_uri",
+                "{uri} was accepted on a web client"
+            );
+            document
+                .as_object_mut()
+                .expect("object")
+                .insert("application_type".to_owned(), json!("native"));
+            let client = validate(&document).unwrap_or_else(|e| panic!("{uri}: {e}"));
+            assert_eq!(client.redirect_uris[0].as_str(), uri);
+        }
+        // Still not a licence for anything else on a native client.
+        let mut document = with("redirect_uris", json!(["http://192.168.1.10/cb"]));
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert("application_type".to_owned(), json!("native"));
+        assert_eq!(rejection(&document).code(), "invalid_redirect_uri");
+    }
+
+    /// Comparison is byte-exact (RFC 9700 §4.1), so the registered bytes come
+    /// back out unchanged — no lowercased host, no added trailing slash, no
+    /// re-encoded path.
+    #[test]
+    fn a_registered_redirect_uri_is_stored_exactly_as_written() {
+        for uri in [
+            "https://rp.example/CB",
+            "https://rp.example/a%2Fb",
+            "https://rp.example:8443/cb?x=1",
+            "https://rp.example/",
+        ] {
+            let client = validate(&with("redirect_uris", json!([uri])))
+                .unwrap_or_else(|e| panic!("{uri}: {e}"));
+            assert_eq!(
+                client.redirect_uris[0].as_str(),
+                uri,
+                "the parser normalised a redirect URI"
+            );
+        }
+    }
+
+    /// The other half of never normalising: a URI that is not already in the
+    /// form a URL parser produces is refused rather than rewritten, because
+    /// rewriting it would change what the client must send and keeping it would
+    /// let the registered string and the URL a browser requests differ.
+    #[test]
+    fn a_redirect_uri_that_is_not_already_normalised_is_refused() {
+        for (uri, becomes) in [
+            ("https://RP.Example/cb", "the host is lowercased"),
+            ("https://rp.example", "a trailing slash is added"),
+            ("https://rp.example:443/cb", "the default port is dropped"),
+            ("https://rp.example/../cb", "the path is resolved"),
+            ("https:///cb", "the empty authority makes `cb` the host"),
+        ] {
+            let error = rejection(&with("redirect_uris", json!([uri])));
+            assert_eq!(
+                error.code(),
+                "invalid_redirect_uri",
+                "accepted {uri}, where {becomes}"
+            );
+        }
+    }
+
+    #[test]
+    fn redirect_uris_are_a_bounded_set_without_repeats() {
+        let duplicated = json!(["https://rp.example/cb", "https://rp.example/cb"]);
+        assert_eq!(
+            rejection(&with("redirect_uris", duplicated)).code(),
+            "invalid_redirect_uri"
+        );
+        let many: Vec<String> = (0..=ClientRegistration::MAX_REDIRECT_URIS)
+            .map(|i| format!("https://rp.example/cb{i}"))
+            .collect();
+        assert_eq!(
+            rejection(&with("redirect_uris", json!(many))).field(),
+            "redirect_uris"
+        );
+    }
+
+    /// A callback list on a client that cannot reach the authorization endpoint
+    /// is configuration nobody re-reads when the grant list changes.
+    #[test]
+    fn a_client_that_never_redirects_may_not_register_a_redirect_uri() {
+        let mut document = minimal();
+        let object = document.as_object_mut().expect("object");
+        object.insert("grant_types".to_owned(), json!(["client_credentials"]));
+        object.insert("response_types".to_owned(), json!([]));
+        assert_eq!(rejection(&document).field(), "redirect_uris");
+    }
+
+    // -----------------------------------------------------------------------
+    // Algorithms (ADR-0003, FAPI 2.0 SP §5.4.1)
+    // -----------------------------------------------------------------------
+
+    /// The client does not get to choose the algorithm used to check its own
+    /// credentials, and `none` is not a value that exists.
+    #[test]
+    fn no_signing_algorithm_outside_the_allow_list_can_be_registered() {
+        for field in [
+            "id_token_signed_response_alg",
+            "request_object_signing_alg",
+            "backchannel_authentication_request_signing_alg",
+        ] {
+            for alg in [
+                "none", "None", "HS256", "RS256", "ES384", "PS512", "eddsa", "",
+            ] {
+                let error = rejection(&with(field, json!(alg)));
+                assert_eq!(error.field(), field, "{field} accepted {alg}");
+                assert_eq!(error.code(), "invalid_client_metadata");
+            }
+            for alg in SigningAlgorithm::ALL {
+                assert!(
+                    validate(&with(field, json!(alg.as_str()))).is_ok(),
+                    "{field} refused {alg}"
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Key material (RFC 7591 §2)
+    // -----------------------------------------------------------------------
+
+    /// RFC 7591 §2: "The `jwks_uri` and `jwks` parameters MUST NOT both be present
+    /// in the same request or response." The schema's
+    /// `clients_exactly_one_key_source` check adds that one of them must be.
+    #[test]
+    fn a_client_registers_exactly_one_key_source() {
+        let both = with("jwks_uri", json!("https://rp.example/jwks"));
+        assert_eq!(rejection(&both).code(), "invalid_client_metadata");
+
+        let neither = without("jwks");
+        assert_eq!(rejection(&neither).code(), "invalid_client_metadata");
+
+        let mut uri_only = without("jwks");
+        uri_only
+            .as_object_mut()
+            .expect("object")
+            .insert("jwks_uri".to_owned(), json!("https://rp.example/jwks"));
+        let client = validate(&uri_only).expect("a jwks_uri alone is valid");
+        assert_eq!(
+            client.jwks,
+            JwksSource::Uri("https://rp.example/jwks".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_jwks_uri_must_be_an_https_url_that_can_be_fetched() {
+        let mut document = without("jwks");
+        for uri in [
+            "http://rp.example/jwks",
+            "file:///etc/passwd",
+            "https://rp.example/jwks#keys",
+            "/jwks",
+            "",
+        ] {
+            document
+                .as_object_mut()
+                .expect("object")
+                .insert("jwks_uri".to_owned(), json!(uri));
+            let error = rejection(&document);
+            assert_eq!(error.field(), "jwks_uri", "accepted {uri}");
+        }
+    }
+
+    #[test]
+    fn an_inline_jwks_must_at_least_be_a_jwk_set() {
+        for value in [
+            json!({}),
+            json!({"keys": []}),
+            json!({"keys": "abc"}),
+            json!([]),
+            json!({"keys": ["abc"]}),
+        ] {
+            assert_eq!(
+                rejection(&with("jwks", value.clone())).field(),
+                "jwks",
+                "{value}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Sender constraint (RFC 9449 §12, RFC 8705 §3.4)
+    // -----------------------------------------------------------------------
+
+    /// FAPI 2.0 SP §5.3.2.1: access tokens are sender-constrained. Turning DPoP
+    /// off is admissible only when certificate binding takes over; turning both
+    /// off asks for a bearer token, which this server does not issue.
+    #[test]
+    fn access_tokens_are_always_bound_to_something_the_client_holds() {
+        let mut document = with("dpop_bound_access_tokens", json!(false));
+        let error = rejection(&document);
+        assert_eq!(error.field(), "dpop_bound_access_tokens");
+        assert_eq!(error.code(), "invalid_client_metadata");
+
+        document.as_object_mut().expect("object").insert(
+            "tls_client_certificate_bound_access_tokens".to_owned(),
+            json!(true),
+        );
+        let error = validate_with(&document, caps(false)).expect_err("mtls is off");
+        assert_eq!(error.field(), "tls_client_certificate_bound_access_tokens");
+
+        let client = validate_with(&document, caps(true)).expect("mtls is on");
+        assert_eq!(client.token_binding, TokenBinding::Certificate);
+        assert!(!client.token_binding.is_dpop_bound());
+        assert!(client.token_binding.is_certificate_bound());
+    }
+
+    #[test]
+    fn a_client_may_be_bound_by_both_dpop_and_a_certificate() {
+        let mut document = with("dpop_bound_access_tokens", json!(true));
+        document.as_object_mut().expect("object").insert(
+            "tls_client_certificate_bound_access_tokens".to_owned(),
+            json!(true),
+        );
+        let client = validate_with(&document, caps(true)).expect("both bindings");
+        assert_eq!(client.token_binding, TokenBinding::DpopAndCertificate);
+        assert!(client.token_binding.is_dpop_bound());
+        assert!(client.token_binding.is_certificate_bound());
+    }
+
+    // -----------------------------------------------------------------------
+    // PAR (RFC 9126 §6)
+    // -----------------------------------------------------------------------
+
+    /// RFC 9126 §6 defaults this to false. Accepting a `false` and then
+    /// requiring PAR anyway would leave the client's own record contradicting
+    /// the server, so it is refused.
+    #[test]
+    fn a_client_cannot_register_out_of_pushed_authorization_requests() {
+        let error = rejection(&with("require_pushed_authorization_requests", json!(false)));
+        assert_eq!(error.field(), "require_pushed_authorization_requests");
+        assert!(validate(&with("require_pushed_authorization_requests", json!(true))).is_ok());
+        assert!(validate(&minimal()).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Subject types (OIDC Core §8.1)
+    // -----------------------------------------------------------------------
+
+    /// OIDC Core §8.1: without a `sector_identifier_uri` the sector is the host
+    /// of the registered redirect URI, so redirect URIs spanning several hosts
+    /// leave a pairwise `sub` undefined.
+    #[test]
+    fn a_pairwise_client_with_several_redirect_hosts_must_name_its_sector() {
+        let mut document = with("subject_type", json!("pairwise"));
+        document.as_object_mut().expect("object").insert(
+            "redirect_uris".to_owned(),
+            json!(["https://a.rp.example/cb", "https://b.rp.example/cb"]),
+        );
+        let error = rejection(&document);
+        assert_eq!(error.field(), "sector_identifier_uri");
+
+        document.as_object_mut().expect("object").insert(
+            "sector_identifier_uri".to_owned(),
+            json!("https://rp.example/sector.json"),
+        );
+        let client = validate(&document).expect("a named sector resolves it");
+        assert_eq!(client.subject_type, SubjectType::Pairwise);
+        assert_eq!(
+            client.sector_identifier_uri.as_deref(),
+            Some("https://rp.example/sector.json")
+        );
+
+        // One host needs no sector identifier.
+        let single = with("subject_type", json!("pairwise"));
+        assert!(validate(&single).is_ok());
+    }
+
+    #[test]
+    fn a_sector_identifier_is_refused_where_nothing_would_read_it() {
+        let error = rejection(&with(
+            "sector_identifier_uri",
+            json!("https://rp.example/sector.json"),
+        ));
+        assert_eq!(error.field(), "sector_identifier_uri");
+
+        let mut insecure = with("subject_type", json!("pairwise"));
+        insecure.as_object_mut().expect("object").insert(
+            "sector_identifier_uri".to_owned(),
+            json!("http://rp.example/sector.json"),
+        );
+        assert_eq!(rejection(&insecure).field(), "sector_identifier_uri");
+    }
+
+    #[test]
+    fn subject_type_and_application_type_take_only_their_defined_values() {
+        assert_eq!(
+            rejection(&with("subject_type", json!("PAIRWISE"))).field(),
+            "subject_type"
+        );
+        assert_eq!(
+            rejection(&with("application_type", json!("service"))).field(),
+            "application_type"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Scopes, names and other free text
+    // -----------------------------------------------------------------------
+
+    /// RFC 6749 §3.3: `scope-token = 1*( %x21 / %x23-5B / %x5D-7E )`. A tab is
+    /// not a separator and a quote is not a scope character.
+    #[test]
+    fn scope_is_parsed_by_the_grammar_and_not_by_splitting_on_whitespace() {
+        let client = validate(&with("scope", json!("openid  profile email")))
+            .expect("extra spaces are empty tokens");
+        assert_eq!(
+            client.scopes,
+            BTreeSet::from([
+                "openid".to_owned(),
+                "profile".to_owned(),
+                "email".to_owned()
+            ])
+        );
+        for bad in [
+            "openid\tprofile",
+            "openid\nprofile",
+            "open\"id",
+            "open\\id",
+            "openid é",
+            "openid openid",
+        ] {
+            assert_eq!(
+                rejection(&with("scope", json!(bad))).field(),
+                "scope",
+                "{bad}"
+            );
+        }
+    }
+
+    /// The name is what the consent screen asks the user to authorise. A
+    /// right-to-left override reorders what the user reads without changing a
+    /// byte of the markup, so escaping downstream does not help.
+    #[test]
+    fn a_client_name_that_could_misrepresent_the_consent_prompt_is_refused() {
+        for name in [
+            "",
+            "   ",
+            "Acme\u{202e}kcatta",
+            "Acme\u{200f}",
+            "Acme\u{0000}",
+            "Acme\nInc",
+        ] {
+            let error = rejection(&with("client_name", json!(name)));
+            assert_eq!(error.field(), "client_name", "{name:?}");
+        }
+        assert_eq!(rejection(&without("client_name")).field(), "client_name");
+        let long = "a".repeat(ClientRegistration::MAX_CLIENT_NAME_LEN + 1);
+        assert_eq!(
+            rejection(&with("client_name", json!(long))).field(),
+            "client_name"
+        );
+        // Non-ASCII names are ordinary, and must not be collateral damage.
+        assert!(validate(&with("client_name", json!("Société Générale"))).is_ok());
+    }
+
+    #[test]
+    fn authorization_details_types_are_a_bounded_set_of_names() {
+        let client = validate(&with(
+            "authorization_details_types",
+            json!(["payment_initiation", "account_information"]),
+        ))
+        .expect("valid");
+        assert_eq!(client.authorization_details_types.len(), 2);
+
+        for value in [
+            json!([""]),
+            json!(["  "]),
+            json!(["a\u{0000}b"]),
+            json!(["payment", "payment"]),
+        ] {
+            assert_eq!(
+                rejection(&with("authorization_details_types", value.clone())).field(),
+                "authorization_details_types",
+                "{value}"
+            );
+        }
+        let many: Vec<String> = (0..=ClientRegistration::MAX_AUTHORIZATION_DETAILS_TYPES)
+            .map(|i| format!("type{i}"))
+            .collect();
+        assert_eq!(
+            rejection(&with("authorization_details_types", json!(many))).field(),
+            "authorization_details_types"
+        );
+    }
+
+    #[test]
+    fn mtls_endpoint_aliases_need_the_mtls_flag() {
+        let document = with("use_mtls_endpoint_aliases", json!(true));
+        assert_eq!(
+            validate_with(&document, caps(false))
+                .expect_err("mtls is off")
+                .field(),
+            "use_mtls_endpoint_aliases"
+        );
+        assert!(
+            validate_with(&document, caps(true))
+                .expect("mtls is on")
+                .use_mtls_endpoint_aliases
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The document itself
+    // -----------------------------------------------------------------------
+
+    /// The parser takes bytes off the network, so it must fail rather than
+    /// panic on anything — and it must not carry the input back out in the
+    /// error, which becomes an RFC 7591 §3.2.2 `error_description`.
+    #[test]
+    fn a_malformed_document_is_refused_without_echoing_itself() {
+        for document in [
+            &b""[..],
+            b"null",
+            b"[]",
+            b"{",
+            b"{\"client_name\": }",
+            b"{\"redirect_uris\": \"https://rp.example/cb\"}",
+            b"{\"dpop_bound_access_tokens\": \"yes\"}",
+            &[0xff, 0xfe][..],
+        ] {
+            let error = ClientRegistration::from_json(document, caps(false))
+                .expect_err("should have been refused");
+            assert_eq!(error.code(), "invalid_client_metadata");
+            let rendered = error.to_string();
+            assert!(
+                !rendered.contains("rp.example") && !rendered.contains("yes"),
+                "the document was echoed back: {rendered}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The aggregate
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_disabled_client_is_not_active() {
+        let client = Client {
+            tenant: TenantId::new("demo"),
+            id: ClientId::new("billing"),
+            registration: validate(&minimal()).expect("valid"),
+            status: ClientStatus::Disabled,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        assert!(!client.is_active());
+        assert!(client.allows(GrantType::AuthorizationCode));
+        assert!(!client.allows(GrantType::ClientCredentials));
+    }
+
+    #[test]
+    fn every_closed_set_round_trips_through_its_wire_spelling() {
+        for method in TokenEndpointAuthMethod::ALL {
+            assert_eq!(
+                TokenEndpointAuthMethod::parse(method.as_str()),
+                Some(method)
+            );
+        }
+        for grant in GrantType::ALL {
+            assert_eq!(GrantType::parse(grant.as_str()), Some(grant));
+        }
+        for application in [ApplicationType::Web, ApplicationType::Native] {
+            assert_eq!(
+                ApplicationType::parse(application.as_str()),
+                Some(application)
+            );
+        }
+        for subject in [SubjectType::Public, SubjectType::Pairwise] {
+            assert_eq!(SubjectType::parse(subject.as_str()), Some(subject));
+        }
+        for status in [ClientStatus::Active, ClientStatus::Disabled] {
+            assert_eq!(ClientStatus::parse(status.as_str()), Some(status));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Properties
+    //
+    // The tables above pin the cases a reader can check against the
+    // specification. These check what has to hold for *every* document, which
+    // is where a validator with a dozen interacting fields actually goes wrong.
+    // -----------------------------------------------------------------------
+
+    use proptest::prelude::*;
+
+    fn config() -> ProptestConfig {
+        ProptestConfig {
+            cases: 256,
+            // A failing case is reproduced from the seed proptest prints.
+            // Writing a regressions file into the source tree is not this
+            // project's convention: CONTRIBUTING.md says a case found this way
+            // earns a named test in the ordinary suite.
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    fn scope_token() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9_:]{2,10}"
+    }
+
+    /// Redirect URIs a client could plausibly register, already normalised.
+    fn redirect_uri() -> impl Strategy<Value = String> {
+        (
+            "[a-z]{3,10}",
+            "[a-z0-9]{1,8}",
+            proptest::option::of(1024_u16..=65535),
+        )
+            .prop_map(|(host, path, port)| match port {
+                Some(port) => format!("https://{host}.example:{port}/{path}"),
+                None => format!("https://{host}.example/{path}"),
+            })
+    }
+
+    /// A document that satisfies every rule, built only from permitted values.
+    fn valid_document() -> impl Strategy<Value = serde_json::Value> {
+        (
+            "[A-Z][a-z]{2,15}",
+            proptest::collection::btree_set(redirect_uri(), 1..4),
+            (any::<bool>(), any::<bool>(), any::<bool>()),
+            proptest::collection::btree_set(scope_token(), 0..4),
+            proptest::sample::select(SigningAlgorithm::ALL.to_vec()),
+            proptest::option::of(proptest::sample::select(SigningAlgorithm::ALL.to_vec())),
+            proptest::collection::btree_set("[a-z_]{3,12}", 0..3),
+            any::<bool>(),
+        )
+            .prop_map(
+                |(
+                    name,
+                    uris,
+                    (refresh, credentials, explicit),
+                    scopes,
+                    id_alg,
+                    request_alg,
+                    rar,
+                    inline_keys,
+                )| {
+                    let mut grants = vec!["authorization_code"];
+                    if refresh {
+                        grants.push("refresh_token");
+                    }
+                    if credentials {
+                        grants.push("client_credentials");
+                    }
+                    let mut document = serde_json::Map::new();
+                    document.insert("client_name".to_owned(), json!(name));
+                    document.insert(
+                        "redirect_uris".to_owned(),
+                        json!(uris.into_iter().collect::<Vec<_>>()),
+                    );
+                    document.insert("grant_types".to_owned(), json!(grants));
+                    if explicit {
+                        document.insert("response_types".to_owned(), json!(["code"]));
+                    }
+                    if !scopes.is_empty() {
+                        document.insert(
+                            "scope".to_owned(),
+                            json!(scopes.into_iter().collect::<Vec<_>>().join(" ")),
+                        );
+                    }
+                    if inline_keys {
+                        document.insert("jwks".to_owned(), json!({"keys": [{"kty": "OKP"}]}));
+                    } else {
+                        document.insert("jwks_uri".to_owned(), json!("https://rp.example/jwks"));
+                    }
+                    document.insert(
+                        "id_token_signed_response_alg".to_owned(),
+                        json!(id_alg.as_str()),
+                    );
+                    if let Some(alg) = request_alg {
+                        document
+                            .insert("request_object_signing_alg".to_owned(), json!(alg.as_str()));
+                    }
+                    if !rar.is_empty() {
+                        document.insert(
+                            "authorization_details_types".to_owned(),
+                            json!(rar.into_iter().collect::<Vec<_>>()),
+                        );
+                    }
+                    serde_json::Value::Object(document)
+                },
+            )
+    }
+
+    /// Values the profile forbids, paired with the field they belong to.
+    fn forbidden() -> Vec<(&'static str, serde_json::Value)> {
+        vec![
+            ("token_endpoint_auth_method", json!("client_secret_basic")),
+            ("token_endpoint_auth_method", json!("client_secret_post")),
+            ("token_endpoint_auth_method", json!("client_secret_jwt")),
+            ("token_endpoint_auth_method", json!("none")),
+            ("response_types", json!(["token"])),
+            ("response_types", json!(["code", "id_token"])),
+            ("grant_types", json!(["implicit"])),
+            ("grant_types", json!(["password"])),
+            ("id_token_signed_response_alg", json!("none")),
+            ("id_token_signed_response_alg", json!("RS256")),
+            ("request_object_signing_alg", json!("HS256")),
+            ("require_pushed_authorization_requests", json!(false)),
+            ("dpop_bound_access_tokens", json!(false)),
+            ("subject_type", json!("public_pairwise")),
+            ("application_type", json!("service")),
+            ("scope", json!("openid\tprofile")),
+            ("client_name", json!("")),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(config())]
+
+        /// The generator only emits documents every rule permits, so a
+        /// rejection here is a rule firing on something it should not.
+        #[test]
+        fn every_document_built_only_from_permitted_values_is_accepted(
+            document in valid_document(),
+        ) {
+            let encoded = serde_json::to_vec(&document).expect("serialise");
+            let client = ClientRegistration::from_json(&encoded, everything_on())
+                .map_err(|e| TestCaseError::fail(format!("rejected a valid document: {e}")))?;
+
+            prop_assert!(client.allows(GrantType::AuthorizationCode));
+            prop_assert_eq!(client.token_binding, TokenBinding::Dpop);
+            prop_assert_eq!(client.application_type, ApplicationType::Web);
+            prop_assert_eq!(client.subject_type, SubjectType::Public);
+
+            // Byte for byte, in the order registered: RFC 9700 §4.1 matching is
+            // a string comparison, so both are part of the contract.
+            let registered: Vec<&str> =
+                client.redirect_uris.iter().map(RedirectUri::as_str).collect();
+            let submitted: Vec<&str> = document["redirect_uris"]
+                .as_array()
+                .expect("array")
+                .iter()
+                .map(|value| value.as_str().expect("string"))
+                .collect();
+            prop_assert_eq!(registered, submitted);
+        }
+
+        /// Every rejection rule fires whatever else the document says: one
+        /// forbidden value is enough, and the error names the field that
+        /// carried it.
+        #[test]
+        fn a_forbidden_value_is_rejected_whatever_else_the_document_says(
+            document in valid_document(),
+            (field, value) in proptest::sample::select(forbidden()),
+        ) {
+            let mut document = document;
+            document.as_object_mut().expect("object").insert(field.to_owned(), value);
+            let encoded = serde_json::to_vec(&document).expect("serialise");
+            let error = ClientRegistration::from_json(&encoded, everything_on())
+                .err()
+                .ok_or_else(|| {
+                    TestCaseError::fail(format!("{field} accepted a forbidden value"))
+                })?;
+            prop_assert_eq!(error.field(), field);
+            prop_assert_eq!(error.code(), "invalid_client_metadata");
+        }
+
+        /// Whatever it is handed, the parser answers rather than panicking —
+        /// and whatever it accepts satisfies the invariants the rest of the
+        /// server never re-checks.
+        #[test]
+        fn an_accepted_document_always_satisfies_the_profile(
+            bytes in proptest::collection::vec(any::<u8>(), 0..512),
+            mtls in any::<bool>(),
+        ) {
+            let capabilities = if mtls { everything_on() } else { Capabilities::default() };
+            let Ok(client) = ClientRegistration::from_json(&bytes, capabilities) else {
+                return Ok(());
+            };
+            prop_assert!(
+                client.token_binding.is_dpop_bound() || client.token_binding.is_certificate_bound(),
+                "an accepted client would be issued bearer access tokens"
+            );
+            prop_assert!(
+                !client.token_endpoint_auth_method.requires_mtls() || mtls,
+                "an mTLS authentication method survived with the flag off"
+            );
+            prop_assert!(!client.use_mtls_endpoint_aliases || mtls);
+            prop_assert!(SigningAlgorithm::ALL.contains(&client.id_token_signed_response_alg));
+            for grant in &client.grant_types {
+                prop_assert!(
+                    grant.required_feature().is_none_or(|f| capabilities.is_enabled(f)),
+                    "a grant behind a disabled flag survived"
+                );
+            }
+            for uri in &client.redirect_uris {
+                prop_assert!(
+                    uri.as_str().starts_with("https://")
+                        || (client.application_type == ApplicationType::Native
+                            && uri.as_str().starts_with("http://")),
+                    "an http redirect URI survived on a client that is not native"
+                );
+            }
+            if client.redirect_uris.is_empty() {
+                prop_assert!(!client.allows(GrantType::AuthorizationCode));
+            }
+        }
+
+        /// Switching a feature on must never turn an acceptable client into an
+        /// unacceptable one: an operator enabling mTLS would otherwise
+        /// invalidate registrations that were fine the day before.
+        #[test]
+        fn enabling_every_feature_never_rejects_a_client_that_was_already_valid(
+            bytes in proptest::collection::vec(any::<u8>(), 0..512),
+        ) {
+            if ClientRegistration::from_json(&bytes, Capabilities::default()).is_ok() {
+                prop_assert!(ClientRegistration::from_json(&bytes, everything_on()).is_ok());
+            }
+        }
+
+        /// The rendered error becomes an RFC 7591 §3.2.2 `error_description`
+        /// and an audit detail, so it must not carry the document back out.
+        #[test]
+        fn a_rejection_never_repeats_a_value_taken_from_the_document(
+            document in valid_document(),
+            (field, _) in proptest::sample::select(forbidden()),
+            marker in "[A-Za-z]{12}",
+        ) {
+            let mut document = document;
+            let object = document.as_object_mut().expect("object");
+            object.insert("client_name".to_owned(), json!(format!("Acme {marker}")));
+            object.insert(field.to_owned(), json!(marker.clone()));
+            let encoded = serde_json::to_vec(&document).expect("serialise");
+            if let Err(error) = ClientRegistration::from_json(&encoded, everything_on()) {
+                prop_assert!(
+                    !error.to_string().contains(marker.as_str()),
+                    "the document was echoed into the error: {}",
+                    error
+                );
+            }
+        }
+    }
+}

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod audit;
+mod clients;
 mod error;
 mod scope;
 mod sql_audit;
@@ -15,6 +16,7 @@ mod store;
 mod tenants;
 
 pub use audit::{PgAuditSink, VerifiedChain};
+pub use clients::PgClientRepository;
 pub use error::to_domain_error;
 pub use scope::TenantScope;
 pub use store::{MIGRATOR, Store};

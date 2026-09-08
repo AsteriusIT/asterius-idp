@@ -1,7 +1,8 @@
 //! The tenant scope: the handle every tenant-scoped repository hangs off.
 
-use asterius_domain::TenantId;
+use crate::clients::PgClientRepository;
 use asterius_domain::ports::TenantScoped;
+use asterius_domain::{Capabilities, TenantId};
 use sqlx::postgres::PgPool;
 
 /// Database access confined to one tenant.
@@ -12,13 +13,6 @@ use sqlx::postgres::PgPool;
 /// an argument a caller can omit — it is a precondition of having the handle.
 #[derive(Debug, Clone)]
 pub struct TenantScope<'a> {
-    #[expect(
-        dead_code,
-        reason = "the seam is deliberately empty: each repository is added by \
-                  its own story (clients ast-m9c.1, sessions ast-2vk.2, grants \
-                  ast-uwv.2), and every one of them reaches the database through \
-                  this field so that the tenant is already chosen"
-    )]
     pool: &'a PgPool,
     tenant: TenantId,
 }
@@ -26,6 +20,15 @@ pub struct TenantScope<'a> {
 impl<'a> TenantScope<'a> {
     pub(crate) const fn new(pool: &'a PgPool, tenant: TenantId) -> Self {
         Self { pool, tenant }
+    }
+
+    /// The client repository for this tenant.
+    ///
+    /// `capabilities` is what a stored client is re-validated against on the
+    /// way out; see [`PgClientRepository::new`].
+    #[must_use]
+    pub fn clients(&self, capabilities: Capabilities) -> PgClientRepository {
+        PgClientRepository::new(self.pool.clone(), self.tenant.clone(), capabilities)
     }
 }
 
