@@ -38,39 +38,16 @@ uuid = "1"
 # `grant_record` re-parses every resource indicator the grant validator
 # accepted, so that "absolute URI, no fragment" is checked by something other
 # than the code under test.
-url = "2"
-
-[[bin]]
-name = "issuer_parse"
-path = "fuzz_targets/issuer_parse.rs"
+url = "2"[[bin]]
+name = "access_token_claims"
+path = "fuzz_targets/access_token_claims.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "tenant_route"
-path = "fuzz_targets/tenant_route.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "config_parse"
-path = "fuzz_targets/config_parse.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "redaction_scan"
-path = "fuzz_targets/redaction_scan.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "forwarded_resolve"
-path = "fuzz_targets/forwarded_resolve.rs"
+name = "access_token_claims"
+path = "fuzz_targets/access_token_claims.rs"
 test = false
 doc = false
 bench = false
@@ -83,15 +60,22 @@ doc = false
 bench = false
 
 [[bin]]
-name = "jws_parse"
-path = "fuzz_targets/jws_parse.rs"
+name = "claim_name"
+path = "fuzz_targets/claim_name.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "jwt_verify"
-path = "fuzz_targets/jwt_verify.rs"
+name = "claims_request"
+path = "fuzz_targets/claims_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_assertion"
+path = "fuzz_targets/client_assertion.rs"
 test = false
 doc = false
 bench = false
@@ -104,15 +88,57 @@ doc = false
 bench = false
 
 [[bin]]
-name = "redirect_uri"
-path = "fuzz_targets/redirect_uri.rs"
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "kek_unwrap"
-path = "fuzz_targets/kek_unwrap.rs"
+name = "csp_form_action"
+path = "fuzz_targets/csp_form_action.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpop_proof"
+path = "fuzz_targets/dpop_proof.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "forwarded_resolve"
+path = "fuzz_targets/forwarded_resolve.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "grant_record"
+path = "fuzz_targets/grant_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "id_token_claims"
+path = "fuzz_targets/id_token_claims.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "interaction_cookie"
+path = "fuzz_targets/interaction_cookie.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "issuer_parse"
+path = "fuzz_targets/issuer_parse.rs"
 test = false
 doc = false
 bench = false
@@ -132,8 +158,22 @@ doc = false
 bench = false
 
 [[bin]]
-name = "pkce"
-path = "fuzz_targets/pkce.rs"
+name = "jws_parse"
+path = "fuzz_targets/jws_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jwt_verify"
+path = "fuzz_targets/jwt_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kek_unwrap"
+path = "fuzz_targets/kek_unwrap.rs"
 test = false
 doc = false
 bench = false
@@ -146,22 +186,36 @@ doc = false
 bench = false
 
 [[bin]]
-name = "claim_name"
-path = "fuzz_targets/claim_name.rs"
+name = "par_form"
+path = "fuzz_targets/par_form.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "client_assertion"
-path = "fuzz_targets/client_assertion.rs"
+name = "password_policy"
+path = "fuzz_targets/password_policy.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "csp_form_action"
-path = "fuzz_targets/csp_form_action.rs"
+name = "pkce"
+path = "fuzz_targets/pkce.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redaction_scan"
+path = "fuzz_targets/redaction_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redirect_uri"
+path = "fuzz_targets/redirect_uri.rs"
 test = false
 doc = false
 bench = false
@@ -174,8 +228,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "par_form"
-path = "fuzz_targets/par_form.rs"
+name = "tenant_route"
+path = "fuzz_targets/tenant_route.rs"
 test = false
 doc = false
 bench = false
@@ -183,41 +237,6 @@ bench = false
 [[bin]]
 name = "token_form"
 path = "fuzz_targets/token_form.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "grant_record"
-path = "fuzz_targets/grant_record.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "interaction_cookie"
-path = "fuzz_targets/interaction_cookie.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "claims_request"
-path = "fuzz_targets/claims_request.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "dpop_proof"
-path = "fuzz_targets/dpop_proof.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "password_policy"
-path = "fuzz_targets/password_policy.rs"
 test = false
 doc = false
 bench = false

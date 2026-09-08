@@ -20,6 +20,11 @@ time.workspace = true
 # transformation next to the clause it implements is worth more than routing a
 # hash through an adapter port.
 base64.workspace = true
+# `JwtId::generate` draws 128 bits for the `jti` of every access token
+# (RFC 9068 §2.2, FAPI 2.0 SP §5.4.1 item 4). The same argument `sha2` gets
+# above: the entropy floor is the requirement, and a token minted through an
+# adapter port would put the one line that has to be right somewhere else.
+getrandom.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -47,6 +47,23 @@ while read -r target; do
   fi
 done <<<"$present"
 
+# The registry must match the directory exactly.
+#
+# `scripts/sync-fuzz-registry.sh` derives it, so this only catches a hand edit
+# that got it wrong — which has happened three times in one day, every time
+# while resolving a merge conflict whose markers landed inside a `[[bin]]`
+# block.
+on_disk="$(ls fuzz/fuzz_targets/*.rs 2>/dev/null | xargs -n1 basename | sed 's/\.rs$//' | sort)"
+registered="$(awk '/^\[\[bin\]\]/ { in_bin = 1; next }
+                   in_bin && /^name = / { gsub(/^name = "|"$/, ""); print; in_bin = 0 }' \
+              fuzz/Cargo.toml | sort)"
+if [[ "$on_disk" != "$registered" ]]; then
+  echo "FUZZ REGISTRY OUT OF STEP with fuzz/fuzz_targets/:" >&2
+  diff <(echo "$on_disk") <(echo "$registered") >&2 || true
+  echo "  run: ./scripts/sync-fuzz-registry.sh" >&2
+  status=1
+fi
+
 # A target that does not compile covers nothing, however present its file is.
 #
 # This check exists because the gate above did not catch a real regression: a
