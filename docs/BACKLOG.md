@@ -251,7 +251,7 @@ Tenant = issuer. Issuer shape `https://{host}/t/{tenant}` (path-based) with opti
 
 *task · P0 · labels: area:foundation, area:audit*
 
-**Spec:** FAPI 2.0 SP §6.7 item 4 (credential linking — record relationships so linked credentials can be revoked together); product requirement: per-agent audit trail.
+**Spec:** FAPI 2.0 SP §6.8 item 4 (credential linking — record relationships so linked credentials can be revoked together); product requirement: per-agent audit trail.
 
 `audit_events` append-only table written from domain events: timestamp, tenant, actor (user | client | admin | system), subject, client, session, grant, agent delegation chain (`act` chain), event type, outcome/error code, request id, hashed IP/UA. Optional per-tenant hash chain for tamper evidence. Retention job.
 
@@ -330,7 +330,7 @@ Trait `Signer { fn sign(&self, header: Header, claims: &[u8]) -> Result<Jws> }` 
 
 *feature · P0 · labels: area:keys, spec:oidc-core, status:final*
 
-**Spec:** OIDC Core §10.1.1 (rotation of asymmetric signing keys: publish new key, then sign with it; keep old for verification); FAPI 2.0 SP §6.7 (key compromise: automated regular rotation, single-purpose keys).
+**Spec:** OIDC Core §10.1.1 (rotation of asymmetric signing keys: publish new key, then sign with it; keep old for verification); FAPI 2.0 SP §6.8 (key compromise: automated regular rotation, single-purpose keys).
 
 States `pending → active → retiring → retired`. Per-tenant rotation schedule; private keys encrypted with a KEK obtained from a `Kek` port (local file / env for dev, cloud KMS adapters later). Separate keys per purpose (id_token/access_token signing, SET signing may share; encryption keys separate).
 
@@ -1009,7 +1009,7 @@ SSR consent page listing client name/URI (text only; logo only if uploaded to th
 
 *feature · P0 · labels: area:consent, spec:oauth-grant-management, spec:fapi2-sp, status:impl-draft*
 
-**Spec:** Grant Management for OAuth 2.0 ID1 (draft-03) §5.6 'Lifecycle of the grant' (active once tokens claimed; delete unclaimed after timeout; AS may modify); FAPI 2.0 SP §6.7 item 4 (record relationships between credentials issued for the same authorization so they can be revoked together).
+**Spec:** Grant Management for OAuth 2.0 ID1 (draft-03) §5.6 'Lifecycle of the grant' (active once tokens claimed; delete unclaimed after timeout; AS may modify); FAPI 2.0 SP §6.8 item 4 (record relationships between credentials issued for the same authorization so they can be revoked together).
 
 `grants` row: tenant, client, user (null for client_credentials), scopes, claims, authorization_details, resources, status (pending|active|revoked|expired), created_at, last_updated_at, expires_at, updated_by. Codes, refresh tokens, access-token jti and device/CIBA requests reference `grant_id`.
 
@@ -1583,7 +1583,7 @@ Make a FAPI-compliant Asterius tenant usable by MCP clients that are confidentia
 
 *feature · P2 · labels: area:agents, area:audit, differentiator:agents*
 
-**Spec:** RFC 8693 §4.1 (act chain semantics); FAPI 2.0 SP §6.7 item 4 (credential linking); product requirement.
+**Spec:** RFC 8693 §4.1 (act chain semantics); FAPI 2.0 SP §6.8 item 4 (credential linking); product requirement.
 
 Extend E01_11 events with `agent_id`, `agent_owner`, `act_chain`, `grant_id`, `authorization_details` summary, `resource`, `approval_id` (CIBA/device). Query API with filters and NDJSON export; console explorer (E14_08).
 
@@ -2006,7 +2006,7 @@ User search/create/disable, claims editing with verification flags, credential m
 
 *feature · P1 · labels: area:admin, area:console, area:keys*
 
-**Spec:** OIDC Core §10.1.1; FAPI 2.0 SP §6.7.
+**Spec:** OIDC Core §10.1.1; FAPI 2.0 SP §6.8.
 
 Key inventory per purpose/alg with states; rotate now; set rotation schedule; JWKS preview; never shows private material.
 

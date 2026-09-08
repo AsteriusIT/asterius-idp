@@ -30,6 +30,7 @@ jobs:
           - jwt_verify
           - client_metadata_json
           - redirect_uri
+          - kek_unwrap
     env:
       SQLX_OFFLINE: "true"
     steps:

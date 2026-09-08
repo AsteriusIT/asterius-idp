@@ -7,7 +7,7 @@
 //! * **Attribution.** Who caused this? For an agent that is not one answer but
 //!   a chain — the agent, and the human it is acting for (RFC 8693 `act`) —
 //!   so [`AuditEvent::actor_chain`] is a list, not a field.
-//! * **Revocation.** FAPI 2.0 SP §6.7 item 4 asks that linked credentials be
+//! * **Revocation.** FAPI 2.0 SP §6.8 item 4 asks that linked credentials be
 //!   recorded so they can be revoked together. Every event therefore carries
 //!   the grant, session and client it belongs to where they are known.
 //! * **Evidence.** A trail the application can rewrite is not evidence, so the
@@ -303,7 +303,7 @@ pub struct AuditEvent {
     pub client: Option<ClientId>,
     /// The session involved, when there is one.
     pub session: Option<SessionId>,
-    /// The grant involved. This is the link FAPI 2.0 SP §6.7 item 4 asks for:
+    /// The grant involved. This is the link FAPI 2.0 SP §6.8 item 4 asks for:
     /// it is what lets everything derived from one authorization be revoked
     /// together.
     pub grant: Option<GrantId>,

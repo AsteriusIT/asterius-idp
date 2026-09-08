@@ -125,7 +125,9 @@ name = "asterius-store-pg"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
+ "asterius-jose",
  "async-trait",
+ "base64",
  "serde_json",
  "sqlx",
  "thiserror",

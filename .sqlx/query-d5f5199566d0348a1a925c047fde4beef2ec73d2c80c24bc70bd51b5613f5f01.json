@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kid from signing_keys\n             where tenant_id = $1 and purpose = $2 and alg = $3\n               and state = 'pending' and created_at <= $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kid",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d5f5199566d0348a1a925c047fde4beef2ec73d2c80c24bc70bd51b5613f5f01"
+}
