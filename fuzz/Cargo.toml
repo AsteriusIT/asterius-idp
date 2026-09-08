@@ -161,3 +161,17 @@ path = "fuzz_targets/csp_form_action.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "request_uri"
+path = "fuzz_targets/request_uri.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "par_form"
+path = "fuzz_targets/par_form.rs"
+test = false
+doc = false
+bench = false

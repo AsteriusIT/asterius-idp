@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 asterius-domain.workspace = true
+hex.workspace = true
 # The key repository generates, seals and unseals signing keys. Cryptography
 # lives in one adapter (ADR-0004), so this one calls it rather than growing a
 # second copy.

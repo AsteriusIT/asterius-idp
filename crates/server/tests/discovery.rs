@@ -88,6 +88,9 @@ fn server(capabilities: Capabilities) -> Router {
     let routes = protocol::routes(ProtocolState {
         keys: Arc::clone(&keys) as Arc<dyn KeyStore>,
         capabilities,
+        // The discovery and JWKS handlers need no database; leaving this
+        // `None` is what lets this suite run without one.
+        clients: None,
     })
     .fallback(not_found);
 

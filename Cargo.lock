@@ -136,6 +136,7 @@ dependencies = [
  "asterius-jose",
  "async-trait",
  "base64",
+ "hex",
  "serde_json",
  "sqlx",
  "thiserror",

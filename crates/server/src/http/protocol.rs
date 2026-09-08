@@ -10,12 +10,15 @@
 //! not-yet-built endpoint and answering 501 is more honest than omitting it
 //! from a document the specification says must contain it.
 
+use crate::client_auth::ClientAuthenticator;
+use crate::http::par::{self, PushContext};
 use asterius_domain::{Capabilities, KeyStore, Tenant};
+use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
 use axum::extract::{Extension, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -45,6 +48,34 @@ pub struct ProtocolState {
     /// What this deployment offers. The same value the router was built from,
     /// so the document cannot describe a different server than the one running.
     pub capabilities: Capabilities,
+    /// How endpoints that require an authenticated client get one.
+    ///
+    /// `None` leaves those endpoints answering 501 rather than accepting
+    /// unauthenticated requests. That is the safe default for a partially
+    /// wired deployment: an endpoint with no way to authenticate must not be
+    /// one that skips authentication.
+    pub clients: Option<Arc<ClientEndpoints>>,
+}
+
+/// The database-backed pieces the client-facing endpoints need.
+///
+/// Separate from [`ProtocolState`] so that the discovery and JWKS handlers —
+/// which need none of it — can be tested without a database.
+pub struct ClientEndpoints {
+    /// Authenticates the client behind a request.
+    pub authenticator: Arc<ClientAuthenticator>,
+    /// Tenant-scoped repositories.
+    pub store: asterius_store_pg::Store,
+    /// What a deployment offers, for re-validating a stored registration.
+    pub capabilities: Capabilities,
+    /// How long a `request_uri` lives, already clamped.
+    pub par_lifetime: time::Duration,
+}
+
+impl std::fmt::Debug for ClientEndpoints {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientEndpoints").finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for ProtocolState {
@@ -61,6 +92,8 @@ impl std::fmt::Debug for ProtocolState {
 /// tenant parameter it could get wrong.
 pub fn routes(state: ProtocolState) -> Router {
     let capabilities = state.capabilities;
+    let built = state.clients.clone();
+    let built_par = built.is_some();
     let mut router = Router::new()
         // OIDC Discovery §4 and RFC 8414 §3. Both forms of the URL are
         // normalised to these paths by the tenancy middleware, so one route
@@ -70,11 +103,22 @@ pub fn routes(state: ProtocolState) -> Router {
         .route(Endpoint::Jwks.path(), get(jwks))
         .with_state(state);
 
+    // The pushed authorization request endpoint, when the deployment has the
+    // database wiring for it. `ast-gxh.1`.
+    if let Some(endpoints) = built {
+        router = router.route(
+            Endpoint::PushedAuthorizationRequest.path(),
+            post(pushed_authorization_request).with_state(endpoints),
+        );
+    }
+
     // Everything else exists but is not built yet. Mounted from the registry so
     // that the parity test — and a client reading the document — find a route
     // rather than a 404.
     for endpoint in Endpoint::enabled(&capabilities) {
-        if endpoint == Endpoint::Jwks {
+        if endpoint == Endpoint::Jwks
+            || (built_par && endpoint == Endpoint::PushedAuthorizationRequest)
+        {
             continue;
         }
         router = router.route(endpoint.path(), any(not_implemented));
@@ -125,6 +169,51 @@ async fn jwks(
         "keys": keys.into_iter().map(|key| key.public_jwk).collect::<Vec<Value>>(),
     });
     cacheable_json(&document, JWKS_MAX_AGE)
+}
+
+/// `POST /par` — RFC 9126.
+///
+/// The wiring only. Everything that decides anything lives in
+/// [`crate::http::par::push`], which is where the tests are: this function's
+/// whole job is to turn a request into that call, with the tenant's
+/// repositories and a closure that authenticates.
+async fn pushed_authorization_request(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    let requests = scope.auth_requests();
+
+    let authenticator = Arc::clone(&endpoints.authenticator);
+    let tenant_for_auth = Arc::clone(&tenant);
+    let clients_for_auth = scope.clients(endpoints.capabilities);
+
+    par::push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            lifetime: endpoints.par_lifetime,
+        },
+        &headers,
+        &body,
+        async |attempt: &Attempt<'_>, rules: &AssertionRules| {
+            authenticator
+                .authenticate(
+                    &tenant_for_auth,
+                    &clients_for_auth,
+                    attempt,
+                    rules,
+                    time::OffsetDateTime::now_utc(),
+                )
+                .await
+        },
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
 }
 
 /// An endpoint that is advertised but not yet built.

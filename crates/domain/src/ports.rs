@@ -3,7 +3,7 @@
 //! Adapters live in `asterius-store-pg`, `asterius-jose` and the server crate.
 //! Protocol crates depend on these traits and never on an implementation.
 
-use crate::{Client, ClientId, DomainError, Issuer, Tenant, TenantId};
+use crate::{Client, ClientId, Consumed, DomainError, Issuer, PushedRequest, Tenant, TenantId};
 use std::fmt::Debug;
 use time::OffsetDateTime;
 
@@ -124,6 +124,50 @@ pub trait ClientRepository: Debug + Send + Sync {
     /// "no such client" are the same to a client and must not be the same
     /// here, because one of them is a reason to stop.
     async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError>;
+}
+
+/// Stores pushed authorization requests for one tenant.
+///
+/// Tenant-scoped, like the other repositories: a `request_uri` issued by one
+/// tenant means nothing at another, and a port that took the tenant as an
+/// argument would be one more place to pass the wrong one.
+#[async_trait::async_trait]
+pub trait AuthRequestRepository: Debug + Send + Sync {
+    /// Stores a validated request.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the digest already exists — which, at 256
+    /// bits of entropy, means something is wrong with the generator rather
+    /// than that a collision occurred. [`DomainError::Storage`] otherwise.
+    async fn push(&self, request: &PushedRequest) -> Result<(), DomainError>;
+
+    /// Spends a reference, if it is live.
+    ///
+    /// Must be atomic. FAPI 2.0 SP §5.3.2.2 Note 3 puts one-time use at the
+    /// *completion* of authorization, not at page load, so two tabs that both
+    /// reach the consent screen are fine and two that both submit are not —
+    /// and the second must lose. A read followed by a write would let both
+    /// win, which is the whole attack.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. Never
+    /// treat that as [`Consumed::NotFound`].
+    async fn consume(&self, digest: &str, now: OffsetDateTime) -> Result<Consumed, DomainError>;
+
+    /// Reads a reference without spending it.
+    ///
+    /// For rendering the consent screen, which may happen more than once.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn peek(
+        &self,
+        digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<PushedRequest>, DomainError>;
 }
 
 /// What a `jti` is being remembered for.

@@ -1,5 +1,6 @@
 //! The tenant scope: the handle every tenant-scoped repository hangs off.
 
+use crate::auth_requests::PgAuthRequestRepository;
 use crate::clients::PgClientRepository;
 use crate::users::PgUserRepository;
 use asterius_domain::ports::TenantScoped;
@@ -36,6 +37,12 @@ impl<'a> TenantScope<'a> {
     #[must_use]
     pub fn users(&self) -> PgUserRepository {
         PgUserRepository::new(self.pool.clone(), self.tenant.clone())
+    }
+
+    /// The pushed-authorization-request repository for this tenant.
+    #[must_use]
+    pub fn auth_requests(&self) -> PgAuthRequestRepository {
+        PgAuthRequestRepository::new(self.pool.clone(), self.tenant.clone())
     }
 }
 

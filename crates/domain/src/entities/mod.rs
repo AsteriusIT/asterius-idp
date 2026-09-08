@@ -1,5 +1,6 @@
 //! Entities: the things Asterius stores and reasons about.
 
+pub mod auth_request;
 pub mod client;
 pub mod tenant;
 pub mod user;

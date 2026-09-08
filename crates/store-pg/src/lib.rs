@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod audit;
+mod auth_requests;
 mod clients;
 mod error;
 mod key_store;
@@ -20,6 +21,7 @@ mod tenants;
 mod users;
 
 pub use audit::{PgAuditSink, VerifiedChain};
+pub use auth_requests::PgAuthRequestRepository;
 pub use clients::PgClientRepository;
 pub use error::to_domain_error;
 pub use key_store::TenantKeyStore;

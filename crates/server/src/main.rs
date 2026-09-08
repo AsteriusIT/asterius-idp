@@ -4,15 +4,19 @@
 use asterius_domain::ports::TenantRepository as _;
 use asterius_domain::{Feature, Tenant, TenantStatus};
 use asterius_jose::LocalKek;
+use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::kek::Kek;
+use asterius_oidc::par;
+use asterius_server::client_auth::ClientAuthenticator;
 use asterius_server::config::KekSource;
-use asterius_server::http::protocol::{self, ProtocolState};
+use asterius_server::http::protocol::{self, ClientEndpoints, ProtocolState};
 use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
+use asterius_server::outbound::HttpsJwksFetcher;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
-use asterius_store_pg::{PgAuditSink, PgTenantRepository, Store, TenantKeyStore};
+use asterius_store_pg::{PgAuditSink, PgReplayGuard, PgTenantRepository, Store, TenantKeyStore};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -104,9 +108,31 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cannot prepare signing keys for {}: {e}", tenant.id))?;
         }
 
+        // Client-facing endpoints: the ones that need an authenticated client
+        // and the database. Built here rather than lazily so that a deployment
+        // that cannot construct them fails at startup, where somebody is
+        // watching, rather than on a client's first request.
+        let client_keys = Arc::new(ClientKeyCache::new(Arc::new(
+            HttpsJwksFetcher::new()
+                .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?,
+        )));
+        let authenticator = Arc::new(
+            ClientAuthenticator::new(
+                client_keys,
+                Arc::new(PgReplayGuard::new(store.pool().clone())),
+            )
+            .map_err(|e| format!("cannot build the client authenticator: {e}"))?,
+        );
+
         let routes = protocol::routes(ProtocolState {
             keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
             capabilities: config.features,
+            clients: Some(Arc::new(ClientEndpoints {
+                authenticator,
+                store: store.clone(),
+                capabilities: config.features,
+                par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
+            })),
         })
         .fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);

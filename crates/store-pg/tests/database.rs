@@ -2432,3 +2432,273 @@ mod replay {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pushed authorization requests (ast-gxh.1)
+
+mod auth_requests {
+    use super::*;
+    use asterius_domain::{AuthRequestRepository, ClientId, Consumed, PushedRequest};
+    use asterius_store_pg::PgAuthRequestRepository;
+
+    fn digest(seed: &str) -> String {
+        hex::encode(asterius_domain::sha256(seed.as_bytes()))
+    }
+
+    fn request(tenant: &str, seed: &str, expires_at: OffsetDateTime) -> PushedRequest {
+        PushedRequest {
+            tenant: TenantId::new(tenant),
+            request_uri_digest: digest(seed),
+            client: ClientId::new("billing"),
+            parameters: serde_json::json!({
+                "redirect_uri": "https://rp.example/cb",
+                "scopes": ["openid"],
+            }),
+            dpop_jkt: None,
+            pushed_at: OffsetDateTime::now_utc(),
+            expires_at,
+        }
+    }
+
+    /// The FK needs a client to point at.
+    async fn seed_client(pool: &PgPool, tenant: &str) {
+        seed_tenant(pool, tenant).await;
+        let store = Store::from_pool(pool.clone());
+        store
+            .scope(TenantId::new(tenant))
+            .clients(Capabilities::default())
+            .upsert(&client(tenant, "billing", &registration_document()))
+            .await
+            .expect("seed client");
+    }
+
+    fn later() -> OffsetDateTime {
+        OffsetDateTime::now_utc() + time::Duration::minutes(5)
+    }
+
+    db_test! {
+        /// A reference round-trips and comes back with what was pushed.
+        async fn a_pushed_request_can_be_consumed_once(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "one", later());
+            repo.push(&pushed).await.expect("push");
+
+            let consumed = repo
+                .consume(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                .await
+                .expect("consume");
+            let Consumed::Request(found) = consumed else {
+                panic!("a live reference did not resolve: {consumed:?}");
+            };
+            assert_eq!(found.client.as_str(), "billing");
+            assert_eq!(found.parameters, pushed.parameters);
+
+            // Spent.
+            assert_eq!(
+                repo.consume(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("second consume"),
+                Consumed::AlreadyUsed
+            );
+        }
+    }
+
+    db_test! {
+        /// FAPI 2.0 SP §5.3.2.2 Note 3: one-time use is enforced at the
+        /// *completion* of authorization, not at page load.
+        ///
+        /// So reading the request to render a consent screen must not spend it
+        /// — a user who reloads the page twice before consenting is doing
+        /// nothing wrong, and must not be told their request has expired.
+        async fn peeking_does_not_spend_the_reference(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "peek", later());
+            repo.push(&pushed).await.expect("push");
+
+            for _ in 0..3 {
+                assert!(
+                    repo.peek(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                        .await
+                        .expect("peek")
+                        .is_some(),
+                    "a reload spent the request"
+                );
+            }
+
+            assert!(matches!(
+                repo.consume(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("consume"),
+                Consumed::Request(_)
+            ));
+        }
+    }
+
+    db_test! {
+        /// The property the one-time-use rule rests on: two submissions of the
+        /// same consent screen, and exactly one wins.
+        ///
+        /// A read followed by a write would pass every other test here and fail
+        /// this one — and letting both win is an authorization code issued
+        /// twice for one user decision.
+        async fn concurrent_consumption_yields_exactly_one_winner(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = std::sync::Arc::new(PgAuthRequestRepository::new(
+                db.pool.clone(),
+                TenantId::new("demo"),
+            ));
+            let pushed = request("demo", "contested", later());
+            repo.push(&pushed).await.expect("push");
+
+            let attempts: Vec<_> = (0..16)
+                .map(|_| {
+                    let repo = repo.clone();
+                    let digest = pushed.request_uri_digest.clone();
+                    tokio::spawn(async move {
+                        repo.consume(&digest, OffsetDateTime::now_utc())
+                            .await
+                            .expect("consume")
+                    })
+                })
+                .collect();
+
+            let mut winners = 0;
+            for attempt in attempts {
+                if matches!(attempt.await.expect("task"), Consumed::Request(_)) {
+                    winners += 1;
+                }
+            }
+            assert_eq!(winners, 1, "{winners} concurrent consumers each got the request");
+        }
+    }
+
+    db_test! {
+        /// An expired reference is refused, and is not consumable afterwards.
+        async fn an_expired_reference_is_refused(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request(
+                "demo",
+                "stale",
+                OffsetDateTime::now_utc() - time::Duration::seconds(1),
+            );
+            repo.push(&pushed).await.expect("push");
+
+            assert_eq!(
+                repo.consume(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("consume"),
+                Consumed::Expired
+            );
+            assert!(
+                repo.peek(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("peek")
+                    .is_none()
+            );
+        }
+    }
+
+    db_test! {
+        /// A reference issued by one tenant is nothing at another.
+        async fn a_reference_does_not_cross_tenants(db) {
+            seed_client(&db.pool, "demo").await;
+            seed_client(&db.pool, "other").await;
+            let demo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let other = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("other"));
+
+            let pushed = request("demo", "cross", later());
+            demo.push(&pushed).await.expect("push");
+
+            assert_eq!(
+                other
+                    .consume(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("consume"),
+                Consumed::NotFound,
+                "a reference resolved at the wrong tenant"
+            );
+            // Still live where it belongs.
+            assert!(matches!(
+                demo.consume(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("consume"),
+                Consumed::Request(_)
+            ));
+        }
+    }
+
+    db_test! {
+        /// An unknown reference is `NotFound` rather than an error, and a
+        /// malformed one never reaches the database.
+        async fn an_unknown_reference_resolves_to_nothing(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            assert_eq!(
+                repo.consume(&digest("never-pushed"), OffsetDateTime::now_utc())
+                    .await
+                    .expect("consume"),
+                Consumed::NotFound
+            );
+            assert!(
+                repo.consume("not-hex", OffsetDateTime::now_utc()).await.is_err(),
+                "a malformed digest was sent to the database"
+            );
+        }
+    }
+
+    db_test! {
+        /// The stored row holds a digest. A leaked database must not yield a
+        /// usable `request_uri`.
+        async fn the_stored_row_holds_a_digest(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "opaque", later());
+            repo.push(&pushed).await.expect("push");
+
+            let stored: Vec<u8> = sqlx::query_scalar(
+                "select request_uri_hash from auth_requests where tenant_id = $1",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read back");
+
+            assert_eq!(stored.len(), 32, "not a SHA-256 digest");
+            assert_eq!(hex::encode(&stored), pushed.request_uri_digest);
+        }
+    }
+
+    db_test! {
+        /// Retention drops expired rows for the named tenant only.
+        async fn purging_removes_expired_rows_of_one_tenant(db) {
+            seed_client(&db.pool, "demo").await;
+            seed_client(&db.pool, "other").await;
+            let demo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let other = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("other"));
+            let past = OffsetDateTime::now_utc() - time::Duration::minutes(1);
+
+            demo.push(&request("demo", "gone", past)).await.expect("push");
+            demo.push(&request("demo", "live", later())).await.expect("push");
+            other.push(&request("other", "gone", past)).await.expect("push");
+
+            let removed = demo
+                .purge_expired(OffsetDateTime::now_utc())
+                .await
+                .expect("purge");
+            assert_eq!(removed, 1);
+
+            // The other tenant's expired row survives its neighbour's purge.
+            let remaining: i64 = sqlx::query_scalar(
+                "select count(*) from auth_requests where tenant_id = $1",
+            )
+            .bind("other")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+            assert_eq!(remaining, 1, "purging one tenant removed another's rows");
+        }
+    }
+}
