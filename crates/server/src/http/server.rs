@@ -70,7 +70,12 @@ pub fn with_middleware(routes: Router, config: &ServerConfig) -> Router {
 /// rewrite a URI nothing looks at again. Wrapping instead means the rewrite
 /// happens first and the inner router matches `/authorize` rather than
 /// `/t/demo/authorize`.
-pub fn app(routes: Router, tenant_state: TenantState, config: &ServerConfig) -> Router {
+pub fn app(
+    routes: Router,
+    tenant_state: TenantState,
+    operations: Option<OperationalRoutes>,
+    config: &ServerConfig,
+) -> Router {
     let tenanted =
         Router::new()
             .fallback_service(routes)
@@ -78,7 +83,45 @@ pub fn app(routes: Router, tenant_state: TenantState, config: &ServerConfig) -> 
                 tenant_state,
                 crate::tenancy::layer,
             ));
-    with_middleware(tenanted, config)
+
+    // Health and metrics sit *outside* tenant resolution: they describe the
+    // process, not a tenant, and a readiness probe that 404s because the
+    // database is down — which is exactly when the tenant directory cannot
+    // load — would report the opposite of the truth. They stay *inside* the
+    // shared middleware, so a probe response is hardened like any other.
+    let Some(operations) = operations else {
+        return with_middleware(tenanted, config);
+    };
+
+    let metrics = operations.metrics;
+    let with_operations = Router::new()
+        .route(
+            "/healthz",
+            axum::routing::get(crate::observability::health::healthz),
+        )
+        .route(
+            "/readyz",
+            axum::routing::get(crate::observability::health::readyz).with_state(operations.health),
+        )
+        .route(
+            "/metrics",
+            axum::routing::get(move || {
+                let metrics = metrics.clone();
+                async move { crate::observability::metrics::handler(metrics).await }
+            }),
+        )
+        .fallback_service(tenanted);
+
+    with_middleware(with_operations, config)
+}
+
+/// The process-level endpoints, which are not tenant-scoped.
+#[derive(Clone, Debug)]
+pub struct OperationalRoutes {
+    /// State for `/readyz`.
+    pub health: crate::observability::health::HealthState,
+    /// The metrics registry behind `/metrics`.
+    pub metrics: crate::observability::Metrics,
 }
 
 /// The response to a request for a path this server does not serve.

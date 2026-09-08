@@ -10,6 +10,11 @@
 # Unknown keys are a startup error, not a warning: a typo in a security flag
 # must never be silently ignored.
 
+# How log lines are rendered: "text" for a terminal, "json" for a log pipeline.
+# Either way every field passes through the redaction formatter first, so a
+# credential cannot reach an appender (RFC 9700 §4.2-4.3).
+log_format = "text"
+
 [server]
 # Address to listen on. Default: "0.0.0.0:9443".
 #

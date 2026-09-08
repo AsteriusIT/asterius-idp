@@ -1,6 +1,7 @@
 //! The connection pool and the migrator.
 
 use sqlx::migrate::Migrator;
+use std::time::Duration;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 use crate::scope::TenantScope;
@@ -53,6 +54,43 @@ impl Store {
     #[must_use]
     pub const fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// How long a readiness probe waits before deciding the answer is "no".
+    ///
+    /// Short on purpose. `sqlx` will happily wait out its acquire timeout for a
+    /// connection, which for a readiness probe is the wrong answer delivered
+    /// slowly: a load balancer that gets no response at all keeps sending
+    /// traffic to a replica that cannot serve it. Failing in two seconds is
+    /// more useful than being right in thirty.
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+    /// Whether the database answers, within [`Store::PROBE_TIMEOUT`].
+    ///
+    /// Deliberately the cheapest possible query: the question is "is the
+    /// connection usable", not "is the schema correct".
+    pub async fn ping(&self) -> bool {
+        let query = sqlx::query("select 1").fetch_optional(&self.pool);
+        matches!(tokio::time::timeout(Self::PROBE_TIMEOUT, query).await, Ok(Ok(_)))
+    }
+
+    /// Whether every migration compiled into this binary is recorded applied.
+    ///
+    /// A binary running against a schema older than itself fails in ways that
+    /// look like data corruption rather than a deployment mistake, so it should
+    /// refuse traffic instead.
+    pub async fn migrations_applied(&self) -> bool {
+        let expected = MIGRATOR.iter().count();
+        let query = sqlx::query_scalar::<_, i64>(
+            "select count(*) from _sqlx_migrations where success",
+        )
+        .fetch_one(&self.pool);
+        // No table means no migration has ever run; a timeout means we cannot
+        // tell, which for readiness is the same answer.
+        match tokio::time::timeout(Self::PROBE_TIMEOUT, query).await {
+            Ok(Ok(count)) => usize::try_from(count).is_ok_and(|count| count >= expected),
+            _ => false,
+        }
     }
 
     /// Confines every subsequent operation to one tenant.

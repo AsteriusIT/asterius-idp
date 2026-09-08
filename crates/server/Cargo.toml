@@ -27,6 +27,8 @@ getrandom.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 ipnet.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 tokio-rustls.workspace = true
@@ -46,6 +48,8 @@ path = "src/main.rs"
 
 [dev-dependencies]
 asterius-domain.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 async-trait.workspace = true
 http-body-util.workspace = true
 time.workspace = true

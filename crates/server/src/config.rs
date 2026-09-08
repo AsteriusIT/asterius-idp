@@ -14,6 +14,7 @@
 //! is split in two: a lenient pass where every field is optional, then a
 //! validation pass that accumulates problems and reports them together.
 
+use crate::observability::LogFormat;
 use asterius_domain::{Capabilities, Issuer, Secret, TenantId};
 use ipnet::IpNet;
 use serde::Deserialize;
@@ -49,6 +50,8 @@ pub struct Config {
     pub features: Capabilities,
     /// Tenants known at boot. Each one is an issuer.
     pub tenants: Vec<TenantConfig>,
+    /// How log lines are rendered.
+    pub log_format: LogFormat,
 }
 
 /// Listener and transport settings.
@@ -233,6 +236,7 @@ struct RawConfig {
     features: Capabilities,
     #[serde(default)]
     tenant: Vec<RawTenant>,
+    log_format: Option<LogFormat>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -381,6 +385,7 @@ impl RawConfig {
             database,
             features: self.features,
             tenants,
+            log_format: self.log_format.unwrap_or_default(),
         })
     }
 }

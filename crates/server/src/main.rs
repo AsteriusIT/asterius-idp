@@ -3,7 +3,9 @@
 
 use asterius_domain::ports::TenantRepository as _;
 use asterius_domain::{Feature, Tenant, TenantStatus};
-use asterius_server::http::server::{app, not_found, serve, shutdown_signal};
+use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
+use asterius_server::observability::health::HealthState;
+use asterius_server::observability::{self, Metrics};
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{PgTenantRepository, Store};
@@ -33,16 +35,8 @@ fn run() -> Result<(), String> {
     let path = config_path()?;
     let config = Config::load(&path).map_err(|e| e.to_string())?;
 
-    // Minimal for now; `ast-83p.5` replaces this with redaction, metrics and
-    // structured fields.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                // The binary's own target is `asterius`; the library is
-                // `asterius_server`. Both, or the startup lines never appear.
-                .unwrap_or_else(|_| "asterius=info,asterius_server=info,tower_http=warn".into()),
-        )
-        .init();
+    observability::init(config.log_format);
+    let metrics = Metrics::install().map_err(|e| format!("cannot install metrics: {e}"))?;
 
     let enabled: Vec<&str> = config.features.enabled().map(Feature::as_str).collect();
     tracing::info!(
@@ -72,11 +66,18 @@ fn run() -> Result<(), String> {
 
         let directory = TenantDirectory::new(Arc::new(repository));
         let tenant_state = TenantState::new(directory, &config.server);
+        let operations = OperationalRoutes {
+            health: HealthState {
+                store: store.clone(),
+                features: Arc::new(config.features.enabled().map(Feature::as_str).collect()),
+            },
+            metrics,
+        };
 
         // No protocol endpoints yet — they arrive with their own stories. What
         // is wired here is everything every one of them will sit behind.
         let routes = Router::new().fallback(not_found);
-        let app = app(routes, tenant_state, &config.server);
+        let app = app(routes, tenant_state, Some(operations), &config.server);
 
         serve(&config.server, app, shutdown_signal())
             .await

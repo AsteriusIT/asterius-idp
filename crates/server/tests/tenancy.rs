@@ -122,7 +122,7 @@ fn seeded() -> Router {
         )
         .fallback(not_found);
 
-    app(routes, state, &config)
+    app(routes, state, None, &config)
 }
 
 async fn request(host: &str, path: &str) -> (StatusCode, String, axum::http::HeaderMap) {

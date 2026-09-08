@@ -93,19 +93,72 @@ pub fn classify(value: &str) -> Option<Sensitive> {
     None
 }
 
-/// Replaces `value` when it looks like a credential.
+/// Replaces credentials in `value`, whether the whole value is one or one is
+/// buried inside it.
 ///
-/// Returns the original text otherwise, so ordinary fields — a client name, an
-/// error description, a `scope` — survive intact.
+/// The embedded case is not an edge case — it is the common one. A credential
+/// reaches a log through a `Debug` dump of a response struct, through
+/// `warn!("redeeming code {code}")`, or inside an error message built by
+/// `format!`. In each of those the credential is a substring, and a scanner
+/// that only classified whole values would pass all three straight through.
+///
+/// Ordinary text is returned unchanged, so a client name, an error code or a
+/// scope list survives.
 #[must_use]
 pub fn redact(value: &str) -> String {
-    match classify(value) {
+    // The whole value being a credential is worth special-casing, because it
+    // keeps the informative tag ("jwt", "credential") that says what was
+    // removed.
+    if let Some(kind) = classify(value) {
         // The digest is kept so that two events about the same credential can
         // still be correlated, which is most of why the value was being
         // recorded in the first place.
-        Some(kind) => format!("{REDACTED}{}:{}]", kind.tag(), short_fingerprint(value)),
-        None => value.to_owned(),
+        return format!("{REDACTED}{}:{}]", kind.tag(), short_fingerprint(value));
     }
+    redact_embedded(value)
+}
+
+/// Scans `value` for credential-shaped runs and replaces each one in place.
+fn redact_embedded(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut token = String::new();
+
+    for character in value.chars() {
+        if is_token_character(character) {
+            token.push(character);
+        } else {
+            flush(&mut out, &mut token);
+            out.push(character);
+        }
+    }
+    flush(&mut out, &mut token);
+    out
+}
+
+/// Characters that can occur *inside* one credential.
+///
+/// `.` for a JWT's segment separators and `:` for a `request_uri` URN. `=` is
+/// deliberately excluded: OAuth base64url is unpadded, and including it would
+/// swallow `key=value` pairs into one token and redact ordinary fields.
+fn is_token_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.' | ':')
+}
+
+fn flush(out: &mut String, token: &mut String) {
+    if token.is_empty() {
+        return;
+    }
+    match classify(token) {
+        Some(kind) => {
+            out.push_str(REDACTED);
+            out.push_str(kind.tag());
+            out.push(':');
+            out.push_str(&short_fingerprint(token));
+            out.push(']');
+        }
+        None => out.push_str(token),
+    }
+    token.clear();
 }
 
 /// A stable, non-reversible identifier for a secret.
@@ -171,11 +224,16 @@ fn is_opaque_credential(value: &str) -> bool {
     distinct_characters(value) >= 12
 }
 
+/// Unpadded base64url, which is what JOSE and OAuth use (RFC 7515 §2).
+///
+/// `=` is excluded deliberately. Allowing padding would also make
+/// `grant_type=authorization_code` look like one long high-entropy token, and
+/// redacting that would make the logs useless while protecting nothing.
 fn is_base64url(value: &str) -> bool {
     !value.is_empty()
         && value
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=')
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn distinct_characters(value: &str) -> usize {
@@ -294,6 +352,55 @@ mod tests {
             classify("Zx9Kq2mNpR7vT4wY1bC8dF"),
             Some(Sensitive::OpaqueCredential)
         );
+    }
+
+    /// The three ways a credential actually reaches a log: a `Debug` dump, a
+    /// formatted message, and an error string. All were leaking until the
+    /// scanner learned to look inside a value rather than only at it.
+    #[test]
+    fn a_credential_buried_in_a_larger_string_is_found() {
+        let code = "Zx9Kq2mNpR7vT4wY1bC8dF3gH6jL0aS5uV-eW_iO2nQ";
+        let jwt = "eyJhbGciOiJFZERTQSIsInR5cCI6ImF0K2p3dCJ9.eyJzdWIiOiJhbGljZSJ9.c2ln";
+
+        let cases = [
+            format!("redeeming code {code}"),
+            format!("TokenResponse {{ access_token: \"{jwt}\", token_type: \"DPoP\" }}"),
+            format!("grant failed for {code}"),
+            format!("[{jwt}]"),
+        ];
+        for case in cases {
+            let redacted = redact(&case);
+            assert!(
+                !redacted.contains(code),
+                "code survived in {case:?}: {redacted}"
+            );
+            assert!(
+                !redacted.contains(jwt),
+                "jwt survived in {case:?}: {redacted}"
+            );
+            assert!(redacted.contains("redacted:"), "no marker in {redacted}");
+        }
+    }
+
+    /// The surrounding prose has to survive, or the log line stops being worth
+    /// reading and the redaction has cost more than it saved.
+    #[test]
+    fn scanning_inside_a_string_leaves_the_rest_of_it_alone() {
+        let redacted =
+            redact("redeeming code Zx9Kq2mNpR7vT4wY1bC8dF3gH6jL0aS5uV-eW_iO2nQ for client billing");
+        assert!(redacted.starts_with("redeeming code "), "{redacted}");
+        assert!(redacted.ends_with(" for client billing"), "{redacted}");
+    }
+
+    #[test]
+    fn key_value_text_is_not_swallowed_into_one_token() {
+        for value in [
+            "grant_type=authorization_code",
+            "error=invalid_grant scope=openid",
+            "response_type=code&client_id=billing",
+        ] {
+            assert_eq!(redact(value), value, "over-redacted {value:?}");
+        }
     }
 
     #[test]
