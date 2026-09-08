@@ -54,6 +54,7 @@ impl Issuer {
     ///
     /// Returns [`IssuerError`] if the value is not an https URL with a host and
     /// no query, fragment or userinfo component.
+    // fuzz-target: issuer_parse
     pub fn parse(raw: &str) -> Result<Self, IssuerError> {
         let url = Url::parse(raw).map_err(|e| IssuerError::NotAUrl(e.to_string()))?;
 

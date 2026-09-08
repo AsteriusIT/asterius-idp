@@ -14,6 +14,7 @@ run() { printf '\n\033[1m==> %s\033[0m\n' "$*"; "$@"; }
 run cargo fmt --all --check
 SQLX_OFFLINE=true run cargo clippy --workspace --all-targets --all-features -- -D warnings
 run ./scripts/check-layering.sh
+run ./scripts/check-fuzz-coverage.sh
 
 if $want_db; then
   run docker compose up -d --wait db

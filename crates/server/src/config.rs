@@ -330,6 +330,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`ConfigError`] as [`Config::load`] does.
+    // fuzz-target: config_parse
     pub fn parse(
         text: &str,
         path: &Path,

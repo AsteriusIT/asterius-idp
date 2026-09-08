@@ -65,6 +65,24 @@ pub enum RouteError {
     /// tenant, so there is nothing to resolve.
     #[error("well-known path suffix {0:?} is not a tenant path")]
     NotATenantPath(String),
+    /// The input was not an absolute path.
+    ///
+    /// Found by fuzzing: `route("")` used to return a `Route` whose `path` was
+    /// empty, which is not a path and which every caller assumes cannot happen.
+    /// An HTTP request always carries at least `/`, so this is unreachable
+    /// through the server — but a postcondition that only holds for the inputs
+    /// someone remembered is not a postcondition.
+    #[error("not an absolute path: {0:?}")]
+    NotAPath(String),
+    /// The path contains a `.` or `..` segment.
+    ///
+    /// Also found by fuzzing. No endpoint this server publishes has a
+    /// relative segment in its path, so one can only be an attempt to reach a
+    /// handler by a spelling that review and routing tables did not consider.
+    /// Rejecting is cheaper than reasoning about which normalisation every
+    /// proxy in front of us performs.
+    #[error("path contains a relative segment: {0:?}")]
+    RelativeSegment(String),
 }
 
 /// Splits a request path into a tenant and the path a handler should see.
@@ -75,7 +93,18 @@ pub enum RouteError {
 /// identifier, or uses the path-insertion form with a suffix that is not a
 /// tenant path. Both are client errors, not "tenant not found": the request is
 /// malformed regardless of which tenants exist.
+// fuzz-target: tenant_route
 pub fn route(path: &str) -> Result<Route, RouteError> {
+    if !path.starts_with('/') {
+        return Err(RouteError::NotAPath(path.to_owned()));
+    }
+    if path
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(RouteError::RelativeSegment(path.to_owned()));
+    }
+
     // RFC 8414 §3.1 path-insertion: /.well-known/{document}{issuer-path}
     if let Some(rest) = path.strip_prefix(WELL_KNOWN_PREFIX) {
         let (document, suffix) = match rest.find('/') {
@@ -241,13 +270,9 @@ mod tests {
     /// A tenant id is attacker-controlled and is about to choose signing keys.
     #[test]
     fn a_malformed_tenant_is_an_error_not_a_lookup() {
-        for path in [
-            "/t/../authorize",
-            "/t/%2e%2e/authorize",
-            "/t/Demo/authorize",
-            "/t//authorize",
-            "/.well-known/openid-configuration/t/..",
-        ] {
+        // Literal `..` is caught earlier, by the relative-segment rule; these
+        // are the ones that reach the identifier check.
+        for path in ["/t/%2e%2e/authorize", "/t/Demo/authorize", "/t//authorize"] {
             assert!(
                 matches!(route(path), Err(RouteError::Tenant(_))),
                 "{path:?} was not rejected: {:?}",
@@ -271,6 +296,37 @@ mod tests {
                 "{path:?} was not rejected: {:?}",
                 route(path)
             );
+        }
+    }
+
+    /// Found by fuzzing: every accepted route must hand downstream something
+    /// that is actually a path, and an input that is not one must be refused
+    /// rather than passed through.
+    #[test]
+    fn an_input_that_is_not_a_path_is_refused() {
+        for not_a_path in [
+            "",
+            "authorize",
+            "t/demo/authorize",
+            "https://as.example/authorize",
+        ] {
+            assert!(
+                matches!(route(not_a_path), Err(RouteError::NotAPath(_))),
+                "accepted {not_a_path:?}: {:?}",
+                route(not_a_path)
+            );
+        }
+    }
+
+    #[test]
+    fn every_accepted_route_yields_an_absolute_path() {
+        for path in [
+            "/",
+            "/t/demo",
+            "/t/demo/authorize",
+            "/.well-known/openid-configuration",
+        ] {
+            assert!(ok(path).path.starts_with('/'), "{path} produced a non-path");
         }
     }
 

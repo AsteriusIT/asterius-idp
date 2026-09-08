@@ -146,3 +146,37 @@ discussions in English or French.
 
 Do not open a public issue. Until a security contact is published, report
 privately to the repository owner. We will acknowledge within 72 hours.
+
+## Fuzzing
+
+The definition of done says every parser and validator has a fuzz target. That
+is mechanical, not remembered: an entry point opts in with a marker comment,
+
+```rust
+// fuzz-target: issuer_parse
+pub fn parse(raw: &str) -> Result<Self, IssuerError> { … }
+```
+
+and `scripts/check-fuzz-coverage.sh` fails CI if the matching target is missing
+— or if a target exists that nothing claims, which is how a target survives the
+code it used to cover and sits in CI proving nothing.
+
+```sh
+rustup toolchain install nightly     # libFuzzer needs it
+cargo install cargo-fuzz
+
+cargo +nightly fuzz list
+cargo +nightly fuzz run issuer_parse -- -max_total_time=60
+./scripts/check-fuzz-coverage.sh
+```
+
+**Write targets that assert, not just targets that run.** "Does not panic" is
+the weakest property a parser has. Every target here also checks the invariant
+the rest of the server relies on — that an accepted issuer is canonical and
+re-parses to itself, that a tenant id cannot escape a path segment, that
+redaction is idempotent, that two different audit events cannot share an
+encoding. A crash-only target passes happily while the parser returns nonsense.
+
+A crash found by fuzzing gets a regression test in the ordinary suite as well
+as a corpus entry, because the corpus is not run on every commit and the test
+suite is.

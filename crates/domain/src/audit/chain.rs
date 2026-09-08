@@ -112,6 +112,7 @@ pub enum ChainError {
 ///
 /// See the module docs for why the length prefixes are not decoration.
 #[must_use]
+// fuzz-target: audit_canonical
 pub fn canonical_bytes(event: &AuditEvent) -> Vec<u8> {
     let mut out = Vec::with_capacity(256);
 

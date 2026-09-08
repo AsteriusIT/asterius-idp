@@ -1,8 +1,8 @@
 //! The connection pool and the migrator.
 
 use sqlx::migrate::Migrator;
-use std::time::Duration;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use std::time::Duration;
 
 use crate::scope::TenantScope;
 use asterius_domain::TenantId;
@@ -71,7 +71,10 @@ impl Store {
     /// connection usable", not "is the schema correct".
     pub async fn ping(&self) -> bool {
         let query = sqlx::query("select 1").fetch_optional(&self.pool);
-        matches!(tokio::time::timeout(Self::PROBE_TIMEOUT, query).await, Ok(Ok(_)))
+        matches!(
+            tokio::time::timeout(Self::PROBE_TIMEOUT, query).await,
+            Ok(Ok(_))
+        )
     }
 
     /// Whether every migration compiled into this binary is recorded applied.
@@ -81,10 +84,9 @@ impl Store {
     /// refuse traffic instead.
     pub async fn migrations_applied(&self) -> bool {
         let expected = MIGRATOR.iter().count();
-        let query = sqlx::query_scalar::<_, i64>(
-            "select count(*) from _sqlx_migrations where success",
-        )
-        .fetch_one(&self.pool);
+        let query =
+            sqlx::query_scalar::<_, i64>("select count(*) from _sqlx_migrations where success")
+                .fetch_one(&self.pool);
         // No table means no migration has ever run; a timeout means we cannot
         // tell, which for readiness is the same answer.
         match tokio::time::timeout(Self::PROBE_TIMEOUT, query).await {

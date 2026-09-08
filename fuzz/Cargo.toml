@@ -1,0 +1,65 @@
+[package]
+name = "asterius-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Not a workspace member: cargo-fuzz builds with its own flags and a nightly
+# toolchain, and dragging that into the main workspace would slow every
+# ordinary build down.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+asterius-domain = { path = "../crates/domain" }
+asterius-oidc = { path = "../crates/oidc" }
+asterius-server = { path = "../crates/server" }
+# Needed by the targets themselves: `audit_canonical` builds events with
+# timestamps, `forwarded_resolve` builds header maps.
+axum = { version = "0.8", default-features = false }
+time = "0.3"
+
+[[bin]]
+name = "issuer_parse"
+path = "fuzz_targets/issuer_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tenant_route"
+path = "fuzz_targets/tenant_route.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "redaction_scan"
+path = "fuzz_targets/redaction_scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "forwarded_resolve"
+path = "fuzz_targets/forwarded_resolve.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit_canonical"
+path = "fuzz_targets/audit_canonical.rs"
+test = false
+doc = false
+bench = false

@@ -67,6 +67,7 @@ const MIN_CREDENTIAL_LEN: usize = 22;
 /// credential. Callers that legitimately need a long opaque identifier in the
 /// trail should record a [`fingerprint`] instead.
 #[must_use]
+// fuzz-target: redaction_scan
 pub fn classify(value: &str) -> Option<Sensitive> {
     let trimmed = value.trim();
 

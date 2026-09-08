@@ -48,6 +48,10 @@ jobs:
       - name: ports-and-adapters layering
         run: ./scripts/check-layering.sh
 
+      # Definition of done: every parser and validator has a fuzz target.
+      - name: fuzz coverage
+        run: ./scripts/check-fuzz-coverage.sh
+
       # Belt and braces around the forbid attribute: an `unsafe` block that
       # somehow compiles should still stop the build.
       - name: no unsafe in first-party code
@@ -174,12 +178,52 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --no-deps --all-features
 
+  # -------------------------------------------------------------------------
+  # A short fuzz run on every PR. Sixty seconds per target does not prove much
+  # on its own — the value is that a change which makes a parser panic on its
+  # own seed corpus fails here rather than at 3am. The long runs are nightly,
+  # in fuzz-nightly.yml.
+  # -------------------------------------------------------------------------
+  fuzz:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    env:
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target\nfuzz -> fuzz/target"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: build every target
+        run: cargo fuzz build
+
+      - name: run each target for 60 s
+        run: |
+          for target in $(cargo fuzz list); do
+            echo "::group::$target"
+            cargo fuzz run "$target" -- -max_total_time=60 -print_final_stats=1
+            echo "::endgroup::"
+          done
+
+      - name: upload any crash that was found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
   # A single required status check, so branch protection does not have to be
   # edited every time a job is added.
   ci:
     name: CI
     if: always()
-    needs: [lint, test, sqlx-check, supply-chain, docs]
+    needs: [lint, test, sqlx-check, supply-chain, docs, fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: all jobs succeeded

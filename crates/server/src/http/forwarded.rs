@@ -32,6 +32,7 @@ pub struct ClientAddr {
 /// the right is what stops a client from prepending `X-Forwarded-For: 1.2.3.4`
 /// and choosing its own identity.
 #[must_use]
+// fuzz-target: forwarded_resolve
 pub fn resolve(peer: IpAddr, headers: &HeaderMap, trusted_proxies: &[IpNet]) -> ClientAddr {
     if !is_trusted(peer, trusted_proxies) {
         return ClientAddr {

@@ -1,5 +1,8 @@
 [workspace]
 resolver = "3"
+# cargo-fuzz builds with its own flags on nightly; keeping it out of the
+# workspace keeps that out of every ordinary build.
+exclude = ["fuzz"]
 members = [
     "crates/domain",
     "crates/oidc",
