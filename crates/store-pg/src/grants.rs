@@ -20,28 +20,37 @@
 //! `a_revocation_that_fails_part_way_revokes_nothing` in the database tests
 //! injects a failure at the denylist insert and reads all three tables back.
 //!
-//! ## The status is computed from the credentials, not from a column
+//! ## The claim is a stamp; the status is still computed
 //!
 //! Grant Management ID1 §5.6 makes a grant `active` "when associated tokens
-//! have been successfully claimed by the client". The baseline schema has no
-//! column recording that, so this adapter derives it, and the derivation is
-//! deliberately made of facts rather than of a flag somebody has to remember to
-//! set:
+//! have been successfully claimed by the client". This adapter used to derive
+//! that from the credentials that reference the grant — a refresh token, a
+//! consumed authorization code, or one of the two grant shapes minted at the
+//! token endpoint. The appeal was that a derivation cannot disagree with
+//! reality the way a flag can.
 //!
-//! * a refresh token references the grant, or
-//! * an authorization code for the grant has been consumed, or
-//! * the grant has no `subject` — a `client_credentials` grant, minted at the
-//!   token endpoint at the moment its access token was, so it is claimed before
-//!   it is stored — or
-//! * the grant has a `parent_grant_id` — an RFC 8693 exchanged grant, minted at
-//!   the token endpoint for the same reason.
+//! It could disagree with reality in one direction, though, and it was the
+//! direction that loses tokens. **A bare access token leaves nothing behind to
+//! derive from.** It is a stateless JWT (RFC 9068) and nothing records that it
+//! was issued; the authorization code it was exchanged for is gone inside 60
+//! seconds (FAPI 2.0 SP §5.3.2.1 item 11); and a code flow need not issue a
+//! token at all. So a grant in exactly that state — the ordinary one for a
+//! client that asked for no `offline_access` — had nothing pointing at it, read
+//! as never claimed, and was deleted by [`PgGrantRepository::purge_unclaimed`]
+//! while its access token was still live, taking with it the only row that
+//! could have revoked that token.
 //!
-//! A flag could disagree with the credentials that exist; this cannot. What it
-//! *cannot see* is a grant whose only credential is a bare access token issued
-//! by some future path that is neither of the last two shapes, because nothing
-//! records issued access tokens. See the module's `README`-shaped note in
-//! [`PgGrantRepository::purge_unclaimed`] for what that costs and what one
-//! column would buy.
+//! `grants.claimed_at` closes that: [`PgGrantRepository::claim`] stamps it, and
+//! [`PgGrantRepository::claim`] is the only way to obtain the [`ClaimedGrant`]
+//! every issuance path demands. A credential cannot be minted without the stamp
+//! being written first, so there is no issuance path — including the device and
+//! CIBA flows that have no table of their own yet — that can leave a claimed
+//! grant looking abandoned.
+//!
+//! What stays derived is `expired`, and deliberately: a stored status would say
+//! `active` about a grant that is not, from the instant `expires_at` passes
+//! until a sweep got round to it. [`Grant::status`] compares against `now`
+//! instead, so it cannot be stale.
 
 use crate::error::to_domain_error;
 use asterius_domain::ports::TenantScoped;
@@ -129,11 +138,17 @@ impl PgGrantRepository {
         let authorization_details = serde_json::Value::Array(grant.authorization_details.clone());
         let actor_chain = serde_json::Value::Array(grant.actor_chain.clone());
 
+        // `claimed_at` is written here as well as by `claim`, because the two
+        // shapes minted at the token endpoint — `client_credentials` and an RFC
+        // 8693 exchange — are created already claimed. A caller that leaves it
+        // `None`, which is what `Grant::new` produces, is storing a grant no
+        // credential has been taken from yet, and the sweep may collect it.
         sqlx::query!(
             "insert into grants (tenant_id, grant_id, client_id, user_id, subject, scopes,
                                  claims, authorization_details, resources, actor_chain,
-                                 parent_grant_id, session_id, created_at, updated_at, expires_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $14)",
+                                 parent_grant_id, session_id, created_at, updated_at, expires_at,
+                                 claimed_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $14, $15)",
             self.tenant.as_str(),
             id,
             grant.client.as_str(),
@@ -148,6 +163,7 @@ impl PgGrantRepository {
             grant.session.as_ref().map(SessionId::as_str),
             grant.created_at,
             grant.expires_at,
+            grant.claimed_at,
         )
         .execute(&self.pool)
         .await
@@ -164,19 +180,12 @@ impl PgGrantRepository {
     pub async fn find(&self, id: &GrantId) -> Result<Option<Grant>, DomainError> {
         let row = sqlx::query_as!(
             Row,
-            r#"select g.grant_id, g.client_id, g.user_id, g.subject, g.scopes, g.claims,
-                      g.authorization_details, g.resources, g.actor_chain, g.parent_grant_id,
-                      g.session_id, g.created_at, g.updated_at, g.expires_at, g.revoked_at,
-                      g.revocation_reason,
-                      (g.subject is null
-                       or g.parent_grant_id is not null
-                       or exists (select 1 from refresh_tokens r
-                                  where r.tenant_id = g.tenant_id and r.grant_id = g.grant_id)
-                       or exists (select 1 from authorization_codes c
-                                  where c.tenant_id = g.tenant_id and c.grant_id = g.grant_id
-                                    and c.consumed_at is not null)) as "claimed!"
-               from grants g
-               where g.tenant_id = $1 and g.grant_id = $2"#,
+            "select grant_id, client_id, user_id, subject, scopes, claims,
+                    authorization_details, resources, actor_chain, parent_grant_id,
+                    session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
+                    revocation_reason
+               from grants
+               where tenant_id = $1 and grant_id = $2",
             self.tenant.as_str(),
             uuid(id)?
         )
@@ -200,20 +209,13 @@ impl PgGrantRepository {
     pub async fn list_for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError> {
         sqlx::query_as!(
             Row,
-            r#"select g.grant_id, g.client_id, g.user_id, g.subject, g.scopes, g.claims,
-                      g.authorization_details, g.resources, g.actor_chain, g.parent_grant_id,
-                      g.session_id, g.created_at, g.updated_at, g.expires_at, g.revoked_at,
-                      g.revocation_reason,
-                      (g.subject is null
-                       or g.parent_grant_id is not null
-                       or exists (select 1 from refresh_tokens r
-                                  where r.tenant_id = g.tenant_id and r.grant_id = g.grant_id)
-                       or exists (select 1 from authorization_codes c
-                                  where c.tenant_id = g.tenant_id and c.grant_id = g.grant_id
-                                    and c.consumed_at is not null)) as "claimed!"
-               from grants g
-               where g.tenant_id = $1 and g.subject = $2
-               order by g.created_at desc, g.grant_id"#,
+            "select grant_id, client_id, user_id, subject, scopes, claims,
+                    authorization_details, resources, actor_chain, parent_grant_id,
+                    session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
+                    revocation_reason
+               from grants
+               where tenant_id = $1 and subject = $2
+               order by created_at desc, grant_id",
             self.tenant.as_str(),
             subject.as_str()
         )
@@ -225,21 +227,33 @@ impl PgGrantRepository {
         .collect()
     }
 
-    /// Takes the authority to mint one credential from a grant.
+    /// Takes the authority to mint one credential from a grant, and records
+    /// that it was taken.
     ///
     /// The guard every issuance path passes through. It refuses a grant that is
     /// revoked or expired, which is where the illegal transition `revoked ->
     /// active` is actually stopped: nothing else can produce a
     /// [`ClaimedGrant`], and nothing can be issued without one.
     ///
-    /// **The decision has to be made inside the transaction that writes the
-    /// credential.** Called on the pool, as it is here, it is a read followed
-    /// by a gap: a revocation committing in that gap would be a token minted
-    /// from a grant that is already gone. [`Self::revoke`] takes the grant row
-    /// with `select … for update`, so a claim performed in the issuing
-    /// transaction with the same lock serialises against it; wiring that into
-    /// the token endpoint is `ast-a05.3`'s job, and until then a caller must
-    /// treat the answer as fresh only for as long as it holds no lock.
+    /// **The guard and the stamp are one statement.** The predicate that
+    /// decides — not revoked, not past `expires_at` — is the `where` clause of
+    /// the `update` that writes `claimed_at`, so PostgreSQL takes the row lock
+    /// before evaluating it and [`Self::revoke`]'s `select … for update`
+    /// serialises against it. A read followed by a separate write would leave a
+    /// gap, and a revocation committing in that gap would be a token minted
+    /// from a grant that was already gone — the exact failure the type is meant
+    /// to make unrepresentable.
+    ///
+    /// **The stamp is written before the credential exists**, which is the safe
+    /// direction of the only ordering available. Stamp first and a mint that
+    /// then fails leaves a grant reading `active` with nothing issued under it:
+    /// the sweep spares a row it did not have to. Stamp afterwards and there is
+    /// a window in which a live credential's grant reads abandoned, and the
+    /// sweep deletes the row that revokes it. One costs a row, the other costs
+    /// a revocation.
+    ///
+    /// `coalesce` because "when the first credential was taken" is the fact
+    /// Grant Management ID1 §5.6 turns on; a second claim must not rewrite it.
     ///
     /// # Errors
     ///
@@ -250,8 +264,46 @@ impl PgGrantRepository {
         id: &GrantId,
         now: OffsetDateTime,
     ) -> Result<ClaimedGrant, DomainError> {
-        let grant = self.find(id).await?.ok_or(DomainError::NotFound)?;
-        grant
+        let row = sqlx::query_as!(
+            Row,
+            "update grants set claimed_at = coalesce(claimed_at, $3)
+             where tenant_id = $1 and grant_id = $2
+               and revoked_at is null
+               and (expires_at is null or expires_at > $3)
+             returning grant_id, client_id, user_id, subject, scopes, claims,
+                       authorization_details, resources, actor_chain, parent_grant_id,
+                       session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
+                       revocation_reason",
+            self.tenant.as_str(),
+            uuid(id)?,
+            now
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        let Some(row) = row else {
+            // Nothing matched, so the grant is missing, revoked or expired.
+            // Which one is a second query, taken only on the failure path: the
+            // answer is an error message, and charging every successful
+            // issuance for it would be paying in the wrong place. The verdict
+            // comes from `Grant::claim` rather than a hand-written mapping, so
+            // the two ways this repository can refuse a claim cannot drift.
+            let grant = self.find(id).await?.ok_or(DomainError::NotFound)?;
+            return Err(grant.claim(now).map_or_else(
+                |error| DomainError::invalid("grant_id", error.to_string()),
+                // Claimable now, but not a moment ago when the update ran. Only
+                // a concurrent writer undoing a revocation or an expiry could
+                // do that, and nothing in this server does either — so the
+                // answer that cannot mint a token by accident is the right one.
+                |_| DomainError::invalid("grant_id", "changed while it was being claimed"),
+            ));
+        };
+
+        // The update's `where` clause has already established that this grant
+        // is claimable, so this cannot fail — but it is the one constructor of
+        // `ClaimedGrant`, and going through it is what keeps that true.
+        row.into_entity(&self.tenant)?
             .claim(now)
             .map_err(|error| DomainError::invalid("grant_id", error.to_string()))
     }
@@ -389,41 +441,33 @@ impl PgGrantRepository {
     ///
     /// ## What this deliberately will not delete
     ///
-    /// The predicate is the [`Self::find`] claim derivation, negated — and it
-    /// keeps every grant the derivation cannot speak for. A grant with no
-    /// `subject` (`client_credentials`) or with a `parent_grant_id` (an RFC
-    /// 8693 exchange) was minted at the token endpoint alongside its access
-    /// token, so it is claimed the moment it exists and is never collected,
-    /// even though no refresh token or code will ever point at it.
+    /// `claimed_at is null` is the whole predicate now, and it is safe in the
+    /// one direction that matters because [`Self::claim`] writes the stamp
+    /// *before* the credential exists. There is no instant at which a live
+    /// credential's grant reads unclaimed, so there is no window in which this
+    /// statement can delete the only row that could revoke a token — including
+    /// for the shape the previous derivation could not see: a code-flow grant
+    /// whose only live credential is a bare access token, with no refresh token
+    /// issued and its ≤60 s authorization code (FAPI 2.0 SP §5.3.2.1 item 11)
+    /// already
+    /// purged. That grant has nothing pointing at it and is kept anyway,
+    /// because the stamp is on the grant itself.
     ///
-    /// That leaves one shape the schema cannot express: a grant created at the
-    /// *authorization* endpoint whose only credential is a bare access token,
-    /// with no refresh token issued and the authorization code row already
-    /// purged. Nothing records issued access tokens — they are stateless — so
-    /// such a grant reads as unclaimed and would be collected here while its
-    /// access token is still live, taking with it the only row that could have
-    /// revoked that token. A single `claimed_at timestamptz` column on `grants`
-    /// would close it outright, stamped by whatever mints the first credential;
-    /// until there is one, the timeout must be set longer than the longest
-    /// access-token lifetime, which is the deployment-side version of the same
-    /// guarantee.
+    /// A revoked grant is kept as well, and not because it might still be
+    /// claimed: the record of a withdrawal is the evidence that the withdrawal
+    /// happened, and an investigation asking "when did this stop" needs a row
+    /// to answer from.
     ///
     /// # Errors
     ///
     /// Returns a storage error.
     pub async fn purge_unclaimed(&self, older_than: OffsetDateTime) -> Result<u64, DomainError> {
         let result = sqlx::query!(
-            "delete from grants g
-             where g.tenant_id = $1
-               and g.created_at < $2
-               and g.revoked_at is null
-               and g.subject is not null
-               and g.parent_grant_id is null
-               and not exists (select 1 from refresh_tokens r
-                               where r.tenant_id = g.tenant_id and r.grant_id = g.grant_id)
-               and not exists (select 1 from authorization_codes c
-                               where c.tenant_id = g.tenant_id and c.grant_id = g.grant_id
-                                 and c.consumed_at is not null)",
+            "delete from grants
+             where tenant_id = $1
+               and created_at < $2
+               and claimed_at is null
+               and revoked_at is null",
             self.tenant.as_str(),
             older_than
         )
@@ -442,7 +486,7 @@ fn uuid(id: &GrantId) -> Result<Uuid, DomainError> {
         .map_err(|_| DomainError::invalid("grant_id", "is not a UUID and cannot name a grant"))
 }
 
-/// One row of `grants`, plus the derived claim, before it becomes an entity.
+/// One row of `grants`, before it becomes an entity.
 struct Row {
     grant_id: Uuid,
     client_id: String,
@@ -458,9 +502,9 @@ struct Row {
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
     expires_at: Option<OffsetDateTime>,
+    claimed_at: Option<OffsetDateTime>,
     revoked_at: Option<OffsetDateTime>,
     revocation_reason: Option<String>,
-    claimed: bool,
 }
 
 impl Row {
@@ -489,9 +533,9 @@ impl Row {
             created_at: self.created_at,
             updated_at: self.updated_at,
             expires_at: self.expires_at,
+            claimed_at: self.claimed_at,
             revoked_at: self.revoked_at,
             revocation_reason: self.revocation_reason,
-            claimed: self.claimed,
         }
         .validate(tenant)
         .map_err(|error| {

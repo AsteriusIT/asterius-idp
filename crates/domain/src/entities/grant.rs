@@ -25,9 +25,14 @@
 //! **The status is computed, never stored.** A grant is `expired` the instant
 //! `expires_at` passes, and no process runs at that instant; a `status` column
 //! would therefore say `active` about a grant that is not, until a sweep got
-//! round to it. [`Grant::status`] derives the answer from the facts — the
-//! revocation stamp, the expiry, and whether a credential was ever claimed — so
-//! it cannot be stale and cannot disagree with the row it came from.
+//! round to it. [`Grant::status`] derives the answer from three stamps — the
+//! revocation, the expiry, and the first claim — so it cannot be stale and
+//! cannot disagree with the row it came from.
+//!
+//! The three stamps are stored; the *status* is not. That distinction is the
+//! whole design: `revoked_at` and `claimed_at` record things that happened, and
+//! a thing that happened does not go stale, whereas `expired` is a comparison
+//! against the current clock and goes stale the moment it is written down.
 //!
 //! ## Lifecycle
 //!
@@ -340,18 +345,32 @@ pub struct Grant {
     pub revoked_at: Option<OffsetDateTime>,
     /// Why it was withdrawn. Set exactly when `revoked_at` is.
     pub revocation_reason: Option<RevocationReason>,
-    /// Whether a credential has ever been claimed from this grant.
+    /// When the first credential was claimed from this grant, if one ever was.
     ///
-    /// **Derived, not stored.** The baseline schema has no column for it, so
-    /// the adapter computes it from the credentials that reference the grant
-    /// and from the two shapes of grant that are minted at the token endpoint
-    /// rather than at the authorization endpoint. That is deliberate as far as
-    /// it goes — a stored flag and the credentials that exist could disagree,
-    /// and the credentials are the truth — but it is not free: see
-    /// `PgGrantRepository::purge_unclaimed` in `asterius-store-pg` for the one
-    /// shape the derivation cannot see, and the single column that would close
-    /// it.
-    pub claimed: bool,
+    /// Grant Management ID1 §5.6 turns on this one fact: a grant is `active`
+    /// "when associated tokens have been successfully claimed by the client",
+    /// and one that was never claimed "should be deleted by the AS after a
+    /// reasonable timeout". So the sweep that deletes abandoned grants and the
+    /// status a grants dashboard shows are the same question, and this is the
+    /// answer to it.
+    ///
+    /// It is a stamp rather than a flag because the instant is worth having and
+    /// costs nothing extra in a `timestamptz` column, and because "first claim"
+    /// is a fact with a time, not a boolean somebody flipped.
+    ///
+    /// **Stored, not derived.** The adapter used to compute it from the
+    /// credentials that reference the grant, which is appealing — a flag can
+    /// disagree with reality, and the credentials are reality — but there is
+    /// one credential that leaves nothing behind to look at. A bare access
+    /// token is a stateless JWT (RFC 9068) and nothing records that it was
+    /// issued; the authorization code it came from is gone inside 60 seconds
+    /// (FAPI 2.0 SP §5.3.2.1 item 11). A code-flow grant whose only live
+    /// credential is
+    /// such a token therefore has nothing pointing at it at all, and a
+    /// derivation reads it as abandoned — so the sweep deletes the only row
+    /// that could ever have revoked that token. See
+    /// `PgGrantRepository::purge_unclaimed` in `asterius-store-pg`.
+    pub claimed_at: Option<OffsetDateTime>,
 }
 
 impl Grant {
@@ -401,9 +420,9 @@ impl Grant {
             created_at,
             updated_at: created_at,
             expires_at: None,
+            claimed_at: None,
             revoked_at: None,
             revocation_reason: None,
-            claimed: false,
         }
     }
 
@@ -421,7 +440,7 @@ impl Grant {
         if self.expires_at.is_some_and(|expiry| expiry <= now) {
             return GrantStatus::Expired;
         }
-        if self.claimed {
+        if self.claimed_at.is_some() {
             GrantStatus::Active
         } else {
             GrantStatus::Pending
@@ -605,13 +624,12 @@ pub struct GrantRecord {
     pub updated_at: OffsetDateTime,
     /// `expires_at`.
     pub expires_at: Option<OffsetDateTime>,
+    /// `claimed_at`.
+    pub claimed_at: Option<OffsetDateTime>,
     /// `revoked_at`.
     pub revoked_at: Option<OffsetDateTime>,
     /// `revocation_reason`.
     pub revocation_reason: Option<String>,
-    /// Whether a credential was ever claimed from this grant. Not a column —
-    /// see [`Grant::claimed`].
-    pub claimed: bool,
 }
 
 impl GrantRecord {
@@ -669,9 +687,9 @@ impl GrantRecord {
             created_at: self.created_at,
             updated_at: self.updated_at,
             expires_at: self.expires_at,
+            claimed_at: self.claimed_at,
             revoked_at: self.revoked_at,
             revocation_reason,
-            claimed: self.claimed,
         })
     }
 }
@@ -760,9 +778,9 @@ mod tests {
             created_at: epoch(),
             updated_at: epoch(),
             expires_at: None,
+            claimed_at: None,
             revoked_at: None,
             revocation_reason: None,
-            claimed: false,
         }
     }
 
@@ -846,7 +864,7 @@ mod tests {
     #[test]
     fn a_grant_expires_without_anybody_writing_a_row() {
         let mut grant = a_grant();
-        grant.claimed = true;
+        grant.claimed_at = Some(epoch());
         grant.expires_at = Some(epoch() + Duration::minutes(10));
 
         assert_eq!(grant.status(epoch()), GrantStatus::Active);
@@ -867,7 +885,7 @@ mod tests {
     fn a_grant_is_pending_until_a_credential_is_claimed_from_it() {
         let mut grant = a_grant();
         assert_eq!(grant.status(epoch()), GrantStatus::Pending);
-        grant.claimed = true;
+        grant.claimed_at = Some(epoch());
         assert_eq!(grant.status(epoch()), GrantStatus::Active);
     }
 
@@ -877,7 +895,7 @@ mod tests {
     #[test]
     fn revocation_outranks_expiry() {
         let mut grant = a_grant();
-        grant.claimed = true;
+        grant.claimed_at = Some(epoch());
         grant.expires_at = Some(epoch() + Duration::minutes(1));
         grant.revoked_at = Some(epoch());
         grant.revocation_reason = Some(RevocationReason::UserRevoked);
