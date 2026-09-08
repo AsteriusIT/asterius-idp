@@ -400,6 +400,12 @@ create table auth_requests (
     dpop_jkt          text,
     -- Login and consent progress; replaced as the interaction advances.
     interaction_state jsonb       not null default '{}'::jsonb,
+    -- The browser's handle on this request, distinct from `request_uri_hash`,
+    -- which is the client's. Two parties, two credentials, neither derivable
+    -- from the other: a client that could compute this could drive the user's
+    -- interaction. Digest only, like the request_uri — it is a bearer value
+    -- and a leaked row must not yield a usable one.
+    interaction_id_hash bytea unique,
     session_id        text,
     pushed_at         timestamptz not null default now(),
     expires_at        timestamptz not null,
@@ -411,6 +417,10 @@ create table auth_requests (
 );
 
 create index auth_requests_expiring on auth_requests (expires_at);
+
+create index auth_requests_by_interaction
+    on auth_requests (tenant_id, interaction_id_hash)
+    where interaction_id_hash is not null;
 
 -- A grant is the revocable unit of authority. Every token traces back to one,
 -- which is what makes revocation a single row update rather than a hunt.
@@ -433,6 +443,23 @@ create table grants (
     created_at            timestamptz not null default now(),
     updated_at            timestamptz not null default now(),
     expires_at            timestamptz,
+    -- Grant Management ID1 §5.6: a grant is active "when associated tokens have
+    -- been successfully claimed by the client", and one that was never claimed
+    -- "should be deleted by the AS after a reasonable timeout". This is the
+    -- stamp that says which, written by whatever mints the first credential.
+    --
+    -- It is a column and not a derivation because the one credential that
+    -- leaves no trace is the interesting one: a bare access token is a
+    -- stateless JWT (RFC 9068), and the authorization code it came from is
+    -- gone within 60 seconds (FAPI 2.0 SP §5.3.2.1 item 11). A grant whose
+    -- credential is such a token has nothing pointing at it, so a derivation
+    -- reads it as abandoned and the sweep below deletes the only row that
+    -- could ever have revoked that token.
+    --
+    -- Deliberately not a `status` column: `expired` is a fact about the clock,
+    -- and a stored status is wrong from the instant `expires_at` passes until
+    -- a sweep gets to it. See `Grant::status`.
+    claimed_at            timestamptz,
     revoked_at            timestamptz,
     revocation_reason     text,
 
@@ -466,7 +493,8 @@ create table authorization_codes (
     nonce                 text,
     dpop_jkt              text,
     issued_at             timestamptz not null default now(),
-    -- FAPI 2.0 SP §5.4.1: at most 60 seconds. Enforced in code; recorded here
+    -- FAPI 2.0 SP §5.3.2.1 item 11, "shall issue authorization codes with a
+    -- maximum lifetime of 60 seconds". Enforced in code; recorded here
     -- so that a stored row can be audited against the rule.
     expires_at            timestamptz not null,
     -- Set on first redemption. A second redemption finds it set and revokes

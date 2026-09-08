@@ -1,0 +1,120 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update grants set claimed_at = coalesce(claimed_at, $3)\n             where tenant_id = $1 and grant_id = $2\n               and revoked_at is null\n               and (expires_at is null or expires_at > $3)\n             returning grant_id, client_id, user_id, subject, scopes, claims,\n                       authorization_details, resources, actor_chain, parent_grant_id,\n                       session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,\n                       revocation_reason",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "claims",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "authorization_details",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 7,
+        "name": "resources",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 8,
+        "name": "actor_chain",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "parent_grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 10,
+        "name": "session_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 14,
+        "name": "claimed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 15,
+        "name": "revoked_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "revocation_reason",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "237fcf4a7fcff213b4f3b12d7ae620cc1ef9d5812878d803045912e76e2b2344"
+}

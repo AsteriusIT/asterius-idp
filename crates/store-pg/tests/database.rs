@@ -320,7 +320,8 @@ db_test! {
 }
 
 db_test! {
-    /// FAPI 2.0 SP §5.4.1 caps authorization codes at 60 seconds. Code enforces
+    /// FAPI 2.0 SP §5.3.2.1 item 11 caps authorization codes at 60 seconds. Code
+    /// enforces
     /// it; the schema refuses to hold a row that breaks it, so a bug in the
     /// issuing path cannot quietly persist a long-lived code.
     async fn the_schema_refuses_an_authorization_code_that_outlives_sixty_seconds(db) {
@@ -3099,6 +3100,59 @@ mod grants {
         .expect("insert refresh token");
     }
 
+    /// An authorization code pointing at a grant, redeemed or not. Written by
+    /// hand for the same reason as the refresh token above: the repository that
+    /// will write it belongs to another story, and what these tests need is the
+    /// row the sweep used to reason about.
+    async fn insert_authorization_code(
+        pool: &PgPool,
+        tenant: &str,
+        grant: &GrantId,
+        label: &str,
+        consumed: bool,
+    ) {
+        sqlx::query(
+            "insert into authorization_codes
+                 (tenant_id, code_hash, client_id, grant_id, code_challenge, redirect_uri,
+                  issued_at, expires_at, consumed_at)
+             values ($1, $2, 'billing', $3::uuid, 'a-challenge', 'https://client.example/cb',
+                     $4, $4 + interval '60 seconds', case when $5 then $4 end)",
+        )
+        .bind(tenant)
+        .bind(asterius_domain::sha256(label.as_bytes()).to_vec())
+        .bind(grant.as_str())
+        .bind(epoch())
+        .bind(consumed)
+        .execute(pool)
+        .await
+        .expect("insert authorization code");
+    }
+
+    /// What a 60-second expiry sweep does a minute after the login.
+    async fn delete_authorization_codes(pool: &PgPool, tenant: &str) {
+        sqlx::query("delete from authorization_codes where tenant_id = $1")
+            .bind(tenant)
+            .execute(pool)
+            .await
+            .expect("purge authorization codes");
+    }
+
+    async fn authorization_codes(pool: &PgPool, tenant: &str) -> i64 {
+        sqlx::query_scalar("select count(*) from authorization_codes where tenant_id = $1")
+            .bind(tenant)
+            .fetch_one(pool)
+            .await
+            .expect("count authorization codes")
+    }
+
+    async fn refresh_tokens(pool: &PgPool, tenant: &str) -> i64 {
+        sqlx::query_scalar("select count(*) from refresh_tokens where tenant_id = $1")
+            .bind(tenant)
+            .fetch_one(pool)
+            .await
+            .expect("count refresh tokens")
+    }
+
     async fn revoked_refresh_tokens(pool: &PgPool, tenant: &str) -> i64 {
         sqlx::query_scalar(
             "select count(*) from refresh_tokens
@@ -3165,9 +3219,10 @@ mod grants {
         /// Grant Management ID1 §5.6: "a grant should be considered active when
         /// associated tokens have been successfully claimed by the client."
         ///
-        /// The status is derived from the credentials that exist, so writing a
-        /// refresh token is what moves the grant — there is no separate flag to
-        /// forget to set.
+        /// `claim` is what moves the grant, because `claim` is the only way to
+        /// obtain the authority to mint a credential. The stamp therefore
+        /// cannot be forgotten by an issuance path: the path cannot issue
+        /// anything without asking for it.
         async fn a_grant_becomes_active_when_a_credential_is_claimed_from_it(db) {
             seed_client(&db.pool, "demo", "billing").await;
             let repo = repo(&db.pool, "demo");
@@ -3179,33 +3234,121 @@ mod grants {
                 GrantStatus::Pending
             );
 
-            insert_refresh_token(&db.pool, "demo", &grant.id, "rt-1").await;
+            let _ = repo.claim(&grant.id, epoch()).await.expect("claim");
 
+            let found = repo.find(&grant.id).await.expect("find").expect("present");
+            assert_eq!(found.status(epoch()), GrantStatus::Active);
+            assert_eq!(found.claimed_at, Some(epoch()));
+
+            // Grant Management ID1 §5.6 asks when the *first* credential was
+            // taken, and a refresh cycle would otherwise keep pushing the stamp
+            // forward until a grant claimed months ago looked minutes old.
+            let _ = repo
+                .claim(&grant.id, epoch() + Duration::hours(1))
+                .await
+                .expect("second claim");
             assert_eq!(
-                repo.find(&grant.id).await.expect("find").expect("present").status(epoch()),
-                GrantStatus::Active
+                repo.find(&grant.id).await.expect("find").expect("present").claimed_at,
+                Some(epoch()),
+                "a later claim rewrote the instant the grant became active"
             );
         }
     }
 
     db_test! {
         /// A `client_credentials` grant is minted at the token endpoint at the
-        /// moment its access token is, so it is claimed before it is stored.
-        /// Nothing will ever reference it — no code, no refresh token — and a
-        /// derivation that only looked for those would call it unclaimed and
-        /// collect it while its access token is still live.
-        async fn a_grant_with_no_subject_is_claimed_the_moment_it_exists(db) {
+        /// moment its access token is. Nothing will ever reference it — no
+        /// code, no refresh token — so the stamp `claim` writes is the only
+        /// thing standing between it and the sweep.
+        ///
+        /// Two halves, and the first is the one that changed with
+        /// `grants.claimed_at`: a grant that was created and never claimed from
+        /// *is* collectable, whatever shape it has. The old derivation read
+        /// `subject is null` as "claimed the moment it exists" and kept such a
+        /// row forever, which spared an abandoned authorization on the strength
+        /// of its shape rather than of anything that happened to it.
+        async fn a_client_credentials_grant_is_claimed_by_the_claim_and_not_by_its_shape(db) {
             seed_client(&db.pool, "demo", "billing").await;
             let repo = repo(&db.pool, "demo");
             let machine = Grant::new(TenantId::new("demo"), ClientId::new("billing"), epoch());
             repo.create(&machine).await.expect("create");
 
             let found = repo.find(&machine.id).await.expect("find").expect("present");
+            assert_eq!(
+                found.status(epoch()),
+                GrantStatus::Pending,
+                "a grant nothing was ever taken from reported active"
+            );
+
+            let claimed = repo.claim(&machine.id, epoch()).await.expect("claim");
+            assert_eq!(claimed.id(), &machine.id);
+            assert_eq!(claimed.subject(), None, "a client_credentials grant has no sub");
+
+            let found = repo.find(&machine.id).await.expect("find").expect("present");
             assert_eq!(found.status(epoch()), GrantStatus::Active);
+            assert_eq!(found.claimed_at, Some(epoch()));
             assert_eq!(
                 repo.purge_unclaimed(epoch() + Duration::days(1)).await.expect("purge"),
                 0,
-                "a client_credentials grant was collected as unclaimed"
+                "a claimed client_credentials grant was collected as unclaimed"
+            );
+        }
+    }
+
+    db_test! {
+        /// The shape `ast-uwv.7` exists for, and the one the old derivation
+        /// could not see.
+        ///
+        /// A code flow that issues no refresh token leaves a grant with exactly
+        /// one live credential: a bare access token. That token is a stateless
+        /// JWT (RFC 9068) and no table records it; the authorization code it
+        /// was exchanged for lives at most 60 seconds (FAPI 2.0 SP §5.3.2.1
+        /// item 11) and
+        /// is then purged. So a minute after a perfectly ordinary login there
+        /// is nothing in the database pointing at the grant at all — and the
+        /// sweep used to delete it, taking with it the only row that could have
+        /// revoked the token still in the client's hands.
+        ///
+        /// The assertions before the purge are the point: every piece of
+        /// evidence the old derivation looked for is absent, and the grant
+        /// survives anyway.
+        async fn a_claimed_grant_survives_after_its_authorization_code_is_purged(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let grant = a_grant("demo", "billing", "sub-1");
+            repo.create(&grant).await.expect("create");
+
+            // The code flow: a code is written, redeemed, and the grant claimed
+            // as the access token is minted. No refresh token is issued.
+            insert_authorization_code(&db.pool, "demo", &grant.id, "code-1", true).await;
+            let _ = repo.claim(&grant.id, epoch()).await.expect("claim");
+
+            // ...and 60 seconds later the code row is gone.
+            delete_authorization_codes(&db.pool, "demo").await;
+
+            assert_eq!(
+                authorization_codes(&db.pool, "demo").await,
+                0,
+                "the fixture left a code row for the derivation to find"
+            );
+            assert_eq!(
+                refresh_tokens(&db.pool, "demo").await,
+                0,
+                "the fixture left a refresh token for the derivation to find"
+            );
+            let found = repo.find(&grant.id).await.expect("find").expect("present");
+            assert!(found.subject.is_some(), "this is a code flow, not client_credentials");
+            assert!(found.parent.is_none(), "this is a code flow, not a token exchange");
+            assert_eq!(found.status(epoch()), GrantStatus::Active);
+
+            assert_eq!(
+                repo.purge_unclaimed(epoch() + Duration::days(1)).await.expect("purge"),
+                0,
+                "a grant with a live access token was collected as unclaimed"
+            );
+            assert!(
+                repo.find(&grant.id).await.expect("find").is_some(),
+                "the only row that could revoke a live access token was deleted"
             );
         }
     }
@@ -3270,6 +3413,10 @@ mod grants {
             let repo = repo(&db.pool, "demo");
             let grant = a_grant("demo", "billing", "sub-1");
             repo.create(&grant).await.expect("create");
+            // A live refresh token exists, so the grant was claimed: this is
+            // what makes `active` below the reading a failed revocation must
+            // leave untouched.
+            let _ = repo.claim(&grant.id, epoch()).await.expect("claim");
             insert_refresh_token(&db.pool, "demo", &grant.id, "rt-1").await;
 
             sqlx::query(
@@ -3448,6 +3595,7 @@ mod grants {
             repo.create(&abandoned).await.expect("create");
             let claimed = a_grant("demo", "billing", "sub-2");
             repo.create(&claimed).await.expect("create");
+            let _ = repo.claim(&claimed.id, epoch()).await.expect("claim");
             insert_refresh_token(&db.pool, "demo", &claimed.id, "rt-1").await;
 
             // Before the timeout, nothing is collected: an authorization a
@@ -3467,6 +3615,10 @@ mod grants {
                 repo.find(&claimed.id).await.expect("find").is_some(),
                 "a grant with a live refresh token was collected as unclaimed"
             );
+
+            // A revoked grant that was never claimed from is kept too. It is
+            // the one exception to "unclaimed grants are worthless": the record
+            // of a withdrawal is the evidence that the withdrawal happened.
 
             // A revoked grant is not collected either: the record of a
             // withdrawal is the evidence that it happened.

@@ -78,7 +78,7 @@ struct Input {
     reason: Option<String>,
     revoked: bool,
     expires_after: Option<i32>,
-    claimed: bool,
+    claimed_after: Option<i32>,
     parented: bool,
     subject: Option<String>,
     jti: String,
@@ -123,9 +123,9 @@ fuzz_target!(|input: Input| {
         created_at,
         updated_at: created_at,
         expires_at: input.expires_after.map(instant),
+        claimed_at: input.claimed_after.map(instant),
         revoked_at: input.revoked.then_some(created_at),
         revocation_reason: input.reason.clone(),
-        claimed: input.claimed,
     };
 
     // Validation is a pure function of the row: the read path is taken by

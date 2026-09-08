@@ -27,6 +27,7 @@
 use asterius_domain::entities::client::{ClientRegistration, RedirectUri};
 use std::collections::BTreeSet;
 
+use crate::claims::{ClaimsRequest, ClaimsRequestError};
 use crate::form::{Duplicated, Parameters};
 use crate::pkce::{CodeChallenge, PkceError};
 
@@ -95,6 +96,13 @@ pub enum AuthorizationError {
     /// PKCE was missing or wrong (RFC 7636, FAPI 2.0 SP §5.3.2.2 item 5).
     #[error("PKCE: {0}")]
     Pkce(#[from] PkceError),
+    /// The `claims` parameter is malformed or oversized (OIDC Core §5.5).
+    ///
+    /// Only its *shape* is refused here. A member naming a claim this server
+    /// will not release is ignored rather than rejected, which is what §5.5
+    /// asks for — see [`ClaimsRequest::parse`].
+    #[error("claims: {0}")]
+    Claims(#[from] ClaimsRequestError),
     /// A `request` or `request_uri` parameter was present.
     #[error("request objects are not supported")]
     RequestObjectNotSupported,
@@ -205,6 +213,15 @@ pub struct AuthorizationRequest {
     pub resources: BTreeSet<String>,
     /// RFC 9449 §12: the thumbprint the issued code is bound to.
     pub dpop_jkt: Option<String>,
+    /// The OIDC Core §5.5 `claims` request, parsed. Empty when the client sent
+    /// none, which is the same request as sending `{}`.
+    ///
+    /// Parsed here rather than at issuance because this is the one place an
+    /// authorization request is validated (see the module documentation), and
+    /// because what is stored on the grant should be the thing that was
+    /// checked. Re-parsing a raw string at the token endpoint would be a
+    /// second parser with a second set of bounds.
+    pub claims: ClaimsRequest,
     /// Whether `openid` was requested, which is what makes this OIDC rather
     /// than plain OAuth.
     pub openid: bool,
@@ -304,6 +321,16 @@ pub fn validate(
 
     let resources = parse_resources(params.multi("resource"), registration)?;
 
+    // OIDC Core §5.5. Bounded and shape-checked here; what it *releases* is
+    // `claims::resolve`, run against the grant rather than against this
+    // request, because a request is what was asked for and a grant is what was
+    // agreed to.
+    let claims = params
+        .get("claims")?
+        .map(ClaimsRequest::parse)
+        .transpose()?
+        .unwrap_or_default();
+
     // RFC 9449 §12. Validated as a JWK thumbprint's shape only; binding it to
     // an actual proof is `ast-a05.4`.
     let dpop_jkt = params
@@ -331,6 +358,7 @@ pub fn validate(
         login_hint,
         resources,
         dpop_jkt,
+        claims,
         openid,
     })
 }
@@ -774,5 +802,72 @@ mod tests {
 
         let error = replacing("redirect_uri", "https://attacker.example/cb").expect_err("refused");
         assert!(!error.to_string().contains("attacker.example"), "{error}");
+
+        // And a `claims` parameter, which is the one parameter that is a whole
+        // JSON document the client wrote.
+        let error = refuse(&[("claims", r#"{"userinfo":"a-secret-looking-string"}"#)])
+            .expect_err("refused");
+        assert!(!error.to_string().contains("a-secret-looking"), "{error}");
+    }
+
+    /// The `claims` parameter is parsed once, here, and what is stored is what
+    /// was checked (OIDC Core §5.5).
+    ///
+    /// The interesting half is the split between ignoring and refusing. A
+    /// member naming a claim this server will not release — `sub` — is
+    /// dropped, because §5.5 says unrecognised members are ignored and because
+    /// refusing would let a client map the reserved list by bisection. A
+    /// member whose *shape* is wrong is refused, because a client that sent
+    /// one has misunderstood the parameter and would otherwise walk away with
+    /// a narrower authorization than it thinks it has.
+    #[test]
+    fn the_claims_parameter_is_parsed_and_a_reserved_name_in_it_is_ignored() {
+        let request = with(&[(
+            "claims",
+            r#"{"id_token":{"sub":{"value":"somebody-else"},"given_name":null}}"#,
+        )])
+        .expect("a well-shaped claims parameter");
+        assert_eq!(
+            request
+                .claims
+                .id_token()
+                .keys()
+                .map(crate::claims::ReleasableClaim::as_str)
+                .collect::<Vec<_>>(),
+            ["given_name"]
+        );
+
+        // Absent is the same request as `{}`.
+        assert!(with(&[]).expect("no claims parameter").claims.is_empty());
+        assert!(
+            with(&[("claims", "{}")])
+                .expect("an empty claims parameter")
+                .claims
+                .is_empty()
+        );
+
+        // Shape errors reach the client as `invalid_request` (RFC 6749
+        // §4.1.2.1), which is what a malformed parameter is.
+        for malformed in ["not json", "[]", r#"{"userinfo":"name"}"#] {
+            let error = refuse(&[("claims", malformed)]).expect_err("refused");
+            assert!(
+                matches!(error, AuthorizationError::Claims(_)),
+                "{malformed:?} gave {error:?}"
+            );
+            assert_eq!(error.code(), "invalid_request");
+        }
+
+        // RFC 6749 §3.1: a parameter must not appear twice, and `claims` is
+        // not the exception `resource` is.
+        let mut pairs = base();
+        pairs.push(("claims".to_owned(), "{}".to_owned()));
+        pairs.push((
+            "claims".to_owned(),
+            r#"{"id_token":{"name":null}}"#.to_owned(),
+        ));
+        assert!(matches!(
+            validate(&Parameters::from_pairs(pairs), CLIENT, &registration()),
+            Err(AuthorizationError::DuplicateParameter(_))
+        ));
     }
 }

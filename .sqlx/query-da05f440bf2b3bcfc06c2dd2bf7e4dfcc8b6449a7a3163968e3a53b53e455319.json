@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select g.grant_id, g.client_id, g.user_id, g.subject, g.scopes, g.claims,\n                      g.authorization_details, g.resources, g.actor_chain, g.parent_grant_id,\n                      g.session_id, g.created_at, g.updated_at, g.expires_at, g.revoked_at,\n                      g.revocation_reason,\n                      (g.subject is null\n                       or g.parent_grant_id is not null\n                       or exists (select 1 from refresh_tokens r\n                                  where r.tenant_id = g.tenant_id and r.grant_id = g.grant_id)\n                       or exists (select 1 from authorization_codes c\n                                  where c.tenant_id = g.tenant_id and c.grant_id = g.grant_id\n                                    and c.consumed_at is not null)) as \"claimed!\"\n               from grants g\n               where g.tenant_id = $1 and g.subject = $2\n               order by g.created_at desc, g.grant_id",
+  "query": "select grant_id, client_id, user_id, subject, scopes, claims,\n                    authorization_details, resources, actor_chain, parent_grant_id,\n                    session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,\n                    revocation_reason\n               from grants\n               where tenant_id = $1 and grant_id = $2",
   "describe": {
     "columns": [
       {
@@ -75,24 +75,24 @@
       },
       {
         "ordinal": 14,
-        "name": "revoked_at",
+        "name": "claimed_at",
         "type_info": "Timestamptz"
       },
       {
         "ordinal": 15,
-        "name": "revocation_reason",
-        "type_info": "Text"
+        "name": "revoked_at",
+        "type_info": "Timestamptz"
       },
       {
         "ordinal": 16,
-        "name": "claimed!",
-        "type_info": "Bool"
+        "name": "revocation_reason",
+        "type_info": "Text"
       }
     ],
     "parameters": {
       "Left": [
         "Text",
-        "Text"
+        "Uuid"
       ]
     },
     "nullable": [
@@ -112,8 +112,8 @@
       true,
       true,
       true,
-      null
+      true
     ]
   },
-  "hash": "f8f4cd32e46e250d09a420dd14f2d28b5bee1cc98940c2e027445277d1ac189c"
+  "hash": "da05f440bf2b3bcfc06c2dd2bf7e4dfcc8b6449a7a3163968e3a53b53e455319"
 }
