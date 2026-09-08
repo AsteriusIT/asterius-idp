@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update sessions\n                set revoked_at = coalesce(revoked_at, $3),\n                    revocation_reason = coalesce(revocation_reason, $4)\n              where tenant_id = $1 and user_id = $2 and revoked_at is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "95826c52e52e13116282bedbf9e2a339e6f52959c9a003ad285611b8c5a90a40"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from sessions where tenant_id = $1 and expires_at <= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "18b1137c52ed067438d1de7662433407e0c69c70308cc0e239aee8fc443a5e0b"
+}

@@ -3,6 +3,7 @@
 pub mod auth_request;
 pub mod client;
 pub mod grant;
+pub mod session;
 pub mod tenant;
 pub mod user;
 

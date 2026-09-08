@@ -4,8 +4,8 @@
 //! Protocol crates depend on these traits and never on an implementation.
 
 use crate::{
-    Client, ClientId, Consumed, DomainError, InteractionRecord, Issuer, PushedRequest, Tenant,
-    TenantId,
+    AuthenticationMethod, Client, ClientId, Consumed, DomainError, InteractionRecord, Issuer,
+    Participant, PushedRequest, Session, SessionRevocation, Tenant, TenantId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -249,6 +249,112 @@ pub trait InteractionRepository: Debug + Send + Sync {
     /// [`DomainError::Storage`] if the delete fails. Absent is not an error —
     /// destroying something already gone is the outcome that was wanted.
     async fn destroy_interaction(&self, interaction_digest: &str) -> Result<(), DomainError>;
+}
+
+/// Server-side sessions for one tenant.
+#[async_trait::async_trait]
+pub trait SessionRepository: Debug + Send + Sync {
+    /// Writes a new session.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the digest already exists, which at 256
+    /// bits means a broken generator rather than bad luck.
+    async fn begin(&self, session: &Session) -> Result<(), DomainError>;
+
+    /// Loads a session by the digest of its id.
+    ///
+    /// Returns the row whatever state it is in — expiry and revocation are
+    /// [`Session::status`]'s job, and a caller that needs to *report* why a
+    /// session is unusable needs the row to ask.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn find(&self, id_digest: &str) -> Result<Option<Session>, DomainError>;
+
+    /// Moves the idle deadline forward.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the session is gone, expired or revoked —
+    /// touching must not resurrect one.
+    async fn touch(
+        &self,
+        id_digest: &str,
+        now: OffsetDateTime,
+        idle: time::Duration,
+    ) -> Result<(), DomainError>;
+
+    /// Replaces a session's id with a fresh one, atomically.
+    ///
+    /// This is the session-fixation defence, and it has to be one statement:
+    /// two, and there is an instant where both ids work, or neither does. The
+    /// old digest stops resolving the moment this returns.
+    ///
+    /// `authenticated_at` moves too, because the reason to rotate is always
+    /// that the user has just proved something.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the old session is not there to rotate.
+    async fn rotate(
+        &self,
+        old_digest: &str,
+        new_digest: &str,
+        methods: &[AuthenticationMethod],
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Ends one session.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. Revoking an
+    /// already-revoked session keeps the first reason: the first answer to
+    /// "why was I signed out" is the true one.
+    async fn revoke(
+        &self,
+        id_digest: &str,
+        reason: SessionRevocation,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Ends every session a user has.
+    ///
+    /// Returns how many were ended. Used when a credential changes, when an
+    /// account closes, and by an administrator.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn revoke_all_for_user(
+        &self,
+        user: uuid::Uuid,
+        reason: SessionRevocation,
+        now: OffsetDateTime,
+    ) -> Result<u64, DomainError>;
+
+    /// Records that a client took part in a session.
+    ///
+    /// Called when an ID token is issued. Back-channel logout needs the list.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn record_participant(
+        &self,
+        id_digest: &str,
+        client: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Every client that took part.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn participants(&self, id_digest: &str) -> Result<Vec<Participant>, DomainError>;
 }
 
 /// What a `jti` is being remembered for.

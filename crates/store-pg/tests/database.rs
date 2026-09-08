@@ -4080,3 +4080,333 @@ mod grants {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sessions (ast-2vk.2)
+
+mod sessions {
+    use super::*;
+    use asterius_domain::entities::session::SessionId;
+    use asterius_domain::{
+        AuthenticationMethod, ClientId, Lifetimes, Session, SessionRepository, SessionRevocation,
+        SessionStatus,
+    };
+    use asterius_store_pg::PgSessionRepository;
+
+    async fn seed_user(pool: &PgPool, tenant: &str, user: uuid::Uuid) {
+        seed_tenant(pool, tenant).await;
+        sqlx::query(
+            "insert into users (tenant_id, user_id, username, status)
+             values ($1, $2, $3, 'active')",
+        )
+        .bind(tenant)
+        .bind(user)
+        .bind(user.to_string())
+        .execute(pool)
+        .await
+        .expect("seed user");
+    }
+
+    fn repo(pool: &PgPool, tenant: &str) -> PgSessionRepository {
+        PgSessionRepository::new(pool.clone(), TenantId::new(tenant))
+    }
+
+    fn session_for(tenant: &str, id: &SessionId, user: uuid::Uuid) -> Session {
+        Session::begin(
+            TenantId::new(tenant),
+            id,
+            user,
+            vec![AuthenticationMethod::Password],
+            OffsetDateTime::now_utc(),
+            Lifetimes::default(),
+        )
+    }
+
+    db_test! {
+        /// A session round-trips, and is active.
+        async fn a_session_survives_the_round_trip(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let repo = repo(&db.pool, "demo");
+            let id = SessionId::generate();
+            repo.begin(&session_for("demo", &id, user)).await.expect("begin");
+
+            let found = repo.find(&id.digest()).await.expect("find").expect("present");
+            assert_eq!(found.user, user);
+            assert_eq!(found.amr, vec![AuthenticationMethod::Password]);
+            assert_eq!(found.status(OffsetDateTime::now_utc()), SessionStatus::Active);
+        }
+    }
+
+    db_test! {
+        /// The session-fixation defence: rotation is atomic, and the old id
+        /// stops working the moment it returns.
+        ///
+        /// An attacker who planted an id in the victim's browser before they
+        /// signed in holds a value that is now worth nothing.
+        async fn rotating_invalidates_the_old_id_immediately(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let repo = repo(&db.pool, "demo");
+
+            let planted = SessionId::generate();
+            repo.begin(&session_for("demo", &planted, user)).await.expect("begin");
+
+            let fresh = SessionId::generate();
+            repo.rotate(
+                &planted.digest(),
+                &fresh.digest(),
+                &[AuthenticationMethod::Password],
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .expect("rotate");
+
+            assert!(
+                repo.find(&planted.digest()).await.expect("find").is_none(),
+                "the pre-login id still resolves after rotation"
+            );
+            let found = repo.find(&fresh.digest()).await.expect("find").expect("present");
+            assert_eq!(found.user, user, "rotation lost the user");
+        }
+    }
+
+    db_test! {
+        /// Rotation moves `auth_time`, because the reason to rotate is always
+        /// that the user has just proved something. `max_age` is measured from
+        /// it (OIDC Core §3.1.2.1).
+        async fn rotation_moves_the_authentication_time(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let repo = repo(&db.pool, "demo");
+
+            let first = SessionId::generate();
+            let mut original = session_for("demo", &first, user);
+            original.authenticated_at = OffsetDateTime::now_utc() - time::Duration::hours(2);
+            original.created_at = original.authenticated_at;
+            repo.begin(&original).await.expect("begin");
+
+            let stepped_up = SessionId::generate();
+            let at = OffsetDateTime::now_utc();
+            repo.rotate(
+                &first.digest(),
+                &stepped_up.digest(),
+                &[AuthenticationMethod::Password, AuthenticationMethod::Passkey],
+                at,
+            )
+            .await
+            .expect("rotate");
+
+            let found = repo.find(&stepped_up.digest()).await.expect("find").expect("present");
+            assert!(
+                found.authenticated_at > original.authenticated_at,
+                "auth_time did not move"
+            );
+            assert!(
+                !found.needs_reauthentication(Some(60), OffsetDateTime::now_utc()),
+                "a just-stepped-up session should satisfy max_age=60"
+            );
+            assert_eq!(
+                found.amr,
+                vec![AuthenticationMethod::Password, AuthenticationMethod::Passkey]
+            );
+        }
+    }
+
+    db_test! {
+        /// A rotation is not a way to revive a revoked or expired session.
+        async fn a_revoked_session_cannot_be_rotated(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let repo = repo(&db.pool, "demo");
+
+            let id = SessionId::generate();
+            repo.begin(&session_for("demo", &id, user)).await.expect("begin");
+            repo.revoke(&id.digest(), SessionRevocation::UserLogout, OffsetDateTime::now_utc())
+                .await
+                .expect("revoke");
+
+            let fresh = SessionId::generate();
+            assert!(
+                repo.rotate(
+                    &id.digest(),
+                    &fresh.digest(),
+                    &[AuthenticationMethod::Password],
+                    OffsetDateTime::now_utc(),
+                )
+                .await
+                .is_err(),
+                "a revoked session was rotated back into use"
+            );
+            assert!(repo.find(&fresh.digest()).await.expect("find").is_none());
+        }
+    }
+
+    db_test! {
+        /// The first reason survives. The first answer to "why was I signed
+        /// out" is the true one.
+        async fn revoking_twice_keeps_the_first_reason(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let repo = repo(&db.pool, "demo");
+            let id = SessionId::generate();
+            repo.begin(&session_for("demo", &id, user)).await.expect("begin");
+
+            repo.revoke(&id.digest(), SessionRevocation::Suspicious, OffsetDateTime::now_utc())
+                .await
+                .expect("first");
+            repo.revoke(&id.digest(), SessionRevocation::UserLogout, OffsetDateTime::now_utc())
+                .await
+                .expect("second");
+
+            let found = repo.find(&id.digest()).await.expect("find").expect("present");
+            assert_eq!(
+                found.status(OffsetDateTime::now_utc()),
+                SessionStatus::Revoked(SessionRevocation::Suspicious),
+                "the later reason overwrote the first"
+            );
+        }
+    }
+
+    db_test! {
+        /// A credential change ends every session the user has.
+        async fn revoking_by_user_ends_all_their_sessions(db) {
+            let user = uuid::Uuid::new_v4();
+            let other = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            seed_user(&db.pool, "demo", other).await;
+            let repo = repo(&db.pool, "demo");
+
+            let ids: Vec<SessionId> = (0..3).map(|_| SessionId::generate()).collect();
+            for id in &ids {
+                repo.begin(&session_for("demo", id, user)).await.expect("begin");
+            }
+            let untouched = SessionId::generate();
+            repo.begin(&session_for("demo", &untouched, other)).await.expect("begin");
+
+            let ended = repo
+                .revoke_all_for_user(user, SessionRevocation::CredentialChange, OffsetDateTime::now_utc())
+                .await
+                .expect("revoke all");
+            assert_eq!(ended, 3);
+
+            for id in &ids {
+                let found = repo.find(&id.digest()).await.expect("find").expect("present");
+                assert!(!found.status(OffsetDateTime::now_utc()).is_usable());
+            }
+            let survivor = repo.find(&untouched.digest()).await.expect("find").expect("present");
+            assert!(
+                survivor.status(OffsetDateTime::now_utc()).is_usable(),
+                "another user's session was revoked"
+            );
+        }
+    }
+
+    db_test! {
+        /// Touching moves the idle deadline; it cannot revive a dead session.
+        async fn touching_extends_an_active_session_only(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let repo = repo(&db.pool, "demo");
+            let id = SessionId::generate();
+            repo.begin(&session_for("demo", &id, user)).await.expect("begin");
+
+            let before = repo.find(&id.digest()).await.expect("find").expect("present");
+            repo.touch(&id.digest(), OffsetDateTime::now_utc(), time::Duration::hours(2))
+                .await
+                .expect("touch");
+            let after = repo.find(&id.digest()).await.expect("find").expect("present");
+            assert!(after.idle_expires_at > before.idle_expires_at);
+
+            repo.revoke(&id.digest(), SessionRevocation::UserLogout, OffsetDateTime::now_utc())
+                .await
+                .expect("revoke");
+            assert!(
+                repo.touch(&id.digest(), OffsetDateTime::now_utc(), time::Duration::hours(2))
+                    .await
+                    .is_err(),
+                "a revoked session was touched back to life"
+            );
+        }
+    }
+
+    db_test! {
+        /// Back-channel logout needs the participant list.
+        async fn participants_are_recorded_once_and_updated(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let store = Store::from_pool(db.pool.clone());
+            store
+                .scope(TenantId::new("demo"))
+                .clients(Capabilities::default())
+                .upsert(&client("demo", "billing", &registration_document()))
+                .await
+                .expect("seed client");
+
+            let repo = repo(&db.pool, "demo");
+            let id = SessionId::generate();
+            repo.begin(&session_for("demo", &id, user)).await.expect("begin");
+
+            let client_id = ClientId::new("billing");
+            repo.record_participant(&id.digest(), &client_id, OffsetDateTime::now_utc())
+                .await
+                .expect("first");
+            let later = OffsetDateTime::now_utc() + time::Duration::minutes(5);
+            repo.record_participant(&id.digest(), &client_id, later)
+                .await
+                .expect("second");
+
+            let participants = repo.participants(&id.digest()).await.expect("read");
+            assert_eq!(participants.len(), 1, "a client was recorded twice");
+            assert!(
+                participants[0].last_seen_at > participants[0].first_seen_at,
+                "the second visit did not update last_seen_at"
+            );
+        }
+    }
+
+    db_test! {
+        /// A session id issued by one tenant is nothing at another.
+        async fn a_session_does_not_cross_tenants(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            seed_tenant(&db.pool, "other").await;
+            let demo = repo(&db.pool, "demo");
+            let other = repo(&db.pool, "other");
+
+            let id = SessionId::generate();
+            demo.begin(&session_for("demo", &id, user)).await.expect("begin");
+
+            assert!(other.find(&id.digest()).await.expect("find").is_none());
+            // And the wrong tenant cannot revoke it.
+            other
+                .revoke(&id.digest(), SessionRevocation::Administrative, OffsetDateTime::now_utc())
+                .await
+                .expect("no-op");
+            let survivor = demo.find(&id.digest()).await.expect("find").expect("present");
+            assert!(survivor.status(OffsetDateTime::now_utc()).is_usable());
+        }
+    }
+
+    db_test! {
+        /// The stored id is a digest: a leaked row must not yield a usable
+        /// session cookie.
+        async fn the_stored_session_id_is_a_digest(db) {
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let repo = repo(&db.pool, "demo");
+            let id = SessionId::generate();
+            repo.begin(&session_for("demo", &id, user)).await.expect("begin");
+
+            let stored: String =
+                sqlx::query_scalar("select session_id from sessions where tenant_id = $1")
+                    .bind("demo")
+                    .fetch_one(&db.pool)
+                    .await
+                    .expect("read back");
+            assert_eq!(stored, id.digest());
+            assert_ne!(stored, id.expose());
+            assert!(!stored.contains(id.expose()));
+        }
+    }
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into session_clients (tenant_id, session_id, client_id, first_seen_at, last_seen_at)\n             values ($1, $2, $3, $4, $4)\n             on conflict (tenant_id, session_id, client_id)\n             do update set last_seen_at = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "62bffbc2c2b93db36734800b584a07fac4b5bbdf6a74def7cf2bb8740bd28068"
+}
