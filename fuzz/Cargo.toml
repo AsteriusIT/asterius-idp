@@ -71,3 +71,10 @@ path = "fuzz_targets/jws_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "jwt_verify"
+path = "fuzz_targets/jwt_verify.rs"
+test = false
+doc = false
+bench = false

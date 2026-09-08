@@ -12,10 +12,12 @@
 pub mod jws;
 pub mod key;
 pub mod store;
+pub mod verify;
 
 pub use jws::{Header, Unverified};
 pub use key::{MIN_RSA_BITS, SigningKey, VerifyingKey};
 pub use store::{LocalKeyStore, thumbprint};
+pub use verify::{KeyResolver, Policy, VerificationError, Verified, verify};
 
 use asterius_domain::SigningAlgorithm;
 

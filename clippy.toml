@@ -6,5 +6,5 @@ doc-valid-idents = [
     "PKCE", "DPoP", "PostgreSQL", "JavaScript", "TypeScript", "WebAuthn",
     "AuthZEN", "MCP", "SCIM", "SAML", "LDAP", "HSTS", "CSRF", "TLS", "mTLS",
     "PAR", "RAR", "SSF", "HSM", "UserInfo", "EdDSA", "Ed25519", "ES256", "PS256",
-    "RS256", "SHA-256", "Argon2id",
+    "RS256", "SHA-256", "Argon2id", "NumericDate", "JWS", "JWE",
 ]

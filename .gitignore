@@ -16,3 +16,7 @@
 /fuzz/target/
 /fuzz/artifacts/
 /fuzz/corpus/
+
+# Subagent worktrees live inside the repo; they are separate checkouts,
+# never content.
+.claude/worktrees/

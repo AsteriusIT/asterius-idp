@@ -35,7 +35,13 @@ pub struct Header {
     /// purpose being presented as another.
     pub typ: String,
     /// Which key signed it.
-    pub kid: String,
+    ///
+    /// Optional on the way in: everything *this server issues* sets a `kid`,
+    /// but a DPoP proof carries its key in `jwk` instead (RFC 9449 §4.2) and a
+    /// request object may carry neither. A verifier that demanded `kid` would
+    /// reject those before it could look at them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kid: Option<String>,
     /// Critical header parameters (RFC 7515 §4.1.11).
     ///
     /// We never emit any. We reject every one we are offered, because `crit`
@@ -61,8 +67,33 @@ pub struct Unverified {
 impl Unverified {
     /// The `kid`, so a caller can find the key to check this with.
     #[must_use]
-    pub fn kid(&self) -> Kid {
-        Kid::new(self.header.kid.clone())
+    pub fn kid(&self) -> Option<Kid> {
+        self.header.kid.as_deref().map(Kid::new)
+    }
+
+    /// The header, for a caller that needs a field this type does not surface.
+    #[must_use]
+    pub const fn header(&self) -> &Header {
+        &self.header
+    }
+
+    /// The bytes the signature covers, for a caller verifying by hand.
+    #[must_use]
+    pub fn signing_input(&self) -> &str {
+        &self.signing_input
+    }
+
+    /// The signature bytes.
+    #[must_use]
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
+    }
+
+    /// The payload, still unverified. Reading this before `verify` is a bug
+    /// unless the caller is about to decide *which key* to verify with.
+    #[must_use]
+    pub fn unverified_payload(&self) -> &[u8] {
+        &self.payload
     }
 
     /// The `alg` the token claims. Only for reporting a mismatch — never for
@@ -126,7 +157,7 @@ pub fn sign(
     let header = Header {
         alg: key.algorithm().as_str().to_owned(),
         typ: typ.to_owned(),
-        kid: kid.as_str().to_owned(),
+        kid: Some(kid.as_str().to_owned()),
         crit: None,
     };
 
@@ -414,7 +445,7 @@ mod tests {
     fn the_kid_is_readable_before_verification_and_nothing_else_needs_to_be() {
         let (_, jws) = signed(SigningAlgorithm::Es256);
         let unverified = parse(jws.as_str()).expect("parse");
-        assert_eq!(unverified.kid(), Kid::new("k1"));
+        assert_eq!(unverified.kid(), Some(Kid::new("k1")));
         assert_eq!(unverified.claimed_alg(), "ES256");
         assert_eq!(unverified.claimed_typ(), "at+jwt");
     }

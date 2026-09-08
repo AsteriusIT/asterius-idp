@@ -318,7 +318,7 @@ mod tests {
             .expect("sign");
         assert_eq!(
             jws::parse(new_token.as_str()).expect("parse").kid(),
-            new_kid
+            Some(new_kid.clone())
         );
 
         // The old token still verifies against the old key.

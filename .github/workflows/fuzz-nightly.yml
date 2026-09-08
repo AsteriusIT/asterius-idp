@@ -27,6 +27,7 @@ jobs:
           - forwarded_resolve
           - audit_canonical
           - jws_parse
+          - jwt_verify
     env:
       SQLX_OFFLINE: "true"
     steps:
