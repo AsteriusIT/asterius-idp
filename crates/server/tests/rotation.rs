@@ -13,7 +13,7 @@
 use asterius_domain::audit::Actor;
 use asterius_domain::keys::SigningAlgorithm;
 use asterius_domain::ports::{Clock, TenantRepository};
-use asterius_domain::{Issuer, KeyStore, Tenant, TenantId, TenantStatus};
+use asterius_domain::{DomainError, Issuer, KeyStore, Tenant, TenantId, TenantStatus};
 use asterius_jose::LocalKek;
 use asterius_jose::kek::Kek;
 use asterius_server::rotation::RotationSweep;
@@ -41,6 +41,56 @@ impl Hand {
 impl Clock for Hand {
     fn now(&self) -> OffsetDateTime {
         *self.0.lock().expect("lock")
+    }
+}
+
+/// A tenant repository that lists only the tenants a test made.
+///
+/// The sweep is global on purpose — it walks every tenant, which is exactly
+/// what makes a tenant created after boot get keys. That is also why two of
+/// these tests running at once would provision each other's tenants: this
+/// suite shares one database, because `asterius-server` has no `sqlx`
+/// dependency to build a per-test schema with (ADR-0001).
+///
+/// So the *walk* is narrowed rather than the sweep. Every other method
+/// delegates untouched; only `list` is scoped, and it still returns more than
+/// one tenant where a test wants to prove the walk visits all of them.
+#[derive(Debug)]
+struct OnlyOurTenants {
+    inner: PgTenantRepository,
+    ours: Vec<TenantId>,
+}
+
+#[async_trait::async_trait]
+impl TenantRepository for OnlyOurTenants {
+    async fn find_by_id(&self, id: &TenantId) -> Result<Option<Tenant>, DomainError> {
+        self.inner.find_by_id(id).await
+    }
+
+    async fn find_by_issuer(&self, issuer: &Issuer) -> Result<Option<Tenant>, DomainError> {
+        self.inner.find_by_issuer(issuer).await
+    }
+
+    async fn find_by_host(&self, host: &str) -> Result<Option<Tenant>, DomainError> {
+        self.inner.find_by_host(host).await
+    }
+
+    async fn list(&self) -> Result<Vec<Tenant>, DomainError> {
+        Ok(self
+            .inner
+            .list()
+            .await?
+            .into_iter()
+            .filter(|tenant| self.ours.contains(&tenant.id))
+            .collect())
+    }
+
+    async fn upsert(&self, tenant: &Tenant) -> Result<(), DomainError> {
+        self.inner.upsert(tenant).await
+    }
+
+    async fn delete(&self, id: &TenantId) -> Result<(), DomainError> {
+        self.inner.delete(id).await
     }
 }
 
@@ -105,11 +155,43 @@ impl Fixture {
     /// the running task has, and it is what makes the "a tenant created after
     /// boot is picked up" case meaningful.
     fn sweep(&self) -> RotationSweep {
+        self.sweep_over(vec![self.tenant.clone()])
+    }
+
+    /// A sweep whose walk covers exactly `ours`.
+    fn sweep_over(&self, ours: Vec<TenantId>) -> RotationSweep {
         RotationSweep::new(
             self.keys.clone(),
-            Arc::clone(&self.tenants) as Arc<dyn TenantRepository>,
+            Arc::new(OnlyOurTenants {
+                inner: PgTenantRepository::new(self.store.pool().clone(), Arc::clone(&self.kek)),
+                ours,
+            }),
             Arc::clone(&self.clock) as Arc<dyn Clock>,
         )
+    }
+
+    /// Creates a second tenant, so a test can prove the walk visits both.
+    async fn another_tenant(&self) -> TenantId {
+        let id = format!(
+            "rot-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let tenant = TenantId::parse(&id).expect("a generated tenant id");
+        self.tenants
+            .upsert(&Tenant {
+                id: tenant.clone(),
+                issuer: Issuer::parse(&format!("https://as.example/t/{id}")).expect("issuer"),
+                custom_host: None,
+                display_name: "Rotation".to_owned(),
+                default_resource: "https://api.example/".to_owned(),
+                status: TenantStatus::Active,
+                created_at: self.clock.now(),
+                updated_at: self.clock.now(),
+            })
+            .await
+            .expect("create the second tenant");
+        tenant
     }
 
     /// The kids in this tenant's published JWK Set, sorted.
@@ -172,14 +254,35 @@ db_test! {
             "the fixture tenant started with a key, so this proves nothing"
         );
 
-        let outcome = fixture.sweep().sweep_once().await.expect("sweep");
-        assert!(outcome.swept >= 1, "the sweep skipped the tenant: {outcome:?}");
+        // A second tenant, so this also proves the sweep *walks* rather than
+        // visiting whichever tenant it was handed.
+        let second = fixture.another_tenant().await;
+        let outcome = fixture
+            .sweep_over(vec![fixture.tenant.clone(), second.clone()])
+            .sweep_once()
+            .await
+            .expect("sweep");
+        assert_eq!(outcome.swept, 2, "the sweep did not visit both tenants");
         assert_eq!(outcome.failed, 0);
 
         assert!(
             fixture.active_kid().await.is_some(),
             "a tenant created after boot never got a signing key"
         );
+        assert!(
+            fixture
+                .keys
+                .for_tenant(&second)
+                .active_signing_key(SigningAlgorithm::DEFAULT)
+                .await
+                .expect("read")
+                .is_some(),
+            "the second tenant was walked past rather than swept"
+        );
+        PgTenantRepository::new(fixture.store.pool().clone(), Arc::clone(&fixture.kek))
+            .delete(&second)
+            .await
+            .expect("delete the second tenant");
 
         fixture.tear_down().await;
     }

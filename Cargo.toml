@@ -9,6 +9,7 @@ members = [
     "crates/jose",
     "crates/store-pg",
     "crates/web",
+    "crates/webauthn",
     "crates/admin-api",
     "crates/server",
 ]
@@ -29,6 +30,7 @@ asterius-oidc = { path = "crates/oidc" }
 asterius-jose = { path = "crates/jose" }
 asterius-store-pg = { path = "crates/store-pg" }
 asterius-web = { path = "crates/web" }
+asterius-webauthn = { path = "crates/webauthn" }
 asterius-admin-api = { path = "crates/admin-api" }
 
 # --- pure / protocol-safe --------------------------------------------------
@@ -44,6 +46,10 @@ async-trait = "0.1"
 zeroize = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 hex = "0.4"
+# CBOR, for the WebAuthn attestation object and COSE keys (ast-2vk.3).
+# Pure Rust and no crypto: it decodes a byte string, which is exactly the
+# part ADR-0004 says we may take from a library.
+ciborium = "0.2"
 base64 = "0.22"
 aws-lc-rs = "1"
 uuid = { version = "1", features = ["v4", "serde"] }

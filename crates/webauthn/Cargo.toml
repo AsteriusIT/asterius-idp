@@ -1,0 +1,27 @@
+[package]
+name = "asterius-webauthn"
+description = "W3C WebAuthn Level 3 relying-party verification. Pure functions over domain types; no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+asterius-domain.workspace = true
+base64.workspace = true
+ciborium.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+ciborium.workspace = true
+base64.workspace = true

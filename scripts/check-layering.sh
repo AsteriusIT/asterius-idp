@@ -11,6 +11,8 @@ set -euo pipefail
 declare -A BANNED=(
   [asterius-domain]="sqlx axum tokio hyper reqwest tower tower-http askama"
   [asterius-oidc]="sqlx axum tokio hyper reqwest tower tower-http askama"
+  # WebAuthn is protocol logic too: parsing and comparison, no I/O.
+  [asterius-webauthn]="sqlx axum tokio hyper reqwest tower tower-http askama"
   [asterius-jose]="sqlx axum hyper reqwest tower-http askama"
   [asterius-store-pg]="axum askama"
   [asterius-web]="sqlx"

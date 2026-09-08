@@ -22,6 +22,7 @@ asterius-jose = { path = "../crates/jose" }
 asterius-oidc = { path = "../crates/oidc" }
 asterius-server = { path = "../crates/server" }
 asterius-web = { path = "../crates/web" }
+asterius-webauthn = { path = "../crates/webauthn" }
 # Needed by the targets themselves: `audit_canonical` builds events with
 # timestamps, `forwarded_resolve` builds header maps, `client_metadata_json`
 # rebuilds a registration document from what the validator accepted.
@@ -253,6 +254,34 @@ bench = false
 [[bin]]
 name = "token_form"
 path = "fuzz_targets/token_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cose_key"
+path = "fuzz_targets/cose_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "attestation_object"
+path = "fuzz_targets/attestation_object.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "authenticator_data"
+path = "fuzz_targets/authenticator_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webauthn_client_data"
+path = "fuzz_targets/webauthn_client_data.rs"
 test = false
 doc = false
 bench = false
