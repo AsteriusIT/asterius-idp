@@ -93,6 +93,12 @@ pub struct ClientEndpoints {
     /// a legitimate shape — passkeys are primary — and which the login page
     /// reports rather than failing obscurely.
     pub argon2: Option<asterius_domain::Argon2Parameters>,
+    /// Signs everything this deployment issues.
+    ///
+    /// Held rather than built per request: it caches the unwrapped private
+    /// keys, and a per-request one would decrypt on every token — see
+    /// [`crate::signing::CachedSigner`].
+    pub signer: Arc<dyn asterius_domain::keys::Signer>,
     /// Validates DPoP proofs on every endpoint that takes one.
     ///
     /// Always present: the *decision* about whether proofs are required lives

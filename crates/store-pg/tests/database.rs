@@ -1433,7 +1433,7 @@ db_test! {
         seed_tenant(&db.pool, "demo").await;
         let repo = keys(&db.pool, "demo");
         let t0 = epoch();
-        let schedule = repo.schedule().await.expect("default schedule");
+        let schedule = repo.schedule(SigningAlgorithm::DEFAULT).await.expect("default schedule");
 
         // First key: active immediately, because no verifier can have cached a
         // JWK Set this tenant has never published.
@@ -1933,14 +1933,14 @@ db_test! {
         seed_tenant(&db.pool, "demo").await;
         let repo = keys(&db.pool, "demo");
 
-        let default = repo.schedule().await.expect("schedule");
+        let default = repo.schedule(SigningAlgorithm::DEFAULT).await.expect("schedule");
         assert_eq!(default.rotation_period, Duration::days(90));
         assert_eq!(default.propagation_period, Duration::minutes(15));
         assert_eq!(default.grace_period, Duration::days(7));
         assert_eq!(default.last_rotated_at, None);
         assert!(default.is_due(epoch()), "a tenant with no key must always be due");
 
-        repo.set_schedule(RotationSchedule {
+        repo.set_schedule(SigningAlgorithm::DEFAULT, RotationSchedule {
             rotation_period: Duration::days(1),
             propagation_period: Duration::minutes(5),
             grace_period: Duration::hours(6),
@@ -1949,7 +1949,7 @@ db_test! {
         .await
         .expect("replace the schedule");
 
-        let updated = repo.schedule().await.expect("schedule");
+        let updated = repo.schedule(SigningAlgorithm::DEFAULT).await.expect("schedule");
         assert_eq!(updated.rotation_period, Duration::days(1));
         assert_eq!(updated.propagation_period, Duration::minutes(5));
         assert_eq!(updated.grace_period, Duration::hours(6));
@@ -1958,7 +1958,7 @@ db_test! {
         // only once the period has passed.
         let t0 = epoch();
         repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("rotate");
-        assert_eq!(repo.schedule().await.expect("schedule").last_rotated_at, Some(t0));
+        assert_eq!(repo.schedule(SigningAlgorithm::DEFAULT).await.expect("schedule").last_rotated_at, Some(t0));
 
         let too_soon = repo
             .apply_schedule(SigningAlgorithm::EdDsa, t0 + Duration::hours(23))
@@ -2021,7 +2021,7 @@ db_test! {
             ),
         ] {
             assert!(
-                repo.set_schedule(schedule).await.is_err(),
+                repo.set_schedule(SigningAlgorithm::DEFAULT, schedule).await.is_err(),
                 "the schema accepted {label}"
             );
         }

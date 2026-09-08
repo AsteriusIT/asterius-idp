@@ -717,6 +717,14 @@ create table key_rotation_schedules (
                                references tenants (tenant_id) on delete cascade,
     purpose                    text        not null default 'sig'
                                check (purpose in ('sig', 'enc')),
+    -- Per algorithm, not per tenant. A tenant holds one active key of each
+    -- algorithm it advertises (ADR-0003 fixes the set at three), and
+    -- `last_rotated_at` is what decides whether the next one is due. Shared
+    -- across algorithms it would mean rotating EdDSA suppresses the ES256 and
+    -- PS256 rotations that were due at the same time — and, on a tenant with
+    -- no keys at all, that only the first algorithm ever gets one.
+    alg                        text        not null default 'EdDSA'
+                               check (alg in ('EdDSA', 'ES256', 'PS256')),
     -- How often a new key is created. 90 days by default.
     rotation_period_seconds    bigint      not null default 7776000,
     -- How long a new key sits in the JWKS before it is allowed to sign, so
@@ -733,7 +741,7 @@ create table key_rotation_schedules (
     created_at                 timestamptz not null default now(),
     updated_at                 timestamptz not null default now(),
 
-    primary key (tenant_id, purpose),
+    primary key (tenant_id, purpose, alg),
     -- A schedule that never rotates is not a schedule; a year is already
     -- longer than item 1 has in mind.
     constraint key_rotation_schedules_rotation_period_is_sane

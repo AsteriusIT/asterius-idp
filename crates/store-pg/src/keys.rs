@@ -232,9 +232,12 @@ impl PgKeyRepository {
     ///
     /// Returns a storage error, or [`DomainError::Conflict`] if the tenant does
     /// not exist.
-    pub async fn schedule(&self) -> Result<RotationSchedule, DomainError> {
+    pub async fn schedule(
+        &self,
+        algorithm: SigningAlgorithm,
+    ) -> Result<RotationSchedule, DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
-        let schedule = self.ensure_schedule(&mut transaction).await?;
+        let schedule = self.ensure_schedule(&mut transaction, algorithm).await?;
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(schedule)
     }
@@ -246,7 +249,11 @@ impl PgKeyRepository {
     /// Returns [`DomainError::Invalid`] if a period is negative or does not fit
     /// what the schema will hold — the bounds are checked there, and a caller
     /// gets the constraint name back rather than a panic.
-    pub async fn set_schedule(&self, schedule: RotationSchedule) -> Result<(), DomainError> {
+    pub async fn set_schedule(
+        &self,
+        algorithm: SigningAlgorithm,
+        schedule: RotationSchedule,
+    ) -> Result<(), DomainError> {
         let (rotation, propagation, grace) = (
             seconds(schedule.rotation_period, "rotation_period")?,
             seconds(schedule.propagation_period, "propagation_period")?,
@@ -255,15 +262,16 @@ impl PgKeyRepository {
 
         sqlx::query!(
             "insert into key_rotation_schedules
-                 (tenant_id, purpose, rotation_period_seconds,
+                 (tenant_id, purpose, alg, rotation_period_seconds,
                   propagation_period_seconds, grace_period_seconds)
-             values ($1, $2, $3, $4, $5)
-             on conflict (tenant_id, purpose) do update
+             values ($1, $2, $3, $4, $5, $6)
+             on conflict (tenant_id, purpose, alg) do update
              set rotation_period_seconds = excluded.rotation_period_seconds,
                  propagation_period_seconds = excluded.propagation_period_seconds,
                  grace_period_seconds = excluded.grace_period_seconds",
             self.tenant.as_str(),
             PURPOSE.as_str(),
+            algorithm.as_str(),
             rotation,
             propagation,
             grace
@@ -392,7 +400,7 @@ impl PgKeyRepository {
             .await
             .map_err(to_domain_error)?;
 
-        let schedule = self.ensure_schedule(&mut transaction).await?;
+        let schedule = self.ensure_schedule(&mut transaction, algorithm).await?;
 
         // Retire first, so a key whose grace has expired leaves the JWKS in the
         // same pass that adds its eventual replacement — and so the ordering
@@ -474,10 +482,11 @@ impl PgKeyRepository {
         if forced || schedule.is_due(now) {
             created = Some(self.stage(&mut transaction, algorithm, now).await?);
             sqlx::query!(
-                "update key_rotation_schedules set last_rotated_at = $3
-                 where tenant_id = $1 and purpose = $2",
+                "update key_rotation_schedules set last_rotated_at = $4
+                 where tenant_id = $1 and purpose = $2 and alg = $3",
                 self.tenant.as_str(),
                 PURPOSE.as_str(),
+                algorithm.as_str(),
                 now
             )
             .execute(&mut *transaction)
@@ -599,12 +608,14 @@ impl PgKeyRepository {
     async fn ensure_schedule(
         &self,
         transaction: &mut PgTransaction<'_>,
+        algorithm: SigningAlgorithm,
     ) -> Result<RotationSchedule, DomainError> {
         sqlx::query!(
-            "insert into key_rotation_schedules (tenant_id, purpose) values ($1, $2)
-             on conflict (tenant_id, purpose) do nothing",
+            "insert into key_rotation_schedules (tenant_id, purpose, alg) values ($1, $2, $3)
+             on conflict (tenant_id, purpose, alg) do nothing",
             self.tenant.as_str(),
-            PURPOSE.as_str()
+            PURPOSE.as_str(),
+            algorithm.as_str()
         )
         .execute(&mut **transaction)
         .await
@@ -614,9 +625,10 @@ impl PgKeyRepository {
             "select rotation_period_seconds, propagation_period_seconds,
                     grace_period_seconds, last_rotated_at
              from key_rotation_schedules
-             where tenant_id = $1 and purpose = $2",
+             where tenant_id = $1 and purpose = $2 and alg = $3",
             self.tenant.as_str(),
-            PURPOSE.as_str()
+            PURPOSE.as_str(),
+            algorithm.as_str()
         )
         .fetch_one(&mut **transaction)
         .await

@@ -69,6 +69,22 @@ impl TenantKeyStore {
     /// not serve an empty JWKS — the first person to notice that would be a
     /// client whose signature check failed.
     ///
+    /// # One key per algorithm, not one key
+    ///
+    /// Every algorithm in [`SigningAlgorithm::ALL`], because the discovery
+    /// document advertises all of them: `id_token_signing_alg_values_supported`
+    /// is the same closed list (ADR-0003), and OpenID Connect Dynamic Client
+    /// Registration 1.0 §2 makes `id_token_signed_response_alg` "REQUIRED for
+    /// signing the ID Token issued to this Client" — an obligation on the
+    /// server, per client, settled at registration. A tenant that advertises
+    /// `PS256` and holds no `PS256` key accepts a registration it can never
+    /// honour, and the failure surfaces as a client that cannot log anybody in.
+    ///
+    /// Three key pairs per tenant rather than one is the cost. It is the right
+    /// side of the trade: the alternative is a configuration knob that has to
+    /// be kept in step with what the metadata says, and a mismatch there is
+    /// exactly the failure this avoids.
+    ///
     /// # Errors
     ///
     /// Returns [`DomainError`] if the keys cannot be read or created.
@@ -78,25 +94,26 @@ impl TenantKeyStore {
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
         let repository = self.for_tenant(tenant);
-        repository
-            .apply_schedule(SigningAlgorithm::DEFAULT, now)
-            .await?;
+        for algorithm in SigningAlgorithm::ALL {
+            repository.apply_schedule(algorithm, now).await?;
 
-        // Then actually open the active key. `apply_schedule` is a no-op on a
-        // tenant that already has one, so on its own it never touches the
-        // ciphertext — and a server started with the wrong key-encryption key
-        // would come up clean and fail on the first token instead. Decrypting
-        // once at startup is what makes that a boot failure someone is watching.
-        repository
-            .active_signing_key(SigningAlgorithm::DEFAULT)
-            .await?
-            .ok_or_else(|| {
-                DomainError::invalid(
-                    "signing_keys",
-                    "no active signing key after applying the schedule",
-                )
-            })
-            .map(|_| ())
+            // Then actually open the active key. `apply_schedule` is a no-op on
+            // a tenant that already has one, so on its own it never touches the
+            // ciphertext — and a server started with the wrong key-encryption
+            // key would come up clean and fail on the first token instead.
+            // Decrypting once at startup is what makes that a boot failure
+            // someone is watching.
+            repository
+                .active_signing_key(algorithm)
+                .await?
+                .ok_or_else(|| {
+                    DomainError::invalid(
+                        "signing_keys",
+                        format!("no active {algorithm} signing key after applying the schedule"),
+                    )
+                })?;
+        }
+        Ok(())
     }
 }
 

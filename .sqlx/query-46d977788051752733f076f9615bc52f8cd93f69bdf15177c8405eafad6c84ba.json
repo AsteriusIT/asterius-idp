@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into key_rotation_schedules\n                 (tenant_id, purpose, alg, rotation_period_seconds,\n                  propagation_period_seconds, grace_period_seconds)\n             values ($1, $2, $3, $4, $5, $6)\n             on conflict (tenant_id, purpose, alg) do update\n             set rotation_period_seconds = excluded.rotation_period_seconds,\n                 propagation_period_seconds = excluded.propagation_period_seconds,\n                 grace_period_seconds = excluded.grace_period_seconds",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "46d977788051752733f076f9615bc52f8cd93f69bdf15177c8405eafad6c84ba"
+}

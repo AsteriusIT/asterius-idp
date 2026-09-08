@@ -16,6 +16,7 @@ use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, sh
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::outbound::HttpsJwksFetcher;
+use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{PgAuditSink, PgReplayGuard, PgTenantRepository, Store, TenantKeyStore};
@@ -113,6 +114,16 @@ fn run() -> Result<(), String> {
                 .map_err(|e| format!("cannot prepare signing keys for {}: {e}", tenant.id))?;
         }
 
+        // The one object in this process that holds an unwrapped private key.
+        // Built here because that is what `PgKeyRepository`'s documentation
+        // says the composition root is for: signing through the repository
+        // would unwrap the key on every token, which for a cloud KEK is a
+        // network round trip each time.
+        let signer: Arc<dyn asterius_domain::keys::Signer> = Arc::new(CachedSigner::new(
+            (*keys).clone(),
+            Arc::new(asterius_domain::ports::SystemClock),
+        ));
+
         // Client-facing endpoints: the ones that need an authenticated client
         // and the database. Built here rather than lazily so that a deployment
         // that cannot construct them fails at startup, where somebody is
@@ -164,6 +175,7 @@ fn run() -> Result<(), String> {
                 // `ast-2vk.15` makes these configurable; the default is the
                 // floor.
                 argon2: Some(Argon2Parameters::default()),
+                signer,
                 dpop,
             })),
         })
