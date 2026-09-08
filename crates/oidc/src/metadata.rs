@@ -494,6 +494,41 @@ mod tests {
         }
     }
 
+    /// RFC 9449 §5.1 defines exactly one metadata parameter, and its presence
+    /// is how a client learns that this server does DPoP at all.
+    ///
+    /// Called out separately from the sweep above because that test would keep
+    /// passing if this member were deleted: it checks the shape of every list
+    /// whose name ends in `_alg_values_supported`, not that this particular one
+    /// exists. RFC 8414 §2 makes metadata a description of actual behaviour, so
+    /// a server that validates DPoP proofs and does not say so is as wrong as
+    /// one that says so and does not.
+    ///
+    /// Note that RFC 9449 defines *no* metadata for the nonce mechanism (§8)
+    /// and none for whether tokens are DPoP-bound — `dpop_bound_access_tokens`
+    /// is client registration metadata (§5.2), which lives on the client, not
+    /// here.
+    #[test]
+    fn dpop_support_is_advertised_the_one_way_rfc_9449_defines() {
+        for capabilities in [Capabilities::default(), all_features()] {
+            let document = provider_metadata(&issuer(), &capabilities);
+            assert_eq!(
+                document["dpop_signing_alg_values_supported"],
+                json!(["EdDSA", "ES256", "PS256"]),
+                "the advertised DPoP algorithms are not the allow-list"
+            );
+            // The nonce flag changes no metadata member, because there is none
+            // to change. A client discovers the requirement by being told
+            // `use_dpop_nonce` and retrying, which is what RFC 9449 §8
+            // specifies.
+            assert!(
+                document.get("dpop_nonce_supported").is_none(),
+                "invented a metadata member RFC 9449 does not define"
+            );
+            assert!(document.get("dpop_bound_access_tokens").is_none());
+        }
+    }
+
     // ---- flags -----------------------------------------------------------
 
     /// Toggling one flag flips exactly the documented keys and nothing else.

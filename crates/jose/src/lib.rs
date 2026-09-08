@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod client_keys;
+pub mod dpop;
 pub mod jws;
 pub mod kek;
 pub mod key;
@@ -20,6 +21,7 @@ pub use client_keys::{
     ClientKey, ClientKeyCache, ClientKeyError, ClientKeySet, MAX_JWK_SET_BYTES, MAX_KEYS,
     keys_from_jwk_set, parse_jwk_set,
 };
+pub use dpop::{DpopError, Expectation, NonceIssuer, NonceRule, NormalisedUri, Proof};
 pub use jws::{Header, Unverified};
 pub use kek::{KEK_LEN, Kek, KeyBinding, LocalKek, NONCE_LEN, TenantSecret, WrappedKey};
 pub use key::{MIN_RSA_BITS, SigningKey, VerifyingKey};

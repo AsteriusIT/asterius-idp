@@ -116,6 +116,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "url",
  "zeroize",
 ]
 

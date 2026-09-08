@@ -207,3 +207,10 @@ path = "fuzz_targets/claims_request.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dpop_proof"
+path = "fuzz_targets/dpop_proof.rs"
+test = false
+doc = false
+bench = false

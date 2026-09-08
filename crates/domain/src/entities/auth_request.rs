@@ -23,7 +23,7 @@ pub struct PushedRequest {
     pub client: ClientId,
     /// The validated parameters, exactly as they will be executed.
     pub parameters: Value,
-    /// RFC 9449 §12: the key the eventual code is bound to.
+    /// RFC 9449 §10: the key the eventual code is bound to.
     pub dpop_jkt: Option<String>,
     /// When it was pushed.
     pub pushed_at: OffsetDateTime,

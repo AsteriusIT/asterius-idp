@@ -211,7 +211,7 @@ pub struct AuthorizationRequest {
     pub login_hint: Option<String>,
     /// RFC 8707 resource indicators.
     pub resources: BTreeSet<String>,
-    /// RFC 9449 §12: the thumbprint the issued code is bound to.
+    /// RFC 9449 §10: the thumbprint the issued code is bound to.
     pub dpop_jkt: Option<String>,
     /// The OIDC Core §5.5 `claims` request, parsed. Empty when the client sent
     /// none, which is the same request as sending `{}`.
@@ -331,7 +331,7 @@ pub fn validate(
         .transpose()?
         .unwrap_or_default();
 
-    // RFC 9449 §12. Validated as a JWK thumbprint's shape only; binding it to
+    // RFC 9449 §10. Validated as a JWK thumbprint's shape only; binding it to
     // an actual proof is `ast-a05.4`.
     let dpop_jkt = params
         .get("dpop_jkt")?

@@ -319,15 +319,26 @@ pub fn keys_from_jwk_set(document: &Value) -> Result<ClientKeySet, ClientKeyErro
 /// secret.
 const PRIVATE_MEMBERS: [&str; 8] = ["d", "p", "q", "dp", "dq", "qi", "oth", "k"];
 
+/// Whether a JWK carries any of them.
+///
+/// Shared with [`crate::dpop`], which has the same rule for the same reason.
+/// RFC 9449 §4.2 says a DPoP proof's `jwk` "MUST NOT contain a private key",
+/// and §4.3 item 7 makes checking it one of the twelve required checks. A
+/// proof carrying `d` is a client that has signed its own private key into a
+/// header anyone on the path can read — a disclosure, not a parse failure —
+/// and the two places that can see one should refuse it identically.
+pub(crate) fn has_private_members(jwk: &Map<String, Value>) -> bool {
+    PRIVATE_MEMBERS
+        .iter()
+        .any(|member| jwk.contains_key(*member))
+}
+
 /// Decides whether one JWK becomes a usable key.
 ///
 /// `Ok(None)` is "not for us" — a key this server cannot or must not use.
 /// `Err` is reserved for the one condition that condemns the whole document.
 fn admit(jwk: &Map<String, Value>) -> Result<Option<ClientKey>, ClientKeyError> {
-    if PRIVATE_MEMBERS
-        .iter()
-        .any(|member| jwk.contains_key(*member))
-    {
+    if has_private_members(jwk) {
         return Err(ClientKeyError::PrivateKeyMaterial);
     }
 
@@ -400,7 +411,17 @@ fn admit(jwk: &Map<String, Value>) -> Result<Option<ClientKey>, ClientKeyError> 
 
 /// Builds a verifying key from a JWK's public members, or `None` if they are
 /// not a well-formed key of that algorithm.
-fn verifying_key(algorithm: SigningAlgorithm, jwk: &Map<String, Value>) -> Option<VerifyingKey> {
+///
+/// `algorithm` is decided by the caller from what it already knows (RFC 8725
+/// §3.1); this only answers whether the members present are a well-formed key
+/// *of that algorithm*. Shared with [`crate::dpop`] so that a DPoP proof's
+/// `jwk` faces the same curve and coordinate-length rules as a client's
+/// published one — a second implementation would be a second chance to accept
+/// a short coordinate, an off-curve `crv`, or a padded modulus.
+pub(crate) fn verifying_key(
+    algorithm: SigningAlgorithm,
+    jwk: &Map<String, Value>,
+) -> Option<VerifyingKey> {
     let member = |name: &str| -> Option<Vec<u8>> {
         // RFC 7515 §2: JWK members holding key material are base64url without
         // padding. The engine also rejects a final character with non-zero

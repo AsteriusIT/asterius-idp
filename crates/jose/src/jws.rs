@@ -68,6 +68,7 @@ pub struct Header {
 #[derive(Debug, Clone)]
 pub struct Unverified {
     header: Header,
+    header_bytes: Vec<u8>,
     payload: Vec<u8>,
     signature: Vec<u8>,
     signing_input: String,
@@ -84,6 +85,22 @@ impl Unverified {
     #[must_use]
     pub const fn header(&self) -> &Header {
         &self.header
+    }
+
+    /// The JOSE header exactly as it arrived, before [`Header`] narrowed it.
+    ///
+    /// [`Header`] models the parameters this server writes and the ones every
+    /// verifier needs; serde drops the rest. One token type needs a parameter
+    /// outside that set — RFC 9449 §4.2 puts the DPoP proof's public key in
+    /// `jwk`, and a proof is the one JWT whose key *is* in its header — so the
+    /// bytes are kept for [`crate::dpop`] to read.
+    ///
+    /// Bytes rather than a parsed value, deliberately: keeping them undecided
+    /// is the point. Nothing here has judged what they mean, and a caller that
+    /// wants a member has to say which one and what it will accept.
+    #[must_use]
+    pub fn raw_header(&self) -> &[u8] {
+        &self.header_bytes
     }
 
     /// The bytes the signature covers, for a caller verifying by hand.
@@ -237,6 +254,7 @@ pub fn parse(token: &str) -> Result<Unverified, JoseError> {
     let signing_input = format!("{header_b64}.{payload_b64}");
     Ok(Unverified {
         header,
+        header_bytes,
         payload,
         signature,
         signing_input,

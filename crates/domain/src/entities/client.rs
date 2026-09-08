@@ -332,7 +332,7 @@ impl SubjectType {
 ///
 /// There is no `Neither` variant, and that is the point: FAPI 2.0 SP §5.3.2.1
 /// requires sender-constrained access tokens, so "this client gets bearer
-/// tokens" is not a state this type can hold. RFC 9449 §12
+/// tokens" is not a state this type can hold. RFC 9449 §5.2
 /// (`dpop_bound_access_tokens`) and RFC 8705 §3.4
 /// (`tls_client_certificate_bound_access_tokens`) are the two ways in; the
 /// pair `false, false` is the one combination the parser refuses.
@@ -784,7 +784,7 @@ pub struct ClientMetadata {
     pub sector_identifier_uri: Option<String>,
     /// RFC 9126 §6.
     pub require_pushed_authorization_requests: Option<bool>,
-    /// RFC 9449 §12.
+    /// RFC 9449 §5.2.
     pub dpop_bound_access_tokens: Option<bool>,
     /// RFC 8705 §3.4.
     pub tls_client_certificate_bound_access_tokens: Option<bool>,
@@ -1297,7 +1297,7 @@ impl ClientMetadata {
         capabilities: Capabilities,
     ) -> Result<TokenBinding, ClientMetadataError> {
         const CERT_FIELD: &str = "tls_client_certificate_bound_access_tokens";
-        // RFC 9449 §12 gives this a default of false. Here the default is true:
+        // RFC 9449 §5.2 gives this a default of false. Here the default is true:
         // FAPI 2.0 SP §5.3.2.1 requires sender-constrained access tokens, and a
         // client that says nothing must not end up with the weaker of the two
         // readings.
@@ -1623,7 +1623,7 @@ mod tests {
         assert_eq!(
             client.token_binding,
             TokenBinding::Dpop,
-            "RFC 9449 §12 defaults dpop_bound_access_tokens to false; the profile does not"
+            "RFC 9449 §5.2 defaults dpop_bound_access_tokens to false; the profile does not"
         );
         assert!(client.token_binding.is_dpop_bound());
         const { assert!(ClientRegistration::REQUIRE_PUSHED_AUTHORIZATION_REQUESTS) };
@@ -2359,7 +2359,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Sender constraint (RFC 9449 §12, RFC 8705 §3.4)
+    // Sender constraint (RFC 9449 §5.2, RFC 8705 §3.4)
     // -----------------------------------------------------------------------
 
     /// FAPI 2.0 SP §5.3.2.1: access tokens are sender-constrained. Turning DPoP
