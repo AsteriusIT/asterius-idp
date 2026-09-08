@@ -373,6 +373,38 @@ mod tests {
         assert!(rendered.contains("base-uri 'none'"));
     }
 
+    /// A host is not a keyword, however it is spelled.
+    ///
+    /// CSP Level 3 §2.3.1 writes every dangerous source quoted —
+    /// `'unsafe-inline'`, `'unsafe-eval'`, `'unsafe-hashes'` — and never
+    /// writes a host-source that way. So `unsafe-` as a run of host-chars is
+    /// an ordinary domain somebody can register and register as a
+    /// `redirect_uri`, and the thing that keeps a keyword out is the quoting,
+    /// not the letters. A check on the unquoted substring refuses a legitimate
+    /// client for a resemblance (`ast-83p.14`).
+    #[test]
+    fn a_host_whose_name_contains_unsafe_is_still_only_a_host() {
+        let origin = FormActionOrigin::parse("https://unsafe-eval.example").expect("an origin");
+        let rendered = Policy::strict()
+            .with_form_post_to(origin)
+            .header_value(&fixed_nonce("n"));
+
+        assert!(rendered.contains("form-action 'self' https://unsafe-eval.example;"));
+        // The keyword is the quoted spelling, and it is not here.
+        assert!(
+            !rendered.contains("'unsafe-"),
+            "a host introduced a quoted keyword: {rendered}"
+        );
+        assert_eq!(
+            rendered.matches('\'').count(),
+            Policy::strict()
+                .header_value(&fixed_nonce("n"))
+                .matches('\'')
+                .count(),
+            "widening the policy changed how many quoted sources it names"
+        );
+    }
+
     /// The acceptance criterion, over every policy this type can produce.
     #[test]
     fn unsafe_keywords_appear_in_no_policy() {

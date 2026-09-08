@@ -432,6 +432,51 @@ impl<'a> AccessToken<'a> {
     ///
     /// The first [`IssuanceError`] that applies.
     // fuzz-target: access_token_claims
+    /// The `sub` claim.
+    ///
+    /// RFC 9068 §2.2 puts the `client_id` there for a grant with no resource
+    /// owner, which is the `None` arm. A *present* but empty subject is
+    /// neither case and must not be allowed to take the first: falling back
+    /// would label a user's token as a client's.
+    fn subject_claim(&self, client_id: &str) -> Result<String, IssuanceError> {
+        let Some(subject) = self.claimed.subject() else {
+            return Ok(client_id.to_owned());
+        };
+        let subject = subject.to_string();
+        if subject.is_empty() {
+            return Err(IssuanceError::EmptySubject);
+        }
+        Ok(subject)
+    }
+
+    /// The `scope` claim, or `None` when the grant carries no scopes.
+    ///
+    /// Every scope is checked against the domain's own `scope-token` function
+    /// rather than a copy of its rule. `GrantRecord::validate` refuses a
+    /// splitting scope on the way in; this is the join that would do the
+    /// damage, and a row edited by hand never met that check.
+    fn scope_claim(&self) -> Result<Option<String>, IssuanceError> {
+        if self.grant.scopes.is_empty() {
+            return Ok(None);
+        }
+        if !self
+            .grant
+            .scopes
+            .iter()
+            .all(|scope| asterius_domain::entities::grant::is_scope_token(scope))
+        {
+            return Err(IssuanceError::Scope);
+        }
+        Ok(Some(
+            self.grant
+                .scopes
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" "),
+        ))
+    }
+
     pub fn build(self) -> Result<UnsignedToken, IssuanceError> {
         if self.grant.id != *self.claimed.id()
             || self.grant.client != *self.claimed.client()
@@ -474,11 +519,7 @@ impl<'a> AccessToken<'a> {
         // the second case, so the two arms are the two the RFC names.
         claims.insert(
             "sub".to_owned(),
-            Value::String(
-                self.claimed
-                    .subject()
-                    .map_or_else(|| client_id.to_owned(), ToString::to_string),
-            ),
+            Value::String(self.subject_claim(client_id)?),
         );
         claims.insert("client_id".to_owned(), Value::String(client_id.to_owned()));
         claims.insert(
@@ -499,18 +540,8 @@ impl<'a> AccessToken<'a> {
         // request's: what was granted, not what was asked for. The join is safe
         // because `GrantRecord::validate` already holds every stored scope to
         // RFC 6749 §3.3's grammar, so none of them contains a space to split on.
-        if !self.grant.scopes.is_empty() {
-            claims.insert(
-                "scope".to_owned(),
-                Value::String(
-                    self.grant
-                        .scopes
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                ),
-            );
+        if let Some(scope) = self.scope_claim()? {
+            claims.insert("scope".to_owned(), Value::String(scope));
         }
 
         // §2.2.1.
@@ -663,6 +694,52 @@ mod tests {
         let grant = grant();
         let claimed = grant.claim(now()).expect("a live grant");
         token(&grant, &claimed).expect("a buildable token")
+    }
+
+    /// RFC 9068 §2.2 makes `sub` REQUIRED, and §2.2 also says an access token
+    /// from a grant with no resource owner puts the `client_id` there instead.
+    /// An empty subject is neither: it is not absent, so it must not take the
+    /// client-credentials fork and be minted as the client's own token; and it
+    /// is not a subject, because every empty subject compares equal to every
+    /// other. Found by `cargo fuzz run access_token_claims` (`ast-a05.17`).
+    #[test]
+    fn a_present_but_empty_subject_is_refused_rather_than_minted() {
+        let mut grant = grant();
+        grant.subject = Some(SubjectId::new(""));
+        let claimed = grant.claim(now()).expect("a live grant");
+        assert!(
+            matches!(token(&grant, &claimed), Err(IssuanceError::EmptySubject)),
+            "an empty subject was accepted"
+        );
+    }
+
+    /// The other side of the fork, so the guard above cannot be "refuse every
+    /// grant without a resource owner" by accident.
+    #[test]
+    fn an_absent_subject_still_falls_back_to_the_client() {
+        let mut grant = grant();
+        grant.subject = None;
+        let claimed = grant.claim(now()).expect("a live grant");
+        let claims = token(&grant, &claimed).expect("a buildable token");
+        assert_eq!(claims["sub"], "billing");
+    }
+
+    /// The escalation `GrantRecord::validate` exists to stop, checked again at
+    /// the join that would actually cause it. `scope` is space-delimited
+    /// (RFC 9068 §2.2.3), so a stored scope containing a space arrives at the
+    /// resource server as two scopes. Found by `cargo fuzz` (`ast-a05.17`),
+    /// which builds a `Grant` in memory and so never passes the store's check.
+    #[test]
+    fn a_scope_that_would_split_in_the_claim_is_refused() {
+        for bad in ["read write", "read\u{0}", "quoted\"scope", "back\\slash"] {
+            let mut grant = grant();
+            grant.scopes = [bad.to_owned()].into_iter().collect();
+            let claimed = grant.claim(now()).expect("a live grant");
+            assert!(
+                matches!(token(&grant, &claimed), Err(IssuanceError::Scope)),
+                "accepted a scope that would split: {bad:?}"
+            );
+        }
     }
 
     // --- RFC 9068 §2.1 and §2.2: the shape -------------------------------

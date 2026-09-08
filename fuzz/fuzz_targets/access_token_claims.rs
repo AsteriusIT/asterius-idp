@@ -407,6 +407,10 @@ fuzz_target!(|input: Input| {
                 [
                     "iss", "exp", "aud", "sub", "client_id", "iat", "jti", "cnf", "scope",
                     "auth_time", "acr", "amr",
+                    // RFC 8693 §4.1. Written whenever the grant carries an
+                    // actor chain, which is why only a run that generated one
+                    // ever reached this assertion.
+                    "act",
                 ]
                 .contains(&member.as_str()),
                 "a server-issued claim this profile does not define: {member}"

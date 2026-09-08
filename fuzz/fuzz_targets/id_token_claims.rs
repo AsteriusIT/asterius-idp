@@ -215,7 +215,18 @@ fuzz_target!(|input: Input| {
         // A grant with no resource owner has no ID token to build, and that is
         // the only refusal that does not depend on the inputs above.
         if grant.subject.is_none() {
-            assert_eq!(build(), Err(IssuanceError::NoSubject));
+            // That it refuses, not which refusal wins. `IdToken::build`
+            // checks the lifetime before the subject, so a grant that has
+            // neither a resource owner nor a usable lifetime answers
+            // `Lifetime` — and the order those two are tested in is an
+            // implementation detail no caller can depend on.
+            assert!(
+                matches!(
+                    build(),
+                    Err(IssuanceError::NoSubject | IssuanceError::Lifetime)
+                ),
+                "a grant with no resource owner built an ID token"
+            );
         }
         return;
     };

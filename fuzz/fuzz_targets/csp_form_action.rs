@@ -69,6 +69,16 @@ fuzz_target!(|data: &[u8]| {
     ] {
         assert!(widened.contains(untouched), "{untouched} lost: {widened:?}");
     }
-    assert!(!widened.contains("unsafe-"), "{widened:?}");
+    // The *quoted* form, because that is the only form that is a keyword.
+    // CSP Level 3 §2.3.1 spells the dangerous sources 'unsafe-inline',
+    // 'unsafe-eval' and 'unsafe-hashes', always inside single quotes; a
+    // host-source is never quoted. Unquoted, `unsafe-` is just letters and a
+    // hyphen — every one of them a legal host-char — so `unsafe-thing.example`
+    // is a domain somebody can register and register as a redirect_uri, and
+    // refusing it here would be this assertion inventing a rule CSP does not
+    // have. What actually forecloses an injected keyword is the quote count
+    // asserted above: a widened policy has exactly as many `'` as the strict
+    // one, so no new quoted token can have appeared.
+    assert!(!widened.contains("'unsafe-"), "{widened:?}");
     assert!(!widened.contains('*'), "{widened:?}");
 });

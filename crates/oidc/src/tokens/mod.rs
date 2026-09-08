@@ -125,6 +125,31 @@ pub enum IssuanceError {
     /// a principal that never authenticated.
     #[error("an ID token needs a subject; this grant has no resource owner")]
     NoSubject,
+    /// The grant names a subject, and it is the empty string.
+    ///
+    /// Distinct from [`IssuanceError::NoSubject`], because absent and empty
+    /// mean different things and only one of them is legitimate. RFC 9068 §2.2
+    /// and OIDC Core §2 both make `sub` REQUIRED, and an empty string meets
+    /// "present" and nothing else: a resource server keying authorization on it
+    /// gets `""`, and two grants with empty subjects are the same principal as
+    /// far as it can tell.
+    ///
+    /// It is worse than useless for an access token. An *absent* subject
+    /// deliberately falls back to `client_id`, which is RFC 9068 §2.2's own
+    /// rule for a grant with no resource owner — so an empty one would slip
+    /// past that fork and mint a token that is honestly neither shape.
+    #[error("a subject must not be empty")]
+    EmptySubject,
+    /// A scope on the grant is not an RFC 6749 §3.3 `scope-token`.
+    ///
+    /// `scope` is a space-delimited claim (RFC 9068 §2.2.3), so a stored scope
+    /// containing a space becomes *two scopes* at the resource server — an
+    /// escalation, not a formatting problem. `GrantRecord::validate` refuses
+    /// such a scope on the way into the store; this refuses it on the way out,
+    /// because a row edited by hand during an incident never passed the first
+    /// check and the consequence is privilege, not a malformed string.
+    #[error("a scope must be printable ASCII other than space, '\"' and '\\'")]
+    Scope,
     /// A `nonce` is empty or longer than [`crate::authorize::MAX_NONCE_LEN`].
     #[error("a nonce must be 1 to {} bytes", crate::authorize::MAX_NONCE_LEN)]
     Nonce,

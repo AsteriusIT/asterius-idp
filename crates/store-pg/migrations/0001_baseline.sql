@@ -436,7 +436,10 @@ create table grants (
     grant_id              uuid        not null,
     client_id             text        not null,
     user_id               uuid,
-    subject               text,
+    -- Null means "no resource owner", which RFC 9068 §2.2 answers by putting
+    -- the client_id in `sub`. Empty means nothing at all, and would be minted
+    -- into a token as a subject every other empty subject compares equal to.
+    subject               text        check (subject <> ''),
     scopes                text[]      not null default '{}',
     claims                jsonb       not null default '{}'::jsonb,
     authorization_details jsonb       not null default '[]'::jsonb,

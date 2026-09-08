@@ -311,6 +311,13 @@ impl<'a> IdToken<'a> {
     pub fn build(self) -> Result<UnsignedToken, IssuanceError> {
         let lifetime = usable_lifetime(self.lifetime, Self::MAX_LIFETIME)?;
         let subject = self.claimed.subject().ok_or(IssuanceError::NoSubject)?;
+        // Present and empty is its own failure. OIDC Core §2 makes `sub`
+        // REQUIRED, and §3.1.3.7 has the client compare it to the one it
+        // already holds for this user — a comparison an empty string passes
+        // against every other empty string.
+        if subject.as_str().is_empty() {
+            return Err(IssuanceError::EmptySubject);
+        }
         let client_id = self.claimed.client().as_str();
 
         if let Some(nonce) = &self.nonce
@@ -747,6 +754,28 @@ mod tests {
             )
             .build(),
             Err(IssuanceError::NoSubject)
+        );
+    }
+
+    /// Present and empty is not the same as absent, and gets its own refusal.
+    /// OIDC Core §3.1.3.7 has the client compare `sub` against the one it
+    /// already holds for this user — a comparison every empty string passes
+    /// against every other. Found by `cargo fuzz` (`ast-a05.17`).
+    #[test]
+    fn a_present_but_empty_subject_is_refused() {
+        let grant = grant_with(Some(SubjectId::new("")));
+        let claimed = grant.claim(now()).expect("a live grant");
+        assert_eq!(
+            IdToken::new(
+                &issuer(),
+                &claimed,
+                SigningAlgorithm::Es256,
+                authentication(),
+                ACCESS_TOKEN,
+                now(),
+            )
+            .build(),
+            Err(IssuanceError::EmptySubject)
         );
     }
 

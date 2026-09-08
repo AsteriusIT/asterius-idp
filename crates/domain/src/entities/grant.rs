@@ -704,6 +704,21 @@ impl GrantRecord {
 /// string a client sent at registration, this one checks the already-split
 /// array a row holds. A unit test asserts the two agree on every token, which
 /// is what keeps a second implementation from becoming a second rule.
+/// Whether one scope matches RFC 6749 §3.3's `scope-token` grammar.
+///
+/// `%x21 / %x23-5B / %x5D-7E`: printable ASCII other than space, `"` and `\`.
+/// Public because the token builders check it again on the way *out*. That is
+/// not a second rule — it is this one, called twice — and calling it rather
+/// than restating it is the difference. The escalation it prevents is worth
+/// two calls: `scope` is a space-delimited claim (RFC 9068 §2.2.3), so one
+/// stored scope containing a space becomes *two scopes* at a resource server.
+#[must_use]
+pub fn is_scope_token(scope: &str) -> bool {
+    scope
+        .bytes()
+        .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
+}
+
 fn validate_scopes(scopes: &[String]) -> Result<BTreeSet<String>, GrantError> {
     if scopes.len() > Grant::MAX_SCOPES {
         return Err(GrantError::ScopeSize);
@@ -713,10 +728,7 @@ fn validate_scopes(scopes: &[String]) -> Result<BTreeSet<String>, GrantError> {
         if scope.is_empty() || scope.len() > Grant::MAX_SCOPE_LEN {
             return Err(GrantError::ScopeSize);
         }
-        if !scope
-            .bytes()
-            .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
-        {
+        if !is_scope_token(scope) {
             return Err(GrantError::ScopeToken);
         }
         validated.insert(scope.clone());

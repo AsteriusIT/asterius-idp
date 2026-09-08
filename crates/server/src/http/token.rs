@@ -207,8 +207,8 @@ fn no_store() -> [(header::HeaderName, header::HeaderValue); 2] {
 /// client has authenticated. So the status is not a parameter, and a handler
 /// cannot accidentally answer a bad code with a 200.
 ///
-/// The description is `&'static str` for the reason [`description_for`] gives:
-/// it is written here, never assembled from the request.
+/// The description is `&'static str` for the same reason `description_for`
+/// below is: it is written here, never assembled from the request.
 #[must_use]
 pub fn refused(code: &'static str, description: &'static str) -> Response {
     error(StatusCode::BAD_REQUEST, code, description)
