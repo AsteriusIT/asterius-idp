@@ -193,3 +193,10 @@ path = "fuzz_targets/grant_record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "interaction_cookie"
+path = "fuzz_targets/interaction_cookie.rs"
+test = false
+doc = false
+bench = false

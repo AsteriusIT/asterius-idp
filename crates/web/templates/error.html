@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Something went wrong — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# Deliberately vague. This page is reached by a browser that may not be the
+   user's, in a flow that may not be theirs, so it says what happened in the
+   broadest terms and nothing about which client, which tenant, or which check
+   failed. The correlation id is the only specific thing on it, and it
+   identifies a log line rather than anything about the request. #}
+<p class="error">{{ message }}</p>
+<p class="muted">If you contact support, quote <code>{{ correlation_id }}</code>.</p>
+{% endblock %}

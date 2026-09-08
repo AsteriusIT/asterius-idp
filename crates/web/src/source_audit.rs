@@ -18,6 +18,11 @@
 //!   broken page; a document served without going through [`crate::document`]
 //!   is a page with no policy at all. Both are prevented by there being one
 //!   producer of `text/html` and one caller of the nonce generator.
+//! * askama escapes by default, so a cross-site scripting bug in a template
+//!   takes the form of somebody *adding* `|safe` — usually to make a piece of
+//!   markup render, in a value that turns out to be attacker-supplied. The
+//!   templates are scanned for it, with one exemption that is named rather
+//!   than pattern-matched.
 
 #![cfg(test)]
 
@@ -189,6 +194,152 @@ mod tests {
              extensions; drawn directly at:\n  {}",
             offenders.join("\n  ")
         );
+    }
+
+    /// A template with its `{# … #}` comments removed.
+    ///
+    /// The same reasoning as `code_lines` for Rust: a comment *about* the rule
+    /// must not trip it. `base.html` explains why there is no `<script>` in
+    /// the tree, and saying so should not read as one.
+    fn without_comments(source: &str) -> String {
+        let mut out = String::with_capacity(source.len());
+        let mut rest = source;
+        while let Some(start) = rest.find("{#") {
+            out.push_str(&rest[..start]);
+            match rest[start..].find("#}") {
+                // Keep the newlines so line numbers still mean something.
+                Some(end) => {
+                    let comment = &rest[start..start + end + 2];
+                    out.extend(comment.chars().filter(|c| *c == '\n'));
+                    rest = &rest[start + end + 2..];
+                }
+                None => return out,
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Every `.html` template, with its file name and comments stripped.
+    fn templates() -> Vec<(String, String)> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("read templates/") {
+            let path = entry.expect("directory entry").path();
+            if path.extension().is_some_and(|e| e == "html") {
+                files.push((
+                    path.file_name()
+                        .expect("file name")
+                        .to_string_lossy()
+                        .into_owned(),
+                    without_comments(&std::fs::read_to_string(&path).expect("read a template")),
+                ));
+            }
+        }
+        assert!(!files.is_empty(), "found no templates to audit");
+        files
+    }
+
+    /// The only unescaped interpolation in the tree is the CSP nonce.
+    ///
+    /// askama escapes automatically, so a template injection here is always
+    /// somebody adding `|safe`. The one legitimate use is the nonce attribute,
+    /// which this crate generates and which is base64url by construction — it
+    /// is exempted **by the exact expression**, not by file, so that adding a
+    /// second `|safe` to `base.html` still fails.
+    #[test]
+    fn no_template_marks_a_request_value_safe() {
+        const PERMITTED: &str = "{{ nonce_attribute|safe }}";
+
+        let mut offenders = Vec::new();
+        for (name, source) in templates() {
+            for (number, line) in source.lines().enumerate() {
+                if !line.contains("|safe") {
+                    continue;
+                }
+                if line.contains(PERMITTED) {
+                    continue;
+                }
+                offenders.push(format!("{name}:{}: {}", number + 1, line.trim()));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "askama escapes by default; `|safe` on a value from a request or a \
+             registration is a cross-site scripting bug:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// The exemption is real: the nonce attribute is still marked safe.
+    ///
+    /// Without this, deleting the nonce from `base.html` would make the test
+    /// above pass for the wrong reason — and every page would lose its inline
+    /// style block.
+    #[test]
+    fn the_nonce_attribute_is_still_the_one_permitted_interpolation() {
+        let found = templates()
+            .iter()
+            .any(|(_, source)| source.contains("{{ nonce_attribute|safe }}"));
+        assert!(found, "no template renders the CSP nonce any more");
+    }
+
+    /// No page runs script, so `strict-dynamic` has nothing to get wrong.
+    #[test]
+    fn no_template_contains_a_script_element() {
+        for (name, source) in templates() {
+            let lowered = source.to_lowercase();
+            assert!(
+                !lowered.contains("<script"),
+                "{name} contains a script element"
+            );
+            assert!(
+                !lowered.contains("javascript:"),
+                "{name} contains a javascript: URL"
+            );
+            // Inline event handlers are script by another name, and no nonce
+            // can allow them.
+            for handler in [" onclick=", " onload=", " onerror=", " onsubmit="] {
+                assert!(
+                    !lowered.contains(handler),
+                    "{name} contains an inline {handler} handler"
+                );
+            }
+        }
+    }
+
+    /// Every form that posts carries a synchroniser token.
+    ///
+    /// The check is on the template rather than on a rendered page, so a new
+    /// form added without one fails immediately rather than when somebody
+    /// remembers to write a test for that page.
+    #[test]
+    fn every_post_form_in_a_template_carries_a_csrf_field() {
+        for (name, source) in templates() {
+            let forms = source.matches("method=\"post\"").count();
+            let tokens = source.matches("name=\"csrf\"").count();
+            assert_eq!(
+                forms, tokens,
+                "{name} has {forms} POST form(s) and {tokens} CSRF field(s)"
+            );
+        }
+    }
+
+    /// The stripper removes comments and nothing else.
+    #[test]
+    fn a_comment_about_a_script_is_not_a_script() {
+        let source = "{# there is no <script> here #}\n<p>text</p>\n";
+        let stripped = without_comments(source);
+        assert!(!stripped.contains("<script"), "{stripped:?}");
+        assert!(stripped.contains("<p>text</p>"), "{stripped:?}");
+
+        // Real markup outside a comment still survives, or the audits above
+        // would pass by deleting everything.
+        let hostile = "<script>alert(1)</script>\n";
+        assert!(without_comments(hostile).contains("<script"));
+
+        // An unterminated comment does not panic and does not leak its tail.
+        assert!(!without_comments("{# unterminated <script>").contains("<script"));
     }
 
     /// An absence check that cannot fail passes for the wrong reason, so prove

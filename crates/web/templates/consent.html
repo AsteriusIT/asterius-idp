@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Authorise {{ client_name }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+<h2>{{ client_name }} would like access</h2>
+<p class="muted">Signed in as {{ username }}.</p>
+
+<ul class="scopes">
+{% for scope in scopes %}
+  <li>{{ scope.description }} <span class="muted">({{ scope.name }})</span></li>
+{% endfor %}
+</ul>
+
+{# Two buttons, one form, one token. A denial is as much a decision as an
+   approval and needs the same protection: a forged "deny" is a denial of
+   service, and a forged "allow" is a granted authorization. #}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="actions">
+  <button type="submit" name="decision" value="allow">Allow</button>
+  <button type="submit" name="decision" value="deny" class="secondary">Deny</button>
+</div>
+</form>
+{% endblock %}

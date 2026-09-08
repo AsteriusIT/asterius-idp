@@ -1,0 +1,24 @@
+:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #eee; --bg: #16181c; --muted: #aaa; --line: #444; }
+}
+body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--fg);
+       font: 16px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+main { max-width: 26rem; margin: 0 auto; }
+h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1.5rem; }
+h2 { font-size: 1rem; font-weight: 600; margin: 0 0 .75rem; }
+label { display: block; margin: 0 0 1rem; }
+label span { display: block; margin-bottom: .25rem; }
+input[type=text], input[type=password] {
+  width: 100%; box-sizing: border-box; padding: .5rem;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg); color: var(--fg); font: inherit;
+}
+button { padding: .55rem 1rem; border: 0; border-radius: 4px; font: inherit;
+         cursor: pointer; background: #2f6fdb; color: #fff; }
+button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+.actions { display: flex; gap: .5rem; margin-top: 1.5rem; }
+.scopes { margin: 0 0 1.5rem; padding-left: 1.25rem; }
+.muted { color: var(--muted); font-size: .875rem; }
+.error { border-left: 3px solid #c0392b; padding-left: .75rem; margin-bottom: 1.5rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875rem; }

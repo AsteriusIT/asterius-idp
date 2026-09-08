@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Sign in — {{ tenant_name }}{% endblock %}
+{% block content %}
+{% if let Some(message) = message %}
+<p class="error">{{ message }}</p>
+{% endif %}
+
+<form method="post" action="{{ action }}">
+{# The synchroniser token. Every POST form in this tree carries one; see
+   `crates/web/src/source_audit.rs`, which fails the build if one does not. #}
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label>
+  <span>Username</span>
+  <input type="text" name="username" autocomplete="username" autocapitalize="none"
+         spellcheck="false" required{% if let Some(hint) = login_hint %} value="{{ hint }}"{% endif %}>
+</label>
+<label>
+  <span>Password</span>
+  <input type="password" name="password" autocomplete="current-password" required>
+</label>
+<div class="actions"><button type="submit">Sign in</button></div>
+</form>
+{% endblock %}

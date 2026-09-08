@@ -14,7 +14,10 @@
 
 pub mod csp;
 pub mod document;
+pub mod interaction;
+pub mod pages;
 mod source_audit;
 
 pub use csp::{FormActionOrigin, InvalidOrigin, Nonce, Policy};
 pub use document::Document;
+pub use interaction::{CsrfToken, Interaction, InteractionError, InteractionId, Stage};

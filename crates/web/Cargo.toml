@@ -13,7 +13,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+askama.workspace = true
 asterius-domain.workspace = true
+time.workspace = true
 asterius-oidc.workspace = true
 axum.workspace = true
 serde.workspace = true

@@ -1,0 +1,26 @@
+{# The one layout. Every page extends it, so the head is written once and the
+   nonce cannot be forgotten on a page that needs it.
+
+   There is no <script> tag anywhere in this tree. Every page works with
+   JavaScript disabled, which is a requirement of ast-2vk.1 and also the
+   simplest way to keep `script-src 'nonce-…' 'strict-dynamic'` honest: a
+   policy that permits nothing to run is one nothing can bypass. #}
+<!DOCTYPE html>
+<html lang="{{ locale }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{# `no-referrer` is also sent as a header. It is repeated here because a page
+   saved and reopened from disk keeps the meta and loses the header, and an
+   authorization page in someone's Downloads folder should still not leak. #}
+<meta name="referrer" content="no-referrer">
+<title>{% block title %}{{ tenant_name }}{% endblock %}</title>
+<style {{ nonce_attribute|safe }}>{% include "style.css" %}</style>
+</head>
+<body>
+<main>
+<h1>{{ tenant_name }}</h1>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

@@ -88,6 +88,17 @@ impl Nonce {
         )
     }
 
+    /// A nonce with a chosen value, for tests that render a template.
+    ///
+    /// Test-only, and deliberately here rather than in the module that needs
+    /// it: `source_audit` requires every real nonce to come from the document
+    /// middleware, and this module is the one it exempts.
+    #[cfg(test)]
+    #[must_use]
+    pub fn fixed_for_test(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+
     /// The nonce as it appears inside `'nonce-…'`.
     #[must_use]
     pub fn as_str(&self) -> &str {
