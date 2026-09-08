@@ -14,6 +14,9 @@
 //! is split in two: a lenient pass where every field is optional, then a
 //! validation pass that accumulates problems and reports them together.
 
+use crate::http::register::{
+    InitialAccessTokens, MIN_INITIAL_ACCESS_TOKEN_LEN, RegistrationPolicy,
+};
 use crate::observability::LogFormat;
 use asterius_domain::{Capabilities, Issuer, Secret, TenantId};
 use ipnet::IpNet;
@@ -54,6 +57,8 @@ pub struct Config {
     pub log_format: LogFormat,
     /// Where the key-encryption key comes from.
     pub kek: KekSource,
+    /// Who, if anyone, may register a client dynamically (RFC 7591 §3).
+    pub registration: RegistrationPolicy,
 }
 
 /// Listener and transport settings.
@@ -257,6 +262,38 @@ struct RawConfig {
     log_format: Option<LogFormat>,
     #[serde(default)]
     keys: RawKeys,
+    #[serde(default)]
+    registration: Option<RawRegistration>,
+}
+
+/// The `[registration]` table.
+///
+/// Absent means closed, which is why this is an `Option` rather than a
+/// `#[serde(default)]` struct: "the operator wrote nothing" and "the operator
+/// wrote a table" are different, and only the second one is asked to name a
+/// mode. A deployment that never thought about dynamic registration should not
+/// be running it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRegistration {
+    mode: Option<RegistrationMode>,
+    initial_access_tokens: Option<Vec<String>>,
+}
+
+/// The three postures an operator may choose between.
+///
+/// Spelled out in the file rather than inferred from whether tokens are
+/// present. Inferring it would mean that deleting the last token from
+/// `initial_access_tokens` silently turned a gated endpoint into an open one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RegistrationMode {
+    /// Nobody may register.
+    Closed,
+    /// A bearer initial access token is required (RFC 7591 §3).
+    InitialAccessToken,
+    /// Anybody may register (RFC 7591 §3's SHOULD), behind a rate limiter.
+    Open,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -431,6 +468,8 @@ impl RawConfig {
             }
         };
 
+        let registration = validate_registration(self.registration, &mut errors);
+
         errors.finish(Config {
             server,
             database,
@@ -438,6 +477,7 @@ impl RawConfig {
             tenants,
             log_format: self.log_format.unwrap_or_default(),
             kek: kek.unwrap_or_else(|| KekSource::Env(String::new())),
+            registration,
         })
     }
 }
@@ -552,6 +592,89 @@ impl RawServer {
             }
         }
         nets
+    }
+}
+
+/// Turns the `[registration]` table into a policy, or reports why it cannot.
+///
+/// The rules are all of the form "a setting that does nothing is a lie", which
+/// is worth spelling out because every one of them has bitten somebody:
+///
+/// * **No table means closed.** RFC 7591 §3 says an authorization server SHOULD
+///   accept unauthenticated registration requests. This deliberately does not,
+///   by default. The SHOULD serves interoperability between parties that have
+///   never met; a FAPI deployment's clients are counterparties, and the cost of
+///   getting the default wrong is an internet-writable row in `clients`.
+/// * **A table must name a mode.** Defaulting it would mean the difference
+///   between "gated" and "open" could be a key an operator forgot to write.
+/// * **`initial_access_token` needs tokens.** A gated endpoint with no tokens
+///   is a closed endpoint spelled at length, and an operator who meant to
+///   provision one has made a mistake worth stopping for.
+/// * **Every token must be long enough.** FAPI 2.0 SP §5.4.1 puts a 128-bit
+///   floor under any credential no end user handles; an initial access token is
+///   the only thing between the internet and this endpoint.
+/// * **`open` must not carry tokens.** They would be inert, and a value that
+///   does nothing is one an operator believes is doing something.
+fn validate_registration(
+    raw: Option<RawRegistration>,
+    errors: &mut Collector,
+) -> RegistrationPolicy {
+    let Some(raw) = raw else {
+        return RegistrationPolicy::Closed;
+    };
+
+    let Some(mode) = raw.mode else {
+        errors.problem(
+            "registration.mode",
+            "required when [registration] is present: one of \"closed\", \
+             \"initial_access_token\" or \"open\"",
+        );
+        return RegistrationPolicy::Closed;
+    };
+
+    let tokens = raw.initial_access_tokens.unwrap_or_default();
+
+    match mode {
+        RegistrationMode::Closed | RegistrationMode::Open if !tokens.is_empty() => {
+            errors.problem(
+                "registration.initial_access_tokens",
+                "only has an effect when registration.mode = \"initial_access_token\"",
+            );
+            RegistrationPolicy::Closed
+        }
+        RegistrationMode::Closed => RegistrationPolicy::Closed,
+        RegistrationMode::Open => RegistrationPolicy::Open,
+        RegistrationMode::InitialAccessToken => {
+            if tokens.is_empty() {
+                errors.problem(
+                    "registration.initial_access_tokens",
+                    "required when registration.mode = \"initial_access_token\": \
+                     with none configured no caller can ever register",
+                );
+            }
+            for (index, token) in tokens.iter().enumerate() {
+                if token.len() < MIN_INITIAL_ACCESS_TOKEN_LEN {
+                    // The token itself never reaches the message. It is a
+                    // credential, this error is printed to a terminal and
+                    // usually into a startup log, and the index is enough to
+                    // find the entry.
+                    errors.problem(
+                        format!("registration.initial_access_tokens[{index}]"),
+                        format!(
+                            "too short: an initial access token needs at least \
+                             {MIN_INITIAL_ACCESS_TOKEN_LEN} characters, for the 128 bits of \
+                             entropy FAPI 2.0 SP §5.4.1 requires of a credential no end user \
+                             handles"
+                        ),
+                    );
+                }
+            }
+            // Hashed here and not carried further: from this point the process
+            // holds no value that could be replayed against itself.
+            RegistrationPolicy::Gated(InitialAccessTokens::from_tokens(
+                tokens.iter().map(String::as_str),
+            ))
+        }
     }
 }
 
@@ -1172,5 +1295,128 @@ mod tests {
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("sup3rs3cret"), "leaked: {rendered}");
         assert!(rendered.contains("[REDACTED]"), "{rendered}");
+    }
+
+    // ---- dynamic client registration -------------------------------------
+
+    const INITIAL_ACCESS_TOKEN: &str = "vJ8qN2mXbL5-tRw0KePzUA";
+
+    /// A deployment that never mentioned registration must not be running it.
+    /// RFC 7591 §3's "SHOULD allow registration requests with no authorization"
+    /// is a deliberate non-default here: the SHOULD serves interoperability
+    /// between strangers, and the cost of getting it wrong is an
+    /// internet-writable row in `clients`.
+    #[test]
+    fn registration_is_closed_unless_an_operator_opens_it() {
+        assert_eq!(
+            parse(MINIMAL).expect("valid").registration,
+            RegistrationPolicy::Closed
+        );
+    }
+
+    /// The mode is not inferred from whether tokens are present, because
+    /// deleting the last token would then turn a gated endpoint into an open
+    /// one without anybody editing the line that says so.
+    #[test]
+    fn a_registration_table_must_name_its_mode() {
+        let text = format!("{MINIMAL}\n[registration]\ninitial_access_tokens = []\n");
+        let error = parse(&text).expect_err("a table with no mode");
+        assert!(error.to_string().contains("registration.mode"), "{error}");
+    }
+
+    #[test]
+    fn a_gated_deployment_hashes_the_tokens_it_was_given() {
+        let text = format!(
+            "{MINIMAL}\n[registration]\nmode = \"initial_access_token\"\n\
+             initial_access_tokens = [\"{INITIAL_ACCESS_TOKEN}\"]\n"
+        );
+        let config = parse(&text).expect("valid");
+        let RegistrationPolicy::Gated(tokens) = &config.registration else {
+            panic!("expected a gated policy, got {:?}", config.registration);
+        };
+        assert_eq!(tokens.len(), 1);
+
+        // The token itself must not survive into the loaded configuration, and
+        // `Config` is `Debug` — something will eventually log it.
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains(INITIAL_ACCESS_TOKEN),
+            "an initial access token reached a Debug rendering: {rendered}"
+        );
+    }
+
+    /// A gated endpoint with no tokens is a closed endpoint spelled at length,
+    /// and an operator who meant to provision one has made a mistake worth
+    /// stopping for.
+    #[test]
+    fn a_gated_deployment_with_no_tokens_is_a_configuration_error() {
+        let text = format!("{MINIMAL}\n[registration]\nmode = \"initial_access_token\"\n");
+        let error = parse(&text).expect_err("gated with nothing to present");
+        assert!(
+            error
+                .to_string()
+                .contains("registration.initial_access_tokens"),
+            "{error}"
+        );
+    }
+
+    /// FAPI 2.0 SP §5.4.1: a credential no end user handles carries at least
+    /// 128 bits of entropy. An initial access token is the only thing between
+    /// the internet and this endpoint, so a short one is refused at startup —
+    /// and the refusal must not print the token it is complaining about.
+    #[test]
+    fn a_short_initial_access_token_is_refused_without_being_quoted() {
+        let text = format!(
+            "{MINIMAL}\n[registration]\nmode = \"initial_access_token\"\n\
+             initial_access_tokens = [\"hunter2\"]\n"
+        );
+        let error = parse(&text).expect_err("a seven-character credential");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("registration.initial_access_tokens[0]"),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("hunter2"),
+            "leaked the token: {rendered}"
+        );
+    }
+
+    /// A value that does nothing is one an operator believes is doing
+    /// something. Tokens under `open` would be inert.
+    #[test]
+    fn tokens_that_could_never_be_checked_are_a_configuration_error() {
+        for mode in ["open", "closed"] {
+            let text = format!(
+                "{MINIMAL}\n[registration]\nmode = \"{mode}\"\n\
+                 initial_access_tokens = [\"{INITIAL_ACCESS_TOKEN}\"]\n"
+            );
+            let error = parse(&text).expect_err("inert tokens under {mode}");
+            assert!(
+                error
+                    .to_string()
+                    .contains("registration.initial_access_tokens"),
+                "{mode}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn open_registration_has_to_be_written_out() {
+        let text = format!("{MINIMAL}\n[registration]\nmode = \"open\"\n");
+        assert_eq!(
+            parse(&text).expect("valid").registration,
+            RegistrationPolicy::Open
+        );
+    }
+
+    /// `deny_unknown_fields` covers the new table too: a typo in a security
+    /// switch is the one class of configuration error that must stop the
+    /// server rather than be discovered later.
+    #[test]
+    fn a_typo_in_the_registration_table_stops_the_server() {
+        let text = format!("{MINIMAL}\n[registration]\nmode = \"open\"\nrate_limit = 10\n");
+        let error = parse(&text).expect_err("an unknown key");
+        assert!(error.to_string().contains("registration"), "{error}");
     }
 }

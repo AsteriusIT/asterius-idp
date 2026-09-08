@@ -56,6 +56,17 @@ impl asterius_domain::ClientRepository for PgClientRepository {
     }
 }
 
+#[async_trait::async_trait]
+impl asterius_domain::ClientRegistry for PgClientRepository {
+    async fn register(
+        &self,
+        client: &Client,
+        registration_access_token: &[u8; 32],
+    ) -> Result<Client, DomainError> {
+        Self::register(self, client, registration_access_token).await
+    }
+}
+
 impl TenantScoped for PgClientRepository {
     fn tenant(&self) -> &TenantId {
         &self.tenant
@@ -233,6 +244,113 @@ impl PgClientRepository {
         .map_err(to_domain_error)
     }
 
+    /// Creates a client that did not exist, with the digest of its RFC 7592
+    /// registration access token.
+    ///
+    /// Not [`Self::upsert`] with an extra column, for two reasons.
+    ///
+    /// **`insert` and not `on conflict do update`.** Registration mints its own
+    /// `client_id`, so a row already sitting under that id is a collision in a
+    /// 256-bit space, not an update anybody asked for. Upserting would let the
+    /// improbable case silently replace a live client's keys, redirect URIs and
+    /// registration access token — which is the shape of a takeover, arriving
+    /// through the one endpoint that is reachable without a client credential.
+    /// A conflict is therefore an error, and the caller retries with a fresh
+    /// draw or gives up; neither outcome touches an existing row.
+    ///
+    /// **`returning` and not a second `select`.** RFC 7591 §3.2.1 requires the
+    /// response to carry the metadata the server actually registered, and the
+    /// only honest source for that is the row. Reading it back in the same
+    /// statement means what the client is told is what was committed, with no
+    /// window in between and no second round trip that could fail after the row
+    /// exists — a failure there would leave a registered client whose owner was
+    /// handed an error and never learned its `client_id`.
+    ///
+    /// The row is put back through [`ClientMetadata::validate`] on the way out
+    /// like every other read, so a registration that the schema silently
+    /// altered — a default, a trigger — fails here rather than at the token
+    /// endpoint weeks later.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the `client_id` is taken or the tenant does
+    /// not exist, [`DomainError::Invalid`] if the entity belongs to another
+    /// tenant or the stored row does not validate, or a storage error.
+    pub async fn register(
+        &self,
+        client: &Client,
+        registration_access_token: &[u8; 32],
+    ) -> Result<Client, DomainError> {
+        if client.tenant != self.tenant {
+            return Err(DomainError::invalid(
+                "tenant_id",
+                "does not match the tenant this repository is scoped to",
+            ));
+        }
+        let registration = &client.registration;
+        let lists = ListColumns::of(registration);
+        let (jwks, jwks_uri) = match &registration.jwks {
+            JwksSource::Inline(value) => (Some(value.clone()), None),
+            JwksSource::Uri(uri) => (None, Some(uri.clone())),
+        };
+
+        let row = sqlx::query_as!(
+            Row,
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, redirect_uris, grant_types,
+                                  response_types, scopes, resources, jwks, jwks_uri,
+                                  id_token_signed_response_alg, application_type, subject_type,
+                                  sector_identifier_uri, request_object_signing_alg,
+                                  backchannel_authentication_request_signing_alg,
+                                  dpop_bound_access_tokens,
+                                  tls_client_certificate_bound_access_tokens,
+                                  authorization_details_types, use_mtls_endpoint_aliases, status,
+                                  registration_access_token_hash)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                     $18, $19, $20, $21, $22, $23)
+             returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
+                       grant_types, response_types, scopes, resources, jwks, jwks_uri,
+                       id_token_signed_response_alg, application_type, subject_type,
+                       sector_identifier_uri, request_object_signing_alg,
+                       backchannel_authentication_request_signing_alg,
+                       dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
+                       authorization_details_types, use_mtls_endpoint_aliases,
+                       status, created_at, updated_at",
+            self.tenant.as_str(),
+            client.id.as_str(),
+            registration.client_name,
+            registration.token_endpoint_auth_method.as_str(),
+            &lists.redirect_uris,
+            &lists.grant_types,
+            &lists.response_types,
+            &lists.scopes,
+            &lists.resources,
+            jwks,
+            jwks_uri.as_deref(),
+            registration.id_token_signed_response_alg.as_str(),
+            registration.application_type.as_str(),
+            registration.subject_type.as_str(),
+            registration.sector_identifier_uri.as_deref(),
+            registration
+                .request_object_signing_alg
+                .map(SigningAlgorithm::as_str),
+            registration
+                .backchannel_authentication_request_signing_alg
+                .map(SigningAlgorithm::as_str),
+            registration.token_binding.is_dpop_bound(),
+            registration.token_binding.is_certificate_bound(),
+            &lists.authorization_details_types,
+            registration.use_mtls_endpoint_aliases,
+            client.status.as_str(),
+            &registration_access_token[..],
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        row.into_entity(&self.tenant, self.capabilities)
+    }
+
     /// Deletes a client and, by cascade, its grants, tokens and pushed
     /// requests.
     ///
@@ -285,19 +403,14 @@ impl ListColumns {
                 .collect(),
             // Kept consistent with `grant_types` rather than defaulted by the
             // column: RFC 7591 §2.1 ties the two together, and a row where they
-            // disagree is a row that fails to load.
-            response_types: if registration
-                .grant_types
+            // disagree is a row that fails to load. The derivation lives on the
+            // registration so that the registration endpoint echoes back
+            // exactly what this writes (`ast-m9c.4`).
+            response_types: registration
+                .response_types()
                 .iter()
-                .any(|grant| grant.uses_the_authorization_endpoint())
-            {
-                ClientRegistration::RESPONSE_TYPES
-                    .iter()
-                    .map(|value| (*value).to_owned())
-                    .collect()
-            } else {
-                Vec::new()
-            },
+                .map(|value| (*value).to_owned())
+                .collect(),
             scopes: registration.scopes.iter().cloned().collect(),
             resources: registration.resources.iter().cloned().collect(),
             authorization_details_types: registration

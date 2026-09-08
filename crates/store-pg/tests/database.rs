@@ -1164,6 +1164,201 @@ db_test! {
 }
 
 // ---------------------------------------------------------------------------
+// Dynamic client registration (`ast-m9c.4`)
+// ---------------------------------------------------------------------------
+
+db_test! {
+    /// The registration round trip, against the row rather than the entity.
+    ///
+    /// Two things are asserted that no in-memory test can reach. The client
+    /// that `register` hands back is the one the database holds — RFC 7591
+    /// §3.2.1 makes the response "all registered metadata about this client",
+    /// and the endpoint renders it from this value, so a row the database
+    /// altered on the way in must show up here. And the registration access
+    /// token is in the row only as a digest: the column is `bytea`, it is
+    /// exactly the 32 bytes of SHA-256, and the token itself appears nowhere.
+    async fn registering_a_client_stores_only_the_digest_of_its_access_token(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+
+        let token = asterius_domain::OpaqueToken::generate();
+        let digest = asterius_domain::sha256(token.expose().as_bytes());
+        let registered = client("demo", "c.abc", &registration_document());
+
+        let stored = repo.register(&registered, &digest).await.expect("register");
+        assert_eq!(stored.registration, registered.registration);
+        assert_eq!(stored.id, registered.id);
+        assert!(stored.is_active());
+        // The timestamps come from the column defaults, not from the entity, so
+        // `client_id_issued_at` is a value the database will always agree with.
+        assert!(stored.created_at > OffsetDateTime::UNIX_EPOCH);
+
+        // The same client comes back through the ordinary read path.
+        let found = repo.find(&ClientId::new("c.abc")).await.expect("find").expect("present");
+        assert_eq!(found.registration, stored.registration);
+
+        let column: Option<Vec<u8>> = sqlx::query_scalar(
+            "select registration_access_token_hash from clients
+             where tenant_id = 'demo' and client_id = 'c.abc'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read the digest");
+        let column = column.expect("a registration access token was stored");
+        assert_eq!(column, digest.to_vec());
+        assert_eq!(column.len(), 32, "SHA-256 is 32 bytes");
+
+        // Nothing in the row is the token. Checked across every text column,
+        // because the point is not that one column is clean but that the
+        // credential is not recoverable from the row at all.
+        let row: Vec<String> = sqlx::query_scalar(
+            "select coalesce(t.value::text, '') from clients c,
+                    lateral jsonb_each(to_jsonb(c)) as t(key, value)
+             where c.tenant_id = 'demo' and c.client_id = 'c.abc'",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the row");
+        assert!(
+            !row.iter().any(|value| value.contains(token.expose())),
+            "the registration access token survived into the row"
+        );
+    }
+}
+
+db_test! {
+    /// `register` creates; it never replaces.
+    ///
+    /// A `client_id` collision at 128 bits is not an update anybody asked for,
+    /// and treating it as one would let the improbable case retire a live
+    /// client's keys, redirect URIs and registration access token — through the
+    /// one endpoint reachable without a client credential. The second call must
+    /// fail and the first client must be untouched.
+    async fn registering_over_an_existing_client_is_refused_not_merged(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+
+        let first_digest = [1_u8; 32];
+        repo.register(&client("demo", "c.abc", &registration_document()), &first_digest)
+            .await
+            .expect("the first registration");
+
+        let mut second = registration_document();
+        second
+            .as_object_mut()
+            .expect("object")
+            .insert("redirect_uris".to_owned(), json!(["https://attacker.example/cb"]));
+        let conflict = repo
+            .register(&client("demo", "c.abc", &second), &[2_u8; 32])
+            .await;
+        assert!(
+            matches!(conflict, Err(asterius_domain::DomainError::Conflict(_))),
+            "a second registration under the same id was not refused: {conflict:?}"
+        );
+
+        let found = repo.find(&ClientId::new("c.abc")).await.expect("find").expect("present");
+        assert_eq!(
+            found.registration.redirect_uris[0].as_str(),
+            "https://rp.example/cb",
+            "the second registration overwrote the first client's redirect URI"
+        );
+        let digest: Option<Vec<u8>> = sqlx::query_scalar(
+            "select registration_access_token_hash from clients
+             where tenant_id = 'demo' and client_id = 'c.abc'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read the digest");
+        assert_eq!(
+            digest,
+            Some(first_digest.to_vec()),
+            "the second registration replaced the first client's access token"
+        );
+    }
+}
+
+db_test! {
+    /// A client registered in one tenant does not exist in another, even when
+    /// both tenants used the same `client_id`. This is the case a missing
+    /// `tenant_id` predicate breaks, and dynamic registration is the path that
+    /// creates clients fastest, so it is the path where a leak would be widest.
+    async fn a_client_registered_in_one_tenant_is_invisible_in_another(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let store = Store::from_pool(db.pool.clone());
+        let alpha = store.scope(TenantId::new("alpha")).clients(Capabilities::default());
+        let beta = store.scope(TenantId::new("beta")).clients(Capabilities::default());
+
+        alpha
+            .register(&client("alpha", "c.abc", &registration_document()), &[3_u8; 32])
+            .await
+            .expect("alpha registers");
+
+        assert!(
+            beta.find(&ClientId::new("c.abc")).await.expect("find").is_none(),
+            "the other tenant's client was visible"
+        );
+        assert!(beta.list().await.expect("list").is_empty());
+        assert_eq!(alpha.list().await.expect("list").len(), 1);
+
+        // Both tenants may hold the same identifier without either seeing the
+        // other's row, and the registration access tokens stay distinct.
+        beta.register(&client("beta", "c.abc", &registration_document()), &[4_u8; 32])
+            .await
+            .expect("beta registers the same id");
+        let digests: Vec<(String, Vec<u8>)> = sqlx::query_as(
+            "select tenant_id, registration_access_token_hash from clients
+             where client_id = 'c.abc' order by tenant_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the digests");
+        assert_eq!(digests.len(), 2);
+        assert_eq!(digests[0], ("alpha".to_owned(), vec![3_u8; 32]));
+        assert_eq!(digests[1], ("beta".to_owned(), vec![4_u8; 32]));
+
+        // And an entity belonging to another tenant cannot be registered
+        // through this scope at all.
+        let wrong = alpha
+            .register(&client("beta", "c.def", &registration_document()), &[5_u8; 32])
+            .await;
+        assert!(
+            matches!(
+                wrong,
+                Err(asterius_domain::DomainError::Invalid { field: "tenant_id", .. })
+            ),
+            "a foreign entity was registered into this tenant: {wrong:?}"
+        );
+    }
+}
+
+db_test! {
+    /// Registering into a tenant that does not exist is a conflict, not a
+    /// storage failure and not a row. The foreign key is what makes it so, and
+    /// this asserts the mapping rather than the constraint: a caller that got
+    /// `Storage` back would retry, and a caller that got `Conflict` knows not
+    /// to.
+    async fn registering_into_an_unknown_tenant_creates_nothing(db) {
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("ghost")).clients(Capabilities::default());
+        let failed = repo
+            .register(&client("ghost", "c.abc", &registration_document()), &[7_u8; 32])
+            .await;
+        assert!(
+            matches!(failed, Err(asterius_domain::DomainError::Conflict(_))),
+            "{failed:?}"
+        );
+        let count: i64 = sqlx::query_scalar("select count(*) from clients")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+        assert_eq!(count, 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Signing keys: lifecycle, rotation and encryption at rest
 // ---------------------------------------------------------------------------
 

@@ -95,6 +95,42 @@ ssf = false              # Shared Signals Framework transmitter, CAEP/RISC
 authzen = false          # AuthZEN Authorization API 1.0
 dpop_nonce = false       # server-issued DPoP nonces (RFC 9449 §8)
 
+# Dynamic client registration — POST /register (RFC 7591 §3).
+#
+# Omit this table entirely and the endpoint registers nobody, answering 403.
+# That is a deliberate departure from RFC 7591 §3, which says an authorization
+# server SHOULD accept registration requests with no authorization: that SHOULD
+# exists so clients can interoperate with servers nobody has agreed with in
+# advance, and a FAPI deployment's clients are counterparties rather than
+# strangers. The cost of the other default is an internet-writable row in
+# `clients`, an unbounded inline JWKS per row, and — once `jwks_uri` fetching
+# lands — an outbound fetch to an address the caller chose.
+#
+# [registration]
+#
+# Required when the table is present. One of:
+#
+#   "closed"               nobody registers. 403.
+#   "initial_access_token" a bearer initial access token is required (RFC 7591
+#                          §3), presented as `Authorization: Bearer <token>`.
+#                          Missing or unrecognised: 401.
+#   "open"                 anybody registers. RFC 7591 §3's SHOULD.
+#
+# mode = "initial_access_token"
+#
+# The tokens, in plaintext, and only meaningful under "initial_access_token".
+# They are hashed at startup — the running process holds only SHA-256 digests,
+# so a core dump or a `Debug` of the configuration contains nothing replayable —
+# and each must be at least 22 characters, which is the 128 bits FAPI 2.0 SP
+# §5.4.1 requires of a credential no end user handles. Generate one with:
+#     head -c 16 /dev/urandom | basenc --base64url | tr -d '='
+#
+# initial_access_tokens = ["vJ8qN2mXbL5-tRw0KePzUA"]
+#
+# NOTE: neither mode is rate-limited yet (`ast-p2l.3`). Until it lands, "open"
+# means an unauthenticated caller can create rows at the speed of the network,
+# and "initial_access_token" means a leaked token can do the same.
+
 # One table per tenant. A tenant is an issuer.
 #
 # The issuer must be an https URL with no query and no fragment (RFC 8414 §2,

@@ -33,5 +33,8 @@ pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
 pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, SigningAlgorithm};
-pub use ports::{AuthRequestRepository, ClientRepository, ReplayCheck, ReplayGuard, ReplayPurpose};
+pub use ports::{
+    AuthRequestRepository, ClientRegistry, ClientRepository, ReplayCheck, ReplayGuard,
+    ReplayPurpose,
+};
 pub use secret::{Secret, ct_eq};
