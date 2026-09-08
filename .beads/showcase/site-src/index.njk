@@ -1,0 +1,29 @@
+---
+layout: base.njk
+---
+{% if site.report %}{{ site.report | safe }}{% endif %}
+<header class="hero"><h1>{{ site.title }}</h1><p class="sub">{% if site.scope == 'all' %}Across all projects{% else %}A look at what we're getting done{% endif %} · {{ site.generated }}</p></header>
+{% if site.statsEnabled %}
+<section class="stats">
+  <div class="stat"><div class="n">{{ site.stats.total }}</div><div class="l">Total</div></div>
+  <div class="stat done"><div class="n">{{ site.stats.done }}</div><div class="l">Shipped</div></div>
+  <div class="stat wip"><div class="n">{{ site.stats.inProgress }}</div><div class="l">In progress</div></div>
+  <div class="stat"><div class="n">{{ site.stats.human }}<span class="vs">/</span>{{ site.stats.agent }}</div><div class="l">Human / Agent</div></div>
+</section>{% endif %}
+{% if site.gamificationEnabled %}
+<section class="game">
+  <div class="game-head"><span class="lvl">Level {{ site.gamification.level }}</span><span class="xp">{{ site.gamification.totalXp }} XP</span><span class="cl">{{ site.gamification.totalClosed }} closed</span></div>
+  {% if site.gamification.badges.length %}<div class="badges">{% for b in site.gamification.badges %}<span class="badge">🏅 {{ b.label }}</span>{% endfor %}</div>{% endif %}
+  <ol class="lb">{% for a in site.gamification.leaders %}<li><span class="r">{{ loop.index }}</span><span class="who {{ a.origin }}">{{ a.origin }}</span><span class="nm">{{ a.actor }}</span>{% if a.streak %}<span class="st">🔥{{ a.streak }}</span>{% endif %}<span class="v">{{ a.xp }} XP</span></li>{% endfor %}</ol>
+</section>
+{% endif %}
+<div class="bar">{% if site.searchEnabled %}<input id="q" class="search" type="search" placeholder="Search beads…" oninput="(function(v){v=v.value.toLowerCase();document.querySelectorAll('[data-bead]').forEach(function(e){e.style.display=(e.getAttribute('data-text')||'').indexOf(v)>-1?'':'none'})})(this)">{% endif %}</div>
+<div class="grid">
+{% for b in site.cards %}
+  <a class="card s-{{ b.status }}" data-bead data-text="{{ (b.id + ' ' + b.title + ' ' + b.assignee + ' ' + b.typeLabel + ' ' + b.statusLabel) | lower }}" href="beads/{{ b.slug }}.html">
+    <div class="row"><span class="dot"></span><span class="id">{{ b.id }}</span><span class="pill p{{ b.priority }}">{{ b.priorityLabel }}</span></div>
+    <div class="t">{{ b.title }}</div>
+    <div class="meta"><span class="type">{{ b.typeLabel }}</span><span class="who {{ b.origin }}">{{ b.origin }}</span><span class="upd">{{ b.updatedLabel }}</span></div>
+  </a>
+{% endfor %}
+</div>

@@ -1,0 +1,10 @@
+---
+layout: base.njk
+---
+<header class="hero sm"><a class="back" href="../index.html">← {{ site.title }}</a></header>
+<article class="bead">
+  <div class="row"><span class="id">{{ id }}</span><span class="chip">{{ status }}</span><span class="chip">{{ type }}</span><span class="chip">{{ priority }}</span><span class="who {{ origin }}">{{ origin }}</span></div>
+  <h1>{{ title }}</h1>
+  <div class="prose">{{ content | safe }}</div>
+  <div class="upd">Updated {{ updated }} · {{ assignee }}</div>
+</article>

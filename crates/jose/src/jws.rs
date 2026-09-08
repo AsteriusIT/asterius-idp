@@ -30,10 +30,19 @@ pub struct Header {
     pub alg: String,
     /// The media type of the token (RFC 8725 §3.11).
     ///
-    /// Required, never optional. `at+jwt`, `logout+jwt`, `dpop+jwt`,
-    /// `secevent+jwt`: an explicit type is what stops a token minted for one
-    /// purpose being presented as another.
-    pub typ: String,
+    /// Always set on everything *this server issues* — `at+jwt`, `logout+jwt`,
+    /// `dpop+jwt`, `secevent+jwt` — because an explicit type is what stops a
+    /// token minted for one purpose being presented as another.
+    ///
+    /// Optional on the way in, and only on the way in. RFC 7523 predates
+    /// RFC 8725 §3.11 and requires no `typ` on a client assertion, so a
+    /// verifier that demanded one would reject conforming clients before it
+    /// could look at them. Whether an absent `typ` is acceptable is not a
+    /// question this module can answer — it depends on what the caller thinks
+    /// it is verifying — so it is [`crate::verify::Policy`] that decides, and
+    /// this type only reports what was found.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typ: Option<String>,
     /// Which key signed it.
     ///
     /// Optional on the way in: everything *this server issues* sets a `kid`,
@@ -103,23 +112,26 @@ impl Unverified {
         &self.header.alg
     }
 
-    /// The `typ` the token claims.
+    /// The `typ` the token claims, if it carries one.
+    ///
+    /// `None` is a real answer, not a missing one: see [`Header::typ`].
     #[must_use]
-    pub fn claimed_typ(&self) -> &str {
-        &self.header.typ
+    pub fn claimed_typ(&self) -> Option<&str> {
+        self.header.typ.as_deref()
     }
 
     /// Verifies against `key` and returns the payload.
     ///
-    /// The algorithm is the key's. The header must agree with it, and the
-    /// `typ` must be the one expected, or nothing is returned.
+    /// The algorithm is the key's, and the header must agree with it. The `typ`
+    /// is *not* checked here — [`crate::verify::Policy`] owns that decision and
+    /// applies it before any key is fetched, which is both cheaper and the only
+    /// place that knows what the token is supposed to be.
     ///
     /// # Errors
     ///
     /// Returns [`JoseError::InvalidSignature`] if the signature does not check
-    /// out, or [`JoseError::UnexpectedHeader`] if `alg` or `typ` disagrees with
-    /// what the caller required.
-    pub fn verify(self, key: &VerifyingKey, expected_typ: &str) -> Result<Vec<u8>, JoseError> {
+    /// out, or [`JoseError::UnexpectedHeader`] if `alg` disagrees with the key.
+    pub fn verify(self, key: &VerifyingKey) -> Result<Vec<u8>, JoseError> {
         // The header must agree with the key we are about to use. If it does
         // not, the token was made for something else, and continuing would mean
         // verifying it under an algorithm its author did not choose.
@@ -128,13 +140,6 @@ impl Unverified {
                 field: "alg",
                 expected: key.algorithm().as_str().to_owned(),
                 found: self.header.alg,
-            });
-        }
-        if self.header.typ != expected_typ {
-            return Err(JoseError::UnexpectedHeader {
-                field: "typ",
-                expected: expected_typ.to_owned(),
-                found: self.header.typ,
             });
         }
 
@@ -156,7 +161,8 @@ pub fn sign(
 ) -> Result<CompactJws, JoseError> {
     let header = Header {
         alg: key.algorithm().as_str().to_owned(),
-        typ: typ.to_owned(),
+        // Always set on what we issue, whatever we tolerate on the way in.
+        typ: Some(typ.to_owned()),
         kid: Some(kid.as_str().to_owned()),
         crit: None,
     };
@@ -258,7 +264,7 @@ mod tests {
             let (key, jws) = signed(algorithm);
             let payload = parse(jws.as_str())
                 .expect("parse")
-                .verify(&key.verifying_key().expect("public"), "at+jwt")
+                .verify(&key.verifying_key().expect("public"))
                 .unwrap_or_else(|e| panic!("{algorithm} did not verify: {e}"));
             assert_eq!(
                 serde_json::from_slice::<Value>(&payload).expect("json"),
@@ -311,7 +317,7 @@ mod tests {
             assert!(
                 parse(&forged)
                     .expect("parses")
-                    .verify(&verifying, "at+jwt")
+                    .verify(&verifying)
                     .is_err(),
                 "{algorithm} accepted a swapped payload"
             );
@@ -323,7 +329,7 @@ mod tests {
             assert!(
                 parse(&flipped)
                     .expect("parses")
-                    .verify(&verifying, "at+jwt")
+                    .verify(&verifying)
                     .is_err(),
                 "{algorithm} accepted a flipped signature bit"
             );
@@ -352,7 +358,7 @@ mod tests {
                 // mismatch, because the key decides and the header must agree.
                 Ok(unverified) => {
                     let error = unverified
-                        .verify(&key.verifying_key().expect("public"), "at+jwt")
+                        .verify(&key.verifying_key().expect("public"))
                         .expect_err("must not verify under a nominated algorithm");
                     assert!(
                         matches!(error, JoseError::UnexpectedHeader { field: "alg", .. }),
@@ -366,16 +372,17 @@ mod tests {
 
     /// A token minted for one purpose must not be usable as another.
     #[test]
-    fn a_token_of_the_wrong_type_is_refused() {
+    fn the_claimed_type_is_reported_but_not_judged_here() {
+        // `typ` moved to `verify::Policy`, because whether an absent one is
+        // acceptable depends on which specification defined the token — see
+        // `Header::typ`. This module's job is to report what was found; the
+        // rejection tests live next to the rule, in `verify`.
         let (key, jws) = signed(SigningAlgorithm::EdDsa);
-        let error = parse(jws.as_str())
-            .expect("parse")
-            .verify(&key.verifying_key().expect("public"), "logout+jwt")
-            .expect_err("an at+jwt must not pass as a logout+jwt");
-        assert!(
-            matches!(error, JoseError::UnexpectedHeader { field: "typ", .. }),
-            "{error}"
-        );
+        let unverified = parse(jws.as_str()).expect("parse");
+        assert_eq!(unverified.claimed_typ(), Some("at+jwt"));
+        unverified
+            .verify(&key.verifying_key().expect("public"))
+            .expect("a good signature verifies regardless of type");
     }
 
     /// RFC 7515 §4.1.11: `crit` means fail if you do not understand it.
@@ -435,7 +442,7 @@ mod tests {
         assert!(
             parse(&forged)
                 .expect("parses")
-                .verify(&key.verifying_key().expect("public"), "at+jwt")
+                .verify(&key.verifying_key().expect("public"))
                 .is_err(),
             "a re-encoded header verified against a signature over the original"
         );
@@ -447,6 +454,6 @@ mod tests {
         let unverified = parse(jws.as_str()).expect("parse");
         assert_eq!(unverified.kid(), Some(Kid::new("k1")));
         assert_eq!(unverified.claimed_alg(), "ES256");
-        assert_eq!(unverified.claimed_typ(), "at+jwt");
+        assert_eq!(unverified.claimed_typ(), Some("at+jwt"));
     }
 }

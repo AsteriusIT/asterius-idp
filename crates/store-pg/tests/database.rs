@@ -1287,7 +1287,7 @@ db_test! {
         assert_eq!(old_published.state, KeyState::Retiring);
         jws::parse(old_token.as_str())
             .expect("parse")
-            .verify(&verifying_key_from_jwk(&old_published.public_jwk), "at+jwt")
+            .verify(&verifying_key_from_jwk(&old_published.public_jwk))
             .expect("a token signed before the rotation must still verify");
 
         // Once the grace period is over the old key leaves the JWK Set.

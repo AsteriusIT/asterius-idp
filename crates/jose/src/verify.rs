@@ -58,12 +58,8 @@ pub const MAX_FUTURE_SKEW: Duration = Duration::seconds(60);
 /// What a caller requires of a token.
 #[derive(Debug, Clone)]
 pub struct Policy {
-    /// The `typ` header the token must carry (RFC 8725 §3.11).
-    ///
-    /// `dpop+jwt`, `oauth-authz-req+jwt`, `at+jwt`, `logout+jwt`,
-    /// `secevent+jwt`. Required, always: a token minted for one purpose must
-    /// not be presentable as another.
-    pub expected_typ: &'static str,
+    /// What the token's `typ` header must be (RFC 8725 §3.11).
+    pub typ: TypRule,
     /// Algorithms this caller will accept. Never read from the token.
     pub allowed_algorithms: Vec<SigningAlgorithm>,
     /// The `iss` the token must carry, when the caller knows it.
@@ -78,6 +74,74 @@ pub struct Policy {
     pub max_bytes: usize,
 }
 
+/// What a token's `typ` header must be.
+///
+/// RFC 8725 §3.11 asks for explicit typing, and every token *this server*
+/// issues carries a registered media type. Not every token this server
+/// *receives* can: a client assertion is defined by RFC 7523, which predates
+/// the recommendation and requires no `typ` at all, so demanding one would
+/// reject conforming clients. The distinction is a decision per token type,
+/// which is why it is spelled out here rather than assumed.
+///
+/// Comparison is case-insensitive and tolerates the `application/` prefix,
+/// which RFC 7515 §4.1.9 explicitly permits a sender to omit — `JWT`,
+/// `jwt` and `application/JWT` are the same media type, and treating them as
+/// three would be a rejection with no security value behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypRule {
+    /// The token must carry exactly this `typ`.
+    ///
+    /// The right answer for anything with a registered type: `at+jwt`,
+    /// `dpop+jwt`, `logout+jwt`, `secevent+jwt`, `oauth-authz-req+jwt`. A token
+    /// minted for one purpose must not be presentable as another.
+    Exactly(&'static str),
+    /// The token may omit `typ`, or carry one of these values.
+    ///
+    /// Only for token types whose own specification never required one. The
+    /// list is still closed: an assertion that announces itself as `at+jwt` is
+    /// refused, so this widens what is accepted without erasing the check.
+    OptionalOneOf(&'static [&'static str]),
+}
+
+impl TypRule {
+    /// Whether `claimed` satisfies this rule.
+    #[must_use]
+    pub fn accepts(&self, claimed: Option<&str>) -> bool {
+        match self {
+            Self::Exactly(expected) => claimed.is_some_and(|found| Self::same_type(found, expected)),
+            Self::OptionalOneOf(accepted) => match claimed {
+                None => true,
+                Some(found) => accepted
+                    .iter()
+                    .any(|expected| Self::same_type(found, expected)),
+            },
+        }
+    }
+
+    /// Whether two `typ` values name the same media type.
+    fn same_type(found: &str, expected: &str) -> bool {
+        fn normalise(value: &str) -> &str {
+            // RFC 7515 §4.1.9: a sender MAY omit the `application/` prefix, so
+            // a receiver that treats its presence as a different type is
+            // rejecting a spelling the specification invited.
+            value
+                .strip_prefix("application/")
+                .or_else(|| value.strip_prefix("APPLICATION/"))
+                .unwrap_or(value)
+        }
+        normalise(found).eq_ignore_ascii_case(normalise(expected))
+    }
+
+    /// How to describe this rule in an error, without allocating in the happy
+    /// path.
+    fn describe(&self) -> String {
+        match self {
+            Self::Exactly(expected) => (*expected).to_owned(),
+            Self::OptionalOneOf(accepted) => format!("absent or one of [{}]", accepted.join(", ")),
+        }
+    }
+}
+
 impl Policy {
     /// A policy for tokens of media type `typ`, with the profile's defaults.
     ///
@@ -85,9 +149,9 @@ impl Policy {
     /// decisions, and a caller that has not made them has not thought about
     /// what it is verifying.
     #[must_use]
-    pub fn new(expected_typ: &'static str, allowed_algorithms: Vec<SigningAlgorithm>) -> Self {
+    pub fn new(typ: TypRule, allowed_algorithms: Vec<SigningAlgorithm>) -> Self {
         Self {
-            expected_typ,
+            typ,
             allowed_algorithms,
             expected_issuer: None,
             expected_audience: None,
@@ -202,6 +266,14 @@ pub enum VerificationError {
     /// The payload is not a JSON object.
     #[error("claims are not a JSON object")]
     MalformedClaims,
+    /// The `typ` header is not one this caller accepts.
+    #[error("unexpected typ: expected {expected}, found {}", found.as_deref().unwrap_or("none"))]
+    UnexpectedType {
+        /// What the policy would have accepted.
+        expected: String,
+        /// What the token carried, if anything.
+        found: Option<String>,
+    },
     /// A required claim is absent.
     #[error("missing required claim {0}")]
     MissingClaim(&'static str),
@@ -260,6 +332,16 @@ pub fn verify(
     // Structure, `crit`, and the allow-list at the crate level.
     let unverified = jws::parse(token)?;
 
+    // `typ` before anything cryptographic. RFC 8725 §3.11: the cheapest way to
+    // establish that this token was even meant for the thing about to consume
+    // it, and there is no reason to fetch a key for a token of the wrong type.
+    if !policy.typ.accepts(unverified.claimed_typ()) {
+        return Err(VerificationError::UnexpectedType {
+            expected: policy.typ.describe(),
+            found: unverified.claimed_typ().map(ToOwned::to_owned),
+        });
+    }
+
     // The caller's list, which may be narrower than the crate's. RFC 8725
     // §3.1–3.2: the algorithm is decided by the verifier, and this is where
     // this verifier decides.
@@ -269,7 +351,7 @@ pub fn verify(
         .ok_or(VerificationError::AlgorithmNotAllowed { found: claimed })?;
 
     let kid = unverified.kid();
-    let payload = select_key_and_verify(&unverified, kid.as_ref(), algorithm, policy, resolver)?;
+    let payload = select_key_and_verify(&unverified, kid.as_ref(), algorithm, resolver)?;
 
     let claims: Value =
         serde_json::from_slice(&payload).map_err(|_| VerificationError::MalformedClaims)?;
@@ -298,7 +380,6 @@ fn select_key_and_verify(
     unverified: &jws::Unverified,
     kid: Option<&Kid>,
     algorithm: SigningAlgorithm,
-    policy: &Policy,
     resolver: &impl KeyResolver,
 ) -> Result<Vec<u8>, VerificationError> {
     let candidates: Vec<VerifyingKey> = resolver
@@ -321,7 +402,7 @@ fn select_key_and_verify(
         )) else {
             continue;
         };
-        if let Ok(payload) = reparsed.verify(&key, policy.expected_typ) {
+        if let Ok(payload) = reparsed.verify(&key) {
             return Ok(payload);
         }
     }
@@ -431,7 +512,7 @@ mod tests {
     }
 
     fn policy() -> Policy {
-        Policy::new(TYP, vec![SigningAlgorithm::EdDsa])
+        Policy::new(TypRule::Exactly(TYP), vec![SigningAlgorithm::EdDsa])
     }
 
     /// Builds a token and a resolver that offers only the key that signed it.
@@ -446,6 +527,31 @@ mod tests {
         (jws.as_str().to_owned(), move |_: Option<&Kid>| {
             vec![verifying.clone()]
         })
+    }
+
+    /// A token with no `typ` header at all.
+    ///
+    /// `jws::sign` always writes one, deliberately, so this builds the header
+    /// by hand — which is the only way to produce what RFC 7523 permits a
+    /// client to send.
+    fn token_without_typ(
+        algorithm: SigningAlgorithm,
+        claims: &Value,
+    ) -> (String, impl KeyResolver + use<>) {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+
+        let key = SigningKey::generate(algorithm).expect("generate");
+        let header = json!({"alg": algorithm.as_str(), "kid": "k1"});
+        let signing_input = format!(
+            "{}.{}",
+            B64.encode(serde_json::to_vec(&header).expect("json")),
+            B64.encode(serde_json::to_vec(claims).expect("json"))
+        );
+        let signature = key.sign(signing_input.as_bytes()).expect("sign");
+        let token = format!("{signing_input}.{}", B64.encode(signature));
+        let verifying = key.verifying_key().expect("public");
+        (token, move |_: Option<&Kid>| vec![verifying.clone()])
     }
 
     fn valid_claims() -> Value {
@@ -471,14 +577,71 @@ mod tests {
 
     #[test]
     fn a_token_of_the_wrong_type_is_refused() {
+        // The rejection is now named. It used to surface as `NoKeyVerified`,
+        // because the type was checked during key selection and a mismatch
+        // simply exhausted the candidates — a true statement that told an
+        // operator nothing about why.
         for wrong in ["at+jwt", "dpop+jwt", "logout+jwt", "JWT", ""] {
             let (token, resolver) = token_with(SigningAlgorithm::EdDsa, wrong, &valid_claims());
             assert_eq!(
                 verify(&token, &policy(), &resolver, now()),
-                Err(VerificationError::NoKeyVerified),
+                Err(VerificationError::UnexpectedType {
+                    expected: TYP.to_owned(),
+                    found: Some(wrong.to_owned()),
+                }),
                 "accepted typ {wrong:?}"
             );
         }
+    }
+
+    /// A `typ` this policy demands cannot be satisfied by leaving it out.
+    #[test]
+    fn an_absent_type_is_refused_when_the_policy_names_one() {
+        let (token, resolver) = token_without_typ(SigningAlgorithm::EdDsa, &valid_claims());
+        assert_eq!(
+            verify(&token, &policy(), &resolver, now()),
+            Err(VerificationError::UnexpectedType {
+                expected: TYP.to_owned(),
+                found: None,
+            })
+        );
+    }
+
+    /// RFC 7523 defines no `typ` for a client assertion, so a policy for one
+    /// must accept its absence — and must still refuse a token that announces
+    /// itself as something else.
+    #[test]
+    fn an_optional_type_accepts_absence_and_the_listed_spellings_only() {
+        let assertion = Policy::new(
+            TypRule::OptionalOneOf(&["JWT", "client-authentication+jwt"]),
+            vec![SigningAlgorithm::EdDsa],
+        );
+
+        let (token, resolver) = token_without_typ(SigningAlgorithm::EdDsa, &valid_claims());
+        assert!(verify(&token, &assertion, &resolver, now()).is_ok(), "absent");
+
+        // RFC 7515 §4.1.9 lets a sender omit the `application/` prefix, and
+        // RFC 7519 §5.1 only *recommends* upper case, so all of these name the
+        // same media type.
+        for spelling in ["JWT", "jwt", "Jwt", "application/JWT", "application/jwt"] {
+            let (token, resolver) =
+                token_with(SigningAlgorithm::EdDsa, spelling, &valid_claims());
+            assert!(
+                verify(&token, &assertion, &resolver, now()).is_ok(),
+                "refused {spelling:?}, which is the same media type as JWT"
+            );
+        }
+
+        // Widened, not erased: a token minted as an access token is still not
+        // a client assertion.
+        let (token, resolver) = token_with(SigningAlgorithm::EdDsa, "at+jwt", &valid_claims());
+        assert_eq!(
+            verify(&token, &assertion, &resolver, now()),
+            Err(VerificationError::UnexpectedType {
+                expected: "absent or one of [JWT, client-authentication+jwt]".to_owned(),
+                found: Some("at+jwt".to_owned()),
+            })
+        );
     }
 
     /// The caller's list is narrower than the crate's, and it wins.

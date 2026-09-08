@@ -947,7 +947,7 @@ mod tests {
         assert_eq!(candidates.len(), 1, "a kid must narrow the candidates");
         jws::parse(assertion.as_str())
             .expect("parse")
-            .verify(&candidates[0], "JWT")
+            .verify(&candidates[0])
             .expect("the key the kid names must verify the assertion");
     }
 

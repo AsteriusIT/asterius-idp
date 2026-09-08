@@ -281,7 +281,7 @@ mod tests {
             .expect("present");
         let payload = jws::parse(jws.as_str())
             .expect("parse")
-            .verify(&verifying, "at+jwt")
+            .verify(&verifying)
             .expect("verify");
         assert_eq!(
             serde_json::from_slice::<Value>(&payload).expect("json")["sub"],
@@ -336,7 +336,7 @@ mod tests {
             .expect("present");
         jws::parse(old_token.as_str())
             .expect("parse")
-            .verify(&old_key, "at+jwt")
+            .verify(&old_key)
             .expect("a token signed before rotation must still verify");
 
         // Both keys are still published.
@@ -390,7 +390,7 @@ mod tests {
             assert!(
                 jws::parse(token.as_str())
                     .expect("parse")
-                    .verify(&verifying, "at+jwt")
+                    .verify(&verifying)
                     .is_err()
             );
         }
