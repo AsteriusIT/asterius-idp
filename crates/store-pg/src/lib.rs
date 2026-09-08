@@ -13,6 +13,7 @@ mod error;
 mod key_store;
 mod keys;
 mod replay;
+mod salts;
 mod scope;
 mod sql_audit;
 mod store;

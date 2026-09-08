@@ -23,7 +23,7 @@
 //! the hashed byte string would reassign every one of them at once.
 #![no_main]
 
-use asterius_domain::{PairwiseSalt, SectorIdentifier, SubjectId, UserId, derive_subject};
+use asterius_domain::{PairwiseSalt, SectorIdentifier, SubjectId, UserId};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use libfuzzer_sys::fuzz_target;
@@ -133,6 +133,25 @@ fuzz_target!(|data: &[u8]| {
     let left_id = UserId::new(Uuid::from_bytes(left_user));
     let right_id = UserId::new(Uuid::from_bytes(right_user));
 
+    // The production path rebuilds the salt from a decrypted column, so the
+    // length check on that path has to agree with the array constructor: 32
+    // bytes and nothing else, never stretched, never truncated.
+    assert_eq!(
+        PairwiseSalt::from_storage(&left_salt_bytes)
+            .expect("32 bytes is a salt")
+            .derive_subject(&left_sector, left_id)
+            .as_str(),
+        left_salt.derive_subject(&left_sector, left_id).as_str(),
+        "a salt read back from storage derived a different subject"
+    );
+    if data.len() != PairwiseSalt::LEN {
+        assert!(
+            PairwiseSalt::from_storage(data).is_err(),
+            "{} bytes was accepted as a pairwise salt",
+            data.len()
+        );
+    }
+
     // --- the sector parser --------------------------------------------------
 
     // A stored sector is the record of which sector a `sub` belongs to. What it
@@ -150,9 +169,9 @@ fuzz_target!(|data: &[u8]| {
 
     // --- determinism --------------------------------------------------------
 
-    let subject = derive_subject(&left_sector, left_id, &left_salt);
+    let subject = left_salt.derive_subject(&left_sector, left_id);
     assert_eq!(
-        derive_subject(&left_sector, left_id, &left_salt).as_str(),
+        left_salt.derive_subject(&left_sector, left_id).as_str(),
         subject.as_str(),
         "the derivation is not deterministic"
     );
@@ -204,7 +223,7 @@ fuzz_target!(|data: &[u8]| {
 
     // --- separation ---------------------------------------------------------
 
-    let other = derive_subject(&right_sector, right_id, &right_salt);
+    let other = right_salt.derive_subject(&right_sector, right_id);
     let same_inputs = left_sector == right_sector
         && left_user == right_user
         && left_salt_bytes == right_salt_bytes;
@@ -218,7 +237,7 @@ fuzz_target!(|data: &[u8]| {
     // A public subject is its own sector, so it never collides with a pairwise
     // one for the same user under the same salt.
     if !left_sector.is_public() {
-        let public = derive_subject(&SectorIdentifier::public(), left_id, &left_salt);
+        let public = left_salt.derive_subject(&SectorIdentifier::public(), left_id);
         assert_ne!(public.as_str(), subject.as_str());
     }
 

@@ -23,9 +23,12 @@
 //! **A `sub` is derived, not stored twice.** OIDC Core §8 defines two subject
 //! identifier types, and §8.1 fixes what a pairwise one has to satisfy: not
 //! reversible by anyone but the OpenID Provider, distinct for distinct sectors,
-//! and deterministic. [`derive_subject`] is a pure function of those three
-//! inputs, so the property can be tested without a database and the same user
-//! in the same sector always lands on the same `sub`.
+//! and deterministic. [`PairwiseSalt::derive_subject`] is a pure function of
+//! the tenant salt and those two inputs, so the property can be tested without
+//! a database and the same user in the same sector always lands on the same
+//! `sub`. The salt is the receiver rather than a third argument: a caller that
+//! can pass a salt is a caller that can pass the wrong one, and the first
+//! derivation is the one that gets stored and handed to a relying party.
 //!
 //! **Every claim has one home.** A value that lives in a column does not also
 //! live in the bag: [`ClaimName::parse`] refuses `email`, `email_verified` and
@@ -57,7 +60,8 @@ use super::client::{Client, SubjectType};
 /// The local account identifier — OIDC Core §8.1's `local_account_id`.
 ///
 /// A random UUID rather than a sequence, because it is an input to
-/// [`derive_subject`] and therefore, indirectly, to every `sub` the deployment
+/// [`PairwiseSalt::derive_subject`] and therefore, indirectly, to every `sub`
+/// the deployment
 /// issues. A sequence would make the local id guessable, which turns "recover
 /// the user from a `sub`" into "confirm a guess" for anyone who ever obtains
 /// the tenant salt; 122 random bits leave nothing to enumerate.
@@ -87,7 +91,8 @@ impl UserId {
         &self.0
     }
 
-    /// The sixteen bytes, which is the form [`derive_subject`] hashes.
+    /// The sixteen bytes, which is the form [`PairwiseSalt::derive_subject`]
+    /// hashes.
     ///
     /// The raw bytes and not the hyphenated text: a UUID has several spellings
     /// and only one byte encoding, so hashing the bytes is what stops a
@@ -165,8 +170,8 @@ pub struct User {
     /// The tenant that owns this account. A user means nothing outside it.
     pub tenant: TenantId,
     /// The local account identifier: what OIDC Core §8.1 calls the
-    /// `local_account_id`, and the only input to [`derive_subject`] that
-    /// identifies the person.
+    /// `local_account_id`, and the only input to
+    /// [`PairwiseSalt::derive_subject`] that identifies the person.
     pub id: UserId,
     /// The login identifier. Unique within the tenant.
     ///
@@ -675,6 +680,12 @@ pub enum SubjectError {
     /// The sector could not be read out of the client's registration.
     #[error("cannot determine the sector identifier: {0}")]
     Sector(&'static str),
+    /// The salt a store handed back is not 256 bits.
+    ///
+    /// A short salt is not stretched and an absent one is not invented; see
+    /// [`PairwiseSalt::from_storage`].
+    #[error("the stored pairwise salt is not 256 bits")]
+    Salt,
 }
 
 /// The sector a pairwise subject is calculated in — OIDC Core §8.1.
@@ -822,13 +833,21 @@ impl SectorIdentifier {
 /// It is a [`Secret`], so it prints `[REDACTED]`, is zeroed on drop, and cannot
 /// be compared with `==`.
 ///
-/// **It is never rotated.** Every derived `sub` is written to
-/// `subject_identifiers` and read back from there, so rotating would not break
-/// an identifier already issued — but it would mean the same user in the same
-/// sector derives differently if that row were ever lost, and a `sub` that
-/// changes is a relying party's account that vanishes (OIDC Core §8: a Subject
-/// Identifier is "locally unique and never reassigned"). A tenant's salt is
-/// generated once.
+/// # It is never rotated
+///
+/// There is no `rotate`, no setter, and no way to replace the bytes of an
+/// existing salt — not because rotation is hard, but because it is not a
+/// meaningful operation. Every derived `sub` is written to
+/// `subject_identifiers` and read back from there, so a new salt would not move
+/// an identifier already issued; it would only mean that the same user in the
+/// same sector derives *differently* if that row were ever lost. OIDC Core §8
+/// says a Subject Identifier is "a locally unique and never reassigned
+/// identifier within the Issuer for the End-User", and a `sub` that changes is
+/// a relying party's account that vanishes. Recovering from a leaked salt is
+/// therefore a reissue of every identifier in the tenant — a relying-party
+/// migration — and not a rotation. A tenant's salt is generated once, at
+/// creation, and the table it lives in refuses an `UPDATE` for the same reason
+/// this type offers no way to ask for one.
 pub struct PairwiseSalt(Secret<[u8; PairwiseSalt::LEN]>);
 
 impl PairwiseSalt {
@@ -837,6 +856,9 @@ impl PairwiseSalt {
     pub const LEN: usize = 32;
 
     /// Draws a salt from the operating system CSPRNG.
+    ///
+    /// Called once per tenant, when the tenant is created. Every later use
+    /// reads the stored one back.
     #[must_use]
     pub fn generate() -> Self {
         let mut bytes = [0_u8; Self::LEN];
@@ -846,7 +868,30 @@ impl PairwiseSalt {
         Self(Secret::new(bytes))
     }
 
-    /// Wraps a salt read back from storage.
+    /// Rebuilds a salt from the plaintext a store decrypted.
+    ///
+    /// The length check is the point. A salt of any other length — an empty
+    /// slice, a truncated row, a value somebody put there by hand — is refused
+    /// rather than padded, stretched or hashed into shape. An empty or
+    /// predictable salt would leave the derivation with no secret in it at all,
+    /// and every `sub` in the deployment would then be computable by anyone who
+    /// has read [`Self::derive_subject`]: the sector is public and the local
+    /// account id sits in the database next to the answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubjectError::Salt`] unless the material is exactly
+    /// [`PairwiseSalt::LEN`] bytes.
+    pub fn from_storage(material: &[u8]) -> Result<Self, SubjectError> {
+        let bytes: [u8; Self::LEN] = material.try_into().map_err(|_| SubjectError::Salt)?;
+        Ok(Self(Secret::new(bytes)))
+    }
+
+    /// Wraps a salt whose length the type system already proves.
+    ///
+    /// For a caller holding an array, and for tests that need a fixed salt to
+    /// assert a particular `sub` against. Anywhere the length comes from a
+    /// database column or a wire, use [`Self::from_storage`].
     #[must_use]
     pub const fn from_bytes(bytes: [u8; Self::LEN]) -> Self {
         Self(Secret::new(bytes))
@@ -860,6 +905,83 @@ impl PairwiseSalt {
     pub const fn expose(&self) -> &[u8; Self::LEN] {
         self.0.expose()
     }
+
+    /// Calculates the `sub` a user is known by in one sector — OIDC Core §8.1.
+    ///
+    /// §8.1 permits any algorithm with three properties, and gives
+    /// `sub = SHA-256 ( sector_identifier || local_account_id || salt )` as the
+    /// first of the three examples it offers. This is that, with the
+    /// concatenation made **injective**:
+    ///
+    /// ```text
+    /// sub = BASE64URL( SHA-256(
+    ///           "asterius/pairwise-subject/v1"
+    ///        ++ u64be(len(sector)) ++ sector
+    ///        ++ u64be(16)          ++ user_id
+    ///        ++ salt ) )
+    /// ```
+    ///
+    /// The length prefixes are the difference that matters. Plain concatenation
+    /// gives `("ab", "c")` and `("a", "bc")` the same bytes, so it does *not*
+    /// guarantee §8.1's "Distinct Sector Identifier values MUST result in
+    /// distinct Subject Identifier values" — it only makes a collision
+    /// unlikely. Prefixed, two different pairs cannot produce one input, and
+    /// the property rests on SHA-256 alone. The same reasoning produces the
+    /// audit trail's canonical encoding (`ast-83p.11`), and it is why the salt
+    /// goes last: everything before it is self-delimiting, so nothing can be
+    /// shifted between fields.
+    ///
+    /// The three properties §8.1 requires:
+    ///
+    /// * **Not reversible by any party other than the provider.** The output is
+    ///   a SHA-256 digest, and the input carries 256 secret bits. Recovering
+    ///   the user from a `sub` means a preimage; confirming a *guessed* user
+    ///   means holding the salt.
+    /// * **Distinct sectors give distinct subjects.** Injective encoding, then
+    ///   SHA-256.
+    /// * **Deterministic.** A pure function of the salt and its two arguments —
+    ///   no clock, no counter, no database.
+    ///
+    /// The result is 43 characters of unpadded base64url: URL- and JSON-safe
+    /// with no escaping, and well inside the 255 ASCII characters OIDC Core
+    /// allows a `sub`.
+    ///
+    /// Public subjects go through the same call with
+    /// [`SectorIdentifier::public`], so a public `sub` does not expose the
+    /// internal user id either, and one code path mints both.
+    ///
+    /// # Why the salt is the receiver and not an argument
+    ///
+    /// It was an argument once, and a function that takes the salt is a
+    /// function a caller can hand the wrong salt to — a freshly generated one,
+    /// an empty one, another tenant's. Every one of those mints a `sub` that
+    /// looks entirely valid and is wrong permanently, because the first
+    /// derivation is the one that gets written to `subject_identifiers` and
+    /// handed to a relying party. As a method, the only way to derive is to
+    /// already hold the salt, and the only ways to hold one are to have
+    /// generated it at tenant creation or to have read it back out of the
+    /// store.
+    // fuzz-target: pairwise_subject
+    #[must_use]
+    pub fn derive_subject(&self, sector: &SectorIdentifier, user: UserId) -> SubjectId {
+        let mut hasher = Sha256::new();
+        hasher.update(SUBJECT_DOMAIN);
+        let sector = sector.as_str().as_bytes();
+        hasher.update(
+            u64::try_from(sector.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        hasher.update(sector);
+        let local = user.as_bytes();
+        hasher.update(u64::try_from(local.len()).unwrap_or(u64::MAX).to_be_bytes());
+        hasher.update(local);
+        // The salt is the last field and has a fixed length, so nothing after
+        // it has to be delimited. This is the one place it is exposed, and it
+        // is exposed to a hash.
+        hasher.update(self.expose());
+        SubjectId::new(URL_SAFE_NO_PAD.encode(hasher.finalize()))
+    }
 }
 
 impl fmt::Debug for PairwiseSalt {
@@ -868,76 +990,13 @@ impl fmt::Debug for PairwiseSalt {
     }
 }
 
-/// Domain separation for [`derive_subject`].
+/// Domain separation for [`PairwiseSalt::derive_subject`].
 ///
 /// The server computes SHA-256 over several unrelated things — token digests,
 /// audit records, this. A constant prefix unique to this computation means no
 /// digest taken here can ever be mistaken for, or collide with, one taken
 /// somewhere else, whatever the rest of the input turns out to be.
 const SUBJECT_DOMAIN: &[u8] = b"asterius/pairwise-subject/v1";
-
-/// Calculates the `sub` a user is known by in one sector — OIDC Core §8.1.
-///
-/// §8.1 permits any algorithm with three properties, and names
-/// `sub = SHA-256 ( sector_identifier || local_account_id || salt )` as an
-/// example. This is that, with the concatenation made **injective**:
-///
-/// ```text
-/// sub = BASE64URL( SHA-256(
-///           "asterius/pairwise-subject/v1"
-///        ++ u64be(len(sector)) ++ sector
-///        ++ u64be(16)          ++ user_id
-///        ++ salt ) )
-/// ```
-///
-/// The length prefixes are the difference that matters. Plain concatenation
-/// gives `("ab", "c")` and `("a", "bc")` the same bytes, so it does *not*
-/// guarantee §8.1's "distinct Sector Identifier values MUST result in distinct
-/// Subject Identifier values" — it only makes a collision unlikely. Prefixed,
-/// two different pairs cannot produce one input, and the property rests on
-/// SHA-256 alone. The same reasoning produces the audit trail's canonical
-/// encoding (`ast-83p.11`), and it is why the salt goes last: everything before
-/// it is self-delimiting, so nothing can be shifted between fields.
-///
-/// The three properties §8.1 requires:
-///
-/// * **Not reversible by any party other than the provider.** The output is a
-///   SHA-256 digest, and the input carries 256 secret bits. Recovering the user
-///   from a `sub` means a preimage; confirming a *guessed* user means holding
-///   the salt.
-/// * **Distinct sectors give distinct subjects.** Injective encoding, then
-///   SHA-256.
-/// * **Deterministic.** A pure function of its three arguments — no clock, no
-///   counter, no database.
-///
-/// The result is 43 characters of unpadded base64url: URL- and JSON-safe with
-/// no escaping, and well inside the 255 ASCII characters OIDC Core allows a
-/// `sub`.
-///
-/// Public subjects go through the same function with
-/// [`SectorIdentifier::public`], so a public `sub` does not expose the internal
-/// user id either, and one code path mints both.
-// fuzz-target: pairwise_subject
-#[must_use]
-pub fn derive_subject(sector: &SectorIdentifier, user: UserId, salt: &PairwiseSalt) -> SubjectId {
-    let mut hasher = Sha256::new();
-    hasher.update(SUBJECT_DOMAIN);
-    let sector = sector.as_str().as_bytes();
-    hasher.update(
-        u64::try_from(sector.len())
-            .unwrap_or(u64::MAX)
-            .to_be_bytes(),
-    );
-    hasher.update(sector);
-    let local = user.as_bytes();
-    hasher.update(u64::try_from(local.len()).unwrap_or(u64::MAX).to_be_bytes());
-    hasher.update(local);
-    // The salt is the last field and has a fixed length, so nothing after it
-    // has to be delimited. This is the one place it is exposed, and it is
-    // exposed to a hash.
-    hasher.update(salt.expose());
-    SubjectId::new(URL_SAFE_NO_PAD.encode(hasher.finalize()))
-}
 
 #[cfg(test)]
 mod tests {
@@ -990,16 +1049,16 @@ mod tests {
     /// OIDC Core §8.1: "The algorithm MUST be deterministic."
     #[test]
     fn the_same_user_in_the_same_sector_always_gets_the_same_subject() {
-        let subject = derive_subject(&sector("rp.example"), user(1), &salt(7));
+        let subject = salt(7).derive_subject(&sector("rp.example"), user(1));
         assert_eq!(
-            derive_subject(&sector("rp.example"), user(1), &salt(7)),
+            salt(7).derive_subject(&sector("rp.example"), user(1)),
             subject
         );
         // Across a freshly built salt holding the same bytes, because the salt
         // is read out of a row on every process start.
         let reloaded = PairwiseSalt::from_bytes(*salt(7).expose());
         assert_eq!(
-            derive_subject(&sector("rp.example"), user(1), &reloaded),
+            reloaded.derive_subject(&sector("rp.example"), user(1)),
             subject
         );
     }
@@ -1011,13 +1070,13 @@ mod tests {
     #[test]
     fn two_sectors_never_see_one_user_under_the_same_subject() {
         let salt = salt(7);
-        let here = derive_subject(&sector("rp.example"), user(1), &salt);
-        let there = derive_subject(&sector("other.example"), user(1), &salt);
+        let here = salt.derive_subject(&sector("rp.example"), user(1));
+        let there = salt.derive_subject(&sector("other.example"), user(1));
         assert_ne!(here, there);
         // A public subject is its own sector, so it does not collide with a
         // pairwise one either.
         assert_ne!(
-            derive_subject(&SectorIdentifier::public(), user(1), &salt),
+            salt.derive_subject(&SectorIdentifier::public(), user(1)),
             here
         );
     }
@@ -1026,8 +1085,8 @@ mod tests {
     fn two_users_in_one_sector_never_share_a_subject() {
         let salt = salt(7);
         assert_ne!(
-            derive_subject(&sector("rp.example"), user(1), &salt),
-            derive_subject(&sector("rp.example"), user(2), &salt)
+            salt.derive_subject(&sector("rp.example"), user(1)),
+            salt.derive_subject(&sector("rp.example"), user(2))
         );
     }
 
@@ -1036,8 +1095,8 @@ mod tests {
     #[test]
     fn two_tenants_derive_different_subjects_for_the_same_user() {
         assert_ne!(
-            derive_subject(&sector("rp.example"), user(1), &salt(1)),
-            derive_subject(&sector("rp.example"), user(1), &salt(2))
+            salt(1).derive_subject(&sector("rp.example"), user(1)),
+            salt(2).derive_subject(&sector("rp.example"), user(1))
         );
     }
 
@@ -1046,7 +1105,7 @@ mod tests {
     #[test]
     fn a_subject_carries_neither_the_salt_nor_the_user_it_was_derived_from() {
         let salt = salt(0xAB);
-        let subject = derive_subject(&sector("rp.example"), user(0x1234_5678), &salt);
+        let subject = salt.derive_subject(&sector("rp.example"), user(0x1234_5678));
         assert!(!subject.as_str().contains("rp.example"));
         assert!(!subject.as_str().contains(&user(0x1234_5678).to_string()));
         let encoded = URL_SAFE_NO_PAD.encode(salt.expose());
@@ -1057,7 +1116,7 @@ mod tests {
     /// URL, a JSON string and a JWT payload.
     #[test]
     fn a_derived_subject_is_short_url_safe_and_needs_no_escaping() {
-        let subject = derive_subject(&sector("rp.example"), user(1), &salt(7));
+        let subject = salt(7).derive_subject(&sector("rp.example"), user(1));
         assert_eq!(subject.as_str().len(), 43);
         assert!(
             subject
@@ -1073,8 +1132,8 @@ mod tests {
     #[test]
     fn a_sector_boundary_cannot_be_moved_into_the_next_field() {
         let salt = salt(7);
-        let left = derive_subject(&SectorIdentifier("ab".to_owned()), user(1), &salt);
-        let right = derive_subject(&SectorIdentifier("a".to_owned()), user(1), &salt);
+        let left = salt.derive_subject(&SectorIdentifier("ab".to_owned()), user(1));
+        let right = salt.derive_subject(&SectorIdentifier("a".to_owned()), user(1));
         assert_ne!(left, right);
     }
 
@@ -1252,6 +1311,35 @@ mod tests {
         let salt = salt(0xCD);
         assert_eq!(format!("{salt:?}"), "[REDACTED]");
         assert!(!format!("{salt:?}").contains("cd"));
+    }
+
+    /// A salt that is not 256 bits is refused rather than repaired. An empty
+    /// one is the case that matters: it would leave the derivation with no
+    /// secret in it, and every `sub` in the deployment would be computable by
+    /// anyone who knows the algorithm, since the sector is public and the local
+    /// account id is stored beside the answer.
+    #[test]
+    fn a_stored_salt_that_is_not_256_bits_is_refused_not_stretched() {
+        for length in [0_usize, 1, 8, 16, 31, 33, 64] {
+            let material = vec![0x11; length];
+            assert!(
+                matches!(
+                    PairwiseSalt::from_storage(&material),
+                    Err(SubjectError::Salt)
+                ),
+                "{length} bytes was accepted as a pairwise salt"
+            );
+        }
+
+        let material = [0x11_u8; PairwiseSalt::LEN];
+        let recovered = PairwiseSalt::from_storage(&material).expect("32 bytes is a salt");
+        assert_eq!(recovered.expose(), &material);
+        // And it derives exactly what the same bytes derive through the
+        // infallible constructor, so the two paths cannot diverge.
+        assert_eq!(
+            recovered.derive_subject(&sector("rp.example"), user(1)),
+            PairwiseSalt::from_bytes(material).derive_subject(&sector("rp.example"), user(1))
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1571,15 +1659,15 @@ mod tests {
             let left = SectorIdentifier(left_sector.clone());
             let right = SectorIdentifier(right_sector.clone());
 
-            let subject = derive_subject(&left, user(left_user), &salt);
-            let again = derive_subject(&left, user(left_user), &salt);
+            let subject = salt.derive_subject(&left, user(left_user));
+            let again = salt.derive_subject(&left, user(left_user));
             prop_assert_eq!(again.as_str(), subject.as_str());
             prop_assert_eq!(subject.as_str().len(), 43);
 
             // Distinct inputs, distinct subject. The encoding is injective, so
             // an equality here would be a SHA-256 collision.
             if left_sector != right_sector || left_user != right_user {
-                let other = derive_subject(&right, user(right_user), &salt);
+                let other = salt.derive_subject(&right, user(right_user));
                 prop_assert_ne!(other.as_str(), subject.as_str());
             }
         }

@@ -12,5 +12,5 @@ pub use client::{
 pub use tenant::{Tenant, TenantStatus};
 pub use user::{
     Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier,
-    SubjectError, User, UserId, UserStatus, derive_subject,
+    SubjectError, User, UserId, UserStatus,
 };

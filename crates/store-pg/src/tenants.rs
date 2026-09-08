@@ -1,22 +1,44 @@
 //! The tenant repository.
+//!
+//! Creating a tenant does two things, and they commit together: it writes the
+//! `tenants` row, and it gives the tenant the pairwise salt every `sub` it will
+//! ever issue is derived under. The salt needs a key-encryption key, which is
+//! why this repository holds one — see [`crate::salts`] for why the salt is key
+//! material and why it is written exactly once.
 
 use crate::error::to_domain_error;
+use crate::salts;
 use asterius_domain::ports::TenantRepository;
 use asterius_domain::{DomainError, Issuer, Tenant, TenantId, TenantStatus};
+use asterius_jose::Kek;
 use sqlx::postgres::PgPool;
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 /// `TenantRepository` over PostgreSQL.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PgTenantRepository {
     pool: PgPool,
+    kek: Arc<dyn Kek>,
+}
+
+impl std::fmt::Debug for PgTenantRepository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The KEK's id is derived from the material and reveals nothing about
+        // it, and it is the one field an operator debugging "cannot decrypt"
+        // wants to see.
+        f.debug_struct("PgTenantRepository")
+            .field("kek", &self.kek.id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl PgTenantRepository {
-    /// Wraps a pool.
+    /// Wraps a pool and the key-encryption key a new tenant's salt is sealed
+    /// under.
     #[must_use]
-    pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub const fn new(pool: PgPool, kek: Arc<dyn Kek>) -> Self {
+        Self { pool, kek }
     }
 }
 
@@ -119,7 +141,17 @@ impl TenantRepository for PgTenantRepository {
         .collect()
     }
 
+    /// Creates or updates a tenant, and gives a new one its pairwise salt.
+    ///
+    /// One transaction, because a tenant that exists without a salt cannot mint
+    /// a subject identifier and therefore cannot issue an `id_token` — a state
+    /// that would be created by a crash between two statements and would look,
+    /// from the outside, like a tenant that simply does not work. The salt
+    /// write is an insert that yields to whatever is already there, so updating
+    /// a tenant never disturbs the salt it was created with.
     async fn upsert(&self, tenant: &Tenant) -> Result<(), DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+
         sqlx::query!(
             "insert into tenants (tenant_id, issuer, custom_host, display_name, status)
              values ($1, $2, $3, $4, $5)
@@ -134,10 +166,13 @@ impl TenantRepository for PgTenantRepository {
             tenant.display_name,
             tenant.status.as_str()
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
-        .map(|_| ())
-        .map_err(to_domain_error)
+        .map_err(to_domain_error)?;
+
+        salts::ensure(&mut *transaction, &tenant.id, self.kek.as_ref()).await?;
+
+        transaction.commit().await.map_err(to_domain_error)
     }
 
     async fn delete(&self, id: &TenantId) -> Result<(), DomainError> {

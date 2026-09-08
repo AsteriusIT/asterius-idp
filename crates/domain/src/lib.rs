@@ -25,7 +25,7 @@ pub use entities::{
     ApplicationType, Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, Client, ClientMetadata,
     ClientMetadataError, ClientRegistration, ClientStatus, GrantType, JwksSource, PairwiseSalt,
     RedirectUri, RedirectUriError, SectorIdentifier, SubjectError, SubjectType, Tenant,
-    TenantStatus, TokenBinding, TokenEndpointAuthMethod, User, UserId, UserStatus, derive_subject,
+    TenantStatus, TokenBinding, TokenEndpointAuthMethod, User, UserId, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};

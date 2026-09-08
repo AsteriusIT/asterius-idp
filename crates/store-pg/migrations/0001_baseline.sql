@@ -209,6 +209,93 @@ create table subject_identifiers (
         references users (tenant_id, user_id) on delete cascade
 );
 
+-- The per-tenant salt every pairwise `sub` is derived under (OIDC Core §8.1).
+--
+-- **Why this is key material and not configuration.** §8.1 requires that a
+-- pairwise Subject Identifier "MUST NOT be reversible by any party other than
+-- the OpenID Provider". The other two inputs to the derivation are not secret:
+-- the sector identifier is a public host name, and the local account id is a
+-- UUID sitting in `users` one join away. The salt is the only thing standing
+-- between somebody holding a dump and re-deriving — or confirming — every `sub`
+-- in the tenant, which is the entire property pairwise subjects exist to
+-- provide. So it is sealed exactly as a signing key is: `*_ciphertext` under a
+-- key-encryption key held outside the database, bound to its tenant as AEAD
+-- additional authenticated data, with the `kek_id` recorded so a KEK rotation
+-- is a `WHERE` clause. See asterius_jose::kek, and `signing_keys` above for the
+-- pattern this follows.
+--
+-- **Why its own table.** A salt is written once per tenant and never again, and
+-- a table that refuses `UPDATE` is the only place that statement can be made in
+-- a language an operator with `psql` cannot argue with. `tenants` is updated
+-- whenever a display name or a settings blob changes, so the salt could not
+-- live there without a column-level trigger that has to keep being right
+-- forever. Here the trigger is unconditional.
+--
+-- **Why rotation is not offered.** Every derived `sub` is stored in
+-- `subject_identifiers` and read back from there, so a new salt would not move
+-- an identifier already issued — it would only mean the same user in the same
+-- sector derives differently if that row were ever lost. OIDC Core §8: a
+-- Subject Identifier is "a locally unique and never reassigned identifier
+-- within the Issuer for the End-User". Recovering from a leaked salt is a
+-- reissue of every identifier in the tenant — a relying-party migration — and
+-- not a rotation.
+create table tenant_pairwise_salts (
+    tenant_id       text        primary key
+                    references tenants (tenant_id) on delete cascade,
+    salt_ciphertext bytea       not null,
+    salt_nonce      bytea       not null,
+    kek_id          text        not null,
+    created_at      timestamptz not null default now(),
+
+    -- 96 bits, the IV length NIST SP 800-38D §5.2.1.1 recommends restricting
+    -- support to, and the only length aws-lc-rs will produce here.
+    constraint tenant_pairwise_salts_nonce_is_96_bits
+        check (length(salt_nonce) = 12),
+    -- A salt is exactly 256 bits, so its envelope is exactly that plus a
+    -- 16-byte GCM tag. Unlike a private key the plaintext length is fixed, so
+    -- this can be an equality rather than a lower bound: a row of any other
+    -- size did not come from sealing a salt.
+    constraint tenant_pairwise_salts_ciphertext_is_a_sealed_salt
+        check (length(salt_ciphertext) = 48)
+);
+
+-- A nonce may be used once per key-encryption key, for the reason given on
+-- `signing_keys_nonce_never_repeats`: AES-GCM loses confidentiality *and*
+-- authenticity if one repeats under one key (NIST SP 800-38D §8). Not tenant
+-- scoped, because a KEK spans tenants.
+--
+-- This covers salt against salt. It cannot cover salt against signing key —
+-- PostgreSQL has no cross-table unique constraint — so the residual risk is a
+-- nonce collision between the two tables under one KEK. With 96 random bits and
+-- one sealing per tenant per lifetime for salts, that is the birthday bound on
+-- a handful of draws; the index exists to catch a broken RBG, not to make the
+-- arithmetic work.
+create unique index tenant_pairwise_salts_nonce_never_repeats
+    on tenant_pairwise_salts (kek_id, salt_nonce);
+
+-- Write once. Rotation is refused here rather than merely not implemented, so
+-- that "the salt is generated once" is a property of the database and not a
+-- convention in the adapter above it. Like the audit trail's append-only
+-- trigger, this is not a defence against an attacker with arbitrary SQL — they
+-- can drop it — it is a defence against the application, an operator, or a
+-- future migration quietly reassigning every subject identifier in a tenant.
+--
+-- `DELETE` is allowed, because the cascade from `tenants` is a delete: a tenant
+-- that no longer exists takes its salt with it, along with every `sub` derived
+-- under it.
+create function tenant_pairwise_salts_are_written_once() returns trigger language plpgsql as $$
+begin
+    raise exception 'a tenant pairwise salt is never updated'
+        using errcode = 'restrict_violation',
+              hint = 'every sub already derived under this salt is stored and never '
+                     'reassigned (OIDC Core section 8); recovering from a leak means '
+                     'reissuing every identifier, which is a relying-party migration';
+end;
+$$;
+
+create trigger tenant_pairwise_salts_no_update before update on tenant_pairwise_salts
+    for each statement execute function tenant_pairwise_salts_are_written_once();
+
 create table credentials (
     tenant_id             text        not null,
     credential_id         uuid        not null,
