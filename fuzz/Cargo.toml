@@ -18,6 +18,7 @@ asterius-domain = { path = "../crates/domain" }
 asterius-jose = { path = "../crates/jose" }
 asterius-oidc = { path = "../crates/oidc" }
 asterius-server = { path = "../crates/server" }
+asterius-web = { path = "../crates/web" }
 # Needed by the targets themselves: `audit_canonical` builds events with
 # timestamps, `forwarded_resolve` builds header maps, `client_metadata_json`
 # rebuilds a registration document from what the validator accepted.
@@ -112,6 +113,13 @@ bench = false
 [[bin]]
 name = "jwks_uri_target"
 path = "fuzz_targets/jwks_uri_target.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "csp_form_action"
+path = "fuzz_targets/csp_form_action.rs"
 test = false
 doc = false
 bench = false
