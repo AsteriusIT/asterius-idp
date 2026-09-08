@@ -27,6 +27,9 @@ use time::OffsetDateTime;
 use tower::ServiceExt as _;
 
 const CONFIG: &str = r#"
+    [keys]
+    kek_env = "ASTERIUS_TEST_KEK"
+
     [database]
     url = "postgres://asterius@localhost/asterius"
 "#;

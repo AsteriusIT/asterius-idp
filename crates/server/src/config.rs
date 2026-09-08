@@ -52,6 +52,8 @@ pub struct Config {
     pub tenants: Vec<TenantConfig>,
     /// How log lines are rendered.
     pub log_format: LogFormat,
+    /// Where the key-encryption key comes from.
+    pub kek: KekSource,
 }
 
 /// Listener and transport settings.
@@ -89,6 +91,22 @@ pub struct TlsConfig {
     pub certificate: PathBuf,
     /// PEM private key.
     pub private_key: PathBuf,
+}
+
+/// Where the key-encryption key comes from.
+///
+/// Deliberately an enum with no default. A signing key is encrypted at rest
+/// under this, so a deployment that has not said where it lives is a deployment
+/// that cannot read its own keys — and silently generating one would mean every
+/// restart produced a KEK that could not open yesterday's rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KekSource {
+    /// A file holding a base64 32-byte key. The usual production shape: the
+    /// file is mounted by the orchestrator and never in the image.
+    File(PathBuf),
+    /// An environment variable holding the same. Convenient for a container,
+    /// and visible in `/proc/self/environ`, so the file is preferred.
+    Env(String),
 }
 
 /// PostgreSQL connection settings.
@@ -237,6 +255,15 @@ struct RawConfig {
     #[serde(default)]
     tenant: Vec<RawTenant>,
     log_format: Option<LogFormat>,
+    #[serde(default)]
+    keys: RawKeys,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawKeys {
+    kek_file: Option<PathBuf>,
+    kek_env: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -381,12 +408,36 @@ impl RawConfig {
 
         let tenants = validate_tenants(self.tenant, &mut errors);
 
+        // Exactly one source, and one is required. Two would leave the server
+        // choosing between them silently; none would leave it unable to read
+        // the keys it wrote yesterday.
+        let kek = match (self.keys.kek_file, self.keys.kek_env) {
+            (Some(path), None) => Some(KekSource::File(path)),
+            (None, Some(variable)) => Some(KekSource::Env(variable)),
+            (None, None) => {
+                errors.problem(
+                    "keys.kek_file",
+                    "a key-encryption key is required: set keys.kek_file or keys.kek_env. \
+                     Signing keys are encrypted at rest under it, so there is no safe default",
+                );
+                None
+            }
+            (Some(_), Some(_)) => {
+                errors.problem(
+                    "keys",
+                    "set exactly one of keys.kek_file and keys.kek_env, not both",
+                );
+                None
+            }
+        };
+
         errors.finish(Config {
             server,
             database,
             features: self.features,
             tenants,
             log_format: self.log_format.unwrap_or_default(),
+            kek: kek.unwrap_or_else(|| KekSource::Env(String::new())),
         })
     }
 }
@@ -632,6 +683,9 @@ mod tests {
     use asterius_domain::Feature;
 
     const MINIMAL: &str = r#"
+        [keys]
+        kek_env = "ASTERIUS_KEK"
+
         [database]
         url = "postgres://asterius@localhost/asterius"
 
@@ -749,12 +803,14 @@ mod tests {
                 "database.url",
                 "tenant[0].id",
                 "tenant[0].issuer",
+                "keys.kek_file",
             ]
         );
         assert!(
             problems
                 .as_slice()
                 .iter()
+                .filter(|p| !p.path.starts_with("keys."))
                 .all(|p| p.message == "required key is missing")
         );
     }
@@ -763,7 +819,7 @@ mod tests {
     fn the_error_message_lists_every_problem() {
         let rendered = problems(parse("[server]\nmode = \"terminate_tls\"\n")).to_string();
         assert!(
-            rendered.starts_with("configuration has 3 problems:"),
+            rendered.starts_with("configuration has 4 problems:"),
             "{rendered}"
         );
         assert!(
@@ -775,7 +831,7 @@ mod tests {
     #[test]
     fn a_single_problem_is_not_pluralised() {
         let rendered = problems(parse(
-            "[[tenant]]\nid = \"demo\"\n\n[database]\nurl = \"x\"\n",
+            "[keys]\nkek_env = \"K\"\n\n[[tenant]]\nid = \"demo\"\n\n[database]\nurl = \"x\"\n",
         ))
         .to_string();
         assert!(
@@ -827,7 +883,7 @@ mod tests {
             ("as.example", "URL"),
         ] {
             let text = format!(
-                "[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"demo\"\nissuer = \"{issuer}\"\n"
+                "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"demo\"\nissuer = \"{issuer}\"\n"
             );
             let problems = problems(parse(&text));
             assert_eq!(
@@ -845,7 +901,7 @@ mod tests {
 
     #[test]
     fn the_issuer_is_normalised_once_and_stored_canonical() {
-        let text = "[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"demo\"\n\
+        let text = "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"demo\"\n\
                     issuer = \"https://AS.Example:443/t/demo/\"\n";
         let config = parse(text).expect("valid");
         assert_eq!(
@@ -859,7 +915,7 @@ mod tests {
     /// the canonical form, so the inconsistent spelling cannot hide it.
     #[test]
     fn tenants_may_not_share_an_issuer_however_it_is_spelled() {
-        let text = "[database]\nurl = \"x\"\n\n\
+        let text = "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n\
                     [[tenant]]\nid = \"a\"\nissuer = \"https://as.example\"\n\n\
                     [[tenant]]\nid = \"b\"\nissuer = \"https://as.example/\"\n";
         let problems = problems(parse(text));
@@ -877,7 +933,7 @@ mod tests {
     fn a_tenant_id_that_cannot_be_a_path_segment_is_refused() {
         for bad in ["../etc", "Demo", "a b", "has.dot", ""] {
             let text = format!(
-                "[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"{bad}\"\n\
+                "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"{bad}\"\n\
                  issuer = \"https://as.example/t/x\"\n"
             );
             let problems = problems(parse(&text));
@@ -891,7 +947,7 @@ mod tests {
 
     #[test]
     fn tenants_may_not_share_an_id() {
-        let text = "[database]\nurl = \"x\"\n\n\
+        let text = "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n\
                     [[tenant]]\nid = \"demo\"\nissuer = \"https://a.example\"\n\n\
                     [[tenant]]\nid = \"demo\"\nissuer = \"https://b.example\"\n";
         assert_eq!(
@@ -1062,6 +1118,42 @@ mod tests {
         let config = parse(&text).expect("valid");
         assert_eq!(config.server.request_body_limit, 8192);
         assert_eq!(config.server.request_timeout, Duration::from_secs(3));
+    }
+
+    // ---- the key-encryption key ------------------------------------------
+
+    /// There is no safe default. A generated-on-boot KEK would produce a key
+    /// that cannot open yesterday's rows, and the failure would surface as
+    /// corruption rather than as configuration.
+    #[test]
+    fn a_missing_key_encryption_key_refuses_the_boot() {
+        let text = "[database]\nurl = \"x\"\n";
+        let problems = problems(parse(text));
+        assert!(
+            problems.paths().any(|path| path.starts_with("keys.")),
+            "no problem reported for the missing KEK: {:?}",
+            problems.paths().collect::<Vec<_>>()
+        );
+    }
+
+    /// Two sources would leave the server picking one silently, and an operator
+    /// reading the other.
+    #[test]
+    fn exactly_one_key_encryption_key_source_is_permitted() {
+        let both = "[database]\nurl = \"x\"\n\n[keys]\nkek_file = \"/k\"\nkek_env = \"K\"\n";
+        assert_eq!(problems(parse(both)).paths().collect::<Vec<_>>(), ["keys"]);
+
+        let file = "[database]\nurl = \"x\"\n\n[keys]\nkek_file = \"/etc/asterius/kek\"\n";
+        assert_eq!(
+            parse(file).expect("valid").kek,
+            KekSource::File(PathBuf::from("/etc/asterius/kek"))
+        );
+
+        let env = "[database]\nurl = \"x\"\n\n[keys]\nkek_env = \"ASTERIUS_KEK\"\n";
+        assert_eq!(
+            parse(env).expect("valid").kek,
+            KekSource::Env("ASTERIUS_KEK".to_owned())
+        );
     }
 
     // ---- redaction -------------------------------------------------------

@@ -2,15 +2,17 @@
 #![forbid(unsafe_code)]
 
 use asterius_domain::ports::TenantRepository as _;
-use asterius_domain::{Feature, SigningAlgorithm, Tenant, TenantStatus};
-use asterius_jose::LocalKeyStore;
+use asterius_domain::{Feature, Tenant, TenantStatus};
+use asterius_jose::LocalKek;
+use asterius_jose::kek::Kek;
+use asterius_server::config::KekSource;
 use asterius_server::http::protocol::{self, ProtocolState};
 use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
-use asterius_store_pg::{PgTenantRepository, Store};
+use asterius_store_pg::{PgAuditSink, PgTenantRepository, Store, TenantKeyStore};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -75,13 +77,31 @@ fn run() -> Result<(), String> {
             metrics,
         };
 
-        // Signing keys. `ast-mxc.3` replaces this with the PostgreSQL-backed
-        // store; until then a tenant's keys live for the life of the process,
-        // which is enough to serve a JWKS and sign with.
-        let keys = Arc::new(LocalKeyStore::new());
+        // Signing keys, from PostgreSQL and encrypted at rest under the
+        // configured key-encryption key. Loading the KEK is a startup step
+        // rather than a lazy one: a deployment that cannot read its own keys
+        // should fail while someone is watching, not on the first token.
+        let kek: Arc<dyn Kek> = Arc::new(match &config.kek {
+            KekSource::File(path) => LocalKek::from_file(path)
+                .map_err(|e| format!("cannot load the key-encryption key: {e}"))?,
+            KekSource::Env(variable) => LocalKek::from_env(variable)
+                .map_err(|e| format!("cannot load the key-encryption key: {e}"))?,
+        });
+        tracing::info!(kek = kek.id(), "key-encryption key loaded");
+
+        let keys = Arc::new(TenantKeyStore::new(
+            store.pool().clone(),
+            kek,
+            Arc::new(PgAuditSink::new(store.pool().clone())),
+        ));
+
+        // Creates the first key for a new tenant and applies the schedule for
+        // an existing one. Same call, so there is no separate bootstrap path to
+        // diverge from the steady-state one.
         for tenant in &config.tenants {
-            keys.generate(&tenant.id, SigningAlgorithm::DEFAULT)
-                .map_err(|e| format!("cannot generate a signing key for {}: {e}", tenant.id))?;
+            keys.apply_schedule(&tenant.id, OffsetDateTime::now_utc())
+                .await
+                .map_err(|e| format!("cannot prepare signing keys for {}: {e}", tenant.id))?;
         }
 
         let routes = protocol::routes(ProtocolState {

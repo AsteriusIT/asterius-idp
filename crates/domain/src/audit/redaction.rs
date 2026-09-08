@@ -204,9 +204,33 @@ fn is_jwt_shaped(value: &str) -> bool {
         && (signature.is_empty() || is_base64url(signature))
 }
 
+/// Whether a value is a canonical UUID: 8-4-4-4-12 hexadecimal.
+///
+/// Exempt from the credential scan. A UUID carries enough entropy to look like
+/// one, and the credentials this server issues are base64url rather than
+/// hyphenated hex — so the only things this shape catches in practice are
+/// identifiers that belong in a log: a request id, a grant id, a path
+/// containing a directory named after one. Redacting those made a startup line
+/// name a file the operator could not read back.
+fn is_uuid(value: &str) -> bool {
+    let groups: Vec<&str> = value.split('-').collect();
+    groups.len() == 5
+        && [8, 4, 4, 4, 12]
+            == [
+                groups[0].len(),
+                groups[1].len(),
+                groups[2].len(),
+                groups[3].len(),
+                groups[4].len(),
+            ]
+        && groups
+            .iter()
+            .all(|g| g.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 /// A long, high-entropy token-shaped string with no structure suggesting prose.
 fn is_opaque_credential(value: &str) -> bool {
-    if value.len() < MIN_CREDENTIAL_LEN {
+    if value.len() < MIN_CREDENTIAL_LEN || is_uuid(value) {
         return false;
     }
     // A URN-shaped `request_uri` carries its credential in the last segment.
@@ -402,6 +426,25 @@ mod tests {
         ] {
             assert_eq!(redact(value), value, "over-redacted {value:?}");
         }
+    }
+
+    /// A UUID is an identifier, not a credential. Redacting one made a startup
+    /// log line name a config file whose path the operator could not read.
+    #[test]
+    fn a_uuid_is_not_treated_as_a_credential() {
+        for uuid in [
+            "88a5b2cf-168e-4f46-8ce9-2e495107a498",
+            "00000000-0000-0000-0000-000000000000",
+            "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF",
+        ] {
+            assert_eq!(classify(uuid), None, "redacted the UUID {uuid}");
+        }
+        // A path containing one survives whole.
+        let path = "/tmp/claude/88a5b2cf-168e-4f46-8ce9-2e495107a498/scratchpad/asterius.toml";
+        assert_eq!(redact(path), path);
+
+        // Something merely UUID-ish is still scanned.
+        assert!(classify("88a5b2cf-168e-4f46-8ce9-2e495107a498x").is_some());
     }
 
     #[test]

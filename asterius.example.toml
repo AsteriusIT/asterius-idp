@@ -58,6 +58,21 @@ private_key = "/etc/asterius/tls/privkey.pem"
 # [server.proxy]
 # trusted_cidrs = ["127.0.0.0/8", "::1/128", "10.42.0.0/16"]
 
+# Where the key-encryption key comes from. REQUIRED, with no default: signing
+# keys are encrypted at rest under it, and a key generated on each boot could
+# not open yesterday's rows — the failure would look like corruption rather
+# than like configuration. Set exactly one of these.
+#
+# The value is 32 bytes, base64. Generate one with:
+#     head -c 32 /dev/urandom | base64 > /etc/asterius/kek
+#
+# The server proves at startup that this key can actually decrypt the tenant's
+# active signing key, so a wrong or swapped KEK fails the boot rather than the
+# first token request.
+[keys]
+kek_file = "/etc/asterius/kek"
+# kek_env = "ASTERIUS_KEK"   # visible in /proc/self/environ; prefer the file
+
 [database]
 # Required. Contains a password, so it is held in a Secret<String> and prints
 # as [REDACTED] wherever the configuration is logged.
