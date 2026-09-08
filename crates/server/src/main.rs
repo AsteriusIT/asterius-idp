@@ -7,7 +7,7 @@ use asterius_domain::{Feature, Tenant, TenantStatus};
 use asterius_jose::LocalKek;
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::kek::Kek;
-use asterius_oidc::par;
+use asterius_oidc::{code, par};
 use asterius_server::client_auth::ClientAuthenticator;
 use asterius_server::config::KekSource;
 use asterius_server::http::dpop::DpopEndpoint;
@@ -100,7 +100,7 @@ fn run() -> Result<(), String> {
 
         let keys = Arc::new(TenantKeyStore::new(
             store.pool().clone(),
-            kek,
+            Arc::clone(&kek),
             Arc::new(PgAuditSink::new(store.pool().clone())),
         ));
 
@@ -148,6 +148,12 @@ fn run() -> Result<(), String> {
                 store: store.clone(),
                 capabilities: config.features,
                 par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
+                // `ast-ndk.2` makes this per tenant. The default is the cap
+                // itself: a code is redeemed within one round trip of being
+                // issued, so a shorter one buys nothing and a slow network
+                // loses by it.
+                code_lifetime: code::clamp_lifetime(code::DEFAULT_LIFETIME),
+                kek: Arc::clone(&kek),
                 registration: config.registration.clone(),
                 audit: Arc::new(PgAuditSink::new(store.pool().clone())),
                 session_lifetimes: Lifetimes::default().clamped(),

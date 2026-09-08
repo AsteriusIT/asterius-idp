@@ -3678,6 +3678,72 @@ mod interactions {
             assert!(!hex::encode(&stored).contains("secret-browser-handle"));
         }
     }
+    db_test! {
+        /// FAPI 2.0 SP §5.3.2.2 Note 3: one-time use at the *completion* of
+        /// authorization. Two tabs both submitting consent must produce one
+        /// authorization response, and the statement is what decides which.
+        async fn a_request_can_be_completed_exactly_once(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "completes-once", later());
+            repo.push(&pushed).await.expect("push");
+            let ix = digest("one-browser");
+            repo.begin_interaction(&pushed.request_uri_digest, &ix, OffsetDateTime::now_utc())
+                .await
+                .expect("begin");
+
+            repo.complete_interaction(&ix, OffsetDateTime::now_utc())
+                .await
+                .expect("the first completion must win");
+
+            let error = repo
+                .complete_interaction(&ix, OffsetDateTime::now_utc())
+                .await
+                .expect_err("a second completion must lose");
+            assert!(matches!(error, DomainError::NotFound), "{error:?}");
+
+            // And the row is spent for both callers: the browser cannot come
+            // back to the page, and the client cannot consume the reference.
+            assert!(
+                repo.by_interaction(&ix, OffsetDateTime::now_utc())
+                    .await
+                    .expect("read")
+                    .is_none()
+            );
+            assert_eq!(
+                repo.consume(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("consume"),
+                Consumed::AlreadyUsed
+            );
+        }
+    }
+
+    db_test! {
+        /// Completion does not resurrect a request whose window has closed.
+        async fn an_expired_request_cannot_be_completed(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "too-late", OffsetDateTime::now_utc() - time::Duration::seconds(1));
+            repo.push(&pushed).await.expect("push");
+            // `begin_interaction` refuses an expired request, so the handle is
+            // written while the request is live and the clock is moved on
+            // instead.
+            let ix = digest("late-browser");
+            sqlx::query("update auth_requests set interaction_id_hash = $2 where tenant_id = $1")
+                .bind("demo")
+                .bind(hex::decode(&ix).expect("hex"))
+                .execute(&db.pool)
+                .await
+                .expect("attach a handle");
+
+            let error = repo
+                .complete_interaction(&ix, OffsetDateTime::now_utc())
+                .await
+                .expect_err("an expired request must not complete");
+            assert!(matches!(error, DomainError::NotFound), "{error:?}");
+        }
+    }
 }
 
 mod grants {
@@ -3695,7 +3761,7 @@ mod grants {
     /// A tenant and one client for its grants to hang off. `grants` has a
     /// foreign key to `clients`, which is the schema saying that a grant with
     /// no client is not a thing.
-    async fn seed_client(pool: &PgPool, tenant: &str, client_id: &str) {
+    pub(super) async fn seed_client(pool: &PgPool, tenant: &str, client_id: &str) {
         seed_tenant(pool, tenant).await;
         Store::from_pool(pool.clone())
             .scope(TenantId::new(tenant))
@@ -3725,7 +3791,12 @@ mod grants {
     /// A refresh token pointing at a grant. Written by hand because the token
     /// story (`ast-a05.5`) owns the repository that will write it; what these
     /// tests need is the row a revocation has to reach.
-    async fn insert_refresh_token(pool: &PgPool, tenant: &str, grant: &GrantId, label: &str) {
+    pub(super) async fn insert_refresh_token(
+        pool: &PgPool,
+        tenant: &str,
+        grant: &GrantId,
+        label: &str,
+    ) {
         sqlx::query(
             "insert into refresh_tokens (tenant_id, token_hash, grant_id, client_id, dpop_jkt)
              values ($1, $2, $3::uuid, 'billing', 'a-thumbprint')",
@@ -4278,6 +4349,279 @@ mod grants {
 
 // ---------------------------------------------------------------------------
 // Sessions (ast-2vk.2)
+
+mod codes {
+    use super::*;
+    use asterius_domain::{
+        CodeBinding, DomainError, Grant, GrantId, GrantStatus, RevocationReason,
+    };
+    use asterius_store_pg::{PgCodeRepository, PgGrantRepository, Redemption};
+
+    use super::grants::{insert_refresh_token, seed_client};
+
+    fn repo(pool: &PgPool, tenant: &str) -> PgCodeRepository {
+        PgCodeRepository::new(pool.clone(), TenantId::new(tenant))
+    }
+
+    /// The digest of a label, which is what the repository stores. Real codes
+    /// come from `MintedCode::generate`; a test needs a value it can name
+    /// twice.
+    fn digest(label: &str) -> String {
+        asterius_domain::sha256_hex(label.as_bytes())
+    }
+
+    /// A grant for codes to draw on, written first because the schema says a
+    /// code with no grant is not a thing.
+    async fn a_grant(pool: &PgPool, tenant: &str) -> GrantId {
+        seed_client(pool, tenant, "billing").await;
+        let mut grant = Grant::new(TenantId::new(tenant), ClientId::new("billing"), epoch());
+        grant.user = Some(UserId::generate());
+        grant.subject = Some(asterius_domain::SubjectId::new("sub-1"));
+        grant.scopes = ["openid"].into_iter().map(str::to_owned).collect();
+        PgGrantRepository::new(pool.clone(), TenantId::new(tenant))
+            .create(&grant)
+            .await
+            .expect("create grant");
+        grant.id
+    }
+
+    /// `timestamptz` holds microseconds, so a value with nanoseconds in it
+    /// does not survive the round trip. Truncating here keeps the assertion
+    /// about the repository rather than about Postgres's resolution.
+    fn micros(at: OffsetDateTime) -> OffsetDateTime {
+        at.replace_nanosecond(at.nanosecond() / 1_000 * 1_000)
+            .expect("a truncated nanosecond is in range")
+    }
+
+    fn binding(grant: &GrantId, now: OffsetDateTime) -> CodeBinding {
+        CodeBinding {
+            client_id: "billing".to_owned(),
+            grant_id: grant.clone(),
+            code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned(),
+            redirect_uri: "https://client.example/cb".to_owned(),
+            nonce: Some("n-0S6_WzA2Mj".to_owned()),
+            dpop_jkt: Some("a-thumbprint".to_owned()),
+            expires_at: micros(now + time::Duration::seconds(60)),
+        }
+    }
+
+    db_test! {
+        /// Every binding survives the round trip. They are what makes a leaked
+        /// code worthless, and a binding that is written but not read back is
+        /// a binding nothing will ever compare.
+        async fn a_code_round_trips_every_binding(db) {
+            let now = OffsetDateTime::now_utc();
+            let grant = a_grant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let expected = binding(&grant, now);
+
+            repo.issue(&digest("code-1"), &expected, now).await.expect("issue");
+            let Redemption::Redeemed(found) = repo
+                .redeem(&digest("code-1"), now)
+                .await
+                .expect("redeem")
+            else {
+                panic!("a live code did not redeem");
+            };
+            assert_eq!(*found, expected);
+        }
+    }
+
+    db_test! {
+        /// RFC 6749 §4.1.2: a code "MUST NOT be used more than once".
+        ///
+        /// The check and the spend are one statement, so the second attempt
+        /// matches no row rather than reading a flag somebody else is about to
+        /// set.
+        async fn a_code_is_redeemable_exactly_once(db) {
+            let now = OffsetDateTime::now_utc();
+            let grant = a_grant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            repo.issue(&digest("once"), &binding(&grant, now), now).await.expect("issue");
+
+            assert!(matches!(
+                repo.redeem(&digest("once"), now).await.expect("first"),
+                Redemption::Redeemed(_)
+            ));
+            assert_eq!(
+                repo.redeem(&digest("once"), now).await.expect("second"),
+                Redemption::Replayed
+            );
+        }
+    }
+
+    db_test! {
+        /// RFC 6749 §10.5: on reuse, revoke everything issued from that code.
+        ///
+        /// A replay and a theft look identical from here, so the safe reading
+        /// is applied to both — and it happens inside `redeem`, where a caller
+        /// cannot forget it.
+        async fn a_replay_revokes_the_grant_and_its_refresh_tokens(db) {
+            let now = OffsetDateTime::now_utc();
+            let grant = a_grant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            insert_refresh_token(&db.pool, "demo", &grant, "rt-1").await;
+            repo.issue(&digest("stolen"), &binding(&grant, now), now).await.expect("issue");
+
+            assert!(matches!(
+                repo.redeem(&digest("stolen"), now).await.expect("first"),
+                Redemption::Redeemed(_)
+            ));
+            // Still `Pending`: spending a code is not claiming a credential.
+            // Grant Management ID1 §5.6 makes a grant `active` when tokens
+            // "have been successfully claimed by the client", which is the
+            // token endpoint's `claim` a statement later. What matters here is
+            // that a legitimate redemption did not *revoke* anything.
+            let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let after_first = grants.find(&grant).await.expect("find").expect("present");
+            assert_eq!(after_first.status(now), GrantStatus::Pending);
+            assert!(
+                after_first.revoked_at.is_none(),
+                "a legitimate redemption revoked the grant"
+            );
+
+            assert_eq!(
+                repo.redeem(&digest("stolen"), now).await.expect("second"),
+                Redemption::Replayed
+            );
+
+            let revoked = grants.find(&grant).await.expect("find").expect("present");
+            assert_eq!(revoked.status(now), GrantStatus::Revoked);
+            assert_eq!(revoked.revocation_reason, Some(RevocationReason::CodeReplayed));
+
+            let live: i64 = sqlx::query_scalar(
+                "select count(*) from refresh_tokens
+                  where tenant_id = $1 and grant_id = $2::uuid and revoked_at is null",
+            )
+            .bind("demo")
+            .bind(grant.as_str())
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+            assert_eq!(live, 0, "a refresh token survived a code replay");
+        }
+    }
+
+    db_test! {
+        /// A third presentation must not rewrite the first revocation's reason
+        /// or time. The `coalesce` is what makes this idempotent.
+        async fn repeated_replays_keep_the_first_revocation(db) {
+            let now = OffsetDateTime::now_utc();
+            let grant = a_grant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            repo.issue(&digest("thrice"), &binding(&grant, now), now).await.expect("issue");
+
+            assert!(matches!(
+                repo.redeem(&digest("thrice"), now).await.expect("first"),
+                Redemption::Redeemed(_)
+            ));
+            assert_eq!(
+                repo.redeem(&digest("thrice"), now).await.expect("second"),
+                Redemption::Replayed
+            );
+            let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let first = grants.find(&grant).await.expect("find").expect("present");
+
+            let later = now + time::Duration::minutes(5);
+            assert_eq!(
+                repo.redeem(&digest("thrice"), later).await.expect("third"),
+                Redemption::Replayed
+            );
+            let again = grants.find(&grant).await.expect("find").expect("present");
+            assert_eq!(again.revoked_at, first.revoked_at, "the revocation moved");
+            assert_eq!(again.revocation_reason, first.revocation_reason);
+        }
+    }
+
+    db_test! {
+        /// Expired and unknown are one answer, and neither is a replay: there
+        /// is nothing to revoke, and treating a guess as an incident would let
+        /// anyone revoke a grant by presenting rubbish.
+        async fn an_expired_or_unknown_code_is_not_found(db) {
+            let now = OffsetDateTime::now_utc();
+            let grant = a_grant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let mut expiring = binding(&grant, now);
+            expiring.expires_at = now + time::Duration::seconds(1);
+            repo.issue(&digest("expiring"), &expiring, now).await.expect("issue");
+
+            let later = now + time::Duration::seconds(2);
+            assert_eq!(
+                repo.redeem(&digest("expiring"), later).await.expect("expired"),
+                Redemption::NotFound
+            );
+            assert_eq!(
+                repo.redeem(&digest("never-issued"), now).await.expect("unknown"),
+                Redemption::NotFound
+            );
+
+            // Neither touched the grant.
+            let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("demo"));
+            assert!(
+                grants.find(&grant).await.expect("find").expect("present").revoked_at.is_none()
+            );
+        }
+    }
+
+    db_test! {
+        /// FAPI 2.0 SP §5.3.2.1 item 11, as a `CHECK` constraint. The rule is
+        /// enforced in code; this proves a row that broke it could not be
+        /// written even if the code were wrong.
+        async fn the_schema_refuses_a_code_that_would_outlive_the_cap(db) {
+            let now = OffsetDateTime::now_utc();
+            let grant = a_grant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let mut too_long = binding(&grant, now);
+            too_long.expires_at = now + time::Duration::seconds(61);
+
+            let error = repo
+                .issue(&digest("too-long"), &too_long, now)
+                .await
+                .expect_err("the database must refuse it");
+            assert!(matches!(error, DomainError::Storage(_)), "{error:?}");
+        }
+    }
+
+    db_test! {
+        /// A code belongs to its tenant. Another tenant presenting the same
+        /// digest finds nothing.
+        async fn a_code_does_not_cross_a_tenant(db) {
+            let now = OffsetDateTime::now_utc();
+            let grant = a_grant(&db.pool, "demo").await;
+            repo(&db.pool, "demo")
+                .issue(&digest("theirs"), &binding(&grant, now), now)
+                .await
+                .expect("issue");
+
+            seed_client(&db.pool, "other", "billing").await;
+            assert_eq!(
+                repo(&db.pool, "other").redeem(&digest("theirs"), now).await.expect("redeem"),
+                Redemption::NotFound
+            );
+        }
+    }
+
+    db_test! {
+        /// The sweep drops what is spent or past its expiry, and leaves a live
+        /// code alone.
+        async fn purging_drops_expired_codes_only(db) {
+            let now = OffsetDateTime::now_utc();
+            let grant = a_grant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let mut stale = binding(&grant, now);
+            stale.expires_at = now + time::Duration::seconds(1);
+            repo.issue(&digest("stale"), &stale, now).await.expect("issue");
+            repo.issue(&digest("fresh"), &binding(&grant, now), now).await.expect("issue");
+
+            let later = now + time::Duration::seconds(2);
+            assert_eq!(repo.purge_expired(later).await.expect("purge"), 1);
+            assert!(matches!(
+                repo.redeem(&digest("fresh"), later).await.expect("redeem"),
+                Redemption::Redeemed(_)
+            ));
+        }
+    }
+}
 
 mod sessions {
     use super::*;

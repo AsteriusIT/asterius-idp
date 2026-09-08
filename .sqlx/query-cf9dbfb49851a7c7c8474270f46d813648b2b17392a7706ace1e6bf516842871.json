@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from authorization_codes where tenant_id = $1 and expires_at <= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cf9dbfb49851a7c7c8474270f46d813648b2b17392a7706ace1e6bf516842871"
+}

@@ -55,6 +55,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "authorization_code"
+path = "fuzz_targets/authorization_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "claim_name"
 path = "fuzz_targets/claim_name.rs"
 test = false

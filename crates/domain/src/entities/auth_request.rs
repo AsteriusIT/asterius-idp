@@ -6,7 +6,7 @@
 //! row. The parameters travel as an opaque JSON document, so the store never
 //! has to be recompiled because a protocol parameter was added.
 
-use crate::{ClientId, TenantId};
+use crate::{ClientId, GrantId, TenantId};
 use serde_json::Value;
 use time::OffsetDateTime;
 
@@ -74,5 +74,28 @@ pub struct InteractionRecord {
     /// The session that authenticated the user, once one has.
     pub session: Option<String>,
     /// When the interaction stops being usable.
+    pub expires_at: OffsetDateTime,
+}
+
+/// What an authorization code was bound to at issuance.
+///
+/// Every field is compared at redemption. Grouping them means a new binding is
+/// added in one place and checked in one place, rather than being remembered
+/// at both ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeBinding {
+    /// The client the code was issued to.
+    pub client_id: String,
+    /// The grant it draws its authority from.
+    pub grant_id: GrantId,
+    /// The PKCE challenge, which is public (RFC 7636 §4.2).
+    pub code_challenge: String,
+    /// The redirect URI it was sent to, compared byte-for-byte.
+    pub redirect_uri: String,
+    /// `nonce`, carried into the ID token.
+    pub nonce: Option<String>,
+    /// The DPoP key the code is pinned to, if any.
+    pub dpop_jkt: Option<String>,
+    /// When it stops being redeemable.
     pub expires_at: OffsetDateTime,
 }

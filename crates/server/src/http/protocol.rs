@@ -75,6 +75,11 @@ pub struct ClientEndpoints {
     pub capabilities: Capabilities,
     /// How long a `request_uri` lives, already clamped.
     pub par_lifetime: time::Duration,
+    /// How long an authorization code lives, already clamped to the profile's
+    /// 60-second cap (FAPI 2.0 SP §5.3.2.1 item 11).
+    pub code_lifetime: time::Duration,
+    /// Opens the tenant's pairwise salt, which every `sub` derives from.
+    pub kek: Arc<dyn asterius_jose::Kek>,
     /// Who may register a client, and how.
     pub registration: RegistrationPolicy,
     /// Where registration decisions are recorded.
@@ -464,6 +469,9 @@ async fn interaction_show(
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
+    let grants = scope.grants();
+    let codes = scope.codes();
+    let users = scope.users(Arc::clone(&endpoints.kek));
     let passwords = endpoints.passwords(&tenant.id);
     interaction::show(
         InteractionContext {
@@ -479,6 +487,10 @@ async fn interaction_show(
             // one.
             username: None,
             clients: &clients,
+            grants: &grants,
+            codes: &codes,
+            subjects: &users,
+            code_lifetime: endpoints.code_lifetime,
             nonce: &nonce,
         },
         &id,
@@ -501,6 +513,9 @@ async fn interaction_submit(
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
+    let grants = scope.grants();
+    let codes = scope.codes();
+    let users = scope.users(Arc::clone(&endpoints.kek));
     let passwords = endpoints.passwords(&tenant.id);
     interaction::submit(
         InteractionContext {
@@ -516,6 +531,10 @@ async fn interaction_submit(
             // one.
             username: None,
             clients: &clients,
+            grants: &grants,
+            codes: &codes,
+            subjects: &users,
+            code_lifetime: endpoints.code_lifetime,
             nonce: &nonce,
         },
         &id,

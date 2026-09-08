@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select grant_id, consumed_at from authorization_codes\n              where tenant_id = $1 and code_hash = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "consumed_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "12c74c07d3cb98c9a00ed354b0e3c5ff56a982c183323636f62caa565d0915fc"
+}

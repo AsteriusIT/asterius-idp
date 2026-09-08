@@ -481,7 +481,7 @@ impl PgGrantRepository {
 /// The `grant_id` column is `uuid`, and [`Grant::new`] is the only thing that
 /// mints one — so this only ever fails on an identifier that came from
 /// somewhere else, which is worth an error rather than a panic.
-fn uuid(id: &GrantId) -> Result<Uuid, DomainError> {
+pub(crate) fn uuid(id: &GrantId) -> Result<Uuid, DomainError> {
     Uuid::parse_str(id.as_str())
         .map_err(|_| DomainError::invalid("grant_id", "is not a UUID and cannot name a grant"))
 }
@@ -544,5 +544,15 @@ impl Row {
                 format!("stored row is not a valid grant: {error}"),
             )
         })
+    }
+}
+
+/// The one operation the authorization endpoint needs. Reading, claiming and
+/// revoking stay on the concrete type, where the endpoints that do those things
+/// reach them — see [`asterius_domain::GrantRepository`].
+#[async_trait::async_trait]
+impl asterius_domain::GrantRepository for PgGrantRepository {
+    async fn create(&self, grant: &Grant) -> Result<(), DomainError> {
+        Self::create(self, grant).await
     }
 }

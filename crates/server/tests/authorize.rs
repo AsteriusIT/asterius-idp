@@ -90,6 +90,13 @@ impl InteractionRepository for Store {
     ) -> Result<(), DomainError> {
         Ok(())
     }
+    async fn complete_interaction(
+        &self,
+        _digest: &str,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
     async fn destroy_interaction(&self, _d: &str) -> Result<(), DomainError> {
         Ok(())
     }

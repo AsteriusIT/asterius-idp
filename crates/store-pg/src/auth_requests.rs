@@ -301,6 +301,38 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
         }
     }
 
+    async fn complete_interaction(
+        &self,
+        interaction_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let interaction = Self::digest_bytes(interaction_digest)?;
+        // The same shape as `consume`, reached by the other credential:
+        // `consumed_at is null` in the predicate is what makes exactly one of
+        // two racing submissions win. Whichever loses gets zero rows and must
+        // not send an authorization response.
+        let spent = sqlx::query!(
+            "update auth_requests
+                set consumed_at = $3
+              where tenant_id = $1
+                and interaction_id_hash = $2
+                and consumed_at is null
+                and expires_at > $3",
+            self.tenant.as_str(),
+            interaction,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        if spent.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(DomainError::NotFound)
+        }
+    }
+
     async fn destroy_interaction(&self, interaction_digest: &str) -> Result<(), DomainError> {
         let interaction = Self::digest_bytes(interaction_digest)?;
         sqlx::query!(

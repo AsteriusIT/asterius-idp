@@ -2,6 +2,7 @@
 
 use crate::auth_requests::PgAuthRequestRepository;
 use crate::clients::PgClientRepository;
+use crate::codes::PgCodeRepository;
 use crate::grants::PgGrantRepository;
 use crate::sessions::PgSessionRepository;
 use crate::users::PgUserRepository;
@@ -46,6 +47,12 @@ impl<'a> TenantScope<'a> {
     #[must_use]
     pub fn users(&self, kek: Arc<dyn Kek>) -> PgUserRepository {
         PgUserRepository::new(self.pool.clone(), self.tenant.clone(), kek)
+    }
+
+    /// The authorization-code repository for this tenant.
+    #[must_use]
+    pub fn codes(&self) -> PgCodeRepository {
+        PgCodeRepository::new(self.pool.clone(), self.tenant.clone())
     }
 
     /// The session repository for this tenant.

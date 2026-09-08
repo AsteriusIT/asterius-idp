@@ -5,9 +5,10 @@
 //! browser mismatch destroys the interaction rather than re-rendering it.
 
 use asterius_domain::{
-    AuthenticationMethod, ClientId, CredentialVerifier, DomainError, InteractionRecord,
-    InteractionRepository, Issuer, Lifetimes, Participant, Secret, Session, SessionRepository,
-    SessionRevocation, Tenant, TenantId, TenantStatus,
+    AuthenticationMethod, ClientId, CodeBinding, CodeIssuer, CredentialVerifier, DomainError,
+    Grant, GrantRepository, InteractionRecord, InteractionRepository, Issuer, Lifetimes,
+    Participant, Secret, SectorIdentifier, Session, SessionRepository, SessionRevocation,
+    SubjectId, SubjectResolver, Tenant, TenantId, TenantStatus, UserId,
 };
 use asterius_server::http::interaction::{InteractionContext, show, submit};
 use asterius_web::csp::Nonce;
@@ -25,6 +26,7 @@ const ISSUER: &str = "https://as.example/t/demo";
 struct FakeStore {
     record: Mutex<Option<(String, InteractionRecord)>>,
     destroyed: Mutex<Vec<String>>,
+    completed: Mutex<Vec<String>>,
 }
 
 impl FakeStore {
@@ -41,6 +43,10 @@ impl FakeStore {
                     "redirect_uri": "https://rp.example/cb",
                     "scopes": ["openid", "payments"],
                     "resources": [],
+                    // FAPI 2.0 SP §5.3.2.2 item 5 makes PKCE mandatory, so
+                    // every stored request has one.
+                    "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                    "nonce": "n-0S6_WzA2Mj",
                 }),
                 state,
                 session: None,
@@ -48,6 +54,23 @@ impl FakeStore {
             },
         ));
         store
+    }
+
+    /// Puts a signed-in session behind the interaction, which is what the
+    /// consent stage is reached with in reality.
+    fn signed_in(self, session: &str) -> Self {
+        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
+            record.session = Some(session.to_owned());
+        }
+        self
+    }
+
+    fn was_completed(&self, digest: &str) -> bool {
+        self.completed
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|d| d == digest)
     }
 
     fn was_destroyed(&self, digest: &str) -> bool {
@@ -106,6 +129,24 @@ impl InteractionRepository for FakeStore {
             _ => Err(DomainError::NotFound),
         }
     }
+    async fn complete_interaction(
+        &self,
+        digest: &str,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let mut spent = self.completed.lock().expect("lock");
+        if spent.iter().any(|d| d == digest) {
+            // The second submission finds nothing live, exactly as the single
+            // `update ... where consumed_at is null` does.
+            return Err(DomainError::NotFound);
+        }
+        let held = self.record.lock().expect("lock");
+        if held.as_ref().is_none_or(|(d, _)| d != digest) {
+            return Err(DomainError::NotFound);
+        }
+        spent.push(digest.to_owned());
+        Ok(())
+    }
     async fn destroy_interaction(&self, digest: &str) -> Result<(), DomainError> {
         self.destroyed.lock().expect("lock").push(digest.to_owned());
         let mut held = self.record.lock().expect("lock");
@@ -142,8 +183,14 @@ impl SessionRepository for FakeSessions {
         self.0.lock().expect("lock").push(session.clone());
         Ok(())
     }
-    async fn find(&self, _d: &str) -> Result<Option<Session>, DomainError> {
-        Ok(None)
+    async fn find(&self, digest: &str) -> Result<Option<Session>, DomainError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("lock")
+            .iter()
+            .find(|s| s.id_digest == digest)
+            .cloned())
     }
     async fn touch(
         &self,
@@ -191,6 +238,77 @@ impl SessionRepository for FakeSessions {
     }
 }
 
+impl FakeSessions {
+    /// A store already holding one live session for `user`.
+    fn holding(digest: &str, user: uuid::Uuid, now: OffsetDateTime) -> Self {
+        let session = Session {
+            tenant: TenantId::new("demo"),
+            id_digest: digest.to_owned(),
+            user,
+            created_at: now,
+            authenticated_at: now,
+            last_seen_at: now,
+            expires_at: now + time::Duration::hours(8),
+            idle_expires_at: now + time::Duration::minutes(30),
+            acr: None,
+            amr: vec![AuthenticationMethod::Password],
+            revoked: None,
+        };
+        Self(Mutex::new(vec![session]))
+    }
+}
+
+/// The grants a completed authorization writes.
+#[derive(Debug, Default)]
+struct FakeGrants(Mutex<Vec<Grant>>);
+
+#[async_trait::async_trait]
+impl GrantRepository for FakeGrants {
+    async fn create(&self, grant: &Grant) -> Result<(), DomainError> {
+        self.0.lock().expect("lock").push(grant.clone());
+        Ok(())
+    }
+}
+
+/// The codes it issues, by digest.
+#[derive(Debug, Default)]
+struct FakeCodes(Mutex<Vec<(String, CodeBinding)>>);
+
+#[async_trait::async_trait]
+impl CodeIssuer for FakeCodes {
+    async fn issue(
+        &self,
+        digest: &str,
+        binding: &CodeBinding,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.0
+            .lock()
+            .expect("lock")
+            .push((digest.to_owned(), binding.clone()));
+        Ok(())
+    }
+}
+
+/// A deterministic `sub`, so a test can assert which one the grant recorded.
+#[derive(Debug)]
+struct FakeSubjects;
+
+#[async_trait::async_trait]
+impl SubjectResolver for FakeSubjects {
+    async fn subject(
+        &self,
+        user: UserId,
+        sector: &SectorIdentifier,
+    ) -> Result<SubjectId, DomainError> {
+        Ok(SubjectId::new(format!(
+            "sub-{}-{}",
+            sector.as_str(),
+            user.as_uuid()
+        )))
+    }
+}
+
 fn tenant() -> Tenant {
     Tenant {
         id: TenantId::new("demo"),
@@ -219,12 +337,21 @@ async fn body_of(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// Everything a completed authorization writes to, held together so a test can
+/// look at what was written.
+#[derive(Debug, Default)]
+struct Issued {
+    grants: FakeGrants,
+    codes: FakeCodes,
+}
+
 fn context<'a>(
     tenant: &'a Tenant,
     store: &'a FakeStore,
     nonce: &'a Nonce,
     auth: Option<&'a dyn CredentialVerifier>,
     sessions: &'a FakeSessions,
+    issued: &'a Issued,
 ) -> InteractionContext<'a> {
     InteractionContext {
         tenant,
@@ -234,6 +361,10 @@ fn context<'a>(
         lifetimes: Lifetimes::default(),
         username: Some("ada"),
         clients: &FakeClients,
+        grants: &issued.grants,
+        codes: &issued.codes,
+        subjects: &FakeSubjects,
+        code_lifetime: asterius_oidc::code::DEFAULT_LIFETIME,
         nonce,
     }
 }
@@ -279,9 +410,10 @@ async fn a_matching_path_and_cookie_render_the_login_page() {
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
 
     let response = show(
-        context(&tenant, &store, &nonce, None, &sessions),
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
@@ -304,9 +436,10 @@ async fn a_url_without_the_cookie_does_not_render_a_form() {
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
 
     let response = show(
-        context(&tenant, &store, &nonce, None, &sessions),
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
         &HeaderMap::new(),
         OffsetDateTime::now_utc(),
@@ -333,9 +466,10 @@ async fn a_cookie_for_another_interaction_destroys_this_one() {
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
 
     let response = show(
-        context(&tenant, &store, &nonce, None, &sessions),
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
         &cookie_header(other.expose()),
         OffsetDateTime::now_utc(),
@@ -366,9 +500,10 @@ async fn an_unknown_interaction_is_indistinguishable_from_an_expired_one() {
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
 
     let response = show(
-        context(&tenant, &store, &nonce, None, &sessions),
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
@@ -396,6 +531,7 @@ async fn a_submission_without_the_issued_token_is_forbidden() {
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
     let auth = AlwaysSucceeds;
 
     for body in [
@@ -404,7 +540,7 @@ async fn a_submission_without_the_issued_token_is_forbidden() {
         "csrf=forged&username=ada&password=hunter2",
     ] {
         let response = submit(
-            context(&tenant, &store, &nonce, Some(&auth), &sessions),
+            context(&tenant, &store, &nonce, Some(&auth), &sessions, &issued),
             id.expose(),
             &cookie_header(id.expose()),
             &Bytes::from(body),
@@ -423,20 +559,21 @@ async fn a_submission_without_the_issued_token_is_forbidden() {
 async fn a_submission_with_the_issued_token_is_accepted() {
     let id = InteractionId::generate();
     let mut state = StoredState::default();
-    let issued = state.issue_csrf();
+    let token = state.issue_csrf();
     let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
     let auth = AlwaysSucceeds;
 
     let response = submit(
-        context(&tenant, &store, &nonce, Some(&auth), &sessions),
+        context(&tenant, &store, &nonce, Some(&auth), &sessions, &issued),
         id.expose(),
         &cookie_header(id.expose()),
         &Bytes::from(format!(
             "csrf={}&username=ada&password=hunter2",
-            issued.expose()
+            token.expose()
         )),
         OffsetDateTime::now_utc(),
     )
@@ -461,17 +598,25 @@ async fn a_submission_with_the_issued_token_is_accepted() {
 async fn a_token_cannot_be_submitted_twice() {
     let id = InteractionId::generate();
     let mut state = StoredState::default();
-    let issued = state.issue_csrf();
+    let token = state.issue_csrf();
     let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
 
-    let body = Bytes::from(format!("csrf={}&username=ada", issued.expose()));
+    let body = Bytes::from(format!("csrf={}&username=ada", token.expose()));
 
     // First: accepted, and re-rendered with a message because no password.
     let first = submit(
-        context(&tenant, &store, &nonce, Some(&AlwaysSucceeds), &sessions),
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysSucceeds),
+            &sessions,
+            &issued,
+        ),
         id.expose(),
         &cookie_header(id.expose()),
         &body,
@@ -482,7 +627,14 @@ async fn a_token_cannot_be_submitted_twice() {
 
     // Second: the same body, now refused.
     let second = submit(
-        context(&tenant, &store, &nonce, Some(&AlwaysSucceeds), &sessions),
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysSucceeds),
+            &sessions,
+            &issued,
+        ),
         id.expose(),
         &cookie_header(id.expose()),
         &body,
@@ -501,19 +653,20 @@ async fn a_token_cannot_be_submitted_twice() {
 async fn a_server_with_no_authentication_method_refuses_to_sign_anybody_in() {
     let id = InteractionId::generate();
     let mut state = StoredState::default();
-    let issued = state.issue_csrf();
+    let token = state.issue_csrf();
     let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
 
     let response = submit(
-        context(&tenant, &store, &nonce, None, &sessions),
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
         &cookie_header(id.expose()),
         &Bytes::from(format!(
             "csrf={}&username=ada&password=hunter2",
-            issued.expose()
+            token.expose()
         )),
         OffsetDateTime::now_utc(),
     )
@@ -534,10 +687,11 @@ async fn reloading_the_page_issues_a_fresh_token() {
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
 
     let first = body_of(
         show(
-            context(&tenant, &store, &nonce, None, &sessions),
+            context(&tenant, &store, &nonce, None, &sessions, &issued),
             id.expose(),
             &cookie_header(id.expose()),
             OffsetDateTime::now_utc(),
@@ -547,7 +701,7 @@ async fn reloading_the_page_issues_a_fresh_token() {
     .await;
     let second = body_of(
         show(
-            context(&tenant, &store, &nonce, None, &sessions),
+            context(&tenant, &store, &nonce, None, &sessions, &issued),
             id.expose(),
             &cookie_header(id.expose()),
             OffsetDateTime::now_utc(),
@@ -579,20 +733,21 @@ async fn reloading_the_page_issues_a_fresh_token() {
 async fn signing_in_creates_a_session_and_sets_its_cookie() {
     let id = InteractionId::generate();
     let mut state = StoredState::default();
-    let issued = state.issue_csrf();
+    let token = state.issue_csrf();
     let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
     let tenant = tenant();
     let nonce = Nonce::generate();
     let sessions = FakeSessions::default();
+    let issued = Issued::default();
     let auth = AlwaysSucceeds;
 
     let response = submit(
-        context(&tenant, &store, &nonce, Some(&auth), &sessions),
+        context(&tenant, &store, &nonce, Some(&auth), &sessions, &issued),
         id.expose(),
         &cookie_header(id.expose()),
         &Bytes::from(format!(
             "csrf={}&username=ada&password=hunter2",
-            issued.expose()
+            token.expose()
         )),
         OffsetDateTime::now_utc(),
     )
@@ -623,91 +778,149 @@ async fn signing_in_creates_a_session_and_sets_its_cookie() {
 
 // ---- the consent decision (ast-uwv.1) -----------------------------------
 
-/// Sets up an interaction already at the consent stage, with an issued token.
-fn at_consent() -> (InteractionId, FakeStore, String) {
+/// The account behind every consent test.
+const USER: u128 = 0x7a;
+
+/// An interaction at the consent stage, signed in, with a token issued.
+struct Consenting {
+    id: InteractionId,
+    store: FakeStore,
+    csrf: String,
+    sessions: FakeSessions,
+}
+
+fn at_consent() -> Consenting {
     let id = InteractionId::generate();
     let mut state = StoredState {
         stage: asterius_web::interaction::Stage::Consent,
         csrf_digest: None,
         decision: None,
     };
-    let issued = state.issue_csrf();
-    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
-    (id, store, issued.expose().to_owned())
+    let token = state.issue_csrf();
+    let session = "0".repeat(64);
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"))
+        .signed_in(&session);
+    Consenting {
+        id,
+        store,
+        csrf: token.expose().to_owned(),
+        sessions: FakeSessions::holding(
+            &session,
+            uuid::Uuid::from_u128(USER),
+            OffsetDateTime::now_utc(),
+        ),
+    }
 }
 
-async fn submit_decision(
-    id: &InteractionId,
-    store: &FakeStore,
-    body: &str,
-) -> axum::response::Response {
+async fn submit_decision(at: &Consenting, issued: &Issued, body: &str) -> axum::response::Response {
     let tenant = tenant();
     let nonce = Nonce::generate();
-    let sessions = FakeSessions::default();
     submit(
-        context(&tenant, store, &nonce, None, &sessions),
-        id.expose(),
-        &cookie_header(id.expose()),
+        context(&tenant, &at.store, &nonce, None, &at.sessions, issued),
+        at.id.expose(),
+        &cookie_header(at.id.expose()),
         &Bytes::from(body.to_owned()),
         OffsetDateTime::now_utc(),
     )
     .await
 }
 
+/// The `Location` a response redirected to, parsed.
+fn location_of(response: &axum::response::Response) -> url::Url {
+    let raw = response
+        .headers()
+        .get(header::LOCATION)
+        .expect("a redirect carries a Location")
+        .to_str()
+        .expect("a header value");
+    url::Url::parse(raw).expect("a URL")
+}
+
+/// One query parameter, or `None` if it is absent.
+fn parameter(url: &url::Url, name: &str) -> Option<String> {
+    url.query_pairs()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.into_owned())
+}
+
 #[tokio::test]
 async fn approving_records_the_scopes_that_were_granted() {
-    let (id, store, csrf) = at_consent();
+    let at = at_consent();
+    let issued = Issued::default();
 
     let response = submit_decision(
-        &id,
-        &store,
-        &format!("csrf={csrf}&decision=allow&scope=openid&scope=payments"),
+        &at,
+        &issued,
+        &format!(
+            "csrf={}&decision=allow&scope=openid&scope=payments",
+            at.csrf
+        ),
     )
     .await;
 
-    // `ast-gxh.4` turns the decision into a code; until then the stage
-    // advances and stops.
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    let state = store.state().expect("present");
+    assert_eq!(response.status().as_u16(), 303);
+    let state = at.store.state().expect("present");
     assert_eq!(state["stage"], "response");
     assert_eq!(state["decision"]["outcome"], "approved");
     assert_eq!(
         state["decision"]["scopes"],
         serde_json::json!(["openid", "payments"])
     );
+
+    let grants = issued.grants.0.lock().expect("lock");
+    let grant = grants.first().expect("a grant was recorded");
+    assert_eq!(
+        grant.scopes,
+        ["openid", "payments"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect()
+    );
+    assert_eq!(grant.user, Some(UserId::new(uuid::Uuid::from_u128(USER))));
+    assert!(grant.subject.is_some(), "the grant has no sub");
+    // Grant Management ID1 §5.6: nothing has been claimed from it yet.
+    assert!(grant.claimed_at.is_none());
 }
 
 /// The user may grant less than was asked, and the grant records what they
 /// actually agreed to.
 #[tokio::test]
 async fn a_narrowed_approval_records_only_what_was_ticked() {
-    let (id, store, csrf) = at_consent();
+    let at = at_consent();
+    let issued = Issued::default();
 
     let response = submit_decision(
-        &id,
-        &store,
-        &format!("csrf={csrf}&decision=allow&scope=openid"),
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    let state = store.state().expect("present");
+    assert_eq!(response.status().as_u16(), 303);
+    let state = at.store.state().expect("present");
     assert_eq!(
         state["decision"]["scopes"],
         serde_json::json!(["openid"]),
         "the decision recorded a scope the user unticked"
+    );
+    let grants = issued.grants.0.lock().expect("lock");
+    assert_eq!(
+        grants.first().expect("a grant").scopes,
+        std::iter::once("openid".to_owned()).collect(),
+        "the grant was written for more than the user allowed"
     );
 }
 
 /// Deny is a decision, not an error. It takes the same path as an approval.
 #[tokio::test]
 async fn denying_is_recorded_as_a_decision() {
-    let (id, store, csrf) = at_consent();
+    let at = at_consent();
+    let issued = Issued::default();
 
-    let response = submit_decision(&id, &store, &format!("csrf={csrf}&decision=deny")).await;
+    let response = submit_decision(&at, &issued, &format!("csrf={}&decision=deny", at.csrf)).await;
 
-    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-    let state = store.state().expect("present");
+    assert_eq!(response.status().as_u16(), 303);
+    let state = at.store.state().expect("present");
     assert_eq!(state["stage"], "response", "a denial did not advance");
     assert_eq!(state["decision"]["outcome"], "denied");
 }
@@ -716,17 +929,18 @@ async fn denying_is_recorded_as_a_decision() {
 /// receives without telling it.
 #[tokio::test]
 async fn an_approval_that_drops_a_required_scope_is_refused() {
-    let (id, store, csrf) = at_consent();
+    let at = at_consent();
+    let issued = Issued::default();
 
     let response = submit_decision(
-        &id,
-        &store,
-        &format!("csrf={csrf}&decision=allow&scope=payments"),
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=payments", at.csrf),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let state = store.state().expect("present");
+    let state = at.store.state().expect("present");
     assert_eq!(state["stage"], "consent", "the stage advanced anyway");
     assert!(state.get("decision").is_none_or(serde_json::Value::is_null));
 }
@@ -735,32 +949,234 @@ async fn an_approval_that_drops_a_required_scope_is_refused() {
 /// authority.
 #[tokio::test]
 async fn a_scope_that_was_never_offered_cannot_be_granted() {
-    let (id, store, csrf) = at_consent();
+    let at = at_consent();
+    let issued = Issued::default();
 
     let response = submit_decision(
-        &id,
-        &store,
-        &format!("csrf={csrf}&decision=allow&scope=openid&scope=admin"),
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid&scope=admin", at.csrf),
     )
     .await;
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(store.state().expect("present")["stage"], "consent");
+    assert_eq!(at.store.state().expect("present")["stage"], "consent");
 }
 
 #[tokio::test]
 async fn a_submission_with_neither_button_is_refused() {
-    let (id, store, csrf) = at_consent();
-    let response = submit_decision(&id, &store, &format!("csrf={csrf}&scope=openid")).await;
+    let at = at_consent();
+    let issued = Issued::default();
+    let response = submit_decision(&at, &issued, &format!("csrf={}&scope=openid", at.csrf)).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(store.state().expect("present")["stage"], "consent");
+    assert_eq!(at.store.state().expect("present")["stage"], "consent");
 }
 
 /// A decision needs the token like everything else.
 #[tokio::test]
 async fn a_decision_without_the_issued_token_is_forbidden() {
-    let (id, store, _csrf) = at_consent();
-    let response = submit_decision(&id, &store, "decision=allow&scope=openid").await;
+    let at = at_consent();
+    let issued = Issued::default();
+    let response = submit_decision(&at, &issued, "decision=allow&scope=openid").await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    assert_eq!(store.state().expect("present")["stage"], "consent");
+    assert_eq!(at.store.state().expect("present")["stage"], "consent");
+}
+
+// ---- the authorization response (ast-gxh.4) -----------------------------
+
+/// FAPI 2.0 SP §5.3.2.2 items 10–11: 303, and to the registered URI.
+#[tokio::test]
+async fn an_approval_redirects_to_the_client_with_a_code() {
+    let at = at_consent();
+    let issued = Issued::default();
+
+    let response = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 303);
+    let location = location_of(&response);
+    assert_eq!(location.host_str(), Some("rp.example"));
+    assert_eq!(location.path(), "/cb");
+
+    let code = parameter(&location, "code").expect("no code in the redirect");
+    // The code goes to the browser; only its digest is stored.
+    let stored = issued.codes.0.lock().expect("lock");
+    let (digest, binding) = stored.first().expect("a code was stored");
+    assert_ne!(digest, &code, "the code itself was stored");
+    assert_eq!(
+        digest,
+        &asterius_oidc::code::digest_of(&code).expect("ours"),
+        "the stored digest is not this code's"
+    );
+    assert_eq!(binding.redirect_uri, "https://rp.example/cb");
+    assert_eq!(binding.client_id, "billing");
+}
+
+/// The URL carries a credential, so nothing may keep it.
+#[tokio::test]
+async fn the_redirect_is_not_cacheable_and_takes_the_cookie_with_it() {
+    let at = at_consent();
+    let issued = Issued::default();
+
+    let response = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    let cleared = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.starts_with(COOKIE_NAME) && v.contains("Max-Age=0"));
+    assert!(cleared, "the interaction cookie outlived the interaction");
+}
+
+/// RFC 9207 §2. Both variants, because the mix-up attack works with an error
+/// response too.
+#[tokio::test]
+async fn every_authorization_response_names_the_issuer() {
+    for (body, expected) in [
+        ("decision=allow&scope=openid", None),
+        ("decision=deny", Some("access_denied")),
+    ] {
+        let at = at_consent();
+        let issued = Issued::default();
+        let response = submit_decision(&at, &issued, &format!("csrf={}&{body}", at.csrf)).await;
+
+        assert_eq!(response.status().as_u16(), 303, "{body}");
+        let location = location_of(&response);
+        assert_eq!(
+            parameter(&location, "iss").as_deref(),
+            Some(ISSUER),
+            "no iss on {body}"
+        );
+        assert_eq!(parameter(&location, "error").as_deref(), expected, "{body}");
+    }
+}
+
+/// RFC 6749 §4.1.2.1: a refusal goes back through the same validated redirect
+/// URI, and carries no code.
+#[tokio::test]
+async fn a_denial_redirects_with_access_denied_and_no_code() {
+    let at = at_consent();
+    let issued = Issued::default();
+
+    let response = submit_decision(&at, &issued, &format!("csrf={}&decision=deny", at.csrf)).await;
+
+    let location = location_of(&response);
+    assert_eq!(location.host_str(), Some("rp.example"));
+    assert_eq!(
+        parameter(&location, "error").as_deref(),
+        Some("access_denied")
+    );
+    assert_eq!(parameter(&location, "code"), None);
+    assert!(
+        issued.codes.0.lock().expect("lock").is_empty(),
+        "a refusal minted a code"
+    );
+    assert!(
+        issued.grants.0.lock().expect("lock").is_empty(),
+        "a refusal recorded a grant"
+    );
+}
+
+/// FAPI 2.0 SP §5.3.2.1 item 11.
+#[tokio::test]
+async fn a_code_expires_within_sixty_seconds() {
+    let at = at_consent();
+    let issued = Issued::default();
+    let before = OffsetDateTime::now_utc();
+
+    submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+
+    let after = OffsetDateTime::now_utc();
+    let stored = issued.codes.0.lock().expect("lock");
+    let (_, binding) = stored.first().expect("a code");
+    assert!(
+        binding.expires_at <= after + time::Duration::seconds(60),
+        "a code outlived the cap: {}",
+        binding.expires_at
+    );
+    assert!(
+        binding.expires_at > before,
+        "a code expired as it was issued"
+    );
+}
+
+/// FAPI 2.0 SP §5.3.2.2 Note 3: one-time use at *completion*. Two tabs both
+/// submitting must produce one authorization response.
+#[tokio::test]
+async fn a_second_submission_produces_no_second_response() {
+    let at = at_consent();
+    let issued = Issued::default();
+
+    let first = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+    assert_eq!(first.status().as_u16(), 303);
+    assert!(at.store.was_completed(&at.id.digest()));
+
+    // The token is spent too, so this is refused before the stage is even
+    // consulted — but the request being spent is what would stop a submission
+    // that arrived with a valid token from a concurrent rendering.
+    let second = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+    assert_ne!(second.status().as_u16(), 303, "a second response was sent");
+    assert!(second.headers().get(header::LOCATION).is_none());
+    assert_eq!(
+        issued.codes.0.lock().expect("lock").len(),
+        1,
+        "two codes were minted for one authorization"
+    );
+}
+
+/// The session is what says who this authorization is about. Without a usable
+/// one there is nobody to bind a grant to, and the client is told the request
+/// was denied rather than handed a code for a user who is not there.
+#[tokio::test]
+async fn an_authorization_whose_session_ended_mints_nothing() {
+    let mut at = at_consent();
+    at.sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    let response = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+
+    let location = location_of(&response);
+    assert_eq!(
+        parameter(&location, "error").as_deref(),
+        Some("access_denied")
+    );
+    assert_eq!(parameter(&location, "code"), None);
+    assert!(issued.codes.0.lock().expect("lock").is_empty());
 }

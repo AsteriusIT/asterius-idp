@@ -30,11 +30,14 @@
 //! fixed message, which is what a server that cannot sign anybody in should
 //! do. It does not pretend to authenticate.
 
+use crate::http::redirect::SeeOther;
 use asterius_domain::entities::session::SessionId;
 use asterius_domain::{
-    AuthenticationMethod, CredentialVerifier, InteractionRecord, InteractionRepository, Lifetimes,
-    Secret, Session, SessionRepository, Tenant,
+    AuthenticationMethod, CodeBinding, CodeIssuer, CredentialVerifier, Grant, GrantRepository,
+    InteractionRecord, InteractionRepository, Lifetimes, Secret, SectorIdentifier, Session,
+    SessionId as DomainSessionId, SessionRepository, SubjectResolver, Tenant, UserId,
 };
+use asterius_oidc::code::{self, AuthorizationResponse, MintedCode};
 use asterius_oidc::consent::{ConsentRequest, Decision};
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
@@ -42,9 +45,9 @@ use asterius_web::interaction::{
 use asterius_web::pages::{self, ConsentPage, ErrorPage, LoginPage, ScopeLine, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
 use axum::body::Bytes;
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 /// What the handlers need.
 pub struct InteractionContext<'a> {
@@ -68,6 +71,17 @@ pub struct InteractionContext<'a> {
     /// registration to draw a form nobody has authenticated for would be work
     /// an unauthenticated visitor can make this server do.
     pub clients: &'a dyn asterius_domain::ClientRepository,
+    /// Where a completed authorization is recorded.
+    pub grants: &'a dyn GrantRepository,
+    /// Where the code that carries it is stored.
+    ///
+    /// The issuing half only. This handler has no way to *redeem* a code, and
+    /// that is deliberate — see [`asterius_domain::CodeIssuer`].
+    pub codes: &'a dyn CodeIssuer,
+    /// How the `sub` this client will see is resolved (OIDC Core §8.1).
+    pub subjects: &'a dyn SubjectResolver,
+    /// How long an issued code lives, clamped to the profile's 60-second cap.
+    pub code_lifetime: Duration,
     /// The CSP nonce the document middleware drew for this response.
     pub nonce: &'a Nonce,
 }
@@ -202,7 +216,8 @@ pub async fn submit(
     match state.stage {
         Stage::Login => sign_in(&context, &presented, state, id, &form, &record, now).await,
         Stage::Consent => decide(&context, &presented, state, &form, &record, now).await,
-        // `ast-2vk.7` owns step-up; `ast-gxh.4` turns a decision into a code.
+        // `ast-2vk.7` owns step-up. A submission at `Response` has nothing
+        // left to submit: the request was spent when the response was sent.
         Stage::StepUp | Stage::Response => error_page(
             &context,
             StatusCode::NOT_IMPLEMENTED,
@@ -421,12 +436,251 @@ async fn decide(
         return *error;
     }
 
-    // `ast-gxh.4` picks it up from here.
-    error_page(
-        context,
-        StatusCode::NOT_IMPLEMENTED,
-        InteractionError::NotAvailable,
-    )
+    complete(context, presented, &decision, record, now).await
+}
+
+/// Turns the recorded decision into the authorization response.
+///
+/// # Why the request is spent before anything is minted
+///
+/// FAPI 2.0 SP §5.3.2.2 Note 3 puts one-time use at the completion of
+/// authorization. This is that point, and the spend goes *first*: if two tabs
+/// submit the same consent, one of them must produce no authorization response
+/// at all, and the only way to guarantee that is to decide the winner before
+/// either has minted anything. Minting first and spending after would leave a
+/// window in which two codes exist for one authorization.
+///
+/// # Why a failure after that point is a redirect and not a page
+///
+/// The opposite of `/authorize`, and for the opposite reason. There the
+/// redirect URI could not be trusted — the request might belong to another
+/// client, or not exist. Here it came from a request this server validated
+/// against the client's registration at push time, so it *is* the client's,
+/// and RFC 6749 §4.1.2.1 says errors go there. A user who has decided should
+/// end up back at the application either way; an error page would strand them
+/// with a client still waiting.
+async fn complete(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    decision: &Decision,
+    record: &InteractionRecord,
+    now: OffsetDateTime,
+) -> Response {
+    let string = |name: &str| {
+        record
+            .parameters
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    };
+
+    // Before the spend, because without it there is nowhere to send anything
+    // and the interaction should stay recoverable.
+    let Some(redirect_uri) = string("redirect_uri") else {
+        tracing::error!(
+            tenant = %context.tenant.id,
+            "a stored request has no redirect_uri"
+        );
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+    let state = string("state");
+    let issuer = context.tenant.issuer.as_str().to_owned();
+
+    if let Err(error) = context
+        .requests
+        .complete_interaction(&presented.digest(), now)
+        .await
+    {
+        // Some other submission got here first, or the window closed. Either
+        // way this one must not send a second authorization response.
+        tracing::warn!(%error, tenant = %context.tenant.id, "nothing live to complete");
+        return error_page(
+            context,
+            StatusCode::BAD_REQUEST,
+            InteractionError::NotAvailable,
+        );
+    }
+
+    let response = match decision {
+        // RFC 6749 §4.1.2.1. A refusal travels the same road as an approval.
+        Decision::Denied => AuthorizationResponse::Error {
+            error: "access_denied",
+            state,
+            issuer,
+        },
+        Decision::Approved { scopes } => match mint(context, scopes, record, now).await {
+            Ok(code) => AuthorizationResponse::Code {
+                code,
+                state,
+                issuer,
+            },
+            Err(error) => AuthorizationResponse::Error {
+                error,
+                state,
+                issuer,
+            },
+        },
+    };
+
+    redirect(context, &response, &redirect_uri)
+}
+
+/// The approval path: a grant, a code, and the binding that ties them.
+///
+/// Returns the code to hand back, or the RFC 6749 §4.1.2.1 error code to
+/// redirect with instead. Nothing here renders anything — the caller owns the
+/// response, so there is one place where `iss` is attached and one place where
+/// the 303 is built.
+async fn mint(
+    context: &InteractionContext<'_>,
+    scopes: &std::collections::BTreeSet<String>,
+    record: &InteractionRecord,
+    now: OffsetDateTime,
+) -> Result<String, &'static str> {
+    let string = |name: &str| {
+        record
+            .parameters
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    };
+
+    let Ok(Some(client)) = context.clients.find(&record.client).await else {
+        tracing::error!(tenant = %context.tenant.id, "the client went away mid-authorization");
+        return Err("server_error");
+    };
+
+    // Who this is about. The session digest was written when the user signed
+    // in; a session that is gone or no longer usable means the authorization
+    // has nobody behind it, and issuing a code anyway would bind a grant to a
+    // user who is not there.
+    let Some(digest) = record.session.as_deref() else {
+        tracing::error!(tenant = %context.tenant.id, "consent was recorded with no session");
+        return Err("server_error");
+    };
+    let session = match context.sessions.find(digest).await {
+        Ok(Some(session)) if session.status(now).is_usable() => session,
+        Ok(_) => {
+            tracing::info!(tenant = %context.tenant.id, "the session ended before consent completed");
+            return Err("access_denied");
+        }
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read the session");
+            return Err("server_error");
+        }
+    };
+
+    // OIDC Core §8.1. A pairwise client sees its own sector's `sub`; a public
+    // one sees the sector every public subject shares.
+    let Ok(sector) = SectorIdentifier::of_client(&client) else {
+        tracing::error!(tenant = %context.tenant.id, "this client has no sector to identify in");
+        return Err("server_error");
+    };
+    let user = UserId::new(session.user);
+    let subject = match context.subjects.subject(user, &sector).await {
+        Ok(subject) => subject,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot resolve a subject");
+            return Err("server_error");
+        }
+    };
+
+    let mut grant = Grant::new(context.tenant.id.clone(), record.client.clone(), now);
+    grant.user = Some(user);
+    grant.subject = Some(subject);
+    grant.scopes = scopes.iter().cloned().collect();
+    grant.resources = record
+        .parameters
+        .get("resources")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    grant.session = Some(DomainSessionId::new(digest.to_owned()));
+    // `claimed_at` stays `None`: Grant Management ID1 §5.6 makes a grant
+    // `active` when a credential has been *claimed*, and nothing has been. The
+    // token endpoint stamps it when the code is redeemed.
+
+    let grant_id = grant.id.clone();
+    if let Err(error) = context.grants.create(&grant).await {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot record a grant");
+        return Err("server_error");
+    }
+
+    let Some(code_challenge) = string("code_challenge") else {
+        // FAPI 2.0 SP §5.3.2.2 item 5 makes PKCE mandatory and
+        // `authorize::validate` enforces it at push time, so a stored request
+        // without one did not come from this server. Refusing is the only safe
+        // reading: a code with no challenge is redeemable by whoever holds it.
+        tracing::error!(tenant = %context.tenant.id, "a stored request has no code_challenge");
+        return Err("server_error");
+    };
+    let minted = MintedCode::generate();
+    let binding = CodeBinding {
+        client_id: record.client.as_str().to_owned(),
+        grant_id,
+        code_challenge,
+        // Byte-for-byte the URI the code is being sent to, so redemption can
+        // compare rather than re-derive (OIDC Core §3.1.3.2).
+        redirect_uri: string("redirect_uri").unwrap_or_default(),
+        nonce: string("nonce"),
+        // RFC 9449 §10: when the request pinned a key, the code is pinned too.
+        dpop_jkt: string("dpop_jkt"),
+        expires_at: now + code::clamp_lifetime(context.code_lifetime),
+    };
+    if let Err(error) = context.codes.issue(minted.digest(), &binding, now).await {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot store a code");
+        return Err("server_error");
+    }
+
+    Ok(minted.expose().to_owned())
+}
+
+/// Sends the browser back to the client.
+///
+/// The cookie goes with it. The interaction is spent by the time this is
+/// reached, so a cookie left in the browser is one an attacker can keep
+/// presenting against a row that will never answer again.
+fn redirect(
+    context: &InteractionContext<'_>,
+    response: &AuthorizationResponse,
+    redirect_uri: &str,
+) -> Response {
+    let Ok(location) = response.redirect_url(redirect_uri) else {
+        tracing::error!(tenant = %context.tenant.id, "a registered redirect URI will not parse");
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+    // Through `SeeOther`, never open-coded: 303 is the status FAPI 2.0 SP
+    // §5.3.2.2 items 10–11 leave available, and the helper is also where
+    // response splitting through `Location` is refused.
+    let Ok(see_other) = SeeOther::to(&location) else {
+        tracing::error!(tenant = %context.tenant.id, "a redirect location is not a header value");
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+
+    let mut response = see_other.into_response();
+    // The URL in this header carries an authorization code.
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    clear(&mut response);
+    response
 }
 
 /// Re-renders the current stage with a message and a fresh token.
@@ -600,8 +854,11 @@ fn render(
             })
             .into_response()
         }
-        // `ast-gxh.4` turns a decision into a code and a redirect. Reaching
-        // this stage means one was made and has nowhere to go yet.
+        // Unreachable in practice: reaching `Response` spends the request in
+        // the same call that sends the redirect, so a later `GET` finds
+        // nothing and never gets this far. Rendering rather than redirecting
+        // is still the right answer if it ever does — replaying a stored
+        // authorization response on a reload is what one-time use forbids.
         Stage::Response => error_page(
             context,
             StatusCode::NOT_IMPLEMENTED,

@@ -10,6 +10,7 @@
 mod audit;
 mod auth_requests;
 mod clients;
+mod codes;
 mod error;
 mod grants;
 mod key_store;
@@ -27,6 +28,7 @@ mod users;
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;
 pub use clients::PgClientRepository;
+pub use codes::{PgCodeRepository, Redemption};
 pub use error::to_domain_error;
 pub use grants::{PgGrantRepository, Revocation};
 pub use key_store::TenantKeyStore;

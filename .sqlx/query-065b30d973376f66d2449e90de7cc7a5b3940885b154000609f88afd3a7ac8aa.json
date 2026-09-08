@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update grants\n                set revoked_at = coalesce(revoked_at, $3),\n                    revocation_reason = coalesce(revocation_reason, $4)\n              where tenant_id = $1 and grant_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "065b30d973376f66d2449e90de7cc7a5b3940885b154000609f88afd3a7ac8aa"
+}

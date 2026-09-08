@@ -4,8 +4,9 @@
 //! Protocol crates depend on these traits and never on an implementation.
 
 use crate::{
-    AuthenticationMethod, Client, ClientId, Consumed, DomainError, InteractionRecord, Issuer,
-    Participant, PushedRequest, Secret, Session, SessionRevocation, Tenant, TenantId,
+    AuthenticationMethod, Client, ClientId, CodeBinding, Consumed, DomainError, Grant,
+    InteractionRecord, Issuer, Participant, PushedRequest, Secret, SectorIdentifier, Session,
+    SessionRevocation, SubjectId, Tenant, TenantId, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -280,6 +281,32 @@ pub trait InteractionRepository: Debug + Send + Sync {
         now: OffsetDateTime,
     ) -> Result<(), DomainError>;
 
+    /// Spends the request, at the moment an authorization response is about to
+    /// be sent.
+    ///
+    /// This is where FAPI 2.0 SP §5.3.2.2 Note 3's one-time use actually
+    /// happens. Not at page load — a user who reloads the consent screen has
+    /// done nothing wrong — but here, at *completion*, which is the only point
+    /// where spending it prevents anything. Two tabs that both reach the
+    /// consent screen are fine; two that both submit must produce one
+    /// authorization response, and this is the statement that decides which.
+    ///
+    /// Must be atomic for the same reason [`AuthRequestRepository::consume`]
+    /// must be: a read followed by a write lets both tabs win, and both
+    /// winning means two codes minted from one authorization.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] when there was nothing live to spend —
+    /// already completed, expired, or gone. A caller must treat that as "some
+    /// other request completed this one" and must not send an authorization
+    /// response of its own.
+    async fn complete_interaction(
+        &self,
+        interaction_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
     /// Destroys an interaction and the request behind it.
     ///
     /// Used when the id in the path and the id in the cookie disagree. That is
@@ -432,6 +459,77 @@ pub trait SessionRepository: Debug + Send + Sync {
     ///
     /// [`DomainError::Storage`] if the store could not be reached.
     async fn participants(&self, id_digest: &str) -> Result<Vec<Participant>, DomainError>;
+}
+
+/// Recording a completed authorization.
+///
+/// Deliberately one method. The authorization endpoint's whole relationship
+/// with a grant is that it creates one; reading, claiming and revoking belong
+/// to the token endpoint, the introspection endpoint and the grants dashboard,
+/// and none of those is reachable from a browser mid-consent. A port carrying
+/// all four would hand every one of those operations to a handler that needs
+/// exactly one of them.
+#[async_trait::async_trait]
+pub trait GrantRepository: Debug + Send + Sync {
+    /// Writes a new grant.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] when the grant belongs to another tenant, and
+    /// [`DomainError::Storage`] otherwise.
+    async fn create(&self, grant: &Grant) -> Result<(), DomainError>;
+}
+
+/// Issuing an authorization code — and nothing else.
+///
+/// Split from redemption for the same reason [`InteractionRepository`] is
+/// split from [`AuthRequestRepository`]: two callers, two credentials, and
+/// neither has any business reaching the other's operation. The authorization
+/// endpoint talks to a browser and mints codes; the token endpoint talks to an
+/// authenticated client and spends them. An issuing handler that *could* spend
+/// a code is a confusion waiting to be written, and one adapter implements
+/// both because it is one table — a fact about the storage, not the callers.
+#[async_trait::async_trait]
+pub trait CodeIssuer: Debug + Send + Sync {
+    /// Stores a freshly minted code under the digest of its value.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the digest exists, which at 256 bits means
+    /// the generator is broken rather than that a collision occurred.
+    /// [`DomainError::Storage`] otherwise.
+    async fn issue(
+        &self,
+        digest: &str,
+        binding: &CodeBinding,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+}
+
+/// The `sub` one client sees for one user.
+///
+/// A port rather than a function because the answer is *stored*: OIDC Core §8
+/// makes a Subject Identifier "locally unique and never reassigned", so the
+/// first derivation is the one that counts and every later call must return
+/// it, not recompute it. That makes this a lookup with a write behind it, and
+/// therefore an adapter's job.
+#[async_trait::async_trait]
+pub trait SubjectResolver: Debug + Send + Sync {
+    /// The identifier `user` is known by in `sector`, minting it on first use.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] when the tenant has no pairwise salt — a
+    /// refusal to mint, never a fallback to a default one, because a `sub`
+    /// derived under a predictable salt is both re-derivable by anyone who
+    /// knows the algorithm and impossible to withdraw once a relying party has
+    /// it. [`DomainError::Conflict`] when the derived value is already held by
+    /// somebody else, and [`DomainError::NotFound`] when the user is gone.
+    async fn subject(
+        &self,
+        user: UserId,
+        sector: &SectorIdentifier,
+    ) -> Result<SubjectId, DomainError>;
 }
 
 /// What a `jti` is being remembered for.
