@@ -70,6 +70,16 @@ impl EventType {
     pub const CLIENT_AUTH_FAILED: Self = Self("client.auth_failed");
     /// A client was registered (RFC 7591).
     pub const CLIENT_REGISTERED: Self = Self("client.registered");
+    /// A client read its own registration at the RFC 7592 client
+    /// configuration endpoint.
+    pub const CLIENT_READ: Self = Self("client.read");
+    /// A client replaced its own registration (RFC 7592 §2.2).
+    ///
+    /// A replacement, not a patch: the recorded event says the whole document
+    /// changed, because that is what the specification makes a PUT mean.
+    pub const CLIENT_UPDATED: Self = Self("client.updated");
+    /// A client deprovisioned itself (RFC 7592 §2.3).
+    pub const CLIENT_DELETED: Self = Self("client.deleted");
     /// A signing key was rotated.
     pub const KEY_ROTATED: Self = Self("key.rotated");
     /// An administrator changed configuration.
@@ -79,7 +89,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 23] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -97,6 +107,9 @@ impl EventType {
         Self::CLIENT_AUTHENTICATED,
         Self::CLIENT_AUTH_FAILED,
         Self::CLIENT_REGISTERED,
+        Self::CLIENT_READ,
+        Self::CLIENT_UPDATED,
+        Self::CLIENT_DELETED,
         Self::KEY_ROTATED,
         Self::ADMIN_CHANGED,
         Self::AUDIT_PURGED,
