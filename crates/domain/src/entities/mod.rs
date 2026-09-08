@@ -5,6 +5,7 @@ pub mod tenant;
 
 pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
-    GrantType, JwksSource, RedirectUri, SubjectType, TokenBinding, TokenEndpointAuthMethod,
+    GrantType, JwksSource, RedirectUri, RedirectUriError, SubjectType, TokenBinding,
+    TokenEndpointAuthMethod,
 };
 pub use tenant::{Tenant, TenantStatus};

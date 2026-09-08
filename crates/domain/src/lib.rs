@@ -23,8 +23,8 @@ pub use capabilities::{Capabilities, Feature};
 pub use credentials::{OpaqueToken, sha256_hex};
 pub use entities::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
-    GrantType, JwksSource, RedirectUri, SubjectType, Tenant, TenantStatus, TokenBinding,
-    TokenEndpointAuthMethod,
+    GrantType, JwksSource, RedirectUri, RedirectUriError, SubjectType, Tenant, TenantStatus,
+    TokenBinding, TokenEndpointAuthMethod,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
