@@ -16,6 +16,7 @@ use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, sh
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::outbound::HttpsJwksFetcher;
+use asterius_server::rotation::RotationSweep;
 use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
@@ -99,30 +100,7 @@ fn run() -> Result<(), String> {
             metrics,
         };
 
-        let keys = Arc::new(TenantKeyStore::new(
-            store.pool().clone(),
-            Arc::clone(&kek),
-            Arc::new(PgAuditSink::new(store.pool().clone())),
-        ));
-
-        // Creates the first key for a new tenant and applies the schedule for
-        // an existing one. Same call, so there is no separate bootstrap path to
-        // diverge from the steady-state one.
-        for tenant in &config.tenants {
-            keys.apply_schedule(&tenant.id, OffsetDateTime::now_utc())
-                .await
-                .map_err(|e| format!("cannot prepare signing keys for {}: {e}", tenant.id))?;
-        }
-
-        // The one object in this process that holds an unwrapped private key.
-        // Built here because that is what `PgKeyRepository`'s documentation
-        // says the composition root is for: signing through the repository
-        // would unwrap the key on every token, which for a cloud KEK is a
-        // network round trip each time.
-        let signer: Arc<dyn asterius_domain::keys::Signer> = Arc::new(CachedSigner::new(
-            (*keys).clone(),
-            Arc::new(asterius_domain::ports::SystemClock),
-        ));
+        let (keys, signer) = prepare_keys(&store, &kek, &config).await?;
 
         // Client-facing endpoints: the ones that need an authenticated client
         // and the database. Built here rather than lazily so that a deployment
@@ -182,10 +160,84 @@ fn run() -> Result<(), String> {
         .fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
 
-        serve(&config.server, app, shutdown_signal())
+        let (stop_sweep, sweeper) = spawn_rotation(
+            (*keys).clone(),
+            Arc::new(PgTenantRepository::new(
+                store.pool().clone(),
+                Arc::clone(&kek),
+            )),
+        );
+
+        let served = serve(&config.server, app, shutdown_signal())
             .await
-            .map_err(|e| format!("server stopped: {e}"))
+            .map_err(|e| format!("server stopped: {e}"));
+
+        // Stopped after the listener, not before: a request already in flight
+        // may still sign something, and a sweep that is mid-transaction should
+        // be allowed to finish it rather than be dropped.
+        let _ = stop_sweep.send(true);
+        let _ = sweeper.await;
+        served
     })
+}
+
+/// Opens the key store, prepares every configured tenant's keys, and builds
+/// the one object in this process that holds an unwrapped private key.
+///
+/// The schedule is applied here rather than left to the sweep so that a
+/// deployment started with the wrong key-encryption key fails at boot, where
+/// somebody is watching, instead of on the first token request. It is the same
+/// call the sweep makes, so there is no separate bootstrap path to diverge
+/// from the steady-state one.
+///
+/// The signer is built here because that is what `PgKeyRepository`'s own
+/// documentation says the composition root is for: signing through the
+/// repository would unwrap the key on every token, which for a cloud KEK is a
+/// network round trip each time.
+async fn prepare_keys(
+    store: &Store,
+    kek: &Arc<dyn asterius_jose::kek::Kek>,
+    config: &Config,
+) -> Result<(Arc<TenantKeyStore>, Arc<dyn asterius_domain::keys::Signer>), String> {
+    let keys = Arc::new(TenantKeyStore::new(
+        store.pool().clone(),
+        Arc::clone(kek),
+        Arc::new(PgAuditSink::new(store.pool().clone())),
+    ));
+
+    for tenant in &config.tenants {
+        keys.apply_schedule(&tenant.id, OffsetDateTime::now_utc())
+            .await
+            .map_err(|e| format!("cannot prepare signing keys for {}: {e}", tenant.id))?;
+    }
+
+    let signer: Arc<dyn asterius_domain::keys::Signer> = Arc::new(CachedSigner::new(
+        (*keys).clone(),
+        Arc::new(asterius_domain::ports::SystemClock),
+    ));
+    Ok((keys, signer))
+}
+
+/// Starts the key rotation sweep and hands back the way to stop it.
+///
+/// Rotation, from here on, is something that happens rather than something a
+/// restart does (`ast-mxc.9`). The schedule loop in `run` prepares the
+/// configured tenants once and fails loudly if it cannot; this keeps every
+/// tenant's schedule applied for the life of the process, including tenants
+/// created through the admin API after boot.
+fn spawn_rotation(
+    keys: TenantKeyStore,
+    tenants: Arc<PgTenantRepository>,
+) -> (
+    tokio::sync::watch::Sender<bool>,
+    tokio::task::JoinHandle<()>,
+) {
+    let sweep = RotationSweep::new(keys, tenants, Arc::new(asterius_domain::ports::SystemClock));
+    let (stop, mut stopping) = tokio::sync::watch::channel(false);
+    let handle = tokio::spawn(sweep.run(async move {
+        let _ = stopping.changed().await;
+    }));
+    (stop, handle)
 }
 
 /// Writes the tenants declared in the configuration into the database.

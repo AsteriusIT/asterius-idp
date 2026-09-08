@@ -10,6 +10,7 @@ pub mod config;
 pub mod http;
 pub mod observability;
 pub mod outbound;
+pub mod rotation;
 pub mod signing;
 pub mod tenancy;
 
