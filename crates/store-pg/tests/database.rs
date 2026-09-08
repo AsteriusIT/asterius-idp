@@ -131,7 +131,7 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
     (
         "clients",
         "dpop_bound_access_tokens",
-        "a boolean saying whether tokens are DPoP-bound (RFC 9449 §12), not a token",
+        "a boolean saying whether tokens are DPoP-bound (RFC 9449 §5.2), not a token",
     ),
     (
         "clients",
@@ -2566,8 +2566,11 @@ db_test! {
 
 mod replay {
     use super::*;
+    use asterius_domain::keys::SigningAlgorithm;
     use asterius_domain::{ReplayCheck, ReplayGuard, ReplayPurpose};
     use asterius_store_pg::PgReplayGuard;
+    use serde_json::json;
+    use time::Duration;
 
     fn later() -> OffsetDateTime {
         OffsetDateTime::now_utc() + time::Duration::minutes(5)
@@ -2762,6 +2765,213 @@ mod replay {
             assert!(
                 !String::from_utf8_lossy(&stored).contains(jti),
                 "the client's own string reached the column"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // DPoP proofs (ast-a05.6)
+
+    /// A real DPoP proof, signed with a real key.
+    ///
+    /// The point of building it here rather than hand-writing a `jti` is that
+    /// the values reaching the store are the ones the checker actually
+    /// produces: the subject is the RFC 7638 thumbprint of the proof's key and
+    /// the expiry is the end of the proof's own acceptance window. A test that
+    /// invented them would keep passing if either changed.
+    fn a_dpop_proof(key: &asterius_jose::SigningKey, jti: &str) -> asterius_jose::dpop::Proof {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+
+        let mut jwk = key.public_jwk().expect("jwk");
+        if let Some(object) = jwk.as_object_mut() {
+            object.remove("use");
+        }
+        let now = OffsetDateTime::now_utc();
+        let header = json!({ "typ": "dpop+jwt", "alg": key.algorithm().as_str(), "jwk": jwk });
+        let claims = json!({
+            "jti": jti,
+            "htm": "POST",
+            "htu": "https://as.example/t/demo/token",
+            "iat": now.unix_timestamp(),
+        });
+        let signing_input = format!(
+            "{}.{}",
+            B64.encode(serde_json::to_vec(&header).expect("header")),
+            B64.encode(serde_json::to_vec(&claims).expect("claims"))
+        );
+        let signature = key.sign(signing_input.as_bytes()).expect("sign");
+        let token = format!("{signing_input}.{}", B64.encode(signature));
+
+        let uri = asterius_jose::dpop::NormalisedUri::parse("https://as.example/t/demo/token")
+            .expect("endpoint");
+        asterius_jose::dpop::check(
+            &token,
+            &asterius_jose::dpop::Expectation::new("POST", &uri),
+            now,
+        )
+        .expect("a proof this test just signed")
+    }
+
+    db_test! {
+        /// RFC 9449 §11.1: a captured proof is replayable at the endpoint it
+        /// was made for until its `iat` window closes, and the `jti` is what
+        /// closes the gap. This is that defence over the real store.
+        ///
+        /// The `subject` is the key's thumbprint, which is what
+        /// `ReplayGuard::claim`'s documentation specifies for a DPoP proof —
+        /// and it is the only value available: a proof is presented before the
+        /// client is known, and often by a client that has no identity at this
+        /// endpoint at all.
+        async fn a_dpop_proofs_jti_can_be_claimed_once(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+            let tenant = TenantId::new("demo");
+            let key = asterius_jose::SigningKey::generate(SigningAlgorithm::EdDsa)
+                .expect("generate");
+            let proof = a_dpop_proof(&key, "dpop-jti-1");
+
+            assert_eq!(
+                guard.claim(
+                    &tenant,
+                    ReplayPurpose::DpopProof,
+                    proof.jkt.as_str(),
+                    &proof.jti,
+                    proof.replay_expires_at,
+                ).await.expect("first claim"),
+                ReplayCheck::FirstUse
+            );
+            assert_eq!(
+                guard.claim(
+                    &tenant,
+                    ReplayPurpose::DpopProof,
+                    proof.jkt.as_str(),
+                    &proof.jti,
+                    proof.replay_expires_at,
+                ).await.expect("second claim"),
+                ReplayCheck::Replay,
+                "a captured DPoP proof was accepted twice"
+            );
+        }
+    }
+
+    db_test! {
+        /// The namespace is the key, not the tenant and not the client.
+        ///
+        /// Two keys choosing the same `jti` is not a replay — it is two
+        /// unrelated clients that both used a UUID library, or one client that
+        /// rotated its DPoP key. A shared namespace would let whoever gets
+        /// there first deny service to the other, and a DPoP key needs no
+        /// registration, so "whoever gets there first" is anybody at all.
+        async fn two_dpop_keys_may_choose_the_same_jti(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+            let tenant = TenantId::new("demo");
+
+            let mut thumbprints = std::collections::HashSet::new();
+            for _ in 0..2 {
+                let key = asterius_jose::SigningKey::generate(SigningAlgorithm::EdDsa)
+                    .expect("generate");
+                let proof = a_dpop_proof(&key, "contested");
+                assert!(
+                    thumbprints.insert(proof.jkt.as_str().to_owned()),
+                    "two generated keys share a thumbprint"
+                );
+                assert_eq!(
+                    guard.claim(
+                        &tenant,
+                        ReplayPurpose::DpopProof,
+                        proof.jkt.as_str(),
+                        &proof.jti,
+                        proof.replay_expires_at,
+                    ).await.expect("claim"),
+                    ReplayCheck::FirstUse,
+                    "a key was denied a jti another key had used"
+                );
+            }
+        }
+    }
+
+    db_test! {
+        /// A DPoP proof and a client assertion that happen to choose the same
+        /// `jti` are unrelated events, even from the same party.
+        ///
+        /// Worth its own case because the two share a table: a client
+        /// authenticating with `private_key_jwt` and presenting a DPoP proof in
+        /// the same request could plausibly reuse one identifier, and being
+        /// told its proof was a replay would be a failure with no cause.
+        async fn a_dpop_proof_and_a_client_assertion_do_not_share_a_namespace(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+            let tenant = TenantId::new("demo");
+            let key = asterius_jose::SigningKey::generate(SigningAlgorithm::EdDsa)
+                .expect("generate");
+            let proof = a_dpop_proof(&key, "shared-identifier");
+
+            for purpose in [ReplayPurpose::ClientAssertion, ReplayPurpose::DpopProof] {
+                assert_eq!(
+                    guard.claim(
+                        &tenant,
+                        purpose,
+                        proof.jkt.as_str(),
+                        &proof.jti,
+                        proof.replay_expires_at,
+                    ).await.expect("claim"),
+                    ReplayCheck::FirstUse,
+                    "{} collided with the other purpose", purpose.as_str()
+                );
+            }
+        }
+    }
+
+    db_test! {
+        /// The row lives exactly as long as the proof would be accepted, and
+        /// the sweep collects it when it stops.
+        ///
+        /// This is what keeps the table proportional to traffic rather than to
+        /// policy: a DPoP proof is good for five minutes, so a row is dead
+        /// weight after five minutes, whatever any retention setting says.
+        async fn a_dpop_replay_row_is_collected_once_its_proof_has_aged_out(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let guard = PgReplayGuard::new(db.pool.clone());
+            let tenant = TenantId::new("demo");
+            let key = asterius_jose::SigningKey::generate(SigningAlgorithm::EdDsa)
+                .expect("generate");
+            let proof = a_dpop_proof(&key, "expiring");
+
+            let _ = guard.claim(
+                &tenant,
+                ReplayPurpose::DpopProof,
+                proof.jkt.as_str(),
+                &proof.jti,
+                proof.replay_expires_at,
+            ).await.expect("claim");
+
+            // While the proof would still be accepted, the row must stay: a
+            // sweep that ran early would reopen the replay window it closed.
+            assert_eq!(
+                guard.purge_expired(&tenant, proof.replay_expires_at - Duration::seconds(1))
+                    .await
+                    .expect("purge"),
+                0
+            );
+            assert_eq!(
+                guard.claim(
+                    &tenant,
+                    ReplayPurpose::DpopProof,
+                    proof.jkt.as_str(),
+                    &proof.jti,
+                    proof.replay_expires_at,
+                ).await.expect("claim"),
+                ReplayCheck::Replay
+            );
+
+            // Once it has aged out, the row protects nothing and goes.
+            assert_eq!(
+                guard.purge_expired(&tenant, proof.replay_expires_at)
+                    .await
+                    .expect("purge"),
+                1
             );
         }
     }

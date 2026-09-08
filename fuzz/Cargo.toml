@@ -193,3 +193,10 @@ path = "fuzz_targets/grant_record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "dpop_proof"
+path = "fuzz_targets/dpop_proof.rs"
+test = false
+doc = false
+bench = false
