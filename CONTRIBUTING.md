@@ -73,6 +73,15 @@ any SQL, regenerate the offline data and commit it, or CI (which builds with
 cargo sqlx prepare --workspace -- --all-targets
 ```
 
+Until the first release the baseline migration is still being edited, and sqlx
+refuses to run a migration whose checksum has changed since it was applied —
+which is exactly what protects a production database. Reset the local one
+instead:
+
+```sh
+psql "$DATABASE_URL" -c 'drop schema public cascade; create schema public;'
+```
+
 `crates/store-pg/.env` is a workaround, not a convention: sqlx walks every
 ancestor directory looking for `.env`, so a stray `.env` anywhere above the
 repository — a Python virtualenv named `.env`, for instance — breaks the build

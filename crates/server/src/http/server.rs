@@ -2,6 +2,7 @@
 
 use crate::config::{ServerConfig, TransportMode};
 use crate::http::{request_id, security_headers, tls};
+use crate::tenancy::TenantState;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, connect_info::ConnectInfo};
 use axum::http::{StatusCode, header};
@@ -51,6 +52,33 @@ pub fn with_middleware(routes: Router, config: &ServerConfig) -> Router {
         ))
         .layer(axum::middleware::from_fn(request_id::layer))
         .layer(axum::middleware::from_fn(security_headers::layer))
+}
+
+/// Assembles the whole application: tenant resolution, then the shared
+/// middleware.
+///
+/// Tenant resolution sits *inside* the shared middleware, so a request that
+/// names no tenant is still refused by a response carrying the security headers
+/// and a request id. It sits *outside* routing, so a handler is only ever
+/// reached once a tenant has been resolved and the path rewritten — a handler
+/// has no tenant parameter to forget, because it never sees one.
+///
+/// The tenant middleware is applied to an outer router that has no routes of
+/// its own, with `routes` as its fallback *service*. That indirection is
+/// load-bearing: `Router::layer` runs middleware **after** the router has
+/// already matched a path, so a layer applied directly to `routes` would
+/// rewrite a URI nothing looks at again. Wrapping instead means the rewrite
+/// happens first and the inner router matches `/authorize` rather than
+/// `/t/demo/authorize`.
+pub fn app(routes: Router, tenant_state: TenantState, config: &ServerConfig) -> Router {
+    let tenanted =
+        Router::new()
+            .fallback_service(routes)
+            .layer(axum::middleware::from_fn_with_state(
+                tenant_state,
+                crate::tenancy::layer,
+            ));
+    with_middleware(tenanted, config)
 }
 
 /// The response to a request for a path this server does not serve.

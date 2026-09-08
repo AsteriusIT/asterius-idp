@@ -15,6 +15,8 @@ workspace = true
 [dependencies]
 asterius-admin-api.workspace = true
 asterius-domain.workspace = true
+async-trait.workspace = true
+time.workspace = true
 asterius-jose.workspace = true
 asterius-oidc.workspace = true
 asterius-store-pg.workspace = true
@@ -43,6 +45,9 @@ name = "asterius"
 path = "src/main.rs"
 
 [dev-dependencies]
+asterius-domain.workspace = true
+async-trait.workspace = true
 http-body-util.workspace = true
+time.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tower = { workspace = true, features = ["util"] }

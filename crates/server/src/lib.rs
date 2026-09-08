@@ -7,8 +7,10 @@
 
 pub mod config;
 pub mod http;
+pub mod tenancy;
 
 pub use config::{Config, ConfigError};
+pub use tenancy::{TenantDirectory, TenantState};
 
 /// The version of the running server, as reported by metadata and `/healthz`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -1,12 +1,17 @@
 //! The `asterius` binary.
 #![forbid(unsafe_code)]
 
-use asterius_domain::Feature;
-use asterius_server::http::server::{not_found, serve, shutdown_signal, with_middleware};
+use asterius_domain::ports::TenantRepository as _;
+use asterius_domain::{Feature, Tenant, TenantStatus};
+use asterius_server::http::server::{app, not_found, serve, shutdown_signal};
+use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
+use asterius_store_pg::{PgTenantRepository, Store};
 use axum::Router;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use time::OffsetDateTime;
 
 const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
 const USAGE: &str = "usage: asterius [--config <path>]";
@@ -48,20 +53,77 @@ fn run() -> Result<(), String> {
         features = %if enabled.is_empty() { "none".to_owned() } else { enabled.join(",") },
         "starting"
     );
-    for tenant in &config.tenants {
-        tracing::info!(tenant = %tenant.id, issuer = %tenant.issuer, "tenant");
-    }
-
-    // No protocol endpoints yet — they arrive with their own stories. What is
-    // wired here is the middleware every one of them will sit behind.
-    let routes = Router::new().fallback(not_found);
-    let app = with_middleware(routes, &config.server);
-
     let runtime =
         tokio::runtime::Runtime::new().map_err(|e| format!("cannot start runtime: {e}"))?;
-    runtime
-        .block_on(serve(&config.server, app, shutdown_signal()))
-        .map_err(|e| format!("server stopped: {e}"))
+    runtime.block_on(async move {
+        let store = Store::connect(
+            config.database.url.expose(),
+            config.database.max_connections,
+        )
+        .await
+        .map_err(|e| format!("cannot connect to the database: {e}"))?;
+        store
+            .migrate()
+            .await
+            .map_err(|e| format!("cannot apply migrations: {e}"))?;
+
+        let repository = PgTenantRepository::new(store.pool().clone());
+        bootstrap_tenants(&repository, &config).await?;
+
+        let directory = TenantDirectory::new(Arc::new(repository));
+        let tenant_state = TenantState::new(directory, &config.server);
+
+        // No protocol endpoints yet — they arrive with their own stories. What
+        // is wired here is everything every one of them will sit behind.
+        let routes = Router::new().fallback(not_found);
+        let app = app(routes, tenant_state, &config.server);
+
+        serve(&config.server, app, shutdown_signal())
+            .await
+            .map_err(|e| format!("server stopped: {e}"))
+    })
+}
+
+/// Writes the tenants declared in the configuration into the database.
+///
+/// The configuration file is the source of truth for which tenants exist at
+/// boot; the admin API adds more at runtime. The upsert is idempotent, so a
+/// restart re-asserts the declared shape without disturbing anything else — and
+/// an operator who corrects an issuer in the file sees it applied rather than
+/// silently ignored because the row already existed.
+async fn bootstrap_tenants(repository: &PgTenantRepository, config: &Config) -> Result<(), String> {
+    for declared in &config.tenants {
+        let existing = repository
+            .find_by_id(&declared.id)
+            .await
+            .map_err(|e| format!("cannot read tenant {}: {e}", declared.id))?;
+
+        let tenant = Tenant {
+            id: declared.id.clone(),
+            issuer: declared.issuer.clone(),
+            custom_host: existing.as_ref().and_then(|t| t.custom_host.clone()),
+            display_name: existing
+                .as_ref()
+                .map_or_else(|| declared.id.to_string(), |t| t.display_name.clone()),
+            status: existing.as_ref().map_or(TenantStatus::Active, |t| t.status),
+            created_at: OffsetDateTime::now_utc(),
+            updated_at: OffsetDateTime::now_utc(),
+        };
+
+        repository
+            .upsert(&tenant)
+            .await
+            .map_err(|e| format!("cannot write tenant {}: {e}", declared.id))?;
+
+        tracing::info!(
+            tenant = %tenant.id,
+            issuer = %tenant.issuer,
+            status = tenant.status.as_str(),
+            new = existing.is_none(),
+            "tenant ready"
+        );
+    }
+    Ok(())
 }
 
 fn config_path() -> Result<PathBuf, String> {

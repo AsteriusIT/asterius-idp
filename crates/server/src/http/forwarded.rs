@@ -57,6 +57,66 @@ pub fn resolve(peer: IpAddr, headers: &HeaderMap, trusted_proxies: &[IpNet]) -> 
     }
 }
 
+/// Resolves the host the client asked for.
+///
+/// Behind a proxy the `Host` header is whatever the proxy chose to forward, and
+/// the client's original host lives in `Forwarded: host=` or
+/// `X-Forwarded-Host`. Since the host selects the *tenant*, believing it from
+/// an untrusted peer would let any client pick which tenant's keys sign its
+/// tokens — so the same trust rule applies as for addresses.
+///
+/// Returns the host as written, without a scheme and with any port intact, so
+/// that it can be compared against an issuer's authority.
+#[must_use]
+pub fn resolve_host<'h>(
+    peer: IpAddr,
+    headers: &'h HeaderMap,
+    trusted_proxies: &[IpNet],
+    fallback: Option<&'h str>,
+) -> Option<&'h str> {
+    if is_trusted(peer, trusted_proxies) {
+        if let Some(host) = forwarded_host(headers) {
+            return Some(host);
+        }
+        if let Some(host) = headers
+            .get("x-forwarded-host")
+            .and_then(|v| v.to_str().ok())
+            // A proxy chain appends, so the first entry is what the client
+            // asked for; the rest are hops.
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|h| !h.is_empty())
+        {
+            return Some(host);
+        }
+    }
+    fallback
+        .or_else(|| {
+            headers
+                .get(axum::http::header::HOST)
+                .and_then(|v| v.to_str().ok())
+        })
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+}
+
+/// Reads `host=` out of an RFC 7239 `Forwarded` header.
+fn forwarded_host(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get_all(axum::http::header::FORWARDED)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .flat_map(|element| element.split(';'))
+        .find_map(|parameter| {
+            let (key, value) = parameter.split_once('=')?;
+            key.trim()
+                .eq_ignore_ascii_case("host")
+                .then(|| value.trim().trim_matches('"'))
+        })
+        .filter(|h| !h.is_empty())
+}
+
 fn is_trusted(ip: IpAddr, trusted_proxies: &[IpNet]) -> bool {
     trusted_proxies.iter().any(|net| net.contains(&ip))
 }
@@ -263,6 +323,84 @@ mod tests {
                 forwarded: false
             }
         );
+    }
+
+    // ---- host resolution -------------------------------------------------
+
+    /// The host selects the tenant, so an untrusted peer must not be able to
+    /// choose it — otherwise any client could pick whose keys sign its tokens.
+    #[test]
+    fn an_untrusted_peer_cannot_choose_the_host() {
+        let trusted = nets(&["10.0.0.0/8"]);
+        let claimed = headers(&[
+            ("host", "real.example"),
+            ("x-forwarded-host", "attacker.example"),
+        ]);
+        assert_eq!(
+            resolve_host(ip("203.0.113.7"), &claimed, &trusted, None),
+            Some("real.example")
+        );
+    }
+
+    #[test]
+    fn a_trusted_proxy_may_report_the_original_host() {
+        let trusted = nets(&["10.0.0.0/8"]);
+        let forwarded = headers(&[("host", "internal.svc"), ("x-forwarded-host", "as.example")]);
+        assert_eq!(
+            resolve_host(ip("10.0.0.1"), &forwarded, &trusted, None),
+            Some("as.example")
+        );
+    }
+
+    #[test]
+    fn rfc_7239_host_is_preferred_and_ports_survive() {
+        let trusted = nets(&["10.0.0.0/8"]);
+        let both = headers(&[
+            (
+                "forwarded",
+                "for=203.0.113.7;host=as.example:8443;proto=https",
+            ),
+            ("x-forwarded-host", "other.example"),
+        ]);
+        assert_eq!(
+            resolve_host(ip("10.0.0.1"), &both, &trusted, None),
+            Some("as.example:8443")
+        );
+    }
+
+    /// A proxy chain appends, so the first entry is the client's own host.
+    #[test]
+    fn the_first_forwarded_host_wins() {
+        let trusted = nets(&["10.0.0.0/8"]);
+        let chain = headers(&[("x-forwarded-host", "as.example, edge.internal")]);
+        assert_eq!(
+            resolve_host(ip("10.0.0.1"), &chain, &trusted, None),
+            Some("as.example")
+        );
+    }
+
+    /// HTTP/2 carries the authority in the pseudo-header, not in `Host`.
+    #[test]
+    fn an_authority_from_the_request_line_is_used_when_there_is_no_host_header() {
+        assert_eq!(
+            resolve_host(
+                ip("203.0.113.7"),
+                &HeaderMap::new(),
+                &[],
+                Some("as.example")
+            ),
+            Some("as.example")
+        );
+    }
+
+    #[test]
+    fn a_missing_host_is_none_rather_than_a_guess() {
+        assert_eq!(
+            resolve_host(ip("203.0.113.7"), &HeaderMap::new(), &[], None),
+            None
+        );
+        let empty = headers(&[("host", "")]);
+        assert_eq!(resolve_host(ip("203.0.113.7"), &empty, &[], None), None);
     }
 
     /// A header split across several lines is one chain, not several.

@@ -88,6 +88,29 @@ impl Issuer {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The authority: host, plus a port when it is not the default.
+    ///
+    /// This is what a request's `Host` header must match for the request to be
+    /// speaking to this issuer.
+    #[must_use]
+    pub fn authority(&self) -> &str {
+        let after_scheme = &self.0["https://".len()..];
+        match after_scheme.find('/') {
+            Some(slash) => &after_scheme[..slash],
+            None => after_scheme,
+        }
+    }
+
+    /// The path component, without a trailing slash. Empty when there is none.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        let after_scheme = &self.0["https://".len()..];
+        match after_scheme.find('/') {
+            Some(slash) => &after_scheme[slash..],
+            None => "",
+        }
+    }
 }
 
 impl fmt::Display for Issuer {
@@ -224,6 +247,21 @@ mod tests {
             let once = canonical(raw);
             assert_eq!(canonical(&once), once, "not idempotent for {raw}");
         }
+    }
+
+    #[test]
+    fn authority_and_path_split_the_identifier() {
+        let issuer = Issuer::parse("https://as.example/t/demo").expect("valid");
+        assert_eq!(issuer.authority(), "as.example");
+        assert_eq!(issuer.path(), "/t/demo");
+
+        let bare = Issuer::parse("https://as.example").expect("valid");
+        assert_eq!(bare.authority(), "as.example");
+        assert_eq!(bare.path(), "");
+
+        let ported = Issuer::parse("https://as.example:8443/t/demo").expect("valid");
+        assert_eq!(ported.authority(), "as.example:8443");
+        assert_eq!(ported.path(), "/t/demo");
     }
 
     #[test]

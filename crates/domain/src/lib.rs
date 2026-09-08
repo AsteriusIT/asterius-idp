@@ -17,6 +17,6 @@ pub mod secret;
 pub use capabilities::{Capabilities, Feature};
 pub use entities::{Tenant, TenantStatus};
 pub use error::DomainError;
-pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId};
+pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
 pub use secret::Secret;

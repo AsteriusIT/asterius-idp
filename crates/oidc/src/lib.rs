@@ -5,3 +5,5 @@
 //! protocol rule can therefore be tested against the normative text without
 //! standing up a server. Side effects belong to the adapters.
 #![forbid(unsafe_code)]
+
+pub mod tenancy;

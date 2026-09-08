@@ -14,7 +14,7 @@
 //! is split in two: a lenient pass where every field is optional, then a
 //! validation pass that accumulates problems and reports them together.
 
-use asterius_domain::{Capabilities, Issuer, Secret};
+use asterius_domain::{Capabilities, Issuer, Secret, TenantId};
 use ipnet::IpNet;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -101,7 +101,7 @@ pub struct DatabaseConfig {
 #[derive(Debug)]
 pub struct TenantConfig {
     /// The tenant's identifier, as it appears in the issuer path.
-    pub id: String,
+    pub id: TenantId,
     /// The tenant's canonical issuer identifier.
     pub issuer: Issuer,
 }
@@ -508,10 +508,22 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
     let mut seen_issuers: BTreeMap<String, usize> = BTreeMap::new();
 
     for (index, tenant) in raw.into_iter().enumerate() {
-        let id = tenant.id;
-        if id.is_none() {
-            errors.missing(format!("tenant[{index}].id"));
-        }
+        // The id is validated here rather than trusted: it becomes a path
+        // segment in the issuer and in every request URL, so a bad one is a
+        // routing hazard, not a cosmetic problem.
+        let id = match tenant.id {
+            None => {
+                errors.missing(format!("tenant[{index}].id"));
+                None
+            }
+            Some(raw) => match TenantId::parse(&raw) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    errors.problem(format!("tenant[{index}].id"), e.to_string());
+                    None
+                }
+            },
+        };
         let issuer = match tenant.issuer {
             None => {
                 errors.missing(format!("tenant[{index}].issuer"));
@@ -527,7 +539,7 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
         };
 
         if let Some(id) = &id
-            && let Some(first) = seen_ids.insert(id.clone(), index)
+            && let Some(first) = seen_ids.insert(id.as_str().to_owned(), index)
         {
             errors.problem(
                 format!("tenant[{index}].id"),
@@ -851,6 +863,24 @@ mod tests {
                 .message
                 .contains("duplicate of tenant[0]")
         );
+    }
+
+    /// The tenant id becomes a path segment in the issuer, so the config file
+    /// is the last place it can be rejected cheaply.
+    #[test]
+    fn a_tenant_id_that_cannot_be_a_path_segment_is_refused() {
+        for bad in ["../etc", "Demo", "a b", "has.dot", ""] {
+            let text = format!(
+                "[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"{bad}\"\n\
+                 issuer = \"https://as.example/t/x\"\n"
+            );
+            let problems = problems(parse(&text));
+            assert_eq!(
+                problems.paths().collect::<Vec<_>>(),
+                ["tenant[0].id"],
+                "accepted tenant id {bad:?}"
+            );
+        }
     }
 
     #[test]
