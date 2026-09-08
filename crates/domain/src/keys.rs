@@ -140,6 +140,73 @@ impl KeyState {
     pub const fn is_published(self) -> bool {
         matches!(self, Self::Pending | Self::Active | Self::Retiring)
     }
+
+    /// Parses the storage spelling.
+    ///
+    /// Returns `None` for anything else. A row whose state nobody recognises
+    /// must not load as a usable key: "unknown" is not a state a key can be in,
+    /// and defaulting it to `retired` would hide a corrupted row while
+    /// defaulting it to `active` would sign with one.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|state| state.as_str() == value)
+    }
+
+    /// Every state, in the order a key passes through them.
+    pub const ALL: [Self; 4] = [Self::Pending, Self::Active, Self::Retiring, Self::Retired];
+}
+
+/// What a key may be used for.
+///
+/// FAPI 2.0 SP §6.8 item 2 asks for single-purpose keys: "single purpose keys
+/// are recommended. For example, it is not recomended to use the same key for
+/// signing and encryption." The reason is not hygiene, it is that a signing
+/// oracle and a decryption oracle over one key pair combine into attacks that
+/// neither offers alone.
+///
+/// The spellings are the JWK `use` values (RFC 7517 §4.2), so a stored purpose
+/// and the `use` member of the published JWK are the same string and cannot
+/// drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyPurpose {
+    /// Signs and verifies. Every JWT this server issues.
+    #[serde(rename = "sig")]
+    Signing,
+    /// Encrypts and decrypts. No key of this purpose exists yet — ADR-0004
+    /// records that JWE is not implemented — but the distinction is stored
+    /// from the start, because a purpose column added after the fact has to
+    /// guess what the rows already in the table were for.
+    #[serde(rename = "enc")]
+    Encryption,
+}
+
+impl KeyPurpose {
+    /// Every purpose.
+    pub const ALL: [Self; 2] = [Self::Signing, Self::Encryption];
+
+    /// The storage and JWK `use` spelling (RFC 7517 §4.2).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Signing => "sig",
+            Self::Encryption => "enc",
+        }
+    }
+
+    /// Parses a `use` value. `None` for anything outside the two.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|purpose| purpose.as_str() == value)
+    }
+}
+
+impl fmt::Display for KeyPurpose {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// The public half of a signing key, as published.
@@ -151,6 +218,9 @@ pub struct PublicKeyRecord {
     pub kid: Kid,
     /// The algorithm it signs with.
     pub algorithm: SigningAlgorithm,
+    /// What it may be used for. A JWKS consumer reads this as the `use`
+    /// member, and nothing may use a key for the other one.
+    pub purpose: KeyPurpose,
     /// Where it is in its life.
     pub state: KeyState,
     /// The public key as a JWK, ready to serve in a JWKS.
@@ -299,5 +369,39 @@ mod tests {
         assert!(KeyState::Active.is_published());
         assert!(KeyState::Retiring.is_published());
         assert!(!KeyState::Retired.is_published());
+    }
+
+    /// A row whose state is not one of the four must not resolve to a state at
+    /// all. Every default a reader could pick here is wrong in one direction:
+    /// `active` signs with a key nobody vouched for, `retired` silently drops
+    /// a key that tokens in the wild were signed by.
+    #[test]
+    fn a_state_outside_the_four_does_not_parse() {
+        for state in KeyState::ALL {
+            assert_eq!(KeyState::parse(state.as_str()), Some(state));
+        }
+        for rejected in ["", "ACTIVE", "active ", "revoked", "compromised", "null"] {
+            assert_eq!(KeyState::parse(rejected), None, "accepted {rejected:?}");
+        }
+    }
+
+    /// FAPI 2.0 SP §6.8 item 2: single-purpose keys. The two purposes are
+    /// exactly the JWK `use` values (RFC 7517 §4.2), so the stored purpose and
+    /// the published `use` member cannot disagree by construction.
+    #[test]
+    fn a_key_purpose_is_its_jwk_use_value_and_nothing_else() {
+        assert_eq!(KeyPurpose::Signing.as_str(), "sig");
+        assert_eq!(KeyPurpose::Encryption.as_str(), "enc");
+        for purpose in KeyPurpose::ALL {
+            assert_eq!(KeyPurpose::parse(purpose.as_str()), Some(purpose));
+            assert_eq!(
+                serde_json::to_string(&purpose).expect("serialise"),
+                format!("\"{purpose}\"")
+            );
+        }
+        // "both" is the state this enum exists to make unrepresentable.
+        for rejected in ["", "both", "sig enc", "signature", "encryption", "SIG"] {
+            assert_eq!(KeyPurpose::parse(rejected), None, "accepted {rejected:?}");
+        }
     }
 }

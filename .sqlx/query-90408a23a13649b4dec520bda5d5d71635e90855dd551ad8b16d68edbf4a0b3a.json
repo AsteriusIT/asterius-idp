@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update signing_keys\n                 set state = 'retiring', retiring_at = $4\n                 where tenant_id = $1 and purpose = $2 and alg = $3 and state = 'active'\n                 returning kid",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kid",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "90408a23a13649b4dec520bda5d5d71635e90855dd551ad8b16d68edbf4a0b3a"
+}

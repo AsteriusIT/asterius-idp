@@ -1152,3 +1152,732 @@ db_test! {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Signing keys: lifecycle, rotation and encryption at rest
+// ---------------------------------------------------------------------------
+
+use asterius_domain::keys::{KeyPurpose, KeyState, KeyStore, Kid, SigningAlgorithm};
+use asterius_jose::{LocalKek, SigningKey, VerifyingKey, jws};
+use asterius_store_pg::{PgKeyRepository, RotationSchedule};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+use std::sync::Arc;
+use time::Duration;
+
+/// A fixed key-encryption key. Constant on purpose: every assertion about what
+/// is in the table has to be made against a KEK the test still holds.
+const A_KEK: [u8; 32] = [0x5a; 32];
+
+fn kek() -> Arc<LocalKek> {
+    Arc::new(LocalKek::from_bytes(&A_KEK).expect("a 32-byte KEK"))
+}
+
+fn keys(pool: &PgPool, tenant: &str) -> PgKeyRepository {
+    PgKeyRepository::new(
+        pool.clone(),
+        TenantId::new(tenant),
+        kek(),
+        Arc::new(PgAuditSink::new(pool.clone())),
+    )
+}
+
+/// An epoch the tests do arithmetic from, so that "before rotation" and "after
+/// the grace period" are exact rather than a sleep.
+fn epoch() -> OffsetDateTime {
+    OffsetDateTime::UNIX_EPOCH + time::Duration::days(20_000)
+}
+
+fn operator() -> Actor {
+    Actor::Admin("ops@example".to_owned())
+}
+
+/// Rebuilds a verifying key from a published JWK, the way a relying party
+/// would: the only thing it is given is the JWK Set.
+fn verifying_key_from_jwk(jwk: &serde_json::Value) -> VerifyingKey {
+    assert_eq!(jwk["kty"], "OKP", "this helper only knows Ed25519");
+    assert_eq!(jwk["crv"], "Ed25519");
+    let x = B64
+        .decode(jwk["x"].as_str().expect("x is a string"))
+        .expect("x is base64url");
+    VerifyingKey::new(SigningAlgorithm::EdDsa, x)
+}
+
+async fn published(repo: &PgKeyRepository, tenant: &str) -> Vec<(Kid, KeyState)> {
+    repo.published_keys(&TenantId::new(tenant))
+        .await
+        .expect("published keys")
+        .into_iter()
+        .map(|key| (key.kid, key.state))
+        .collect()
+}
+
+db_test! {
+    /// OIDC Core §10.1.1, the whole procedure in one test. Keys are rolled over
+    /// by "adding new keys to the JWK Set"; the signer "can begin using a new
+    /// key at its discretion and signals the change to the verifier using the
+    /// kid value"; and the JWK Set "SHOULD retain recently decommissioned
+    /// signing keys for a reasonable period of time to facilitate a smooth
+    /// transition".
+    ///
+    /// So a token signed before a rotation must still verify against the
+    /// published JWKS for the whole grace period, new tokens must carry the new
+    /// `kid`, and once the grace period ends the old key must be gone from what
+    /// is published.
+    async fn a_token_signed_before_rotation_verifies_until_the_grace_period_ends(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        let schedule = repo.schedule().await.expect("default schedule");
+
+        // First key: active immediately, because no verifier can have cached a
+        // JWK Set this tenant has never published.
+        let first = repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("rotate");
+        let old_kid = first.created.clone().expect("a key was created");
+        assert_eq!(first.activated, None);
+        assert_eq!(published(&repo, "demo").await, [(old_kid.clone(), KeyState::Active)]);
+
+        let (signing_kid, old_key) = repo
+            .active_signing_key(SigningAlgorithm::EdDsa)
+            .await
+            .expect("read")
+            .expect("an active key");
+        assert_eq!(signing_kid, old_kid);
+        let old_token = jws::sign(&old_key, &old_kid, "at+jwt", &json!({"sub": "alice"}))
+            .expect("sign");
+
+        // Trigger a rotation. The new key is published and does not sign yet.
+        let second = repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("rotate");
+        let new_kid = second.created.clone().expect("a key was created");
+        assert_ne!(new_kid, old_kid);
+        assert_eq!(
+            published(&repo, "demo").await,
+            [(old_kid.clone(), KeyState::Active), (new_kid.clone(), KeyState::Pending)],
+            "the new key must be published before it signs"
+        );
+        assert_eq!(
+            repo.active_signing_key(SigningAlgorithm::EdDsa).await.expect("read").expect("key").0,
+            old_kid,
+            "a pending key must not sign"
+        );
+
+        // After the propagation period the signer begins using the new key.
+        let promoted = t0 + schedule.propagation_period;
+        let pass = repo.apply_schedule(SigningAlgorithm::EdDsa, promoted).await.expect("advance");
+        assert_eq!(pass.activated.as_ref(), Some(&new_kid));
+        assert_eq!(pass.superseded.as_ref(), Some(&old_kid));
+        assert_eq!(pass.created, None, "nothing is due yet");
+
+        let (kid, new_key) = repo
+            .active_signing_key(SigningAlgorithm::EdDsa)
+            .await
+            .expect("read")
+            .expect("an active key");
+        assert_eq!(kid, new_kid, "new tokens must use the new kid");
+        let new_token = jws::sign(&new_key, &new_kid, "at+jwt", &json!({"sub": "alice"}))
+            .expect("sign");
+        assert_eq!(jws::parse(new_token.as_str()).expect("parse").kid(), Some(new_kid.clone()));
+
+        // The old token still verifies, using only what the JWKS publishes.
+        let jwks = repo.published_keys(&TenantId::new("demo")).await.expect("jwks");
+        let old_published = jwks
+            .iter()
+            .find(|key| key.kid == old_kid)
+            .expect("the decommissioned key is still published");
+        assert_eq!(old_published.state, KeyState::Retiring);
+        jws::parse(old_token.as_str())
+            .expect("parse")
+            .verify(&verifying_key_from_jwk(&old_published.public_jwk), "at+jwt")
+            .expect("a token signed before the rotation must still verify");
+
+        // Once the grace period is over the old key leaves the JWK Set.
+        let expired = promoted + schedule.grace_period;
+        let pass = repo.apply_schedule(SigningAlgorithm::EdDsa, expired).await.expect("advance");
+        assert_eq!(pass.retired.as_slice(), std::slice::from_ref(&old_kid));
+        assert_eq!(published(&repo, "demo").await, [(new_kid.clone(), KeyState::Active)]);
+
+        // The row survives so the kid is never reused, but nothing publishes it.
+        let retired = repo
+            .public_key(&TenantId::new("demo"), &old_kid)
+            .await
+            .expect("read")
+            .expect("the row is kept");
+        assert_eq!(retired.state, KeyState::Retired);
+        assert!(!retired.state.is_published());
+    }
+}
+
+db_test! {
+    /// The property `private_key_ciphertext` exists for: what is written down
+    /// is not a key. Read the bytes straight out of the row and check that they
+    /// are neither a JWK nor a PKCS#8 encoding of anything.
+    async fn the_stored_private_key_is_ciphertext_and_not_a_key(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), epoch()).await.expect("rotate");
+
+        let row = sqlx::query(
+            "select private_key_ciphertext, private_key_nonce, kek_id
+             from signing_keys where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read the row");
+        let ciphertext: Vec<u8> = row.get("private_key_ciphertext");
+
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&ciphertext).is_err(),
+            "the stored private key parses as JSON, so it may be a JWK"
+        );
+        for algorithm in SigningAlgorithm::ALL {
+            assert!(
+                SigningKey::from_pkcs8(algorithm, &ciphertext).is_err(),
+                "the stored private key parses as {algorithm} PKCS#8"
+            );
+        }
+
+        // And it is not the key with a header bolted on, either.
+        let (_, key) = repo
+            .active_signing_key(SigningAlgorithm::EdDsa)
+            .await
+            .expect("read")
+            .expect("an active key");
+        for window in key.pkcs8().windows(16) {
+            assert!(
+                !ciphertext.windows(16).any(|candidate| candidate == window),
+                "a 16-byte run of the private key is stored verbatim"
+            );
+        }
+
+        // The nonce is the 96 bits AES-GCM is used with here, and the KEK is
+        // named so that a rotated KEK leaves a trail.
+        assert_eq!(row.get::<Vec<u8>, _>("private_key_nonce").len(), 12);
+        assert!(row.get::<String, _>("kek_id").starts_with("local:"));
+
+        // The round trip still produces the key that was stored: encrypting it
+        // is only worth anything if it comes back.
+        let signature = key.sign(b"payload").expect("sign");
+        key.verifying_key().expect("public").verify(b"payload", &signature).expect("verify");
+    }
+}
+
+db_test! {
+    /// The ciphertext is bound to the row it belongs in, so a private key
+    /// copied into another tenant's row is not a private key any more. Without
+    /// the binding, an attacker with an `UPDATE` could install one tenant's
+    /// signing key as another tenant's and mint tokens for it.
+    async fn a_private_key_moved_to_another_tenant_stops_decrypting(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let alpha = keys(&db.pool, "alpha");
+        alpha.rotate(SigningAlgorithm::EdDsa, operator(), epoch()).await.expect("rotate");
+        assert!(alpha.active_signing_key(SigningAlgorithm::EdDsa).await.expect("read").is_some());
+
+        sqlx::query("update signing_keys set tenant_id = 'beta' where tenant_id = 'alpha'")
+            .execute(&db.pool)
+            .await
+            .expect("move the row");
+
+        let error = keys(&db.pool, "beta")
+            .active_signing_key(SigningAlgorithm::EdDsa)
+            .await
+            .expect_err("a moved private key must not decrypt");
+        assert!(
+            matches!(error, asterius_domain::DomainError::Storage(_)),
+            "expected a storage failure, got {error:?}"
+        );
+    }
+}
+
+db_test! {
+    /// A rotation waits for any other rotation of the same tenant. Two at once
+    /// — an operator triggering one while the background sweep runs, or two
+    /// replicas sweeping together — would otherwise interleave into two new
+    /// keys, or into a promotion racing an insert.
+    ///
+    /// Asserted by taking the repository's own lock from another transaction
+    /// and watching a rotation fail to make progress until it is released.
+    /// Nothing about wall-clock timing decides the outcome: while the lock is
+    /// held the rotation cannot finish at all.
+    async fn a_rotation_waits_for_another_rotation_of_the_same_tenant(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("first key");
+
+        // The same lock the repository takes, held by somebody else.
+        let mut holder = db.pool.begin().await.expect("begin");
+        sqlx::query("select pg_advisory_xact_lock(hashtext($1), hashtext('key-rotation'))")
+            .bind("demo")
+            .execute(&mut *holder)
+            .await
+            .expect("take the rotation lock");
+
+        let blocked = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            repo.rotate(SigningAlgorithm::EdDsa, operator(), t0),
+        )
+        .await;
+        assert!(
+            blocked.is_err(),
+            "a rotation ran while another transaction held the tenant's rotation lock"
+        );
+
+        // Nothing was written by the attempt that could not finish.
+        let count: i64 = sqlx::query_scalar("select count(*) from signing_keys")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+        assert_eq!(count, 1, "a rotation that never got the lock still wrote a key");
+
+        holder.rollback().await.expect("release the lock");
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("a rotation must proceed once the lock is free");
+    }
+}
+
+db_test! {
+    /// Rotating twice before the first new key has been published long enough
+    /// must not stack up keys nobody has started using. An operator being
+    /// careful is not a request for four signing keys.
+    async fn rotating_again_before_the_propagation_period_reports_the_staged_key(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("first key");
+
+        let (left, right) = tokio::join!(
+            repo.rotate(SigningAlgorithm::EdDsa, operator(), t0),
+            repo.rotate(SigningAlgorithm::EdDsa, operator(), t0),
+        );
+        let left = left.expect("rotate").created.expect("created");
+        let right = right.expect("rotate").created.expect("created");
+        assert_eq!(left, right, "two rotations produced two different keys");
+
+        let count: i64 = sqlx::query_scalar("select count(*) from signing_keys")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+        assert_eq!(count, 2, "a queue of unused keys was left behind");
+        assert_eq!(
+            published(&repo, "demo").await.into_iter().map(|(_, state)| state).collect::<Vec<_>>(),
+            [KeyState::Active, KeyState::Pending]
+        );
+    }
+}
+
+db_test! {
+    /// FAPI 2.0 SP §6.8 item 4 asks that linked credentials be recorded so they
+    /// can be revoked together; a rotation with no trail leaves nobody able to
+    /// say when a compromised key stopped signing.
+    async fn a_rotation_is_recorded_in_the_audit_trail(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let sink = PgAuditSink::new(db.pool.clone());
+        let t0 = epoch();
+
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("first");
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("second");
+
+        let recorded: Vec<String> = sqlx::query_scalar(
+            "select event_type from audit_events where tenant_id = 'demo' order by event_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the trail");
+        assert_eq!(recorded, ["key.rotated", "key.rotated"]);
+
+        let row = sqlx::query(
+            "select actor, detail from audit_events where tenant_id = 'demo' order by event_id limit 1",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read the first record");
+        assert_eq!(row.get::<serde_json::Value, _>("actor")["type"], "admin");
+        let detail: serde_json::Value = row.get("detail");
+        assert_eq!(detail["alg"], "EdDSA");
+        assert_eq!(detail["purpose"], "sig");
+        // The kid is public but is a long high-entropy string, so it is
+        // recorded as a correlatable digest rather than as free text the
+        // scanner would redact into a marker.
+        assert!(
+            detail["created_kid"].as_str().expect("created_kid").starts_with("sha256:"),
+            "{detail}"
+        );
+
+        sink.verify_chain(&TenantId::new("demo")).await.expect("the chain still verifies");
+
+        // A sweep that changed nothing writes nothing: a trail with one "no
+        // change" record per minute is a trail nobody reads.
+        repo.apply_schedule(SigningAlgorithm::EdDsa, t0).await.expect("sweep");
+        let count: i64 = sqlx::query_scalar("select count(*) from audit_events where tenant_id = 'demo'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+        assert_eq!(count, 2);
+    }
+}
+
+db_test! {
+    /// FAPI 2.0 SP §6.8 item 2: "single purpose keys are recommended. For
+    /// example, it is not recomended to use the same key for signing and
+    /// encryption." A P-256 or RSA key pair is usable for both operations, so
+    /// nothing about the key type prevents the reuse — the schema has to.
+    async fn one_key_cannot_be_stored_for_both_signing_and_encryption(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), epoch()).await.expect("rotate");
+
+        let row = sqlx::query("select kid, public_jwk from signing_keys where tenant_id = 'demo'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the key");
+        let kid: String = row.get("kid");
+        let mut jwk: serde_json::Value = row.get("public_jwk");
+        jwk["use"] = json!("enc");
+
+        // Same key, same kid, second purpose: the primary key refuses it,
+        // because the kid is the thumbprint of the material.
+        let same_kid = sqlx::query(
+            "insert into signing_keys (tenant_id, kid, alg, purpose, public_jwk,
+                                       private_key_ciphertext, private_key_nonce, kek_id, state)
+             values ('demo', $1, 'EdDSA', 'enc', $2, repeat('\\001', 64)::bytea,
+                     repeat('\\002', 12)::bytea, 'local:x', 'pending')",
+        )
+        .bind(&kid)
+        .bind(&jwk)
+        .execute(&db.pool)
+        .await;
+        assert!(same_kid.is_err(), "the same key was stored twice, once per purpose");
+
+        // Same key material under a fresh kid: the material index refuses it,
+        // which is what catches a kid that was not computed honestly.
+        let new_kid = sqlx::query(
+            "insert into signing_keys (tenant_id, kid, alg, purpose, public_jwk,
+                                       private_key_ciphertext, private_key_nonce, kek_id, state)
+             values ('demo', 'a-kid-of-my-own-choosing', 'EdDSA', 'enc', $1,
+                     repeat('\\001', 64)::bytea, repeat('\\003', 12)::bytea, 'local:x', 'pending')",
+        )
+        .bind(&jwk)
+        .execute(&db.pool)
+        .await;
+        assert!(new_kid.is_err(), "the same key material was stored under two kids");
+
+        // And a row may not advertise a purpose other than the one it is
+        // stored under, or the JWKS would say `enc` while the signer used it.
+        let lying = sqlx::query(
+            "insert into signing_keys (tenant_id, kid, alg, purpose, public_jwk,
+                                       private_key_ciphertext, private_key_nonce, kek_id, state)
+             values ('demo', 'another-kid', 'EdDSA', 'sig',
+                     '{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"unique-material\",\"use\":\"enc\"}'::jsonb,
+                     repeat('\\001', 64)::bytea, repeat('\\004', 12)::bytea, 'local:x', 'pending')",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(lying.is_err(), "a signing key was published as an encryption key");
+    }
+}
+
+db_test! {
+    /// An encryption key must never be reachable through the signing path, even
+    /// when one exists for the same algorithm. `purpose` is in the `where`
+    /// clause of every query here, not applied by the caller.
+    async fn the_signing_path_never_selects_an_encryption_key(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let signing = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), epoch())
+            .await
+            .expect("rotate")
+            .created
+            .expect("created");
+
+        // A hand-written encryption key of the same algorithm, also active.
+        sqlx::query(
+            "insert into signing_keys (tenant_id, kid, alg, purpose, public_jwk,
+                                       private_key_ciphertext, private_key_nonce, kek_id,
+                                       state, activated_at)
+             values ('demo', 'an-encryption-key', 'EdDSA', 'enc',
+                     '{\"kty\":\"OKP\",\"crv\":\"Ed25519\",\"x\":\"enc-material\",\"use\":\"enc\"}'::jsonb,
+                     repeat('\\001', 64)::bytea, repeat('\\005', 12)::bytea, 'local:x',
+                     'active', now())",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("an encryption key may exist alongside a signing key");
+
+        let (kid, _) = repo
+            .active_signing_key(SigningAlgorithm::EdDsa)
+            .await
+            .expect("read")
+            .expect("an active signing key");
+        assert_eq!(kid, signing, "the signing path picked up an encryption key");
+
+        // It is published — a JWKS carries both — but as what it is.
+        let purposes: Vec<KeyPurpose> = repo
+            .published_keys(&TenantId::new("demo"))
+            .await
+            .expect("published")
+            .into_iter()
+            .map(|key| key.purpose)
+            .collect();
+        assert!(purposes.contains(&KeyPurpose::Signing));
+        assert!(purposes.contains(&KeyPurpose::Encryption));
+    }
+}
+
+/// Inserts a `signing_keys` row by hand, the way a seed script or somebody in
+/// a `psql` session during an incident would. The point of every test that uses
+/// it is that the schema refuses on its own, without the repository's help.
+async fn insert_key_row(
+    pool: &PgPool,
+    tenant: &str,
+    kid: &str,
+    state: &str,
+    material: &str,
+    nonce_seed: &str,
+    kek_id: &str,
+) -> Result<(), sqlx::Error> {
+    let activated = if state == "pending" { "null" } else { "now()" };
+    let statement = format!(
+        "insert into signing_keys (tenant_id, kid, alg, purpose, public_jwk,
+                                   private_key_ciphertext, private_key_nonce, kek_id,
+                                   state, activated_at)
+         values ('{tenant}', '{kid}', 'EdDSA', 'sig',
+                 jsonb_build_object('kty', 'OKP', 'crv', 'Ed25519',
+                                    'x', '{material}', 'use', 'sig'),
+                 repeat('\\001', 64)::bytea,
+                 substring(decode(md5('{nonce_seed}'), 'hex') from 1 for 12),
+                 '{kek_id}', '{state}', {activated})"
+    );
+    sqlx::query(&statement).execute(pool).await.map(|_| ())
+}
+
+db_test! {
+    /// AES-GCM loses confidentiality *and* authenticity if one nonce is used
+    /// twice under one key (NIST SP 800-38D §8). The provider draws the nonce,
+    /// so this is the belt to that braces: the table refuses to hold a repeat.
+    async fn a_nonce_cannot_repeat_under_one_key_encryption_key(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+
+        insert_key_row(&db.pool, "alpha", "k1", "pending", "m1", "n1", "local:one")
+            .await
+            .expect("the first key");
+
+        // A different tenant and a different key, but the same nonce under the
+        // same key-encryption key: still a total break, so still refused.
+        let repeat =
+            insert_key_row(&db.pool, "beta", "k2", "pending", "m2", "n1", "local:one").await;
+        assert!(repeat.is_err(), "a nonce was reused under one key-encryption key");
+
+        // The same nonce under a *different* KEK is not a reuse at all.
+        insert_key_row(&db.pool, "beta", "k3", "pending", "m3", "n1", "local:two")
+            .await
+            .expect("a different KEK");
+        insert_key_row(&db.pool, "alpha", "k4", "active", "m4", "n2", "local:one")
+            .await
+            .expect("a fresh nonce");
+    }
+}
+
+db_test! {
+    /// "Which key signs this" must have exactly one answer. Two active keys for
+    /// one algorithm would make the choice depend on row order.
+    async fn the_schema_refuses_two_active_keys_for_one_algorithm(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let insert = async |kid: &str, material: &str, state: &str| {
+            insert_key_row(&db.pool, "demo", kid, state, material, kid, "local:one").await
+        };
+
+        insert("k1", "m1", "active").await.expect("the first active key");
+        assert!(
+            insert("k2", "m2", "active").await.is_err(),
+            "two active keys were accepted"
+        );
+        insert("k3", "m3", "pending").await.expect("the first pending key");
+        assert!(
+            insert("k4", "m4", "pending").await.is_err(),
+            "two pending keys were accepted"
+        );
+
+        // A state that does not match its timestamps is a row nobody can read
+        // afterwards, so it cannot be written.
+        let inconsistent = sqlx::query(
+            "insert into signing_keys (tenant_id, kid, alg, purpose, public_jwk,
+                                       private_key_ciphertext, private_key_nonce, kek_id,
+                                       state, activated_at)
+             values ('demo', 'k5', 'ES256', 'sig',
+                     '{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"m5\",\"y\":\"m5\",\"use\":\"sig\"}'::jsonb,
+                     repeat('\\001', 64)::bytea,
+                     substring(decode(md5('k5'), 'hex') from 1 for 12), 'local:one',
+                     'active', null)",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(inconsistent.is_err(), "an active key with no activated_at was accepted");
+    }
+}
+
+db_test! {
+    /// The rotation policy is per tenant and exists from the first use, because
+    /// a policy that only applies once somebody sets it is a policy most
+    /// deployments never get (FAPI 2.0 SP §6.8 item 1).
+    async fn a_rotation_schedule_defaults_on_first_use_and_can_be_replaced(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+
+        let default = repo.schedule().await.expect("schedule");
+        assert_eq!(default.rotation_period, Duration::days(90));
+        assert_eq!(default.propagation_period, Duration::minutes(15));
+        assert_eq!(default.grace_period, Duration::days(7));
+        assert_eq!(default.last_rotated_at, None);
+        assert!(default.is_due(epoch()), "a tenant with no key must always be due");
+
+        repo.set_schedule(RotationSchedule {
+            rotation_period: Duration::days(1),
+            propagation_period: Duration::minutes(5),
+            grace_period: Duration::hours(6),
+            last_rotated_at: None,
+        })
+        .await
+        .expect("replace the schedule");
+
+        let updated = repo.schedule().await.expect("schedule");
+        assert_eq!(updated.rotation_period, Duration::days(1));
+        assert_eq!(updated.propagation_period, Duration::minutes(5));
+        assert_eq!(updated.grace_period, Duration::hours(6));
+
+        // A rotation records when it happened, and the sweep stages a new key
+        // only once the period has passed.
+        let t0 = epoch();
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("rotate");
+        assert_eq!(repo.schedule().await.expect("schedule").last_rotated_at, Some(t0));
+
+        let too_soon = repo
+            .apply_schedule(SigningAlgorithm::EdDsa, t0 + Duration::hours(23))
+            .await
+            .expect("sweep");
+        assert_eq!(too_soon.created, None, "the sweep rotated before the period elapsed");
+
+        let due = repo
+            .apply_schedule(SigningAlgorithm::EdDsa, t0 + Duration::days(1))
+            .await
+            .expect("sweep");
+        assert!(due.created.is_some(), "the sweep did not rotate when the period elapsed");
+    }
+}
+
+db_test! {
+    /// A schedule the schema will not hold must be refused rather than
+    /// truncated: a propagation period of zero means signing with a key no
+    /// verifier has had the chance to fetch.
+    async fn a_schedule_that_defeats_the_procedure_is_refused(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+
+        for (label, schedule) in [
+            (
+                "zero propagation",
+                RotationSchedule {
+                    rotation_period: Duration::days(90),
+                    propagation_period: Duration::ZERO,
+                    grace_period: Duration::days(7),
+                    last_rotated_at: None,
+                },
+            ),
+            (
+                "a rotation period of a minute",
+                RotationSchedule {
+                    rotation_period: Duration::minutes(1),
+                    propagation_period: Duration::seconds(1),
+                    grace_period: Duration::days(7),
+                    last_rotated_at: None,
+                },
+            ),
+            (
+                "zero grace",
+                RotationSchedule {
+                    rotation_period: Duration::days(90),
+                    propagation_period: Duration::minutes(15),
+                    grace_period: Duration::ZERO,
+                    last_rotated_at: None,
+                },
+            ),
+            (
+                "propagation longer than the rotation period",
+                RotationSchedule {
+                    rotation_period: Duration::hours(2),
+                    propagation_period: Duration::hours(3),
+                    grace_period: Duration::days(7),
+                    last_rotated_at: None,
+                },
+            ),
+        ] {
+            assert!(
+                repo.set_schedule(schedule).await.is_err(),
+                "the schema accepted {label}"
+            );
+        }
+    }
+}
+
+db_test! {
+    /// A repository is scoped to one tenant, and the scope is the tenant. A key
+    /// belonging to another one must not be reachable through this handle even
+    /// when the caller names it.
+    async fn a_scoped_key_lookup_never_answers_for_another_tenant(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let alpha = keys(&db.pool, "alpha");
+        let beta = keys(&db.pool, "beta");
+        let t0 = epoch();
+
+        let alpha_kid = alpha
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("created");
+        beta.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("rotate");
+
+        assert!(
+            beta.public_key(&TenantId::new("beta"), &alpha_kid).await.expect("read").is_none(),
+            "one tenant's kid resolved in another tenant"
+        );
+        assert_eq!(published(&beta, "beta").await.len(), 1);
+
+        // Asking a scoped repository about a different tenant is a bug in the
+        // caller, not a query to run.
+        assert!(beta.published_keys(&TenantId::new("alpha")).await.is_err());
+        assert!(beta.public_key(&TenantId::new("alpha"), &alpha_kid).await.is_err());
+    }
+}
+
+db_test! {
+    /// Rows get edited during incidents. A row that no longer describes a key
+    /// this profile would publish must fail to load rather than reach a JWKS.
+    async fn a_key_row_edited_into_something_unpublishable_refuses_to_load(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), epoch()).await.expect("rotate");
+
+        // Disable the constraints the way someone with SQL access would, then
+        // make the published `use` disagree with the stored purpose.
+        sqlx::query("alter table signing_keys drop constraint signing_keys_jwk_use_matches_purpose")
+            .execute(&db.pool)
+            .await
+            .expect("drop the constraint");
+        sqlx::query("update signing_keys set public_jwk = jsonb_set(public_jwk, '{use}', '\"enc\"')")
+            .execute(&db.pool)
+            .await
+            .expect("tamper");
+
+        let error = repo
+            .published_keys(&TenantId::new("demo"))
+            .await
+            .expect_err("a key whose use disagrees with its purpose must not publish");
+        assert!(error.to_string().contains("public_jwk"), "{error}");
+    }
+}

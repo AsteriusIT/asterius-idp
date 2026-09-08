@@ -29,6 +29,7 @@ jobs:
           - jws_parse
           - jwt_verify
           - client_metadata_json
+          - kek_unwrap
     env:
       SQLX_OFFLINE: "true"
     steps:

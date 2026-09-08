@@ -10,6 +10,7 @@
 mod audit;
 mod clients;
 mod error;
+mod keys;
 mod scope;
 mod sql_audit;
 mod store;
@@ -18,6 +19,7 @@ mod tenants;
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use clients::PgClientRepository;
 pub use error::to_domain_error;
+pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
 pub use scope::TenantScope;
 pub use store::{MIGRATOR, Store};
 pub use tenants::PgTenantRepository;

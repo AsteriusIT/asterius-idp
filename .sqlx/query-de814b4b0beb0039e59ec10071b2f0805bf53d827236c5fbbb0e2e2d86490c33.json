@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into key_rotation_schedules (tenant_id, purpose) values ($1, $2)\n             on conflict (tenant_id, purpose) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de814b4b0beb0039e59ec10071b2f0805bf53d827236c5fbbb0e2e2d86490c33"
+}

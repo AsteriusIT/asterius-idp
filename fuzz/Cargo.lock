@@ -45,10 +45,13 @@ name = "asterius-domain"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64",
+ "getrandom 0.3.4",
  "hex",
  "serde",
  "serde_json",
  "sha2",
+ "subtle",
  "thiserror",
  "time",
  "url",
@@ -135,6 +138,7 @@ name = "asterius-store-pg"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
+ "asterius-jose",
  "async-trait",
  "serde_json",
  "sqlx",

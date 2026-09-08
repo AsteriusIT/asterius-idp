@@ -460,37 +460,174 @@ create index jti_replay_expiring on jti_replay (expires_at);
 -- Signing keys
 -- ---------------------------------------------------------------------------
 
+-- A key's life is `pending -> active -> retiring -> retired`, and it is a
+-- sequence rather than a swap because of OIDC Core §10.1.1: keys are rolled
+-- over "by periodically adding new keys to the JWK Set", the signer "can begin
+-- using a new key at its discretion and signals the change to the verifier
+-- using the kid value", and the JWK Set "SHOULD retain recently decommissioned
+-- signing keys for a reasonable period of time to facilitate a smooth
+-- transition".
+--
+-- So: a key is published before it ever signs (`pending`, for long enough that
+-- a verifier's cached copy has turned over, which is why no verifier should
+-- ever meet an unfamiliar `kid`), and it stays published after it stops
+-- (`retiring`, for at least the lifetime of the longest token it signed).
+-- `retired` is the only state that is gone from the JWKS, and the row survives
+-- so its `kid` is never handed out twice.
 create table signing_keys (
     tenant_id              text        not null
                            references tenants (tenant_id) on delete cascade,
+    -- The RFC 7638 thumbprint of the public key: identity, not a label. The
+    -- same key material always produces the same `kid`, so the primary key
+    -- below is what makes "this key exists once, for one purpose" true rather
+    -- than merely intended.
     kid                    text        not null,
     alg                    text        not null
                            check (alg in ('EdDSA', 'ES256', 'PS256')),
-    key_use                text        not null default 'sig'
-                           check (key_use in ('sig', 'enc')),
+    -- The JWK `use` value (RFC 7517 §4.2). FAPI 2.0 SP §6.8 item 2: "single
+    -- purpose keys are recommended. For example, it is not recomended to use
+    -- the same key for signing and encryption." A P-256 or RSA key pair is
+    -- usable for both operations, so the separation has to be recorded and
+    -- enforced — it is not implied by the key type.
+    purpose                text        not null default 'sig'
+                           check (purpose in ('sig', 'enc')),
     public_jwk             jsonb       not null,
     -- Private key, encrypted with a key-encryption key held outside the
     -- database (KMS or a file). Never a `_hash`: it has to come back out.
+    -- Bound to this row's tenant, kid, purpose and algorithm as AEAD
+    -- additional authenticated data, so moving the bytes to another row makes
+    -- them undecryptable rather than useful. See asterius_jose::kek.
     private_key_ciphertext bytea       not null,
     private_key_nonce      bytea       not null,
     kek_id                 text        not null,
-    -- pending  -> published in JWKS, not yet signing (lets verifiers cache it)
-    -- active   -> the signing key
-    -- retiring -> still published for verification, no longer signing
-    -- retired  -> gone from JWKS
     state                  text        not null default 'pending'
                            check (state in ('pending', 'active', 'retiring', 'retired')),
     created_at             timestamptz not null default now(),
+    -- When it started signing, when it stopped signing, and when it left the
+    -- JWKS. `retiring_at` is what the grace period is measured from, so it is
+    -- a column and not an inference from `created_at`.
     activated_at           timestamptz,
+    retiring_at            timestamptz,
     retired_at             timestamptz,
 
-    primary key (tenant_id, kid)
+    primary key (tenant_id, kid),
+    -- A published key announces its own purpose. Storing it twice looks
+    -- redundant until a row is edited: if these could disagree, a key could be
+    -- served to the world as `use: enc` while the signer still treated it as a
+    -- signing key.
+    constraint signing_keys_jwk_use_matches_purpose
+        check (public_jwk ->> 'use' = purpose),
+    -- 96 bits, the IV length NIST SP 800-38D §5.2.1.1 recommends restricting
+    -- support to, and the only length aws-lc-rs will produce here.
+    constraint signing_keys_nonce_is_96_bits
+        check (length(private_key_nonce) = 12),
+    -- Ciphertext plus a 16-byte GCM tag: a row shorter than that is truncated,
+    -- and a row exactly that long carries no key at all.
+    constraint signing_keys_ciphertext_carries_a_tag
+        check (length(private_key_ciphertext) > 16),
+    -- The timestamps are the audit trail of the state machine, so a state that
+    -- does not match them is a row nobody can reason about afterwards.
+    constraint signing_keys_timestamps_follow_the_state check (
+        case state
+            when 'pending'  then activated_at is null
+                                 and retiring_at is null and retired_at is null
+            when 'active'   then activated_at is not null
+                                 and retiring_at is null and retired_at is null
+            when 'retiring' then activated_at is not null
+                                 and retiring_at is not null and retired_at is null
+            -- A key can be retired straight out of `pending` when it is
+            -- destroyed before it ever signs, so only the final stamp is
+            -- required here.
+            when 'retired'  then retired_at is not null
+        end
+    )
 );
 
--- At most one active signing key per algorithm per tenant.
+-- At most one active key per purpose and algorithm per tenant: "which key
+-- signs this" must have exactly one answer, and two concurrent rotations
+-- racing to promote must have one of them fail rather than both succeed.
 create unique index signing_keys_one_active_per_alg
-    on signing_keys (tenant_id, alg)
+    on signing_keys (tenant_id, purpose, alg)
     where state = 'active';
+
+-- And at most one pending key, so a rotation triggered twice before the
+-- propagation period elapses does not leave a queue of unused keys behind.
+create unique index signing_keys_one_pending_per_alg
+    on signing_keys (tenant_id, purpose, alg)
+    where state = 'pending';
+
+-- The JWKS query: every published key for a tenant.
+create index signing_keys_published
+    on signing_keys (tenant_id, purpose, state)
+    where state in ('pending', 'active', 'retiring');
+
+-- A nonce may be used once per key-encryption key. AES-GCM loses both
+-- confidentiality and authenticity if a nonce repeats under one key
+-- (NIST SP 800-38D §8), and the nonces here come from an RBG rather than a
+-- counter — so the uniqueness the standard requires is asserted here instead
+-- of assumed. Not tenant-scoped, deliberately: a KEK spans tenants, so the
+-- constraint has to as well.
+create unique index signing_keys_nonce_never_repeats
+    on signing_keys (kek_id, private_key_nonce);
+
+-- Key material appears in exactly one row, anywhere. Two rows sharing a public
+-- key are either the same key registered for both purposes — the reuse
+-- FAPI 2.0 SP §6.8 item 2 warns about — or one tenant's key installed in
+-- another tenant's JWKS. The `kid` is a thumbprint, so the primary key already
+-- catches this whenever the `kid` was computed honestly; this catches it when
+-- it was not.
+create unique index signing_keys_material_is_used_once
+    on signing_keys (
+        coalesce(public_jwk ->> 'x', ''),
+        coalesce(public_jwk ->> 'y', ''),
+        coalesce(public_jwk ->> 'n', '')
+    );
+
+-- Per-tenant rotation policy. FAPI 2.0 SP §6.8 item 1: "automated regular key
+-- rotation is recommended, as it reduces the time window in which a
+-- compromised key can be used."
+--
+-- Periods are seconds and not `interval` because an interval of one month has
+-- no fixed length, and "how long does a decommissioned key stay verifiable"
+-- is not a question that may have a different answer in February.
+create table key_rotation_schedules (
+    tenant_id                  text        not null
+                               references tenants (tenant_id) on delete cascade,
+    purpose                    text        not null default 'sig'
+                               check (purpose in ('sig', 'enc')),
+    -- How often a new key is created. 90 days by default.
+    rotation_period_seconds    bigint      not null default 7776000,
+    -- How long a new key sits in the JWKS before it is allowed to sign, so
+    -- that verifiers have refreshed their cached JWK Set first (OIDC Core
+    -- §10.1.1). 15 minutes by default; it should exceed the `max-age` the
+    -- jwks_uri response advertises.
+    propagation_period_seconds bigint      not null default 900,
+    -- How long a key stays published after it stops signing. Must exceed the
+    -- longest lifetime of any token signed with it, or a token still inside
+    -- its own `exp` stops verifying. 7 days by default, which is far beyond
+    -- the access-token lifetimes this profile issues.
+    grace_period_seconds       bigint      not null default 604800,
+    last_rotated_at            timestamptz,
+    created_at                 timestamptz not null default now(),
+    updated_at                 timestamptz not null default now(),
+
+    primary key (tenant_id, purpose),
+    -- A schedule that never rotates is not a schedule; a year is already
+    -- longer than item 1 has in mind.
+    constraint key_rotation_schedules_rotation_period_is_sane
+        check (rotation_period_seconds between 3600 and 31536000),
+    -- Zero propagation would mean signing with a key no verifier has had the
+    -- chance to fetch, which is the failure the OIDC Core §10.1.1 procedure
+    -- exists to avoid.
+    constraint key_rotation_schedules_propagation_is_positive
+        check (propagation_period_seconds > 0
+               and propagation_period_seconds < rotation_period_seconds),
+    constraint key_rotation_schedules_grace_is_positive
+        check (grace_period_seconds > 0 and grace_period_seconds <= 31536000)
+);
+
+create trigger key_rotation_schedules_set_updated_at before update on key_rotation_schedules
+    for each row execute function set_updated_at();
 
 -- ---------------------------------------------------------------------------
 -- Audit

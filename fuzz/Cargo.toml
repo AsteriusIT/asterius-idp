@@ -87,3 +87,10 @@ path = "fuzz_targets/client_metadata_json.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "kek_unwrap"
+path = "fuzz_targets/kek_unwrap.rs"
+test = false
+doc = false
+bench = false

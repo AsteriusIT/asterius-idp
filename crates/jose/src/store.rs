@@ -7,7 +7,9 @@
 //! that always writes a `kid`, an allow-listed `alg` and an explicit `typ`.
 
 use crate::{JoseError, SigningKey, VerifyingKey, jws};
-use asterius_domain::keys::{KeyState, KeyStore, PublicKeyRecord, Signer, SigningAlgorithm};
+use asterius_domain::keys::{
+    KeyPurpose, KeyState, KeyStore, PublicKeyRecord, Signer, SigningAlgorithm,
+};
 use asterius_domain::{CompactJws, DomainError, Kid, TenantId};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -178,6 +180,11 @@ impl KeyStore for LocalKeyStore {
                         tenant: tenant.clone(),
                         kid: key.kid.clone(),
                         algorithm: key.key.algorithm(),
+                        // Every key this store holds signs. It has no way to
+                        // make an encryption key, which is the crudest
+                        // possible enforcement of FAPI 2.0 SP §6.8 item 2 and
+                        // also the most reliable one.
+                        purpose: KeyPurpose::Signing,
                         state: key.state,
                         public_jwk: key.public_jwk.clone(),
                         created_at: key.created_at,
@@ -204,6 +211,7 @@ impl KeyStore for LocalKeyStore {
                     tenant: tenant.clone(),
                     kid: key.kid.clone(),
                     algorithm: key.key.algorithm(),
+                    purpose: KeyPurpose::Signing,
                     state: key.state,
                     public_jwk: key.public_jwk.clone(),
                     created_at: key.created_at,
