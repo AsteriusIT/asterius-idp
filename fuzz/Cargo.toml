@@ -101,3 +101,17 @@ path = "fuzz_targets/kek_unwrap.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "jwk_set_parse"
+path = "fuzz_targets/jwk_set_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jwks_uri_target"
+path = "fuzz_targets/jwks_uri_target.rs"
+test = false
+doc = false
+bench = false

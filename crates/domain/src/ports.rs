@@ -71,6 +71,43 @@ pub trait TenantScoped {
     fn tenant(&self) -> &TenantId;
 }
 
+// ---------------------------------------------------------------------------
+// Outbound fetches
+// ---------------------------------------------------------------------------
+
+/// Dereferences a URL that a *client* chose.
+///
+/// The only port whose input is attacker-controlled end to end: a `jwks_uri` is
+/// a string a client wrote into its own registration, and an implementation of
+/// this trait is the server going and fetching it. RFC 7591 §5 raises the
+/// general shape of the problem — an authorization server that dereferences a
+/// URL from a registration document is doing work an attacker asked for, at an
+/// address an attacker chose.
+///
+/// An implementation is therefore not merely an HTTP client. It is the boundary
+/// that decides which addresses this process will ever connect to, how long it
+/// will wait, and how many bytes it will read. `asterius_server::outbound` has
+/// the one that ships, and states precisely what its guard does and does not
+/// stop.
+///
+/// The port hands back a body and nothing else. Status codes, media types,
+/// redirects and the size cap are HTTP's vocabulary and stay in the adapter:
+/// protocol code above this line has no use for them, and a port that leaked
+/// them would invite a second implementation to interpret them differently.
+#[async_trait::async_trait]
+pub trait JwksFetcher: Debug + Send + Sync {
+    /// Fetches the JWK Set document at `url`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::Invalid`] when the URL is one this server refuses
+    /// to dereference at all, and [`DomainError::Storage`] when the fetch was
+    /// attempted and failed. A caller should treat both the same way — as "no
+    /// keys, and do not ask again immediately" — because the difference is
+    /// useful to an operator reading a log and to nobody else.
+    async fn fetch(&self, url: &str) -> Result<Vec<u8>, DomainError>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

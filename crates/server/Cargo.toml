@@ -24,8 +24,13 @@ asterius-web.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 getrandom.workspace = true
-hyper.workspace = true
+# `client` on top of the workspace feature set: the JWK Set fetcher in
+# `outbound` is the only HTTP client in the binary.
+hyper = { workspace = true, features = ["client"] }
 hyper-util.workspace = true
+http-body-util.workspace = true
+url.workspace = true
+webpki-roots.workspace = true
 ipnet.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true

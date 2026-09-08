@@ -71,6 +71,11 @@ hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["server-auto", "server-graceful", "tokio"] }
 ipnet = { version = "2", features = ["serde"] }
 http-body-util = "0.1"
+# Trust anchors for the one outbound TLS client (client `jwks_uri` fetches).
+# The Mozilla root programme, compiled in: a scratch container has no
+# platform store, and CDLA-Permissive-2.0 is already on the licence
+# allow-list in deny.toml.
+webpki-roots = "1"
 anyhow = "1"
 
 [workspace.lints.rust]

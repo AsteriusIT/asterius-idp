@@ -8,6 +8,7 @@
 pub mod config;
 pub mod http;
 pub mod observability;
+pub mod outbound;
 pub mod tenancy;
 
 pub use config::{Config, ConfigError};
