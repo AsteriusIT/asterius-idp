@@ -296,6 +296,28 @@ impl ClaimName {
     /// one is an unbounded row, an unbounded log line and an unbounded token.
     pub const MAX_LEN: usize = 128;
 
+    /// The claims the authorization server issues about the exchange, which
+    /// [`ClaimName::parse`] therefore refuses.
+    ///
+    /// Public because the refusal is only half of the guarantee. The other
+    /// half belongs to whatever decides which claims a client receives — the
+    /// claims resolution service in `asterius-oidc` (`ast-1sk.4`) — and a
+    /// second hand-copied list there would be a second rule, drifting from
+    /// this one the first time a name is added. A test in that crate walks
+    /// this array, so "no request can produce a server-issued claim" is
+    /// checked against the list itself rather than against a sample of it.
+    pub const SERVER_ISSUED: &'static [&'static str] = SERVER_ISSUED;
+
+    /// The claims [`User`] carries in a column, which [`ClaimName::parse`]
+    /// also refuses — because two places holding one value is two places that
+    /// can disagree.
+    ///
+    /// Public for the opposite reason to [`ClaimName::SERVER_ISSUED`]: these
+    /// are releasable, and a claims service has to project them from the
+    /// entity precisely *because* they are not in the bag. A service that did
+    /// not know which those are would answer `email` with nothing.
+    pub const HELD_IN_A_COLUMN: &'static [&'static str] = HELD_IN_A_COLUMN;
+
     /// The character OIDC Core §5.2 uses to introduce a language tag.
     const TAG_SEPARATOR: char = '#';
 

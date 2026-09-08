@@ -193,3 +193,10 @@ path = "fuzz_targets/grant_record.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "claims_request"
+path = "fuzz_targets/claims_request.rs"
+test = false
+doc = false
+bench = false
