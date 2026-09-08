@@ -38,12 +38,7 @@ uuid = "1"
 # `grant_record` re-parses every resource indicator the grant validator
 # accepted, so that "absolute URI, no fragment" is checked by something other
 # than the code under test.
-url = "2"[[bin]]
-name = "access_token_claims"
-path = "fuzz_targets/access_token_claims.rs"
-test = false
-doc = false
-bench = false
+url = "2"
 
 [[bin]]
 name = "access_token_claims"
