@@ -8,6 +8,7 @@
 
 pub mod audit;
 pub mod capabilities;
+pub mod credentials;
 pub mod entities;
 pub mod error;
 pub mod ids;
@@ -15,12 +16,14 @@ pub mod issuer;
 pub mod keys;
 pub mod ports;
 pub mod secret;
+mod secret_audit;
 
 pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};
+pub use credentials::{OpaqueToken, sha256_hex};
 pub use entities::{Tenant, TenantStatus};
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
 pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, SigningAlgorithm};
-pub use secret::Secret;
+pub use secret::{Secret, ct_eq};

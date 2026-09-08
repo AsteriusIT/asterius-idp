@@ -1,6 +1,8 @@
-//! A wrapper that keeps secret material out of logs and out of memory.
+//! A wrapper that keeps secret material out of logs and out of memory, and the
+//! one comparison that is safe to use on it.
 
 use std::fmt;
+use subtle::ConstantTimeEq as _;
 use zeroize::Zeroize;
 
 /// Holds a value that must never be printed, logged or serialised by accident.
@@ -13,6 +15,14 @@ use zeroize::Zeroize;
 ///   calling [`Secret::expose`], which is easy to grep for and easy to review.
 /// * The value is zeroed on drop, so a client secret does not linger in a freed
 ///   allocation for a core dump or a heap-scraping attacker to find.
+/// * There is no `PartialEq`, so `==` on a secret does not compile. `==` on
+///   bytes stops at the first difference, which turns "is this the right
+///   secret?" into a per-byte oracle for anyone who can time the response.
+///   Removing the operator is stronger than reviewing for it: it covers code
+///   nobody has written yet, and code that reaches `==` through a generic bound
+///   where the operator never appears in the text. [`Secret::ct_eq`] is the
+///   only comparison there is; `crates/domain/src/secret_audit.rs` fails the
+///   build if the impl ever comes back.
 ///
 /// There is deliberately no `Deref`, no `AsRef` and no `Serialize`.
 pub struct Secret<T: Zeroize>(T);
@@ -40,6 +50,31 @@ impl<T: Zeroize> Secret<T> {
         // its place, so the wrapper's Drop cannot clear what we just returned.
         std::mem::take(&mut self.0)
     }
+}
+
+impl<T: Zeroize + AsRef<[u8]>> Secret<T> {
+    /// Whether the two secrets hold the same bytes, compared in constant time.
+    ///
+    /// The bound is on the wrapped type, not on `Secret` itself: `Secret` still
+    /// exposes no `AsRef`, so this is the only thing that bound buys anyone.
+    #[must_use]
+    pub fn ct_eq(&self, other: &Self) -> bool {
+        ct_eq(self.0.as_ref(), other.0.as_ref())
+    }
+}
+
+/// Compares two byte strings in time that depends on their length but not on
+/// their contents.
+///
+/// Every comparison of a code, a token, a PKCE verifier or a CSRF token goes
+/// through here. Leaking the length is deliberate and harmless: these values
+/// have a length fixed by the type that issued them, so an attacker learns
+/// nothing from it that the specification did not already tell them. Leaking
+/// *where* two values first differ is the thing that matters, because it turns
+/// one search over the whole value into a short search per byte.
+#[must_use]
+pub fn ct_eq(left: &[u8], right: &[u8]) -> bool {
+    left.ct_eq(right).into()
 }
 
 impl<T: Zeroize> fmt::Debug for Secret<T> {
@@ -149,6 +184,40 @@ mod tests {
         let taken = Secret::new(ZeroizeSpy(Rc::clone(&zeroed))).into_inner();
         assert!(!zeroed.get(), "into_inner zeroed the value it returned");
         drop(taken);
+    }
+
+    #[test]
+    fn a_secret_matches_only_an_identical_secret() {
+        let secret = Secret::new(String::from("hunter2"));
+        assert!(secret.ct_eq(&Secret::new(String::from("hunter2"))));
+        assert!(!secret.ct_eq(&Secret::new(String::from("hunter3"))));
+        // A prefix and an extension are the two cases a short-circuiting
+        // comparison answers early, so they are the ones worth naming.
+        assert!(!secret.ct_eq(&Secret::new(String::from("hunter"))));
+        assert!(!secret.ct_eq(&Secret::new(String::from("hunter22"))));
+    }
+
+    #[test]
+    fn constant_time_comparison_agrees_with_ordinary_equality_on_every_case() {
+        // Constant-time is worthless if it is also wrong, so pin the answer
+        // against the operator we are refusing to use.
+        for (left, right) in [
+            (&b""[..], &b""[..]),
+            (b"", b"a"),
+            (b"a", b""),
+            (b"a", b"a"),
+            (b"ab", b"aa"),
+            (b"aa", b"ab"),
+            (b"abc", b"abcd"),
+            (b"\x00", b"\x00"),
+            (b"\x00a", b"\x00b"),
+        ] {
+            assert_eq!(
+                ct_eq(left, right),
+                left == right,
+                "disagreed on {left:?} vs {right:?}"
+            );
+        }
     }
 
     #[test]
