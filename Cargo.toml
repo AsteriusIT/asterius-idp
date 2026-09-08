@@ -49,6 +49,11 @@ serde_path_to_error = "0.1"
 getrandom = "0.3"
 subtle = "2.6"
 
+# --- test-only -------------------------------------------------------------
+# `default-features = false` drops proptest's `fork` and `timeout` features,
+# which pull in a process-spawning harness the property tests here do not use.
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
+
 # --- adapters only ---------------------------------------------------------
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "form", "query", "tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "time"] }

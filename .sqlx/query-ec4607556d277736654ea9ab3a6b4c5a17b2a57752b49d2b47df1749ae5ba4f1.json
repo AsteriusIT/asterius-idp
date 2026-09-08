@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into clients (tenant_id, client_id, client_name,\n                                  token_endpoint_auth_method, redirect_uris, grant_types,\n                                  response_types, scopes, resources, jwks, jwks_uri,\n                                  id_token_signed_response_alg, status)\n             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n             on conflict (tenant_id, client_id) do update\n             set client_name = excluded.client_name,\n                 token_endpoint_auth_method = excluded.token_endpoint_auth_method,\n                 redirect_uris = excluded.redirect_uris,\n                 grant_types = excluded.grant_types,\n                 response_types = excluded.response_types,\n                 scopes = excluded.scopes,\n                 resources = excluded.resources,\n                 jwks = excluded.jwks,\n                 jwks_uri = excluded.jwks_uri,\n                 id_token_signed_response_alg = excluded.id_token_signed_response_alg,\n                 status = excluded.status",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Jsonb",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ec4607556d277736654ea9ab3a6b4c5a17b2a57752b49d2b47df1749ae5ba4f1"
+}

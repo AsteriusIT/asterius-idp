@@ -28,6 +28,7 @@ jobs:
           - audit_canonical
           - jws_parse
           - jwt_verify
+          - client_metadata_json
     env:
       SQLX_OFFLINE: "true"
     steps:
