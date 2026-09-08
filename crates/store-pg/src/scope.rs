@@ -5,7 +5,9 @@ use crate::clients::PgClientRepository;
 use crate::users::PgUserRepository;
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{Capabilities, TenantId};
+use asterius_jose::Kek;
 use sqlx::postgres::PgPool;
+use std::sync::Arc;
 
 /// Database access confined to one tenant.
 ///
@@ -34,9 +36,14 @@ impl<'a> TenantScope<'a> {
     }
 
     /// The user repository for this tenant.
+    ///
+    /// `kek` is what opens the tenant's pairwise salt; see
+    /// [`PgUserRepository::new`]. A user repository that could not reach the
+    /// salt would be a user repository that cannot mint a `sub`, and minting
+    /// one is not an optional part of having a user.
     #[must_use]
-    pub fn users(&self) -> PgUserRepository {
-        PgUserRepository::new(self.pool.clone(), self.tenant.clone())
+    pub fn users(&self, kek: Arc<dyn Kek>) -> PgUserRepository {
+        PgUserRepository::new(self.pool.clone(), self.tenant.clone(), kek)
     }
 
     /// The pushed-authorization-request repository for this tenant.

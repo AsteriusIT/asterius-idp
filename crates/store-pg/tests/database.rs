@@ -163,6 +163,11 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
         "private_key_nonce",
         "the AEAD nonce for private_key_ciphertext; public by construction",
     ),
+    (
+        "tenant_pairwise_salts",
+        "salt_nonce",
+        "the AEAD nonce for salt_ciphertext; public by construction",
+    ),
 ];
 
 /// Substrings that mark a column as credential-bearing.
@@ -175,6 +180,10 @@ const SECRET_MARKERS: &[&str] = &[
     "private_key",
     "verifier",
     "assertion",
+    // A pairwise salt is the only thing making a `sub` irreversible (OIDC Core
+    // §8.1), so a plaintext column holding one is exactly as bad as a plaintext
+    // private key.
+    "salt",
 ];
 
 db_test! {
@@ -366,7 +375,7 @@ db_test! {
 
 db_test! {
     async fn the_tenant_repository_round_trips(db) {
-        let repo = PgTenantRepository::new(db.pool.clone());
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
         let demo = tenant("demo", "https://as.example/t/demo");
         repo.upsert(&demo).await.expect("insert");
 
@@ -390,7 +399,7 @@ db_test! {
     /// Two tenants, two issuers, no crossing over. The lookups a request goes
     /// through — by id and by issuer — must each land on exactly one tenant.
     async fn a_tenant_lookup_never_returns_another_tenants_row(db) {
-        let repo = PgTenantRepository::new(db.pool.clone());
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
         let a = tenant("alpha", "https://as.example/t/alpha");
         let b = tenant("beta", "https://as.example/t/beta");
         repo.upsert(&a).await.expect("insert alpha");
@@ -410,7 +419,7 @@ db_test! {
     /// The issuer is unique across the deployment, so a second tenant cannot
     /// claim it — an ambiguous `iss` would break every client's audience check.
     async fn two_tenants_cannot_share_an_issuer(db) {
-        let repo = PgTenantRepository::new(db.pool.clone());
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
         repo.upsert(&tenant("alpha", "https://as.example")).await.expect("insert alpha");
         let clash = repo.upsert(&tenant("beta", "https://as.example")).await;
         assert!(
@@ -424,7 +433,7 @@ db_test! {
     /// Deleting a tenant takes its data with it, and leaves every other
     /// tenant's data alone. Rows that survive a tenant are rows nobody owns.
     async fn deleting_a_tenant_cascades_only_over_its_own_data(db) {
-        let repo = PgTenantRepository::new(db.pool.clone());
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
         repo.upsert(&tenant("alpha", "https://as.example/t/alpha")).await.expect("alpha");
         repo.upsert(&tenant("beta", "https://as.example/t/beta")).await.expect("beta");
         for id in ["alpha", "beta"] {
@@ -453,7 +462,7 @@ db_test! {
     /// Two tenants may reuse a `client_id`; the primary key is the pair. This
     /// is what stops one tenant's registration from constraining another's.
     async fn a_client_id_is_only_unique_within_its_tenant(db) {
-        let repo = PgTenantRepository::new(db.pool.clone());
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
         repo.upsert(&tenant("alpha", "https://as.example/t/alpha")).await.expect("alpha");
         repo.upsert(&tenant("beta", "https://as.example/t/beta")).await.expect("beta");
         let store = Store::from_pool(db.pool.clone());
@@ -1888,18 +1897,48 @@ db_test! {
 
 use asterius_domain::{
     Claim, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier, SubjectId, User,
-    UserId, UserStatus, derive_subject,
+    UserId, UserStatus,
 };
+use asterius_jose::{KeyBinding, TenantSecret};
 use asterius_store_pg::PgUserRepository;
 
 fn users(pool: &PgPool, tenant: &str) -> PgUserRepository {
-    PgUserRepository::new(pool.clone(), TenantId::new(tenant))
+    PgUserRepository::new(pool.clone(), TenantId::new(tenant), kek())
 }
 
 /// A fixed salt. Constant on purpose: an assertion about which `sub` a sector
-/// sees can only be made against a salt the test still holds.
+/// sees can only be made against a salt the test still holds. Written into the
+/// tenant's row by [`seed_salt`], so the repository reads back exactly this.
 fn salt() -> PairwiseSalt {
     PairwiseSalt::from_bytes([0x5c; PairwiseSalt::LEN])
+}
+
+/// Gives a raw-SQL-seeded tenant the salt [`salt`] returns, sealed the way the
+/// adapter seals it.
+///
+/// `seed_tenant` writes a bare `tenants` row, which is what an operator's
+/// `INSERT` looks like and what most tests here want. A tenant that mints
+/// subjects needs the salt as well, and needs it to be a *known* one, or no
+/// test could assert which `sub` a sector sees.
+async fn seed_salt(pool: &PgPool, tenant: &str) {
+    let id = TenantId::new(tenant);
+    let sealed = kek()
+        .seal(
+            KeyBinding::tenant_secret(&id, TenantSecret::PairwiseSalt),
+            salt().expose(),
+        )
+        .expect("seal the salt");
+    sqlx::query(
+        "insert into tenant_pairwise_salts (tenant_id, salt_ciphertext, salt_nonce, kek_id)
+         values ($1, $2, $3, $4)",
+    )
+    .bind(tenant)
+    .bind(sealed.ciphertext())
+    .bind(sealed.nonce())
+    .bind(sealed.kek_id())
+    .execute(pool)
+    .await
+    .expect("seed the pairwise salt");
 }
 
 fn sector(host: &str) -> SectorIdentifier {
@@ -2011,15 +2050,16 @@ db_test! {
     /// stable, so a relying party's account for a person does not move.
     async fn one_user_in_one_sector_always_sees_the_same_subject(db) {
         seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
         let repo = users(&db.pool, "demo");
         let alice = a_user("demo", UserId::generate(), "alice");
         repo.upsert(&alice).await.expect("insert");
 
-        let first = repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("mint");
-        let again = repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("read");
+        let first = repo.subject(alice.id, &sector("rp.example")).await.expect("mint");
+        let again = repo.subject(alice.id, &sector("rp.example")).await.expect("read");
         assert_eq!(first, again);
         // And it is the derivation, not something the database invented.
-        assert_eq!(first, derive_subject(&sector("rp.example"), alice.id, &salt()));
+        assert_eq!(first, salt().derive_subject(&sector("rp.example"), alice.id));
 
         // One row, not two: minting twice must not accumulate identities.
         let rows: i64 = sqlx::query_scalar(
@@ -2038,14 +2078,15 @@ db_test! {
     /// talking about one person.
     async fn two_sectors_never_see_one_user_under_the_same_subject(db) {
         seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
         let repo = users(&db.pool, "demo");
         let alice = a_user("demo", UserId::generate(), "alice");
         repo.upsert(&alice).await.expect("insert");
 
-        let here = repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("mint");
-        let there = repo.subject(alice.id, &sector("other.example"), &salt()).await.expect("mint");
+        let here = repo.subject(alice.id, &sector("rp.example")).await.expect("mint");
+        let there = repo.subject(alice.id, &sector("other.example")).await.expect("mint");
         let public = repo
-            .subject(alice.id, &SectorIdentifier::public(), &salt())
+            .subject(alice.id, &SectorIdentifier::public())
             .await
             .expect("mint");
         assert_ne!(here, there);
@@ -2084,13 +2125,14 @@ db_test! {
     /// database refuses the write rather than the application noticing later.
     async fn two_users_cannot_be_given_the_same_subject(db) {
         seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
         let repo = users(&db.pool, "demo");
         let alice = a_user("demo", UserId::generate(), "alice");
         let bob = a_user("demo", UserId::generate(), "bob");
         repo.upsert(&alice).await.expect("insert alice");
         repo.upsert(&bob).await.expect("insert bob");
 
-        let alices = repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("mint");
+        let alices = repo.subject(alice.id, &sector("rp.example")).await.expect("mint");
 
         // The derivation cannot produce a collision, so provoke one the way a
         // botched import would: write Alice's `sub` against Bob.
@@ -2113,11 +2155,13 @@ db_test! {
     async fn a_user_lookup_never_answers_for_another_tenant(db) {
         seed_tenant(&db.pool, "alpha").await;
         seed_tenant(&db.pool, "beta").await;
+        seed_salt(&db.pool, "alpha").await;
+        seed_salt(&db.pool, "beta").await;
         let store = Store::from_pool(db.pool.clone());
         let alpha_scope = store.scope(TenantId::new("alpha"));
         let beta_scope = store.scope(TenantId::new("beta"));
-        let alpha = alpha_scope.users();
-        let beta = beta_scope.users();
+        let alpha = alpha_scope.users(kek());
+        let beta = beta_scope.users(kek());
         assert_eq!(alpha.tenant().as_str(), "alpha");
 
         // The same username in both tenants: the unique index is per tenant, so
@@ -2133,14 +2177,14 @@ db_test! {
             there.id
         );
 
-        let subject = alpha.subject(here.id, &sector("rp.example"), &salt()).await.expect("mint");
+        let subject = alpha.subject(here.id, &sector("rp.example")).await.expect("mint");
         assert!(
             beta.find_by_subject(&subject).await.expect("find").is_none(),
             "one tenant's subject resolved in another"
         );
         // Two tenants derive different subjects for one sector even when they
         // share a salt, because the local account ids differ.
-        let theirs = beta.subject(there.id, &sector("rp.example"), &salt()).await.expect("mint");
+        let theirs = beta.subject(there.id, &sector("rp.example")).await.expect("mint");
         assert_ne!(subject, theirs);
 
         // Writing an entity from another tenant through this handle is a bug in
@@ -2155,13 +2199,14 @@ db_test! {
     /// relying party's account with nothing behind it.
     async fn deleting_a_user_takes_every_subject_identifier_with_it(db) {
         seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
         let repo = users(&db.pool, "demo");
         let alice = a_user("demo", UserId::generate(), "alice");
         let bob = a_user("demo", UserId::generate(), "bob");
         repo.upsert(&alice).await.expect("insert alice");
         repo.upsert(&bob).await.expect("insert bob");
-        repo.subject(alice.id, &sector("rp.example"), &salt()).await.expect("mint");
-        repo.subject(bob.id, &sector("rp.example"), &salt()).await.expect("mint");
+        repo.subject(alice.id, &sector("rp.example")).await.expect("mint");
+        repo.subject(bob.id, &sector("rp.example")).await.expect("mint");
 
         repo.delete(alice.id).await.expect("delete");
         assert!(repo.find(alice.id).await.expect("find").is_none());
@@ -2221,9 +2266,298 @@ db_test! {
                 "{reserved} was accepted as a user claim"
             );
         }
-        let derived = derive_subject(&sector("rp.example"), UserId::generate(), &salt());
+        let derived = salt().derive_subject(&sector("rp.example"), UserId::generate());
         assert_eq!(derived.as_str().len(), 43);
         assert!(SubjectId::new(derived.as_str().to_owned()).as_str().len() <= 255);
+    }
+}
+
+db_test! {
+    /// The property `salt_ciphertext` exists for: what is written down is not
+    /// the salt. Read the bytes straight out of the row — an encryption claim
+    /// proved against the API that wrote it proves only that the API is
+    /// self-consistent.
+    ///
+    /// A leaked salt lets anybody holding a dump re-derive, or confirm, every
+    /// pairwise `sub` in the tenant, which is the entire property pairwise
+    /// subjects exist to provide (OIDC Core §8.1: "MUST NOT be reversible by
+    /// any party other than the OpenID Provider").
+    async fn the_stored_pairwise_salt_is_ciphertext_and_not_a_salt(db) {
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
+        repo.upsert(&tenant("demo", "https://demo.example")).await.expect("create");
+
+        let row = sqlx::query(
+            "select salt_ciphertext, salt_nonce, kek_id
+             from tenant_pairwise_salts where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("the tenant should have a salt");
+        let ciphertext: Vec<u8> = row.get("salt_ciphertext");
+
+        // The plaintext is whatever `generate` drew, so recover it the only way
+        // there is — through the KEK — and then look for it in the column.
+        let sealed = asterius_jose::WrappedKey::from_parts(
+            row.get::<String, _>("kek_id"),
+            row.get::<Vec<u8>, _>("salt_nonce"),
+            ciphertext.clone(),
+        )
+        .expect("a well-formed row");
+        let plaintext = kek()
+            .open(
+                KeyBinding::tenant_secret(&TenantId::new("demo"), TenantSecret::PairwiseSalt),
+                &sealed,
+            )
+            .expect("the row must open under the KEK that sealed it");
+        assert_eq!(plaintext.len(), PairwiseSalt::LEN);
+
+        assert_ne!(ciphertext.as_slice(), plaintext.as_slice(), "the column is the salt");
+        // Not even a window of it. Eight bytes is already enough to halve the
+        // search space for the rest.
+        for window in plaintext.windows(8) {
+            assert!(
+                !ciphertext.windows(8).any(|candidate| candidate == window),
+                "an 8-byte run of the salt is stored verbatim"
+            );
+        }
+        // Ciphertext plus the GCM tag, and a 96-bit nonce beside it.
+        assert_eq!(ciphertext.len(), PairwiseSalt::LEN + 16);
+        assert_eq!(row.get::<Vec<u8>, _>("salt_nonce").len(), 12);
+        assert!(row.get::<String, _>("kek_id").starts_with("local:"));
+
+        // And the salt is not sitting in `tenants` in some other form either.
+        let elsewhere: Vec<String> = sqlx::query_scalar(
+            "select column_name from information_schema.columns
+             where table_schema = $1 and table_name = 'tenants'",
+        )
+        .bind(db.schema())
+        .fetch_all(&db.pool)
+        .await
+        .expect("read information_schema");
+        assert!(
+            !elsewhere.iter().any(|column| column.contains("salt")),
+            "the tenants table grew a salt column: {elsewhere:?}"
+        );
+    }
+}
+
+db_test! {
+    /// A tenant gets its salt when it is created, and never gets another one.
+    /// "Generated once" is the property the whole design rests on: a second
+    /// salt would make the same user in the same sector derive differently, and
+    /// OIDC Core §8 says a Subject Identifier is never reassigned.
+    async fn a_tenant_is_created_with_a_salt_and_never_given_a_second_one(db) {
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
+        let mut demo = tenant("demo", "https://demo.example");
+        repo.upsert(&demo).await.expect("create");
+
+        let first: Vec<u8> = sqlx::query_scalar(
+            "select salt_ciphertext from tenant_pairwise_salts where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("a salt");
+
+        // Updating the tenant must not disturb it, however many times.
+        demo.display_name = "Renamed".to_owned();
+        repo.upsert(&demo).await.expect("update");
+        repo.upsert(&demo).await.expect("update again");
+
+        let after: Vec<u8> = sqlx::query_scalar(
+            "select salt_ciphertext from tenant_pairwise_salts where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("still one salt");
+        assert_eq!(first, after, "a tenant update replaced the pairwise salt");
+
+        let rows: i64 = sqlx::query_scalar("select count(*) from tenant_pairwise_salts")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+        assert_eq!(rows, 1);
+
+        // Two tenants do not share one, or their subjects would correlate.
+        repo.upsert(&tenant("other", "https://other.example")).await.expect("create");
+        let salts: Vec<Vec<u8>> = sqlx::query_scalar(
+            "select salt_ciphertext from tenant_pairwise_salts order by tenant_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read salts");
+        assert_eq!(salts.len(), 2);
+        assert_ne!(salts[0], salts[1]);
+    }
+}
+
+db_test! {
+    /// Rotation is refused by the database, not merely unimplemented above it.
+    /// Every `sub` already derived under this salt has been handed to a relying
+    /// party and stored; replacing the salt would reassign identifiers OIDC
+    /// Core §8 says are never reassigned.
+    async fn a_pairwise_salt_cannot_be_rotated(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+
+        for statement in [
+            "update tenant_pairwise_salts set salt_ciphertext = salt_ciphertext",
+            "update tenant_pairwise_salts set kek_id = 'local:elsewhere'",
+            "update tenant_pairwise_salts set tenant_id = 'demo'",
+        ] {
+            let refused = sqlx::query(statement).execute(&db.pool).await;
+            assert!(refused.is_err(), "the schema accepted: {statement}");
+        }
+
+        // The salt still opens, so the refusal did not corrupt anything.
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert");
+        assert_eq!(
+            repo.subject(alice.id, &sector("rp.example")).await.expect("mint"),
+            salt().derive_subject(&sector("rp.example"), alice.id)
+        );
+    }
+}
+
+db_test! {
+    /// A tenant with no salt must refuse to mint rather than fall back to a
+    /// default or empty one. An empty salt would leave the derivation with no
+    /// secret in it at all, so every `sub` in the deployment would be derivable
+    /// by anyone who knows the algorithm — and, because the first derivation is
+    /// the one stored and given to a relying party, it could never be withdrawn.
+    async fn a_tenant_without_a_salt_refuses_to_mint_a_subject(db) {
+        // Seeded with raw SQL and no salt row, which is what an operator's
+        // `INSERT` — or a botched import — produces.
+        seed_tenant(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert");
+
+        let error = repo
+            .subject(alice.id, &sector("rp.example"))
+            .await
+            .expect_err("a tenant with no salt must not mint a subject");
+        assert!(
+            error.to_string().contains("pairwise_salt"),
+            "the refusal should name the missing salt: {error}"
+        );
+
+        // And nothing was written, so a later mint under the real salt is still
+        // the first one.
+        let rows: i64 = sqlx::query_scalar("select count(*) from subject_identifiers")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+        assert_eq!(rows, 0, "a subject was minted without a salt");
+
+        seed_salt(&db.pool, "demo").await;
+        assert_eq!(
+            repo.subject(alice.id, &sector("rp.example")).await.expect("mint"),
+            salt().derive_subject(&sector("rp.example"), alice.id)
+        );
+    }
+}
+
+db_test! {
+    /// The identifier a relying party holds must survive a restart. Two
+    /// repositories built separately — different handles, nothing shared but
+    /// the database and the KEK — must derive the same `sub` for the same user
+    /// in the same sector, and different ones across sectors.
+    ///
+    /// This is the property that broke when the salt was an argument: two call
+    /// sites could disagree and both look correct.
+    async fn two_separate_repositories_agree_on_a_users_subject(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+        let alice = a_user("demo", UserId::generate(), "alice");
+        users(&db.pool, "demo").upsert(&alice).await.expect("insert");
+
+        let here = users(&db.pool, "demo");
+        let there = users(&db.pool, "demo");
+        assert_eq!(
+            here.subject(alice.id, &sector("rp.example")).await.expect("mint"),
+            there.subject(alice.id, &sector("rp.example")).await.expect("read"),
+            "two repositories disagreed about a user's subject"
+        );
+
+        // Different sectors, different subjects — from either handle.
+        let rp = here.subject(alice.id, &sector("rp.example")).await.expect("mint");
+        let other = there.subject(alice.id, &sector("other.example")).await.expect("mint");
+        let public = there.subject(alice.id, &SectorIdentifier::public()).await.expect("mint");
+        assert_ne!(rp, other);
+        assert_ne!(rp, public);
+        assert_ne!(other, public);
+
+        // A repository holding a different KEK cannot open the salt at all,
+        // which is what makes the ciphertext worth writing.
+        let wrong = PgUserRepository::new(
+            db.pool.clone(),
+            TenantId::new("demo"),
+            Arc::new(LocalKek::from_bytes(&[0x11; 32]).expect("a 32-byte KEK")),
+        );
+        assert!(
+            wrong.subject(alice.id, &sector("rp.example")).await.is_err(),
+            "the salt opened under a key-encryption key that did not seal it"
+        );
+    }
+}
+
+db_test! {
+    /// The ciphertext is bound to its tenant, so a salt copied into another
+    /// tenant's row is not a salt any more. Without the binding, an attacker
+    /// with an `UPDATE` could give two tenants one salt — and two tenants
+    /// sharing a salt are two tenants whose `sub` values correlate for any user
+    /// whose local account id is known.
+    async fn a_pairwise_salt_moved_to_another_tenant_stops_decrypting(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        seed_salt(&db.pool, "alpha").await;
+
+        let alice = a_user("beta", UserId::generate(), "alice");
+        users(&db.pool, "beta").upsert(&alice).await.expect("insert");
+
+        // Copying the row wholesale is refused before the cryptography is even
+        // consulted: the nonce index means one nonce may exist once per KEK.
+        let row = sqlx::query(
+            "select salt_ciphertext, salt_nonce, kek_id
+             from tenant_pairwise_salts where tenant_id = 'alpha'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("alpha's salt");
+        let plant = |tenant: &'static str| {
+            sqlx::query(
+                "insert into tenant_pairwise_salts (tenant_id, salt_ciphertext, salt_nonce, kek_id)
+                 values ($1, $2, $3, $4)",
+            )
+            .bind(tenant)
+            .bind(row.get::<Vec<u8>, _>("salt_ciphertext"))
+            .bind(row.get::<Vec<u8>, _>("salt_nonce"))
+            .bind(row.get::<String, _>("kek_id"))
+            .execute(&db.pool)
+        };
+        assert!(
+            plant("beta").await.is_err(),
+            "one nonce was accepted twice under one key-encryption key"
+        );
+
+        // So move it the way a restore from another tenant's backup would: the
+        // original is gone, and the bytes arrive under a new owner. Now only
+        // the binding is left to refuse it.
+        sqlx::query("delete from tenant_pairwise_salts where tenant_id = 'alpha'")
+            .execute(&db.pool)
+            .await
+            .expect("remove the original");
+        plant("beta").await.expect("plant the row");
+
+        let error = users(&db.pool, "beta")
+            .subject(alice.id, &sector("rp.example"))
+            .await
+            .expect_err("a moved salt must not decrypt");
+        assert!(
+            matches!(error, asterius_domain::DomainError::Storage(_)),
+            "expected a storage failure, got {error:?}"
+        );
     }
 }
 

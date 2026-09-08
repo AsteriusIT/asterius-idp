@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select salt_ciphertext, salt_nonce, kek_id\n         from tenant_pairwise_salts\n         where tenant_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "salt_ciphertext",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "salt_nonce",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "kek_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6257582457c4a9b363bd6dda442b408591b2903be01cd355bd4184964cce844a"
+}

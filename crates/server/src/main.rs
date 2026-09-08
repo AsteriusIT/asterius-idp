@@ -68,7 +68,22 @@ fn run() -> Result<(), String> {
             .await
             .map_err(|e| format!("cannot apply migrations: {e}"))?;
 
-        let repository = PgTenantRepository::new(store.pool().clone());
+        // The key-encryption key, before anything that needs it. It seals both
+        // the signing keys and each tenant's pairwise salt, and a tenant is
+        // created with its salt — so this has to be loaded before the first
+        // tenant is written, not just before the first token is signed.
+        // Loading it at startup is deliberate either way: a deployment that
+        // cannot read its own key material should fail while someone is
+        // watching.
+        let kek: Arc<dyn Kek> = Arc::new(match &config.kek {
+            KekSource::File(path) => LocalKek::from_file(path)
+                .map_err(|e| format!("cannot load the key-encryption key: {e}"))?,
+            KekSource::Env(variable) => LocalKek::from_env(variable)
+                .map_err(|e| format!("cannot load the key-encryption key: {e}"))?,
+        });
+        tracing::info!(kek = kek.id(), "key-encryption key loaded");
+
+        let repository = PgTenantRepository::new(store.pool().clone(), Arc::clone(&kek));
         bootstrap_tenants(&repository, &config).await?;
 
         let directory = TenantDirectory::new(Arc::new(repository));
@@ -80,18 +95,6 @@ fn run() -> Result<(), String> {
             },
             metrics,
         };
-
-        // Signing keys, from PostgreSQL and encrypted at rest under the
-        // configured key-encryption key. Loading the KEK is a startup step
-        // rather than a lazy one: a deployment that cannot read its own keys
-        // should fail while someone is watching, not on the first token.
-        let kek: Arc<dyn Kek> = Arc::new(match &config.kek {
-            KekSource::File(path) => LocalKek::from_file(path)
-                .map_err(|e| format!("cannot load the key-encryption key: {e}"))?,
-            KekSource::Env(variable) => LocalKek::from_env(variable)
-                .map_err(|e| format!("cannot load the key-encryption key: {e}"))?,
-        });
-        tracing::info!(kek = kek.id(), "key-encryption key loaded");
 
         let keys = Arc::new(TenantKeyStore::new(
             store.pool().clone(),

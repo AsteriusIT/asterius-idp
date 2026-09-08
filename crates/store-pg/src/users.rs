@@ -1,7 +1,7 @@
 //! The user repository, and the table that remembers which `sub` a user is
 //! known by in each sector.
 //!
-//! Two rules shape this file.
+//! Three rules shape this file.
 //!
 //! **A row is validated by the same code on the way out as on the way in.** The
 //! `claims` column is JSONB, which the database will hold whatever shape is put
@@ -21,15 +21,25 @@
 //! and every sector; and an identifier already handed to a relying party stops
 //! depending on the salt still being the one it was derived under.
 //!
+//! **The salt is not an argument.** [`PgUserRepository::subject`] reads the
+//! tenant's pairwise salt out of the store and decrypts it; it does not accept
+//! one. A caller able to supply the salt is a caller able to supply the wrong
+//! one — a fresh salt, an empty salt, another tenant's — and every one of those
+//! mints a `sub` that is entirely well-formed and permanently wrong, because
+//! the first derivation is the one written to `subject_identifiers` and handed
+//! to a relying party. See [`crate::salts`].
+//!
 //! [`ClaimName::parse`]: asterius_domain::ClaimName::parse
 
 use crate::error::to_domain_error;
+use crate::salts;
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
-    ClaimSet, DomainError, PairwiseSalt, SectorIdentifier, SubjectId, TenantId, User, UserId,
-    UserStatus, derive_subject,
+    ClaimSet, DomainError, SectorIdentifier, SubjectId, TenantId, User, UserId, UserStatus,
 };
+use asterius_jose::Kek;
 use sqlx::postgres::PgPool;
+use std::sync::Arc;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -39,10 +49,20 @@ use uuid::Uuid;
 /// holding the handle rather than an argument a query might forget.
 ///
 /// [`TenantScope`]: crate::TenantScope
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PgUserRepository {
     pool: PgPool,
     tenant: TenantId,
+    kek: Arc<dyn Kek>,
+}
+
+impl std::fmt::Debug for PgUserRepository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgUserRepository")
+            .field("tenant", &self.tenant)
+            .field("kek", &self.kek.id())
+            .finish_non_exhaustive()
+    }
 }
 
 impl TenantScoped for PgUserRepository {
@@ -93,9 +113,15 @@ impl Row {
 
 impl PgUserRepository {
     /// Binds a pool to one tenant.
+    ///
+    /// `kek` is the key-encryption key the tenant's pairwise salt is sealed
+    /// under. It is a constructor argument rather than a parameter of
+    /// [`Self::subject`] for the same reason the salt itself is neither: the
+    /// fewer places a caller can name key material, the fewer places it can
+    /// name the wrong key material.
     #[must_use]
-    pub const fn new(pool: PgPool, tenant: TenantId) -> Self {
-        Self { pool, tenant }
+    pub const fn new(pool: PgPool, tenant: TenantId, kek: Arc<dyn Kek>) -> Self {
+        Self { pool, tenant, kek }
     }
 
     /// Finds one user by their local account identifier.
@@ -249,7 +275,18 @@ impl PgUserRepository {
     /// row at all; a fresh read afterwards sees the winner of that race. Both
     /// callers get the same `sub`, which is the whole requirement.
     ///
+    /// The salt is read from the store and never passed in; see the module
+    /// documentation. That costs one extra query and one KEK operation per
+    /// mint, which is the price of the caller being unable to name the wrong
+    /// salt. A repeat mint pays it too — it is the same read either way, and
+    /// the derivation has to happen before the insert can be attempted.
+    ///
     /// # Errors
+    ///
+    /// Returns [`DomainError::Invalid`] when the tenant has no pairwise salt —
+    /// which is a refusal to mint, never a fallback to a default one, because a
+    /// `sub` derived under an empty or improvised salt is both re-derivable by
+    /// anybody who knows the algorithm and impossible to withdraw once issued.
     ///
     /// Returns [`DomainError::Conflict`] when the user does not exist, and —
     /// the case worth naming — when the derived `sub` is already held by
@@ -260,9 +297,9 @@ impl PgUserRepository {
         &self,
         user: UserId,
         sector: &SectorIdentifier,
-        salt: &PairwiseSalt,
     ) -> Result<SubjectId, DomainError> {
-        let derived = derive_subject(sector, user, salt);
+        let salt = salts::read(&self.pool, &self.tenant, self.kek.as_ref()).await?;
+        let derived = salt.derive_subject(sector, user);
         sqlx::query!(
             "insert into subject_identifiers (tenant_id, user_id, sector_identifier, subject)
              values ($1, $2, $3, $4)

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tenant_pairwise_salts (tenant_id, salt_ciphertext, salt_nonce, kek_id)\n         values ($1, $2, $3, $4)\n         on conflict (tenant_id) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "86fe52652804969b88015b0277c5e4351c07a959d095ca0b00bfc839ce014dbd"
+}

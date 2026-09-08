@@ -52,6 +52,17 @@
 //! tenant, relabelling a signing key as an encryption key, or pairing a
 //! ciphertext with a different public key all produce a decryption failure
 //! rather than a working key in the wrong place. See [`KeyBinding`].
+//!
+//! # What else is sealed here
+//!
+//! Not only key pairs. A [`TenantSecret`] is a secret a tenant holds exactly
+//! one of and never rotates — today that is the pairwise salt, which is the
+//! only thing standing between a leaked database and every `sub` in the tenant
+//! being derivable by anyone who knows the algorithm (OIDC Core §8.1: a
+//! pairwise Subject Identifier "MUST NOT be reversible by any party other than
+//! the OpenID Provider"). It is key material in every sense that matters to
+//! storage, so it is sealed through the same port, with the same key binding
+//! discipline, rather than sitting in a settings column as configuration.
 
 use crate::JoseError;
 use asterius_domain::keys::{KeyPurpose, SigningAlgorithm};
@@ -74,7 +85,42 @@ pub const NONCE_LEN: usize = 12;
 /// The GCM authentication tag length, in bytes.
 const TAG_LEN: usize = 16;
 
-/// What a wrapped private key is allowed to be.
+/// A tenant-wide secret that is not a key pair.
+///
+/// A signing key is identified by its own thumbprint, so [`KeyBinding::new`]
+/// has a `kid` to bind. A tenant secret has no such identity — there is exactly
+/// one of each per tenant, forever — so what distinguishes two of them is which
+/// secret they are, and that is what this enum names. Adding a variant is how a
+/// future tenant secret gets its own binding rather than borrowing this one:
+/// two secrets sharing a binding would be interchangeable ciphertexts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum TenantSecret {
+    /// The per-tenant pairwise salt, the input to every `sub` the tenant
+    /// derives (OIDC Core §8.1).
+    PairwiseSalt,
+}
+
+impl TenantSecret {
+    /// Every secret this enum names, so a test can be exhaustive over them.
+    pub const ALL: [Self; 1] = [Self::PairwiseSalt];
+
+    /// The value that goes into the additional authenticated data.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PairwiseSalt => "pairwise-salt",
+        }
+    }
+}
+
+impl fmt::Display for TenantSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What a piece of wrapped material is allowed to be.
 ///
 /// This is the additional authenticated data. AES-GCM does not encrypt it, it
 /// authenticates it: decryption succeeds only if the caller supplies exactly
@@ -86,13 +132,45 @@ const TAG_LEN: usize = 16;
 /// That matters most for the purpose field. FAPI 2.0 SP §6.8 item 2 wants
 /// single-purpose keys; binding the purpose into the ciphertext means a
 /// signing key cannot be relabelled as an encryption key by an `UPDATE`.
+///
+/// Two shapes of binding exist, because two shapes of material are stored. A
+/// private key ([`KeyBinding::new`]) is one row of `signing_keys` and is
+/// identified by its `kid`; a tenant secret ([`KeyBinding::tenant_secret`]) is
+/// the one row its tenant will ever have, and is identified by *which* secret
+/// it is. They are kept apart by their labels rather than by field count, so
+/// that no amount of choosing tenant ids, `kid`s or secret names can make one
+/// encode to the bytes of the other — see [`KeyBinding::aad`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyBinding<'a> {
     tenant: &'a TenantId,
-    kid: &'a Kid,
-    purpose: KeyPurpose,
-    algorithm: SigningAlgorithm,
+    material: Material<'a>,
 }
+
+/// Which of the two binding shapes a [`KeyBinding`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Material<'a> {
+    /// One row of `signing_keys`.
+    PrivateKey {
+        kid: &'a Kid,
+        purpose: KeyPurpose,
+        algorithm: SigningAlgorithm,
+    },
+    /// A secret a tenant holds exactly one of.
+    TenantSecret(TenantSecret),
+}
+
+/// The label for a private key envelope. Unchanged since the first ciphertext
+/// was written: changing it would make every stored signing key unopenable.
+const KEY_LABEL: &[u8] = b"asterius.kek.v1";
+
+/// The label for a tenant secret envelope.
+///
+/// It differs from [`KEY_LABEL`] at byte 13 — `t` against `v`, both labels
+/// being longer than that — so neither label is a prefix of the other and no
+/// suffix can reconcile them. That is what makes the two field layouts safe to
+/// use under one AEAD: the reader of an envelope never has to guess which
+/// layout produced it, because a mismatched guess fails to authenticate.
+const TENANT_SECRET_LABEL: &[u8] = b"asterius.kek.tenant-secret.v1";
 
 impl<'a> KeyBinding<'a> {
     /// Binds a private key to the row it belongs in.
@@ -105,9 +183,27 @@ impl<'a> KeyBinding<'a> {
     ) -> Self {
         Self {
             tenant,
-            kid,
-            purpose,
-            algorithm,
+            material: Material::PrivateKey {
+                kid,
+                purpose,
+                algorithm,
+            },
+        }
+    }
+
+    /// Binds a tenant-wide secret to the tenant that owns it.
+    ///
+    /// The tenant is the whole point. A pairwise salt copied from one tenant's
+    /// row into another's would give both tenants one salt, and two tenants
+    /// with one salt is two tenants whose `sub` values can be correlated by
+    /// anyone holding it — the exact property pairwise subjects exist to deny
+    /// (OIDC Core §8.1). Binding the tenant into the ciphertext makes the copy
+    /// undecryptable instead of useful.
+    #[must_use]
+    pub const fn tenant_secret(tenant: &'a TenantId, secret: TenantSecret) -> Self {
+        Self {
+            tenant,
+            material: Material::TenantSecret(secret),
         }
     }
 
@@ -118,38 +214,56 @@ impl<'a> KeyBinding<'a> {
     /// bytes, and an encoding where two different bindings collide is an
     /// encoding that authenticates neither. The leading label is domain
     /// separation: a future envelope format changes it rather than silently
-    /// reinterpreting old ciphertexts.
+    /// reinterpreting old ciphertexts, and the two labels here keep the
+    /// private-key layout and the tenant-secret layout in separate spaces.
     #[must_use]
     pub fn aad(&self) -> Vec<u8> {
-        const LABEL: &[u8] = b"asterius.kek.v1";
-        let fields: [&[u8]; 4] = [
-            self.tenant.as_str().as_bytes(),
-            self.kid.as_str().as_bytes(),
-            self.purpose.as_str().as_bytes(),
-            self.algorithm.as_str().as_bytes(),
-        ];
-
-        let mut aad =
-            Vec::with_capacity(LABEL.len() + fields.iter().map(|f| f.len() + 4).sum::<usize>());
-        aad.extend_from_slice(LABEL);
-        for field in fields {
-            // A 32-bit length is more than any of these can reach: a tenant id
-            // is capped at 64 bytes and a `kid` is a base64url SHA-256.
-            let length = u32::try_from(field.len()).unwrap_or(u32::MAX);
-            aad.extend_from_slice(&length.to_be_bytes());
-            aad.extend_from_slice(field);
+        let tenant = self.tenant.as_str().as_bytes();
+        match self.material {
+            Material::PrivateKey {
+                kid,
+                purpose,
+                algorithm,
+            } => encode(
+                KEY_LABEL,
+                &[
+                    tenant,
+                    kid.as_str().as_bytes(),
+                    purpose.as_str().as_bytes(),
+                    algorithm.as_str().as_bytes(),
+                ],
+            ),
+            Material::TenantSecret(secret) => {
+                encode(TENANT_SECRET_LABEL, &[tenant, secret.as_str().as_bytes()])
+            }
         }
-        aad
     }
 }
 
-/// A private key as it is stored: ciphertext, the nonce it was sealed under,
+/// A label followed by length-prefixed fields.
+fn encode(label: &[u8], fields: &[&[u8]]) -> Vec<u8> {
+    let mut aad =
+        Vec::with_capacity(label.len() + fields.iter().map(|f| f.len() + 4).sum::<usize>());
+    aad.extend_from_slice(label);
+    for field in fields {
+        // A 32-bit length is more than any of these can reach: a tenant id is
+        // capped at 64 bytes, a `kid` is a base64url SHA-256, and the rest are
+        // compiled-in constants.
+        let length = u32::try_from(field.len()).unwrap_or(u32::MAX);
+        aad.extend_from_slice(&length.to_be_bytes());
+        aad.extend_from_slice(field);
+    }
+    aad
+}
+
+/// Sealed material as it is stored: ciphertext, the nonce it was sealed under,
 /// and which key-encryption key sealed it.
 ///
-/// Every field goes into a column of `signing_keys`. None of them is secret —
-/// that is the point of the exercise — but the ciphertext is the whole private
-/// key, so this type deliberately has no `Display` and its `Debug` prints
-/// lengths rather than bytes.
+/// Every field goes into a column — `signing_keys` for a private key,
+/// `tenant_pairwise_salts` for a salt. None of them is secret — that is the
+/// point of the exercise — but the ciphertext is the whole plaintext, so this
+/// type deliberately has no `Display` and its `Debug` prints lengths rather
+/// than bytes.
 #[derive(Clone, PartialEq, Eq)]
 pub struct WrappedKey {
     kek_id: String,
@@ -158,7 +272,7 @@ pub struct WrappedKey {
 }
 
 impl WrappedKey {
-    /// Rebuilds a wrapped key from the three stored columns.
+    /// Rebuilds a wrapped secret from the three stored columns.
     ///
     /// # Errors
     ///
@@ -712,6 +826,94 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A tenant secret is bound to its tenant and to *which* secret it is. The
+    /// tenant half is what stops a pairwise salt being copied from one tenant's
+    /// row into another's — two tenants sharing a salt is two tenants whose
+    /// `sub` values correlate, which is the one thing pairwise subjects exist
+    /// to prevent (OIDC Core §8.1).
+    #[test]
+    fn a_tenant_secret_does_not_open_for_another_tenant() {
+        let kek = kek();
+        let (alpha, beta) = (TenantId::new("alpha"), TenantId::new("beta"));
+        let mine = KeyBinding::tenant_secret(&alpha, TenantSecret::PairwiseSalt);
+        let sealed = kek.seal(mine, &[0x5c; 32]).expect("seal");
+
+        assert_eq!(
+            kek.open(mine, &sealed).expect("open").as_slice(),
+            &[0x5c; 32]
+        );
+        assert!(
+            matches!(
+                kek.open(
+                    KeyBinding::tenant_secret(&beta, TenantSecret::PairwiseSalt),
+                    &sealed
+                ),
+                Err(JoseError::Unwrap)
+            ),
+            "a tenant secret opened under another tenant's binding"
+        );
+    }
+
+    /// The two binding shapes have different field counts, so they must not
+    /// share an encoding space: a tenant secret must never be openable as a
+    /// private key, whatever the tenant id, `kid` or secret name happens to be.
+    /// The labels are what separate them, and they diverge inside the constant
+    /// rather than relying on what follows.
+    #[test]
+    fn a_key_binding_and_a_tenant_secret_binding_never_collide() {
+        // The labels differ before either can be a prefix of the other.
+        let at = KEY_LABEL
+            .iter()
+            .zip(TENANT_SECRET_LABEL)
+            .position(|(a, b)| a != b)
+            .expect("the two labels must differ");
+        assert!(at < KEY_LABEL.len() && at < TENANT_SECRET_LABEL.len());
+
+        // And exhaustively, over values chosen to be confusable.
+        let tenants = [
+            TenantId::new("a"),
+            TenantId::new("ab"),
+            TenantId::new("pairwise-salt"),
+        ];
+        let kids = [Kid::new(""), Kid::new("pairwise-salt"), Kid::new("sig")];
+        let mut seen = std::collections::HashSet::new();
+        for tenant in &tenants {
+            for secret in TenantSecret::ALL {
+                assert!(
+                    seen.insert(KeyBinding::tenant_secret(tenant, secret).aad()),
+                    "{tenant}/{secret} collides with another binding"
+                );
+            }
+            for kid in &kids {
+                for purpose in KeyPurpose::ALL {
+                    for algorithm in SigningAlgorithm::ALL {
+                        assert!(
+                            seen.insert(KeyBinding::new(tenant, kid, purpose, algorithm).aad()),
+                            "{tenant}/{kid}/{purpose}/{algorithm} collides with another binding"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A salt is 256 bits, so its envelope is 256 bits plus a GCM tag — the
+    /// exact length `tenant_pairwise_salts.salt_ciphertext` is constrained to.
+    #[test]
+    fn a_sealed_salt_is_exactly_the_length_the_schema_expects() {
+        let tenant = tenant();
+        let sealed = kek()
+            .seal(
+                KeyBinding::tenant_secret(&tenant, TenantSecret::PairwiseSalt),
+                &[0x5c; 32],
+            )
+            .expect("seal");
+        assert_eq!(sealed.ciphertext().len(), 32 + TAG_LEN);
+        assert_eq!(sealed.nonce().len(), NONCE_LEN);
+        // And the ciphertext is not the salt.
+        assert!(!sealed.ciphertext().starts_with(&[0x5c; 16]));
     }
 
     #[test]

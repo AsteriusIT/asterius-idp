@@ -21,7 +21,7 @@ pub use client_keys::{
     keys_from_jwk_set, parse_jwk_set,
 };
 pub use jws::{Header, Unverified};
-pub use kek::{KEK_LEN, Kek, KeyBinding, LocalKek, NONCE_LEN, WrappedKey};
+pub use kek::{KEK_LEN, Kek, KeyBinding, LocalKek, NONCE_LEN, TenantSecret, WrappedKey};
 pub use key::{MIN_RSA_BITS, SigningKey, VerifyingKey};
 pub use store::{LocalKeyStore, thumbprint};
 pub use verify::{KeyResolver, Policy, TypRule, VerificationError, Verified, verify};
