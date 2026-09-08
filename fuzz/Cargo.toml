@@ -214,3 +214,10 @@ path = "fuzz_targets/dpop_proof.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "access_token_claims"
+path = "fuzz_targets/access_token_claims.rs"
+test = false
+doc = false
+bench = false

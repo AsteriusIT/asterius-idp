@@ -126,6 +126,7 @@ version = "0.0.0"
 dependencies = [
  "asterius-domain",
  "base64",
+ "getrandom 0.3.4",
  "proptest",
  "serde",
  "serde_json",
