@@ -184,6 +184,7 @@ async fn run(
         &form_headers(),
         &form(pairs),
         async |_: &Attempt<'_>, _: &AssertionRules| auth,
+        None,
         now(),
     )
     .await;
@@ -387,6 +388,7 @@ async fn a_body_that_is_not_a_form_is_refused() {
         &headers,
         &Bytes::from_static(br#"{"response_type":"code"}"#),
         async |_: &Attempt<'_>, _: &AssertionRules| Ok(client()),
+        None,
         now(),
     )
     .await;
@@ -418,6 +420,7 @@ async fn a_form_content_type_with_a_charset_is_accepted() {
         &headers,
         &form(&valid_pairs()),
         async |_: &Attempt<'_>, _: &AssertionRules| Ok(client()),
+        None,
         now(),
     )
     .await;
@@ -444,6 +447,7 @@ async fn an_oversized_body_is_refused_before_it_is_parsed() {
         async |_: &Attempt<'_>, _: &AssertionRules| {
             panic!("authentication ran on an oversized body");
         },
+        None,
         now(),
     )
     .await;
@@ -459,4 +463,123 @@ async fn a_failed_write_is_reported_rather_than_papered_over() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"], "temporarily_unavailable");
     assert!(body["request_uri"].is_null());
+}
+
+// ---- DPoP key pinning at PAR (RFC 9449 §10.1, ast-a05.10) ---------------
+
+/// A push carrying a proof pins the code to that key, with no `dpop_jkt`.
+#[tokio::test]
+async fn a_proof_on_the_push_pins_the_code_to_its_key() {
+    let requests = FakeRequests::default();
+    let key = asterius_domain::Kid::new("0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I");
+    let tenant = tenant();
+    let clients = FakeClients(Some(client()));
+
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            lifetime: Duration::seconds(90),
+        },
+        &form_headers(),
+        &form(&valid_pairs()),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client()),
+        Some(&key),
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let stored = requests.0.lock().expect("lock");
+    assert_eq!(
+        stored[0].dpop_jkt.as_deref(),
+        Some("0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"),
+        "the proof's key was not pinned to the request"
+    );
+}
+
+/// RFC 9449 §10.1 supports both spellings. A request that uses both and
+/// disagrees with itself does not name a key, so it is refused rather than
+/// resolved — picking one would let whoever controls the other choose.
+#[tokio::test]
+async fn a_proof_and_a_dpop_jkt_that_disagree_are_refused() {
+    let requests = FakeRequests::default();
+    let key = asterius_domain::Kid::new("0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I");
+    let tenant = tenant();
+    let clients = FakeClients(Some(client()));
+
+    let mut pairs = valid_pairs();
+    // A different, well-formed thumbprint.
+    pairs.push(("dpop_jkt", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            lifetime: Duration::seconds(90),
+        },
+        &form_headers(),
+        &form(&pairs),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client()),
+        Some(&key),
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        requests.0.lock().expect("lock").is_empty(),
+        "a request naming two keys was stored anyway"
+    );
+}
+
+/// Both spellings, agreeing, is the ordinary case and must be accepted.
+#[tokio::test]
+async fn a_proof_and_a_matching_dpop_jkt_are_accepted() {
+    let requests = FakeRequests::default();
+    let thumbprint = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I";
+    let key = asterius_domain::Kid::new(thumbprint);
+    let tenant = tenant();
+    let clients = FakeClients(Some(client()));
+
+    let mut pairs = valid_pairs();
+    pairs.push(("dpop_jkt", thumbprint));
+
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            lifetime: Duration::seconds(90),
+        },
+        &form_headers(),
+        &form(&pairs),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client()),
+        Some(&key),
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        requests.0.lock().expect("lock")[0].dpop_jkt.as_deref(),
+        Some(thumbprint)
+    );
+}
+
+/// `dpop_jkt` alone, with no proof on the push, is the other legal spelling.
+#[tokio::test]
+async fn a_dpop_jkt_without_a_proof_still_pins_the_code() {
+    let thumbprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let mut pairs = valid_pairs();
+    pairs.push(("dpop_jkt", thumbprint));
+
+    let (status, _, store) = pushed(&pairs).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        store.0.lock().expect("lock")[0].dpop_jkt.as_deref(),
+        Some(thumbprint)
+    );
 }

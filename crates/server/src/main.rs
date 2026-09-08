@@ -1,6 +1,7 @@
 //! The `asterius` binary.
 #![forbid(unsafe_code)]
 
+use asterius_domain::ReplayGuard;
 use asterius_domain::ports::TenantRepository as _;
 use asterius_domain::{Feature, Tenant, TenantStatus};
 use asterius_jose::LocalKek;
@@ -9,6 +10,7 @@ use asterius_jose::kek::Kek;
 use asterius_oidc::par;
 use asterius_server::client_auth::ClientAuthenticator;
 use asterius_server::config::KekSource;
+use asterius_server::http::dpop::DpopEndpoint;
 use asterius_server::http::protocol::{self, ClientEndpoints, ProtocolState};
 use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
 use asterius_server::observability::health::HealthState;
@@ -119,12 +121,23 @@ fn run() -> Result<(), String> {
             HttpsJwksFetcher::new()
                 .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?,
         )));
+        let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = Arc::new(
-            ClientAuthenticator::new(
-                client_keys,
-                Arc::new(PgReplayGuard::new(store.pool().clone())),
+            ClientAuthenticator::new(client_keys, Arc::clone(&replay) as Arc<dyn ReplayGuard>)
+                .map_err(|e| format!("cannot build the client authenticator: {e}"))?,
+        );
+
+        // DPoP. The nonce secret is per process for now: with more than one
+        // replica each mints its own, so a client that gets a nonce from one
+        // and presents it to another is told to retry. That costs a round trip
+        // rather than correctness, and `ast-a05.11` adds the config key.
+        let dpop = Arc::new(
+            DpopEndpoint::for_capabilities(
+                Arc::clone(&replay) as Arc<dyn ReplayGuard>,
+                &config.features,
+                None,
             )
-            .map_err(|e| format!("cannot build the client authenticator: {e}"))?,
+            .map_err(|e| format!("cannot build the DPoP endpoint: {e}"))?,
         );
 
         let routes = protocol::routes(ProtocolState {
@@ -135,6 +148,7 @@ fn run() -> Result<(), String> {
                 store: store.clone(),
                 capabilities: config.features,
                 par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
+                dpop,
             })),
         })
         .fallback(not_found);

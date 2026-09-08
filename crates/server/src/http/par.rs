@@ -66,6 +66,7 @@ pub async fn push(
     headers: &HeaderMap,
     body: &Bytes,
     authenticate: impl AsyncFnOnce(&Attempt<'_>, &AssertionRules) -> Result<Client, ClientAuthError>,
+    proof_key: Option<&asterius_domain::Kid>,
     now: OffsetDateTime,
 ) -> Response {
     if body.len() > MAX_BODY_BYTES {
@@ -141,6 +142,16 @@ pub async fn push(
         }
     };
 
+    // RFC 9449 §10.1 lets a client pin the authorization code to a DPoP key
+    // either by sending a proof on this request or by naming the thumbprint in
+    // `dpop_jkt`. Both spellings must be supported, and a request that uses
+    // both and disagrees with itself does not name a key at all.
+    let dpop_jkt =
+        match crate::http::dpop::reconcile_par_key(proof_key, request.dpop_jkt.as_deref()) {
+            Ok(jkt) => jkt,
+            Err(refusal) => return refusal.into_response(),
+        };
+
     // The reference. Minted after validation, so a rejected push leaves
     // nothing behind to expire.
     let minted = MintedRequestUri::generate();
@@ -150,7 +161,7 @@ pub async fn push(
         request_uri_digest: minted.digest().to_owned(),
         client: client.id.clone(),
         parameters: serialise(&request),
-        dpop_jkt: request.dpop_jkt.clone(),
+        dpop_jkt,
         pushed_at: now,
         expires_at,
     };

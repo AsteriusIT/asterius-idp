@@ -11,6 +11,7 @@
 //! from a document the specification says must contain it.
 
 use crate::client_auth::ClientAuthenticator;
+use crate::http::dpop::DpopEndpoint;
 use crate::http::par::{self, PushContext};
 use crate::http::token::{self, TokenContext};
 use asterius_domain::{Capabilities, KeyStore, Tenant};
@@ -71,6 +72,14 @@ pub struct ClientEndpoints {
     pub capabilities: Capabilities,
     /// How long a `request_uri` lives, already clamped.
     pub par_lifetime: time::Duration,
+    /// Validates DPoP proofs on every endpoint that takes one.
+    ///
+    /// Always present: the *decision* about whether proofs are required lives
+    /// inside it (`Feature::DpopNonce` for nonces, `dpop_bound_access_tokens`
+    /// on the client for the proof itself), so there is no configuration in
+    /// which this endpoint should skip the check rather than run it and find
+    /// nothing.
+    pub dpop: Arc<DpopEndpoint>,
 }
 
 impl std::fmt::Debug for ClientEndpoints {
@@ -197,6 +206,25 @@ async fn pushed_authorization_request(
     let clients = scope.clients(endpoints.capabilities);
     let requests = scope.auth_requests();
 
+    // RFC 9449 §10.1: a pushed request may carry a proof as well as the
+    // `dpop_jkt` parameter. Checked before the body is looked at, because a
+    // proof that does not verify makes the rest of the request moot.
+    let now = time::OffsetDateTime::now_utc();
+    let binding = match endpoints
+        .dpop
+        .check(
+            &tenant,
+            Endpoint::PushedAuthorizationRequest,
+            &axum::http::Method::POST,
+            &headers,
+            now,
+        )
+        .await
+    {
+        Ok(binding) => binding,
+        Err(refusal) => return refusal.into_response(),
+    };
+
     let authenticator = Arc::clone(&endpoints.authenticator);
     let tenant_for_auth = Arc::clone(&tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
@@ -212,16 +240,11 @@ async fn pushed_authorization_request(
         &body,
         async |attempt: &Attempt<'_>, rules: &AssertionRules| {
             authenticator
-                .authenticate(
-                    &tenant_for_auth,
-                    &clients_for_auth,
-                    attempt,
-                    rules,
-                    time::OffsetDateTime::now_utc(),
-                )
+                .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
                 .await
         },
-        time::OffsetDateTime::now_utc(),
+        binding.as_ref().map(|b| &b.jkt),
+        now,
     )
     .await
 }
@@ -242,11 +265,27 @@ async fn token_endpoint(
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
 
+    let now = time::OffsetDateTime::now_utc();
+    let binding = match endpoints
+        .dpop
+        .check(
+            &tenant,
+            Endpoint::Token,
+            &axum::http::Method::POST,
+            &headers,
+            now,
+        )
+        .await
+    {
+        Ok(binding) => binding,
+        Err(refusal) => return refusal.into_response(),
+    };
+
     let authenticator = Arc::clone(&endpoints.authenticator);
     let tenant_for_auth = Arc::clone(&tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
 
-    token::token(
+    let mut response = token::token(
         TokenContext {
             tenant: &tenant,
             clients: &clients,
@@ -257,17 +296,19 @@ async fn token_endpoint(
         &body,
         async |attempt: &Attempt<'_>, rules: &AssertionRules| {
             authenticator
-                .authenticate(
-                    &tenant_for_auth,
-                    &clients_for_auth,
-                    attempt,
-                    rules,
-                    time::OffsetDateTime::now_utc(),
-                )
+                .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
                 .await
         },
     )
-    .await
+    .await;
+
+    // RFC 9449 §8.2: hand the client the next nonce on a successful response,
+    // so a well-behaved one sees the `use_dpop_nonce` refusal exactly once
+    // rather than on every request.
+    if let Some(binding) = &binding {
+        DpopEndpoint::supply_nonce(&mut response, binding);
+    }
+    response
 }
 
 /// An endpoint that is advertised but not yet built.
