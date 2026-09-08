@@ -949,6 +949,37 @@ mod tests {
         }
     }
 
+    /// RFC 6750 §2.1's `b64token` is ASCII, so a header carrying anything else
+    /// is not a bearer credential at all and is refused like a missing one.
+    ///
+    /// This is worth pinning because `HeaderValue` and `HeaderValue::to_str`
+    /// disagree about what a header may hold: the first accepts obs-text
+    /// (`%x80-FF`), so `Bearer é` is a header a client can genuinely send, and
+    /// the second refuses it. The endpoint therefore sees no credential, which
+    /// is the right answer — but it is `Missing` rather than `Invalid`, and a
+    /// fuzz oracle written against the Rust string got that wrong.
+    #[test]
+    fn a_header_that_is_not_visible_ascii_carries_no_credential() {
+        let policy = gated();
+        for exotic in [
+            format!("Bearer {TOKEN}\u{e9}"),
+            format!("Bearer \u{e9}{TOKEN}"),
+            "Bearer \u{ff}".to_owned(),
+            format!("B\u{e9}arer {TOKEN}"),
+        ] {
+            let Ok(value) = exotic.parse::<axum::http::HeaderValue>() else {
+                continue;
+            };
+            let mut map = HeaderMap::new();
+            map.insert(header::AUTHORIZATION, value);
+            assert_eq!(
+                policy.admit(&map),
+                Err(Denial::Missing),
+                "{exotic:?} was read as a presented credential"
+            );
+        }
+    }
+
     /// RFC 6750 §3: both 401 cases carry `WWW-Authenticate`, and the `error`
     /// attribute appears only when a token was presented and rejected — saying
     /// `invalid_token` to a caller that sent none describes a token that does

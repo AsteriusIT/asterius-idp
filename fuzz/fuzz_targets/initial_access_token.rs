@@ -47,6 +47,14 @@ const CONFIGURED: [&str; 3] = [
     "vJ8qN2mXbL5-tRw0KePzUAxx",
 ];
 
+/// Every description a refusal may carry, gathered so the target can assert
+/// membership rather than absence.
+const DESCRIPTIONS: [&str; 3] = [
+    Denial::Closed.description(),
+    Denial::Missing.description(),
+    Denial::Invalid.description(),
+];
+
 /// How the fuzzer spells the `Authorization` header.
 #[derive(Arbitrary, Debug)]
 enum Credential {
@@ -77,6 +85,12 @@ impl Credential {
 
 fn pick(which: u8) -> &'static str {
     CONFIGURED[usize::from(which) % CONFIGURED.len()]
+}
+
+/// Whether `HeaderValue::to_str` would hand this value back, which is the test
+/// for visible ASCII: every byte in `%x20-7E`.
+fn readable(header: &str) -> bool {
+    header.bytes().all(|b| (0x20..=0x7e).contains(&b))
 }
 
 /// The bytes after the first space, which is what RFC 6750 §2.1 calls the
@@ -166,23 +180,42 @@ fuzz_target!(|input: Input| {
                 "a 401 without WWW-Authenticate"
             );
             assert_eq!(denial.code(), "invalid_token");
-            // The description is fixed text and never the credential.
+
+            // The description is one of three compile-time constants, so it
+            // cannot carry anything out of the request.
+            //
+            // Asserted as membership rather than as "does not contain the
+            // credential", which is what this was first written as. That check
+            // is not a leak detector: a one-character credential is a substring
+            // of any English sentence, and so is a longer run that happens to
+            // spell "l access". The fuzzer found the first case within a minute.
+            // Byte-equality with a constant is the property that actually
+            // matters and the only one with no false positives.
             let description = denial.description();
+            assert!(
+                DESCRIPTIONS.contains(&description),
+                "a refusal produced a description this module did not write: {description:?}"
+            );
             assert!(description.is_ascii() && !description.is_empty());
+
+            // The refusal that a *presented* credential gets must not be the
+            // one that means "you sent nothing", or a client with a revoked
+            // token would be told to send the one it just sent.
+            //
+            // `readable` is not incidental. `HeaderValue` accepts obs-text
+            // (0x80-0xFF), so `Bearer é` is a header a client really can send,
+            // and `HeaderValue::to_str` refuses it because it is not visible
+            // ASCII. RFC 6750 §2.1's `b64token` is ASCII, so such a value is not
+            // a bearer credential at all and the endpoint answers `Missing`
+            // rather than `Invalid` — the same answer `Basic …` gets. The
+            // fuzzer found this by treating a Rust `String` as though the HTTP
+            // layer would hand it back unchanged, which it does not.
             if let Some(header) = &rendered
+                && readable(header)
                 && let Some(credential) = presented(header)
-                && !credential.is_empty()
+                && !CONFIGURED.contains(&credential)
             {
-                assert!(
-                    !description.contains(credential),
-                    "a refusal quoted the credential back"
-                );
-                // The refusal that a *presented* credential gets must not be
-                // the one that means "you sent nothing", or a client with a
-                // revoked token would be told to send the one it just sent.
-                if !CONFIGURED.contains(&credential) {
-                    assert_eq!(denial, Denial::Invalid);
-                }
+                assert_eq!(denial, Denial::Invalid);
             }
         }
     }
