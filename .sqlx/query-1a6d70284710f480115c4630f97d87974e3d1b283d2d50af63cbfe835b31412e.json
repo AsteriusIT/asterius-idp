@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from auth_requests where tenant_id = $1 and interaction_id_hash = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1a6d70284710f480115c4630f97d87974e3d1b283d2d50af63cbfe835b31412e"
+}

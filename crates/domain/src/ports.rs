@@ -3,7 +3,11 @@
 //! Adapters live in `asterius-store-pg`, `asterius-jose` and the server crate.
 //! Protocol crates depend on these traits and never on an implementation.
 
-use crate::{Client, ClientId, Consumed, DomainError, Issuer, PushedRequest, Tenant, TenantId};
+use crate::{
+    Client, ClientId, Consumed, DomainError, InteractionRecord, Issuer, PushedRequest, Tenant,
+    TenantId,
+};
+use serde_json::Value;
 use std::fmt::Debug;
 use time::OffsetDateTime;
 
@@ -168,6 +172,83 @@ pub trait AuthRequestRepository: Debug + Send + Sync {
         digest: &str,
         now: OffsetDateTime,
     ) -> Result<Option<PushedRequest>, DomainError>;
+}
+
+/// The same rows, reached by the browser's credential.
+///
+/// A separate port from [`AuthRequestRepository`] because it has a separate
+/// caller. The client holds the `request_uri` and talks to the PAR and token
+/// endpoints; the browser holds the interaction id and talks to the
+/// interaction pages. Neither credential is derivable from the other, and
+/// neither caller has any business reaching the other's operations — a PAR
+/// handler that could destroy an interaction, or an interaction page that
+/// could consume a `request_uri`, is a confusion waiting to be written.
+///
+/// One adapter implements both, because it is one table. That is a fact about
+/// the storage, not about the callers.
+#[async_trait::async_trait]
+pub trait InteractionRepository: Debug + Send + Sync {
+    /// Gives a pushed request a second identity: the browser's.
+    ///
+    /// Called once, by `/authorize`, when a user agent arrives with a
+    /// `request_uri`. After this the row can be found by either credential —
+    /// the client's `request_uri` or the browser's interaction id — and
+    /// neither is derivable from the other.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the request is gone or already consumed,
+    /// and [`DomainError::Conflict`] if it already has an interaction: a
+    /// second `/authorize` on one `request_uri` is a replay, not a retry, and
+    /// re-keying the row would hand the second browser the first one's flow.
+    async fn begin_interaction(
+        &self,
+        request_uri_digest: &str,
+        interaction_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Finds an interaction by the browser's credential.
+    ///
+    /// Returns `None` for absent, expired and already-consumed alike: the
+    /// difference is a fact for the log, and a browser that could tell them
+    /// apart could probe for live interactions.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn by_interaction(
+        &self,
+        interaction_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<InteractionRecord>, DomainError>;
+
+    /// Records progress through the interaction.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the interaction is gone, expired or
+    /// consumed — progress must not resurrect one.
+    async fn save_interaction_state(
+        &self,
+        interaction_digest: &str,
+        state: &Value,
+        session: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Destroys an interaction and the request behind it.
+    ///
+    /// Used when the id in the path and the id in the cookie disagree. That is
+    /// not a recoverable error: somebody is being deceived and this server
+    /// cannot tell which party, so the flow ends for both rather than
+    /// continuing for whichever one asked last.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the delete fails. Absent is not an error —
+    /// destroying something already gone is the outcome that was wanted.
+    async fn destroy_interaction(&self, interaction_digest: &str) -> Result<(), DomainError>;
 }
 
 /// What a `jti` is being remembered for.

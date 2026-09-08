@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update auth_requests\n                set interaction_id_hash = $3\n              where tenant_id = $1\n                and request_uri_hash = $2\n                and interaction_id_hash is null\n                and consumed_at is null\n                and expires_at > $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3ea0edb3d391540fc9392817f9ba8055d5d123161b60b86fa8244924d2c1f433"
+}

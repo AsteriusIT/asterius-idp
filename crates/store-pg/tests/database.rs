@@ -2986,11 +2986,11 @@ mod auth_requests {
     use asterius_domain::{AuthRequestRepository, ClientId, Consumed, PushedRequest};
     use asterius_store_pg::PgAuthRequestRepository;
 
-    fn digest(seed: &str) -> String {
+    pub(super) fn digest(seed: &str) -> String {
         hex::encode(asterius_domain::sha256(seed.as_bytes()))
     }
 
-    fn request(tenant: &str, seed: &str, expires_at: OffsetDateTime) -> PushedRequest {
+    pub(super) fn request(tenant: &str, seed: &str, expires_at: OffsetDateTime) -> PushedRequest {
         PushedRequest {
             tenant: TenantId::new(tenant),
             request_uri_digest: digest(seed),
@@ -3006,7 +3006,7 @@ mod auth_requests {
     }
 
     /// The FK needs a client to point at.
-    async fn seed_client(pool: &PgPool, tenant: &str) {
+    pub(super) async fn seed_client(pool: &PgPool, tenant: &str) {
         seed_tenant(pool, tenant).await;
         let store = Store::from_pool(pool.clone());
         store
@@ -3251,6 +3251,239 @@ mod auth_requests {
 // ---------------------------------------------------------------------------
 // Grants and the revocation cascade (ast-uwv.2)
 // ---------------------------------------------------------------------------
+
+mod interactions {
+    use super::*;
+    use asterius_domain::{
+        AuthRequestRepository, Consumed, DomainError, InteractionRecord, InteractionRepository,
+    };
+    use asterius_store_pg::PgAuthRequestRepository;
+
+    use super::auth_requests::{digest, request, seed_client};
+
+    fn later() -> OffsetDateTime {
+        OffsetDateTime::now_utc() + time::Duration::minutes(5)
+    }
+
+    db_test! {
+        /// One row, two credentials. The client holds the `request_uri`; the
+        /// browser holds the interaction id; neither can be derived from the
+        /// other, and the row answers to both.
+        async fn a_request_can_be_reached_by_either_credential(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "both", later());
+            repo.push(&pushed).await.expect("push");
+
+            let ix = digest("browser-handle");
+            repo.begin_interaction(&pushed.request_uri_digest, &ix, OffsetDateTime::now_utc())
+                .await
+                .expect("begin");
+
+            let found: InteractionRecord = repo
+                .by_interaction(&ix, OffsetDateTime::now_utc())
+                .await
+                .expect("read")
+                .expect("the interaction must resolve");
+            assert_eq!(found.client.as_str(), "billing");
+            assert_eq!(found.parameters, pushed.parameters);
+
+            // The client's credential still works on the same row.
+            assert!(
+                repo.peek(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("peek")
+                    .is_some()
+            );
+        }
+    }
+
+    db_test! {
+        /// A second `/authorize` on one `request_uri` is a replay, not a retry.
+        ///
+        /// Re-keying the row would hand the second browser the first one's
+        /// flow, and the first would be left holding a cookie for a request
+        /// somebody else now owns.
+        async fn a_request_accepts_only_one_interaction(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "once", later());
+            repo.push(&pushed).await.expect("push");
+
+            let first = digest("first-browser");
+            repo.begin_interaction(&pushed.request_uri_digest, &first, OffsetDateTime::now_utc())
+                .await
+                .expect("first");
+
+            let second = digest("second-browser");
+            let error = repo
+                .begin_interaction(&pushed.request_uri_digest, &second, OffsetDateTime::now_utc())
+                .await
+                .expect_err("a second interaction must be refused");
+            assert!(matches!(error, DomainError::Conflict(_)), "{error:?}");
+
+            // The first browser still owns it, and the second's id resolves
+            // to nothing.
+            assert!(
+                repo.by_interaction(&first, OffsetDateTime::now_utc())
+                    .await
+                    .expect("read")
+                    .is_some()
+            );
+            assert!(
+                repo.by_interaction(&second, OffsetDateTime::now_utc())
+                    .await
+                    .expect("read")
+                    .is_none()
+            );
+        }
+    }
+
+    db_test! {
+        /// Progress is recorded, and cannot resurrect a closed request.
+        async fn state_is_saved_and_an_expired_interaction_refuses_progress(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+
+            let live = request("demo", "live", later());
+            repo.push(&live).await.expect("push");
+            let ix = digest("live-browser");
+            repo.begin_interaction(&live.request_uri_digest, &ix, OffsetDateTime::now_utc())
+                .await
+                .expect("begin");
+
+            let progress = serde_json::json!({"stage": "consent"});
+            repo.save_interaction_state(&ix, &progress, Some("sess-1"), OffsetDateTime::now_utc())
+                .await
+                .expect("save");
+
+            let found = repo
+                .by_interaction(&ix, OffsetDateTime::now_utc())
+                .await
+                .expect("read")
+                .expect("present");
+            assert_eq!(found.state, progress);
+            assert_eq!(found.session.as_deref(), Some("sess-1"));
+
+            // An expired one refuses progress rather than accepting it.
+            let stale = request(
+                "demo",
+                "stale",
+                OffsetDateTime::now_utc() - time::Duration::seconds(1),
+            );
+            repo.push(&stale).await.expect("push");
+            let stale_ix = digest("stale-browser");
+            assert!(
+                repo.begin_interaction(
+                    &stale.request_uri_digest,
+                    &stale_ix,
+                    OffsetDateTime::now_utc()
+                )
+                .await
+                .is_err(),
+                "an expired request accepted an interaction"
+            );
+        }
+    }
+
+    db_test! {
+        /// A browser mismatch destroys the request, not just the interaction.
+        ///
+        /// Leaving the `request_uri` alive would let the client retry into a
+        /// flow whose browser half has been tampered with.
+        async fn destroying_an_interaction_takes_the_request_with_it(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "doomed", later());
+            repo.push(&pushed).await.expect("push");
+            let ix = digest("doomed-browser");
+            repo.begin_interaction(&pushed.request_uri_digest, &ix, OffsetDateTime::now_utc())
+                .await
+                .expect("begin");
+
+            repo.destroy_interaction(&ix).await.expect("destroy");
+
+            assert!(
+                repo.by_interaction(&ix, OffsetDateTime::now_utc())
+                    .await
+                    .expect("read")
+                    .is_none()
+            );
+            assert_eq!(
+                repo.consume(&pushed.request_uri_digest, OffsetDateTime::now_utc())
+                    .await
+                    .expect("consume"),
+                Consumed::NotFound,
+                "the client's half of a destroyed request survived"
+            );
+
+            // Destroying something already gone is success, not an error.
+            repo.destroy_interaction(&ix).await.expect("idempotent");
+        }
+    }
+
+    db_test! {
+        /// An interaction id issued by one tenant is nothing at another.
+        async fn an_interaction_does_not_cross_tenants(db) {
+            seed_client(&db.pool, "demo").await;
+            seed_client(&db.pool, "other").await;
+            let demo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let other = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("other"));
+
+            let pushed = request("demo", "crossing", later());
+            demo.push(&pushed).await.expect("push");
+            let ix = digest("crossing-browser");
+            demo.begin_interaction(&pushed.request_uri_digest, &ix, OffsetDateTime::now_utc())
+                .await
+                .expect("begin");
+
+            assert!(
+                other
+                    .by_interaction(&ix, OffsetDateTime::now_utc())
+                    .await
+                    .expect("read")
+                    .is_none(),
+                "an interaction resolved at the wrong tenant"
+            );
+            // And the wrong tenant cannot destroy it either.
+            other.destroy_interaction(&ix).await.expect("no-op");
+            assert!(
+                demo.by_interaction(&ix, OffsetDateTime::now_utc())
+                    .await
+                    .expect("read")
+                    .is_some(),
+                "another tenant destroyed this one's interaction"
+            );
+        }
+    }
+
+    db_test! {
+        /// The stored id is a digest. A leaked row must not yield a usable
+        /// interaction id, exactly as for the `request_uri`.
+        async fn the_stored_interaction_id_is_a_digest(db) {
+            seed_client(&db.pool, "demo").await;
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let pushed = request("demo", "opaque-ix", later());
+            repo.push(&pushed).await.expect("push");
+            let ix = digest("secret-browser-handle");
+            repo.begin_interaction(&pushed.request_uri_digest, &ix, OffsetDateTime::now_utc())
+                .await
+                .expect("begin");
+
+            let stored: Vec<u8> = sqlx::query_scalar(
+                "select interaction_id_hash from auth_requests where tenant_id = $1",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read back");
+
+            assert_eq!(stored.len(), 32, "not a SHA-256 digest");
+            assert_eq!(hex::encode(&stored), ix);
+            assert!(!hex::encode(&stored).contains("secret-browser-handle"));
+        }
+    }
+}
 
 mod grants {
     use super::*;

@@ -192,6 +192,97 @@ impl Stage {
     }
 }
 
+/// What is stored between one request and the next.
+///
+/// Lives in `auth_requests.interaction_state`, which the store treats as
+/// opaque JSON — the stage machine belongs to this crate, so adding a stage is
+/// not a schema change.
+///
+/// The CSRF token is held as a **digest**. It is issued once per rendered
+/// form and checked once on submission, so the stored form never has to be
+/// readable: a leaked row yields a value that cannot be submitted, for the
+/// same reason the interaction id and the `request_uri` are stored hashed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StoredState {
+    /// Where the interaction has got to.
+    pub stage: Stage,
+    /// SHA-256 of the token issued with the last rendered form, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub csrf_digest: Option<String>,
+}
+
+impl Default for StoredState {
+    fn default() -> Self {
+        Self {
+            stage: Stage::Login,
+            csrf_digest: None,
+        }
+    }
+}
+
+impl StoredState {
+    /// Reads the state out of what the store returned.
+    ///
+    /// An unreadable state is [`Stage::Login`] rather than an error: the row
+    /// exists, the user is mid-flow, and starting them again at the beginning
+    /// is the only outcome that is both safe and useful. It cannot skip a
+    /// stage, because `Login` is the first one.
+    ///
+    /// `deny_unknown_fields` means a state written by a *newer* binary fails
+    /// to parse here, which is the direction to fail in during a rolling
+    /// deployment: an old replica restarts the login rather than acting on a
+    /// field it does not understand.
+    #[must_use]
+    pub fn from_stored(value: &serde_json::Value) -> Self {
+        serde_json::from_value(value.clone()).unwrap_or_default()
+    }
+
+    /// Issues a token for a form about to be rendered, and records its digest.
+    ///
+    /// Returns the token to render; the digest is what is stored.
+    pub fn issue_csrf(&mut self) -> CsrfToken {
+        let token = CsrfToken::generate();
+        self.csrf_digest = Some(sha256_hex(token.expose().as_bytes()));
+        token
+    }
+
+    /// Checks a submitted token against the issued one.
+    ///
+    /// # Errors
+    ///
+    /// [`InteractionError::CsrfFailed`] when there is no issued token, none
+    /// was submitted, or they differ. One error for all three: a form that was
+    /// not the one this server rendered is refused, and which way it failed is
+    /// not the submitter's business.
+    pub fn check_csrf(&self, presented: Option<&str>) -> Result<(), InteractionError> {
+        let issued = self
+            .csrf_digest
+            .as_deref()
+            .ok_or(InteractionError::CsrfFailed)?;
+        let presented = presented.ok_or(InteractionError::CsrfFailed)?;
+        // Both sides are digests of the same width, so the comparison is over
+        // equal-length values and `ct_eq` is meaningful.
+        if ct_eq(
+            issued.as_bytes(),
+            sha256_hex(presented.as_bytes()).as_bytes(),
+        ) {
+            Ok(())
+        } else {
+            Err(InteractionError::CsrfFailed)
+        }
+    }
+
+    /// Spends the issued token.
+    ///
+    /// A synchroniser token is good for one submission. Leaving it valid would
+    /// make a captured form body replayable for the life of the interaction —
+    /// which for a consent form means a decision that can be submitted twice.
+    pub fn spend_csrf(&mut self) {
+        self.csrf_digest = None;
+    }
+}
+
 /// Why an interaction could not continue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -608,6 +699,107 @@ mod tests {
         let token = CsrfToken::generate();
         let rendered = format!("{token:?}");
         assert!(!rendered.contains(token.expose()), "{rendered}");
+    }
+
+    // ---- the stored state ------------------------------------------------
+
+    #[test]
+    fn a_csrf_token_is_stored_as_a_digest_and_still_verifies() {
+        let mut state = StoredState::default();
+        let token = state.issue_csrf();
+
+        let digest = state.csrf_digest.clone().expect("issued");
+        assert_eq!(digest.len(), 64, "not a hex SHA-256");
+        assert!(
+            !digest.contains(token.expose()),
+            "the token itself reached the stored state"
+        );
+
+        state.check_csrf(Some(token.expose())).expect("must verify");
+    }
+
+    #[test]
+    fn a_state_with_no_issued_token_refuses_every_submission() {
+        let state = StoredState::default();
+        assert_eq!(state.csrf_digest, None);
+        for presented in [None, Some(""), Some("anything")] {
+            assert_eq!(
+                state.check_csrf(presented),
+                Err(InteractionError::CsrfFailed)
+            );
+        }
+    }
+
+    /// One submission per token. Otherwise a captured form body is replayable
+    /// for the life of the interaction — and for a consent form that is a
+    /// decision that can be submitted twice.
+    #[test]
+    fn a_token_is_good_for_one_submission() {
+        let mut state = StoredState::default();
+        let token = state.issue_csrf();
+        state.check_csrf(Some(token.expose())).expect("first");
+
+        state.spend_csrf();
+        assert_eq!(
+            state.check_csrf(Some(token.expose())),
+            Err(InteractionError::CsrfFailed),
+            "a spent token was accepted again"
+        );
+    }
+
+    #[test]
+    fn a_token_from_a_different_rendering_does_not_verify() {
+        let mut first = StoredState::default();
+        let issued = first.issue_csrf();
+        let mut second = StoredState::default();
+        let other = second.issue_csrf();
+
+        assert_eq!(
+            first.check_csrf(Some(other.expose())),
+            Err(InteractionError::CsrfFailed)
+        );
+        assert_eq!(
+            second.check_csrf(Some(issued.expose())),
+            Err(InteractionError::CsrfFailed)
+        );
+    }
+
+    #[test]
+    fn state_survives_the_round_trip_through_json() {
+        let mut state = StoredState {
+            stage: Stage::Consent,
+            csrf_digest: None,
+        };
+        let token = state.issue_csrf();
+        let stored = serde_json::to_value(&state).expect("serialise");
+        let read = StoredState::from_stored(&stored);
+
+        assert_eq!(read.stage, Stage::Consent);
+        read.check_csrf(Some(token.expose()))
+            .expect("the token must still verify after a round trip");
+    }
+
+    /// An unreadable state restarts the login rather than failing.
+    ///
+    /// It cannot skip a stage, because `Login` is the first one — which is
+    /// what makes the lenient reading safe.
+    #[test]
+    fn an_unreadable_state_falls_back_to_the_first_stage() {
+        for hostile in [
+            serde_json::json!(null),
+            serde_json::json!("nonsense"),
+            serde_json::json!({}),
+            serde_json::json!({"stage": "no_such_stage"}),
+            serde_json::json!({"stage": 42}),
+            // Written by a newer binary: an unknown field fails to parse, and
+            // failing towards `Login` is the right direction during a rolling
+            // deployment.
+            serde_json::json!({"stage": "consent", "something_new": true}),
+        ] {
+            let read = StoredState::from_stored(&hostile);
+            assert_eq!(read.stage, Stage::Login, "for {hostile}");
+            assert_eq!(read.csrf_digest, None);
+        }
     }
 
     // ---- the state machine ----------------------------------------------

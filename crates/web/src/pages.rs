@@ -109,6 +109,23 @@ pub struct ErrorPage<'a> {
     pub nonce_attribute: String,
 }
 
+/// Renders a page, or an empty document if it somehow cannot.
+///
+/// A template that fails to render is a bug, not a runtime condition: every
+/// value in these types is already a `String`, so there is nothing left to
+/// fail on. Returning an empty body beats panicking on a request path, and the
+/// caller's status still reaches the browser.
+///
+/// It lives here rather than in the server so that askama stays an
+/// implementation detail of this crate — a handler should not have to name the
+/// templating engine to render a page.
+pub fn render<T: Template>(page: &T) -> String {
+    page.render().unwrap_or_else(|error| {
+        tracing::error!(%error, "a template failed to render");
+        String::new()
+    })
+}
+
 /// Builds the `nonce="…"` attribute for a template.
 ///
 /// A free function rather than a method so that the one `|safe` in the

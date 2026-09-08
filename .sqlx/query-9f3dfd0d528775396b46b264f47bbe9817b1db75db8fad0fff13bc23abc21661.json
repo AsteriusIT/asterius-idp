@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select interaction_id_hash from auth_requests\n              where tenant_id = $1 and request_uri_hash = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "interaction_id_hash",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "9f3dfd0d528775396b46b264f47bbe9817b1db75db8fad0fff13bc23abc21661"
+}

@@ -50,3 +50,29 @@ pub enum Consumed {
     /// Found, but past its expiry.
     Expired,
 }
+
+/// An authorization request as the *browser* sees it, mid-interaction.
+///
+/// The same row as [`PushedRequest`], reached by the other credential. What is
+/// different is what the caller needs: a browser driving login and consent
+/// cares about progress and the client's identity, not about the reference the
+/// client is holding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InteractionRecord {
+    /// Which tenant. A resumed interaction cannot cross one.
+    pub tenant: TenantId,
+    /// The client the user is being asked to authorise.
+    pub client: ClientId,
+    /// The validated authorization parameters.
+    pub parameters: Value,
+    /// Login and consent progress, owned and shaped by `asterius-web`.
+    ///
+    /// Opaque here on purpose: the stage machine belongs to the crate that
+    /// renders the pages, and a store that understood it would have to be
+    /// changed every time a stage was added.
+    pub state: Value,
+    /// The session that authenticated the user, once one has.
+    pub session: Option<String>,
+    /// When the interaction stops being usable.
+    pub expires_at: OffsetDateTime,
+}

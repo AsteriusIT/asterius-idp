@@ -184,6 +184,15 @@ mod tests {
 
         let mut offenders = Vec::new();
         for (path, number, line) in code_outside(EXEMPT) {
+            // The rule is about the shipped binary: a *handler* that drew its
+            // own nonce would put one in the header and a different one in the
+            // page. An integration test constructing a context is not a code
+            // path a browser reaches, and it has no middleware to draw from —
+            // `Nonce::fixed_for_test` is `#[cfg(test)]` inside `web`, so it is
+            // not visible from another crate's `tests/`.
+            if path.contains("/tests/") {
+                continue;
+            }
             if line.contains("Nonce::generate") {
                 offenders.push(format!("{path}:{number}"));
             }
@@ -340,6 +349,30 @@ mod tests {
 
         // An unterminated comment does not panic and does not leak its tail.
         assert!(!without_comments("{# unterminated <script>").contains("<script"));
+    }
+
+    /// The `tests/` exemption is narrow: production sources are still scanned.
+    ///
+    /// Without this, widening the path filter by accident — to `/test`, say,
+    /// which matches nothing today but would match a future `src/testing.rs` —
+    /// would turn the rule off without any test noticing.
+    #[test]
+    fn the_nonce_rule_still_covers_production_sources() {
+        let scanned: Vec<String> = code_outside(&["web/src/csp.rs"])
+            .into_iter()
+            .map(|(path, _, _)| path)
+            .filter(|path| !path.contains("/tests/"))
+            .collect();
+        assert!(
+            scanned
+                .iter()
+                .any(|p| p.ends_with("server/src/http/interaction.rs")),
+            "the handler that renders pages is not being scanned"
+        );
+        assert!(
+            scanned.iter().any(|p| p.ends_with("web/src/pages.rs")),
+            "the page types are not being scanned"
+        );
     }
 
     /// An absence check that cannot fail passes for the wrong reason, so prove

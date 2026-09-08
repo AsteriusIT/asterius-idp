@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update auth_requests\n                set interaction_state = $3, session_id = coalesce($4, session_id)\n              where tenant_id = $1\n                and interaction_id_hash = $2\n                and consumed_at is null\n                and expires_at > $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Jsonb",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2cf66f2a15d934975b9c3e4a8e9426d8d4cc213b0b27a0c9eb8f7e4e25837684"
+}

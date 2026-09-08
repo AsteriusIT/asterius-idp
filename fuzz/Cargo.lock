@@ -226,6 +226,7 @@ dependencies = [
  "asterius-oidc",
  "axum",
  "serde",
+ "serde_json",
  "thiserror",
  "time",
  "tracing",
