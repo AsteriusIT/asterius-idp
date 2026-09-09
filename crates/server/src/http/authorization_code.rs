@@ -40,7 +40,7 @@ use asterius_oidc::tokens::JwtId;
 use asterius_oidc::tokens::access::{AccessToken, Audience, Authentication, Confirmation};
 use asterius_oidc::tokens::id_token::IdToken;
 use asterius_oidc::{code, pkce};
-use asterius_store_pg::{PgCodeRepository, PgGrantRepository, Redemption};
+use asterius_store_pg::{PgCodeRepository, PgGrantRepository, PgUserRepository, Redemption};
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
@@ -72,6 +72,9 @@ pub struct AuthorizationCode<'a> {
     pub grants: &'a PgGrantRepository,
     /// Sessions for this tenant, for `auth_time`, `acr` and `amr`.
     pub sessions: &'a dyn SessionRepository,
+    /// Users for this tenant, read only to resolve the claims the grant
+    /// covers (OIDC Core §5.4, §5.5). Nothing here writes a user.
+    pub users: &'a PgUserRepository,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// The thumbprint of the DPoP proof presented with this request.
@@ -106,6 +109,26 @@ struct SessionFacts {
     authentication: Authentication,
     /// The session's public identifier, never its lookup digest.
     sid: String,
+}
+
+/// What one redemption contributes to its ID token.
+///
+/// A struct rather than five more parameters, because four of the five are
+/// values this redemption computed a moment earlier and the fifth — `released`
+/// — is the one a reader has to be able to see is *the grant's*. A signature
+/// long enough that its arguments are matched by position is a signature in
+/// which the request's claims could be passed instead.
+struct IdTokenParts<'a> {
+    /// The authority the tokens are minted from.
+    claimed: &'a asterius_domain::ClaimedGrant,
+    /// `auth_time`, `acr`, `amr` and `sid`.
+    session: &'a SessionFacts,
+    /// The signed access token, for OIDC Core §3.1.3.6's `at_hash`.
+    access_token: &'a str,
+    /// `nonce`, echoed byte-exact when the authorization request carried one.
+    nonce: Option<&'a str>,
+    /// The claims the grant covers, from `claims::resolve_for_grant`.
+    released: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Why a redemption stopped.
@@ -280,17 +303,15 @@ impl AuthorizationCode<'_> {
         // the grant is an OpenID Connect one. `openid` is on the grant rather
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
-            Some(
-                self.sign_id_token(
-                    tenant,
-                    client,
-                    &claimed,
-                    &session,
-                    access_token.as_str(),
-                    binding.nonce.as_deref(),
-                )
-                .await?,
-            )
+            let parts = IdTokenParts {
+                claimed: &claimed,
+                session: &session,
+                access_token: access_token.as_str(),
+                nonce: binding.nonce.as_deref(),
+                // From the grant, never from the request. See `released_claims`.
+                released: self.released_claims(&grant).await?,
+            };
+            Some(self.sign_id_token(tenant, client, parts).await?)
         } else {
             None
         };
@@ -408,6 +429,43 @@ impl AuthorizationCode<'_> {
         })
     }
 
+    /// The claims this grant releases into its ID token.
+    ///
+    /// Read from the grant and from the user row, and from nothing else. The
+    /// authorization request is not consulted: it says what a client asked
+    /// for, and an hour and a consent screen separate that from what this
+    /// token may carry.
+    ///
+    /// A grant with no user, or whose user is gone, is a server-side
+    /// inconsistency and is reported as one — the same treatment
+    /// [`Self::authentication`] gives a vanished session. Releasing nothing
+    /// instead would mint an authentication assertion about somebody this
+    /// server can no longer describe.
+    async fn released_claims(
+        &self,
+        grant: &Grant,
+    ) -> Result<serde_json::Map<String, serde_json::Value>, Failure> {
+        let id = grant.user.ok_or_else(|| {
+            Failure::Server(DomainError::invalid(
+                "grant",
+                "an authorization_code grant names no user",
+            ))
+        })?;
+        let user = self.users.find(id).await?.ok_or_else(|| {
+            Failure::Server(DomainError::invalid(
+                "user",
+                "the user this grant was made for no longer exists",
+            ))
+        })?;
+        let resolved = asterius_oidc::claims::resolve_for_grant(&user, grant).map_err(|error| {
+            // The request was validated at PAR and re-serialised canonically
+            // onto the grant, so a stored one that no longer parses is a
+            // damaged row rather than a bad request.
+            Failure::Server(DomainError::invalid("claims", error.to_string()))
+        })?;
+        Ok(resolved.id_token)
+    }
+
     /// Builds and signs the ID token.
     ///
     /// The access token is signed first and handed in whole, because OIDC Core
@@ -425,11 +483,15 @@ impl AuthorizationCode<'_> {
         &self,
         tenant: &Tenant,
         client: &Client,
-        claimed: &asterius_domain::ClaimedGrant,
-        session: &SessionFacts,
-        access_token: &str,
-        nonce: Option<&str>,
+        parts: IdTokenParts<'_>,
     ) -> Result<String, Failure> {
+        let IdTokenParts {
+            claimed,
+            session,
+            access_token,
+            nonce,
+            released,
+        } = parts;
         let mut builder = IdToken::new(
             &tenant.issuer,
             claimed,
@@ -449,6 +511,10 @@ impl AuthorizationCode<'_> {
             ))
             .map_err(|e| Failure::Server(DomainError::invalid("sid", e.to_string())))?,
         );
+        // `releasing` takes a plain map, so `IdToken::build` re-checks it
+        // against `ClaimName::SERVER_ISSUED` rather than trusting that it came
+        // from `claims::resolve`.
+        builder = builder.releasing(released);
         let unsigned = builder
             .build()
             .map_err(|e| Failure::Server(DomainError::invalid("id_token", e.to_string())))?;

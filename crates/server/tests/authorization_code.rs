@@ -204,7 +204,24 @@ impl Fixture {
             email: None,
             email_verified: false,
             status: UserStatus::Active,
-            claims: asterius_domain::entities::user::ClaimSet::default(),
+            // Two claims, so a test can show that a narrowed request releases
+            // one of them and not the other. Neither reaches an ID token from
+            // a scope: OIDC Core §5.4 sends scope-derived claims to UserInfo,
+            // and only the §5.5 `claims` parameter names the ID token.
+            claims: {
+                let mut set = asterius_domain::entities::user::ClaimSet::default();
+                for (name, value) in [("given_name", "Ada"), ("name", "Ada Lovelace")] {
+                    set.insert(
+                        asterius_domain::ClaimName::parse(name).expect("a fixture claim name"),
+                        asterius_domain::entities::user::Claim::new(
+                            json!(value),
+                            asterius_domain::entities::user::ClaimSource::Local,
+                        )
+                        .expect("a fixture claim"),
+                    );
+                }
+                set
+            },
             created_at: self.now,
             updated_at: self.now,
         })
@@ -229,6 +246,18 @@ impl Fixture {
 
     /// A grant naming an existing session.
     async fn grant_in(&self, scopes: &[&str], session: &Session, user: UserId) -> Grant {
+        self.grant_covering(scopes, json!({}), session, user).await
+    }
+
+    /// The same, with the OIDC Core §5.5 claims request the grant covers —
+    /// what the user consented to, which is the only copy issuance may read.
+    async fn grant_covering(
+        &self,
+        scopes: &[&str],
+        claims: Value,
+        session: &Session,
+        user: UserId,
+    ) -> Grant {
         let grant = Grant {
             tenant: self.tenant.id.clone(),
             id: GrantId::new(uuid::Uuid::new_v4().to_string()),
@@ -236,7 +265,8 @@ impl Fixture {
             user: Some(user),
             subject: Some(SubjectId::new("alice-pairwise")),
             scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
-            claims: json!({}),
+            claims,
+            claims_locales: Vec::new(),
             authorization_details: Vec::new(),
             resources: std::collections::BTreeSet::new(),
             actor_chain: Vec::new(),
@@ -284,10 +314,16 @@ impl Fixture {
         let codes = self.codes();
         let grants = self.grants();
         let sessions = self.sessions();
+        let users = PgUserRepository::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+            Arc::clone(&self.kek),
+        );
         let handler = AuthorizationCode {
             codes: &codes,
             grants: &grants,
             sessions: &sessions,
+            users: &users,
             signer: self.signer.as_ref(),
             proof_key,
             now: self.now,
@@ -448,6 +484,61 @@ db_test! {
             sid, session_digest,
             "the ID token published the session lookup digest as its sid"
         );
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// **A claims request narrowed at consent does not widen at issuance**
+    /// (`ast-1sk.6`).
+    ///
+    /// The client pushed a request naming `name` and `given_name` for the ID
+    /// token; the grant records only `given_name`. `claims::resolve_for_grant`
+    /// reads the grant and has no way to reach the request, so `name` — which
+    /// this user does hold, and which the wider request did ask for — is not
+    /// in the token. The `profile` scope is granted too, and releases neither:
+    /// OIDC Core §5.4 sends scope-derived claims to UserInfo, so a scope alone
+    /// never puts a claim in front of the browser.
+    async fn a_claims_request_narrowed_at_consent_does_not_widen_at_issuance(fixture) {
+        let client = fixture.client().await;
+        let pkce = Pkce::generate();
+        let (session, user) = fixture.session().await;
+        let grant = fixture
+            .grant_covering(
+                &["openid", "profile"],
+                json!({"id_token": {"given_name": {}}, "userinfo": {}}),
+                &session,
+                user,
+            )
+            .await;
+        let jkt = thumbprint(1);
+        let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
+
+        let (status, body) = fixture
+            .redeem(
+                &client,
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("redirect_uri", REDIRECT),
+                    ("code_verifier", pkce.verifier),
+                ],
+                Some(&jkt),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id_token = fixture.verify(body["id_token"].as_str().expect("id_token")).await;
+        assert_eq!(id_token["given_name"], "Ada");
+        assert_eq!(
+            id_token.get("name"),
+            None,
+            "issuance released a claim the grant does not cover"
+        );
+        // The `sub` is the grant's, not anything the claims request could have
+        // reached: `ReleasableClaim` has no variant for it.
+        assert_eq!(id_token["sub"], "alice-pairwise");
 
         fixture.tear_down().await;
     }

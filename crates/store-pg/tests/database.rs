@@ -3787,6 +3787,9 @@ mod grants {
             .collect();
         grant.resources = ["https://api.example/".to_owned()].into_iter().collect();
         grant.claims = json!({"id_token": {"acr": {"essential": true}}});
+        // OIDC Core §5.2, ordered by preference — an array and not a set, so a
+        // round trip that reordered it would be caught.
+        grant.claims_locales = vec!["ja-Kana-JP".to_owned(), "en".to_owned()];
         grant.authorization_details = vec![json!({"type": "payment_initiation"})];
         grant.session = Some(SessionId::new("sess-1"));
         grant

@@ -388,10 +388,15 @@ async fn token_endpoint(
     let codes = scope.codes();
     let grants = scope.grants();
     let sessions = scope.sessions();
+    // Read only, to project the claims the grant covers into the ID token
+    // (OIDC Core §5.4, §5.5). The KEK is the same one every other user read
+    // takes, because the claim bag is encrypted at rest.
+    let users = scope.users(Arc::clone(&endpoints.kek));
     let authorization_code = AuthorizationCode {
         codes: &codes,
         grants: &grants,
         sessions: &sessions,
+        users: &users,
         signer: endpoints.signer.as_ref(),
         proof_key: binding.as_ref().map(|binding| &binding.jkt),
         now,

@@ -276,6 +276,14 @@ pub enum GrantError {
     /// The `claims` column does not hold a JSON object (OIDC Core §5.5).
     #[error("claims must be a JSON object")]
     ClaimsShape,
+    /// A `claims_locales` entry is not shaped like a language tag, or there
+    /// are too many of them (OIDC Core §5.2, RFC 5646 §2.1).
+    #[error(
+        "a grant holds at most {} language tags of at most {} bytes",
+        Grant::MAX_CLAIMS_LOCALES,
+        Grant::MAX_LOCALE_LEN
+    )]
+    ClaimsLocale,
     /// The `authorization_details` column does not hold a JSON array
     /// (RFC 9396 §2).
     #[error("authorization_details must be a JSON array")]
@@ -317,7 +325,25 @@ pub struct Grant {
     pub scopes: BTreeSet<String>,
     /// The OIDC Core §5.5 `claims` request this authorization covers, as a JSON
     /// object.
+    ///
+    /// The *parsed* request, canonically serialised — see
+    /// `asterius_oidc::claims::ClaimsRequest::to_json`. Not the document the
+    /// client pushed: a grant records the decision, and a member this server
+    /// declined to understand was no part of it.
     pub claims: serde_json::Value,
+    /// The OIDC Core §5.2 `claims_locales` preference, most preferred first.
+    ///
+    /// A column of its own rather than a member of `claims`, because it is not
+    /// part of the §5.5 request object and a reader that parsed `claims` as one
+    /// would have to know to skip it. Order is meaning here — "ordered by
+    /// preference" is the whole of the parameter — so it is a `Vec` and not a
+    /// set.
+    ///
+    /// It lives on the grant because it belongs to the authorization it was
+    /// expressed in. A token request arriving later carries no such parameter,
+    /// so reading it anywhere else would mean answering a refresh in whatever
+    /// language the last caller happened to imply.
+    pub claims_locales: Vec<String>,
     /// The RFC 9396 §2 `authorization_details`, as a JSON array. Their
     /// per-type schemas belong to the RAR story; what is enforced here is that
     /// the column holds the shape the specification names.
@@ -384,6 +410,19 @@ impl Grant {
     pub const MAX_SCOPE_LEN: usize = 128;
     /// The most resource indicators one grant may be bound to.
     pub const MAX_RESOURCES: usize = 32;
+    /// The most `claims_locales` tags one grant may carry.
+    ///
+    /// The same bound `asterius_oidc::claims::ClaimsLocales::MAX` applies at
+    /// the authorization endpoint, restated here because a row is not written
+    /// only by that path. Each tag costs a pass over the claim set for every
+    /// claim resolved, on every issuance for the life of the grant.
+    pub const MAX_CLAIMS_LOCALES: usize = 8;
+    /// The longest single language tag a grant may carry.
+    ///
+    /// RFC 5646 §2.1 allows a primary subtag of 8 characters and a chain of
+    /// subtags of 8; 35 covers every tag in the IANA registry with room to
+    /// spare and refuses free text wearing a tag's shape.
+    pub const MAX_LOCALE_LEN: usize = 35;
     /// The longest a `jti` handed to [`LiveAccessToken::new`] may be.
     ///
     /// It becomes half of a primary key in `access_token_denylist`; RFC 9068
@@ -412,6 +451,7 @@ impl Grant {
             subject: None,
             scopes: BTreeSet::new(),
             claims: serde_json::Value::Object(serde_json::Map::new()),
+            claims_locales: Vec::new(),
             authorization_details: Vec::new(),
             resources: BTreeSet::new(),
             actor_chain: Vec::new(),
@@ -608,6 +648,8 @@ pub struct GrantRecord {
     pub scopes: Vec<String>,
     /// `claims`.
     pub claims: serde_json::Value,
+    /// `claims_locales`.
+    pub claims_locales: Vec<String>,
     /// `authorization_details`.
     pub authorization_details: serde_json::Value,
     /// `resources`.
@@ -664,6 +706,7 @@ impl GrantRecord {
         if !self.claims.is_object() {
             return Err(GrantError::ClaimsShape);
         }
+        validate_claims_locales(&self.claims_locales)?;
         let serde_json::Value::Array(authorization_details) = self.authorization_details else {
             return Err(GrantError::AuthorizationDetailsShape);
         };
@@ -679,6 +722,7 @@ impl GrantRecord {
             subject: self.subject.map(SubjectId::new),
             scopes,
             claims: self.claims,
+            claims_locales: self.claims_locales,
             authorization_details,
             resources,
             actor_chain,
@@ -759,6 +803,40 @@ fn validate_resources(resources: &[String]) -> Result<BTreeSet<String>, GrantErr
     Ok(validated)
 }
 
+/// OIDC Core §5.2 carries BCP 47 language tags, whose basic shape RFC 5646
+/// §2.1 gives: alphanumeric subtags joined with `-`, the first alphabetic.
+///
+/// A shape check and not a registry lookup. What has to be true is that the
+/// value cannot be arbitrary text — it is read back at every issuance and used
+/// to select between the stored spellings of a claim — not that somebody
+/// speaks it.
+///
+/// Refused rather than dropped, unlike at the authorization endpoint. The two
+/// are different questions: a client that misspells a tag should get the
+/// fallback instead of an error page, but a *row* holding a tag this server
+/// would never have written is a row nothing should mint a token from.
+fn validate_claims_locales(locales: &[String]) -> Result<(), GrantError> {
+    if locales.len() > Grant::MAX_CLAIMS_LOCALES {
+        return Err(GrantError::ClaimsLocale);
+    }
+    for tag in locales {
+        if tag.len() > Grant::MAX_LOCALE_LEN {
+            return Err(GrantError::ClaimsLocale);
+        }
+        let mut subtags = tag.split('-');
+        let primary = subtags.next().unwrap_or_default();
+        if !(1..=8).contains(&primary.len()) || !primary.bytes().all(|b| b.is_ascii_alphabetic()) {
+            return Err(GrantError::ClaimsLocale);
+        }
+        if !subtags.all(|subtag| {
+            (1..=8).contains(&subtag.len()) && subtag.bytes().all(|b| b.is_ascii_alphanumeric())
+        }) {
+            return Err(GrantError::ClaimsLocale);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -782,6 +860,7 @@ mod tests {
             subject: Some("sub-1".to_owned()),
             scopes: vec!["openid".to_owned(), "payments".to_owned()],
             claims: json!({}),
+            claims_locales: vec!["fr-CA".to_owned(), "fr".to_owned()],
             authorization_details: json!([]),
             resources: vec!["https://api.example/".to_owned()],
             actor_chain: json!([]),
@@ -1143,6 +1222,42 @@ mod tests {
             break_it(&mut record);
             assert_eq!(record.validate(&TenantId::new("demo")), Err(expected));
         }
+    }
+
+    /// A stored language tag is read back at every issuance and used to pick
+    /// between the stored spellings of a claim, so a row holding free text
+    /// where a tag belongs is refused rather than carried.
+    #[test]
+    fn a_claims_locale_that_is_not_a_language_tag_does_not_load() {
+        for bad in [
+            "fr_CA",
+            "-fr",
+            "fr-",
+            "1234",
+            "français",
+            "abcdefghi",
+            "fr-abcdefghi",
+        ] {
+            let mut record = a_record();
+            record.claims_locales = vec![bad.to_owned()];
+            assert_eq!(
+                record.validate(&TenantId::new("demo")),
+                Err(GrantError::ClaimsLocale),
+                "accepted the language tag {bad:?}"
+            );
+        }
+    }
+
+    /// The order is the meaning of the parameter (OIDC Core §5.2), so it is
+    /// preserved exactly and not sorted or deduplicated on the way in.
+    #[test]
+    fn claims_locales_load_in_the_order_they_were_stored() {
+        let mut record = a_record();
+        record.claims_locales = vec!["ja-Kana-JP".to_owned(), "en-GB".to_owned(), "en".to_owned()];
+
+        let grant = record.validate(&TenantId::new("demo")).expect("a grant");
+
+        assert_eq!(grant.claims_locales, ["ja-Kana-JP", "en-GB", "en"]);
     }
 
     #[test]

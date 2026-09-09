@@ -69,7 +69,7 @@
 //! So a claim reaches the ID token only when a client named it and named the
 //! ID token, never as a side effect of a scope.
 
-use asterius_domain::{Claim, ClaimName, ClaimSet, User};
+use asterius_domain::{Claim, ClaimName, ClaimSet, Grant, User};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -303,6 +303,29 @@ impl ClaimsLocales {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Rebuilds the preference list from stored tags.
+    ///
+    /// The same filter and the same bound as [`ClaimsLocales::parse`], because
+    /// a row is not more trustworthy than a form field: the grant was written
+    /// by an earlier version of this server, or by a migration, or by an
+    /// operator, and a tag that is not shaped like one must not become a map
+    /// key at issuance merely because it survived a round trip through the
+    /// database.
+    #[must_use]
+    pub fn from_tags<I, S>(tags: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self(
+            tags.into_iter()
+                .filter(|tag| is_language_tag(tag.as_ref()))
+                .take(Self::MAX)
+                .map(|tag| tag.as_ref().to_owned())
+                .collect(),
+        )
+    }
 }
 
 /// BCP 47's basic shape: `[A-Za-z]{1,8}` followed by alphanumeric subtags
@@ -413,6 +436,28 @@ impl ClaimRequest {
     #[must_use]
     pub fn accepted_values(&self) -> &[Value] {
         &self.values
+    }
+
+    /// This entry as the JSON object a grant stores (OIDC Core §5.5.1).
+    ///
+    /// `essential: false` and an empty `values` are written as absence rather
+    /// than as members, because §5.5.1 makes both the default and `null` "the
+    /// Claim is being requested with default behaviour". Two spellings of the
+    /// same request would make a stored grant compare unequal to itself.
+    ///
+    /// `values` is always the plural form: §5.5.1 defines `value` as the
+    /// singular of it, [`ClaimsRequest::parse`] folds one into the other, and
+    /// writing back whichever the client happened to send would mean a grant
+    /// whose shape depends on the request rather than on the decision.
+    fn to_json(&self) -> Value {
+        let mut members = Map::new();
+        if self.essential {
+            members.insert("essential".to_owned(), Value::Bool(true));
+        }
+        if !self.values.is_empty() {
+            members.insert("values".to_owned(), Value::Array(self.values.clone()));
+        }
+        Value::Object(members)
     }
 }
 
@@ -538,6 +583,64 @@ impl ClaimsRequest {
     pub fn is_empty(&self) -> bool {
         self.id_token.is_empty() && self.userinfo.is_empty() && self.acr.is_none()
     }
+
+    /// The canonical form of this request, as the JSON object a grant stores.
+    ///
+    /// **The parsed request is what is written down, not the document the
+    /// client sent.** A grant records what the user agreed to, and the client's
+    /// document is not that: it may carry members this server ignores, a
+    /// `sub` it will never release, whitespace and key ordering nobody agreed
+    /// to, and a size only [`ClaimsRequest::MAX_LEN`] bounds. What comes out of
+    /// here is exactly the request [`ClaimsRequest::parse`] accepted — the
+    /// releasable claims, their `essential` flag, their accepted values — and
+    /// nothing else, so a grant cannot hold a member that was dropped at
+    /// validation and might be picked up by a later reader.
+    ///
+    /// It round-trips: `from_json(&r.to_json()) == r` for every accepted `r`,
+    /// which is the property the `claims_request` fuzz target asserts over
+    /// arbitrary input.
+    ///
+    /// `acr` is re-emitted under `id_token`, the section OIDC Core §5.5.1.1's
+    /// examples use and the one [`ClaimsRequest::parse`] reads first. Emitting
+    /// it nowhere would lose an §5.5.1.1 request on the way to the grant, which
+    /// is the one member the ACR story will need to find there.
+    #[must_use]
+    pub fn to_json(&self) -> Value {
+        let mut id_token = section_json(&self.id_token);
+        if let Some(acr) = &self.acr {
+            id_token.insert("acr".to_owned(), acr.to_json());
+        }
+        let mut root = Map::new();
+        root.insert("id_token".to_owned(), Value::Object(id_token));
+        root.insert(
+            "userinfo".to_owned(),
+            Value::Object(section_json(&self.userinfo)),
+        );
+        Value::Object(root)
+    }
+
+    /// Reads back a request stored by [`ClaimsRequest::to_json`].
+    ///
+    /// The same parser, over the same bounds. A stored value is re-checked
+    /// rather than trusted: the column is `jsonb` and this server is not the
+    /// only thing that can have written it, so "it came from our own
+    /// serialiser" is an assumption and not a guarantee.
+    ///
+    /// # Errors
+    ///
+    /// A [`ClaimsRequestError`] when the stored value is not a request this
+    /// server would have accepted in the first place.
+    pub fn from_json(value: &Value) -> Result<Self, ClaimsRequestError> {
+        Self::parse(&value.to_string())
+    }
+}
+
+/// One section of [`ClaimsRequest::to_json`].
+fn section_json(claims: &BTreeMap<ReleasableClaim, ClaimRequest>) -> Map<String, Value> {
+    claims
+        .iter()
+        .map(|(claim, entry)| (claim.as_str().to_owned(), entry.to_json()))
+        .collect()
 }
 
 /// One `userinfo` or `id_token` section.
@@ -653,6 +756,11 @@ pub struct ResolvedClaims {
 /// Infallible on purpose. There is no failure mode: a claim the user does not
 /// have is absent, a claim no scope or request covers was never a candidate,
 /// and OIDC Core §5.5.1 forbids erroring over an unmet essential claim.
+///
+/// Prefer [`resolve_for_grant`] at every issuance path: it is the same
+/// function with the three consent-bearing arguments taken from one grant, so
+/// there is no call site at which the request's copy could be passed by
+/// mistake. This one stays public because it is the unit under test.
 #[must_use]
 pub fn resolve(
     user: &User,
@@ -690,6 +798,60 @@ pub fn resolve(
     }
 
     resolved
+}
+
+/// Records the claims half of an authorization onto the grant it produced.
+///
+/// **This copy is the consent boundary.** What the client asked for lives on
+/// the pushed request; what the user agreed to lives on the grant, and
+/// [`resolve_for_grant`] reads only the second. Writing it here — once, where
+/// the grant is minted — is what makes the two sides of that sentence the same
+/// value, and what stops a later reader reaching for the request because the
+/// grant had nothing on it.
+///
+/// `parameters` is the stored authorization request (`http::par::serialise`),
+/// which already holds the canonical form of the parsed request. A member that
+/// is missing or malformed yields the empty request and no locale preference:
+/// this runs after the user has approved, and refusing an authorization at
+/// that point over a presentation hint would deny a consent that was actually
+/// given. The empty request releases nothing that a scope does not already
+/// cover, so the failure direction is closed.
+pub fn record_on_grant(parameters: &Value, grant: &mut Grant) {
+    let request = parameters
+        .get("claims")
+        .and_then(|value| ClaimsRequest::from_json(value).ok())
+        .unwrap_or_default();
+    grant.claims = request.to_json();
+    grant.claims_locales = parameters
+        .get("claims_locales")
+        .and_then(Value::as_array)
+        .map(|tags| {
+            ClaimsLocales::from_tags(tags.iter().filter_map(Value::as_str))
+                .preferences()
+                .to_vec()
+        })
+        .unwrap_or_default();
+}
+
+/// Resolves the claims a client receives, from the grant and nothing else.
+///
+/// The form every issuance path should call. [`resolve`] takes the scopes, the
+/// claims request and the locales as three separate arguments, and three
+/// arguments are three chances to hand it the authorization request's copy of
+/// one; here they come from one grant, so "output ⊆ consented" is a property
+/// of the call and not of the caller's discipline.
+///
+/// # Errors
+///
+/// A [`ClaimsRequestError`] when `grant.claims` is not a request this server
+/// would accept. Refused rather than defaulted: at issuance an unreadable
+/// stored request means the row does not say what was consented to, and an
+/// empty default would quietly release the scope-derived claims of a grant
+/// whose record is damaged.
+pub fn resolve_for_grant(user: &User, grant: &Grant) -> Result<ResolvedClaims, ClaimsRequestError> {
+    let requested = ClaimsRequest::from_json(&grant.claims)?;
+    let locales = ClaimsLocales::from_tags(&grant.claims_locales);
+    Ok(resolve(user, &grant.scopes, &requested, &locales))
 }
 
 /// The value of one claim for one user, or `None` when the user has none.
@@ -783,7 +945,7 @@ fn pick((_, claim): (&ClaimName, &Claim)) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asterius_domain::{ClaimSource, TenantId, UserId, UserStatus};
+    use asterius_domain::{ClaimSource, ClientId, TenantId, UserId, UserStatus};
     use serde_json::json;
     use time::OffsetDateTime;
 
@@ -1418,6 +1580,141 @@ mod tests {
         assert_eq!(
             ClaimsLocales::parse(Some(&many)).preferences().len(),
             ClaimsLocales::MAX
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The grant: storage and the consent boundary
+    // -----------------------------------------------------------------------
+
+    fn a_grant() -> Grant {
+        Grant::new(TenantId::new("demo"), ClientId::new("billing"), epoch())
+    }
+
+    /// What is stored is the parsed request, not the document the client sent:
+    /// a member this server declined to understand must not reach the row that
+    /// records what a person agreed to.
+    #[test]
+    fn storing_a_claims_request_keeps_what_was_parsed_and_drops_what_was_ignored() {
+        let request = ClaimsRequest::parse(
+            r#"{"id_token":{"given_name":{"essential":true},"sub":null},
+                "userinfo":{"name":null},
+                "transaction":{"id":"t-1"}}"#,
+        )
+        .expect("a well-shaped claims parameter");
+
+        let stored = request.to_json();
+
+        assert_eq!(
+            stored,
+            json!({
+                "id_token": {"given_name": {"essential": true}},
+                "userinfo": {"name": {}}
+            })
+        );
+    }
+
+    /// The property the `claims_request` fuzz target asserts over arbitrary
+    /// input, pinned here on the shapes a reviewer can read.
+    #[test]
+    fn a_stored_claims_request_reads_back_as_the_same_request() {
+        for raw in [
+            "{}",
+            r#"{"id_token":{"given_name":{"essential":true}}}"#,
+            r#"{"userinfo":{"name":null,"phone_number":{"values":["+44 20 7946 0000"]}}}"#,
+            r#"{"id_token":{"acr":{"essential":true,"values":["urn:example:loa:2"]}}}"#,
+        ] {
+            let request = ClaimsRequest::parse(raw).expect("a well-shaped claims parameter");
+
+            let restored =
+                ClaimsRequest::from_json(&request.to_json()).expect("a stored request re-parses");
+
+            assert_eq!(restored, request, "{raw} did not survive storage");
+        }
+    }
+
+    /// OIDC Core §5.5.1.1's `acr` request is kept aside by the parser, so it
+    /// has to be written back somewhere or the ACR story finds nothing on the
+    /// grant.
+    #[test]
+    fn an_acr_request_survives_the_trip_through_the_grant() {
+        let request = ClaimsRequest::parse(r#"{"id_token":{"acr":{"essential":true}}}"#)
+            .expect("an acr request");
+        let mut grant = a_grant();
+
+        record_on_grant(&json!({"claims": request.to_json()}), &mut grant);
+
+        let stored = ClaimsRequest::from_json(&grant.claims).expect("a stored request");
+        assert!(
+            stored.acr().is_some_and(ClaimRequest::is_essential),
+            "the acr request was lost on the way to the grant"
+        );
+    }
+
+    /// The locale preference belongs to the authorization it was expressed in,
+    /// and its order is its meaning (OIDC Core §5.2).
+    #[test]
+    fn the_locale_preference_reaches_the_grant_in_order() {
+        let mut grant = a_grant();
+
+        record_on_grant(
+            &json!({"claims_locales": ["ja-Kana-JP", "not a tag", "en"]}),
+            &mut grant,
+        );
+
+        assert_eq!(grant.claims_locales, ["ja-Kana-JP", "en"]);
+    }
+
+    /// A stored request that is not one this server would accept is refused at
+    /// issuance rather than defaulted to the empty one: a damaged row does not
+    /// say what was consented to, and quietly releasing the scope-derived
+    /// claims anyway would answer a question nobody asked.
+    #[test]
+    fn a_grant_whose_claims_column_is_damaged_releases_nothing() {
+        let mut grant = a_grant();
+        grant.scopes = scopes(&["openid", "email"]);
+        grant.claims = json!({"userinfo": "a-secret-looking-string"});
+
+        let refused = resolve_for_grant(&a_user(), &grant);
+
+        assert!(refused.is_err(), "a damaged claims column reached issuance");
+    }
+
+    /// **The consent boundary.** The client pushed a request naming two claims
+    /// for the ID token; what reached the grant names one. Issuance reads the
+    /// grant, so the second claim is not released — and the wider request is
+    /// still sitting in the authorization request, which is exactly the value
+    /// `resolve_for_grant` gives no call site a way to reach.
+    #[test]
+    fn a_claims_request_narrowed_at_consent_does_not_widen_at_issuance() {
+        let asked_for = ClaimsRequest::parse(r#"{"id_token":{"name":null,"given_name":null}}"#)
+            .expect("the request the client pushed");
+        let consented_to =
+            ClaimsRequest::parse(r#"{"id_token":{"given_name":null}}"#).expect("what was granted");
+
+        let mut grant = a_grant();
+        grant.scopes = scopes(&["openid"]);
+        record_on_grant(&json!({"claims": consented_to.to_json()}), &mut grant);
+
+        let released = resolve_for_grant(&a_user(), &grant).expect("a readable grant");
+
+        assert_eq!(
+            released.id_token.keys().collect::<Vec<_>>(),
+            ["given_name"],
+            "issuance released a claim the grant does not cover"
+        );
+        // And the user does hold the claim that was dropped, so the narrowing
+        // is what kept it out rather than an empty claim set.
+        assert!(asked_for.id_token().len() > consented_to.id_token().len());
+        assert!(
+            resolve(
+                &a_user(),
+                &grant.scopes,
+                &asked_for,
+                &ClaimsLocales::default()
+            )
+            .id_token
+            .contains_key("name")
         );
     }
 

@@ -675,6 +675,10 @@ async fn mint(
                 .collect()
         })
         .unwrap_or_default();
+    // The consent boundary (`ast-1sk.6`): the claims request the user approved
+    // and the language they asked to be answered in are copied onto the grant
+    // here, and `claims::resolve_for_grant` reads them from nowhere else.
+    asterius_oidc::claims::record_on_grant(&record.parameters, &mut grant);
     grant.session = Some(DomainSessionId::new(digest.to_owned()));
     // `claimed_at` stays `None`: Grant Management ID1 §5.6 makes a grant
     // `active` when a credential has been *claimed*, and nothing has been. The

@@ -134,6 +134,7 @@ impl PgGrantRepository {
         let id = uuid(&grant.id)?;
         let parent = grant.parent.as_ref().map(uuid).transpose()?;
         let scopes: Vec<String> = grant.scopes.iter().cloned().collect();
+        let claims_locales: Vec<String> = grant.claims_locales.clone();
         let resources: Vec<String> = grant.resources.iter().cloned().collect();
         let authorization_details = serde_json::Value::Array(grant.authorization_details.clone());
         let actor_chain = serde_json::Value::Array(grant.actor_chain.clone());
@@ -145,10 +146,10 @@ impl PgGrantRepository {
         // credential has been taken from yet, and the sweep may collect it.
         sqlx::query!(
             "insert into grants (tenant_id, grant_id, client_id, user_id, subject, scopes,
-                                 claims, authorization_details, resources, actor_chain,
-                                 parent_grant_id, session_id, created_at, updated_at, expires_at,
-                                 claimed_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13, $14, $15)",
+                                 claims, claims_locales, authorization_details, resources,
+                                 actor_chain, parent_grant_id, session_id, created_at, updated_at,
+                                 expires_at, claimed_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $15, $16)",
             self.tenant.as_str(),
             id,
             grant.client.as_str(),
@@ -156,6 +157,7 @@ impl PgGrantRepository {
             grant.subject.as_ref().map(SubjectId::as_str),
             &scopes,
             grant.claims,
+            &claims_locales,
             authorization_details,
             &resources,
             actor_chain,
@@ -180,7 +182,7 @@ impl PgGrantRepository {
     pub async fn find(&self, id: &GrantId) -> Result<Option<Grant>, DomainError> {
         let row = sqlx::query_as!(
             Row,
-            "select grant_id, client_id, user_id, subject, scopes, claims,
+            "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                     authorization_details, resources, actor_chain, parent_grant_id,
                     session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
                     revocation_reason
@@ -209,7 +211,7 @@ impl PgGrantRepository {
     pub async fn list_for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError> {
         sqlx::query_as!(
             Row,
-            "select grant_id, client_id, user_id, subject, scopes, claims,
+            "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                     authorization_details, resources, actor_chain, parent_grant_id,
                     session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
                     revocation_reason
@@ -270,7 +272,7 @@ impl PgGrantRepository {
              where tenant_id = $1 and grant_id = $2
                and revoked_at is null
                and (expires_at is null or expires_at > $3)
-             returning grant_id, client_id, user_id, subject, scopes, claims,
+             returning grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                        authorization_details, resources, actor_chain, parent_grant_id,
                        session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
                        revocation_reason",
@@ -494,6 +496,7 @@ struct Row {
     subject: Option<String>,
     scopes: Vec<String>,
     claims: serde_json::Value,
+    claims_locales: Vec<String>,
     authorization_details: serde_json::Value,
     resources: Vec<String>,
     actor_chain: serde_json::Value,
@@ -523,6 +526,7 @@ impl Row {
             subject: self.subject,
             scopes: self.scopes,
             claims: self.claims,
+            claims_locales: self.claims_locales,
             authorization_details: self.authorization_details,
             resources: self.resources,
             actor_chain: self.actor_chain,

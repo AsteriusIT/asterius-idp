@@ -246,6 +246,15 @@ fn serialise(request: &authorize::AuthorizationRequest) -> serde_json::Value {
         "login_hint": request.login_hint,
         "resources": request.resources,
         "dpop_jkt": request.dpop_jkt,
+        // The *parsed* request, canonically serialised, and not the document
+        // the client sent. This is what will be copied onto the grant when the
+        // user consents, and a grant records the decision: a member this
+        // server declined to understand was no part of it, and storing the raw
+        // document would leave one for a later reader to find.
+        "claims": request.claims.to_json(),
+        // OIDC Core §5.2. Stored with the authorization it was expressed in,
+        // because the token request that follows carries no such parameter.
+        "claims_locales": request.claims_locales.preferences(),
         "openid": request.openid,
     })
 }

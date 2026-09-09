@@ -230,6 +230,42 @@ async fn a_conforming_push_returns_a_request_uri() {
     assert_eq!(stored[0].expires_at, now() + Duration::seconds(90));
 }
 
+/// OIDC Core §5.5 and §5.2 both reach the stored request, because the grant is
+/// built from that row and `claims::resolve_for_grant` reads it from nowhere
+/// else (`ast-1sk.6`).
+///
+/// What is stored is the *parsed* request, canonically serialised: `sub` was
+/// named and is gone, `transaction` was not a section this server understands
+/// and is gone, and `name` arrived as `null` and is stored as the empty object
+/// §5.5.1 says that means. A raw copy of the client's document would leave all
+/// three on the row that records what a person agreed to.
+#[tokio::test]
+async fn the_claims_request_and_the_locale_preference_are_stored_as_parsed() {
+    let mut pairs = valid_pairs();
+    pairs.push((
+        "claims",
+        r#"{"id_token":{"given_name":{"essential":true},"sub":null},"userinfo":{"name":null},"transaction":{"id":"t-1"}}"#,
+    ));
+    pairs.push(("claims_locales", "ja-Kana-JP fr_CA en"));
+
+    let (status, _, store) = pushed(&pairs).await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let stored = store.0.lock().expect("lock");
+    assert_eq!(
+        stored[0].parameters["claims"],
+        serde_json::json!({
+            "id_token": {"given_name": {"essential": true}},
+            "userinfo": {"name": {}}
+        })
+    );
+    // The malformed tag is dropped and the order of the rest is the meaning.
+    assert_eq!(
+        stored[0].parameters["claims_locales"],
+        serde_json::json!(["ja-Kana-JP", "en"])
+    );
+}
+
 /// The response carries a credential, so it must not be stored anywhere.
 #[tokio::test]
 async fn the_response_is_not_cacheable() {
