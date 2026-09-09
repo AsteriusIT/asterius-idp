@@ -1068,10 +1068,10 @@ async fn signing_in_needs_no_session_cookie() {
     // Act, Assert
     assert!(
         !headers
-            .get(header::COOKIE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_default()
-            .contains(asterius_domain::entities::session::COOKIE_NAME),
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .any(|value| value.contains(asterius_domain::entities::session::COOKIE_NAME)),
         "these endpoints are reached before any session exists"
     );
     let (status, _) = fixture.options(now).await;
