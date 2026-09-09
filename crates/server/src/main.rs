@@ -22,7 +22,8 @@ use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{
-    PgAuditSink, PgReplayGuard, PgRetention, PgTenantRepository, Store, TenantKeyStore,
+    PgAuditSink, PgKekRewrap, PgReplayGuard, PgRetention, PgTenantRepository, RewrapOutcome, Store,
+    TenantKeyStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -30,7 +31,9 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 
 const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
-const USAGE: &str = "usage: asterius [--config <path>] [--config-reference]";
+const USAGE: &str = "usage: asterius [--config <path>] [--config-reference]\n       \
+                     asterius rewrap-kek (--new-kek-file <path> | --new-kek-env <var>) \
+                     [--config <path>]";
 
 fn main() -> ExitCode {
     match run() {
@@ -46,8 +49,15 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
-    let path = config_path()?;
-    let config = Config::load(&path).map_err(|e| e.to_string())?;
+    let invocation = Invocation::parse(std::env::args_os().skip(1))?;
+    match invocation.command {
+        Command::Serve => serve_forever(&invocation.config),
+        Command::RewrapKek(new_kek) => rewrap_kek(&invocation.config, &new_kek),
+    }
+}
+
+fn serve_forever(path: &std::path::Path) -> Result<(), String> {
+    let config = Config::load(path).map_err(|e| e.to_string())?;
 
     observability::init(config.log_format);
     let metrics = Metrics::install().map_err(|e| format!("cannot install metrics: {e}"))?;
@@ -294,6 +304,216 @@ async fn stopped(mut stopping: tokio::sync::watch::Receiver<bool>) {
     let _ = stopping.changed().await;
 }
 
+/// Re-seals every sealed row under a new key-encryption key.
+///
+/// The KEK in the configuration file is the one the deployment is running on,
+/// so it is the *old* key here; the new one comes from the command line, which
+/// is what keeps the two apart without asking an operator to edit the config
+/// file half-way through a rotation. See `asterius_store_pg::PgKekRewrap` for
+/// what moves and why the pairwise salt cannot simply be updated, and
+/// `docs/runbooks/backup-restore.md` §4 for the order the steps go in.
+///
+/// It is a foreground command with a report on stdout rather than a background
+/// sweep: rotating a KEK is an operator decision taken during a change window,
+/// and the operator has to read the result before destroying the old material.
+/// Running it twice is safe and is in fact the documented procedure — the
+/// second pass catches rows written by replicas that were still on the old key
+/// during the first.
+fn rewrap_kek(path: &std::path::Path, new_kek: &KekSource) -> Result<(), String> {
+    let config = Config::load(path).map_err(|e| e.to_string())?;
+
+    let from = load_kek(&config.kek)?;
+    let to = load_kek(new_kek)?;
+    println!(
+        "asterius {VERSION}: re-wrapping from {} to {}",
+        from.id(),
+        to.id()
+    );
+
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|e| format!("cannot start runtime: {e}"))?;
+    runtime.block_on(async move {
+        let store = Store::connect(
+            config.database.url.expose(),
+            config.database.max_connections,
+        )
+        .await
+        .map_err(|e| format!("cannot connect to the database: {e}"))?;
+
+        // No migration here, deliberately: a rotation is not the moment to
+        // change the schema, and the tool has to be runnable against a
+        // database whose replicas are mid-upgrade.
+        let tenants = PgTenantRepository::new(store.pool().clone(), Arc::clone(&from))
+            .list()
+            .await
+            .map_err(|e| format!("cannot list tenants: {e}"))?;
+        let rewrap = PgKekRewrap::new(store.pool().clone());
+
+        let mut incomplete = 0_usize;
+        for tenant in &tenants {
+            let outcome = rewrap
+                .rewrap_tenant(&tenant.id, from.as_ref(), to.as_ref())
+                .await
+                .map_err(|e| format!("cannot re-wrap tenant {}: {e}", tenant.id))?;
+
+            match outcome {
+                RewrapOutcome::Busy => {
+                    incomplete += 1;
+                    println!("{}: busy, another re-wrap holds this tenant", tenant.id);
+                }
+                RewrapOutcome::Rewrapped(pass) => {
+                    if !pass.is_complete() {
+                        incomplete += 1;
+                    }
+                    println!(
+                        "{}: signing keys {}, pairwise salt {}, still on the old key {}, \
+                         sealed under an unknown key {}",
+                        tenant.id,
+                        pass.signing_keys,
+                        if pass.pairwise_salt {
+                            "re-wrapped"
+                        } else {
+                            "nothing to do"
+                        },
+                        pass.left_behind,
+                        pass.stranded
+                    );
+                }
+            }
+        }
+
+        if incomplete == 0 {
+            println!(
+                "{} tenant(s) are wholly on {}. Point the configuration at it and restart, \
+                 then run this once more before destroying the old material.",
+                tenants.len(),
+                to.id()
+            );
+            Ok(())
+        } else {
+            Err(format!(
+                "{incomplete} of {} tenant(s) are not wholly on {}; do not destroy the old \
+                 key material — run this again once the replicas are on the new key",
+                tenants.len(),
+                to.id()
+            ))
+        }
+    })
+}
+
+/// Loads a KEK from wherever the operator put it.
+fn load_kek(source: &KekSource) -> Result<Arc<dyn Kek>, String> {
+    let kek = match source {
+        KekSource::File(path) => LocalKek::from_file(path),
+        KekSource::Env(variable) => LocalKek::from_env(variable),
+    }
+    .map_err(|e| format!("cannot load the key-encryption key: {e}"))?;
+    Ok(Arc::new(kek))
+}
+
+/// What the command line asked for.
+#[derive(Debug, PartialEq, Eq)]
+struct Invocation {
+    config: PathBuf,
+    command: Command,
+}
+
+/// The one thing the binary does, or the one operator command it also offers.
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    /// Run the server. What every deployment does.
+    Serve,
+    /// Re-seal everything under the KEK named on the command line, and exit.
+    RewrapKek(KekSource),
+}
+
+impl Invocation {
+    /// Parses the arguments, exiting for `--help` and `--config-reference`.
+    ///
+    /// Hand-rolled, like the rest of this binary's argument handling: the
+    /// surface is a subcommand and three flags, and a parser dependency for
+    /// that is a dependency to audit for the life of the project.
+    fn parse<I>(arguments: I) -> Result<Self, String>
+    where
+        I: IntoIterator<Item = std::ffi::OsString>,
+    {
+        let mut arguments = arguments.into_iter();
+        let mut path: Option<PathBuf> = None;
+        let mut command = Command::Serve;
+        let mut new_kek_file: Option<PathBuf> = None;
+        let mut new_kek_env: Option<String> = None;
+
+        while let Some(argument) = arguments.next() {
+            match argument.to_str() {
+                Some("--config" | "-c") => {
+                    let value = arguments.next().ok_or("--config needs a path")?;
+                    path = Some(PathBuf::from(value));
+                }
+                Some("--help" | "-h") => {
+                    println!("{USAGE}");
+                    std::process::exit(0);
+                }
+                // Prints docs/configuration.md and exits. It lives behind a
+                // flag on the server binary rather than in a generator of its
+                // own so that the document can only ever be produced by the
+                // same build that defines the schema it describes.
+                Some("--config-reference") => {
+                    print!("{}", asterius_server::config_reference::render());
+                    std::process::exit(0);
+                }
+                Some("rewrap-kek") => command = Command::RewrapKek(KekSource::Env(String::new())),
+                Some("--new-kek-file") => {
+                    let value = arguments.next().ok_or("--new-kek-file needs a path")?;
+                    new_kek_file = Some(PathBuf::from(value));
+                }
+                Some("--new-kek-env") => {
+                    let value = arguments.next().ok_or("--new-kek-env needs a variable")?;
+                    new_kek_env = Some(
+                        value
+                            .into_string()
+                            .map_err(|_| "--new-kek-env needs a UTF-8 variable name")?,
+                    );
+                }
+                _ => {
+                    return Err(format!(
+                        "unexpected argument {}\n{USAGE}",
+                        PathBuf::from(argument).display()
+                    ));
+                }
+            }
+        }
+
+        // Exactly one source, and only where it means something. Two sources
+        // would leave "which key am I rotating to" to argument order, and a
+        // key named for a run that is not a rotation is an operator who typed
+        // the wrong command and would otherwise be given a server.
+        let command = match (command, new_kek_file, new_kek_env) {
+            (Command::RewrapKek(_), Some(file), None) => Command::RewrapKek(KekSource::File(file)),
+            (Command::RewrapKek(_), None, Some(variable)) => {
+                Command::RewrapKek(KekSource::Env(variable))
+            }
+            (Command::RewrapKek(_), _, _) => {
+                return Err(format!(
+                    "rewrap-kek needs exactly one of --new-kek-file and --new-kek-env\n{USAGE}"
+                ));
+            }
+            (Command::Serve, None, None) => Command::Serve,
+            (Command::Serve, _, _) => {
+                return Err(format!(
+                    "--new-kek-file and --new-kek-env belong to rewrap-kek\n{USAGE}"
+                ));
+            }
+        };
+
+        Ok(Self {
+            config: path
+                .or_else(|| std::env::var_os("ASTERIUS_CONFIG").map(PathBuf::from))
+                .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH)),
+            command,
+        })
+    }
+}
+
 /// Writes the tenants declared in the configuration into the database.
 ///
 /// The configuration file is the source of truth for which tenants exist at
@@ -342,36 +562,91 @@ async fn bootstrap_tenants(repository: &PgTenantRepository, config: &Config) -> 
     Ok(())
 }
 
-fn config_path() -> Result<PathBuf, String> {
-    let mut args = std::env::args_os().skip(1);
-    let mut path: Option<PathBuf> = None;
-    while let Some(arg) = args.next() {
-        match arg.to_str() {
-            Some("--config" | "-c") => {
-                let value = args.next().ok_or("--config needs a path")?;
-                path = Some(PathBuf::from(value));
-            }
-            Some("--help" | "-h") => {
-                println!("{USAGE}");
-                std::process::exit(0);
-            }
-            // Prints docs/configuration.md and exits. It lives behind a flag
-            // on the server binary rather than in a generator of its own so
-            // that the document can only ever be produced by the same build
-            // that defines the schema it describes.
-            Some("--config-reference") => {
-                print!("{}", asterius_server::config_reference::render());
-                std::process::exit(0);
-            }
-            _ => {
-                return Err(format!(
-                    "unexpected argument {}\n{USAGE}",
-                    PathBuf::from(arg).display()
-                ));
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use super::{Command, Invocation};
+    use asterius_server::config::KekSource;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    fn parse(arguments: &[&str]) -> Result<Invocation, String> {
+        Invocation::parse(arguments.iter().map(OsString::from))
     }
-    Ok(path
-        .or_else(|| std::env::var_os("ASTERIUS_CONFIG").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH)))
+
+    #[test]
+    fn no_arguments_asks_for_a_server() {
+        let invocation = parse(&[]).expect("no arguments is a valid invocation");
+
+        assert_eq!(invocation.command, Command::Serve);
+    }
+
+    #[test]
+    fn a_rewrap_reads_its_new_key_from_a_file() {
+        let invocation =
+            parse(&["rewrap-kek", "--new-kek-file", "/etc/asterius/kek.new"]).expect("valid");
+
+        assert_eq!(
+            invocation.command,
+            Command::RewrapKek(KekSource::File(PathBuf::from("/etc/asterius/kek.new")))
+        );
+    }
+
+    #[test]
+    fn a_rewrap_reads_its_new_key_from_the_environment() {
+        let invocation =
+            parse(&["rewrap-kek", "--new-kek-env", "ASTERIUS_KEK_NEXT"]).expect("valid");
+
+        assert_eq!(
+            invocation.command,
+            Command::RewrapKek(KekSource::Env("ASTERIUS_KEK_NEXT".to_owned()))
+        );
+    }
+
+    /// Two sources would leave "which key am I rotating to" to argument order,
+    /// on the one command where guessing wrong is unrecoverable.
+    #[test]
+    fn a_rewrap_with_two_new_keys_is_refused() {
+        let refused = parse(&[
+            "rewrap-kek",
+            "--new-kek-file",
+            "/k",
+            "--new-kek-env",
+            "ASTERIUS_KEK_NEXT",
+        ]);
+
+        assert!(refused.is_err(), "{refused:?}");
+    }
+
+    #[test]
+    fn a_rewrap_with_no_new_key_is_refused() {
+        let refused = parse(&["rewrap-kek"]);
+
+        assert!(refused.is_err(), "{refused:?}");
+    }
+
+    /// An operator who meant to rotate and mistyped the subcommand gets an
+    /// error rather than a server started with a key it will never use.
+    #[test]
+    fn a_new_key_without_the_subcommand_is_refused() {
+        let refused = parse(&["--new-kek-file", "/k"]);
+
+        assert!(refused.is_err(), "{refused:?}");
+    }
+
+    #[test]
+    fn a_rewrap_still_takes_the_configuration_path() {
+        let invocation = parse(&[
+            "rewrap-kek",
+            "--config",
+            "/etc/asterius/asterius.toml",
+            "--new-kek-env",
+            "K",
+        ])
+        .expect("valid");
+
+        assert_eq!(
+            invocation.config,
+            PathBuf::from("/etc/asterius/asterius.toml")
+        );
+    }
 }

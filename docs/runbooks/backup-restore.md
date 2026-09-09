@@ -1,6 +1,6 @@
 # Runbook: backup, restore, and rotating the key-encryption key
 
-**Status:** describes the system as it is on `ast-p2l.4`, not as it is meant to
+**Status:** describes the system as it is on `ast-xni`, not as it is meant to
 become. Where a step is manual, it says so and names the bead that automates it.
 A runbook that describes automation nobody wrote is worse than no runbook: it is
 read at 3am by somebody who then discovers the command does not exist.
@@ -124,99 +124,119 @@ incident:
 
 ## 4. Rotating the key-encryption key
 
-> **Read this section before planning the change, not during it.** KEK rotation
-> is **manual today**, it needs a maintenance window, and for a tenant using
-> pairwise subject identifiers it needs a program that this repository does not
-> ship. `ast-mxc.3` owns the re-wrap job; the threat model records the gap under
-> "Rotating the key-encryption key itself is manual".
+> **Automated as of `ast-xni`.** `asterius rewrap-kek` re-seals every row the KEK
+> protects — signing keys *and* pairwise salts — under a new key. It is a
+> foreground operator command, not a background sweep: an operator has to read
+> its report before destroying the old key material. Earlier versions of this
+> runbook said rotation for a pairwise deployment needed a program nobody had
+> written; that program is this subcommand.
 
 ### What "rotating the KEK" actually means
 
-The KEK encrypts two kinds of row:
+The KEK is not in the database, so rotating it moves no plaintext: the private
+keys and the salts stay exactly what they were, and only the envelope around
+them changes. It encrypts two kinds of row.
 
-| Row | Re-wrappable in place? |
+| Row | How it moves |
 |---|---|
-| `signing_keys.private_key_ciphertext` | Yes — the row takes `UPDATE`. |
-| `tenant_pairwise_salts.salt_ciphertext` | **No.** A trigger refuses `UPDATE` outright, so the salt can only be replaced by `DELETE` + `INSERT` of the *same plaintext* re-sealed. |
+| `signing_keys.private_key_ciphertext` | `UPDATE` in place. The `kid` is a thumbprint of the *public* half, which is not encrypted, so nothing a relying party has cached moves. |
+| `tenant_pairwise_salts.salt_ciphertext` | `DELETE` + `INSERT` of the **same plaintext**, in one transaction. The table refuses `UPDATE` from a trigger and still does: an updatable salt is an updatable set of subject identifiers, and OIDC Core §8 says a Subject Identifier is never reassigned. |
 
-Both need the old KEK and the new one held at once, and both need code:
-`asterius_jose::kek::LocalKek::open` and `::seal` are the only things that can
-open and re-seal a row, and the AEAD binds each ciphertext to its row's tenant,
-kid, purpose and algorithm — so the re-wrap cannot be done in SQL, and a byte
-copied to another row stops decrypting rather than becoming a working key
-somewhere else. The server binary loads exactly one KEK and has no re-wrap
-subcommand.
+Both need the old KEK and the new one held at once — the old one is the only
+thing that can open a row, the new one the only thing that can re-seal it — and
+the AEAD binds each ciphertext to its row's tenant, `kid`, purpose and
+algorithm, so none of this can be done in SQL and a byte copied to another row
+stops decrypting rather than becoming a working key somewhere else.
 
-### Procedure A — signing keys only, with no new code
+The re-wrap does not take the salt's survival on trust: for every tenant it
+re-reads the row it has just written, opens it under the new KEK and compares
+the salt in constant time with the one it opened under the old. A mismatch rolls
+that tenant's transaction back, so the failure mode is "this tenant is still on
+the old key", never "every relying party lost its users".
 
-Usable when no tenant uses `subject_type = pairwise`. Check first:
+### Procedure
 
-```sql
-select count(*) from clients where subject_type = 'pairwise';
-select count(*) from tenant_pairwise_salts;
-```
+Everything here is per tenant and idempotent. A pass that dies half way is
+resumed by running it again: every statement selects on the *old* `kek_id`, so
+what has already moved is not touched twice. Two replicas or two operators
+running it at once are safe — each tenant is done under
+`pg_try_advisory_lock(tenant, 'kek-rewrap')`, and whoever loses the tenant is
+told `busy` and moves on.
 
-If either is non-zero, go to procedure B.
-
-This procedure rotates the *signing keys* rather than re-wrapping them, which the
-server already knows how to do. Verification is unaffected throughout: a relying
-party checks a signature against `public_jwk`, which is not encrypted.
-
-1. Take a backup (§2) and confirm you can read the current KEK.
-2. Announce a signing outage. Between steps 4 and 6 the server holds no key it
-   can open, so token issuance fails while the JWKS keeps serving. Keep it
-   short; it is minutes, not hours.
-3. For every tenant, retire the keys sealed under the old KEK, so that the next
-   rotation pass has to stage new ones:
-   ```sql
-   update signing_keys
-      set state = 'retiring', retiring_at = now()
-    where state = 'active' and kek_id = '<old kek id>';
+1. Take a backup (§2) and confirm you can read the *current* KEK. Keep that
+   backup and that key together until step 7: a backup taken before the
+   rotation can only be restored with the key that was current when it was
+   taken.
+2. Generate the new key and put it where the deployment will read it from:
+   ```sh
+   openssl rand -base64 32 > /etc/asterius/kek.new    # mode 0400, owned by root
    ```
-   Do **not** delete them: their public halves must stay published for the grace
-   period, or every token they signed stops verifying.
-4. Install the new KEK material and restart the replicas.
-5. `RotationSweep` stages, publishes and promotes a fresh key per tenant, sealed
-   under the new KEK. At the defaults this is one sweep interval plus the
-   propagation period; `prepare_keys` also runs a pass at boot, so a restart is
-   usually enough. Confirm:
-   ```sql
-   select tenant_id, state, kek_id from signing_keys where state in ('active','pending');
+3. Run the re-wrap. The configuration file still names the **old** key — that is
+   what the command rotates *from* — and the new one is named on the command
+   line, so no configuration is edited mid-rotation:
+   ```sh
+   asterius rewrap-kek --config /etc/asterius/asterius.toml \
+                       --new-kek-file /etc/asterius/kek.new
    ```
-6. Mint a token per tenant and verify it against the published JWKS.
-7. After the grace period, the old keys reach `retired` and leave the JWKS on
-   their own. Their rows stay — a `kid` is never handed out twice — and they are
-   ciphertext nobody can open, which is the desired end state for a key that has
-   been rotated away from.
+   It prints one line per tenant and exits non-zero if any tenant is not wholly
+   on the new key. Nothing in the output is secret: key ids, counts and tenant
+   ids only.
+4. Replicas still running are unaffected in the middle of this. A signer holds
+   its unwrapped key in memory (`CachedSigner`), so token issuance keeps
+   working; what fails, until step 5, is anything that has to *open* a row that
+   has already moved — a replica restarting, a rotation sweep staging a key, a
+   tenant being created, or the first `sub` minted in a sector for a tenant
+   whose salt has moved. Keep steps 3 to 5 close together, or run them in a
+   maintenance window if that set of failures is not acceptable.
+5. Point the configuration at the new key and restart the replicas:
+   ```toml
+   [keys]
+   kek_file = "/etc/asterius/kek.new"
+   ```
+6. Run the same command again, with the roles unchanged — the configuration now
+   names the new key, so pass the *old* one as `--new-kek-file` only if you mean
+   to roll back. The ordinary second pass is:
+   ```sh
+   asterius rewrap-kek --config /etc/asterius/asterius.toml \
+                       --new-kek-file /etc/asterius/kek.new
+   ```
+   which now refuses with "the new key-encryption key is the one already in
+   use" — the deployment is on it. That refusal *is* the confirmation. To check
+   the database directly instead:
+   ```sql
+   select kek_id, count(*) from signing_keys group by 1;
+   select kek_id, count(*) from tenant_pairwise_salts group by 1;
+   ```
+   Both must show only the new id. A row still under the old id is one a replica
+   wrote during step 3 to 5; re-run step 3 with the configuration temporarily
+   pointed back at the old key, or move the row's tenant on its own.
+7. Verify before destroying anything: mint a token per tenant and check it
+   against the published JWKS, and confirm a known `sub` is unchanged for a
+   relying party that had one before the rotation. Only then destroy the old key
+   material — and only once a backup taken *after* the rotation has been proven
+   restorable under the new key.
 
-### Procedure B — a real re-wrap (needs a one-off program)
+### Rolling back
 
-Required as soon as `tenant_pairwise_salts` has rows, because those cannot be
-re-issued: every `sub` already derived under a salt is stored, and OIDC Core §8
-says a subject identifier is never reassigned. Replacing a salt reassigns every
-identifier in the tenant, which is a relying-party migration, not a rotation.
+Until step 7 the old key opens nothing that has moved, and the new key opens
+nothing that has not. To go back, run `rewrap-kek` with the two keys the other
+way round: the command is symmetric and the old key is a perfectly good
+destination as long as it still exists. That is the whole reason step 7 destroys
+the old material last rather than first.
 
-The program to write — it is small, and `ast-mxc.3` is where it belongs:
+### What the re-wrap does not cover
 
-1. Load both KEKs (`LocalKek::from_file` twice).
-2. In one transaction per tenant:
-   * for each `signing_keys` row with the old `kek_id`: `open` under the old KEK
-     with that row's binding, `seal` under the new one, `update` the ciphertext,
-     nonce and `kek_id` together;
-   * for the `tenant_pairwise_salts` row: `open`, then `delete` and `insert` the
-     re-sealed salt — the trigger refuses `UPDATE`, and this is the one path it
-     leaves. The plaintext salt must be byte-identical, or every subject
-     identifier in the tenant changes.
-3. Assert afterwards that `select distinct kek_id` returns only the new id in
-   both tables, and that a token still signs and a known `sub` still derives to
-   the same value.
-4. Destroy the old KEK material only after that assertion passes and a backup
-   taken *before* the rotation has been proven restorable against the old KEK.
-
-Until that program exists, treat KEK rotation for a pairwise deployment as
-requiring a scheduled change with engineering present. Say so out loud when
-someone asks whether the KEK can be rotated: the honest answer today is "for
-signing keys, yes, with a short outage; for pairwise salts, not without code".
+* **Anything the KEK does not seal.** Password hashes, recovery-code hashes,
+  passkey public keys and the audit chain are not ciphertext under it; they are
+  hashes or public values, and no key rotation touches them.
+* **Rows sealed under a third key.** The residue of an earlier, abandoned
+  rotation is counted and reported per tenant rather than skipped quietly. It
+  needs whichever KEK sealed it; the command cannot invent one.
+* **Rows added while it runs.** See step 6. This is why the procedure has a
+  second pass rather than a single command.
+* **A KMS.** `LocalKek` is the only `Kek` implementation there is, so both keys
+  have to be readable by the process running the command. A KMS adapter is the
+  documented trigger for revisiting ADR-0008 (`ast-f12`).
 
 ---
 
@@ -228,5 +248,7 @@ signing keys, yes, with a short outage; for pairwise salts, not without code".
   somebody who also recomputes the chain. Shipping the tip somewhere else is the
   real defence, and it is not built (threat model, residual risks).
 * **A KMS or HSM KEK.** The `Kek` port is what one plugs into, and the `kek_id`
-  recorded on every row is what makes migrating to one a re-wrap (procedure B)
-  rather than a re-issue.
+  recorded on every row is what makes migrating to one a re-wrap (§4) rather
+  than a re-issue. `asterius rewrap-kek` re-seals through the `Kek` port, but
+  the only implementation of that port today reads its material into this
+  process, so both keys still have to be local.

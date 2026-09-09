@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from tenant_pairwise_salts where tenant_id = $1 and kek_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "df978bb7b42449112d2e4701ba83ad8f65618c8cb7e041f6fed8d999f5ce6cae"
+}
