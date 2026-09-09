@@ -724,6 +724,58 @@ mod tests {
         assert_eq!(claims["sid"], json!("08a5019c-17e1-4977-8f42-65a12843ea02"));
     }
 
+    /// The other half of the OpenID Foundation suite's finding (`ast-8p1`):
+    /// `CheckForUnexpectedClaimsInIdToken` reported a name it did not know,
+    /// and the name was `sid`. It stays — it is a registered claim and
+    /// Back-Channel Logout 1.0 §2.1 is why the token has one — but it is only
+    /// defensible for as long as the discovery document says so out loud.
+    ///
+    /// So this asserts the inclusion the finding was really about: every claim
+    /// this builder emits about the exchange is a claim
+    /// `metadata::claims_supported` advertises. A claim added here without a
+    /// line there is exactly the surprise the suite flags, and it fails this
+    /// test first.
+    #[test]
+    fn every_claim_the_builder_emits_is_one_the_discovery_document_advertises() {
+        // Arrange: a token with every optional member populated, so that no
+        // claim is absent merely because this fixture did not ask for it.
+        let grant = grant_with(Some(SubjectId::new("SUBJECT-1")));
+        let claimed = grant.claim(now()).expect("a live grant");
+        let session = Session::new(&SessionId::new("08a5019c-17e1-4977-8f42-65a12843ea02"))
+            .expect("a session id");
+
+        // Act.
+        let claims = IdToken::new(
+            &issuer(),
+            &claimed,
+            SigningAlgorithm::Es256,
+            Authentication {
+                authenticated_at: authenticated(),
+                acr: Some("urn:mace:incommon:iap:silver".to_owned()),
+                amr: vec!["pwd".to_owned()],
+            },
+            ACCESS_TOKEN,
+            now(),
+        )
+        .with_nonce("n-0S6_WzA2Mj")
+        .for_session(session)
+        .build()
+        .expect("a buildable token")
+        .into_claims();
+
+        // Assert.
+        let unexpected: Vec<&String> = claims
+            .as_object()
+            .expect("an object")
+            .keys()
+            .filter(|name| !crate::metadata::ID_TOKEN_CLAIMS.contains(&name.as_str()))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "emitted but not advertised: {unexpected:?}"
+        );
+    }
+
     #[test]
     fn a_session_id_that_is_not_printable_ascii_is_refused() {
         for bad in ["", "has space", "line\nbreak", "nul\0", &"s".repeat(129)] {
