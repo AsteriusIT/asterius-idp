@@ -1,0 +1,19 @@
+# Everything that is not a build input. Keeping the context small is not only
+# about speed: a secret that never enters the context cannot be baked into a
+# layer.
+/target/
+/fuzz/target/
+/fuzz/corpus/
+/fuzz/artifacts/
+/.git/
+/.github/
+/.claude/
+/.codex/
+/.agents/
+/.beads/
+/.dolt/
+/docs/
+/deploy/
+.env
+*.pem
+*.key

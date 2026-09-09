@@ -1,0 +1,69 @@
+# An example Asterius deployment: PostgreSQL and one Asterius process.
+#
+#     docker compose -f deploy/compose/docker-compose.yml up --build -d
+#     ./scripts/smoke-test.sh
+#
+# This is a demonstration stack, not a production one. Every value in it is a
+# development value, chosen to be obviously so; deploy/README.md lists what has
+# to change before this shape is safe to run anywhere real.
+#
+# The `asterius` service is where the container hardening is asserted, and the
+# settings there are the acceptance criteria of `ast-p2l.7` written as
+# configuration: non-root, read-only root filesystem, no new privileges, every
+# capability dropped. If one of them has to be removed to make the stack work,
+# that is a bug in the image, not in this file.
+name: asterius
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      # Development credentials. They are in cleartext here because they are
+      # worthless: the port is not published and the volume is disposable.
+      POSTGRES_USER: asterius
+      POSTGRES_PASSWORD: asterius
+      POSTGRES_DB: asterius
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asterius -d asterius"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  asterius:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Development KEK: 32 bytes of ASCII that spell out what they are.
+      # `head -c 32 /dev/urandom | base64` produces a real one, and production
+      # mounts it as a file rather than passing it in the environment, where it
+      # is readable through /proc/self/environ.
+      ASTERIUS_KEK: "YXN0ZXJpdXMtZGV2LWtlay1ub3QtYS1zZWNyZXQhISE="
+    ports:
+      # Loopback only. The stack terminates no TLS (see asterius.toml), so
+      # exposing it on 0.0.0.0 would publish an OpenID Provider over cleartext.
+      - "127.0.0.1:9443:9443"
+    volumes:
+      - ./asterius.toml:/etc/asterius/asterius.toml:ro
+    # --- the hardening, which is the point of this file --------------------
+    # uid/gid 65532, the distroless `nonroot` user. Repeated here so that the
+    # guarantee survives someone rebuilding the image from a different base.
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      # The process writes nothing of its own; this is only so that a library
+      # reaching for a temporary file fails at write time rather than making
+      # the read-only root filesystem unusable.
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  pgdata:
