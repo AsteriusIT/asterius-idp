@@ -73,8 +73,9 @@
 //! go through the same statement, and a digest no client holds writes nothing
 //! at all.
 //!
-//! Two properties make that safe to do on an unauthenticated request, and
-//! [`burn`] carries the argument for both:
+//! Two properties make that safe to do on an unauthenticated request, and the
+//! private `burn` helper this module refuses through carries the argument for
+//! both:
 //!
 //! * **It is one indexed statement, never a scan.** `clients` grew a partial
 //!   index on `(tenant_id, registration_access_token_hash)` for this caller
@@ -86,7 +87,7 @@
 //!
 //! It is also a real loss for the client it happens to: this server issues no
 //! client secret, so that token was the client's only credential and there is
-//! no re-issue path. [`burn`] weighs that against what a leaked token can do
+//! no re-issue path. `burn` weighs that against what a leaked token can do
 //! with unlimited attempts, and says why the trade lands where it does.
 //!
 //! # What this endpoint deliberately does not do

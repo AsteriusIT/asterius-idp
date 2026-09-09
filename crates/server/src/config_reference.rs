@@ -12,8 +12,8 @@
 //!
 //! * **Which keys exist.** [`crate::config::declared_keys`] reads them out of
 //!   the deserializers themselves. A key documented here that the file does not
-//!   accept, or a key the file accepts that is not documented here, fails
-//!   [`every_key_is_documented`](tests::every_key_is_documented).
+//!   accept, or a key the file accepts that is not documented here, fails this
+//!   module's `every_key_is_documented` test.
 //! * **What the defaults are.** The default column is formatted from the same
 //!   constants the validator applies, so a default cannot be changed in one
 //!   place and described in the other.

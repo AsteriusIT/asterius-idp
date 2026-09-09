@@ -21,12 +21,14 @@
 //!   and *then* asked would violate the §3 MUST while looking, from the
 //!   outside, almost the same.
 //! * **The relying parties are notified before the browser leaves.** The
-//!   `Location` is built from a [`Notified`] receipt, which only
-//!   [`notify_participants`] produces.
+//!   `Location` is built from a [`Notified`] receipt, and the one place in
+//!   this server that mints one is the notifying step itself. That step,
+//!   `notify_participants`, stays private so no second path to a receipt can
+//!   appear beside it.
 //!
 //! # What is not built yet
 //!
-//! [`notify_participants`] is the named seam for **back-channel logout**
+//! `notify_participants` is the named seam for **back-channel logout**
 //! (OIDC Back-Channel Logout 1.0 §2, `E10_02`) and for the **CAEP
 //! `session-revoked`** signal, which needs the outbox (`ast-0ju.9`). It reads
 //! the participant list and records the count today; it does not send
@@ -34,7 +36,7 @@
 //! function, which is why the redirect is already gated behind its receipt.
 //!
 //! Registered `post_logout_redirect_uris` (§3.1) *are* stored, and
-//! [`registered_redirect_uris`] reads them off the identified client's
+//! `registered_redirect_uris` reads them off the identified client's
 //! registration. The comparison stays where it was — [`asterius_oidc::logout`]
 //! — and stays byte-exact; what this file decides is only whose set is
 //! consulted, and it answers "nobody's" for every case it is not certain
