@@ -37,6 +37,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
 /// Where the console is mounted, beneath any tenant prefix.
+///
+/// Named here, beside the bundle it addresses, but *routed* by
+/// `asterius_server::http::console`, which owns the redirect to
+/// [`INDEX_PATH`]: see [`assets`].
 pub const BASE_PATH: &str = "/admin";
 
 /// The path of the entry document, which is `BASE_PATH` with its slash.
@@ -146,36 +150,27 @@ struct Index {
     styles: Vec<&'static str>,
 }
 
-/// The console's *unguarded* routes: the redirect to the trailing slash, and
-/// the assets.
+/// The console's *unguarded* routes: the assets, and nothing else.
 ///
-/// The entry document is not here. It is mounted by the composition root
-/// against a handler that has a session repository behind it
-/// (`asterius_server::http::console`), because ADR-0009 makes a session the
-/// console's only credential and `ast-wr4` makes the absence of one an
-/// interaction rather than a blank shell. Serving the document from a router
-/// with no state at all is what made "signed out" a thing the *script* had to
-/// notice; keeping the two apart is what stops it becoming that again.
+/// Two things that belong to `/admin` are deliberately not here, and both are
+/// mounted by the composition root (`asterius_server::http::console`).
 ///
-/// All of these are `GET`, and none of them changes anything: this is a static
-/// bundle.
+/// The entry document, because deciding whether this visitor may see it needs
+/// a session repository: ADR-0009 makes a session the console's only
+/// credential and `ast-wr4` makes the absence of one an interaction rather
+/// than a blank shell. Serving the document from a router with no state at all
+/// is what made "signed out" a thing the *script* had to notice; keeping the
+/// two apart is what stops it becoming that again.
+///
+/// The redirect from [`BASE_PATH`] to [`INDEX_PATH`], because every redirect
+/// in this codebase is built by `asterius_server::http::redirect::SeeOther` —
+/// 303 and nothing else, per FAPI 2.0 SP §5.3.2.2 items 10–11 — and this crate
+/// must not depend on `server` (`scripts/check-layering.sh`). So the one place
+/// that can write it is the one that already wraps this router.
+///
+/// What is left is `GET` and changes nothing: this is a static bundle.
 pub fn assets(bundle: Bundle) -> Router {
-    Router::new()
-        // `/admin` without the slash is a mistake a person makes by typing.
-        // A redirect rather than a second copy of the document, because the
-        // relative asset URLs need the trailing slash to resolve inside
-        // `/admin/`. The target is *relative* so that a tenant prefix, which
-        // this handler cannot see, survives it.
-        .route(
-            BASE_PATH,
-            get(|| async {
-                (
-                    StatusCode::PERMANENT_REDIRECT,
-                    [(header::LOCATION, "admin/")],
-                )
-            }),
-        )
-        .route("/admin/assets/{file}", get(move |file| asset(bundle, file)))
+    Router::new().route("/admin/assets/{file}", get(move |file| asset(bundle, file)))
 }
 
 /// The entry document, under this response's nonce.
@@ -477,20 +472,16 @@ mod tests {
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    /// A typed `/admin` has to reach `/admin/`, and has to do it in a way that
-    /// keeps a tenant prefix this handler never sees.
+    /// The slash-less path is not this router's: it is routed, and redirected,
+    /// by `asterius_server::http::console`, which is where the 303 helper
+    /// lives. Asserted here so that mounting a second copy of it — which would
+    /// make axum panic on the overlap at start-up — shows up as a failing test
+    /// instead.
     #[tokio::test]
-    async fn the_slashless_path_redirects_relatively() {
-        // Arrange / Act
+    async fn the_slashless_path_is_not_mounted_here() {
         let response = get(bundle(), BASE_PATH).await;
 
-        // Assert
-        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
-        assert_eq!(
-            response.headers().get(header::LOCATION).expect("location"),
-            "admin/",
-            "an absolute redirect would drop the /t/{{id}} prefix"
-        );
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// Every route the console mounts is safe, which is the whole of its
@@ -502,7 +493,6 @@ mod tests {
         for (path, verb) in [
             (INDEX_PATH, "POST"),
             (INDEX_PATH, "DELETE"),
-            (BASE_PATH, "POST"),
             ("/admin/assets/main-abc123.js", "POST"),
             ("/admin/assets/main-abc123.js", "PUT"),
         ] {
