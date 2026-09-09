@@ -25,6 +25,9 @@
 # so re-ignore its contents and keep only the crashes back.
 /fuzz/corpus/claims_request/*
 !/fuzz/corpus/claims_request/crash-*
+!/fuzz/corpus/redaction_scan/
+/fuzz/corpus/redaction_scan/*
+!/fuzz/corpus/redaction_scan/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.
