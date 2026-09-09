@@ -78,6 +78,7 @@
 
 use crate::http::cookies;
 use crate::http::interaction::{record_registered_passkey, set_session_cookie};
+use crate::http::throttle;
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::entities::session::{COOKIE_NAME, Lifetimes, SessionId};
 use asterius_domain::{
@@ -464,6 +465,14 @@ pub struct PasskeyLoginContext<'a> {
     pub lifetimes: Lifetimes,
     /// Where a sign-in — and a cloned-authenticator signal — is recorded.
     pub audit: &'a dyn AuditSink,
+    /// What bounds guessing here (`ast-2vk.9`).
+    ///
+    /// By address only. A discoverable-credential assertion names nobody —
+    /// that is the point of §7.2 — so there is no identifier to count against,
+    /// and resolving the credential to its owner *before* the assertion
+    /// verifies, just to pick a bucket, would be the enumeration this ceremony
+    /// is designed not to allow.
+    pub throttle: crate::http::throttle::LoginThrottle<'a>,
 }
 
 impl std::fmt::Debug for PasskeyLoginContext<'_> {
@@ -560,7 +569,48 @@ pub async fn login_finish(
     body: &Bytes,
     now: OffsetDateTime,
 ) -> Response {
-    let Some((presented, state)) = resumed(&context, id, headers, now).await else {
+    // The limiter wraps the ceremony rather than sitting inside it, because
+    // §7.2 has a dozen ways to refuse and every one of them is a failed
+    // attempt worth counting. Wrapping means a refusal added later is counted
+    // without anybody remembering to count it.
+    let attempt = context.throttle.attempt(None);
+    match context
+        .throttle
+        .check(&context.tenant.id, &attempt, now)
+        .await
+    {
+        Ok(None) => {}
+        Ok(Some(refused)) => {
+            throttle::record_throttled(context.audit, &context.tenant.id, refused, now).await;
+            return login_throttled(refused);
+        }
+        Err(error) => {
+            // Fail closed, as the password path does: an unreadable limiter is
+            // not permission.
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read the login limiter");
+            return login_refused("the login limiter could not be read");
+        }
+    }
+
+    let response = assertion_ceremony(&context, id, headers, body, now).await;
+    if response.status() == StatusCode::BAD_REQUEST {
+        context
+            .throttle
+            .record_failure(&context.tenant.id, &attempt, now)
+            .await;
+    }
+    response
+}
+
+/// §7.2 itself, once the limiter has let the attempt through.
+async fn assertion_ceremony(
+    context: &PasskeyLoginContext<'_>,
+    id: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+    now: OffsetDateTime,
+) -> Response {
+    let Some((presented, state)) = resumed(context, id, headers, now).await else {
         return login_refused("the interaction is not one that can be continued");
     };
     if !matches!(state.stage, Stage::Login | Stage::StepUp) {
@@ -660,7 +710,7 @@ pub async fn login_finish(
     ) {
         Ok(verified) => verified,
         Err(AssertionError::SignCountRegressed { presented, stored }) => {
-            return clone_signal(&context, &credential, presented, stored, now).await;
+            return clone_signal(context, &credential, presented, stored, now).await;
         }
         Err(error) => {
             tracing::info!(
@@ -672,7 +722,7 @@ pub async fn login_finish(
         }
     };
 
-    session_from_assertion(&context, &presented, state, &credential, &verified, now).await
+    session_from_assertion(context, &presented, state, &credential, &verified, now).await
 }
 
 /// Everything that happens *after* §7.2 has been satisfied.
@@ -1191,6 +1241,27 @@ fn login_refused(reason: &str) -> Response {
         axum::Json(json!({
             "error": "authentication_failed",
             "correlation_id": correlation,
+        })),
+    )
+        .into_response()
+}
+
+/// The same refusal, before any credential was looked at.
+///
+/// A distinct status and a `Retry-After`, because this one is worth acting on:
+/// the script on the page can stop retrying instead of burning the user's
+/// remaining budget. The body says no more than the ordinary refusal does
+/// about *who* was being authenticated — there was no identifier in the
+/// request to say anything about.
+fn login_throttled(refused: crate::http::throttle::Refused) -> Response {
+    let seconds = refused.retry_after_seconds();
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        no_store(),
+        [(header::RETRY_AFTER, seconds.to_string())],
+        axum::Json(json!({
+            "error": "too_many_attempts",
+            "retry_after": seconds,
         })),
     )
         .into_response()

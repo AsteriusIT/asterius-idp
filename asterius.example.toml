@@ -187,3 +187,24 @@ issuer = "https://as.example/t/demo"
 # password_file = "/etc/asterius/admin-password"
 # password_env = "ASTERIUS_ADMIN_PASSWORD"  # readable through
 #                                           # /proc/self/environ; prefer the file
+
+# What bounds online guessing at the sign-in page (NIST SP 800-63B §5.2.2).
+#
+# Failures — not attempts — are counted in fixed windows, per client address
+# and per typed identifier. Both limits apply, because they stop different
+# attacks: the per-account one bounds somebody stuffing passwords into one
+# known account, the per-address one bounds somebody trying a thousand accounts
+# once each. Either alone leaves the other attack unbounded.
+#
+# The counters are rows in the database, not numbers in a process, so two
+# replicas share one limit instead of granting two.
+#
+# The identifier is hashed before it is counted, and its bucket exists whether
+# an account by that name does or not: a locked-out identifier and one that was
+# never registered produce the same page, the same words and the same hint.
+# Nothing here can be used to find out which accounts exist.
+#
+# [login]
+# failure_window_seconds = 900     # default 900, minimum 30
+# max_failures_per_account = 10    # default 10
+# max_failures_per_address = 100   # default 100

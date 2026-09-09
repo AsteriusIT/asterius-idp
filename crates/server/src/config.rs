@@ -18,7 +18,7 @@ use crate::http::register::{
     InitialAccessTokens, MIN_INITIAL_ACCESS_TOKEN_LEN, RegistrationPolicy,
 };
 use crate::observability::LogFormat;
-use asterius_domain::{Capabilities, Issuer, Secret, TenantId};
+use asterius_domain::{Capabilities, Issuer, LoginLimits, RateLimit, Secret, TenantId};
 use ipnet::IpNet;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -61,6 +61,8 @@ pub struct Config {
     pub registration: RegistrationPolicy,
     /// The deployment admin to seed at boot, if the operator declared one.
     pub admin: Option<AdminConfig>,
+    /// How many failed sign-ins are tolerated, and over what window.
+    pub login: LoginLimits,
 }
 
 /// Listener and transport settings.
@@ -312,6 +314,24 @@ struct RawConfig {
     registration: Option<RawRegistration>,
     #[serde(default)]
     admin: Option<RawAdmin>,
+    #[serde(default)]
+    login: RawLogin,
+}
+
+/// The `[login]` table.
+///
+/// A plain `#[serde(default)]` struct rather than an `Option`, unlike
+/// `[registration]` and `[admin]`: those two are postures an operator opts
+/// into, and this is a limit that must exist whether anybody thought about it
+/// or not. A deployment that says nothing about login abuse still gets the
+/// defaults below — an unlimited login endpoint is not a shape this server
+/// offers.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLogin {
+    failure_window_seconds: Option<u64>,
+    max_failures_per_account: Option<u32>,
+    max_failures_per_address: Option<u32>,
 }
 
 /// The `[registration]` table.
@@ -439,6 +459,32 @@ pub(crate) const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 10;
 /// safer.
 pub(crate) const DEFAULT_ADMIN_TENANT: &str = "admin";
 
+/// How long failed sign-ins are counted for.
+///
+/// Fifteen minutes: long enough that an attacker pacing themselves to the
+/// limit makes negligible progress against even a weak password, short enough
+/// that a person who mistyped theirs is not locked out for an afternoon. NIST
+/// SP 800-63B §5.2.2 asks for a bound on attempts and leaves the numbers to
+/// the deployment; these are the numbers this deployment starts with.
+pub(crate) const DEFAULT_LOGIN_WINDOW_SECONDS: u64 = 900;
+
+/// Failures permitted against one typed identifier per window.
+///
+/// Ten: enough for a person with a password manager and a bad day, far below
+/// the thousands an online guessing attack needs.
+pub(crate) const DEFAULT_LOGIN_MAX_PER_ACCOUNT: u32 = 10;
+
+/// Failures permitted from one client address per window.
+///
+/// Higher than the per-account limit, because one address is legitimately many
+/// people: an office, a school, a mobile carrier's NAT. It is the limit that
+/// stops a *sweep* — one attempt each against a thousand accounts — which the
+/// per-account limit cannot see at all.
+pub(crate) const DEFAULT_LOGIN_MAX_PER_ADDRESS: u32 = 100;
+
+/// The shortest counting window an operator may configure.
+pub(crate) const MIN_LOGIN_WINDOW_SECONDS: u64 = 30;
+
 /// The seeded admin's login identifier when `[admin]` does not name one.
 pub(crate) const DEFAULT_ADMIN_USERNAME: &str = "admin";
 
@@ -551,6 +597,7 @@ impl RawConfig {
 
         let registration = validate_registration(self.registration, &mut errors);
         let admin = validate_admin(self.admin, &tenants, &mut errors);
+        let login = validate_login(&self.login, &mut errors);
 
         errors.finish(Config {
             server,
@@ -561,7 +608,60 @@ impl RawConfig {
             kek: kek.unwrap_or_else(|| KekSource::Env(String::new())),
             registration,
             admin,
+            login,
         })
+    }
+}
+
+/// Turns the `[login]` table into the two limits the sign-in paths apply.
+///
+/// Both maxima are refused at zero. Zero is spellable and would mean "nobody
+/// may ever sign in", which is a way to lock a deployment out of itself by
+/// typing one character; an operator who wants that removes the credential
+/// method instead. The window has a floor for the mirror reason: a window of
+/// zero seconds is a limit that resets before it can be reached.
+fn validate_login(raw: &RawLogin, errors: &mut Collector) -> LoginLimits {
+    let window = raw
+        .failure_window_seconds
+        .unwrap_or(DEFAULT_LOGIN_WINDOW_SECONDS);
+    if window < MIN_LOGIN_WINDOW_SECONDS {
+        errors.problem(
+            "login.failure_window_seconds",
+            format!("must be at least {MIN_LOGIN_WINDOW_SECONDS}: a shorter window resets before an attacker's attempts add up"),
+        );
+    }
+    let window = time::Duration::seconds(
+        i64::try_from(window.max(MIN_LOGIN_WINDOW_SECONDS)).unwrap_or(i64::MAX),
+    );
+
+    let mut positive = |key: &str, value: u32| -> u32 {
+        if value == 0 {
+            errors.problem(
+                key,
+                "must be at least 1: zero refuses every sign-in, including the operator's",
+            );
+            return 1;
+        }
+        value
+    };
+
+    LoginLimits {
+        per_address: RateLimit {
+            max: positive(
+                "login.max_failures_per_address",
+                raw.max_failures_per_address
+                    .unwrap_or(DEFAULT_LOGIN_MAX_PER_ADDRESS),
+            ),
+            window,
+        },
+        per_account: RateLimit {
+            max: positive(
+                "login.max_failures_per_account",
+                raw.max_failures_per_account
+                    .unwrap_or(DEFAULT_LOGIN_MAX_PER_ACCOUNT),
+            ),
+            window,
+        },
     }
 }
 
@@ -1037,6 +1137,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("registration", accepted_keys::<RawRegistration>()),
         ("tenant", accepted_keys::<RawTenant>()),
         ("admin", accepted_keys::<RawAdmin>()),
+        ("login", accepted_keys::<RawLogin>()),
     ]
     .into_iter()
     .collect()
@@ -1113,6 +1214,65 @@ mod tests {
             Err(other) => panic!("expected validation problems, got {other}"),
             Ok(_) => panic!("expected validation problems, configuration was accepted"),
         }
+    }
+
+    #[test]
+    fn a_deployment_that_says_nothing_about_login_still_has_limits() {
+        let config = parse(MINIMAL).expect("minimal config should be valid");
+
+        assert_eq!(config.login.per_account.max, DEFAULT_LOGIN_MAX_PER_ACCOUNT);
+        assert_eq!(config.login.per_address.max, DEFAULT_LOGIN_MAX_PER_ADDRESS);
+        assert_eq!(
+            config.login.per_account.window.whole_seconds(),
+            i64::try_from(DEFAULT_LOGIN_WINDOW_SECONDS).expect("a small number"),
+        );
+    }
+
+    #[test]
+    fn login_limits_are_read_from_the_file() {
+        let text = format!(
+            "{MINIMAL}\n[login]\nfailure_window_seconds = 60\nmax_failures_per_account = 3\n"
+        );
+
+        let config = parse(&text).expect("a valid login table");
+
+        assert_eq!(config.login.per_account.max, 3);
+        assert_eq!(config.login.per_account.window.whole_seconds(), 60);
+        // Untouched keys keep their defaults rather than collapsing to the one
+        // that was set.
+        assert_eq!(config.login.per_address.max, DEFAULT_LOGIN_MAX_PER_ADDRESS);
+    }
+
+    /// A window that resets before an attacker's attempts add up is a limit in
+    /// name only, so it is refused rather than quietly raised.
+    #[test]
+    fn a_window_below_the_floor_is_refused() {
+        let text = format!("{MINIMAL}\n[login]\nfailure_window_seconds = 1\n");
+
+        let problems = problems(parse(&text));
+
+        assert!(
+            problems
+                .paths()
+                .any(|path| path == "login.failure_window_seconds"),
+            "{problems}"
+        );
+    }
+
+    /// Zero is spellable and would refuse every sign-in, including the
+    /// operator's own.
+    #[test]
+    fn a_limit_of_zero_is_refused() {
+        let text = format!("{MINIMAL}\n[login]\nmax_failures_per_account = 0\n");
+
+        let problems = problems(parse(&text));
+
+        assert!(
+            problems
+                .paths()
+                .any(|path| path == "login.max_failures_per_account"),
+            "{problems}"
+        );
     }
 
     #[test]

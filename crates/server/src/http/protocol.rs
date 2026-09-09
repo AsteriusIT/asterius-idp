@@ -123,6 +123,14 @@ pub struct ClientEndpoints {
     /// keys, and a per-request one would decrypt on every token — see
     /// [`crate::signing::CachedSigner`].
     pub signer: Arc<dyn asterius_domain::keys::Signer>,
+    /// How many failed sign-ins this deployment tolerates, and over what
+    /// window (`ast-2vk.9`).
+    ///
+    /// The counters themselves are rows in `rate_limits`, reached through the
+    /// same pool as everything else: a limit held in process memory would be
+    /// multiplied by the replica count, which is the same argument ADR-0008
+    /// makes about the pairwise-salt cache.
+    pub login_limits: asterius_domain::LoginLimits,
     /// Validates DPoP proofs on every endpoint that takes one.
     ///
     /// Always present: the *decision* about whether proofs are required lives
@@ -819,6 +827,7 @@ async fn interaction_show(
     Extension(tenant): Extension<Arc<Tenant>>,
     Path(id): Path<String>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
@@ -829,6 +838,7 @@ async fn interaction_show(
     let codes = scope.codes();
     let users = scope.users(Arc::clone(&endpoints.kek));
     let passwords = endpoints.passwords(&tenant.id);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     interaction::show(
         InteractionContext {
             tenant: &tenant,
@@ -848,6 +858,7 @@ async fn interaction_show(
             subjects: &users,
             code_lifetime: endpoints.code_lifetime,
             nonce: &nonce,
+            throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),
         },
         &id,
@@ -863,6 +874,11 @@ async fn interaction_submit(
     Extension(tenant): Extension<Arc<Tenant>>,
     Path(id): Path<String>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    // `Option`, because the extension is the tenancy layer's doing and a
+    // request that reached here without it is a wiring fault rather than a
+    // reason to answer 500. A limiter with no address still counts the
+    // account bucket, which is the half that bounds guessing at one user.
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -874,6 +890,7 @@ async fn interaction_submit(
     let codes = scope.codes();
     let users = scope.users(Arc::clone(&endpoints.kek));
     let passwords = endpoints.passwords(&tenant.id);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     interaction::submit(
         InteractionContext {
             tenant: &tenant,
@@ -893,6 +910,7 @@ async fn interaction_submit(
             subjects: &users,
             code_lifetime: endpoints.code_lifetime,
             nonce: &nonce,
+            throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),
         },
         &id,
@@ -901,6 +919,22 @@ async fn interaction_submit(
         time::OffsetDateTime::now_utc(),
     )
     .await
+}
+
+/// The login limiter for one request.
+///
+/// Built per request because the client address is part of it. The store
+/// behind it is a handle to the shared pool, so this costs an `Arc` clone.
+fn throttle<'a>(
+    endpoints: &ClientEndpoints,
+    limiter: &'a asterius_store_pg::PgRateLimitStore,
+    client: Option<&crate::http::forwarded::ClientAddr>,
+) -> crate::http::throttle::LoginThrottle<'a> {
+    crate::http::throttle::LoginThrottle::new(
+        limiter,
+        endpoints.login_limits,
+        client.map(|client| client.ip),
+    )
 }
 
 /// Builds the context the three passkey routes share.
@@ -991,6 +1025,7 @@ async fn passkey_login_options(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Path(id): Path<String>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -999,6 +1034,7 @@ async fn passkey_login_options(
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
     let users = scope.users(Arc::clone(&endpoints.kek));
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     passkeys::login_options(
         PasskeyLoginContext {
             tenant: &tenant,
@@ -1008,6 +1044,7 @@ async fn passkey_login_options(
             users: &users,
             lifetimes: endpoints.session_lifetimes,
             audit: endpoints.audit.as_ref(),
+            throttle: throttle(&endpoints, &limiter, client.as_deref()),
         },
         &id,
         &headers,
@@ -1022,6 +1059,7 @@ async fn passkey_login_finish(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Path(id): Path<String>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1030,6 +1068,7 @@ async fn passkey_login_finish(
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
     let users = scope.users(Arc::clone(&endpoints.kek));
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     passkeys::login_finish(
         PasskeyLoginContext {
             tenant: &tenant,
@@ -1039,6 +1078,7 @@ async fn passkey_login_finish(
             users: &users,
             lifetimes: endpoints.session_lifetimes,
             audit: endpoints.audit.as_ref(),
+            throttle: throttle(&endpoints, &limiter, client.as_deref()),
         },
         &id,
         &headers,

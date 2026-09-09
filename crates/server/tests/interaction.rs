@@ -5,20 +5,24 @@
 //! browser mismatch destroys the interaction rather than re-rendering it.
 
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, EventType};
+use asterius_domain::rate_limit::{Bucket, RateLimitStore};
 use asterius_domain::{
     AuthenticationMethod, ClientId, CodeBinding, CodeIssuer, CredentialVerifier, DomainError,
     Grant, GrantRepository, InteractionRecord, InteractionRepository, Issuer, Lifetimes,
-    Participant, Secret, SectorIdentifier, Session, SessionRepository, SessionRevocation,
-    SubjectId, SubjectResolver, Tenant, TenantId, TenantStatus, UserId,
+    LoginLimits, Participant, RateLimit, Secret, SectorIdentifier, Session, SessionRepository,
+    SessionRevocation, SubjectId, SubjectResolver, Tenant, TenantId, TenantStatus, UserId,
 };
 use asterius_server::http::interaction::{InteractionContext, show, submit};
+use asterius_server::http::throttle::LoginThrottle;
 use asterius_web::csp::Nonce;
 use asterius_web::interaction::{COOKIE_NAME, InteractionId, StoredState};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::sync::Mutex;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 const ISSUER: &str = "https://as.example/t/demo";
 
@@ -363,6 +367,52 @@ struct Issued {
     grants: FakeGrants,
     codes: FakeCodes,
     audit: FakeAudit,
+    limiter: FakeLimiter,
+}
+
+/// The address every request in this file appears to come from.
+fn client() -> IpAddr {
+    "198.51.100.7".parse().expect("a literal address")
+}
+
+/// Fixed-window counters in memory.
+///
+/// The real ones are rows in `rate_limits`, for the reason
+/// `asterius_domain::rate_limit` gives at length; what a handler test needs is
+/// only that the counters move.
+#[derive(Debug, Default)]
+struct FakeLimiter(Mutex<BTreeMap<(String, i64), u32>>);
+
+#[async_trait::async_trait]
+impl RateLimitStore for FakeLimiter {
+    async fn count(
+        &self,
+        _tenant: &TenantId,
+        bucket: &Bucket,
+        window_start: OffsetDateTime,
+    ) -> Result<u32, DomainError> {
+        Ok(*self
+            .0
+            .lock()
+            .expect("lock")
+            .get(&(bucket.as_str().to_owned(), window_start.unix_timestamp()))
+            .unwrap_or(&0))
+    }
+
+    async fn record(
+        &self,
+        _tenant: &TenantId,
+        bucket: &Bucket,
+        window_start: OffsetDateTime,
+        _expires_at: OffsetDateTime,
+    ) -> Result<u32, DomainError> {
+        let mut counters = self.0.lock().expect("lock");
+        let entry = counters
+            .entry((bucket.as_str().to_owned(), window_start.unix_timestamp()))
+            .or_default();
+        *entry += 1;
+        Ok(*entry)
+    }
 }
 
 /// The audit trail, in memory.
@@ -391,6 +441,27 @@ fn context<'a>(
     sessions: &'a FakeSessions,
     issued: &'a Issued,
 ) -> InteractionContext<'a> {
+    context_with(
+        tenant,
+        store,
+        nonce,
+        auth,
+        sessions,
+        issued,
+        generous_limits(),
+    )
+}
+
+/// The same context, with the login limits a test chooses.
+fn context_with<'a>(
+    tenant: &'a Tenant,
+    store: &'a FakeStore,
+    nonce: &'a Nonce,
+    auth: Option<&'a dyn CredentialVerifier>,
+    sessions: &'a FakeSessions,
+    issued: &'a Issued,
+    limits: LoginLimits,
+) -> InteractionContext<'a> {
     InteractionContext {
         tenant,
         requests: store,
@@ -404,7 +475,26 @@ fn context<'a>(
         subjects: &FakeSubjects,
         code_lifetime: asterius_oidc::code::DEFAULT_LIFETIME,
         nonce,
+        throttle: LoginThrottle::new(&issued.limiter, limits, Some(client())),
         audit: &issued.audit,
+    }
+}
+
+/// Limits far above anything these tests reach.
+///
+/// The limiter's own behaviour is asserted in `http::throttle`; what matters
+/// here is that a sign-in goes through it, so the numbers are chosen not to
+/// interfere. The one test that wants the limit reached lowers them itself.
+fn generous_limits() -> LoginLimits {
+    LoginLimits {
+        per_address: RateLimit {
+            max: 1_000,
+            window: Duration::minutes(15),
+        },
+        per_account: RateLimit {
+            max: 1_000,
+            window: Duration::minutes(15),
+        },
     }
 }
 
@@ -843,6 +933,207 @@ async fn signing_in_creates_a_session_and_sets_its_cookie() {
         !cookie.contains(&created[0].id_digest),
         "the digest was sent to the browser instead of the id"
     );
+}
+
+// ---- login abuse protection (ast-2vk.9) ---------------------------------
+
+/// Never authenticates anybody, so the failure path can be exercised.
+#[derive(Debug)]
+struct AlwaysRefuses;
+
+#[async_trait::async_trait]
+impl CredentialVerifier for AlwaysRefuses {
+    async fn verify(
+        &self,
+        _username: &str,
+        _password: Secret<String>,
+    ) -> Result<Option<uuid::Uuid>, DomainError> {
+        Ok(None)
+    }
+}
+
+/// Two failures per window, per address and per identifier.
+fn tight_limits() -> LoginLimits {
+    LoginLimits {
+        per_address: RateLimit {
+            max: 2,
+            window: Duration::minutes(15),
+        },
+        per_account: RateLimit {
+            max: 2,
+            window: Duration::minutes(15),
+        },
+    }
+}
+
+/// Submits `count` wrong passwords for `username`, returning the last
+/// response and its body.
+async fn guess(
+    username: &str,
+    count: usize,
+    issued: &Issued,
+    now: OffsetDateTime,
+) -> (StatusCode, String) {
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let auth = AlwaysRefuses;
+    let mut last = None;
+    for _ in 0..count {
+        let id = InteractionId::generate();
+        let mut state = StoredState::default();
+        let token = state.issue_csrf();
+        let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+        let response = submit(
+            context_with(
+                &tenant,
+                &store,
+                &nonce,
+                Some(&auth),
+                &sessions,
+                issued,
+                tight_limits(),
+            ),
+            id.expose(),
+            &cookie_header(id.expose()),
+            &Bytes::from(format!(
+                "csrf={}&username={username}&password=wrong",
+                token.expose()
+            )),
+            now,
+        )
+        .await;
+        last = Some((response.status(), body_of(response).await));
+    }
+    last.expect("at least one attempt")
+}
+
+/// The criterion: past the limit the same page comes back, with a generic
+/// message and a hint about when to return.
+#[tokio::test]
+async fn too_many_failures_answer_the_login_page_with_a_retry_hint() {
+    let issued = Issued::default();
+    let now = OffsetDateTime::now_utc();
+
+    let (status, body) = guess("ada", 3, &issued, now).await;
+
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(body.contains("Try again in"), "no retry hint: {body}");
+    assert!(
+        body.contains(r#"name="password""#),
+        "the login form did not come back: {body}"
+    );
+}
+
+/// The refusal is not just a page: a client that reads headers is told the
+/// same thing.
+#[tokio::test]
+async fn a_throttled_sign_in_carries_a_retry_after_header() {
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let auth = AlwaysRefuses;
+    let now = OffsetDateTime::now_utc();
+    guess("ada", 2, &issued, now).await;
+
+    let response = submit(
+        context_with(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&auth),
+            &sessions,
+            &issued,
+            tight_limits(),
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=wrong",
+            token.expose()
+        )),
+        now,
+    )
+    .await;
+
+    let hint = response
+        .headers()
+        .get(header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .expect("no Retry-After");
+    assert!(hint >= 1, "the hint was not a positive number of seconds");
+}
+
+/// The trap this ticket exists to avoid: a per-account limit that only bites
+/// for accounts that exist is an enumeration oracle. Here the two identifiers
+/// differ only in whether the verifier would ever have said yes, and the
+/// answers are byte-identical.
+#[tokio::test]
+async fn a_locked_identifier_and_an_unknown_one_answer_the_same_thing() {
+    let now = OffsetDateTime::now_utc();
+    let real = Issued::default();
+    let invented = Issued::default();
+
+    let (real_status, real_body) = guess("ada", 3, &real, now).await;
+    let (invented_status, invented_body) = guess("nobody@example.test", 3, &invented, now).await;
+
+    assert_eq!(real_status, invented_status);
+    // What the person is told. The rest of the page differs only in the
+    // per-render values — the interaction id, the CSP nonce, the synchroniser
+    // token — none of which is derived from what was typed.
+    let said = |html: &str| {
+        html.split(r#"<p class="error">"#)
+            .nth(1)
+            .and_then(|rest| rest.split("</p>").next())
+            .map(ToOwned::to_owned)
+            .expect("a message on the page")
+    };
+    assert_eq!(said(&real_body), said(&invented_body));
+    assert!(said(&real_body).contains("Try again in"));
+}
+
+/// A refusal that never reached the credential is still a refusal somebody
+/// should be able to see afterwards.
+#[tokio::test]
+async fn a_throttled_sign_in_is_written_to_the_audit_trail() {
+    let issued = Issued::default();
+    let now = OffsetDateTime::now_utc();
+
+    guess("ada", 3, &issued, now).await;
+
+    let types: Vec<_> = issued
+        .audit
+        .events()
+        .into_iter()
+        .map(|event| event.event_type)
+        .collect();
+    assert!(
+        types.contains(&EventType::AUTH_THROTTLED),
+        "no throttle record: {types:?}"
+    );
+    assert!(
+        types.contains(&EventType::AUTH_FAILED),
+        "no failure record: {types:?}"
+    );
+}
+
+/// A limit that never lifted would be a denial of service anybody could aim at
+/// anybody.
+#[tokio::test]
+async fn the_limit_lifts_once_the_window_has_passed() {
+    let issued = Issued::default();
+    let now = OffsetDateTime::now_utc();
+    guess("ada", 3, &issued, now).await;
+
+    let (status, _) = guess("ada", 1, &issued, now + Duration::minutes(16)).await;
+
+    assert_eq!(status, StatusCode::OK);
 }
 
 // ---- the consent decision (ast-uwv.1) -----------------------------------

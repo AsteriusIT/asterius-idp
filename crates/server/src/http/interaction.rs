@@ -32,6 +32,7 @@
 
 use crate::http::form_action_origin;
 use crate::http::redirect::SeeOther;
+use crate::http::throttle;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::session::SessionId;
 use asterius_domain::{
@@ -90,6 +91,13 @@ pub struct InteractionContext<'a> {
     pub code_lifetime: Duration,
     /// The CSP nonce the document middleware drew for this response.
     pub nonce: &'a Nonce,
+    /// How failed sign-ins are counted, and where this request came from.
+    ///
+    /// Consulted before the credential is checked and written to after one is
+    /// refused, so the cost of a wrong guess is paid by whoever made it. It is
+    /// part of the context rather than a parameter of `sign_in` because a
+    /// login handler that can be written without it is one that will be.
+    pub throttle: crate::http::throttle::LoginThrottle<'a>,
     /// Where the security-relevant things that happen here are recorded.
     ///
     /// The interaction endpoints are where a person authenticates and where a
@@ -347,7 +355,7 @@ pub async fn submit(
 async fn sign_in(
     context: &InteractionContext<'_>,
     presented: &InteractionId,
-    mut state: StoredState,
+    state: StoredState,
     id: &str,
     form: &[(String, String)],
     record: &InteractionRecord,
@@ -360,21 +368,7 @@ async fn sign_in(
     };
 
     let Some(credentials) = context.credentials else {
-        // No method is registered, so nobody can sign in. Saying so is
-        // better than a generic failure: the deployment is
-        // misconfigured and an operator needs to know which way.
-        let token = state.issue_csrf();
-        if let Err(error) = save(context, presented, &state, None, now).await {
-            return *error;
-        }
-        return render(
-            context,
-            Stage::Login,
-            &token,
-            id,
-            Some("Signing in is not available on this server."),
-            None,
-        );
+        return no_method(context, presented, state, id, now).await;
     };
 
     let (Some(username), Some(password)) = (field("username"), field("password")) else {
@@ -387,6 +381,12 @@ async fn sign_in(
             "Enter a username and password.",
         )
         .await;
+    };
+
+    let attempt = context.throttle.attempt(Some(username));
+    let mut state = match gate(context, presented, state, id, &attempt, now).await {
+        Ok(state) => state,
+        Err(response) => return *response,
     };
 
     match credentials
@@ -440,6 +440,15 @@ async fn sign_in(
         // is said. Both halves are needed — identical text with a
         // measurable delay is still an oracle.
         Ok(None) => {
+            // The failure is counted against both buckets and recorded once.
+            // Neither step asks whether the account exists, which is what
+            // keeps a locked-out identifier indistinguishable from an invented
+            // one.
+            context
+                .throttle
+                .record_failure(&context.tenant.id, &attempt, now)
+                .await;
+            throttle::record_failed_password(context.audit, &context.tenant.id, now).await;
             retry(
                 context,
                 presented,
@@ -922,6 +931,106 @@ async fn retry(
         return *error;
     }
     render(context, state.stage, &token, id, Some(message), None)
+}
+
+/// The limiter, before the credential is looked at.
+///
+/// That order is the only one that helps: a limit consulted after Argon2id has
+/// run has already paid for the guess it was meant to refuse, so a limiter
+/// behind the verification would bound the guessing without bounding the work.
+///
+/// Returns the state to carry on with, or the response to send instead.
+async fn gate(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    state: StoredState,
+    id: &str,
+    attempt: &throttle::Attempt,
+    now: OffsetDateTime,
+) -> Result<StoredState, Box<Response>> {
+    match context
+        .throttle
+        .check(&context.tenant.id, attempt, now)
+        .await
+    {
+        Ok(None) => Ok(state),
+        Ok(Some(refused)) => {
+            throttle::record_throttled(context.audit, &context.tenant.id, refused, now).await;
+            Err(Box::new(
+                throttled(context, presented, state, id, now, refused).await,
+            ))
+        }
+        Err(error) => {
+            // Fail closed. A limiter that answers "no idea" is not permission,
+            // and the store it could not reach is the same one the credential
+            // check is about to need.
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read the login limiter");
+            Err(Box::new(error_page(
+                context,
+                StatusCode::SERVICE_UNAVAILABLE,
+                InteractionError::NotAvailable,
+            )))
+        }
+    }
+}
+
+/// The login page, saying that nobody can sign in here.
+///
+/// Not a generic failure, unlike everything else on this path: a deployment
+/// with no credential method is misconfigured rather than under attack, and
+/// there is no account to enumerate when there is no verifier to ask. An
+/// operator needs to know which way it is broken.
+async fn no_method(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    mut state: StoredState,
+    id: &str,
+    now: OffsetDateTime,
+) -> Response {
+    let token = state.issue_csrf();
+    if let Err(error) = save(context, presented, &state, None, now).await {
+        return *error;
+    }
+    render(
+        context,
+        Stage::Login,
+        &token,
+        id,
+        Some("Signing in is not available on this server."),
+        None,
+    )
+}
+
+/// The login page again, refusing to check anything this time.
+///
+/// The same page and the same words a wrong password gets, plus a hint about
+/// when to come back — the criterion `ast-2vk.9` states. The status is 429 and
+/// the hint is repeated in `Retry-After`, so a client that reads headers and a
+/// person who reads English are told the same thing.
+///
+/// It says the attempt was throttled, and it says nothing about whose. Two
+/// people typing the same wrong identifier see this in the same number of
+/// attempts whether that identifier belongs to anybody or not.
+async fn throttled(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    state: StoredState,
+    id: &str,
+    now: OffsetDateTime,
+    refused: throttle::Refused,
+) -> Response {
+    let mut response = retry(context, presented, state, id, now, &refused.hint()).await;
+    // Only a rendered page is turned into a refusal. `retry` answers with an
+    // error page of its own when the interaction cannot be saved, and
+    // relabelling that as 429 would say the limiter refused something it did
+    // not.
+    if response.status() == StatusCode::OK {
+        *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+        if let Ok(value) = HeaderValue::from_str(&refused.retry_after_seconds().to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+    }
+    response
 }
 
 /// The two-credential check and the record lookup.

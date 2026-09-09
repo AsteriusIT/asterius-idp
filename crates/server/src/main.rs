@@ -176,6 +176,9 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 // `ast-2vk.15` makes these configurable; the default is the
                 // floor.
                 argon2: Some(Argon2Parameters::default()),
+                // What bounds online guessing (`ast-2vk.9`). Validated at
+                // load, so the handlers get numbers rather than opinions.
+                login_limits: config.login,
                 signer,
                 dpop,
             })),

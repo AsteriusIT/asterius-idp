@@ -102,6 +102,16 @@ Everything is off unless switched on here, and what is switched on is exactly wh
 | `registration.mode` | `"closed"`, `"initial_access_token"` or `"open"` | **required** when `[registration]` is present | Never inferred from whether tokens are present: deleting the last token would otherwise turn a gated endpoint into an open one. |
 | `registration.initial_access_tokens` | array of strings (**secret**) | **required** under `initial_access_token`, rejected otherwise | Hashed at startup, so the running process holds only digests. Each must be at least 22 characters, which is the 128 bits FAPI 2.0 SP §5.4.1 requires of a credential no end user handles. |
 
+## `[login]` — abuse protection at sign-in
+
+Failed sign-ins are counted per client address and per typed identifier, in fixed windows held in the database so that every replica sees the same counter (NIST SP 800-63B §5.2.2). Both limits apply and they stop different attacks: the per-account one bounds the guessing of one password, the per-address one bounds a sweep across many accounts. The identifier is hashed before it is counted and the bucket exists whether the account does or not, so a locked-out identifier and one that was never registered are the same observable.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `login.failure_window_seconds` | integer seconds | 900 | How long failures are remembered. At least 30: a window shorter than that resets before an attacker's attempts add up, which is a limit in name only. |
+| `login.max_failures_per_account` | integer | 10 | Failures tolerated per window against one typed identifier before sign-ins are refused with a retry hint. Raising it buys an attacker guesses; lowering it makes a targeted lockout of one user cheaper to cause. |
+| `login.max_failures_per_address` | integer | 100 | Failures tolerated per window from one client address. Higher than the per-account limit because one address is legitimately many people — an office, a carrier's NAT — and because behind a proxy it is only as trustworthy as `[server.proxy] trusted_cidrs` makes it. |
+
 ## `[[tenant]]` — one table per tenant
 
 A tenant is an issuer. This array is the source of truth for which tenants exist at boot; the admin API adds more at runtime. The upsert is idempotent, so a restart re-asserts the declared shape.

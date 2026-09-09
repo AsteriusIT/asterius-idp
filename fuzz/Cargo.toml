@@ -217,6 +217,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "login_bucket"
+path = "fuzz_targets/login_bucket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "logout_request"
 path = "fuzz_targets/logout_request.rs"
 test = false
