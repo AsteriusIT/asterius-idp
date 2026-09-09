@@ -161,6 +161,27 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "passkey_enrolments",
+        rule: Rule::Sweep {
+            // An outstanding registration challenge, five minutes wide. It
+            // cascades from `sessions` too, but a session lives for hours and
+            // the challenge must not: a row kept past `expires_at` is a
+            // challenge that is refused on the clock and still sitting there
+            // to be read.
+            //
+            // Before `sessions`, and that is the only thing the order in this
+            // table decides. Either way the row is gone; swept first, it is
+            // reported as swept rather than disappearing silently under a
+            // cascade, and a sweep whose count for this table is always zero
+            // is a rule nobody can tell is working.
+            statement: "delete from passkey_enrolments where ctid = any (array(
+                            select ctid from passkey_enrolments
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "sessions",
         rule: Rule::Sweep {
             // The absolute deadline only, matching
@@ -177,21 +198,6 @@ pub const POLICY: &[Retention] = &[
     Retention {
         table: "session_clients",
         rule: Rule::Kept("cascades from `sessions`; a row cannot outlive its session"),
-    },
-    Retention {
-        table: "passkey_enrolments",
-        rule: Rule::Sweep {
-            // An outstanding registration challenge, five minutes wide. It
-            // cascades from `sessions` too, but a session lives for hours and
-            // the challenge must not: a row kept past `expires_at` is a
-            // challenge that is refused on the clock and still sitting there
-            // to be read.
-            statement: "delete from passkey_enrolments where ctid = any (array(
-                            select ctid from passkey_enrolments
-                             where tenant_id = $1 and expires_at <= $2
-                             limit $3))",
-            grace: Duration::ZERO,
-        },
     },
     Retention {
         table: "auth_requests",

@@ -206,6 +206,46 @@ pub fn parse(encoded: &[u8]) -> Result<CredentialPublicKey, CoseError> {
     })
 }
 
+/// The `x` and `y` coordinates of an EC2 key, as [`parse`] accepted them.
+///
+/// Read back out of the stored encoding rather than kept on
+/// [`CredentialPublicKey`], for the reason that type's documentation gives:
+/// the bytes the authenticator sent are the key, and a decoded copy held
+/// beside them is a second answer to the question "what is this key".
+///
+/// `None` for anything [`parse`] would not have accepted, so a caller may
+/// treat it as "this row is not a key" rather than as a signature failure.
+#[must_use]
+pub fn ec2_coordinates(encoded: &[u8]) -> Option<([u8; 32], [u8; 32])> {
+    let value: Value = ciborium::from_reader(encoded).ok()?;
+    let map = value.as_map()?;
+    let x: [u8; 32] = bytes(map, -2)?.try_into().ok()?;
+    let y: [u8; 32] = bytes(map, -3)?.try_into().ok()?;
+    Some((x, y))
+}
+
+/// The public key of an OKP (Ed25519) key.
+///
+/// `None` for anything [`parse`] would not have accepted.
+#[must_use]
+pub fn okp_public_key(encoded: &[u8]) -> Option<[u8; 32]> {
+    let value: Value = ciborium::from_reader(encoded).ok()?;
+    let map = value.as_map()?;
+    bytes(map, -2)?.try_into().ok()
+}
+
+/// The modulus and exponent of an RSA key, big-endian.
+///
+/// `None` for anything [`parse`] would not have accepted.
+#[must_use]
+pub fn rsa_components(encoded: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let value: Value = ciborium::from_reader(encoded).ok()?;
+    let map = value.as_map()?;
+    let n = bytes(map, -1)?.to_vec();
+    let e = bytes(map, -2)?.to_vec();
+    Some((n, e))
+}
+
 /// The integer at `label`, if there is one and it is an integer.
 fn integer(map: &[(Value, Value)], label: i64) -> Option<i64> {
     map.iter()

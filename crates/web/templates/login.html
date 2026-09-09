@@ -1,9 +1,39 @@
 {% extends "base.html" %}
 {% block title %}Sign in — {{ tenant_name }}{% endblock %}
 {% block content %}
+{# The second page in this tree that runs script, and the reason
+   `crates/web/src/source_audit.rs` carries a named exemption for it:
+   `navigator.credentials.get()` is a JavaScript API, so a WebAuthn assertion
+   cannot be produced from markup.
+
+   The shape is `passkey.html`'s, not `form_post.html`'s, and the difference is
+   which control the script drives. On the form-post page the button is the
+   mechanism and the script only presses it, so the button is real and always
+   visible. Here — as at enrolment — the button *is* the script: pressing it
+   with scripting off could do nothing at all. So it starts `hidden` and the
+   script reveals it, and what still works without script is the thing below
+   it, which was always the mechanism: the password form.
+
+   Conditional mediation (autofill) is a third layer on top of that. The
+   username field carries `autocomplete="username webauthn"`, which is what
+   asks a browser to offer passkeys inside its ordinary username dropdown; a
+   browser that does not support it ignores the token and shows the button
+   instead. Nothing depends on it. #}
 {% if let Some(message) = message %}
 <p class="error">{{ message }}</p>
 {% endif %}
+
+<div id="passkey-signin"
+     data-options-url="{{ passkey_options_action }}"
+     data-finish-url="{{ passkey_finish_action }}"
+     data-next-url="{{ action }}"
+     data-csrf="{{ csrf }}"
+     data-working="Follow your device's prompt to sign in."
+     data-failed="That did not work. Sign in with your password instead."
+     hidden>
+  <div class="actions"><button type="button" id="passkey-signin-button">Sign in with a passkey</button></div>
+  <p class="muted" id="passkey-signin-status"></p>
+</div>
 
 <form method="post" action="{{ action }}">
 {# The synchroniser token. Every POST form in this tree carries one; see
@@ -11,7 +41,8 @@
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <label>
   <span>Username</span>
-  <input type="text" name="username" autocomplete="username" autocapitalize="none"
+  <input type="text" name="username" id="username" autocomplete="username webauthn"
+         autocapitalize="none"
          spellcheck="false" required{% if let Some(hint) = login_hint %} value="{{ hint }}"{% endif %}>
 </label>
 <label>
@@ -20,4 +51,114 @@
 </label>
 <div class="actions"><button type="submit">Sign in</button></div>
 </form>
+
+<noscript>
+{# Rendered only when scripting is off. The page still signs people in — the
+   form above is untouched — so this says what is missing rather than
+   apologising for the page. #}
+<p class="muted">Signing in with a passkey needs JavaScript, because it is a
+browser API that a page has to call. JavaScript is switched off here, so use
+your username and password.</p>
+</noscript>
+
+<script {{ nonce_attribute|safe }}>
+(() => {
+  "use strict";
+  const root = document.getElementById("passkey-signin");
+  const status = document.getElementById("passkey-signin-status");
+  const button = document.getElementById("passkey-signin-button");
+  if (!root || !status || !button) {
+    return;
+  }
+  const say = (text) => {
+    status.textContent = text;
+  };
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    return;
+  }
+
+  const decode = (value) => {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(padded + "===".slice((padded.length + 3) % 4));
+    const bytes = new Uint8Array(raw.length);
+    for (let index = 0; index < raw.length; index += 1) {
+      bytes[index] = raw.charCodeAt(index);
+    }
+    return bytes;
+  };
+  const encode = (buffer) => {
+    let raw = "";
+    for (const byte of new Uint8Array(buffer)) {
+      raw += String.fromCharCode(byte);
+    }
+    return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+
+  const post = async (url, body) => {
+    const answer = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!answer.ok) {
+      throw new Error("the server refused the ceremony: " + answer.status);
+    }
+    return answer.status === 204 ? null : answer.json();
+  };
+
+  // One ceremony at a time. A challenge is single-use and the newest one
+  // replaces whatever was outstanding, so an autofill ceremony still waiting
+  // when the button is pressed would be signing over a challenge the server
+  // has already thrown away.
+  let pending = null;
+
+  const authenticate = async (mediation) => {
+    if (pending) {
+      pending.abort();
+    }
+    pending = new AbortController();
+    const options = await post(root.dataset.optionsUrl, { csrf: root.dataset.csrf });
+    options.challenge = decode(options.challenge);
+    const assertion = await navigator.credentials.get({
+      publicKey: options,
+      mediation: mediation,
+      signal: pending.signal,
+    });
+    if (!assertion) {
+      return;
+    }
+    await post(root.dataset.finishUrl, {
+      csrf: root.dataset.csrf,
+      type: assertion.type,
+      rawId: encode(assertion.rawId),
+      clientDataJSON: encode(assertion.response.clientDataJSON),
+      authenticatorData: encode(assertion.response.authenticatorData),
+      signature: encode(assertion.response.signature),
+      userHandle: assertion.response.userHandle ? encode(assertion.response.userHandle) : null,
+    });
+    window.location.assign(root.dataset.nextUrl);
+  };
+
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    say(root.dataset.working);
+    authenticate("optional").catch(() => {
+      button.disabled = false;
+      say(root.dataset.failed);
+    });
+  });
+  root.hidden = false;
+
+  // The enhancement, and only when the browser says it can: an aborted or
+  // unsupported autofill must leave the button and the password form exactly
+  // as they were.
+  if (typeof PublicKeyCredential.isConditionalMediationAvailable === "function") {
+    PublicKeyCredential.isConditionalMediationAvailable()
+      .then((available) => (available ? authenticate("conditional") : null))
+      .catch(() => null);
+  }
+})();
+</script>
 {% endblock %}

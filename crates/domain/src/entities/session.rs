@@ -189,6 +189,17 @@ pub enum AuthenticationMethod {
     Passkey,
     /// A one-time code (RFC 8176 `otp`).
     OneTimeCode,
+    /// The user was verified, not merely present (RFC 8176 `user`).
+    ///
+    /// Never on its own: it qualifies the method beside it. A passkey whose
+    /// assertion set the UV bit proved two things — possession of the
+    /// authenticator and a screen lock, biometric or PIN on it — and RFC 8176
+    /// spells the second `user`. Whether it was a PIN specifically would be
+    /// `pin`, and this server does not claim it: the `uvm` extension is the
+    /// only thing that would say so, no authenticator this server has met
+    /// returns it, and an `amr` value asserted without evidence is worse than
+    /// an absent one.
+    UserVerified,
     /// The session was already established (RFC 8176 does not define this;
     /// OIDC Core §2 permits it and it is what a skipped login looks like).
     ExistingSession,
@@ -202,6 +213,7 @@ impl AuthenticationMethod {
             Self::Password => "pwd",
             Self::Passkey => "swk",
             Self::OneTimeCode => "otp",
+            Self::UserVerified => "user",
             Self::ExistingSession => "session",
         }
     }
@@ -213,6 +225,7 @@ impl AuthenticationMethod {
             Self::Password,
             Self::Passkey,
             Self::OneTimeCode,
+            Self::UserVerified,
             Self::ExistingSession,
         ]
         .into_iter()

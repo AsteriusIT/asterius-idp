@@ -12,8 +12,9 @@ use asterius_domain::audit::{AuditEvent, AuditSink};
 use asterius_domain::entities::session::{COOKIE_NAME, SessionId};
 use asterius_domain::{
     AuthenticationMethod, ClaimSet, ClientId, DomainError, ENROLMENT_TTL, Enrolment, Issuer,
-    NewPasskey, Participant, PasskeyRepository, Session, SessionRepository, SessionRevocation,
-    Tenant, TenantId, TenantStatus, User, UserDirectory, UserId, UserStatus, sha256_hex,
+    NewPasskey, Participant, PasskeyRepository, RegisteredPasskey, Session, SessionRepository,
+    SessionRevocation, Tenant, TenantId, TenantStatus, User, UserDirectory, UserId, UserStatus,
+    sha256_hex,
 };
 use asterius_server::http::passkeys::{self, PasskeyContext};
 use asterius_web::csp::Nonce;
@@ -230,6 +231,51 @@ impl PasskeyRepository for FakePasskeys {
 
     async fn credential_ids(&self, _user: &UserId) -> Result<Vec<Vec<u8>>, DomainError> {
         Ok(Vec::new())
+    }
+
+    // The authentication half of the port. Enrolment reaches none of it, and
+    // these answer the way an empty store would: no challenge, no credential.
+    // `tests/passkey_login.rs` is where it is exercised.
+    async fn issue_assertion_challenge(
+        &self,
+        _interaction: &str,
+        _challenge: &[u8],
+        _expires_at: OffsetDateTime,
+        _now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
+    async fn spend_assertion_challenge(
+        &self,
+        _interaction: &str,
+        _now: OffsetDateTime,
+    ) -> Result<Option<Vec<u8>>, DomainError> {
+        Ok(None)
+    }
+
+    async fn by_credential_id(
+        &self,
+        _credential_id: &[u8],
+    ) -> Result<Option<RegisteredPasskey>, DomainError> {
+        Ok(None)
+    }
+
+    async fn record_assertion(
+        &self,
+        _credential: uuid::Uuid,
+        _sign_count: Option<u32>,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    async fn disable(
+        &self,
+        _credential: uuid::Uuid,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Ok(())
     }
 }
 

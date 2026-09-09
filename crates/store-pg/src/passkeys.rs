@@ -16,7 +16,9 @@
 //! [`DomainError::Conflict`].
 
 use crate::error::to_domain_error;
-use asterius_domain::{DomainError, Enrolment, NewPasskey, PasskeyRepository, TenantId, UserId};
+use asterius_domain::{
+    DomainError, Enrolment, NewPasskey, PasskeyRepository, RegisteredPasskey, TenantId, UserId,
+};
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
 
@@ -32,6 +34,25 @@ impl PgPasskeyRepository {
     #[must_use]
     pub const fn new(pool: PgPool, tenant: TenantId) -> Self {
         Self { pool, tenant }
+    }
+
+    /// An interaction digest as the column holds it.
+    ///
+    /// The same hex-to-bytes step `PgAuthRequestRepository` makes, because
+    /// this repository writes to the same column family and a digest that is
+    /// text here and bytes there would silently match nothing.
+    fn digest_bytes(digest: &str) -> Result<Vec<u8>, DomainError> {
+        hex::decode(digest).map_err(|e| DomainError::invalid("interaction", e.to_string()))
+    }
+
+    /// A stored counter, back in the width the specification gives it.
+    ///
+    /// The column is a `bigint` because Postgres has no unsigned type, and
+    /// §6.1 says the counter is 32 bits. A value outside that range is a row
+    /// nothing this server wrote, and clamping is the reading that cannot make
+    /// a regression look like progress.
+    fn sign_count_of(stored: i64) -> u32 {
+        u32::try_from(stored).unwrap_or(u32::MAX)
     }
 }
 
@@ -177,6 +198,154 @@ impl PasskeyRepository for PgPasskeyRepository {
         .await
         .map_err(to_domain_error)?;
         Ok(credential_id)
+    }
+
+    async fn issue_assertion_challenge(
+        &self,
+        interaction_digest: &str,
+        challenge: &[u8],
+        expires_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let interaction = Self::digest_bytes(interaction_digest)?;
+        // `consumed_at is null` and the expiry are the same predicates every
+        // other write against an interaction carries: a challenge must not be
+        // attachable to a request whose window has closed.
+        let result = sqlx::query!(
+            "update auth_requests
+                set passkey_challenge = $3, passkey_challenge_expires_at = $4
+              where tenant_id = $1
+                and interaction_id_hash = $2
+                and consumed_at is null
+                and expires_at > $5",
+            self.tenant.as_str(),
+            interaction,
+            challenge,
+            expires_at,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn spend_assertion_challenge(
+        &self,
+        interaction_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<Vec<u8>>, DomainError> {
+        let interaction = Self::digest_bytes(interaction_digest)?;
+        // `spend_challenge`'s shape, against the other table. The subquery
+        // reads the pre-update snapshot, so `returning` gives the value that
+        // was outstanding rather than the null this statement just wrote, and
+        // the row lock settles two concurrent finishes: the second re-checks
+        // `passkey_challenge is not null` against the committed row, matches
+        // nothing, and comes away empty.
+        let row = sqlx::query!(
+            "update auth_requests as current
+                set passkey_challenge = null, passkey_challenge_expires_at = null
+               from (select tenant_id, request_uri_hash, passkey_challenge
+                       from auth_requests
+                      where tenant_id = $1 and interaction_id_hash = $2) as previous
+              where current.tenant_id = previous.tenant_id
+                and current.request_uri_hash = previous.request_uri_hash
+                and current.consumed_at is null
+                and current.expires_at > $3
+                and current.passkey_challenge_expires_at > $3
+                and current.passkey_challenge is not null
+             returning previous.passkey_challenge",
+            self.tenant.as_str(),
+            interaction,
+            now,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        Ok(row.and_then(|row| row.passkey_challenge))
+    }
+
+    async fn by_credential_id(
+        &self,
+        credential_id: &[u8],
+    ) -> Result<Option<RegisteredPasskey>, DomainError> {
+        // `disabled_at is null` is a security predicate, not a tidiness one: a
+        // credential blocked for a counter regression must be unfindable, or
+        // blocking it would only have cost the attacker one attempt.
+        let row = sqlx::query!(
+            "select credential_id, user_id, passkey_public_key, passkey_sign_count,
+                    passkey_rp_id
+               from credentials
+              where tenant_id = $1
+                and kind = 'passkey'
+                and passkey_credential_id = $2
+                and disabled_at is null",
+            self.tenant.as_str(),
+            credential_id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        // The `check` constraint makes both columns non-null for a passkey
+        // row, so a row missing either is one this server did not write.
+        Ok(row.and_then(|row| {
+            Some(RegisteredPasskey {
+                row: row.credential_id,
+                user: UserId::new(row.user_id),
+                public_key: row.passkey_public_key?,
+                sign_count: Self::sign_count_of(row.passkey_sign_count),
+                rp_id: row.passkey_rp_id?,
+            })
+        }))
+    }
+
+    async fn record_assertion(
+        &self,
+        credential: uuid::Uuid,
+        sign_count: Option<u32>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        // `coalesce` rather than two statements: an authenticator that does
+        // not count (§6.1.1) leaves the stored value alone, and its use is
+        // still recorded.
+        let sign_count = sign_count.map(i64::from);
+        sqlx::query!(
+            "update credentials
+                set passkey_sign_count = coalesce($3, passkey_sign_count),
+                    last_used_at = $4
+              where tenant_id = $1 and credential_id = $2",
+            self.tenant.as_str(),
+            credential,
+            sign_count,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(())
+    }
+
+    async fn disable(
+        &self,
+        credential: uuid::Uuid,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        // Idempotent on purpose: the first block is what matters and a second
+        // one must not fail a request that is already being refused.
+        sqlx::query!(
+            "update credentials
+                set disabled_at = coalesce(disabled_at, $3)
+              where tenant_id = $1 and credential_id = $2",
+            self.tenant.as_str(),
+            credential,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(())
     }
 
     async fn credential_ids(&self, user: &UserId) -> Result<Vec<Vec<u8>>, DomainError> {

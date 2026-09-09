@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update credentials\n                set passkey_sign_count = coalesce($3, passkey_sign_count),\n                    last_used_at = $4\n              where tenant_id = $1 and credential_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d60517d3cfa94817b3891302957c454fe29c1eff0ee222c30bd44b4b63bff2ad"
+}

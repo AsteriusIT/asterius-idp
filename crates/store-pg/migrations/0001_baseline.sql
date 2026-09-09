@@ -580,13 +580,39 @@ create table auth_requests (
     -- and a leaked row must not yield a usable one.
     interaction_id_hash bytea unique,
     session_id        text,
+    -- The outstanding passkey authentication challenge (WebAuthn L3 section
+    -- 7.2), and when it stops being one.
+    --
+    -- Here rather than in a table of its own, and *not* in `passkey_enrolments`
+    -- beside the registration challenge, because the two are bound to
+    -- different things. Enrolment happens inside a session; authentication is
+    -- what produces one, so at the moment this column is written there is no
+    -- session to hang it on. What does exist is the interaction — the browser
+    -- holds its id, this row holds the digest — which is the same binding the
+    -- synchroniser token in `interaction_state` already has.
+    --
+    -- Single use is the same statement shape `spend_challenge` uses: one
+    -- `update ... from (select ...) returning previous.column`, so two racing
+    -- finishes cannot both come away with bytes. Null between renderings and
+    -- after a spend.
+    passkey_challenge bytea,
+    passkey_challenge_expires_at timestamptz,
     pushed_at         timestamptz not null default now(),
     expires_at        timestamptz not null,
     consumed_at       timestamptz,
 
     primary key (tenant_id, request_uri_hash),
     foreign key (tenant_id, client_id)
-        references clients (tenant_id, client_id) on delete cascade
+        references clients (tenant_id, client_id) on delete cascade,
+    -- WebAuthn L3 section 13.4.3, enforced here as well as in the type for the
+    -- same reason `passkey_enrolments` does it: a short challenge that reached
+    -- the table would be a replayable one.
+    constraint auth_requests_passkey_challenge_is_long_enough
+        check (passkey_challenge is null or octet_length(passkey_challenge) >= 16),
+    -- A challenge with no deadline would be one that never expires, which is
+    -- the failure mode the TTL exists to prevent.
+    constraint auth_requests_passkey_challenge_has_a_deadline
+        check ((passkey_challenge is null) = (passkey_challenge_expires_at is null))
 );
 
 create index auth_requests_expiring on auth_requests (expires_at);

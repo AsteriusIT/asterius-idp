@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update auth_requests\n                set passkey_challenge = $3, passkey_challenge_expires_at = $4\n              where tenant_id = $1\n                and interaction_id_hash = $2\n                and consumed_at is null\n                and expires_at > $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "17b175f00ed1b186ccd3775f260692cfefcb045c9db6c10f0c5d19c423692dc4"
+}

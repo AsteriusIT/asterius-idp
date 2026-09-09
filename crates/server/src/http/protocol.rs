@@ -18,7 +18,7 @@ use crate::http::dpop::DpopEndpoint;
 use crate::http::interaction::{self, InteractionContext};
 use crate::http::logout;
 use crate::http::par::{self, PushContext};
-use crate::http::passkeys::{self, PasskeyContext};
+use crate::http::passkeys::{self, PasskeyContext, PasskeyLoginContext};
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
@@ -270,7 +270,20 @@ pub fn routes(state: ProtocolState) -> Router {
             )
             .route(
                 passkeys::FINISH_PATH,
-                post(passkey_finish).with_state(endpoints),
+                post(passkey_finish).with_state(Arc::clone(&endpoints)),
+            )
+            // Passkey authentication (`ast-2vk.4`). Under the interaction
+            // rather than under `/passkeys`, because that is what these are
+            // bound to: there is no session yet, and the interaction id in the
+            // path — matched against the one in the cookie — is what says two
+            // requests came from the same visitor.
+            .route(
+                passkeys::LOGIN_OPTIONS_PATH,
+                post(passkey_login_options).with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                passkeys::LOGIN_FINISH_PATH,
+                post(passkey_login_finish).with_state(endpoints),
             );
     }
 
@@ -966,6 +979,68 @@ async fn passkey_finish(
     let users = scope.users(Arc::clone(&endpoints.kek));
     passkeys::finish(
         passkey_context(&endpoints, &tenant, &passkeys, &sessions, &users, &nonce),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /interaction/{id}/passkey/options`.
+async fn passkey_login_options(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let passkeys = scope.passkeys();
+    let requests = scope.auth_requests();
+    let sessions = scope.sessions();
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    passkeys::login_options(
+        PasskeyLoginContext {
+            tenant: &tenant,
+            passkeys: &passkeys,
+            requests: &requests,
+            sessions: &sessions,
+            users: &users,
+            lifetimes: endpoints.session_lifetimes,
+            audit: endpoints.audit.as_ref(),
+        },
+        &id,
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /interaction/{id}/passkey/finish`.
+async fn passkey_login_finish(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Path(id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let passkeys = scope.passkeys();
+    let requests = scope.auth_requests();
+    let sessions = scope.sessions();
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    passkeys::login_finish(
+        PasskeyLoginContext {
+            tenant: &tenant,
+            passkeys: &passkeys,
+            requests: &requests,
+            sessions: &sessions,
+            users: &users,
+            lifetimes: endpoints.session_lifetimes,
+            audit: endpoints.audit.as_ref(),
+        },
+        &id,
         &headers,
         &body,
         time::OffsetDateTime::now_utc(),

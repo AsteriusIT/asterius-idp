@@ -29,10 +29,17 @@ test('login and consent are usable with JavaScript disabled', async ({
   // --- Assert: the login page needs nothing to run ------------------------
   await expect(page.locator('input[name="username"]')).toBeVisible();
   await expect(page.locator('input[name="password"]')).toBeVisible();
+  // One script, and it is the passkey bootstrap `ast-2vk.4` added — named in
+  // `source_audit::SCRIPTED_TEMPLATES` with the reason. What matters here is
+  // that it changes nothing when it does not run: the block it would reveal
+  // stays hidden, so a browser with scripting off is never shown a button that
+  // could not work, and the form below it is the whole page.
   expect(
     await page.locator('script').count(),
-    'the login page carries a script; source_audit.rs should have refused it',
-  ).toBe(0);
+    'the login page carries a script other than the passkey bootstrap',
+  ).toBe(1);
+  await expect(page.locator('#passkey-signin')).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Sign in with a passkey' })).toBeHidden();
 
   // The reason this test needs a browser at all. `__Host-` is enforced by the
   // browser and by nothing else: Chromium drops the cookie outright unless it
@@ -52,7 +59,7 @@ test('login and consent are usable with JavaScript disabled', async ({
   // --- Act: sign in, with a plain form submission -------------------------
   await page.locator('input[name="username"]').fill(USERNAME);
   await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 
   // --- Assert: consent, reached without script ----------------------------
   await expect(page.getByRole('button', { name: 'Allow' })).toBeVisible();
@@ -95,7 +102,7 @@ test.describe('the last hop', () => {
     await page.goto(flow.authorizationUrl);
     await page.locator('input[name="username"]').fill(USERNAME);
     await page.locator('input[name="password"]').fill(PASSWORD);
-    await page.getByRole('button', { name: 'Sign in' }).click();
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Allow' })).toBeVisible();
 
     // --- Act ----------------------------------------------------------------

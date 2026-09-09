@@ -14,6 +14,10 @@ workspace = true
 
 [dependencies]
 asterius-domain.workspace = true
+# The one primitive this crate borrows: assertion signature verification.
+# ADR-0004's rule, and the same library the rest of the tree signs with — a
+# second crypto implementation is what ADR-0007 refused `webauthn-rs` over.
+aws-lc-rs.workspace = true
 base64.workspace = true
 ciborium.workspace = true
 serde.workspace = true

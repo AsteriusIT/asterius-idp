@@ -257,6 +257,7 @@ name = "asterius-webauthn"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
+ "aws-lc-rs",
  "base64",
  "ciborium",
  "serde",

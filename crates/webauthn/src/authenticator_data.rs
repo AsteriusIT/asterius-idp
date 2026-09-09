@@ -104,6 +104,98 @@ pub struct AttestedCredential {
     pub sign_count: u32,
 }
 
+/// What an assertion ceremony's authenticator data reported.
+///
+/// No key and no credential id: an assertion names a credential the server
+/// already holds, and the authenticator repeats nothing about it. What is new
+/// each time are the flags and the counter, which is why those are the whole
+/// of this structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AssertedAuthenticator {
+    /// Whether the user was verified, not merely present.
+    pub user_verified: bool,
+    /// Whether the credential may be backed up (§6.1.3).
+    pub backup_eligible: bool,
+    /// Whether it currently is.
+    pub backup_state: bool,
+    /// The authenticator's counter for this assertion.
+    pub sign_count: u32,
+}
+
+/// The fixed header both ceremonies share: §7.1 steps 13-16, §7.2 steps 15-18.
+///
+/// One function because the two ceremonies check the *same* things about the
+/// same 37 bytes, and the specification writes them out twice only because it
+/// describes two procedures. Two copies here would be two places for the UV
+/// rule to be relaxed in one and not in the other.
+fn header(
+    authenticator_data: &[u8],
+    rp_id_hash: &[u8; 32],
+    user_verification: UserVerification,
+) -> Result<(u8, u32), AuthenticatorDataError> {
+    if authenticator_data.len() < HEADER_LEN {
+        return Err(AuthenticatorDataError::Truncated);
+    }
+
+    // §7.1 step 13, §7.2 step 15. Not constant-time on purpose: both sides are
+    // public. The RP ID is in the discovery document and the hash is in a
+    // structure the browser hands to script.
+    if &authenticator_data[..32] != rp_id_hash.as_slice() {
+        return Err(AuthenticatorDataError::WrongRelyingParty);
+    }
+
+    let flags = authenticator_data[32];
+    let sign_count = u32::from_be_bytes([
+        authenticator_data[33],
+        authenticator_data[34],
+        authenticator_data[35],
+        authenticator_data[36],
+    ]);
+
+    // §7.1 step 14, §7.2 step 16.
+    if flags & FLAG_UP == 0 {
+        return Err(AuthenticatorDataError::NoUserPresence);
+    }
+    // §7.1 step 15, §7.2 step 17.
+    if user_verification == UserVerification::Required && flags & FLAG_UV == 0 {
+        return Err(AuthenticatorDataError::NoUserVerification);
+    }
+
+    // §6.1, and step 16 in L3.
+    if flags & FLAG_BS != 0 && flags & FLAG_BE == 0 {
+        return Err(AuthenticatorDataError::InconsistentBackupFlags);
+    }
+
+    Ok((flags, sign_count))
+}
+
+/// Parses authenticator data from an assertion and checks §7.2 steps 15-18.
+///
+/// The bytes are the ones the authenticator signed, so nothing here may
+/// re-encode them: this reads the header and reports it. Attested credential
+/// data is neither required nor read — an assertion carries no new key, and
+/// the AT bit being set on one would only mean an authenticator repeated
+/// something the server already has.
+///
+/// # Errors
+///
+/// [`AuthenticatorDataError`] if the bytes are truncated, name another relying
+/// party, or report a state the specification forbids.
+// fuzz-target: authenticator_data
+pub fn verify_assertion(
+    authenticator_data: &[u8],
+    rp_id_hash: &[u8; 32],
+    user_verification: UserVerification,
+) -> Result<AssertedAuthenticator, AuthenticatorDataError> {
+    let (flags, sign_count) = header(authenticator_data, rp_id_hash, user_verification)?;
+    Ok(AssertedAuthenticator {
+        user_verified: flags & FLAG_UV != 0,
+        backup_eligible: flags & FLAG_BE != 0,
+        backup_state: flags & FLAG_BS != 0,
+        sign_count,
+    })
+}
+
 /// Parses authenticator data from a registration and checks §7.1 steps 13-16.
 ///
 /// `rp_id_hash` is `SHA-256(rp_id)`, computed by the caller so this function
@@ -119,41 +211,11 @@ pub fn verify_registration(
     rp_id_hash: &[u8; 32],
     user_verification: UserVerification,
 ) -> Result<AttestedCredential, AuthenticatorDataError> {
-    if authenticator_data.len() < HEADER_LEN {
-        return Err(AuthenticatorDataError::Truncated);
-    }
-
-    // Step 13. Not constant-time on purpose: both sides are public. The RP ID
-    // is in the discovery document and the hash is in a structure the browser
-    // hands to script.
-    if &authenticator_data[..32] != rp_id_hash.as_slice() {
-        return Err(AuthenticatorDataError::WrongRelyingParty);
-    }
-
-    let flags = authenticator_data[32];
-    let sign_count = u32::from_be_bytes([
-        authenticator_data[33],
-        authenticator_data[34],
-        authenticator_data[35],
-        authenticator_data[36],
-    ]);
-
-    // Step 14.
-    if flags & FLAG_UP == 0 {
-        return Err(AuthenticatorDataError::NoUserPresence);
-    }
+    // Steps 13-16, which an assertion checks too.
+    let (flags, sign_count) = header(authenticator_data, rp_id_hash, user_verification)?;
     let user_verified = flags & FLAG_UV != 0;
-    // Step 15.
-    if user_verification == UserVerification::Required && !user_verified {
-        return Err(AuthenticatorDataError::NoUserVerification);
-    }
-
-    // §6.1, and step 16 in L3.
     let backup_eligible = flags & FLAG_BE != 0;
     let backup_state = flags & FLAG_BS != 0;
-    if backup_state && !backup_eligible {
-        return Err(AuthenticatorDataError::InconsistentBackupFlags);
-    }
 
     if flags & FLAG_AT == 0 {
         return Err(AuthenticatorDataError::NoAttestedCredentialData);

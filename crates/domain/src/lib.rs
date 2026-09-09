@@ -23,7 +23,9 @@ pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};
 pub use credentials::{OpaqueToken, sha256, sha256_hex};
 pub use entities::auth_request::{CodeBinding, Consumed, InteractionRecord, PushedRequest};
-pub use entities::passkey::{ENROLMENT_TTL, Enrolment, NewPasskey};
+pub use entities::passkey::{
+    ASSERTION_TTL, ENROLMENT_TTL, Enrolment, NewPasskey, RegisteredPasskey,
+};
 pub use entities::password::{AcceptedPassword, Argon2Parameters, ParameterError, PasswordError};
 pub use entities::session::{
     AuthenticationMethod, Lifetimes, Participant, Session, SessionRevocation, SessionStatus,

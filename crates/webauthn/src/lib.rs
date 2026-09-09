@@ -1,7 +1,9 @@
 //! W3C WebAuthn Level 3, relying-party side.
 //!
-//! Registration only, for now: [`registration::verify`] is §7.1. Assertion
-//! verification is `ast-2vk.4` and belongs beside it.
+//! Both ceremonies: [`registration::verify`] is §7.1 and
+//! [`assertion::verify`] is §7.2. They share the client-data checks, the
+//! authenticator-data header, and one rule about what a failure is allowed to
+//! tell the browser — nothing.
 //!
 //! # Why this is written rather than taken from a crate
 //!
@@ -21,10 +23,13 @@
 //! Registration is the half of WebAuthn where that is a small claim to make.
 //! With attestation `none` there is **no signature to verify** (§8.7 defines
 //! its verification procedure as returning success), so the whole ceremony is
-//! one hash, some length arithmetic, and a set of equality checks. The
-//! signature verification arrives with assertions, and that is one call into
-//! `aws-lc-rs` against a key this crate has already refused to store unless it
-//! is of a type that call accepts.
+//! one hash, some length arithmetic, and a set of equality checks.
+//!
+//! Assertions add exactly one thing to that: a signature, verified by
+//! [`signature::verify`], which reshapes a COSE key into what `aws-lc-rs`
+//! accepts and then does none of the arithmetic itself. The key it reshapes is
+//! one [`cose::parse`] already refused to store unless `aws-lc-rs` could
+//! verify with it.
 //!
 //! # What is deliberately not here
 //!
@@ -35,13 +40,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod assertion;
 pub mod attestation;
 pub mod authenticator_data;
 pub mod client_data;
 pub mod cose;
 pub mod registration;
+pub mod signature;
 
-pub use authenticator_data::{AttestedCredential, UserVerification};
+pub use assertion::{Assertion, AssertionError, AssertionResponse, SignCount, SignCountPolicy};
+pub use authenticator_data::{AssertedAuthenticator, AttestedCredential, UserVerification};
 pub use cose::{CoseAlgorithm, CredentialPublicKey};
 pub use registration::{Registration, RegistrationError};
 
