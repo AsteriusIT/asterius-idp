@@ -26,6 +26,12 @@
 //! unique and never reassigned identifier within the Issuer for the End-User".
 //! Recovering from a leaked salt is therefore a reissue of every identifier in
 //! the tenant, which is a relying-party migration and not a rotation.
+//!
+//! Rotating the *key-encryption key* is a different operation and it is
+//! supported: [`crate::rewrap`] re-seals the byte-identical plaintext under a
+//! new KEK, through the `DELETE` the trigger leaves open, and proves the salt
+//! read back unchanged before it commits. What is refused here is a change of
+//! value, not a change of envelope.
 
 use crate::error::to_domain_error;
 use asterius_domain::{DomainError, PairwiseSalt, TenantId};

@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select salt_ciphertext, salt_nonce, kek_id, created_at\n               from tenant_pairwise_salts\n              where tenant_id = $1 and kek_id = $2\n              for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "salt_ciphertext",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "salt_nonce",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "kek_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "120c67c569d4ec2a702c07ed7ae60712d288396ad546803dbfb4751a05189dd2"
+}

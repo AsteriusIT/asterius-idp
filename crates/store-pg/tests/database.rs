@@ -6545,3 +6545,316 @@ mod retention {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Rotating the key-encryption key
+// ---------------------------------------------------------------------------
+
+use asterius_store_pg::{PgKekRewrap, RewrapOutcome};
+
+/// The KEK a rotation moves to. Different material from [`A_KEK`], so the two
+/// derive different ids and neither can open the other's rows.
+const B_KEK: [u8; 32] = [0xb7; 32];
+
+fn next_kek() -> Arc<LocalKek> {
+    Arc::new(LocalKek::from_bytes(&B_KEK).expect("a 32-byte KEK"))
+}
+
+/// Seals the fixed [`salt`] under an arbitrary KEK and writes it as the
+/// tenant's salt row.
+///
+/// [`seed_salt`] always uses [`kek`]; a re-wrap test also needs to stage a
+/// tenant that is *already* on the new key, which is what an interrupted pass
+/// leaves behind.
+async fn seed_salt_under(pool: &PgPool, tenant: &str, sealing: &LocalKek) {
+    let id = TenantId::new(tenant);
+    let sealed = sealing
+        .seal(
+            KeyBinding::tenant_secret(&id, TenantSecret::PairwiseSalt),
+            salt().expose(),
+        )
+        .expect("seal the salt");
+    sqlx::query(
+        "insert into tenant_pairwise_salts (tenant_id, salt_ciphertext, salt_nonce, kek_id)
+         values ($1, $2, $3, $4)",
+    )
+    .bind(tenant)
+    .bind(sealed.ciphertext())
+    .bind(sealed.nonce())
+    .bind(sealed.kek_id())
+    .execute(pool)
+    .await
+    .expect("seed the pairwise salt");
+}
+
+/// The tenant's salt row as it is stored: `(kek_id, nonce, ciphertext)`.
+async fn stored_salt(pool: &PgPool, tenant: &str) -> (String, Vec<u8>, Vec<u8>) {
+    sqlx::query_as(
+        "select kek_id, salt_nonce, salt_ciphertext from tenant_pairwise_salts
+         where tenant_id = $1",
+    )
+    .bind(tenant)
+    .fetch_one(pool)
+    .await
+    .expect("read the salt row")
+}
+
+fn rewrap(pool: &PgPool) -> PgKekRewrap {
+    PgKekRewrap::new(pool.clone())
+}
+
+/// Unwraps a [`RewrapOutcome`] that must not have been contended.
+fn pass(outcome: RewrapOutcome) -> asterius_store_pg::Rewrap {
+    match outcome {
+        RewrapOutcome::Rewrapped(moved) => moved,
+        RewrapOutcome::Busy => panic!("nothing else holds this tenant's lock"),
+    }
+}
+
+db_test! {
+    /// The test this whole feature exists for. OIDC Core §8 calls a Subject
+    /// Identifier "a locally unique and never reassigned identifier within the
+    /// Issuer for the End-User", and every `sub` here is derived from the
+    /// tenant's pairwise salt — so a KEK rotation that changed the salt would
+    /// silently reassign every identifier in the tenant.
+    ///
+    /// Both halves are asserted: the identifier already issued and stored, and
+    /// a *fresh* derivation in a sector this tenant has never seen. The second
+    /// is the one that would catch a changed salt, because the first is read
+    /// back from `subject_identifiers` and would survive anything.
+    async fn a_pairwise_subject_is_unchanged_after_the_key_encryption_key_is_rotated(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+        let before = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        before.upsert(&alice).await.expect("insert");
+        let issued = before.subject(alice.id, &sector("rp.example")).await.expect("mint");
+        let (old_kek_id, old_nonce, old_ciphertext) = stored_salt(&db.pool, "demo").await;
+
+        let moved = pass(
+            rewrap(&db.pool)
+                .rewrap_tenant(&TenantId::new("demo"), kek().as_ref(), next_kek().as_ref())
+                .await
+                .expect("re-wrap"),
+        );
+
+        assert!(moved.pairwise_salt, "the salt was not re-wrapped: {moved:?}");
+        assert!(moved.is_complete(), "{moved:?}");
+
+        // The envelope changed, all of it: a new key, and a new nonce, because
+        // `tenant_pairwise_salts_nonce_never_repeats` is only per KEK and
+        // reusing a nonce under a different key is the failure AES-GCM does not
+        // survive.
+        let (new_kek_id, new_nonce, new_ciphertext) = stored_salt(&db.pool, "demo").await;
+        assert_eq!(new_kek_id, next_kek().id());
+        assert_ne!(new_kek_id, old_kek_id);
+        assert_ne!(new_nonce, old_nonce);
+        assert_ne!(new_ciphertext, old_ciphertext);
+
+        // And the plaintext did not. Read through the repository, under the new
+        // KEK, exactly as a replica would once the operator swapped the key.
+        let after = PgUserRepository::new(db.pool.clone(), TenantId::new("demo"), next_kek());
+        assert_eq!(
+            after.subject(alice.id, &sector("rp.example")).await.expect("read"),
+            issued,
+            "the identifier already handed to a relying party moved"
+        );
+        assert_eq!(
+            after.subject(alice.id, &sector("later.example")).await.expect("mint"),
+            salt().derive_subject(&sector("later.example"), alice.id),
+            "a subject minted after the rotation derives from a different salt"
+        );
+    }
+}
+
+db_test! {
+    /// The other half of what the KEK seals. A signing key is re-wrapped in
+    /// place — `signing_keys` takes an `UPDATE` — and the `kid` is a thumbprint
+    /// of the public half, so nothing a relying party has cached moves.
+    async fn a_signing_key_still_opens_after_the_key_encryption_key_is_rotated(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let before = keys(&db.pool, "demo");
+        before.rotate(SigningAlgorithm::EdDsa, operator(), epoch()).await.expect("first key");
+        let (kid, _) = before
+            .active_signing_key(SigningAlgorithm::EdDsa)
+            .await
+            .expect("read")
+            .expect("an active key");
+
+        let moved = pass(
+            rewrap(&db.pool)
+                .rewrap_tenant(&TenantId::new("demo"), kek().as_ref(), next_kek().as_ref())
+                .await
+                .expect("re-wrap"),
+        );
+
+        assert_eq!(moved.signing_keys, 1, "{moved:?}");
+        let after = PgKeyRepository::new(
+            db.pool.clone(),
+            TenantId::new("demo"),
+            next_kek(),
+            Arc::new(PgAuditSink::new(db.pool.clone())),
+        );
+        let (same_kid, key) = after
+            .active_signing_key(SigningAlgorithm::EdDsa)
+            .await
+            .expect("read under the new KEK")
+            .expect("an active key");
+        assert_eq!(same_kid, kid, "the kid moved, so every cached JWKS is stale");
+        // It is a key, not merely bytes that decrypted: it still signs.
+        jws::sign(&key, &kid, "at+jwt", &json!({"sub": "alice"})).expect("sign");
+
+        // And the old KEK no longer opens it, which is the point of rotating.
+        assert!(
+            before.active_signing_key(SigningAlgorithm::EdDsa).await.is_err(),
+            "the row still opens under the key that was rotated away from"
+        );
+    }
+}
+
+db_test! {
+    /// A pass that died between the signing keys and the salt is resumed by
+    /// running it again: every statement selects on the *old* `kek_id`, so what
+    /// already moved is not touched twice and what did not is picked up.
+    async fn a_pass_interrupted_half_way_is_finished_by_running_it_again(db) {
+        seed_tenant(&db.pool, "demo").await;
+        // The state an interrupted pass leaves: the salt already on the new
+        // key, a signing key still on the old one.
+        seed_salt_under(&db.pool, "demo", next_kek().as_ref()).await;
+        keys(&db.pool, "demo")
+            .rotate(SigningAlgorithm::EdDsa, operator(), epoch())
+            .await
+            .expect("a key under the old KEK");
+
+        let resumed = pass(
+            rewrap(&db.pool)
+                .rewrap_tenant(&TenantId::new("demo"), kek().as_ref(), next_kek().as_ref())
+                .await
+                .expect("re-wrap"),
+        );
+
+        assert_eq!(resumed.signing_keys, 1, "{resumed:?}");
+        assert!(!resumed.pairwise_salt, "a salt already on the new key was rewritten");
+        assert!(resumed.is_complete(), "{resumed:?}");
+
+        let after = PgUserRepository::new(db.pool.clone(), TenantId::new("demo"), next_kek());
+        let alice = a_user("demo", UserId::generate(), "alice");
+        after.upsert(&alice).await.expect("insert");
+        assert_eq!(
+            after.subject(alice.id, &sector("rp.example")).await.expect("mint"),
+            salt().derive_subject(&sector("rp.example"), alice.id),
+        );
+    }
+}
+
+db_test! {
+    /// Running the tool twice is not a mistake, it is the documented procedure:
+    /// the second pass catches rows a replica wrote while it was still on the
+    /// old key. So a second pass over a finished tenant must be a no-op rather
+    /// than a re-seal, and must leave the row byte for byte as it was.
+    async fn a_second_pass_over_a_finished_tenant_moves_nothing(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+        let tenant = TenantId::new("demo");
+        pass(
+            rewrap(&db.pool)
+                .rewrap_tenant(&tenant, kek().as_ref(), next_kek().as_ref())
+                .await
+                .expect("first pass"),
+        );
+        let settled = stored_salt(&db.pool, "demo").await;
+
+        let again = pass(
+            rewrap(&db.pool)
+                .rewrap_tenant(&tenant, kek().as_ref(), next_kek().as_ref())
+                .await
+                .expect("second pass"),
+        );
+
+        assert!(again.is_empty(), "{again:?}");
+        assert!(again.is_complete(), "{again:?}");
+        assert_eq!(
+            stored_salt(&db.pool, "demo").await,
+            settled,
+            "a no-op pass rewrote the row"
+        );
+    }
+}
+
+db_test! {
+    /// Two operators, or two replicas, must not re-wrap one tenant at once: the
+    /// salt is deleted and re-inserted, and a second writer racing that is the
+    /// one way this could lose it. The lock is taken with `pg_try_advisory_...`,
+    /// so the loser is told to move on rather than queued behind work that is
+    /// about to make its own pass redundant.
+    async fn a_tenant_somebody_else_is_re_wrapping_is_left_alone(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+        let before = stored_salt(&db.pool, "demo").await;
+        // Somebody else's session, holding exactly the lock a pass takes.
+        let mut held = db.pool.acquire().await.expect("a second connection");
+        sqlx::query("select pg_advisory_lock(hashtext('demo'), hashtext('kek-rewrap'))")
+            .execute(&mut *held)
+            .await
+            .expect("hold the lock");
+
+        let outcome = rewrap(&db.pool)
+            .rewrap_tenant(&TenantId::new("demo"), kek().as_ref(), next_kek().as_ref())
+            .await
+            .expect("re-wrap");
+
+        assert_eq!(outcome, RewrapOutcome::Busy);
+        assert_eq!(
+            stored_salt(&db.pool, "demo").await,
+            before,
+            "a contended pass wrote to the row anyway"
+        );
+
+        sqlx::query("select pg_advisory_unlock(hashtext('demo'), hashtext('kek-rewrap'))")
+            .execute(&mut *held)
+            .await
+            .expect("release");
+    }
+}
+
+db_test! {
+    /// The re-wrap path exists; the invariant it was carved out of does not
+    /// move. `tenant_pairwise_salts` still refuses `UPDATE`, so nothing — not
+    /// this tool, not a migration, not an operator with `psql` — can change a
+    /// salt's value in place and reassign every `sub` in the tenant.
+    async fn the_salt_table_still_refuses_an_update(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+
+        let refused = sqlx::query(
+            "update tenant_pairwise_salts set kek_id = 'local:whatever' where tenant_id = 'demo'",
+        )
+        .execute(&db.pool)
+        .await;
+
+        let error = refused.expect_err("the immutability trigger is gone").to_string();
+        assert!(error.contains("never updated"), "{error}");
+    }
+}
+
+db_test! {
+    /// A row sealed under a third key is the residue of an abandoned rotation.
+    /// The pass cannot open it, and reports it rather than skipping it: an
+    /// operator told "complete" while a row still needs a key they are about to
+    /// destroy has been told the one thing that must not be wrong.
+    async fn a_row_under_an_unrelated_key_is_reported_rather_than_skipped(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let stray = LocalKek::from_bytes(&[0x33; 32]).expect("a 32-byte KEK");
+        seed_salt_under(&db.pool, "demo", &stray).await;
+
+        let moved = pass(
+            rewrap(&db.pool)
+                .rewrap_tenant(&TenantId::new("demo"), kek().as_ref(), next_kek().as_ref())
+                .await
+                .expect("re-wrap"),
+        );
+
+        assert_eq!(moved.stranded, 1, "{moved:?}");
+        assert!(!moved.is_complete(), "{moved:?}");
+    }
+}
