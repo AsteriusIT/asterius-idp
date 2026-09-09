@@ -53,6 +53,21 @@ pub const MAX_STATE_LEN: usize = 512;
 /// what may be. This is the ceiling, comfortably above the requirement.
 pub const MAX_NONCE_LEN: usize = 256;
 
+/// The longest `login_hint` this server will accept.
+///
+/// It names a login identifier — an address, a phone number, an account name —
+/// and it is shown to a person. 128 bytes is longer than any address in use
+/// and short enough that the value cannot become a message.
+pub const MAX_LOGIN_HINT_LEN: usize = 128;
+
+/// The longest `id_token_hint` this server will accept.
+///
+/// The same bound RP-Initiated Logout's hint carries
+/// ([`crate::logout::MAX_ID_TOKEN_HINT_BYTES`]), and the same reason: it is a
+/// signed token this server issued, so its size is one this server chose,
+/// with room for a key set that grew.
+pub const MAX_ID_TOKEN_HINT_LEN: usize = crate::logout::MAX_ID_TOKEN_HINT_BYTES;
+
 /// The most `resource` indicators one request may name (RFC 8707).
 pub const MAX_RESOURCES: usize = 8;
 
@@ -121,6 +136,16 @@ pub enum AuthorizationError {
     /// `prompt=none` alongside another value.
     #[error("prompt=none cannot be combined with other values")]
     ConflictingPrompt,
+    /// A `prompt` value this tenant does not offer.
+    ///
+    /// Today that is `create` and only `create` (OpenID Connect Prompt Create
+    /// 1.0 §3): the four values of OIDC Core §3.1.2.1 are answered by every
+    /// tenant. Kept apart from [`Self::Invalid`] because the two say different
+    /// things to a client — one spelled a value wrong, the other asked for
+    /// something this deployment does not do — and because the second is
+    /// exactly what `prompt_values_supported` already told it.
+    #[error("prompt value is not supported by this tenant")]
+    UnsupportedPrompt,
     /// The `client_id` parameter is not the authenticated client.
     #[error("client_id does not match the authenticated client")]
     ClientMismatch,
@@ -161,9 +186,24 @@ pub enum Prompt {
     Consent,
     /// Let the user pick an account.
     SelectAccount,
+    /// Start at account creation rather than at sign-in.
+    ///
+    /// OpenID Connect Prompt Create 1.0 §3. Not one of OIDC Core's four
+    /// values, and only accepted when the tenant offers self-service
+    /// registration — see [`AuthorizationPolicy::prompt_create`].
+    Create,
 }
 
 impl Prompt {
+    /// Every value this server can parse, in the order the enum declares them.
+    pub const ALL: [Self; 5] = [
+        Self::None,
+        Self::Login,
+        Self::Consent,
+        Self::SelectAccount,
+        Self::Create,
+    ];
+
     /// The wire spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -172,15 +212,131 @@ impl Prompt {
             Self::Login => "login",
             Self::Consent => "consent",
             Self::SelectAccount => "select_account",
+            Self::Create => "create",
         }
     }
 
     /// Parses one `prompt` value.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
-        [Self::None, Self::Login, Self::Consent, Self::SelectAccount]
+        Self::ALL.into_iter().find(|p| p.as_str() == value)
+    }
+
+    /// Parses the whole `prompt` parameter (OIDC Core §3.1.2.1).
+    ///
+    /// The parameter is a space-delimited list, and the specification adds one
+    /// combination rule: `none` "MUST NOT be present with any other value".
+    /// `none` means *do not interact* and every other value means *interact*,
+    /// so a request carrying both asks for two mutually exclusive responses;
+    /// guessing which the client meant would be answering a request nobody
+    /// made. Refused at the push, where an authenticated client is on the
+    /// connection to read the reason — a browser sent to the redirect URI with
+    /// `invalid_request` would be a worse way to say the same thing.
+    ///
+    /// `create` is accepted only when `policy` says the tenant offers
+    /// registration. Prompt Create §4 leaves the handling of an unsupported
+    /// value to the OP; this server refuses it as `invalid_request` rather
+    /// than ignoring it, because a client that asked to enrol a *new* user and
+    /// got a sign-in page for an existing one has been answered with something
+    /// it did not ask for. The same tenant that refuses it omits `create` from
+    /// `prompt_values_supported`, so a client reading the discovery document
+    /// never sends it.
+    ///
+    /// # Errors
+    ///
+    /// [`AuthorizationError::Invalid`] for an unknown value,
+    /// [`AuthorizationError::UnsupportedPrompt`] for one this tenant does not
+    /// offer, and [`AuthorizationError::ConflictingPrompt`] for `none`
+    /// alongside anything else.
+    // fuzz-target: authorization_hints
+    pub fn parse_list(
+        raw: Option<&str>,
+        policy: AuthorizationPolicy,
+    ) -> Result<BTreeSet<Self>, AuthorizationError> {
+        let mut prompts = BTreeSet::new();
+        for token in raw.unwrap_or_default().split_whitespace() {
+            let prompt = Self::parse(token).ok_or(AuthorizationError::Invalid("prompt"))?;
+            if !policy.offers(prompt) {
+                return Err(AuthorizationError::UnsupportedPrompt);
+            }
+            prompts.insert(prompt);
+        }
+        // "none" means "do not interact"; combined with "login" it means both
+        // do and do not interact. There is no reading of that which is safe to
+        // guess.
+        if prompts.contains(&Self::None) && prompts.len() > 1 {
+            return Err(AuthorizationError::ConflictingPrompt);
+        }
+        Ok(prompts)
+    }
+}
+
+/// The tenant-shaped decisions an authorization request is validated against.
+///
+/// Everything here is a property of the *deployment*, not of the request and
+/// not of the client, and every field is the conservative answer by default: a
+/// tenant that has configured nothing offers no registration, and so refuses
+/// `prompt=create`. Passed in rather than read from a global, so that
+/// [`validate`] stays a pure function of its inputs and so that the one place
+/// a tenant's answer is decided is the caller that already knows the tenant.
+///
+/// # The extension point `ast-2vk.7` will use
+///
+/// ACR is deliberately absent. Which `acr` values a tenant can produce, and
+/// what a request naming one should cost, is the step-up story — this type is
+/// where that policy belongs, next to the flag it already carries, and
+/// [`crate::decision`] is where it will be consulted. Nothing here decides it
+/// today: `acr_values` is carried through validation untouched, which is what
+/// OIDC Core §3.1.2.1 asks of a voluntary parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct AuthorizationPolicy {
+    /// Whether this tenant offers self-service registration.
+    ///
+    /// `false` by default, and false is the honest answer for a deployment
+    /// with no registration screen: OpenID Connect Prompt Create 1.0 §4 makes
+    /// the OP responsible for what an unsupported `prompt=create` does, and a
+    /// server with nowhere to send the user cannot honour it.
+    pub prompt_create: bool,
+}
+
+impl AuthorizationPolicy {
+    /// The policy of a tenant that offers registration, or does not.
+    ///
+    /// The constructor exists because the type is `#[non_exhaustive]`: a caller
+    /// outside this crate cannot write the literal, which is what keeps adding
+    /// a field from silently changing what every deployment answers. A new
+    /// field arrives with its own conservative default and its own named way to
+    /// turn on.
+    #[must_use]
+    pub const fn new(prompt_create: bool) -> Self {
+        Self { prompt_create }
+    }
+
+    /// Whether this tenant offers a `prompt` value at all.
+    ///
+    /// Only `create` is conditional. OIDC Core §3.1.2.1's four values are part
+    /// of the core protocol and every tenant answers them — with an error
+    /// response where it must, which is still an answer.
+    #[must_use]
+    pub const fn offers(self, prompt: Prompt) -> bool {
+        match prompt {
+            Prompt::Create => self.prompt_create,
+            Prompt::None | Prompt::Login | Prompt::Consent | Prompt::SelectAccount => true,
+        }
+    }
+
+    /// The `prompt_values_supported` this tenant advertises (Prompt Create §4).
+    ///
+    /// Rendered from [`Self::offers`] rather than written out a second time, so
+    /// a tenant cannot advertise a value its own validator refuses.
+    #[must_use]
+    pub fn prompt_values_supported(&self) -> Vec<&'static str> {
+        Prompt::ALL
             .into_iter()
-            .find(|p| p.as_str() == value)
+            .filter(|prompt| self.offers(*prompt))
+            .map(Prompt::as_str)
+            .collect()
     }
 }
 
@@ -314,7 +470,18 @@ pub struct AuthorizationRequest {
     /// Requested ACR values, in preference order.
     pub acr_values: Vec<String>,
     /// `login_hint`, passed to the interaction.
+    ///
+    /// A value the *client* chose and the *user* will read, so what may be in
+    /// it is bounded here — see [`parse_login_hint`].
     pub login_hint: Option<String>,
+    /// `id_token_hint`, as the client sent it (OIDC Core §3.1.2.1).
+    ///
+    /// Only its compact-serialisation shape is checked here, because deciding
+    /// whether it verifies needs this tenant's keys and this validator has no
+    /// I/O. The signature, `iss` and `aud` are checked by the caller before
+    /// the request is stored — `asterius_server::http::id_token_hint` — and
+    /// what is carried onward is the `sub` it named, never this string.
+    pub id_token_hint: Option<String>,
     /// RFC 8707 resource indicators.
     pub resources: BTreeSet<String>,
     /// RFC 9449 §10: the thumbprint the issued code is bound to.
@@ -357,6 +524,7 @@ pub fn validate(
     params: &Parameters,
     client_id: &str,
     registration: &ClientRegistration,
+    policy: AuthorizationPolicy,
 ) -> Result<AuthorizationRequest, AuthorizationError> {
     // RFC 9126 §2.1: "The `request_uri` authorization request parameter is one
     // exception, and it MUST NOT be provided." A pushed request that carries
@@ -426,22 +594,17 @@ pub fn validate(
     let state = bounded(params.get("state")?, MAX_STATE_LEN, "state")?;
     let nonce = bounded(params.get("nonce")?, MAX_NONCE_LEN, "nonce")?;
 
-    let prompts = parse_prompts(params.get("prompt")?)?;
+    let prompts = Prompt::parse_list(params.get("prompt")?, policy)?;
 
-    let max_age = params
-        .get("max_age")?
-        .map(|raw| {
-            raw.parse::<u32>()
-                .map_err(|_| AuthorizationError::Invalid("max_age"))
-        })
-        .transpose()?;
+    let max_age = parse_max_age(params.get("max_age")?)?;
 
     let acr_values = params
         .get("acr_values")?
         .map(|raw| raw.split_whitespace().map(ToOwned::to_owned).collect())
         .unwrap_or_default();
 
-    let login_hint = bounded(params.get("login_hint")?, MAX_STATE_LEN, "login_hint")?;
+    let login_hint = parse_login_hint(params.get("login_hint")?)?;
+    let id_token_hint = parse_id_token_hint(params.get("id_token_hint")?)?;
 
     let resources = parse_resources(params.multi("resource"), registration)?;
 
@@ -486,6 +649,7 @@ pub fn validate(
         max_age,
         acr_values,
         login_hint,
+        id_token_hint,
         resources,
         dpop_jkt,
         claims,
@@ -530,20 +694,157 @@ fn parse_scopes(
     Ok(scopes)
 }
 
-/// OIDC Core §3.1.2.1: `prompt` is a space-delimited list, and `none` must not
-/// appear with anything else.
-fn parse_prompts(raw: Option<&str>) -> Result<BTreeSet<Prompt>, AuthorizationError> {
-    let mut prompts = BTreeSet::new();
-    for token in raw.unwrap_or_default().split_whitespace() {
-        let prompt = Prompt::parse(token).ok_or(AuthorizationError::Invalid("prompt"))?;
-        prompts.insert(prompt);
+/// Parses `max_age` (OIDC Core §3.1.2.1).
+///
+/// "Maximum Authentication Age... Specifies the allowable elapsed time in
+/// seconds since the last time the End-User was actively authenticated." The
+/// value is a non-negative integer of seconds, and that is the whole grammar:
+/// digits, nothing else. `-1`, `+5`, `1e3`, `5s`, ` 5` and an empty value are
+/// all refused rather than coerced, because every one of them would otherwise
+/// have to be *guessed* into a number, and a guess here decides how old an
+/// authentication may be.
+///
+/// `u32::from_str` is not enough on its own: it accepts a leading `+`, so
+/// `+0` and `0` would be the same request written two ways, and only one of
+/// them is a value the specification defines.
+///
+/// # Zero is a value, not an absence
+///
+/// `max_age=0` means the allowable elapsed time is zero seconds, so any
+/// authentication that happened before this request is too old and the user
+/// must be actively re-authenticated. It is the strictest request a client can
+/// make, and reading it as "no constraint" — which is what a
+/// `NonZeroU32`-shaped API or an `unwrap_or(0)` invites — would turn the
+/// strictest request into the weakest. `None` is the absence; `Some(0)` is the
+/// demand. [`asterius_domain::Session::needs_reauthentication`] is where the
+/// comparison lives, and it compares strictly: elapsed *greater than* zero is
+/// too old.
+///
+/// # Errors
+///
+/// [`AuthorizationError::Invalid`] for anything that is not a run of ASCII
+/// digits denoting a value a `u32` can hold. The upper bound is not a policy —
+/// a `max_age` of a hundred years and one of forty are the same request in
+/// practice — it is a refusal to store a number this server cannot compare.
+// fuzz-target: authorization_hints
+pub fn parse_max_age(raw: Option<&str>) -> Result<Option<u32>, AuthorizationError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(AuthorizationError::Invalid("max_age"));
     }
-    // "none" means "do not interact"; combined with "login" it means both do
-    // and do not interact. There is no reading of that which is safe to guess.
-    if prompts.contains(&Prompt::None) && prompts.len() > 1 {
-        return Err(AuthorizationError::ConflictingPrompt);
+    raw.parse::<u32>()
+        .map(Some)
+        .map_err(|_| AuthorizationError::Invalid("max_age"))
+}
+
+/// Parses `login_hint` (OIDC Core §3.1.2.1).
+///
+/// "Hint to the Authorization Server about the login identifier the End-User
+/// might use to log in" — an email address, a phone number, an account name.
+///
+/// # Why this one is checked more closely than the other strings
+///
+/// Because of where it ends up. `state` and `nonce` are echoed to the client
+/// that sent them; `login_hint` is put in front of a **person**, in a field on
+/// the sign-in page, and the party who chose it is the relying party rather
+/// than the user reading it. That makes it the one request parameter a client
+/// can use to write on this server's own pages, and the page is where a user
+/// decides whether to trust what they are looking at.
+///
+/// Escaping is not enough by itself and is not this function's job — the
+/// templates escape every interpolation, and `ast-o4u.1` made the same call
+/// for the logout confirmation page. What this adds is that the value cannot
+/// *look* like anything but a login identifier:
+///
+/// * bounded to [`MAX_LOGIN_HINT_LEN`], so it cannot be a paragraph of prose;
+/// * no C0 or C1 control characters, so it cannot smuggle a line break into a
+///   log line or a header;
+/// * no bidirectional formatting characters, so it cannot reorder the text
+///   around it — the trick that makes `moc.elpmaxe@ecila` read as an address
+///   at a domain the user trusts (Unicode UAX #9, and the same rule
+///   [`asterius_domain::ClaimName`] applies to a claim name).
+///
+/// A value that breaks those rules is refused at the push rather than
+/// sanitised, because a client that sent one has not asked for a hint.
+///
+/// # Errors
+///
+/// [`AuthorizationError::Invalid`] naming `login_hint`.
+// fuzz-target: authorization_hints
+pub fn parse_login_hint(raw: Option<&str>) -> Result<Option<String>, AuthorizationError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let refused =
+        raw.is_empty() || raw.len() > MAX_LOGIN_HINT_LEN || raw.chars().any(is_display_unsafe);
+    if refused {
+        return Err(AuthorizationError::Invalid("login_hint"));
     }
-    Ok(prompts)
+    Ok(Some(raw.to_owned()))
+}
+
+/// Characters that must not reach a page through a request parameter.
+///
+/// The C0 and C1 control ranges, and the Unicode bidirectional formatting
+/// characters of UAX #9 §2.
+const fn is_display_unsafe(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{200E}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// Parses `id_token_hint` (OIDC Core §3.1.2.1).
+///
+/// "ID Token previously issued by the Authorization Server being passed as a
+/// hint about the End-User's current or past authenticated session with the
+/// Client... If the End-User identified by the ID Token is logged in or is
+/// logged in by the request, then the Authorization Server returns a positive
+/// response; otherwise, it SHOULD return an error, such as `login_required`."
+///
+/// Shape only, here: three non-empty base64url segments separated by dots,
+/// which is JWS Compact Serialization (RFC 7515 §7.1) and the only form an ID
+/// token takes. Whether it *verifies* is a question about this tenant's keys,
+/// and this module has no I/O — the caller checks it before the request is
+/// stored, and OIDC Core's "MUST be validated" is enforced there.
+///
+/// Checking the shape anyway is worth the few lines: it is what stops eight
+/// kilobytes of arbitrary bytes being written to the database and handed to a
+/// JWS parser later, and it means a client that sent an access token or a raw
+/// subject by mistake learns so while it is still on the connection.
+///
+/// # Errors
+///
+/// [`AuthorizationError::Invalid`] naming `id_token_hint`.
+// fuzz-target: authorization_hints
+pub fn parse_id_token_hint(raw: Option<&str>) -> Result<Option<String>, AuthorizationError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    if raw.len() > MAX_ID_TOKEN_HINT_LEN || !is_compact_jws(raw) {
+        return Err(AuthorizationError::Invalid("id_token_hint"));
+    }
+    Ok(Some(raw.to_owned()))
+}
+
+/// RFC 7515 §7.1: `BASE64URL(header) || '.' || BASE64URL(payload) || '.' ||
+/// BASE64URL(signature)`, with no padding and nothing else in it.
+fn is_compact_jws(raw: &str) -> bool {
+    let mut segments = raw.split('.');
+    let three = [segments.next(), segments.next(), segments.next()];
+    if segments.next().is_some() {
+        return false;
+    }
+    three.into_iter().all(|segment| {
+        // The signature of an unsecured JWS is empty (RFC 7515 §6), and this
+        // server accepts no such token: an `alg: none` hint is a string that
+        // anybody can write, and a shape check that let one through would be
+        // deciding it is worth parsing.
+        segment.is_some_and(|segment| !segment.is_empty() && segment.bytes().all(is_base64url))
+    })
 }
 
 /// RFC 8707 §2: each `resource` is an absolute URI without a fragment.
@@ -619,12 +920,29 @@ mod tests {
         ]
     }
 
+    /// A tenant that has configured nothing, which is the default everywhere.
+    fn policy() -> AuthorizationPolicy {
+        AuthorizationPolicy::default()
+    }
+
     fn with(extra: &[(&str, &str)]) -> Result<AuthorizationRequest, AuthorizationError> {
+        with_policy(extra, policy())
+    }
+
+    fn with_policy(
+        extra: &[(&str, &str)],
+        policy: AuthorizationPolicy,
+    ) -> Result<AuthorizationRequest, AuthorizationError> {
         let mut pairs = base();
         for (k, v) in extra {
             pairs.push(((*k).to_owned(), (*v).to_owned()));
         }
-        validate(&Parameters::from_pairs(pairs), CLIENT, &registration())
+        validate(
+            &Parameters::from_pairs(pairs),
+            CLIENT,
+            &registration(),
+            policy,
+        )
     }
 
     fn without(name: &str) -> Result<(), AuthorizationError> {
@@ -639,7 +957,13 @@ mod tests {
     /// exactly right for the rejection tests, which are about *whether* and
     /// *why*, never about what would have been built.
     fn outcome(pairs: Vec<(String, String)>) -> Result<(), AuthorizationError> {
-        validate(&Parameters::from_pairs(pairs), CLIENT, &registration()).map(|_| ())
+        validate(
+            &Parameters::from_pairs(pairs),
+            CLIENT,
+            &registration(),
+            policy(),
+        )
+        .map(|_| ())
     }
 
     /// Like [`with`], discarding the success value.
@@ -939,11 +1263,115 @@ mod tests {
     #[test]
     fn max_age_must_be_a_non_negative_integer() {
         assert_eq!(with(&[("max_age", "0")]).expect("zero").max_age, Some(0));
-        for wrong in ["-1", "1.5", "", "abc", "99999999999999999999"] {
+        for wrong in [
+            "-1",
+            "1.5",
+            "",
+            "abc",
+            "99999999999999999999",
+            // Accepted by `u32::from_str` and by nothing in §3.1.2.1: a
+            // non-negative integer is written without a sign.
+            "+5",
+            " 5",
+            "5 ",
+            "1e3",
+            "5s",
+            // Not ASCII digits, however much they look like them.
+            "٥",
+        ] {
             assert_eq!(
                 refuse(&[("max_age", wrong)]),
                 Err(AuthorizationError::Invalid("max_age")),
                 "accepted max_age {wrong:?}"
+            );
+        }
+    }
+
+    /// §3.1.2.1 again: absence and zero are different requests. `None` asks for
+    /// nothing; `Some(0)` demands an authentication that has just happened.
+    #[test]
+    fn an_absent_max_age_is_not_the_same_as_zero() {
+        assert_eq!(parse_max_age(None), Ok(None));
+        assert_eq!(parse_max_age(Some("0")), Ok(Some(0)));
+    }
+
+    /// Prompt Create §4: a value this tenant does not offer is refused, and the
+    /// refusal names the reason rather than looking like a typo.
+    #[test]
+    fn prompt_create_is_refused_unless_the_tenant_offers_registration() {
+        assert_eq!(
+            refuse(&[("prompt", "create")]),
+            Err(AuthorizationError::UnsupportedPrompt)
+        );
+
+        let offered = AuthorizationPolicy::new(true);
+        let request = with_policy(&[("prompt", "create")], offered).expect("offered");
+        assert!(request.prompts.contains(&Prompt::Create));
+    }
+
+    /// A tenant advertises exactly what it accepts.
+    #[test]
+    fn prompt_values_supported_matches_what_is_accepted() {
+        assert_eq!(
+            AuthorizationPolicy::default().prompt_values_supported(),
+            ["none", "login", "consent", "select_account"]
+        );
+        assert_eq!(
+            AuthorizationPolicy::new(true).prompt_values_supported(),
+            ["none", "login", "consent", "select_account", "create"]
+        );
+    }
+
+    /// `login_hint` is chosen by a client and read by a person, so what may be
+    /// in it is bounded: no controls, no bidirectional overrides, no essays.
+    #[test]
+    fn a_login_hint_that_could_rewrite_a_page_is_refused() {
+        assert_eq!(
+            with(&[("login_hint", "alice@example.test")])
+                .expect("an ordinary hint")
+                .login_hint
+                .as_deref(),
+            Some("alice@example.test")
+        );
+        let long = "a".repeat(MAX_LOGIN_HINT_LEN + 1);
+        for wrong in [
+            "",
+            // A line break in a value that reaches a log line and a page.
+            "alice\nSign in to continue",
+            "alice\u{0}",
+            // UAX #9: the override that makes an address read as another.
+            "alice\u{202E}moc.elpmaxe@",
+            &long,
+        ] {
+            assert_eq!(
+                refuse(&[("login_hint", wrong)]),
+                Err(AuthorizationError::Invalid("login_hint")),
+                "accepted login_hint {wrong:?}"
+            );
+        }
+    }
+
+    /// The hint is an ID token, so it has an ID token's shape. Whether it
+    /// *verifies* is the caller's question — see `parse_id_token_hint`.
+    #[test]
+    fn an_id_token_hint_must_be_a_compact_jws() {
+        let hint = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJ1LTEifQ.c2ln";
+        assert_eq!(
+            with(&[("id_token_hint", hint)])
+                .expect("a well-shaped hint")
+                .id_token_hint
+                .as_deref(),
+            Some(hint)
+        );
+        let long = "a.b.".to_owned() + &"c".repeat(MAX_ID_TOKEN_HINT_LEN);
+        for wrong in [
+            "", "a.b", "a.b.c.d", // An unsecured JWS: a token anybody can write.
+            "a.b.", ".b.c", "a.b.c=", "a b.c.d", &long,
+        ] {
+            assert_eq!(
+                refuse(&[("id_token_hint", wrong)]),
+                Err(AuthorizationError::Invalid("id_token_hint")),
+                "accepted id_token_hint {wrong:?}"
             );
         }
     }
@@ -1078,7 +1506,12 @@ mod tests {
             r#"{"id_token":{"name":null}}"#.to_owned(),
         ));
         assert!(matches!(
-            validate(&Parameters::from_pairs(pairs), CLIENT, &registration()),
+            validate(
+                &Parameters::from_pairs(pairs),
+                CLIENT,
+                &registration(),
+                policy()
+            ),
             Err(AuthorizationError::DuplicateParameter(_))
         ));
     }

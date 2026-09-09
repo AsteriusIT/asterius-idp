@@ -21,7 +21,7 @@
 use arbitrary::Arbitrary;
 use asterius_domain::Capabilities;
 use asterius_domain::entities::client::ClientRegistration;
-use asterius_oidc::authorize::{AuthorizationError, validate};
+use asterius_oidc::authorize::{AuthorizationError, AuthorizationPolicy, validate};
 use asterius_oidc::form::Parameters;
 use libfuzzer_sys::fuzz_target;
 use serde_json::json;
@@ -30,6 +30,12 @@ use std::sync::OnceLock;
 const CLIENT: &str = "billing";
 const REDIRECT: &str = "https://rp.example/cb";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+/// What the reference tenant offers: no self-service registration, which is
+/// the default every deployment starts from (`ast-gxh.8`).
+fn policy() -> AuthorizationPolicy {
+    AuthorizationPolicy::default()
+}
 
 fn registration() -> &'static ClientRegistration {
     static REGISTRATION: OnceLock<ClientRegistration> = OnceLock::new();
@@ -135,7 +141,7 @@ fuzz_target!(|input: Input| {
     }
 
     let params = Parameters::from_pairs(pairs.clone());
-    let Ok(request) = validate(&params, CLIENT, registration()) else {
+    let Ok(request) = validate(&params, CLIENT, registration(), policy()) else {
         return;
     };
 
@@ -220,7 +226,12 @@ fuzz_target!(|input: Input| {
     }
 
     // Deterministic.
-    let again = validate(&Parameters::from_pairs(pairs), CLIENT, registration());
+    let again = validate(
+        &Parameters::from_pairs(pairs),
+        CLIENT,
+        registration(),
+        policy(),
+    );
     assert!(again.is_ok(), "validation is not deterministic");
 
     // Errors never carry the client's input back out.

@@ -407,6 +407,8 @@ async fn pushed_authorization_request(
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            keys: endpoints.keys.as_ref(),
+            policy: authorization_policy(),
             lifetime: endpoints.par_lifetime,
         },
         &headers,
@@ -693,13 +695,14 @@ async fn authorization_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    headers: axum::http::HeaderMap,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
     let pairs: Vec<(String, String)> =
         url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
-    run_authorize(&endpoints, &tenant, &nonce, &pairs).await
+    run_authorize(&endpoints, &tenant, &nonce, &headers, &pairs).await
 }
 
 /// `POST /authorize` — the same request, form-encoded.
@@ -707,34 +710,110 @@ async fn authorization_endpoint_form(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     let pairs: Vec<(String, String)> = url::form_urlencoded::parse(&body)
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
-    run_authorize(&endpoints, &tenant, &nonce, &pairs).await
+    run_authorize(&endpoints, &tenant, &nonce, &headers, &pairs).await
 }
 
 /// The half both verbs share.
+///
+/// The session comes from the cookie the browser sent, and it is resolved here
+/// rather than in the handler because "usable" is a question for the session
+/// repository and the clock. A cookie naming a session that is expired, idle or
+/// revoked is the same as no cookie at all (`ast-gxh.8`).
 async fn run_authorize(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,
     nonce: &asterius_web::csp::Nonce,
+    headers: &axum::http::HeaderMap,
     pairs: &[(String, String)],
 ) -> Response {
+    let now = time::OffsetDateTime::now_utc();
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
+    let sessions = scope.sessions();
+    let clients = scope.clients(endpoints.capabilities);
+    let subjects = scope.users(std::sync::Arc::clone(&endpoints.kek));
+
+    // Every `cookie` field, not just the first (ast-bze).
+    let cookies = crate::http::cookies(headers);
+    let session = match asterius_web::interaction::cookie_value(
+        &cookies,
+        asterius_domain::entities::session::COOKIE_NAME,
+    ) {
+        Some(presented) => {
+            let digest = asterius_domain::sha256_hex(presented.as_bytes());
+            match asterius_domain::SessionRepository::find(&sessions, &digest).await {
+                Ok(session) => session,
+                Err(error) => {
+                    // Not fatal: a request whose session cannot be read is one
+                    // with no session, and the user meets a sign-in page rather
+                    // than an error. Deciding otherwise would take the store's
+                    // availability and make it the availability of every
+                    // authorization.
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read a session at /authorize");
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
     authorize::authorize(
         AuthorizeContext {
             tenant,
             requests: &requests,
             interactions: &requests,
+            session: session.as_ref(),
+            policy: decision_policy(),
             nonce,
         },
         pairs,
-        time::OffsetDateTime::now_utc(),
+        // OIDC Core §8.1: the `sub` this client sees, which is the identifier an
+        // `id_token_hint` from this client would have named. Resolved only when
+        // there is a hint to compare against.
+        async |client: &asterius_domain::ClientId, user: uuid::Uuid| {
+            let found = clients.find(client).await.ok()??;
+            let sector = asterius_domain::SectorIdentifier::of_client(&found).ok()?;
+            subjects
+                .subject(asterius_domain::UserId::new(user), &sector)
+                .await
+                .ok()
+                .map(|subject| subject.as_str().to_owned())
+        },
+        now,
     )
     .await
+}
+
+/// What this deployment does without being asked, at the authorization
+/// endpoint.
+///
+/// No account chooser: this server keeps one session per browser, so there is
+/// nothing to choose between, and a `prompt=none` request naming another
+/// subject is `login_required` rather than `account_selection_required`. The
+/// day a chooser exists this is the line that changes.
+const fn decision_policy() -> asterius_oidc::decision::DecisionPolicy {
+    asterius_oidc::decision::DecisionPolicy::new(false)
+}
+
+/// What this deployment offers an authorization request, in one place.
+///
+/// One function rather than a literal at each call site, because the push and
+/// the discovery document must agree: a tenant that advertises a `prompt` value
+/// its validator refuses has told clients to send something it will reject.
+///
+/// `prompt=create` is off. OpenID Connect Prompt Create 1.0 §3 sends the user
+/// to a registration screen, and this server has none — `ast-2vk.5` and the
+/// enrolment story own that — so the honest answer is the default one. When a
+/// tenant grows self-service registration this is the line that changes, and
+/// `prompt_values_supported` follows it without being edited.
+const fn authorization_policy() -> asterius_oidc::authorize::AuthorizationPolicy {
+    asterius_oidc::authorize::AuthorizationPolicy::new(false)
 }
 
 /// Builds the context both end-session handlers share.

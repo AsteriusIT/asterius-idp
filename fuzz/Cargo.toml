@@ -77,6 +77,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "authorization_hints"
+path = "fuzz_targets/authorization_hints.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "claim_name"
 path = "fuzz_targets/claim_name.rs"
 test = false

@@ -11,6 +11,7 @@ pub mod claims;
 pub mod client_auth;
 pub mod code;
 pub mod consent;
+pub mod decision;
 pub mod form;
 pub mod logout;
 pub mod metadata;

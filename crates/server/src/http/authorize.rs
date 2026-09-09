@@ -29,7 +29,14 @@
 //! success path.
 
 use crate::http::redirect::SeeOther;
-use asterius_domain::{AuthRequestRepository, InteractionRepository, Tenant};
+use asterius_domain::{
+    AuthRequestRepository, ClientId, InteractionRepository, PushedRequest, Session, Tenant,
+};
+use asterius_oidc::authorize::{Prompt, ResponseMode};
+use asterius_oidc::code::AuthorizationResponse;
+use asterius_oidc::decision::{
+    Consent, DecisionPolicy, Interaction, NoAcrPolicy, Requirements, SessionState, Unmet, decide,
+};
 use asterius_oidc::par;
 use asterius_web::interaction::{self, InteractionId};
 use asterius_web::pages::{ErrorPage, nonce_attribute};
@@ -46,6 +53,16 @@ pub struct AuthorizeContext<'a> {
     pub requests: &'a dyn AuthRequestRepository,
     /// The browser's view of the same rows.
     pub interactions: &'a dyn InteractionRepository,
+    /// The session this browser already has, when it has a usable one.
+    ///
+    /// Resolved by the caller from the session cookie, because "usable" is a
+    /// question about a row and a clock rather than about HTTP. `None` covers
+    /// no cookie, an unknown session, and one that is expired, idle or
+    /// revoked — OIDC Core §3.1.2.1 asks whether the End-User "is logged in",
+    /// and none of those three is.
+    pub session: Option<&'a Session>,
+    /// What this tenant will do without being asked (`ast-2vk.7`'s seam).
+    pub policy: DecisionPolicy,
     /// The CSP nonce for this response.
     pub nonce: &'a Nonce,
 }
@@ -63,6 +80,7 @@ impl std::fmt::Debug for AuthorizeContext<'_> {
 pub async fn authorize(
     context: AuthorizeContext<'_>,
     parameters: &[(String, String)],
+    subject_of: impl AsyncFnOnce(&ClientId, uuid::Uuid) -> Option<String>,
     now: OffsetDateTime,
 ) -> Response {
     let value = |name: &str| {
@@ -115,6 +133,48 @@ pub async fn authorize(
         return error_page(&context, StatusCode::BAD_REQUEST);
     }
 
+    // What this request needs before it can be answered (`ast-gxh.8`). Decided
+    // here, before an interaction exists, because that is the only place from
+    // which a `prompt=none` request can be refused *without* a page having been
+    // rendered: OIDC Core §3.1.2.1 forbids displaying any authentication or
+    // consent user interface for one, and an interaction row is the first step
+    // towards displaying one.
+    let requirements = requirements(&stored);
+    let hinted_subject = match (&requirements.hinted_subject, context.session) {
+        (Some(_), Some(session)) => subject_of(&stored.client, session.user).await,
+        _ => None,
+    };
+    let state = match context.session {
+        // The subject is resolved only when a verified `id_token_hint` gave
+        // this request somebody to be about. Resolving one otherwise would be
+        // a query — and, for a pairwise client, a stored identifier — per
+        // browser hit, for a comparison nobody asked for.
+        Some(session) if session.status(now).is_usable() => SessionState::Active {
+            session,
+            subject: hinted_subject.as_deref(),
+            // Consent is asked for every time: nothing in this server records
+            // that it was given before. See `asterius_oidc::decision` — the
+            // decision table has the other row already, and a consent-memory
+            // story is what fills it in.
+            consent: Consent::Required,
+        },
+        _ => SessionState::None,
+    };
+
+    match decide(&requirements, &state, context.policy, &NoAcrPolicy, now) {
+        // Every one of these puts something in front of the user, so they all
+        // continue into the interaction. *Which* screen comes first is the
+        // interaction's own stage machine (`ast-2vk.7` owns the step-up one),
+        // and it is not decided twice.
+        Interaction::Silent
+        | Interaction::Login
+        | Interaction::SelectAccount
+        | Interaction::StepUp
+        | Interaction::Consent
+        | Interaction::Register => {}
+        Interaction::Refuse(unmet) => return refuse(&context, &stored, unmet),
+    }
+
     // The browser's credential. Minted here, never derived from the
     // `request_uri` — a client that could compute it could drive the user's
     // login.
@@ -150,6 +210,150 @@ pub async fn authorize(
     // The redirect carries a credential in both the URL and the cookie.
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
+}
+
+/// Reads the decision's inputs back off the stored request.
+///
+/// Everything here was validated at the push and written by `http::par`, so
+/// this is a read of this server's own JSON rather than a second parse of a
+/// client's parameters. A member that is missing or the wrong shape is treated
+/// as absent, which for every one of them is the "asked for nothing" reading:
+/// the alternative is an error page for a row this server wrote itself, and a
+/// stricter reading here would not make the row any more correct.
+///
+/// `id_token_hint_sub` is the subject the *verified* hint named — `http::par`
+/// checks the signature, the issuer and the audience before storing it, so what
+/// is read back is a fact rather than a claim.
+fn requirements(stored: &PushedRequest) -> Requirements {
+    let strings = |name: &str| -> Vec<String> {
+        stored
+            .parameters
+            .get(name)
+            .and_then(serde_json::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Requirements {
+        prompts: strings("prompts")
+            .iter()
+            .filter_map(|value| Prompt::parse(value))
+            .collect(),
+        max_age: stored
+            .parameters
+            .get("max_age")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|seconds| u32::try_from(seconds).ok()),
+        hinted_subject: stored
+            .parameters
+            .get("id_token_hint_sub")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        acr_values: strings("acr_values"),
+        essential_acr: essential_acr(stored),
+    }
+}
+
+/// The `acr` values the client marked essential (OIDC Core §5.5.1.1).
+///
+/// Read out of the stored `claims` request, which is the parsed and canonical
+/// form `ClaimsRequest::to_json` wrote — not the document the client sent.
+fn essential_acr(stored: &PushedRequest) -> Vec<String> {
+    let Some(claims) = stored.parameters.get("claims") else {
+        return Vec::new();
+    };
+    let Ok(claims) = asterius_oidc::claims::ClaimsRequest::from_json(claims) else {
+        tracing::error!("a stored claims request will not parse back");
+        return Vec::new();
+    };
+    claims
+        .acr()
+        .filter(|acr| acr.is_essential())
+        .map(|acr| {
+            acr.accepted_values()
+                .iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Answers the client with the reason its request cannot be served.
+///
+/// A redirect — or a form post — rather than a page, and this is the one place
+/// in this handler where that is right. Everywhere else `/authorize` refuses
+/// with a page because the redirect URI cannot be trusted: the request may be
+/// unknown, expired, or another client's. Here it is none of those. The request
+/// was found, it belongs to the client that is asking, and its `redirect_uri`
+/// was matched against that client's registration at the push. RFC 6749
+/// §4.1.2.1 says an error then goes to the client, and OIDC Core §3.1.2.6
+/// defines exactly which error this is.
+///
+/// The response travels in the mode the request asked for, `form_post`
+/// included: `ast-gxh.5` delivered that path for errors as well as for codes,
+/// and an error that quietly arrived as a query response would reach a client
+/// that is waiting for a POST.
+///
+/// # Why the request is left alive
+///
+/// Nothing is consumed here. The refusal is a pure function of the request and
+/// the browser's session, so a retry produces the same answer — and a user who
+/// signs in elsewhere and comes back should meet a request that can now be
+/// served, rather than one this server threw away while telling them to log in.
+/// The push's own expiry is what bounds it.
+fn refuse(context: &AuthorizeContext<'_>, stored: &PushedRequest, unmet: Unmet) -> Response {
+    let string = |name: &str| {
+        stored
+            .parameters
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    };
+    let Some(redirect_uri) = string("redirect_uri") else {
+        // A stored request with no redirect URI did not come from this server's
+        // own validator, and there is nowhere to send the browser.
+        tracing::error!(tenant = %context.tenant.id, "a stored request has no redirect_uri");
+        return error_page(context, StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let mode = string("response_mode")
+        .map(|raw| ResponseMode::parse(&raw).unwrap_or_default())
+        .unwrap_or_default();
+
+    tracing::info!(
+        tenant = %context.tenant.id,
+        client = %stored.client,
+        error = unmet.code(),
+        "an authorization request cannot be served"
+    );
+
+    let response = AuthorizationResponse::Error {
+        error: unmet.code(),
+        state: string("state"),
+        // RFC 9207 §3: the issuer travels with every authorization response,
+        // including this one, so a client can tell which server answered.
+        issuer: context.tenant.issuer.as_str().to_owned(),
+    };
+    match crate::http::deliver::build(
+        context.tenant,
+        context.nonce,
+        mode,
+        &response,
+        &redirect_uri,
+    ) {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                tenant = %context.tenant.id,
+                "a validated redirect URI cannot carry an authorization error"
+            );
+            error_page(context, StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 /// The error page. Never a redirect — see the module documentation.

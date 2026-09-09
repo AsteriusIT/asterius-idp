@@ -7,8 +7,10 @@
 
 use asterius_domain::{
     AuthRequestRepository, Capabilities, Client, ClientId, ClientRegistration, ClientRepository,
-    ClientStatus, Consumed, DomainError, Issuer, PushedRequest, Tenant, TenantId, TenantStatus,
+    ClientStatus, Consumed, DomainError, Issuer, KeyStore, Kid, PublicKeyRecord, PushedRequest,
+    Tenant, TenantId, TenantStatus,
 };
+use asterius_oidc::authorize::AuthorizationPolicy;
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
 use asterius_oidc::par::{MAX_LIFETIME, REQUEST_URI_PREFIX, digest_of};
 use asterius_server::http::par::{MAX_BODY_BYTES, PushContext, push};
@@ -17,6 +19,29 @@ use axum::http::{HeaderMap, StatusCode, header};
 use serde_json::{Value, json};
 use std::sync::Mutex;
 use time::{Duration, OffsetDateTime};
+
+/// A tenant with no keys at all.
+///
+/// Every test here pushes without an `id_token_hint`, so the store is never
+/// consulted; a hint that *is* present would fail to verify against an empty
+/// key set, which is the correct answer for a tenant that has published
+/// nothing and is asserted by `an_id_token_hint_that_does_not_verify_is_refused`.
+#[derive(Debug)]
+struct NoKeys;
+
+#[async_trait::async_trait]
+impl KeyStore for NoKeys {
+    async fn published_keys(&self, _t: &TenantId) -> Result<Vec<PublicKeyRecord>, DomainError> {
+        Ok(Vec::new())
+    }
+    async fn public_key(
+        &self,
+        _t: &TenantId,
+        _kid: &Kid,
+    ) -> Result<Option<PublicKeyRecord>, DomainError> {
+        Ok(None)
+    }
+}
 
 const ISSUER: &str = "https://as.example/t/demo";
 const CLIENT: &str = "billing";
@@ -177,6 +202,8 @@ async fn run(
         tenant: &tenant,
         clients: &clients,
         requests,
+        keys: &NoKeys,
+        policy: AuthorizationPolicy::default(),
         lifetime: Duration::seconds(90),
     };
 
@@ -532,6 +559,8 @@ async fn a_body_that_is_not_a_form_is_refused() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
         },
         &headers,
@@ -564,6 +593,8 @@ async fn a_form_content_type_with_a_charset_is_accepted() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
         },
         &headers,
@@ -589,6 +620,8 @@ async fn an_oversized_body_is_refused_before_it_is_parsed() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
         },
         &form_headers(),
@@ -629,6 +662,8 @@ async fn a_proof_on_the_push_pins_the_code_to_its_key() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
         },
         &form_headers(),
@@ -667,6 +702,8 @@ async fn a_proof_and_a_dpop_jkt_that_disagree_are_refused() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
         },
         &form_headers(),
@@ -701,6 +738,8 @@ async fn a_proof_and_a_matching_dpop_jkt_are_accepted() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
         },
         &form_headers(),
@@ -731,4 +770,109 @@ async fn a_dpop_jkt_without_a_proof_still_pins_the_code() {
         store.0.lock().expect("lock")[0].dpop_jkt.as_deref(),
         Some(thumbprint)
     );
+}
+
+// ---- ast-gxh.8: the hint parameters, refused while the client is here -----
+
+/// OIDC Core §3.1.2.1: `none` "MUST NOT be present with any other value". The
+/// client learns it over an authenticated connection rather than through a
+/// browser it has already sent away.
+#[tokio::test]
+async fn prompt_none_with_another_value_is_refused_at_the_push() {
+    let mut pairs = valid_pairs();
+    pairs.push(("prompt", "none login"));
+
+    let (status, body, store) = pushed(&pairs).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+    assert!(store.0.lock().expect("lock").is_empty());
+}
+
+/// OpenID Connect Prompt Create 1.0 §4: this tenant offers no registration, so
+/// it omits `create` from `prompt_values_supported` and refuses the value. The
+/// documented choice is a refusal rather than an ignored parameter — a client
+/// that asked to enrol somebody must not be handed a sign-in page instead.
+#[tokio::test]
+async fn prompt_create_is_refused_by_a_tenant_without_registration() {
+    let mut pairs = valid_pairs();
+    pairs.push(("prompt", "create"));
+
+    let (status, body, _) = pushed(&pairs).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+}
+
+/// §3.1.2.1 again: an `id_token_hint` "MUST be validated". This tenant has
+/// published no keys, so nothing verifies — and a hint that does not verify
+/// makes the request invalid rather than being quietly dropped.
+#[tokio::test]
+async fn an_id_token_hint_that_does_not_verify_is_refused() {
+    let mut pairs = valid_pairs();
+    pairs.push((
+        "id_token_hint",
+        "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJ1LTEifQ.c2ln",
+    ));
+
+    let (status, body, store) = pushed(&pairs).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+    assert!(store.0.lock().expect("lock").is_empty());
+    // The description never quotes the hint back.
+    let description = body["error_description"].as_str().unwrap_or_default();
+    assert!(!description.contains("eyJ"), "{description}");
+}
+
+/// A hint that is not even a compact JWS is refused by shape, before any key is
+/// read.
+#[tokio::test]
+async fn an_id_token_hint_that_is_not_a_jws_is_refused() {
+    let mut pairs = valid_pairs();
+    pairs.push(("id_token_hint", "u-1"));
+
+    let (status, body, _) = pushed(&pairs).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+}
+
+/// A `login_hint` a client could use to write on the sign-in page is refused,
+/// and an ordinary one is stored for the interaction to use.
+#[tokio::test]
+async fn a_login_hint_is_bounded_and_stored() {
+    let mut pairs = valid_pairs();
+    pairs.push(("login_hint", "alice@example.test"));
+    let (status, _, store) = pushed(&pairs).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        store.0.lock().expect("lock")[0].parameters["login_hint"],
+        json!("alice@example.test")
+    );
+
+    let mut pairs = valid_pairs();
+    pairs.push(("login_hint", "alice\nplease approve this request"));
+    let (status, body, _) = pushed(&pairs).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+}
+
+/// `max_age` is a non-negative integer of seconds and nothing else, and zero is
+/// a value rather than an absence.
+#[tokio::test]
+async fn max_age_is_stored_as_a_number_including_zero() {
+    let mut pairs = valid_pairs();
+    pairs.push(("max_age", "0"));
+    let (status, _, store) = pushed(&pairs).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        store.0.lock().expect("lock")[0].parameters["max_age"],
+        json!(0)
+    );
+
+    let mut pairs = valid_pairs();
+    pairs.push(("max_age", "+60"));
+    let (status, _, _) = pushed(&pairs).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }
