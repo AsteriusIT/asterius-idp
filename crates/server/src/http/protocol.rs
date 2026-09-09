@@ -84,6 +84,10 @@ pub struct ClientEndpoints {
     pub kek: Arc<dyn asterius_jose::Kek>,
     /// Who may register a client, and how.
     pub registration: RegistrationPolicy,
+    /// ADR-0006's one outbound path, for the URLs a registration document
+    /// names. Shared with nothing else: the client key cache holds its own
+    /// handle to the same adapter.
+    pub outbound: Arc<dyn asterius_domain::ports::JwksFetcher>,
     /// Where registration decisions are recorded.
     pub audit: Arc<dyn asterius_domain::AuditSink>,
     /// How long this deployment's sessions live.
@@ -434,6 +438,7 @@ async fn client_registration(
             tenant: &tenant,
             clients: &clients,
             capabilities: endpoints.capabilities,
+            outbound: endpoints.outbound.as_ref(),
             policy: &endpoints.registration,
             audit: endpoints.audit.as_ref(),
             request_id: Some(request_id.as_str()),
@@ -457,6 +462,7 @@ fn configuration_context<'a>(
         clients,
         configuration: clients,
         capabilities: endpoints.capabilities,
+        outbound: endpoints.outbound.as_ref(),
         audit: endpoints.audit.as_ref(),
         request_id: Some(request_id.as_str()),
     }

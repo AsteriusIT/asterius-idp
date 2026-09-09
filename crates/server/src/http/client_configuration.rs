@@ -99,7 +99,9 @@
 use crate::http::register::{
     MAX_BODY_BYTES, bearer, client_information, error, is_json, metadata_error, nqschar,
 };
+use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
+use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
     ClientStatus, DomainError, ManagedClient, Tenant, ct_eq, sha256,
@@ -470,6 +472,14 @@ pub struct ConfigurationContext<'a> {
     /// What this deployment offers. An update is validated against it, so a
     /// client cannot update its way into a feature the server does not have.
     pub capabilities: Capabilities,
+    /// Dereferences the URLs an updated registration document names.
+    ///
+    /// The same port `POST /register` holds, for the same reason: RFC 7592 §2.2
+    /// replaces the whole registration, so an update can name a new
+    /// `sector_identifier_uri` and must prove it the same way a fresh
+    /// registration does. Leaving the check out here would make the update
+    /// endpoint the way around it.
+    pub outbound: &'a dyn JwksFetcher,
     /// Where the decision is recorded.
     pub audit: &'a dyn AuditSink,
     /// The request id, for correlating the audit record with the access log.
@@ -621,6 +631,21 @@ pub async fn update(
             return metadata_error(&failure);
         }
     };
+
+    // OIDC Registration §5, as at registration: the sector a client names is
+    // checked before anything derives a `sub` in it.
+    if let Err(failure) = sector::verify(context.outbound, &registration).await {
+        record(
+            context,
+            now,
+            EventType::CLIENT_UPDATED,
+            Outcome::Failure,
+            &client_id,
+            Some(failure.code()),
+        )
+        .await;
+        return metadata_error(&failure);
+    }
 
     let replacement = Client {
         tenant: context.tenant.id.clone(),

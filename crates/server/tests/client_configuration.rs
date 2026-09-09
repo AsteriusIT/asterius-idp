@@ -12,6 +12,7 @@
 //! two a request may touch, and a fixture with one client cannot ask it.
 
 use asterius_domain::audit::{AuditEvent, AuditSink, EventType, Outcome};
+use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
     ClientStatus, DomainError, Issuer, ManagedClient, OpaqueToken, Tenant, TenantId, TenantStatus,
@@ -201,8 +202,36 @@ struct Fixture {
     tenant: Tenant,
     clients: FakeClients,
     audit: FakeAudit,
+    outbound: FakeOutbound,
     alpha: OpaqueToken,
     beta: OpaqueToken,
+}
+
+/// The outbound path, answered from memory.
+///
+/// Empty by default, which is a fetch that fails: no test in this file updates
+/// a client into a pairwise sector, so nothing here should dereference
+/// anything — and a fetcher that would succeed could not show it.
+#[derive(Debug, Default)]
+struct FakeOutbound {
+    document: Option<Vec<u8>>,
+}
+
+impl FakeOutbound {
+    fn serving(document: &Value) -> Self {
+        Self {
+            document: Some(document.to_string().into_bytes()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl JwksFetcher for FakeOutbound {
+    async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
+        self.document
+            .clone()
+            .ok_or_else(|| DomainError::invalid("sector_identifier_uri", "unreachable"))
+    }
 }
 
 impl Fixture {
@@ -224,6 +253,7 @@ impl Fixture {
             tenant: tenant(),
             clients,
             audit: FakeAudit::default(),
+            outbound: FakeOutbound::default(),
             alpha,
             beta,
         }
@@ -236,6 +266,7 @@ impl Fixture {
             configuration: &self.clients,
             capabilities: Capabilities::default(),
             audit: &self.audit,
+            outbound: &self.outbound,
             request_id: Some("req-1"),
         }
     }
@@ -928,6 +959,53 @@ async fn an_update_that_would_not_register_does_not_update() {
     );
 }
 
+/// RFC 7592 §2.2 replaces the whole registration, so an update may name a new
+/// sector — and OIDC Registration §5 has to be checked here too, or the update
+/// endpoint is the way round it.
+#[tokio::test]
+async fn an_update_naming_a_sector_the_client_is_not_listed_in_is_refused() {
+    let mut fixture = Fixture::new();
+    // The sector's owner lists a callback this update does not register.
+    fixture.outbound = FakeOutbound::serving(&json!(["https://elsewhere.example/cb"]));
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "client_id": "c.alpha",
+            "client_name": "Billing",
+            "redirect_uris": ["https://a.rp.example/cb", "https://b.rp.example/cb"],
+            "subject_type": "pairwise",
+            "sector_identifier_uri": "https://rp.example/sector.json",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        }))
+        .expect("serialise"),
+    );
+
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &body,
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_client_metadata")
+    );
+    assert_eq!(
+        fixture
+            .clients
+            .row("c.alpha")
+            .expect("alpha")
+            .client
+            .registration
+            .sector_identifier_uri,
+        None,
+        "an unproven sector was written anyway"
+    );
+}
+
 /// The body caps and the media type, matching `POST /register`: an oversized
 /// document is refused before it is parsed, and only `application/json` is read
 /// (RFC 7592 §2.2 says the update carries "a content type of application/json").
@@ -1063,6 +1141,7 @@ async fn a_store_that_cannot_be_reached_is_not_a_refusal() {
         configuration: &clients,
         capabilities: Capabilities::default(),
         audit: &audit,
+        outbound: &FakeOutbound::default(),
         request_id: Some("req-1"),
     };
     let token = OpaqueToken::generate();
@@ -1193,6 +1272,7 @@ fn the_postgres_repository_satisfies_both_ports_this_endpoint_holds() {
             configuration: repository,
             capabilities: Capabilities::default(),
             audit: &audit,
+            outbound: &FakeOutbound::default(),
             request_id: Some("req-1"),
         };
     }

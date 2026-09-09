@@ -52,7 +52,9 @@
 //!
 //! [closed]: RegistrationPolicy::Closed
 
+use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
+use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration, ClientRegistry,
     ClientStatus, JwksSource, OpaqueToken, Tenant, ct_eq, sha256,
@@ -369,6 +371,14 @@ pub struct RegisterContext<'a> {
     pub capabilities: Capabilities,
     /// Who may call.
     pub policy: &'a RegistrationPolicy,
+    /// Dereferences the URLs a registration document names.
+    ///
+    /// One `sector_identifier_uri` per pairwise registration that names one,
+    /// and nothing else: a `jwks_uri` is fetched lazily when the client first
+    /// authenticates, so a registration is not the moment to find out whether
+    /// its key server is up. The port is ADR-0006's single outbound path, held
+    /// as a port so the rule can be tested without a socket.
+    pub outbound: &'a dyn JwksFetcher,
     /// Where the registration decision is recorded.
     pub audit: &'a dyn AuditSink,
     /// The request id, for correlating the audit record with the access log.
@@ -433,6 +443,16 @@ pub async fn register(
             return metadata_error(&failure);
         }
     };
+
+    // OIDC Registration §5: a pairwise client that named a sector has claimed
+    // one, and this is where the claim is checked. It is the only outbound
+    // fetch a registration makes, and it is deliberately blocking: accepting
+    // the client first and confirming the sector later would mint `sub` values
+    // in a sector nobody confirmed, and those cannot be taken back.
+    if let Err(failure) = sector::verify(context.outbound, &registration).await {
+        record(&context, now, Outcome::Failure, None, Some(failure.code())).await;
+        return metadata_error(&failure);
+    }
 
     // Minted after validation, so a rejected document consumes no identifier
     // and no entropy.

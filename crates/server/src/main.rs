@@ -106,10 +106,15 @@ fn run() -> Result<(), String> {
         // and the database. Built here rather than lazily so that a deployment
         // that cannot construct them fails at startup, where somebody is
         // watching, rather than on a client's first request.
-        let client_keys = Arc::new(ClientKeyCache::new(Arc::new(
+        // One outbound adapter, two callers: the key cache resolves `jwks_uri`
+        // through it and client registration resolves `sector_identifier_uri`
+        // through it. ADR-0006 says one path, and one instance is how that is
+        // spelt here.
+        let outbound: Arc<dyn asterius_domain::ports::JwksFetcher> = Arc::new(
             HttpsJwksFetcher::new()
                 .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?,
-        )));
+        );
+        let client_keys = Arc::new(ClientKeyCache::new(Arc::clone(&outbound)));
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = Arc::new(
             ClientAuthenticator::new(client_keys, Arc::clone(&replay) as Arc<dyn ReplayGuard>)
@@ -144,6 +149,7 @@ fn run() -> Result<(), String> {
                 code_lifetime: code::clamp_lifetime(code::DEFAULT_LIFETIME),
                 kek: Arc::clone(&kek),
                 registration: config.registration.clone(),
+                outbound,
                 audit: Arc::new(PgAuditSink::new(store.pool().clone())),
                 session_lifetimes: Lifetimes::default().clamped(),
                 // Passwords are the legacy path and passkeys are primary, but
