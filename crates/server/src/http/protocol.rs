@@ -89,7 +89,7 @@ pub struct ClientEndpoints {
     /// Two callers. The end-session endpoint's `id_token_hint` needs the
     /// public half of a key that may already have been retired (OIDC
     /// RP-Initiated Logout 1.0 §4), which is what
-    /// [`KeyStore::public_key`](asterius_domain::KeyStore::public_key)
+    /// [`KeyStore::public_key`]
     /// resolves and what the published JWKS no longer contains; UserInfo
     /// verifies an access token against the set `/jwks` publishes, and it is
     /// the same handle so that the two cannot hold different opinions about
