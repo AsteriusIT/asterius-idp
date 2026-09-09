@@ -961,7 +961,9 @@ async fn run_authorize(
             requests: &requests,
             interactions: &requests,
             session: session.as_ref(),
+            grants: &scope.grants(),
             policy: decision_policy(),
+            memory: memory_policy(),
             nonce,
         },
         pairs,
@@ -991,6 +993,21 @@ async fn run_authorize(
 /// day a chooser exists this is the line that changes.
 const fn decision_policy() -> asterius_oidc::decision::DecisionPolicy {
     asterius_oidc::decision::DecisionPolicy::new(false)
+}
+
+/// Whether this deployment remembers a consent it has already been given.
+///
+/// It does. A server that asks the same question every morning trains the
+/// person to answer it without reading it, which is the consent failure FAPI
+/// 2.0 SP §7 names, and OIDC Core §3.1.2.1's `prompt=none` cannot succeed at
+/// all without a memory to consult. The "always ask" tenant switch is the
+/// argument to this constructor and per-tenant settings are `ast-f7m.4`; the
+/// `offline_access` window keeps
+/// `asterius_oidc::consent_memory::DEFAULT_OFFLINE_ACCESS_MEMORY`, which is a
+/// decision with a reason written down beside it rather than a default nobody
+/// chose.
+const fn memory_policy() -> asterius_oidc::consent_memory::MemoryPolicy {
+    asterius_oidc::consent_memory::MemoryPolicy::new(false)
 }
 
 /// What this deployment offers an authorization request, in one place.
@@ -1125,6 +1142,7 @@ async fn interaction_show(
             username: None,
             clients: &clients,
             grants: &grants,
+            memory: memory_policy(),
             codes: &codes,
             subjects: &users,
             code_lifetime: endpoints.code_lifetime,
@@ -1177,6 +1195,7 @@ async fn interaction_submit(
             username: None,
             clients: &clients,
             grants: &grants,
+            memory: memory_policy(),
             codes: &codes,
             subjects: &users,
             code_lifetime: endpoints.code_lifetime,

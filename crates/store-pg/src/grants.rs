@@ -585,12 +585,20 @@ impl Row {
     }
 }
 
-/// The one operation the authorization endpoint needs. Reading, claiming and
-/// revoking stay on the concrete type, where the endpoints that do those things
-/// reach them — see [`asterius_domain::GrantRepository`].
+/// The two operations the authorization endpoint needs. Claiming, revoking and
+/// the Grant Management queries stay on the concrete type, where the endpoints
+/// that do those things reach them — see [`asterius_domain::GrantRepository`].
 #[async_trait::async_trait]
 impl asterius_domain::GrantRepository for PgGrantRepository {
     async fn create(&self, grant: &Grant) -> Result<(), DomainError> {
         Self::create(self, grant).await
+    }
+
+    /// Delegates to [`Self::list_for_subject`], which already answers exactly
+    /// this question — the grants dashboard and the consent memory want the
+    /// same rows, and a second query would be a second chance to disagree
+    /// about which grants a person holds.
+    async fn for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError> {
+        Self::list_for_subject(self, subject).await
     }
 }

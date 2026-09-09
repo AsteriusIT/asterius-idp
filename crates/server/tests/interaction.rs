@@ -78,6 +78,13 @@ impl FakeStore {
         }
     }
 
+    /// Sets the stored `prompt` values, which `http::par` writes as an array.
+    fn prompting(&self, prompt: &str) {
+        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
+            record.parameters["prompts"] = serde_json::json!([prompt]);
+        }
+    }
+
     /// Replaces the stored `redirect_uri`, for the policy the consent screen is
     /// served under.
     fn redirecting_to(&self, redirect_uri: &str) {
@@ -290,6 +297,20 @@ impl GrantRepository for FakeGrants {
         self.0.lock().expect("lock").push(grant.clone());
         Ok(())
     }
+
+    async fn for_subject(
+        &self,
+        subject: &asterius_domain::SubjectId,
+    ) -> Result<Vec<Grant>, DomainError> {
+        Ok(self
+            .0
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|grant| grant.subject.as_ref() == Some(subject))
+            .cloned()
+            .collect())
+    }
 }
 
 /// The codes it issues, by digest.
@@ -472,6 +493,7 @@ fn context_with<'a>(
         username: Some("ada"),
         clients: &FakeClients,
         grants: &issued.grants,
+        memory: asterius_oidc::consent_memory::MemoryPolicy::default(),
         codes: &issued.codes,
         subjects: &FakeSubjects,
         code_lifetime: asterius_oidc::code::DEFAULT_LIFETIME,
@@ -1202,6 +1224,125 @@ fn parameter(url: &url::Url, name: &str) -> Option<String> {
     url.query_pairs()
         .find(|(k, _)| k == name)
         .map(|(_, v)| v.into_owned())
+}
+
+// ---- consent memory (ast-uwv.3) -----------------------------------------
+
+/// The `sub` this client sees for the account behind the consent tests.
+async fn subject_of_billing() -> SubjectId {
+    let client = asterius_domain::ClientRepository::find(&FakeClients, &ClientId::new("billing"))
+        .await
+        .expect("a store")
+        .expect("a client");
+    let sector = SectorIdentifier::of_client(&client).expect("a sector");
+    FakeSubjects
+        .subject(UserId::new(uuid::Uuid::from_u128(USER)), &sector)
+        .await
+        .expect("a subject")
+}
+
+/// A grant this user already holds for this client, covering `scopes`.
+async fn already_granted(scopes: &[&str]) -> Grant {
+    let mut grant = Grant::new(
+        TenantId::new("demo"),
+        ClientId::new("billing"),
+        OffsetDateTime::now_utc() - Duration::days(1),
+    );
+    grant.subject = Some(subject_of_billing().await);
+    grant.scopes = scopes.iter().map(|s| (*s).to_owned()).collect();
+    grant
+}
+
+/// Renders the current stage, which is where a remembered consent is taken.
+async fn render_stage(at: &Consenting, issued: &Issued) -> axum::response::Response {
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    show(
+        context(&tenant, &at.store, &nonce, None, &at.sessions, issued),
+        at.id.expose(),
+        &cookie_header(at.id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// The acceptance criterion: a previously granted superset means no screen.
+#[tokio::test]
+async fn a_previously_granted_superset_skips_the_consent_screen() {
+    // Arrange: everything this request asks for has been granted before.
+    let at = at_consent();
+    let issued = Issued::default();
+    let earlier = already_granted(&["openid", "payments"]).await;
+    issued.grants.0.lock().expect("lock").push(earlier);
+
+    // Act: the browser arrives at the consent stage.
+    let response = render_stage(&at, &issued).await;
+
+    // Assert: it is sent straight back to the client with a code, and the
+    // interaction is spent — no page was drawn.
+    assert!(response.status().is_redirection(), "{}", response.status());
+    assert!(parameter(&location_of(&response), "code").is_some());
+    assert!(at.store.was_completed(&at.id.digest()));
+}
+
+/// The widening rule, where a user would actually notice it: a consent for
+/// `openid` is not a consent for `payments`.
+#[tokio::test]
+async fn a_narrower_earlier_consent_still_shows_the_screen() {
+    // Arrange: only one of the two requested scopes was ever granted.
+    let at = at_consent();
+    let issued = Issued::default();
+    let earlier = already_granted(&["openid"]).await;
+    issued.grants.0.lock().expect("lock").push(earlier);
+
+    // Act.
+    let response = render_stage(&at, &issued).await;
+
+    // Assert: the screen, not a code.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!at.store.was_completed(&at.id.digest()));
+}
+
+/// OIDC Core §3.1.2.1: `prompt=consent` asks for the user to be prompted, and
+/// a memory is not an answer to that.
+#[tokio::test]
+async fn prompt_consent_shows_the_screen_whatever_is_remembered() {
+    // Arrange: the memory covers the request in full, and the client insists.
+    let at = at_consent();
+    at.store.prompting("consent");
+    let issued = Issued::default();
+    let earlier = already_granted(&["openid", "payments"]).await;
+    issued.grants.0.lock().expect("lock").push(earlier);
+
+    // Act.
+    let response = render_stage(&at, &issued).await;
+
+    // Assert.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!at.store.was_completed(&at.id.digest()));
+}
+
+/// A remembered consent produces the same grant a submitted one would: the
+/// scopes asked for, and no more.
+#[tokio::test]
+async fn a_skipped_screen_still_records_a_grant_saying_what_was_granted() {
+    // Arrange: an earlier grant covering more than this request asks for.
+    let at = at_consent();
+    let issued = Issued::default();
+    let earlier = already_granted(&["openid", "payments", "profile"]).await;
+    issued.grants.0.lock().expect("lock").push(earlier);
+
+    // Act.
+    let _ = render_stage(&at, &issued).await;
+
+    // Assert: the new grant covers this request, not the earlier one.
+    let grants = issued.grants.0.lock().expect("lock");
+    let minted = grants.last().expect("a grant was written");
+    assert_eq!(
+        minted.scopes,
+        ["openid".to_owned(), "payments".to_owned()].into(),
+        "a remembered consent widened the grant it produced"
+    );
 }
 
 #[tokio::test]

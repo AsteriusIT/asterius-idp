@@ -126,6 +126,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "consent_memory"
+path = "fuzz_targets/consent_memory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cose_key"
 path = "fuzz_targets/cose_key.rs"
 test = false

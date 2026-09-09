@@ -42,6 +42,7 @@ use asterius_domain::{
 use asterius_oidc::authorize::ResponseMode;
 use asterius_oidc::code::{self, AuthorizationResponse, MintedCode};
 use asterius_oidc::consent::{ConsentRequest, Decision};
+use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
 };
@@ -74,8 +75,12 @@ pub struct InteractionContext<'a> {
     /// registration to draw a form nobody has authenticated for would be work
     /// an unauthenticated visitor can make this server do.
     pub clients: &'a dyn asterius_domain::ClientRepository,
-    /// Where a completed authorization is recorded.
+    /// Where a completed authorization is recorded, and where the consent
+    /// memory is read from (`ast-uwv.3`): a grant is both.
     pub grants: &'a dyn GrantRepository,
+    /// Whether this tenant remembers a consent it already has, and for how long
+    /// it remembers an `offline_access` one.
+    pub memory: MemoryPolicy,
     /// Where the code that carries it is stored.
     ///
     /// The issuing half only. This handler has no way to *redeem* a code, and
@@ -201,6 +206,14 @@ pub async fn show(
         Ok(resumed) => resumed,
         Err(response) => return *response,
     };
+
+    // Before a token is issued and a page is drawn: a consent this person has
+    // already given is a screen they do not have to see again (`ast-uwv.3`).
+    if let Some(response) =
+        skip_consent_if_remembered(&context, &presented, state.clone(), &record, now).await
+    {
+        return response;
+    }
 
     // A fresh token per rendering. Reloading the page twice before deciding is
     // something a user does, and each rendering carries its own token — the
@@ -424,9 +437,26 @@ async fn sign_in(
                 return *error;
             }
 
+            // The session was written a line ago, so the record this handler
+            // was resumed with does not name it yet, and the consent memory is
+            // keyed by who is signed in. Carrying the digest across rather than
+            // re-reading the row: it is the same value the `save` above just
+            // stored, and a second read could only disagree with it.
+            let record = InteractionRecord {
+                session: Some(session.id_digest.clone()),
+                ..record.clone()
+            };
+            if let Some(response) =
+                skip_consent_if_remembered(context, presented, state.clone(), &record, now).await
+            {
+                let mut response = response;
+                set_session_cookie(&mut response, &id_value);
+                return response;
+            }
+
             // Signed in, so the next screen is consent — which needs the
             // offer.
-            let offer = describe(context, record).await;
+            let offer = describe(context, &record).await;
             let mut response = render(context, state.stage, &token, id, None, offer.as_ref());
             set_session_cookie(&mut response, &id_value);
             response
@@ -464,6 +494,208 @@ async fn sign_in(
             )
         }
     }
+}
+
+/// Where the consent behind a grant came from.
+///
+/// Two values rather than a `bool`, and carried all the way to the audit trail
+/// rather than inferred there. Once a screen can be skipped, "the user
+/// approved this" stops being one fact: it is either a person pressing a button
+/// now, or this server deciding that a person pressed one before. An
+/// investigator asking "was anybody actually looking at the screen when this
+/// grant was made" must be able to answer it from the record, and no later
+/// reader can reconstruct it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsentSource {
+    /// The user was shown the offer and approved it.
+    Screen,
+    /// A consent recorded earlier covered the request (`ast-uwv.3`).
+    Memory,
+}
+
+impl ConsentSource {
+    /// The value that appears in the audit trail.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Screen => "screen",
+            Self::Memory => "memory",
+        }
+    }
+}
+
+/// Appends the consent behind a grant to the audit trail.
+///
+/// A failure is logged and does not propagate, for the reason
+/// [`record_registered_passkey`] gives: the grant is already committed, and
+/// refusing the authorization afterwards would strand a user who did nothing
+/// wrong. The transactional outbox (`ast-0ju.9`) is what closes that gap.
+///
+/// The scopes are recorded as a count and not as a list. What was granted is
+/// on the grant, which this event names; repeating it here would put the same
+/// fact in two places, free to disagree, and would put a client's scope tokens
+/// into a trail that is kept longer than the grant is.
+async fn record_consent(
+    context: &InteractionContext<'_>,
+    grant: &Grant,
+    source: ConsentSource,
+    now: OffsetDateTime,
+) {
+    let mut event = AuditEvent::new(
+        context.tenant.id.clone(),
+        EventType::CONSENT_GRANTED,
+        Outcome::Success,
+        grant.subject.as_ref().map_or(Actor::System, |subject| {
+            Actor::User(subject.as_str().to_owned())
+        }),
+        now,
+    )
+    .client(grant.client.clone())
+    .grant(grant.id.clone())
+    .detail(Detail::new().label("source", source.as_str()).number(
+        "scopes",
+        i64::try_from(grant.scopes.len()).unwrap_or(i64::MAX),
+    ));
+    if let Some(subject) = &grant.subject {
+        event = event.subject(subject.as_str().to_owned());
+    }
+    if let Err(failure) = context.audit.record(event).await {
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            "a granted consent was not written to the audit trail"
+        );
+    }
+}
+
+/// Takes a consent this person has already given, instead of asking again.
+///
+/// Returns the authorization response when the memory covers the whole
+/// request, and `None` — meaning "draw the screen" — in every other case,
+/// including every case this function could not decide. That asymmetry is the
+/// design: the only way out of here with a grant is a memory that positively
+/// covers what is being asked for, so a session that cannot be read, a subject
+/// that cannot be resolved or a store that will not answer all lead to the
+/// screen rather than to a grant nobody agreed to.
+///
+/// # Why this is not a shortcut around the stage machine
+///
+/// It still moves `Login -> Consent -> Response`, through
+/// [`Stage::may_advance_to`], and it still produces a [`Decision::Approved`]
+/// that [`complete`] turns into a code the same way a submitted form would.
+/// What is skipped is the rendering, not the record: the grant `mint` writes
+/// says exactly what was granted, and `asterius_oidc::claims::record_on_grant`
+/// copies the consented claims onto it, so `ast-1sk.6`'s consent boundary holds
+/// for a remembered consent exactly as it does for a fresh one.
+///
+/// # `prompt=consent`
+///
+/// OIDC Core §3.1.2.1: the client asked for the user to be prompted, and a
+/// memory is not an answer to that. It is checked here rather than left to the
+/// memory, because it is a fact about the request and not about the person.
+async fn skip_consent_if_remembered(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    mut state: StoredState,
+    record: &InteractionRecord,
+    now: OffsetDateTime,
+) -> Option<Response> {
+    if state.stage != Stage::Consent {
+        return None;
+    }
+    let prompted = record
+        .parameters
+        .get("prompts")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|value| value == "consent")
+        });
+    if prompted {
+        return None;
+    }
+
+    let subject = subject_of_record(context, record, now).await?;
+    let grants = match context.grants.for_subject(&subject).await {
+        Ok(grants) => grants,
+        Err(error) => {
+            // The screen, not an error page: the user can still consent, and
+            // a store that cannot answer "what have they agreed to before"
+            // has not said that they agreed to anything.
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read the consent memory");
+            return None;
+        }
+    };
+    let asked = Asked::from_parameters(&record.parameters);
+    let covered = Remembered::of_client(&grants, &record.client, &subject, now).covers(
+        &asked,
+        context.memory,
+        now,
+    );
+    if covered.delta().is_some() {
+        // Something is new. `ast-uwv.5` narrows the screen to the delta;
+        // until then the whole offer is shown, which asks for more than is
+        // strictly outstanding and never for less.
+        return None;
+    }
+
+    // What was asked for, which the memory has just been shown to cover in
+    // full. Read off the request rather than off the grants: a grant that
+    // covers *more* than this request must not widen it.
+    let decision = Decision::Approved {
+        scopes: asked.scopes.clone(),
+    };
+    state.decision = Some(StoredDecision::Approved {
+        scopes: asked.scopes.iter().cloned().collect(),
+    });
+    if !state.stage.may_advance_to(Stage::Response) {
+        return None;
+    }
+    state.stage = Stage::Response;
+    state.spend_csrf();
+    save(context, presented, &state, None, now).await.ok()?;
+
+    tracing::info!(
+        tenant = %context.tenant.id,
+        client = %record.client,
+        "the consent screen was skipped: this request is covered by an earlier consent"
+    );
+    Some(
+        complete(
+            context,
+            presented,
+            &decision,
+            record,
+            ConsentSource::Memory,
+            now,
+        )
+        .await,
+    )
+}
+
+/// The `sub` this client sees for the user the interaction authenticated.
+///
+/// `None` whenever the answer is not certain — no session on the record, a
+/// session that has ended, a client that has gone, a subject that will not
+/// resolve. Every one of those is a reason to ask rather than to remember.
+async fn subject_of_record(
+    context: &InteractionContext<'_>,
+    record: &InteractionRecord,
+    now: OffsetDateTime,
+) -> Option<asterius_domain::SubjectId> {
+    let digest = record.session.as_deref()?;
+    let session = context.sessions.find(digest).await.ok()??;
+    if !session.status(now).is_usable() {
+        return None;
+    }
+    let client = context.clients.find(&record.client).await.ok()??;
+    let sector = SectorIdentifier::of_client(&client).ok()?;
+    context
+        .subjects
+        .subject(UserId::new(session.user), &sector)
+        .await
+        .ok()
 }
 
 /// The consent stage: record what the user actually agreed to.
@@ -554,7 +786,15 @@ async fn decide(
         return *error;
     }
 
-    complete(context, presented, &decision, record, now).await
+    complete(
+        context,
+        presented,
+        &decision,
+        record,
+        ConsentSource::Screen,
+        now,
+    )
+    .await
 }
 
 /// Turns the recorded decision into the authorization response.
@@ -582,6 +822,7 @@ async fn complete(
     presented: &InteractionId,
     decision: &Decision,
     record: &InteractionRecord,
+    source: ConsentSource,
     now: OffsetDateTime,
 ) -> Response {
     let string = |name: &str| {
@@ -630,7 +871,7 @@ async fn complete(
             state,
             issuer,
         },
-        Decision::Approved { scopes } => match mint(context, scopes, record, now).await {
+        Decision::Approved { scopes } => match mint(context, scopes, record, source, now).await {
             Ok(code) => AuthorizationResponse::Code {
                 code,
                 state,
@@ -682,6 +923,7 @@ async fn mint(
     context: &InteractionContext<'_>,
     scopes: &std::collections::BTreeSet<String>,
     record: &InteractionRecord,
+    source: ConsentSource,
     now: OffsetDateTime,
 ) -> Result<String, &'static str> {
     let string = |name: &str| {
@@ -761,6 +1003,7 @@ async fn mint(
         tracing::error!(%error, tenant = %context.tenant.id, "cannot record a grant");
         return Err("server_error");
     }
+    record_consent(context, &grant, source, now).await;
 
     let Some(code_challenge) = string("code_challenge") else {
         // FAPI 2.0 SP §5.3.2.2 item 5 makes PKCE mandatory and

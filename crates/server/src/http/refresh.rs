@@ -420,11 +420,14 @@ impl RefreshToken<'_> {
             Err(error) if grant.scopes.contains("offline_access") => {
                 // The grant is entitled to outlive the session, but this
                 // server still cannot assert an `auth_time` it no longer
-                // holds. That is a gap rather than a decision, and it is
-                // `ast-uwv.3`'s: consent memory is where the authentication
-                // facts an offline grant needs will be recorded. Until then
-                // the honest answer is to refuse rather than to invent a
-                // claim, and the log says which it was.
+                // holds. `ast-uwv.3` was expected to close this and did not:
+                // the consent memory it delivered is derived from the grants
+                // rather than stored beside them, and a derivation has nowhere
+                // to keep an `auth_time`. Closing it means recording the
+                // authentication facts on the grant itself and reading them
+                // here when the session is gone — a change to the grant model.
+                // Until then the honest answer is to refuse rather than to
+                // invent a claim, and the log says which it was.
                 tracing::warn!(
                     %error,
                     grant = %grant.id,

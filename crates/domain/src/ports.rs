@@ -793,14 +793,16 @@ pub trait SessionRepository: Debug + Send + Sync {
     async fn participants(&self, id_digest: &str) -> Result<Vec<Participant>, DomainError>;
 }
 
-/// Recording a completed authorization.
+/// Recording a completed authorization, and reading back what earlier ones
+/// recorded.
 ///
-/// Deliberately one method. The authorization endpoint's whole relationship
-/// with a grant is that it creates one; reading, claiming and revoking belong
-/// to the token endpoint, the introspection endpoint and the grants dashboard,
-/// and none of those is reachable from a browser mid-consent. A port carrying
-/// all four would hand every one of those operations to a handler that needs
-/// exactly one of them.
+/// Two methods, and the second is not a widening of the first: claiming,
+/// revoking and the Grant Management queries stay on the concrete adapter,
+/// where the token endpoint and the dashboard reach them. What the
+/// authorization endpoint needs is to write one grant and to *read what this
+/// person has already agreed to* — because a server that cannot read that has
+/// no consent memory, must show the screen every time, and can never answer a
+/// satisfiable `prompt=none` request silently (`asterius_oidc::consent_memory`).
 #[async_trait::async_trait]
 pub trait GrantRepository: Debug + Send + Sync {
     /// Writes a new grant.
@@ -810,6 +812,22 @@ pub trait GrantRepository: Debug + Send + Sync {
     /// [`DomainError::Invalid`] when the grant belongs to another tenant, and
     /// [`DomainError::Storage`] otherwise.
     async fn create(&self, grant: &Grant) -> Result<(), DomainError>;
+
+    /// Every grant this tenant holds for `subject`, revoked ones included.
+    ///
+    /// Unfiltered on purpose. Which grants count as a standing agreement is a
+    /// consent rule — not revoked, not expired, the right client — and
+    /// `asterius_oidc::consent_memory::Remembered::of_client` is where that
+    /// rule lives, with a test per clause. Expressing it as a `where` clause
+    /// here would put it in SQL, where nothing that reads it can be tested
+    /// without a database and where "revoked grants are excluded" is a fact
+    /// about a query rather than about consent.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] when a stored row is not one the grant model
+    /// accepts, and [`DomainError::Storage`] otherwise.
+    async fn for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError>;
 }
 
 /// Issuing an authorization code — and nothing else.
