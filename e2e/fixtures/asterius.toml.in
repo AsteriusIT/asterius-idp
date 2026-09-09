@@ -1,0 +1,50 @@
+# Configuration for the browser sweep. NOT a production configuration.
+#
+# `scripts/browser-tests.sh` substitutes @PORT@, @CERTIFICATE@, @PRIVATE_KEY@
+# and @DATABASE_URL@ and writes the result into a run directory it deletes
+# afterwards. Every key is described in docs/configuration.md.
+#
+# Two differences from deploy/compose/asterius.toml, and both are the point.
+#
+# `mode = "terminate_tls"` with a certificate generated for the run, rather than
+# `behind_proxy` on plain HTTP. The sweep has to prove that a real browser keeps
+# the `__Host-` cookie, and the prefix's first guarantee is that the cookie was
+# set over a secure origin. Chromium would treat a loopback origin as
+# trustworthy anyway, which is exactly why it is not good enough: it would prove
+# the cookie survives on the one origin where the rule is relaxed.
+#
+# `[registration] mode = "open"`, so the harness can register the client it
+# needs. An open registration endpoint is a deliberate non-production choice —
+# see docs/configuration.md, which explains why the default is to register
+# nobody.
+
+log_format = "text"
+
+[server]
+bind = "127.0.0.1:@PORT@"
+mode = "terminate_tls"
+
+[server.tls]
+certificate = "@CERTIFICATE@"
+private_key = "@PRIVATE_KEY@"
+
+[database]
+url = "@DATABASE_URL@"
+max_connections = 8
+
+[keys]
+# Development KEK, the same obviously-worthless value the example compose stack
+# uses. `head -c 32 /dev/urandom | base64` produces a real one.
+kek_env = "ASTERIUS_KEK"
+
+[registration]
+mode = "open"
+
+# The issuer is an identifier rather than a fetch target (RFC 8414 §2), but here
+# it is also where the browser really goes, so its authority is the address the
+# server listens on. `127.0.0.1` and not `localhost`: the sweep must reach the
+# same socket the server bound, and a name that may resolve to `::1` first is a
+# way for a run to fail for a reason that has nothing to do with the code.
+[[tenant]]
+id = "e2e"
+issuer = "https://127.0.0.1:@PORT@/t/e2e"

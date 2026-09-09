@@ -190,6 +190,76 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features
 
   # -------------------------------------------------------------------------
+  # The only job that runs a browser (`ast-2vk.14`).
+  #
+  # Everything else in this pipeline asserts what the source says. This one
+  # asserts what Chromium does with it: that login and consent work with
+  # JavaScript disabled, that the browser keeps the `__Host-` cookie we write —
+  # the prefix's guarantees are browser-enforced, so nothing else can check
+  # them — and that no page provokes a Content-Security-Policy violation, in
+  # the no-JS suite and in the JS one. `e2e/tests/csp-gate.spec.ts` breaks a
+  # page on purpose and asserts the gate refuses it, so a green run here is not
+  # a browser that has stopped reporting.
+  #
+  # Kept short deliberately (`ast-83p.15`): one browser rather than three, a
+  # debug build off the shared cache rather than a container image, and the flow
+  # runs in one project rather than both. It is nowhere near the critical path.
+  # -------------------------------------------------------------------------
+  browser:
+    name: browser sweep (no-JS and CSP)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: asterius
+          POSTGRES_PASSWORD: asterius
+          POSTGRES_DB: asterius
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U asterius -d asterius"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://asterius:asterius@127.0.0.1:5433/asterius
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      # Cached across runs and keyed on the lockfile: the browser is ~150 MB and
+      # changes only when @playwright/test does.
+      - name: cache the browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/package-lock.json') }}
+
+      # The script starts the server, issues its certificate and seeds the
+      # fixtures. Running it here rather than reimplementing the steps is the
+      # point: what CI runs and what a developer runs are the same file.
+      - name: browser sweep
+        run: ./scripts/browser-tests.sh
+
+      - name: upload the traces of any failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------------------
   # A short fuzz run on every PR. Sixty seconds per target does not prove much
   # on its own — the value is that a change which makes a parser panic on its
   # own seed corpus fails here rather than at 3am. The long runs are nightly,
@@ -287,7 +357,7 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [lint, test, sqlx-check, supply-chain, docs, fuzz-targets, fuzz]
+    needs: [lint, test, sqlx-check, supply-chain, docs, browser, fuzz-targets, fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: all jobs succeeded
