@@ -684,6 +684,47 @@ async fn a_proof_on_the_push_pins_the_code_to_its_key() {
     );
 }
 
+/// The pin the code issuer actually reads is the one in the stored
+/// *parameters*: `interaction::authorize` builds the `CodeBinding` from
+/// `record.parameters["dpop_jkt"]` and never sees the column beside them. A
+/// push pinned by a proof alone must name its key there too — otherwise the
+/// code is issued unpinned, and the token endpoint has nothing to compare the
+/// presented proof against (`ast-36g`, found by the OIDF suite).
+#[tokio::test]
+async fn a_proof_on_the_push_pins_the_key_the_code_issuer_reads() {
+    let requests = FakeRequests::default();
+    let thumbprint = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I";
+    let key = asterius_domain::Kid::new(thumbprint);
+    let tenant = tenant();
+    let clients = FakeClients(Some(client()));
+
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
+            lifetime: Duration::seconds(90),
+        },
+        &form_headers(),
+        // No `dpop_jkt` in the body: the proof is the whole pin.
+        &form(&valid_pairs()),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client()),
+        Some(&key),
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let stored = requests.0.lock().expect("lock");
+    assert_eq!(
+        stored[0].parameters["dpop_jkt"].as_str(),
+        Some(thumbprint),
+        "the stored parameters do not name the key the push was pinned to"
+    );
+}
+
 /// RFC 9449 §10.1 supports both spellings. A request that uses both and
 /// disagrees with itself does not name a key, so it is refused rather than
 /// resolved — picking one would let whoever controls the other choose.

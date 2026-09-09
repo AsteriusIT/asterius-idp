@@ -85,6 +85,14 @@ impl FakeStore {
         }
     }
 
+    /// Pins the stored request to a DPoP key, as `http::par::serialise` does
+    /// for a push that named one (RFC 9449 §10.1).
+    fn pinned_to(&self, thumbprint: &str) {
+        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
+            record.parameters["dpop_jkt"] = Value::String(thumbprint.to_owned());
+        }
+    }
+
     /// Replaces the stored `redirect_uri`, for the policy the consent screen is
     /// served under.
     fn redirecting_to(&self, redirect_uri: &str) {
@@ -1516,6 +1524,33 @@ async fn an_approval_redirects_to_the_client_with_a_code() {
     );
     assert_eq!(binding.redirect_uri, "https://rp.example/cb");
     assert_eq!(binding.client_id, "billing");
+}
+
+/// RFC 9449 §10.1: a request pinned to a DPoP key issues a code pinned to it.
+/// The pin travels in the stored parameters, and this is the half that copies
+/// it onto the binding the token endpoint compares against (`ast-36g`).
+#[tokio::test]
+async fn a_pinned_request_issues_a_code_bound_to_that_key() {
+    let thumbprint = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I";
+    let at = at_consent();
+    at.store.pinned_to(thumbprint);
+    let issued = Issued::default();
+
+    let response = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 303);
+    let stored = issued.codes.0.lock().expect("lock");
+    let (_, binding) = stored.first().expect("a code was stored");
+    assert_eq!(
+        binding.dpop_jkt.as_deref(),
+        Some(thumbprint),
+        "the code was issued unpinned, so any DPoP key could redeem it"
+    );
 }
 
 /// The URL carries a credential, so nothing may keep it.
