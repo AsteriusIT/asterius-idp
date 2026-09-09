@@ -314,9 +314,7 @@ fn check_nonces(input: &Input) {
     // And never outside its two windows, or for another audience or secret.
     assert!(!issuer.accepts(&nonce, AUDIENCE, issued_at + window * 3));
     assert!(!issuer.accepts(&nonce, "https://as.example/t/other", issued_at));
-    assert!(
-        !NonceIssuer::from_secret(b"a different secret").accepts(&nonce, AUDIENCE, issued_at)
-    );
+    assert!(!NonceIssuer::from_secret(b"a different secret").accepts(&nonce, AUDIENCE, issued_at));
 
     // Arbitrary text is never a nonce. (It could be, with probability 2^-128.)
     if let NonceClaim::Text(text) = &input.nonce {
@@ -393,7 +391,10 @@ fn check_proof(input: &Input) {
 
     // The `jti` is usable: the replay defence has something to remember, and
     // it is bounded so it cannot be used to grow the store without limit.
-    assert!(!accepted.jti.is_empty(), "accepted a proof with an empty jti");
+    assert!(
+        !accepted.jti.is_empty(),
+        "accepted a proof with an empty jti"
+    );
     assert!(
         accepted.jti.len() <= MAX_JTI_LEN,
         "accepted a jti of {} bytes, over the {MAX_JTI_LEN} limit",
@@ -610,11 +611,13 @@ fn render_header(input: &Input, key: &SigningKey) -> Value {
         }
         JwkChoice::WrongDeclaredAlg => {
             let mut jwk = public_jwk(key);
-            jwk["alg"] = json!(SigningAlgorithm::ALL
-                .into_iter()
-                .find(|candidate| *candidate != key.algorithm())
-                .expect("more than one")
-                .as_str());
+            jwk["alg"] = json!(
+                SigningAlgorithm::ALL
+                    .into_iter()
+                    .find(|candidate| *candidate != key.algorithm())
+                    .expect("more than one")
+                    .as_str()
+            );
             header.insert("jwk".into(), jwk);
         }
         JwkChoice::TruncatedCoordinate => {
@@ -790,7 +793,10 @@ fn render_claims(input: &Input) -> Value {
 
     for (name, value) in &input.extra {
         // Never let a generated member collide with one under test.
-        if !matches!(name.as_str(), "htm" | "htu" | "jti" | "iat" | "nonce" | "ath") {
+        if !matches!(
+            name.as_str(),
+            "htm" | "htu" | "jti" | "iat" | "nonce" | "ath"
+        ) {
             claims.insert(name.clone(), json!(value));
         }
     }

@@ -147,7 +147,10 @@ fuzz_target!(|data: &[u8]| {
         raw,
         "a claim name was rewritten on the way in"
     );
-    assert!(!parsed.base().is_empty(), "a name that names nothing: {raw:?}");
+    assert!(
+        !parsed.base().is_empty(),
+        "a name that names nothing: {raw:?}"
+    );
     assert!(
         !parsed
             .as_str()

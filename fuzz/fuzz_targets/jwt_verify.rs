@@ -31,7 +31,9 @@ fn keys() -> &'static Vec<VerifyingKey> {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(token) = std::str::from_utf8(data) else { return };
+    let Ok(token) = std::str::from_utf8(data) else {
+        return;
+    };
 
     let resolver = |_: Option<&Kid>| keys().clone();
     let now = OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("fixed instant");

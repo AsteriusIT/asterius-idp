@@ -267,7 +267,10 @@ fuzz_target!(|input: Input| {
         !object["sub"].as_str().expect("sub is a string").is_empty(),
         "a token with an empty sub"
     );
-    assert_eq!(object["jti"], Value::String("CQkJCQkJCQkJCQkJCQkJCQ".into()));
+    assert_eq!(
+        object["jti"],
+        Value::String("CQkJCQkJCQkJCQkJCQkJCQ".into())
+    );
 
     // --- sender constraining (FAPI 2.0 SP §5.3.2.1 item 4) -----------------
 
@@ -359,7 +362,10 @@ fuzz_target!(|input: Input| {
             "a stored scope split into two on the way into a token: {scope:?}"
         );
         for token in split {
-            assert!(grant.scopes.contains(token), "a scope appeared from nowhere");
+            assert!(
+                grant.scopes.contains(token),
+                "a scope appeared from nowhere"
+            );
         }
     }
 
@@ -405,8 +411,18 @@ fuzz_target!(|input: Input| {
         if ClaimName::SERVER_ISSUED.contains(&member.as_str()) {
             assert!(
                 [
-                    "iss", "exp", "aud", "sub", "client_id", "iat", "jti", "cnf", "scope",
-                    "auth_time", "acr", "amr",
+                    "iss",
+                    "exp",
+                    "aud",
+                    "sub",
+                    "client_id",
+                    "iat",
+                    "jti",
+                    "cnf",
+                    "scope",
+                    "auth_time",
+                    "acr",
+                    "amr",
                     // RFC 8693 §4.1. Written whenever the grant carries an
                     // actor chain, which is why only a run that generated one
                     // ever reached this assertion.

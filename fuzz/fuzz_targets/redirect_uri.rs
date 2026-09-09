@@ -167,10 +167,7 @@ fuzz_target!(|data: &[u8]| {
         !authority.is_empty(),
         "a redirect URI with no authority was accepted: {registered}"
     );
-    assert!(
-        !authority.contains('@'),
-        "userinfo survived: {registered}"
-    );
+    assert!(!authority.contains('@'), "userinfo survived: {registered}");
     let is_loopback_http = registered.as_str().starts_with("http://127.")
         || registered.as_str().starts_with("http://[::1]");
     assert!(

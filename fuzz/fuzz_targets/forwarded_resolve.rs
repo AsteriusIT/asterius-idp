@@ -12,14 +12,20 @@ use libfuzzer_sys::fuzz_target;
 use std::net::IpAddr;
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(text) = std::str::from_utf8(data) else { return };
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
 
     let mut headers = HeaderMap::new();
-    for (name, value) in [("forwarded", text), ("x-forwarded-for", text), ("x-forwarded-host", text)]
-    {
-        if let (Ok(name), Ok(value)) =
-            (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(value))
-        {
+    for (name, value) in [
+        ("forwarded", text),
+        ("x-forwarded-for", text),
+        ("x-forwarded-host", text),
+    ] {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
             headers.append(name, value);
         }
     }

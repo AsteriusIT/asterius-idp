@@ -19,8 +19,12 @@ use libfuzzer_sys::fuzz_target;
 const SEPARATORS: usize = 9;
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(text) = std::str::from_utf8(data) else { return };
-    let Ok(origin) = FormActionOrigin::parse(text) else { return };
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(origin) = FormActionOrigin::parse(text) else {
+        return;
+    };
 
     // Nothing is rewritten (ADR-0005): what was registered is what is served,
     // and it re-parses to itself, so the two sides cannot drift.

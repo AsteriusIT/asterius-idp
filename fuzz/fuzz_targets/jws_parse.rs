@@ -33,8 +33,12 @@ fn keys() -> &'static [SigningKey; 3] {
 }
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(text) = std::str::from_utf8(data) else { return };
-    let Ok(unverified) = jws::parse(text) else { return };
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(unverified) = jws::parse(text) else {
+        return;
+    };
 
     // Whatever parsed, its algorithm is one we permit. RFC 8725 §3.1–3.2.
     assert!(

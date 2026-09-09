@@ -146,7 +146,11 @@ fuzz_target!(|input: Input| {
         },
         "at_hash is not half a digest"
     );
-    assert_eq!(hash, token_hash(algorithm, access_token), "at_hash is not pure");
+    assert_eq!(
+        hash,
+        token_hash(algorithm, access_token),
+        "at_hash is not pure"
+    );
 
     let client_id = if input.client_id.is_empty() {
         "billing".to_owned()

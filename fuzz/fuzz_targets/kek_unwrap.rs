@@ -29,12 +29,7 @@ fn kek() -> &'static LocalKek {
 fuzz_target!(|data: &[u8]| {
     let tenant = TenantId::new("demo");
     let kid = Kid::new("NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs");
-    let binding = KeyBinding::new(
-        &tenant,
-        &kid,
-        KeyPurpose::Signing,
-        SigningAlgorithm::EdDsa,
-    );
+    let binding = KeyBinding::new(&tenant, &kid, KeyPurpose::Signing, SigningAlgorithm::EdDsa);
 
     // The row as the fuzzer wrote it. Split so that both the nonce and the
     // ciphertext are attacker-chosen, which is what an `UPDATE` gives them.
@@ -52,8 +47,14 @@ fuzz_target!(|data: &[u8]| {
     // A genuine sealing of the same bytes, to check the other direction: it
     // opens, it opens to what went in, and it opens under nothing else.
     let sealed = kek().seal(binding, data).expect("seal");
-    let opened = kek().open(binding, &sealed).expect("a sealed key must open");
-    assert_eq!(opened.as_slice(), data, "the plaintext changed in the envelope");
+    let opened = kek()
+        .open(binding, &sealed)
+        .expect("a sealed key must open");
+    assert_eq!(
+        opened.as_slice(),
+        data,
+        "the plaintext changed in the envelope"
+    );
     assert!(
         !sealed.ciphertext().is_empty() && sealed.ciphertext() != data,
         "the ciphertext is the plaintext"
@@ -62,9 +63,24 @@ fuzz_target!(|data: &[u8]| {
     let elsewhere = TenantId::new("other");
     let other_kid = Kid::new("a-different-thumbprint");
     for wrong in [
-        KeyBinding::new(&elsewhere, &kid, KeyPurpose::Signing, SigningAlgorithm::EdDsa),
-        KeyBinding::new(&tenant, &other_kid, KeyPurpose::Signing, SigningAlgorithm::EdDsa),
-        KeyBinding::new(&tenant, &kid, KeyPurpose::Encryption, SigningAlgorithm::EdDsa),
+        KeyBinding::new(
+            &elsewhere,
+            &kid,
+            KeyPurpose::Signing,
+            SigningAlgorithm::EdDsa,
+        ),
+        KeyBinding::new(
+            &tenant,
+            &other_kid,
+            KeyPurpose::Signing,
+            SigningAlgorithm::EdDsa,
+        ),
+        KeyBinding::new(
+            &tenant,
+            &kid,
+            KeyPurpose::Encryption,
+            SigningAlgorithm::EdDsa,
+        ),
         KeyBinding::new(&tenant, &kid, KeyPurpose::Signing, SigningAlgorithm::Es256),
     ] {
         assert!(

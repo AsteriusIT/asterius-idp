@@ -13,7 +13,9 @@ use libfuzzer_sys::fuzz_target;
 use time::OffsetDateTime;
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(text) = std::str::from_utf8(data) else { return };
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
     if text.len() < 2 {
         return;
     }
@@ -21,7 +23,10 @@ fuzz_target!(|data: &[u8]| {
     // and `split_at` panics there. This crashed on its first run, in the
     // harness rather than in the encoder.
     let midpoint = text.chars().count() / 2;
-    let boundary = text.char_indices().nth(midpoint).map_or(text.len(), |(index, _)| index);
+    let boundary = text
+        .char_indices()
+        .nth(midpoint)
+        .map_or(text.len(), |(index, _)| index);
     let (left, right) = text.split_at(boundary);
 
     let build = |client: &str, subject: &str| {

@@ -30,7 +30,9 @@ fuzz_target!(|data: &[u8]| {
         // A hex SHA-256, always.
         assert_eq!(digest.len(), 64, "accepted {candidate:?} -> {digest}");
         assert!(
-            digest.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            digest
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
             "digest is not lower-case hex: {digest}"
         );
 

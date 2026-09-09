@@ -58,11 +58,19 @@ const CREDENTIAL_FIELDS: [&str; 3] = [
 /// They cover the shapes that a comparison doing anything other than equality
 /// would get wrong: an ordinary minted identifier, one that is its prefix, one
 /// that differs only in case, and the empty string.
-const IDENTIFIERS: [&str; 4] = ["c.9tR0nVQ3kZmY1bXeL-oPuA", "c.9tR0nVQ3kZmY1bXeL-oPu", "C.9TR0NVQ3KZMY1BXEL-OPUA", ""];
+const IDENTIFIERS: [&str; 4] = [
+    "c.9tR0nVQ3kZmY1bXeL-oPuA",
+    "c.9tR0nVQ3kZmY1bXeL-oPu",
+    "C.9TR0NVQ3KZMY1BXEL-OPUA",
+    "",
+];
 
 /// RFC 6749 Appendix A.8's `NQSCHAR`.
 fn nqschar(text: &str) -> bool {
-    !text.is_empty() && text.bytes().all(|b| matches!(b, 0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e))
+    !text.is_empty()
+        && text
+            .bytes()
+            .all(|b| matches!(b, 0x20..=0x21 | 0x23..=0x5b | 0x5d..=0x7e))
 }
 
 fuzz_target!(|input: (&[u8], u8)| {
@@ -147,7 +155,10 @@ fuzz_target!(|input: (&[u8], u8)| {
                 "a document that named this client and claimed nothing was still refused"
             );
             if failure == NotYours::ClientId {
-                assert!(!names_us, "a document that named this client failed on client_id");
+                assert!(
+                    !names_us,
+                    "a document that named this client failed on client_id"
+                );
             }
         }
     }

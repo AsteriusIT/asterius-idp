@@ -101,9 +101,15 @@ struct Input {
 
 fuzz_target!(|input: Input| {
     let mut pairs: Vec<(String, String)> = Vec::new();
-    input.response_type.apply("response_type", "code", &mut pairs);
-    input.redirect_uri.apply("redirect_uri", REDIRECT, &mut pairs);
-    input.code_challenge.apply("code_challenge", CHALLENGE, &mut pairs);
+    input
+        .response_type
+        .apply("response_type", "code", &mut pairs);
+    input
+        .redirect_uri
+        .apply("redirect_uri", REDIRECT, &mut pairs);
+    input
+        .code_challenge
+        .apply("code_challenge", CHALLENGE, &mut pairs);
     input
         .code_challenge_method
         .apply("code_challenge_method", "S256", &mut pairs);
@@ -113,11 +119,17 @@ fuzz_target!(|input: Input| {
     input.prompt.apply("prompt", "login", &mut pairs);
     input.max_age.apply("max_age", "60", &mut pairs);
     input.client_id.apply("client_id", CLIENT, &mut pairs);
-    input.request.apply("request", "eyJhbGciOiJub25lIn0..", &mut pairs);
     input
-        .request_uri
-        .apply("request_uri", "urn:ietf:params:oauth:request_uri:x", &mut pairs);
-    input.dpop_jkt.apply("dpop_jkt", &"a".repeat(43), &mut pairs);
+        .request
+        .apply("request", "eyJhbGciOiJub25lIn0..", &mut pairs);
+    input.request_uri.apply(
+        "request_uri",
+        "urn:ietf:params:oauth:request_uri:x",
+        &mut pairs,
+    );
+    input
+        .dpop_jkt
+        .apply("dpop_jkt", &"a".repeat(43), &mut pairs);
     for (name, value) in &input.extra {
         pairs.push((name.clone(), value.clone()));
     }
@@ -193,11 +205,17 @@ fuzz_target!(|input: Input| {
     // The authenticated client wins, whatever the form said.
     assert_eq!(request.client_id, CLIENT);
     if let Some(presented) = value_of("client_id") {
-        assert_eq!(presented, CLIENT, "accepted a request naming another client");
+        assert_eq!(
+            presented, CLIENT,
+            "accepted a request naming another client"
+        );
     }
 
     // `prompt=none` never travels with anything else.
-    if request.prompts.contains(&asterius_oidc::authorize::Prompt::None) {
+    if request
+        .prompts
+        .contains(&asterius_oidc::authorize::Prompt::None)
+    {
         assert_eq!(request.prompts.len(), 1);
     }
 

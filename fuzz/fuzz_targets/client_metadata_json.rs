@@ -111,7 +111,11 @@ fuzz_target!(|data: &[u8]| {
     // Everything a later request compares against must be reproducible: feed
     // the accepted values back in and they must come out identical.
     if !client.redirect_uris.is_empty() {
-        let uris: Vec<&str> = client.redirect_uris.iter().map(RedirectUri::as_str).collect();
+        let uris: Vec<&str> = client
+            .redirect_uris
+            .iter()
+            .map(RedirectUri::as_str)
+            .collect();
         let rebuilt = serde_json::json!({
             "client_name": client.client_name,
             "application_type": client.application_type.as_str(),
