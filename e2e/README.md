@@ -51,15 +51,17 @@ would leave the no-JS suite unguarded.
 Without it the sweep would pass just as happily against a browser reporting
 nothing at all.
 
-## Known failure
+## What this suite found
 
-`tests/no-js-flow.spec.ts` marks the last hop `test.fail()`: Chromium enforces
-`form-action` across the redirects of a form submission, and the consent page is
-served `form-action 'self'`, so the 303 carrying the authorization code to the
-client is refused. The code and the grant are written; the browser simply never
-follows. The seam to fix it exists — `Policy::with_form_post_to` — and is not
-used by the consent page. The annotation is `fail` and not `skip` so that the
-run goes red the day it starts passing.
+The last hop in `tests/no-js-flow.spec.ts` was a documented `test.fail()` until
+`ast-jsq`: Chromium enforces `form-action` across the *redirects* of a form
+submission, and the consent page was served `form-action 'self'`, so the 303
+carrying the authorization code to the client was refused — the code and the
+grant were written and the browser simply never followed. The consent page now
+uses `Policy::with_form_post_to` and names the origin of the `redirect_uri` this
+authorization was validated against, one origin and that page only.
+`tests/csp-sweep.spec.ts` asserts both halves: the widening on the consent page,
+and its absence on every other page.
 
 ## Fixture notes
 
@@ -71,6 +73,15 @@ run goes red the day it starts passing.
   `by_host` is indexed on `custom_host` alone. There is no configuration key for
   it yet, so the harness writes the column. The seed runs *after* boot because
   the tenant upsert at startup writes `custom_host` back to NULL.
+- The client's callback is `https://rp.example.test:{port}/cb`: a name RFC 6761
+  reserves, mapped to the loopback by `--host-resolver-rules` in
+  `playwright.config.ts`. Cross-origin from the server on purpose — a
+  same-origin callback is what passed while the flow was broken for every real
+  client — and unroutable off the machine, so a code cannot escape. What answers
+  there is the server itself with a 404; the assertion is the URL the browser
+  arrived at. A Playwright `route` cannot stand in for it: interception is never
+  offered the redirect hop of a form submission, so it reports a DNS failure
+  where the browser was in fact willing to navigate.
 - The server terminates TLS with a certificate issued for the run. Loopback
   would be treated as a secure origin over plain HTTP too, which is exactly why
   it is not good enough: it would prove the cookie survives on the one origin

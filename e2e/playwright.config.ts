@@ -16,6 +16,7 @@
  * source-level assertion cannot see.
  */
 import { defineConfig, devices } from '@playwright/test';
+import { CALLBACK_HOST } from './src/environment.js';
 
 export default defineConfig({
   testDir: './tests',
@@ -33,6 +34,14 @@ export default defineConfig({
     // this run. Trusting it is what lets the browser treat the origin as
     // secure, which is the precondition for a `__Host-` cookie existing at all.
     ignoreHTTPSErrors: true,
+    launchOptions: {
+      // The client's callback host resolves to the loopback and nowhere else.
+      // The last hop is then a real cross-origin navigation the browser either
+      // performs or refuses — which is the whole subject of `ast-jsq` — with no
+      // way for a code to leave the machine. Interception cannot stand in for
+      // it: Playwright is never offered the redirect hop of a form submission.
+      args: [`--host-resolver-rules=MAP ${CALLBACK_HOST} 127.0.0.1`],
+    },
     trace: process.env.CI ? 'retain-on-failure' : 'off',
     screenshot: 'only-on-failure',
   },

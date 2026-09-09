@@ -44,7 +44,7 @@ use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
 };
 use asterius_web::pages::{self, ConsentPage, ErrorPage, LoginPage, ScopeLine, nonce_attribute};
-use asterius_web::{Document, csp::Nonce};
+use asterius_web::{Document, FormActionOrigin, csp::Nonce};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -188,6 +188,19 @@ pub async fn show(
     render(&context, state.stage, &token, id, None, offer.as_ref())
 }
 
+/// The consent screen's contents, and the one origin its form may reach.
+///
+/// The two travel together because they come from the same place — the stored
+/// request of *this* authorization — and separating them is how a page ends up
+/// naming one client while widening `form-action` for another.
+struct ConsentOffer {
+    /// What the user is asked to agree to.
+    request: ConsentRequest,
+    /// The origin of the validated `redirect_uri`, when it is one a
+    /// `form-action` source expression can name (`ast-jsq`).
+    form_action: Option<FormActionOrigin>,
+}
+
 /// Builds the consent offer for a request, when one is needed.
 ///
 /// Returns `None` for any stage that does not show it, and for a client that
@@ -196,19 +209,22 @@ pub async fn show(
 async fn describe(
     context: &InteractionContext<'_>,
     record: &InteractionRecord,
-) -> Option<ConsentRequest> {
+) -> Option<ConsentOffer> {
     let client = context.clients.find(&record.client).await.ok()??;
 
     // The redirect URI was validated at push time against this client's
     // registered set, so its host is one the client actually owns — which is
     // what makes showing it worth anything (FAPI 2.0 SP §7).
-    let redirect_host = record
+    let redirect_uri = record
         .parameters
         .get("redirect_uri")
         .and_then(serde_json::Value::as_str)
-        .and_then(|uri| url::Url::parse(uri).ok())
+        .and_then(|uri| url::Url::parse(uri).ok());
+    let redirect_host = redirect_uri
+        .as_ref()
         .and_then(|uri| uri.host_str().map(ToOwned::to_owned))
         .unwrap_or_default();
+    let form_action = redirect_uri.as_ref().and_then(form_action_origin);
 
     let scopes: std::collections::BTreeSet<String> = record
         .parameters
@@ -234,16 +250,39 @@ async fn describe(
         })
         .unwrap_or_default();
 
-    Some(ConsentRequest::new(
-        client.registration.client_name.clone(),
-        redirect_host,
-        &scopes,
-        resources,
-        // Per-tenant scope wording is `ast-ndk.2`. Until then a scope is shown
-        // by name, which is honest: an unexplained scope should look
-        // unexplained.
-        |_| None,
-    ))
+    Some(ConsentOffer {
+        request: ConsentRequest::new(
+            client.registration.client_name.clone(),
+            redirect_host,
+            &scopes,
+            resources,
+            // Per-tenant scope wording is `ast-ndk.2`. Until then a scope is
+            // shown by name, which is honest: an unexplained scope should look
+            // unexplained.
+            |_| None,
+        ),
+        form_action,
+    })
+}
+
+/// The one origin a consent form's submission is allowed to end up at.
+///
+/// A browser applies `form-action` to the *redirects* of a submission and not
+/// only to its action, so a consent screen served under `form-action 'self'`
+/// cannot deliver the 303 that carries the authorization code to a client on
+/// another origin (`ast-jsq`). The widening is exactly one origin — the one
+/// belonging to the `redirect_uri` this authorization was validated against
+/// (ADR-0005) — never a raw query parameter, and never the client's whole
+/// registered set, which may span several origins.
+///
+/// `None` for anything a CSP `host-source` cannot express, which is a private
+/// scheme callback: that navigation leaves the browser rather than happening
+/// inside it, and the strict policy stays.
+fn form_action_origin(redirect_uri: &url::Url) -> Option<FormActionOrigin> {
+    // `Origin::ascii_serialization` is `scheme://host[:port]` with a default
+    // port omitted, which is the canonical spelling `FormActionOrigin` accepts;
+    // an opaque origin serialises to `null`, which it refuses.
+    FormActionOrigin::parse(&redirect_uri.origin().ascii_serialization()).ok()
 }
 
 /// `POST /interaction/{id}` — take a decision and advance.
@@ -469,7 +508,7 @@ async fn decide(
         .map(|(_, v)| v.clone())
         .collect();
 
-    let decision = match offer.decide(approved, &granted) {
+    let decision = match offer.request.decide(approved, &granted) {
         Ok(decision) => decision,
         Err(error) => {
             // The submission does not correspond to what was displayed. This
@@ -873,7 +912,7 @@ fn render(
     csrf: &CsrfToken,
     id: &str,
     message: Option<&str>,
-    offer: Option<&ConsentRequest>,
+    offer: Option<&ConsentOffer>,
 ) -> Response {
     let action = format!("/interaction/{id}");
     match stage {
@@ -904,14 +943,15 @@ fn render(
                     InteractionError::NotAvailable,
                 );
             };
-            Document::render(context.nonce, |nonce| {
+            let request = &offer.request;
+            let document = Document::render(context.nonce, |nonce| {
                 pages::render(&ConsentPage {
                     locale: "en",
                     tenant_name: &context.tenant.display_name,
-                    client_name: &offer.client_name,
+                    client_name: &request.client_name,
                     username: context.username.unwrap_or_default(),
-                    redirect_host: &offer.redirect_host,
-                    scopes: offer
+                    redirect_host: &request.redirect_host,
+                    scopes: request
                         .scopes
                         .iter()
                         .map(|scope| ScopeLine {
@@ -920,14 +960,22 @@ fn render(
                             required: scope.required,
                         })
                         .collect(),
-                    offline_access: offer.offline_access,
-                    resources: offer.resources.iter().cloned().collect(),
+                    offline_access: request.offline_access,
+                    resources: request.resources.iter().cloned().collect(),
                     action: &action,
                     csrf: csrf.expose(),
                     nonce_attribute: nonce_attribute(nonce),
                 })
-            })
-            .into_response()
+            });
+            // This form posts back here, but its answer is a 303 to the
+            // client — and `form-action` governs that redirect too, so the
+            // consent screen is the one page that names the client's origin
+            // (`ast-jsq`). No other stage does: the widening is attached here
+            // and nowhere else in this function.
+            match offer.form_action.clone() {
+                Some(origin) => document.with_form_post_to(origin).into_response(),
+                None => document.into_response(),
+            }
         }
         // Unreachable in practice: reaching `Response` spends the request in
         // the same call that sends the redirect, so a later `GET` finds
