@@ -13,6 +13,7 @@ pub mod entities;
 pub mod error;
 pub mod ids;
 pub mod issuer;
+pub mod json_sentinel;
 pub mod keys;
 pub mod ports;
 pub mod secret;
@@ -36,6 +37,9 @@ pub use entities::{
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
+pub use json_sentinel::{
+    SERDE_JSON_SENTINELS, is_serde_json_sentinel, names_a_serde_json_sentinel, serde_json_sentinel,
+};
 pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, SigningAlgorithm};
 pub use ports::{
     AuthRequestRepository, ClientConfiguration, ClientRegistry, ClientRepository, CodeIssuer,

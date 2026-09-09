@@ -39,6 +39,7 @@
 
 use crate::ids::{SubjectId, TenantId};
 use crate::issuer::Issuer;
+use crate::json_sentinel::{names_a_serde_json_sentinel, serde_json_sentinel};
 use crate::secret::Secret;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -236,6 +237,24 @@ pub enum ClaimError {
     /// A claim whose value is `null`.
     #[error("a claim value must not be null; omit the claim instead")]
     NullValue,
+    /// The name is one `serde_json` reserves for its own types — see
+    /// [`SERDE_JSON_SENTINELS`](crate::json_sentinel::SERDE_JSON_SENTINELS).
+    ///
+    /// Refused because the claim bag is written to a JSONB column and read
+    /// back with `serde_json`: a member with one of these names makes the
+    /// *whole* row unreadable as soon as sorting puts it first, and `$` sorts
+    /// before every character a claim name normally starts with. The write
+    /// side is the only place this can still be stopped.
+    #[error("the claim name `{0}` is one the JSON encoder reserves")]
+    ReservedMemberName(&'static str),
+    /// The value carries an object with a member `serde_json` reserves — see
+    /// [`SERDE_JSON_SENTINELS`](crate::json_sentinel::SERDE_JSON_SENTINELS).
+    ///
+    /// The same durable corruption as [`ReservedMemberName`](Self::ReservedMemberName),
+    /// one level down: a claim value is arbitrary JSON stored verbatim in the
+    /// same document as every other claim of that user.
+    #[error("a claim value must not contain a member reserved by the JSON encoder")]
+    ReservedMemberInValue,
 }
 
 /// Claims the authorization server issues about the exchange rather than about
@@ -361,6 +380,14 @@ impl ClaimName {
         };
         if base.is_empty() {
             return Err(ClaimError::NameLength { found: 0 });
+        }
+        // Before the reserved lists and on the base, like they are: a sentinel
+        // is well-formed by every other rule here — no control character, no
+        // whitespace, no `#`, well under the length bound — so nothing else
+        // would have caught it, and `$…RawValue#en` is refused too rather than
+        // left as the one spelling that survives.
+        if let Some(sentinel) = serde_json_sentinel(base) {
+            return Err(ClaimError::ReservedMemberName(sentinel));
         }
         if tag.is_some_and(|tag| !is_language_tag(tag)) {
             return Err(ClaimError::LanguageTag);
@@ -512,6 +539,9 @@ impl Claim {
     pub fn new(value: serde_json::Value, source: ClaimSource) -> Result<Self, ClaimError> {
         if value.is_null() {
             return Err(ClaimError::NullValue);
+        }
+        if names_a_serde_json_sentinel(&value) {
+            return Err(ClaimError::ReservedMemberInValue);
         }
         Ok(Self {
             value,
@@ -1023,6 +1053,7 @@ const SUBJECT_DOMAIN: &[u8] = b"asterius/pairwise-subject/v1";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_sentinel::SERDE_JSON_SENTINELS;
     use serde_json::json;
 
     fn salt(byte: u8) -> PairwiseSalt {
@@ -1613,6 +1644,58 @@ mod tests {
             assert!(
                 serde_json::from_value::<ClaimSet>(hostile.clone()).is_err(),
                 "loaded a claim bag that should have been refused: {hostile}"
+            );
+        }
+    }
+
+    /// The defect this guards: a name `serde_json` reserves is well-formed by
+    /// every other rule — no control character, no whitespace, no `#`, far
+    /// under the length bound — so only an explicit refusal stops it.
+    ///
+    /// Where it matters is the write path. The bag is a JSONB column read back
+    /// with `serde_json`, and `$` sorts before every character a claim name
+    /// normally starts with, so such a member ends up *first* and the whole row
+    /// stops parsing. One accepted name would make a user record durably
+    /// unreadable by the normal paths.
+    #[test]
+    fn a_serde_json_sentinel_is_not_a_claim_name() {
+        for sentinel in SERDE_JSON_SENTINELS {
+            assert_eq!(
+                ClaimName::parse(sentinel),
+                Err(ClaimError::ReservedMemberName(sentinel)),
+                "{sentinel:?} was accepted as a claim name"
+            );
+            assert_eq!(
+                ClaimName::parse(&format!("{sentinel}#en")),
+                Err(ClaimError::ReservedMemberName(sentinel)),
+                "{sentinel:?} was accepted once it carried a language tag"
+            );
+        }
+    }
+
+    /// The same corruption one level down: a claim *value* is arbitrary JSON
+    /// stored verbatim in the same document as every other claim of that user,
+    /// so a sentinel nested inside one breaks the row just as thoroughly.
+    #[test]
+    fn a_claim_value_may_not_hide_a_serde_json_sentinel() {
+        let buried = json!({ "evidence": [{ "$serde_json::private::RawValue": "x" }] });
+
+        let refused = Claim::new(buried, ClaimSource::Import);
+
+        assert_eq!(refused.unwrap_err(), ClaimError::ReservedMemberInValue);
+    }
+
+    /// `parse` is the only way to build a `ClaimName`, so the read path cannot
+    /// route around the rule either — including for a row written before it
+    /// existed.
+    #[test]
+    fn a_stored_bag_carrying_a_serde_json_sentinel_fails_to_load() {
+        for sentinel in SERDE_JSON_SENTINELS {
+            let stored = json!({ sentinel: { "value": "x", "source": "admin" } });
+
+            assert!(
+                serde_json::from_value::<ClaimSet>(stored).is_err(),
+                "a bag keyed by {sentinel:?} loaded"
             );
         }
     }

@@ -268,50 +268,13 @@ impl ReleasableClaim {
 
 /// The member names `serde_json` reserves for its own use.
 ///
-/// These are not claim names and not JSON syntax: they are the struct names
-/// `serde_json` uses to smuggle its `RawValue` and arbitrary-precision `Number`
-/// types through `serde`. When the corresponding feature is on — and features
-/// are unified across a whole binary, so a dependency several crates away
-/// decides this, not us — the *deserialiser* recognises an object whose first
-/// member has one of these names and demands the shape the feature expects,
-/// failing the parse of the whole document otherwise.
-///
-/// Two consequences, both of which this module has to refuse:
-///
-/// * Parsing stops being a function of the document alone. `{"a":{},"$…":{}}`
-///   parses and `{"$…":{},"a":{}}` does not, so the same request accepted at
-///   the pushed authorization request is refused once storage has written the
-///   members back in `serde_json`'s own (sorted) order — which is exactly the
-///   round trip a grant performs on every token issuance.
-/// * Anything this server *emits* with such a member — an ID token, a UserInfo
-///   response — is a document a relying party using `serde_json` cannot read.
-///
-/// The name is client-controlled, so this cannot be left to chance. Both are
-/// listed, not only the one whose feature happens to be enabled today: the
-/// enabling crate can change under us with a `cargo update`.
-pub const SERDE_JSON_SENTINELS: [&str; 2] = [
-    "$serde_json::private::RawValue",
-    "$serde_json::private::Number",
-];
-
-/// Whether a member name is one `serde_json` reserves.
-fn is_serde_json_sentinel(name: &str) -> bool {
-    SERDE_JSON_SENTINELS.contains(&name)
-}
-
-/// Whether any object anywhere in `value` has a member `serde_json` reserves.
-///
-/// Recursive, and safe to be for the same reason [`depth`] is: `serde_json`
-/// refuses input nested past its own recursion limit before this ever runs.
-fn names_a_serde_json_sentinel(value: &Value) -> bool {
-    match value {
-        Value::Array(items) => items.iter().any(names_a_serde_json_sentinel),
-        Value::Object(members) => members.iter().any(|(name, member)| {
-            is_serde_json_sentinel(name) || names_a_serde_json_sentinel(member)
-        }),
-        _ => false,
-    }
-}
+/// Re-exported rather than restated: the rule belongs to every layer that
+/// serialises a map another layer parses back — the claims request here, the
+/// claim bag in the `users` row — and one list is what keeps them from
+/// drifting apart. See [`asterius_domain::json_sentinel`] for why these names
+/// break a document.
+pub use asterius_domain::SERDE_JSON_SENTINELS;
+use asterius_domain::{is_serde_json_sentinel, names_a_serde_json_sentinel};
 
 // ---------------------------------------------------------------------------
 // claims_locales (OIDC Core §5.2)
