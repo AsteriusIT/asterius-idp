@@ -147,6 +147,13 @@ l'orchestrateur gagnent sur tout.
   `main` par l'orchestrateur seulement, puis suppression de la branche et `git worktree prune`.
 - Commits : Conventional Commits, `Refs: <id>` en pied de message.
 - Jamais : `push --force`, `reset --hard`, `clean`, modification directe de `main` depuis un worker.
+- Après un merge, `./scripts/cleanup-worktrees.sh --apply` : un worktree
+  d'agent porte son propre `target/` (~1 Go) et rien ne le supprime tout seul.
+  Le script ne touche que les `claude/*` fusionnés dans `main`, et épargne les
+  worktrees verrouillés par un agent en cours. Les artefacts périmés du dépôt principal se récupèrent séparément avec
+  `./scripts/gc-build-artifacts.sh --apply`. Ne supprime jamais le `target/`
+  d'un worktree qui n'est pas le tien. Contrainte WSL2 et détails :
+  `CONTRIBUTING.md`, section « Disk space ».
 
 ### Mode journée entière
 

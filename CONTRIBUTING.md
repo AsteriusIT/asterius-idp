@@ -102,6 +102,67 @@ ancestor directory looking for `.env`, so a stray `.env` anywhere above the
 repository — a Python virtualenv named `.env`, for instance — breaks the build
 until sqlx finds a readable one first.
 
+## Disk space
+
+A workspace this size, built in debug with test binaries, is expensive to keep
+on disk, and cargo never reclaims anything: every distinct code state adds a
+new hash-suffixed artifact to `target/debug/deps` and the previous one stays
+forever. A single day of branch switching here left 257 copies of the
+`asterius` binary (2.4 GB) and 110 copies of the `tls_handshake` test binary
+(1.3 GB), in a 21 GB `deps/`. Agent worktrees make it worse: each one is a
+separate checkout with its own `target/`, roughly 1 GB after nothing more than
+a `cargo check`.
+
+```sh
+./scripts/gc-build-artifacts.sh             # report what is reclaimable
+./scripts/gc-build-artifacts.sh --apply     # delete artifacts idle for 24h
+./scripts/gc-build-artifacts.sh --apply --hours 6
+```
+
+Prefer it to `cargo clean`: it drops only artifacts nothing has touched in a
+while, so the build you are working on stays warm, and anything it removes
+cargo rebuilds on demand. It never touches a worktree another agent is
+compiling in unless you pass `--worktrees`.
+
+The other half of the bill is the agent worktrees themselves, which nothing
+removes automatically — `git worktree prune` only forgets directories that are
+already gone. `./scripts/cleanup-worktrees.sh --apply` deletes worktree and
+branch for every `claude/*` merged into `main`; without `--apply` it only says
+what it would do. It skips worktrees git reports as locked, which is how a
+running agent marks its own, and branches still sitting on the tip of `main`,
+which have merged nothing and belong to an agent that just started.
+
+Sharing one `CARGO_TARGET_DIR` across worktrees looks like the obvious fix and
+is not: cargo takes an exclusive lock on the build directory, so concurrent
+builds print `Blocking waiting for file lock on build directory` and run one
+after another. Measured with cargo 1.98: two 8-second builds sharing a target
+directory took 15 seconds of wall clock instead of 8.
+
+### WSL2: freeing space inside does not give it back to Windows
+
+On WSL2 the whole filesystem lives in one `ext4.vhdx`, a virtual disk that
+grows on demand and **never shrinks on its own**. Deleting 20 GB inside the
+distribution leaves the `.vhdx` exactly as large as it was on `C:`. Reclaiming
+it is a manual, Windows-side operation — shut WSL down first, then, from an
+elevated PowerShell:
+
+```powershell
+wsl --shutdown
+Optimize-VHD -Path "$env:LOCALAPPDATA\Packages\<distro>\LocalState\ext4.vhdx" -Mode Full
+```
+
+`Optimize-VHD` ships with the Hyper-V management tools; without them,
+`diskpart`'s `compact vdisk` does the same job. The virtual disk also has a
+maximum size — 251 GB by default on this machine — which caps `/` no matter how
+much room the Windows volumes have. Raise it with:
+
+```powershell
+wsl --manage <distro> --resize 400GB
+```
+
+Other Windows drives are not an escape hatch: they are reachable only through
+`/mnt/...` with a translation layer that makes them far too slow to build on.
+
 ## Architecture rules
 
 **Protocol code talks to the outside world only through ports.**

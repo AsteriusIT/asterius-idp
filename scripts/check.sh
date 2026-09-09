@@ -16,6 +16,9 @@ SQLX_OFFLINE=true run cargo clippy --workspace --all-targets --all-features -- -
 run ./scripts/check-layering.sh
 run ./scripts/check-fuzz-coverage.sh
 run ./scripts/check-no-unsafe.sh
+# The disk garbage collector deletes files; its fixture test proves it spares
+# fresh artifacts and sources, and that a dry run deletes nothing.
+run ./scripts/gc-build-artifacts.sh --self-test
 
 if $want_db; then
   run docker compose up -d --wait db
