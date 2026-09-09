@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select password_hash from credentials\n              where tenant_id = $1 and user_id = $2 and kind = 'password'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "password_hash",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "64bcae4b6a17d143fa920b8b651c06a009073135cd2fbc2e9c0b1cb564fc9139"
+}

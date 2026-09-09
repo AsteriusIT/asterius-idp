@@ -24,8 +24,9 @@
 //! goes wrong if it is set carelessly. That is the part a reference is for.
 
 use crate::config::{
-    DEFAULT_BIND, DEFAULT_BODY_LIMIT, DEFAULT_MAX_CONNECTIONS, DEFAULT_MODE,
-    DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_TRUSTED_PROXIES, ROOT_TABLE, TransportMode,
+    DEFAULT_ADMIN_TENANT, DEFAULT_ADMIN_USERNAME, DEFAULT_BIND, DEFAULT_BODY_LIMIT,
+    DEFAULT_MAX_CONNECTIONS, DEFAULT_MODE, DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_TRUSTED_PROXIES, ROOT_TABLE, TransportMode,
 };
 use crate::http::register::MIN_INITIAL_ACCESS_TOKEN_LEN;
 use crate::observability::LogFormat;
@@ -125,6 +126,7 @@ pub fn sections() -> Vec<Section> {
         features_section(),
         registration(),
         tenant(),
+        admin(),
     ]
 }
 
@@ -375,6 +377,64 @@ fn tenant() -> Section {
     }
 }
 
+/// `[admin]`: the deployment admin seeded at boot.
+fn admin() -> Section {
+    Section {
+        table: "admin",
+        heading: "`[admin]` — the deployment admin",
+        blurb: "Omit the table and nothing is seeded. A deployment admin is a user of a \
+                *reserved tenant* holding a deployment-scoped role (ADR-0010): the tenant \
+                is created if it is absent, marked reserved, and cannot be deleted \
+                afterwards — the cascade from `tenants` is what would otherwise remove \
+                every admin in one statement. The seed runs on every boot and is \
+                idempotent; it finishes by verifying the configured password through the \
+                ordinary login verifier, and the server refuses to start if the account \
+                it just asserted could not sign in.",
+        keys: vec![
+            key(
+                "tenant",
+                "string",
+                format!("`\"{DEFAULT_ADMIN_TENANT}\"`"),
+                "The reserved tenant's id. It must not also be declared as a \
+                 `[[tenant]]`: the seed is what creates and marks it. Discoverable by \
+                 anyone who can list tenants, deliberately — an admin surface that hides \
+                 where its authority lives is harder to audit, not safer.",
+            ),
+            key(
+                "issuer",
+                "https URL, no query, no fragment",
+                format!("{REQUIRED} when `[admin]` is present"),
+                "The reserved tenant is a real tenant and needs an issuer like any \
+                 other, with the same normalisation and the same host check. Its login \
+                 surface therefore deserves the same scrutiny as any tenant's.",
+            ),
+            key(
+                "username",
+                "string",
+                format!("`\"{DEFAULT_ADMIN_USERNAME}\"`"),
+                "The login identifier, unique within the reserved tenant.",
+            ),
+            key(
+                "password_file",
+                "path (**points at a secret**)",
+                format!("{REQUIRED}, unless `password_env` is set"),
+                "The production shape: a file the orchestrator mounts read-only. Leading \
+                 and trailing whitespace is stripped, so a trailing newline is not part \
+                 of the password.",
+            ),
+            key(
+                "password_env",
+                "variable name (**names a secret**)",
+                format!("{REQUIRED}, unless `password_file` is set"),
+                "The named variable, injected by the orchestrator. Readable through \
+                 `/proc/self/environ`, so the file is preferred. There is no key that \
+                 takes the password itself: a credential written in the file is a \
+                 credential in version control and in every copy of the image.",
+            ),
+        ],
+    }
+}
+
 /// The `[features]` rows, one per flag in the registry.
 ///
 /// Generated from [`Feature::ALL`] so that a flag added to the registry appears
@@ -485,7 +545,7 @@ makes an unquoted connection URL work.
 const SECRETS: &str = "\n\
 ## Secret sources\n\
 \n\
-Four values in this file are credentials, and each has a supported production\n\
+Five values in this file are credentials, and each has a supported production\n\
 shape. Nothing here belongs in an image layer, in a `docker-compose.yml` or in\n\
 version control; the example stack under `deploy/compose/` uses obvious\n\
 development values and says so in every file.\n\
@@ -506,6 +566,10 @@ whatever issues the certificate. The process reads it at startup. |\n\
 | Initial access tokens | `registration.initial_access_tokens` | Only needed \
 under `mode = \"initial_access_token\"`. Hashed at startup, so the running \
 process holds nothing replayable. |\n\
+| Deployment admin password | `admin.password_file`, `admin.password_env` | A \
+read-only mount, or a variable from the same secret store. Hashed with Argon2id \
+at startup, so the database holds no plaintext; the source is read on every boot, \
+which is what makes rotating it an edit to the secret and a restart. |\n\
 \n\
 Rotating the key-encryption key is not a restart with a new value: the old key\n\
 must still be able to open existing rows while they are re-wrapped. Until the\n\

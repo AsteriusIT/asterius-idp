@@ -59,6 +59,8 @@ pub struct Config {
     pub kek: KekSource,
     /// Who, if anyone, may register a client dynamically (RFC 7591 §3).
     pub registration: RegistrationPolicy,
+    /// The deployment admin to seed at boot, if the operator declared one.
+    pub admin: Option<AdminConfig>,
 }
 
 /// Listener and transport settings.
@@ -138,6 +140,42 @@ pub struct TenantConfig {
     /// resources rather than one every resource server should accept. A
     /// deployment fronting a separate API sets it explicitly.
     pub default_resource: String,
+}
+
+/// The deployment admin seeded at boot (ADR-0010).
+///
+/// Absent means nothing is seeded. Like `[registration]`, "the operator wrote
+/// nothing" and "the operator wrote a table" are different questions: a
+/// deployment that never asked for an admin should not grow one, because the
+/// account this describes administers every tenant in the process.
+#[derive(Debug)]
+pub struct AdminConfig {
+    /// The reserved tenant the admin lives in. Created if it is not there, and
+    /// then undeletable — the cascade from `tenants` is what would otherwise
+    /// take the deployment's admins with it.
+    pub tenant: TenantId,
+    /// The reserved tenant's issuer. A reserved tenant is a real tenant, so it
+    /// needs one like any other.
+    pub issuer: Issuer,
+    /// The admin's login identifier within that tenant.
+    pub username: String,
+    /// Where the initial password comes from.
+    pub password: PasswordSource,
+}
+
+/// Where the deployment admin's initial password is read from.
+///
+/// The same two shapes as [`KekSource`], deliberately: an admin password is a
+/// credential, and a credential that can only be supplied as a literal is a
+/// credential that ends up in an image layer and in version control. There is
+/// no key that takes the password itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PasswordSource {
+    /// A file the orchestrator mounts read-only. The production shape.
+    File(PathBuf),
+    /// A named environment variable, injected by the orchestrator. Visible
+    /// through `/proc/self/environ`, so the file is preferred.
+    Env(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +310,8 @@ struct RawConfig {
     keys: RawKeys,
     #[serde(default)]
     registration: Option<RawRegistration>,
+    #[serde(default)]
+    admin: Option<RawAdmin>,
 }
 
 /// The `[registration]` table.
@@ -309,6 +349,21 @@ enum RegistrationMode {
 struct RawKeys {
     kek_file: Option<PathBuf>,
     kek_env: Option<String>,
+}
+
+/// The `[admin]` table.
+///
+/// An `Option` for the reason `[registration]` is one: seeding an account that
+/// administers the whole deployment is something an operator asks for, never
+/// something a default does.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAdmin {
+    tenant: Option<String>,
+    issuer: Option<String>,
+    username: Option<String>,
+    password_file: Option<PathBuf>,
+    password_env: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -376,6 +431,16 @@ pub(crate) const DEFAULT_BODY_LIMIT: usize = 64 * 1024;
 /// Long enough for a slow client on a bad link, short enough that holding a
 /// connection open is not a denial-of-service primitive.
 pub(crate) const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 10;
+
+/// The reserved tenant's identifier when `[admin]` does not name one.
+///
+/// A tenant id like any other, and readable: ADR-0010 makes the point that an
+/// admin surface hiding where its authority lives is harder to audit, not
+/// safer.
+pub(crate) const DEFAULT_ADMIN_TENANT: &str = "admin";
+
+/// The seeded admin's login identifier when `[admin]` does not name one.
+pub(crate) const DEFAULT_ADMIN_USERNAME: &str = "admin";
 
 /// Believed by default: nothing but this machine.
 pub(crate) const DEFAULT_TRUSTED_PROXIES: [&str; 2] = ["127.0.0.0/8", "::1/128"];
@@ -485,6 +550,7 @@ impl RawConfig {
         };
 
         let registration = validate_registration(self.registration, &mut errors);
+        let admin = validate_admin(self.admin, &tenants, &mut errors);
 
         errors.finish(Config {
             server,
@@ -494,6 +560,7 @@ impl RawConfig {
             log_format: self.log_format.unwrap_or_default(),
             kek: kek.unwrap_or_else(|| KekSource::Env(String::new())),
             registration,
+            admin,
         })
     }
 }
@@ -777,6 +844,96 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
     tenants
 }
 
+/// Validates `[admin]`, the deployment admin seeded at boot (ADR-0010).
+///
+/// Three things can go wrong and each is reported rather than guessed at: no
+/// issuer for the reserved tenant, a reserved tenant that is also declared as
+/// an ordinary `[[tenant]]`, and a password source that is missing or given
+/// twice. The last one follows `[keys]`: two sources would leave the server
+/// choosing a credential silently.
+fn validate_admin(
+    raw: Option<RawAdmin>,
+    tenants: &[TenantConfig],
+    errors: &mut Collector,
+) -> Option<AdminConfig> {
+    let raw = raw?;
+
+    let tenant = match TenantId::parse(raw.tenant.as_deref().unwrap_or(DEFAULT_ADMIN_TENANT)) {
+        Ok(tenant) => Some(tenant),
+        Err(e) => {
+            errors.problem("admin.tenant", e.to_string());
+            None
+        }
+    };
+
+    let issuer = match raw.issuer {
+        None => {
+            errors.missing("admin.issuer");
+            None
+        }
+        Some(raw) => match Issuer::parse(&raw) {
+            Ok(issuer) => Some(issuer),
+            Err(e) => {
+                errors.problem("admin.issuer", e.to_string());
+                None
+            }
+        },
+    };
+
+    // The reserved tenant is created and marked by the seed. Declaring it in
+    // `[[tenant]]` as well would mean two places assert what it is, and the
+    // ordinary bootstrap would be the one that runs second.
+    if let Some(tenant) = &tenant
+        && tenants.iter().any(|declared| declared.id == *tenant)
+    {
+        errors.problem(
+            "admin.tenant",
+            format!(
+                "{tenant} is also declared as a [[tenant]]: the reserved tenant is \
+                 created by the admin seed and must not be declared twice"
+            ),
+        );
+    }
+    if let (Some(issuer), Some(_)) = (&issuer, &tenant)
+        && let Some(clash) = tenants.iter().find(|declared| declared.issuer == *issuer)
+    {
+        errors.problem(
+            "admin.issuer",
+            format!("duplicate of the issuer declared by tenant {}", clash.id),
+        );
+    }
+
+    let password = match (raw.password_file, raw.password_env) {
+        (Some(path), None) => Some(PasswordSource::File(path)),
+        (None, Some(variable)) => Some(PasswordSource::Env(variable)),
+        (None, None) => {
+            errors.problem(
+                "admin.password_file",
+                "a deployment admin needs a password: set admin.password_file or \
+                 admin.password_env. There is no key that takes the password itself, \
+                 and no default — a built-in credential is one every deployment shares",
+            );
+            None
+        }
+        (Some(_), Some(_)) => {
+            errors.problem(
+                "admin",
+                "set exactly one of admin.password_file and admin.password_env, not both",
+            );
+            None
+        }
+    };
+
+    Some(AdminConfig {
+        tenant: tenant?,
+        issuer: issuer?,
+        username: raw
+            .username
+            .unwrap_or_else(|| DEFAULT_ADMIN_USERNAME.to_owned()),
+        password: password?,
+    })
+}
+
 /// Checks a configured default resource against RFC 8707 §2.
 ///
 /// The same shape the schema's `default_resource` check enforces and that
@@ -879,6 +1036,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("keys", accepted_keys::<RawKeys>()),
         ("registration", accepted_keys::<RawRegistration>()),
         ("tenant", accepted_keys::<RawTenant>()),
+        ("admin", accepted_keys::<RawAdmin>()),
     ]
     .into_iter()
     .collect()
@@ -1585,5 +1743,119 @@ mod tests {
         let text = format!("{MINIMAL}\n[registration]\nmode = \"open\"\nrate_limit = 10\n");
         let error = parse(&text).expect_err("an unknown key");
         assert!(error.to_string().contains("registration"), "{error}");
+    }
+
+    // ---- [admin]: the deployment admin (ADR-0010) ------------------------
+
+    /// The whole table, spelled out once so each test below changes one thing.
+    const WITH_ADMIN: &str = r#"
+        [keys]
+        kek_env = "ASTERIUS_KEK"
+
+        [database]
+        url = "postgres://asterius@localhost/asterius"
+
+        [[tenant]]
+        id = "demo"
+        issuer = "https://as.example/t/demo"
+
+        [admin]
+        issuer = "https://as.example/t/admin"
+        password_env = "ASTERIUS_ADMIN_PASSWORD"
+    "#;
+
+    #[test]
+    fn no_admin_table_seeds_no_admin() {
+        let config = parse(MINIMAL).expect("valid");
+
+        assert!(
+            config.admin.is_none(),
+            "an account that administers every tenant must be asked for"
+        );
+    }
+
+    #[test]
+    fn an_admin_table_defaults_its_tenant_and_username() {
+        let config = parse(WITH_ADMIN).expect("valid");
+        let admin = config.admin.expect("an admin was declared");
+
+        assert_eq!(admin.tenant.as_str(), "admin");
+        assert_eq!(admin.username, "admin");
+        assert_eq!(admin.issuer.as_str(), "https://as.example/t/admin");
+        assert_eq!(
+            admin.password,
+            PasswordSource::Env("ASTERIUS_ADMIN_PASSWORD".to_owned())
+        );
+    }
+
+    /// There is no key that takes the password itself: a credential written in
+    /// the configuration file is a credential in version control.
+    #[test]
+    fn an_admin_without_a_password_source_is_refused() {
+        let text = WITH_ADMIN.replace("password_env = \"ASTERIUS_ADMIN_PASSWORD\"", "");
+
+        let problems = problems(parse(&text));
+
+        assert!(
+            problems.paths().any(|p| p == "admin.password_file"),
+            "{problems:?}"
+        );
+    }
+
+    /// Two sources would leave the server choosing a credential silently, the
+    /// same reason `[keys]` refuses both.
+    #[test]
+    fn an_admin_with_two_password_sources_is_refused() {
+        let text = WITH_ADMIN.replace(
+            "password_env = \"ASTERIUS_ADMIN_PASSWORD\"",
+            "password_env = \"ASTERIUS_ADMIN_PASSWORD\"\n        \
+             password_file = \"/etc/asterius/admin-password\"",
+        );
+
+        let problems = problems(parse(&text));
+
+        assert!(problems.paths().any(|p| p == "admin"), "{problems:?}");
+    }
+
+    /// A reserved tenant is a real tenant, and a tenant is an issuer.
+    #[test]
+    fn an_admin_without_an_issuer_is_refused() {
+        let text = WITH_ADMIN.replace("issuer = \"https://as.example/t/admin\"", "");
+
+        let problems = problems(parse(&text));
+
+        assert!(
+            problems.paths().any(|p| p == "admin.issuer"),
+            "{problems:?}"
+        );
+    }
+
+    /// The seed creates and marks the reserved tenant. Declaring it as an
+    /// ordinary tenant as well would mean two places assert what it is.
+    #[test]
+    fn a_reserved_tenant_that_is_also_a_declared_tenant_is_refused() {
+        let text = WITH_ADMIN.replace("id = \"demo\"", "id = \"admin\"");
+
+        let problems = problems(parse(&text));
+
+        assert!(
+            problems.paths().any(|p| p == "admin.tenant"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_reserved_tenant_sharing_an_issuer_with_a_declared_tenant_is_refused() {
+        let text = WITH_ADMIN.replace(
+            "issuer = \"https://as.example/t/demo\"",
+            "issuer = \"https://as.example/t/admin\"",
+        );
+
+        let problems = problems(parse(&text));
+
+        assert!(
+            problems.paths().any(|p| p == "admin.issuer"),
+            "{problems:?}"
+        );
     }
 }

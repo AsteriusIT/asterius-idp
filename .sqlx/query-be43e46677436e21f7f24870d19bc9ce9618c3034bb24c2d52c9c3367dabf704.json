@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select true from user_roles\n              where tenant_id = $1 and user_id = $2 and role = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "?column?",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "be43e46677436e21f7f24870d19bc9ce9618c3034bb24c2d52c9c3367dabf704"
+}

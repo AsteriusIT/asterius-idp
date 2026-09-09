@@ -4,6 +4,7 @@ pub mod auth_request;
 pub mod client;
 pub mod grant;
 pub mod password;
+pub mod role;
 pub mod session;
 pub mod tenant;
 pub mod user;
@@ -16,6 +17,7 @@ pub use client::{
 pub use grant::{
     ClaimedGrant, Grant, GrantError, GrantRecord, GrantStatus, LiveAccessToken, RevocationReason,
 };
+pub use role::{Role, RoleScope, UserRole};
 pub use tenant::{Tenant, TenantStatus};
 pub use user::{
     Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier,

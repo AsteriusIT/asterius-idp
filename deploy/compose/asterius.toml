@@ -43,3 +43,18 @@ max_connections = 8
 [[tenant]]
 id = "demo"
 issuer = "https://localhost:9443/t/demo"
+
+# The deployment admin (ADR-0010): a user of the reserved tenant `admin`,
+# holding a deployment-scoped role. Without this table `docker compose up`
+# gives a working tenant and nobody who can administer it.
+#
+# The password is NOT in this file and NOT in the image. `password_env` names a
+# variable the compose file requires the operator to export, so the stack fails
+# with "set ASTERIUS_ADMIN_PASSWORD" rather than starting with a credential
+# every copy of this repository shares. Production mounts a file instead
+# (`password_file`); see "Secret sources" in docs/configuration.md.
+[admin]
+tenant = "admin"
+issuer = "https://localhost:9443/t/admin"
+username = "admin"
+password_env = "ASTERIUS_ADMIN_PASSWORD"

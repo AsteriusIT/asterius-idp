@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from user_roles\n              where tenant_id = $1 and user_id = $2 and role = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c7c2166e843dbbeb0e9f4778a76db2b912ea9ddef7533c652a12665bdcc4c359"
+}

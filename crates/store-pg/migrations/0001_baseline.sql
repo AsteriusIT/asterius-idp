@@ -54,14 +54,55 @@ create table tenants (
                                check (default_resource ~ '^https://[^#]*$'),
     status         text        not null default 'active'
                                check (status in ('active', 'disabled')),
+    -- Whether this is the deployment's reserved tenant (ADR-0010). A
+    -- deployment admin is a user of it, and a deployment-scoped role may only
+    -- be granted inside it — see `user_roles`. Everything else about the row is
+    -- an ordinary tenant: it has an issuer, it is served by the same code, and
+    -- it is discoverable by anyone who can list tenants, deliberately.
+    is_reserved    boolean     not null default false,
     -- Per-tenant policy: lifetimes, ACR rules, rate limits, theming tokens.
     settings       jsonb       not null default '{}'::jsonb,
     created_at     timestamptz not null default now(),
-    updated_at     timestamptz not null default now()
+    updated_at     timestamptz not null default now(),
+
+    -- Redundant against the primary key, and present because a composite
+    -- foreign key needs a unique constraint to point at: it is what lets
+    -- `user_roles` reference `(tenant_id, is_reserved)` and so refuse a
+    -- deployment-scoped role outside the reserved tenant without a trigger.
+    constraint tenants_id_and_reservation unique (tenant_id, is_reserved)
 );
 
 create trigger tenants_set_updated_at before update on tenants
     for each row execute function set_updated_at();
+
+-- One deployment, one reserved tenant. Two would make "where does deployment
+-- authority live" a question with two answers, which is the thing ADR-0010
+-- rejects the no-reserved-tenant alternative for.
+create unique index tenants_only_one_is_reserved on tenants (is_reserved)
+    where is_reserved;
+
+-- The reserved tenant cannot be deleted (ADR-0010).
+--
+-- Enforced here rather than in the application because the cascade is the
+-- danger: `users` is `on delete cascade` from `tenants`, so deleting the
+-- reserved tenant would remove every deployment admin in one statement — a
+-- routine operation taking away the ability to administer the deployment. Like
+-- the audit trail's append-only trigger, this is not a defence against somebody
+-- with arbitrary SQL, who can drop it; it is a defence against the application,
+-- an operator with `psql`, and a future migration.
+create function tenants_reserved_is_never_deleted() returns trigger language plpgsql as $$
+begin
+    raise exception 'the reserved tenant % cannot be deleted', old.tenant_id
+        using errcode = 'restrict_violation',
+              hint = 'deployment admins are users of this tenant (ADR-0010) and would '
+                     'be removed by the cascade; clear tenants.is_reserved first, which '
+                     'is refused while a deployment-scoped role exists';
+end;
+$$;
+
+create trigger tenants_reserved_no_delete before delete on tenants
+    for each row when (old.is_reserved)
+    execute function tenants_reserved_is_never_deleted();
 
 -- ---------------------------------------------------------------------------
 -- Clients
@@ -368,6 +409,48 @@ create index credentials_by_user on credentials (tenant_id, user_id, kind);
 create unique index credentials_by_passkey_id
     on credentials (tenant_id, passkey_credential_id)
     where passkey_credential_id is not null;
+
+-- What a user is allowed to administer (ADR-0010).
+--
+-- Authority is a role on a user, and a role's scope is either the tenant the
+-- user belongs to or the whole deployment. The scope is not a column an admin
+-- API could get wrong: it is a property of the role name, spelled out in
+-- asterius_domain::Role, so `deployment_admin` is the only value this schema
+-- has to reason about.
+--
+-- **A deployment-scoped role cannot be granted outside the reserved tenant**,
+-- and that is enforced declaratively rather than by a trigger or by the code
+-- above. `tenant_is_reserved` is a copy of `tenants.is_reserved` that the
+-- composite foreign key below forces to be the truth for this tenant — the pair
+-- has to exist in `tenants` — and the check then refuses the combination
+-- "deployment admin, ordinary tenant". `on update cascade` keeps the copy
+-- honest if the flag ever moves: flipping `is_reserved` off cascades into these
+-- rows, where the check rejects the update while a deployment-scoped role still
+-- exists. Without this, an ordinary tenant would become implicitly privileged
+-- and the authority would stop being readable from the data.
+create table user_roles (
+    tenant_id          text        not null,
+    user_id            uuid        not null,
+    role               text        not null
+                       check (role in ('tenant_admin', 'deployment_admin')),
+    -- Denormalised on purpose; see above. Not an assertion the writer makes:
+    -- the foreign key makes it one the database checks.
+    tenant_is_reserved boolean     not null,
+    granted_at         timestamptz not null default now(),
+
+    primary key (tenant_id, user_id, role),
+    foreign key (tenant_id, user_id)
+        references users (tenant_id, user_id) on delete cascade,
+    foreign key (tenant_id, tenant_is_reserved)
+        references tenants (tenant_id, is_reserved)
+        on update cascade on delete cascade,
+    constraint user_roles_deployment_scope_needs_the_reserved_tenant
+        check (role <> 'deployment_admin' or tenant_is_reserved)
+);
+
+-- "Who administers this deployment?" answered by an index lookup rather than by
+-- a scan over every role in every tenant.
+create index user_roles_by_role on user_roles (tenant_id, role);
 
 -- ---------------------------------------------------------------------------
 -- Sessions

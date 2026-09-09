@@ -156,3 +156,34 @@ issuer = "https://as.example/t/demo"
 # https, no fragment. Per tenant, not per deployment: `aud` is what a resource
 # server compares to decide a token was meant for it.
 # default_resource = "https://api.example/"
+
+# The deployment admin (ADR-0010).
+#
+# Omit this table and nothing is seeded: an account that administers every
+# tenant in the process is something you ask for, never something a default
+# gives you.
+#
+# A deployment admin is a user of a *reserved tenant*, holding a
+# deployment-scoped role. The tenant is created if it is absent and marked
+# reserved, after which the database refuses to delete it — `users` cascades
+# from `tenants`, so deleting it would remove every deployment admin in one
+# statement. A deployment-scoped role cannot be granted outside it, which is
+# also a schema constraint rather than a rule the code is trusted to apply.
+#
+# The seed runs on every boot and is idempotent. It ends by verifying the
+# configured password through the same verifier a login uses, and the server
+# refuses to start if the admin it just asserted could not sign in.
+#
+# [admin]
+# tenant = "admin"                       # default "admin"
+# issuer = "https://as.example/t/admin"  # required: a reserved tenant is a
+#                                        # real tenant and needs an issuer
+# username = "admin"                     # default "admin"
+#
+# Where the initial password comes from. Exactly one, and there is no key that
+# takes the password itself: a credential written here is a credential in
+# version control and in every copy of the image.
+#
+# password_file = "/etc/asterius/admin-password"
+# password_env = "ASTERIUS_ADMIN_PASSWORD"  # readable through
+#                                           # /proc/self/environ; prefer the file

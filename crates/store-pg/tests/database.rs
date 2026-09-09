@@ -6116,6 +6116,20 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed grant");
+
+        // A tenant-scoped role on that user. Kept by the policy, and here so
+        // that "the sweep does not touch a kept table" is asserted about
+        // `user_roles` with a real row rather than by an exemption.
+        sqlx::query(
+            "insert into user_roles (tenant_id, user_id, role, tenant_is_reserved)
+             select $1, $2, 'tenant_admin', t.is_reserved from tenants t
+              where t.tenant_id = $1",
+        )
+        .bind(tenant)
+        .bind(user)
+        .execute(pool)
+        .await
+        .expect("seed role");
     }
 
     /// One row per swept expiry-driven table, expiring at `expires`.
@@ -6856,5 +6870,277 @@ db_test! {
 
         assert_eq!(moved.stranded, 1, "{moved:?}");
         assert!(!moved.is_complete(), "{moved:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deployment admins: the reserved tenant and deployment-scoped roles
+// (ADR-0010, `ast-1cj`)
+// ---------------------------------------------------------------------------
+
+use asterius_domain::{Argon2Parameters, DomainError, Role, Secret};
+use asterius_store_pg::{DeploymentAdmin, PgAdminSeed, PgRoleRepository};
+
+/// The password the seeding tests configure. Long enough to pass the policy
+/// every other password in the deployment goes through.
+const AN_ADMIN_PASSWORD: &str = "correct horse battery staple";
+
+fn admin_seed(pool: &PgPool) -> PgAdminSeed {
+    PgAdminSeed::new(pool.clone(), kek(), Argon2Parameters::default())
+}
+
+fn deployment_admin(tenant: &str) -> DeploymentAdmin {
+    DeploymentAdmin {
+        tenant: TenantId::new(tenant),
+        issuer: Issuer::parse(&format!("https://as.example/t/{tenant}")).expect("issuer"),
+        username: "admin".to_owned(),
+        password: Secret::new(AN_ADMIN_PASSWORD.to_owned()),
+    }
+}
+
+/// Inserts a user directly, for the tests that need one without a seed.
+async fn seed_user(pool: &PgPool, tenant: &str, username: &str) -> UserId {
+    let id = UserId::generate();
+    sqlx::query("insert into users (tenant_id, user_id, username) values ($1, $2, $3)")
+        .bind(tenant)
+        .bind(id.as_uuid())
+        .bind(username)
+        .execute(pool)
+        .await
+        .expect("seed user");
+    id
+}
+
+db_test! {
+    /// Seeding writes the four things ADR-0010 names — the reserved tenant, a
+    /// user in it, a password and a deployment-scoped role — and proves the
+    /// last one by authenticating with the configured password.
+    async fn seeding_produces_an_admin_that_can_authenticate(db) {
+        let seeded = admin_seed(&db.pool)
+            .ensure(&deployment_admin("admin"))
+            .await
+            .expect("seed");
+
+        assert!(seeded.created, "the first pass should create the account");
+        assert!(seeded.can_authenticate, "the seeded password does not authenticate");
+
+        let reserved: bool = sqlx::query_scalar(
+            "select is_reserved from tenants where tenant_id = 'admin'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read tenant");
+        assert!(reserved, "the tenant was created but not reserved");
+
+        let roles = PgRoleRepository::new(db.pool.clone(), TenantId::new("admin"))
+            .roles_of(seeded.user)
+            .await
+            .expect("roles");
+        assert_eq!(roles.len(), 1);
+        assert_eq!(roles[0].role, Role::DeploymentAdmin);
+    }
+}
+
+db_test! {
+    /// Every boot runs the seed, so it has to be idempotent — and it must not
+    /// rewrite the password hash it already agrees with, which would put a new
+    /// salt in the row on every restart.
+    async fn seeding_twice_changes_nothing(db) {
+        let seed = admin_seed(&db.pool);
+        let first = seed.ensure(&deployment_admin("admin")).await.expect("first");
+        let hash_before: String = sqlx::query_scalar(
+            "select password_hash from credentials where tenant_id = 'admin'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read credential");
+
+        let second = seed.ensure(&deployment_admin("admin")).await.expect("second");
+
+        assert_eq!(second.user, first.user, "the second pass made a second account");
+        assert!(!second.created);
+        assert!(second.can_authenticate);
+
+        let hash_after: String = sqlx::query_scalar(
+            "select password_hash from credentials where tenant_id = 'admin'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read credential");
+        assert_eq!(hash_before, hash_after, "the hash was rewritten for nothing");
+    }
+}
+
+db_test! {
+    /// A password changed in the configuration is applied at the next boot:
+    /// the file or the variable is the source of truth for the seeded account.
+    async fn a_changed_configuration_password_replaces_the_stored_one(db) {
+        let seed = admin_seed(&db.pool);
+        seed.ensure(&deployment_admin("admin")).await.expect("first");
+
+        let mut rotated = deployment_admin("admin");
+        rotated.password = Secret::new("a quite different passphrase".to_owned());
+        let again = seed.ensure(&rotated).await.expect("second");
+
+        assert!(again.can_authenticate, "the new password does not authenticate");
+    }
+}
+
+db_test! {
+    /// A password the login form would refuse must not become the credential
+    /// that administers the deployment.
+    async fn a_password_below_policy_is_refused_before_anything_is_written(db) {
+        let mut weak = deployment_admin("admin");
+        weak.password = Secret::new("short".to_owned());
+
+        let refused = admin_seed(&db.pool).ensure(&weak).await;
+
+        assert!(matches!(refused, Err(DomainError::Invalid { .. })), "{refused:?}");
+        let tenants: i64 = sqlx::query_scalar("select count(*) from tenants")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count tenants");
+        assert_eq!(tenants, 0, "a refused password still created the reserved tenant");
+    }
+}
+
+db_test! {
+    /// Protection 1 of ADR-0010. `users` cascades from `tenants`, so a delete
+    /// here would remove every deployment admin in one statement — which is
+    /// exactly why the database refuses it rather than trusting the code above.
+    async fn the_reserved_tenant_cannot_be_deleted(db) {
+        let seeded = admin_seed(&db.pool)
+            .ensure(&deployment_admin("admin"))
+            .await
+            .expect("seed");
+
+        let refused = PgTenantRepository::new(db.pool.clone(), kek())
+            .delete(&TenantId::new("admin"))
+            .await;
+
+        assert!(refused.is_err(), "the reserved tenant was deleted");
+        let admins: i64 = sqlx::query_scalar(
+            "select count(*) from users where tenant_id = 'admin' and user_id = $1",
+        )
+        .bind(seeded.user.as_uuid())
+        .fetch_one(&db.pool)
+        .await
+        .expect("count users");
+        assert_eq!(admins, 1, "the admin went with the tenant");
+    }
+}
+
+db_test! {
+    /// An ordinary tenant is still deletable. The protection is about the
+    /// reserved row, not about making `tenants` immutable.
+    async fn an_ordinary_tenant_is_still_deletable(db) {
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
+        repo.upsert(&tenant("demo", "https://as.example/t/demo")).await.expect("insert");
+        admin_seed(&db.pool).ensure(&deployment_admin("admin")).await.expect("seed");
+
+        repo.delete(&TenantId::new("demo")).await.expect("an ordinary tenant deletes");
+    }
+}
+
+db_test! {
+    /// Protection 2 of ADR-0010, and the reason it is a constraint rather than
+    /// a check in the adapter: an ordinary tenant that could hold a
+    /// deployment-scoped role would be implicitly privileged, and nothing in
+    /// the data would say so.
+    async fn a_deployment_role_is_refused_outside_the_reserved_tenant(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let user = seed_user(&db.pool, "demo", "mallory").await;
+        let roles = PgRoleRepository::new(db.pool.clone(), TenantId::new("demo"));
+
+        let refused = roles.grant(user, Role::DeploymentAdmin).await;
+
+        assert!(matches!(refused, Err(DomainError::Conflict(_))), "{refused:?}");
+        assert!(!roles.holds(user, Role::DeploymentAdmin).await.expect("holds"));
+        // A tenant-scoped role in the same tenant is fine: the rule is about
+        // reach, not about that tenant having no administrators at all.
+        roles.grant(user, Role::TenantAdmin).await.expect("a tenant admin is allowed");
+    }
+}
+
+db_test! {
+    /// The flag cannot be taken off the reserved tenant while a
+    /// deployment-scoped role still hangs off it — the update cascades into
+    /// `user_roles`, where the check refuses it. Without this, protection 2
+    /// would be one `UPDATE` away from being untrue of rows already written.
+    async fn a_tenant_holding_a_deployment_role_cannot_stop_being_reserved(db) {
+        admin_seed(&db.pool).ensure(&deployment_admin("admin")).await.expect("seed");
+
+        let refused = sqlx::query("update tenants set is_reserved = false where tenant_id = 'admin'")
+            .execute(&db.pool)
+            .await;
+
+        assert!(refused.is_err(), "the reservation was cleared under a deployment admin");
+    }
+}
+
+db_test! {
+    /// Two reserved tenants would make "where does deployment authority live"
+    /// a question with two answers.
+    async fn a_deployment_has_at_most_one_reserved_tenant(db) {
+        admin_seed(&db.pool).ensure(&deployment_admin("admin")).await.expect("seed");
+
+        let refused = admin_seed(&db.pool).ensure(&deployment_admin("second")).await;
+
+        assert!(matches!(refused, Err(DomainError::Conflict(_))), "{refused:?}");
+    }
+}
+
+db_test! {
+    /// A role is authority over an account, so it lives exactly as long as the
+    /// account does.
+    async fn deleting_a_user_takes_their_roles_with_them(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let user = seed_user(&db.pool, "demo", "operator").await;
+        let roles = PgRoleRepository::new(db.pool.clone(), TenantId::new("demo"));
+        roles.grant(user, Role::TenantAdmin).await.expect("grant");
+
+        sqlx::query("delete from users where tenant_id = 'demo' and user_id = $1")
+            .bind(user.as_uuid())
+            .execute(&db.pool)
+            .await
+            .expect("delete user");
+
+        assert!(!roles.holds(user, Role::TenantAdmin).await.expect("holds"));
+    }
+}
+
+db_test! {
+    /// Granting the same role twice is not an error, because a seed that runs
+    /// on every boot would otherwise fail on the second one.
+    async fn granting_a_role_twice_is_idempotent_and_revoking_is_not(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let user = seed_user(&db.pool, "demo", "operator").await;
+        let roles = PgRoleRepository::new(db.pool.clone(), TenantId::new("demo"));
+
+        roles.grant(user, Role::TenantAdmin).await.expect("first grant");
+        roles.grant(user, Role::TenantAdmin).await.expect("second grant");
+        assert_eq!(roles.holders_of(Role::TenantAdmin).await.expect("holders"), vec![user]);
+
+        roles.revoke(user, Role::TenantAdmin).await.expect("revoke");
+        assert!(matches!(roles.revoke(user, Role::TenantAdmin).await, Err(DomainError::NotFound)));
+    }
+}
+
+db_test! {
+    /// A role granted in one tenant is invisible in another, like every other
+    /// tenant-scoped read in this store.
+    async fn a_role_lookup_never_answers_for_another_tenant(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let user = seed_user(&db.pool, "alpha", "operator").await;
+        PgRoleRepository::new(db.pool.clone(), TenantId::new("alpha"))
+            .grant(user, Role::TenantAdmin)
+            .await
+            .expect("grant");
+
+        let elsewhere = PgRoleRepository::new(db.pool.clone(), TenantId::new("beta"));
+
+        assert!(!elsewhere.holds(user, Role::TenantAdmin).await.expect("holds"));
+        assert!(elsewhere.roles_of(user).await.expect("roles").is_empty());
     }
 }
