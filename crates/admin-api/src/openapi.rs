@@ -14,7 +14,7 @@
 //!
 //! So every path, verb, `operationId`, security requirement, parameter and
 //! response below comes from [`crate::registry`]. There is no list here to
-//! keep in step, and [`tests::the_checked_in_document_is_current`] fails the
+//! keep in step, and a test named `the_checked_in_document_is_current` fails the
 //! build if `docs/admin-api-openapi.json` no longer matches what the code
 //! generates.
 //!

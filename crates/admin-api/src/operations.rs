@@ -30,7 +30,7 @@
 //! constructors are the *only* way to build an [`Operation`], because its
 //! fields are private and it has no other public constructor.
 //!
-//! The belt-and-braces test [`every_mutation_refuses_get`] still exists. It
+//! The belt-and-braces test `every_mutation_refuses_get` still exists. It
 //! costs four lines and it is what fails first if somebody ever widens `Safe`.
 
 use crate::rbac::Authority;

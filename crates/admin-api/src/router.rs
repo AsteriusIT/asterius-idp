@@ -13,7 +13,7 @@
 //!
 //! # One gate, before every handler
 //!
-//! [`dispatch`] runs the same sequence for every operation, in order of cost:
+//! `dispatch` runs the same sequence for every operation, in order of cost:
 //! rate limit, credential, CSRF, authority, idempotency. A handler is reached
 //! only with a [`crate::auth::Principal`] that has already satisfied the
 //! authority its own [`Operation`] declares, so there is no per-handler

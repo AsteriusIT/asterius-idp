@@ -84,7 +84,7 @@ impl Cursor {
     ///
     /// [`AdminError::CursorInvalid`] for anything this build did not mint: a
     /// missing or unknown version, a body that is not base64url, bytes that
-    /// are not UTF-8, an empty key, or one over [`MAX_KEY_LEN`].
+    /// are not UTF-8, an empty key, or one over the maximum key length.
     // fuzz-target: admin_cursor
     pub fn decode(raw: &str) -> Result<Self, AdminError> {
         if raw.len() > MAX_KEY_LEN {

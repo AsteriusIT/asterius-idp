@@ -6,7 +6,7 @@
 //!
 //! 1. **A synchroniser token derived from the session**, sent in
 //!    `X-CSRF-Token` on every non-`GET`, compared in constant time. Derived
-//!    rather than stored, exactly like [`asterius_oidc::logout`]'s
+//!    rather than stored, exactly like `asterius_oidc::logout`'s
 //!    confirmation token: there is no interaction row for a `fetch` API to
 //!    hang a token on, and a derivation has no row to expire, no race between
 //!    two tabs and nothing to clean up. A cross-site page cannot compute it
