@@ -11,7 +11,7 @@
  * this sweep, which is the one way a CSP test can be vacuous.
  */
 import { expect, test } from '../src/fixtures.js';
-import { BASE_URL, PASSWORD, USERNAME } from '../src/environment.js';
+import { BASE_URL, PASSWORD, REDIRECT_URI, USERNAME } from '../src/environment.js';
 import { startAuthorization } from '../src/flow.js';
 
 /** Every directive `asterius_web::csp::Policy::strict` renders. */
@@ -34,6 +34,20 @@ async function expectStrictPolicy(header: string | null): Promise<void> {
   expect(policy, 'script-src carries no nonce').toMatch(/script-src 'nonce-[^']+' 'strict-dynamic'/);
 }
 
+/**
+ * Asserts that `form-action` names nothing but this server (`ast-jsq`).
+ *
+ * Only the consent screen may widen it, by exactly the origin of the
+ * `redirect_uri` of the authorization in hand. Every other page keeps the
+ * strict directive, and this is what fails if the widening ever leaks into a
+ * page that has no redirect to deliver.
+ */
+function expectNoWidening(header: string | null): void {
+  expect(header ?? '', 'form-action names an origin this page does not submit to').toContain(
+    "form-action 'self';",
+  );
+}
+
 test('the error page is served the strict policy and violates none of it', async ({ page }) => {
   // Arrange: an authorization request that names nothing this server knows.
   // RFC 6749 §4.1.2.1 makes that a page rather than a redirect, which is
@@ -45,6 +59,7 @@ test('the error page is served the strict policy and violates none of it', async
   // Assert
   expect(response?.status()).toBeGreaterThanOrEqual(400);
   await expectStrictPolicy(response?.headers()['content-security-policy'] ?? null);
+  expectNoWidening(response?.headers()['content-security-policy'] ?? null);
   expect(await page.locator('script').count()).toBe(0);
   // The fixture asserts the absence of violations at teardown.
 });
@@ -61,6 +76,7 @@ test('the login page is served the strict policy and violates none of it', async
 
   // Assert
   await expectStrictPolicy(response?.headers()['content-security-policy'] ?? null);
+  expectNoWidening(response?.headers()['content-security-policy'] ?? null);
   await expect(page.locator('input[name="password"]')).toBeVisible();
 });
 
@@ -84,6 +100,12 @@ test('the consent page is served the strict policy and violates none of it', asy
   // Assert
   await expect(page.getByRole('button', { name: 'Allow' })).toBeVisible();
   await expectStrictPolicy(response.headers()['content-security-policy'] ?? null);
+  // The one documented widening: this page's form ends up, through the 303
+  // that carries the code, at the client's callback origin and nowhere else
+  // (`ast-jsq`).
+  expect(response.headers()['content-security-policy'] ?? '').toContain(
+    `form-action 'self' ${new URL(REDIRECT_URI).origin};`,
+  );
 });
 
 /**

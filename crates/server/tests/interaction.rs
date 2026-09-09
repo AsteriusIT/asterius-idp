@@ -66,6 +66,14 @@ impl FakeStore {
         self
     }
 
+    /// Replaces the stored `redirect_uri`, for the policy the consent screen is
+    /// served under.
+    fn redirecting_to(&self, redirect_uri: &str) {
+        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
+            record.parameters["redirect_uri"] = Value::String(redirect_uri.to_owned());
+        }
+    }
+
     fn was_completed(&self, digest: &str) -> bool {
         self.completed
             .lock()
@@ -1232,4 +1240,111 @@ async fn an_authorization_whose_session_ended_mints_nothing() {
     );
     assert_eq!(parameter(&location, "code"), None);
     assert!(issued.codes.0.lock().expect("lock").is_empty());
+}
+
+// ---- form-action on the consent screen (ast-jsq) -------------------------
+
+/// The `Content-Security-Policy` a rendered page will be served under.
+///
+/// The header itself is written by `asterius_web::document::layer`, which these
+/// tests call the handlers underneath; what the handler decides is the
+/// [`Policy`] it attaches, so that is what is read back and rendered here.
+fn policy_of(response: &axum::response::Response) -> String {
+    response
+        .extensions()
+        .get::<asterius_web::Policy>()
+        .expect("a document carries its policy")
+        .header_value(&Nonce::generate())
+}
+
+/// Renders the current stage of an interaction, the way a browser `GET` does.
+async fn show_page(at: &Consenting, issued: &Issued) -> axum::response::Response {
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    show(
+        context(&tenant, &at.store, &nonce, None, &at.sessions, issued),
+        at.id.expose(),
+        &cookie_header(at.id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// A browser applies `form-action` to the redirects of a submission, so the
+/// consent screen has to name the origin the authorization code is delivered
+/// to or the flow cannot finish in a real browser.
+#[tokio::test]
+async fn the_consent_screen_lets_its_form_reach_the_client_origin() {
+    let at = at_consent();
+    let issued = Issued::default();
+
+    let response = show_page(&at, &issued).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        policy_of(&response).contains("form-action 'self' https://rp.example;"),
+        "the consent policy does not name the client origin: {}",
+        policy_of(&response)
+    );
+}
+
+/// One origin, from the `redirect_uri` this authorization was validated
+/// against — not the client's registered set, and not the raw request.
+#[tokio::test]
+async fn the_consent_screen_names_only_this_authorization_s_origin() {
+    let at = at_consent();
+    at.store.redirecting_to("https://other.example:8443/cb");
+    let issued = Issued::default();
+
+    let policy = policy_of(&show_page(&at, &issued).await);
+
+    assert!(
+        policy.contains("form-action 'self' https://other.example:8443;"),
+        "{policy}"
+    );
+    assert!(
+        !policy.contains("rp.example"),
+        "a second origin leaked: {policy}"
+    );
+}
+
+/// The login page submits to this server and nowhere else. If the widening
+/// ever attaches itself to a stage that does not need it, this fails.
+#[tokio::test]
+async fn no_other_page_inherits_the_widened_form_action() {
+    let id = InteractionId::generate();
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"}));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    let response = show(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    let policy = policy_of(&response);
+    assert!(policy.contains("form-action 'self';"), "{policy}");
+    assert!(
+        !policy.contains("rp.example"),
+        "the login page inherited a client origin: {policy}"
+    );
+}
+
+/// A callback a CSP `host-source` cannot express — a native client's private
+/// scheme — widens nothing: that navigation leaves the browser instead of
+/// happening inside it.
+#[tokio::test]
+async fn a_private_scheme_callback_widens_nothing() {
+    let at = at_consent();
+    at.store.redirecting_to("com.example.app:/cb");
+    let issued = Issued::default();
+
+    let policy = policy_of(&show_page(&at, &issued).await);
+
+    assert!(policy.contains("form-action 'self';"), "{policy}");
 }

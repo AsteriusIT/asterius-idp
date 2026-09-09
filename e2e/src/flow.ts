@@ -1,8 +1,11 @@
 /**
- * The steps every spec shares: get a browser to a login page, and stop the
- * authorization response from leaving the machine.
+ * The steps every spec shares: get a browser to a login page.
+ *
+ * Nothing here fakes the client. The callback host resolves to the loopback
+ * (`environment.ts`), so the authorization response cannot leave the machine
+ * and the browser still has to perform the navigation for the test to see it.
  */
-import type { APIRequestContext, BrowserContext } from '@playwright/test';
+import type { APIRequestContext } from '@playwright/test';
 import { BASE_URL, REDIRECT_URI } from './environment.js';
 import { discover, pushAuthorizationRequest, registerClient } from './authorization.js';
 
@@ -32,23 +35,4 @@ export async function startAuthorization(api: APIRequestContext): Promise<Starte
     state,
     redirectUri: REDIRECT_URI,
   };
-}
-
-/**
- * Answers for the client's callback, without a network.
- *
- * The redirect URI names a host that resolves nowhere on purpose, and this is
- * what makes the last hop observable: the browser really navigates, so the
- * `code` really travels through a `Location` header, and the test reads it from
- * the address bar rather than from a response body it fetched itself.
- */
-export async function interceptCallback(context: BrowserContext): Promise<void> {
-  const pattern = `${new URL(REDIRECT_URI).origin}/**`;
-  await context.route(pattern, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'text/html; charset=utf-8',
-      body: '<!doctype html><html lang="en"><head><title>client callback</title></head><body><p id="callback">back at the client</p></body></html>',
-    });
-  });
 }

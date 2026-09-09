@@ -13,7 +13,7 @@
  */
 import { expect, test } from '../src/fixtures.js';
 import { INTERACTION_COOKIE, PASSWORD, USERNAME } from '../src/environment.js';
-import { interceptCallback, startAuthorization } from '../src/flow.js';
+import { startAuthorization } from '../src/flow.js';
 
 test('login and consent are usable with JavaScript disabled', async ({
   page,
@@ -75,35 +75,22 @@ test('login and consent are usable with JavaScript disabled', async ({
  *
  * Approving consent posts to `/interaction/{id}` and the server answers 303 to
  * the client's `redirect_uri`. Chromium enforces `form-action` across the
- * redirects of a form submission, and the consent page is served
- * `form-action 'self'` — so the response is minted, the grant and the code are
- * written, and then the browser refuses to follow the redirect that carries
- * them. The user is left on the consent screen with no error, and the client
- * waits forever.
+ * *redirects* of a form submission, not only its action, so while the consent
+ * page was served `form-action 'self'` the response was minted, the grant and
+ * the code were written, and then the browser refused to follow the redirect
+ * that carried them: the user sat on the consent screen with no error and the
+ * client waited forever (`ast-jsq`).
  *
- * Confirmed rather than guessed: with a `redirect_uri` on the server's own
- * origin the identical flow completes and the code arrives, and the database
- * holds a grant and a code for the blocked attempt too. So it is the redirect
- * that is refused, not the submission.
- *
- * `asterius_web::csp` already has the seam this needs —
- * `Policy::with_form_post_to`, built for `ast-gxh.5` to name "this one page
- * also submits to this one registered callback" — but the consent page does
- * not use it. Widening a security header is a decision with an owner, so this
- * test states what the product should do and is marked as a known failure
- * rather than being weakened into a test of the broken behaviour.
- *
- * `test.fail()` and not `skip`: the day the consent page names the client's
- * origin, this test passes and the run goes red until somebody deletes this
- * annotation. A skipped test would have gone on being skipped.
+ * The fix is `asterius_web::Document::with_form_post_to`, the seam `ast-gxh.5`
+ * built for "this one page also submits to this one registered callback",
+ * applied to the consent screen with the origin of the `redirect_uri` this
+ * authorization was validated against — one origin, that page only. Nothing
+ * but a browser can check that, which is why this assertion lives here and not
+ * in a Rust test.
  */
 test.describe('the last hop', () => {
-  // Scoped to this block, so a regression anywhere else still fails the run.
-  test.fail();
-
-  test('the authorization response reaches the client', async ({ page, context, request }) => {
+  test('the authorization response reaches the client', async ({ page, request }) => {
     // --- Arrange ------------------------------------------------------------
-    await interceptCallback(context);
     const flow = await startAuthorization(request);
     await page.goto(flow.authorizationUrl);
     await page.locator('input[name="username"]').fill(USERNAME);
@@ -128,6 +115,5 @@ test.describe('the last hop', () => {
     // RFC 9207: the response names the issuer that produced it, so a client
     // cannot be steered into redeeming a code at the wrong authorization server.
     expect(landed.searchParams.get('iss')).toBeTruthy();
-    await expect(page.locator('#callback')).toBeVisible();
   });
 });
