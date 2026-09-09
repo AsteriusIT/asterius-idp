@@ -6168,6 +6168,8 @@ mod retention {
             .await
             .expect("seed session");
 
+            seed_passkey_enrolment(pool, tenant, label, expires).await;
+
             sqlx::query(
                 "insert into auth_requests (tenant_id, request_uri_hash, client_id,
                                             parameters, expires_at)
@@ -6245,6 +6247,34 @@ mod retention {
             .await
             .expect("seed rate limit");
         }
+    }
+
+    /// One enrolment per seeded session, expiring with it.
+    ///
+    /// `ast-2vk.15` added the table and its `POLICY` rule; without a row here
+    /// the sweep has nothing to delete and the criterion above cannot see
+    /// whether the rule works. It is swept before `sessions` — see `POLICY` —
+    /// so the expired row is reported by its own rule rather than vanishing
+    /// under the session's cascade.
+    async fn seed_passkey_enrolment(
+        pool: &PgPool,
+        tenant: &str,
+        session: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into passkey_enrolments (tenant_id, session_id, csrf_digest,
+                                             challenge, expires_at)
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(tenant)
+        .bind(session)
+        .bind(asterius_domain::sha256_hex(session.as_bytes()))
+        .bind(vec![7_u8; 32])
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed passkey enrolment");
     }
 
     /// The outbox is aged rather than expiring, and only a terminal row is ever

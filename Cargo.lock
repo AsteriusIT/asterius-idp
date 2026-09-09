@@ -163,8 +163,10 @@ dependencies = [
  "asterius-web",
  "asterius-webauthn",
  "async-trait",
+ "aws-lc-rs",
  "axum",
  "base64",
+ "ciborium",
  "getrandom 0.3.4",
  "hex",
  "http-body-util",
@@ -232,6 +234,7 @@ name = "asterius-webauthn"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
+ "aws-lc-rs",
  "base64",
  "ciborium",
  "serde",

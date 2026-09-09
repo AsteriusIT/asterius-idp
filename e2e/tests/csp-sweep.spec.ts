@@ -94,7 +94,7 @@ test('the consent page is served the strict policy and violates none of it', asy
   // redirect, so the header has to be read off that response.
   const [response] = await Promise.all([
     page.waitForResponse((candidate) => candidate.request().method() === 'POST'),
-    page.getByRole('button', { name: 'Sign in' }).click(),
+    page.getByRole('button', { name: 'Sign in', exact: true }).click(),
   ]);
 
   // Assert
@@ -129,7 +129,7 @@ test('the passkey page runs its nonced script and violates nothing', async ({ pa
   await page.locator('input[name="password"]').fill(PASSWORD);
   await Promise.all([
     page.waitForResponse((candidate) => candidate.request().method() === 'POST'),
-    page.getByRole('button', { name: 'Sign in' }).click(),
+    page.getByRole('button', { name: 'Sign in', exact: true }).click(),
   ]);
 
   // Act

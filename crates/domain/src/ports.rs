@@ -5,8 +5,9 @@
 
 use crate::{
     AuthenticationMethod, Client, ClientId, ClientStatus, CodeBinding, Consumed, DomainError,
-    Enrolment, Grant, InteractionRecord, Issuer, NewPasskey, Participant, PushedRequest, Secret,
-    SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant, TenantId, User, UserId,
+    Enrolment, Grant, InteractionRecord, Issuer, NewPasskey, Participant, PushedRequest,
+    RegisteredPasskey, Secret, SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant,
+    TenantId, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -591,6 +592,88 @@ pub trait PasskeyRepository: Debug + Send + Sync {
     /// a prior read, because a prior read races. [`DomainError::Storage`]
     /// otherwise.
     async fn register(&self, passkey: &NewPasskey) -> Result<uuid::Uuid, DomainError>;
+
+    /// Attaches a freshly drawn authentication challenge to an interaction.
+    ///
+    /// Bound to the interaction rather than to a session, because at this
+    /// point in a login there is no session: the browser holds an interaction
+    /// id, the server holds its digest, and that pair is the only thing that
+    /// says these two requests are the same visitor. The same binding the
+    /// synchroniser token already has.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails. An interaction that has
+    /// expired or been consumed is `Ok(false)`.
+    async fn issue_assertion_challenge(
+        &self,
+        interaction_digest: &str,
+        challenge: &[u8],
+        expires_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError>;
+
+    /// Takes the outstanding authentication challenge and clears it in the
+    /// same statement.
+    ///
+    /// Single use, and for a sharper reason than at enrolment: a replayed
+    /// assertion is a sign-in as somebody else, not a duplicate credential.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the statement fails. No outstanding
+    /// challenge is `Ok(None)`.
+    async fn spend_assertion_challenge(
+        &self,
+        interaction_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<Vec<u8>>, DomainError>;
+
+    /// Finds a credential by the id an assertion named.
+    ///
+    /// Tenant-wide, because a discoverable credential arrives with no
+    /// username: the credential id *is* the identification, and the user it
+    /// belongs to is what this answers. Disabled credentials are not found —
+    /// a credential blocked for a counter regression must not sign anybody in
+    /// on the next attempt.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails.
+    async fn by_credential_id(
+        &self,
+        credential_id: &[u8],
+    ) -> Result<Option<RegisteredPasskey>, DomainError>;
+
+    /// Records an accepted assertion against a credential.
+    ///
+    /// `sign_count` is `None` for an authenticator that does not count
+    /// (WebAuthn L3 §6.1.1), which must leave the stored zero alone rather
+    /// than writing one that would look like progress.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn record_assertion(
+        &self,
+        credential: uuid::Uuid,
+        sign_count: Option<u32>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Blocks a credential, and says when.
+    ///
+    /// The policy half of §7.2 step 21: a counter that went backwards is a
+    /// signal that the credential exists in two places, and one of them is not
+    /// the user's. Blocking is a decision about a credential whose private key
+    /// demonstrably signed a fresh challenge, so it is not something an
+    /// attacker without that key can provoke.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn disable(&self, credential: uuid::Uuid, now: OffsetDateTime)
+    -> Result<(), DomainError>;
 
     /// The credential ids this user already has, for `excludeCredentials`.
     ///

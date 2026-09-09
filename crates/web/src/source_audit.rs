@@ -323,6 +323,12 @@ mod tests {
             without_script: "<a href=",
         },
         ScriptedTemplate {
+            name: "login.html",
+            reason: "ast-2vk.4: `navigator.credentials.get()` is a JavaScript API, so a                      passkey sign-in cannot be run from markup, and conditional mediation                      — the browser offering a passkey inside its own username dropdown —                      exists only as a call. The script is inline under the per-response                      nonce and interpolates nothing. What still works without it is the                      mechanism this page always had: the username and password form, whose                      submit button is real, visible and never disabled. The passkey button                      starts hidden and the script reveals it, because unlike the form-post                      page's button it could do nothing on its own.",
+            // The password form is the page; the passkey button is the extra.
+            without_script: "<button type=\"submit\">",
+        },
+        ScriptedTemplate {
             name: "form_post.html",
             reason: "ast-gxh.5: a form cannot submit itself. No HTML attribute does it and \
                      `<noscript>` renders rather than acts, so the auto-submission clients \

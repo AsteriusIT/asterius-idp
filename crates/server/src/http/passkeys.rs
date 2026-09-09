@@ -1,13 +1,34 @@
-//! Passkey enrolment: the page, the options, and the finished ceremony.
+//! Passkeys: enrolment against a session, and authentication into one.
 //!
-//! Three routes, and the whole of the plumbing `asterius-webauthn` deliberately
-//! left to a caller (`ast-2vk.15`):
+//! Five routes. Three are enrolment, and the whole of the plumbing
+//! `asterius-webauthn` deliberately left to a caller (`ast-2vk.15`):
 //!
 //! * `GET /passkeys` renders the one scripted page in this tree and opens an
 //!   enrolment against the session behind the cookie.
 //! * `POST /passkeys/options` draws a challenge and answers with
 //!   `PublicKeyCredentialCreationOptions`, base64url where the script decodes.
 //! * `POST /passkeys/finish` verifies what came back and writes the credential.
+//!
+//! Two are authentication (`ast-2vk.4`), and they hang off an interaction
+//! rather than off a session, because a session is what they *produce*:
+//!
+//! * `POST /interaction/{id}/passkey/options` draws a challenge and answers
+//!   with `PublicKeyCredentialRequestOptions`, `allowCredentials` empty.
+//! * `POST /interaction/{id}/passkey/finish` verifies the assertion, works out
+//!   who signed it, and starts the session the login form would have started.
+//!
+//! # Username-less, because that is what a passkey is for
+//!
+//! `allowCredentials` is empty and stays empty. A discoverable credential
+//! (§5.4.4) knows which account it belongs to, so the browser can offer the
+//! right one before anybody has typed a username — and the server learns who
+//! is signing in from the credential id the assertion names, not from a field
+//! an attacker can iterate. A list of credential ids for a *named* user would
+//! be an enumeration oracle handed out before authentication, which is the
+//! thing §14.6.3 warns about.
+//!
+//! The username-first fallback is the page that is already there: the password
+//! form, which needs no script at all.
 //!
 //! # Why this is not an interaction
 //!
@@ -26,6 +47,16 @@
 //! rendering the page again replaces whatever was outstanding, so the tab a
 //! user is looking at is the one that works.
 //!
+//! # The authentication challenge is bound to the interaction
+//!
+//! Enrolment binds its challenge to a session by a foreign key. Authentication
+//! cannot: there is no session yet, which is the whole point. What does exist
+//! is the interaction — the browser holds the id, `auth_requests` holds its
+//! digest — and that pair is already what says two requests came from the same
+//! visitor. So the challenge lives in `auth_requests.passkey_challenge`, spent
+//! by the same one-statement `update … returning previous` that enrolment
+//! uses, with the same five-minute ceiling.
+//!
 //! # One refusal
 //!
 //! Every way a ceremony can fail — a challenge that expired, an origin that is
@@ -35,20 +66,32 @@
 //! like drawn and a user cannot act on, and "this credential id is already
 //! registered" in particular would answer a question about somebody else's
 //! account. The real reason goes to the log with a correlation id.
+//!
+//! Authentication is the more sensitive of the two. An attacker at enrolment
+//! already holds a session; an attacker here is testing credential ids and
+//! guessing at accounts, so "no such credential", "that credential is
+//! disabled", "that origin is not ours" and "the signature did not verify"
+//! are one answer with one status and one body. The single exception is
+//! internal: a signature counter that went backwards is recorded in the audit
+//! trail, because that is a fact about a credential whose private key has just
+//! demonstrably signed a fresh challenge — nobody can provoke it without it.
 
 use crate::http::cookies;
-use crate::http::interaction::record_registered_passkey;
-use asterius_domain::entities::session::{COOKIE_NAME, SessionId};
+use crate::http::interaction::{record_registered_passkey, set_session_cookie};
+use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
+use asterius_domain::entities::session::{COOKIE_NAME, Lifetimes, SessionId};
 use asterius_domain::{
-    AuditSink, ENROLMENT_TTL, NewPasskey, OpaqueToken, PasskeyRepository, SessionRepository,
+    ASSERTION_TTL, AuditSink, AuthenticationMethod, ENROLMENT_TTL, InteractionRepository,
+    NewPasskey, OpaqueToken, PasskeyRepository, RegisteredPasskey, Session, SessionRepository,
     Tenant, UserDirectory, UserId, UserStatus, sha256, sha256_hex,
 };
-use asterius_web::interaction::{self, CsrfToken};
+use asterius_web::interaction::{self, CsrfToken, InteractionId, Stage, StoredState};
 use asterius_web::pages::{self, ErrorPage, PasskeyPage, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
-use asterius_webauthn::cose::CoseAlgorithm;
+use asterius_webauthn::cose::{self, CoseAlgorithm};
 use asterius_webauthn::{
-    CHALLENGE_BYTES, Challenge, RelyingParty, RelyingPartyError, UserVerification, registration,
+    AssertionError, AssertionResponse, CHALLENGE_BYTES, Challenge, RelyingParty, RelyingPartyError,
+    SignCount, SignCountPolicy, UserVerification, assertion, registration,
 };
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -65,6 +108,25 @@ pub const OPTIONS_PATH: &str = "/passkeys/options";
 
 /// Where the script posts the attestation it got back.
 pub const FINISH_PATH: &str = "/passkeys/finish";
+
+/// Where the sign-in script asks for request options, as axum matches it.
+pub const LOGIN_OPTIONS_PATH: &str = "/interaction/{id}/passkey/options";
+
+/// Where the sign-in script posts the assertion, as axum matches it.
+pub const LOGIN_FINISH_PATH: &str = "/interaction/{id}/passkey/finish";
+
+/// The same two, for one interaction, as the page has to spell them.
+///
+/// A function rather than a template the page interpolates: the id is
+/// attacker-influenced (it arrives in a URL), and building the path here means
+/// the only place it is joined to a string is one a reviewer can read.
+#[must_use]
+pub fn login_paths(id: &str) -> (String, String) {
+    (
+        format!("/interaction/{id}/passkey/options"),
+        format!("/interaction/{id}/passkey/finish"),
+    )
+}
 
 /// The largest body either JSON endpoint will look at.
 ///
@@ -381,6 +443,483 @@ pub async fn finish(
     (StatusCode::NO_CONTENT, no_store()).into_response()
 }
 
+/// What the two authentication routes need.
+///
+/// No client, no grant and no consent, like enrolment — and no session
+/// either, because a session is what these produce. What they do carry that
+/// enrolment does not is the interaction: it is the challenge's binding, the
+/// synchroniser token's binding, and where a successful sign-in is recorded.
+pub struct PasskeyLoginContext<'a> {
+    /// The tenant the request arrived at.
+    pub tenant: &'a Tenant,
+    /// Credentials, and the outstanding authentication challenge.
+    pub passkeys: &'a dyn PasskeyRepository,
+    /// The interaction this sign-in belongs to.
+    pub requests: &'a dyn InteractionRepository,
+    /// Where a verified assertion becomes a session.
+    pub sessions: &'a dyn SessionRepository,
+    /// Reads the account back, to refuse one that may not authenticate.
+    pub users: &'a dyn UserDirectory,
+    /// How long this tenant's sessions live.
+    pub lifetimes: Lifetimes,
+    /// Where a sign-in — and a cloned-authenticator signal — is recorded.
+    pub audit: &'a dyn AuditSink,
+}
+
+impl std::fmt::Debug for PasskeyLoginContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasskeyLoginContext")
+            .finish_non_exhaustive()
+    }
+}
+
+/// `POST /interaction/{id}/passkey/options` — draw a challenge.
+///
+/// `allowCredentials` is absent rather than empty-and-explained: §5.5 says an
+/// omitted list is the discoverable-credential request, and that is the one
+/// shape this server ever asks for. Nothing about a user is named here, which
+/// is why this endpoint can be reached before anybody has authenticated
+/// without telling an attacker whether an account exists.
+pub async fn login_options(
+    context: PasskeyLoginContext<'_>,
+    id: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+    now: OffsetDateTime,
+) -> Response {
+    let Some((presented, state)) = resumed(&context, id, headers, now).await else {
+        return login_refused("the interaction is not one that can be continued");
+    };
+    // Only the stages that are still asking who this is. A request that has
+    // reached consent has an answer already, and starting a second ceremony
+    // against it would be a way to change the answer after the fact.
+    if !matches!(state.stage, Stage::Login | Stage::StepUp) {
+        return login_refused("this interaction is past the point of signing in");
+    }
+    let Some(request) = parse::<CsrfOnly>(body) else {
+        return login_refused("the options request is not the shape this page posts");
+    };
+    if state.check_csrf(Some(&request.csrf)).is_err() {
+        return login_refused("the options request carried no usable synchroniser token");
+    }
+
+    let relying_party = match relying_party(context.tenant) {
+        Ok(relying_party) => relying_party,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "this tenant has no usable RP ID");
+            return login_refused("no relying party could be described for this tenant");
+        }
+    };
+
+    let challenge = draw_challenge();
+    match context
+        .passkeys
+        .issue_assertion_challenge(
+            &presented.digest(),
+            challenge.as_bytes(),
+            now + ASSERTION_TTL,
+            now,
+        )
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return login_refused("the interaction expired before options were asked for"),
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot store a challenge");
+            return login_refused("the challenge could not be stored");
+        }
+    }
+
+    let user_verification = match relying_party.user_verification() {
+        UserVerification::Required => "required",
+        UserVerification::Discouraged => "discouraged",
+    };
+    let document = json!({
+        "challenge": base64_url(challenge.as_bytes()),
+        "rpId": relying_party.id(),
+        "userVerification": user_verification,
+        // §5.5's own default is 300 000 ms; this says it rather than relying
+        // on it, and it is the same five minutes the stored challenge has.
+        "timeout": ASSERTION_TTL.whole_milliseconds().min(i128::from(u32::MAX)),
+    });
+    (StatusCode::OK, no_store(), axum::Json(document)).into_response()
+}
+
+/// `POST /interaction/{id}/passkey/finish` — verify the assertion, sign in.
+///
+/// §7.2 is a sequence where every step's precondition is the step before it,
+/// so this is one function down to the point where the ceremony has been
+/// decided. What follows — the account check, the counter write, the session —
+/// is `session_from_assertion`, and the split is there rather than anywhere
+/// else because it is the one place a reordering could not go unnoticed:
+/// below it there is nothing left to verify.
+pub async fn login_finish(
+    context: PasskeyLoginContext<'_>,
+    id: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+    now: OffsetDateTime,
+) -> Response {
+    let Some((presented, state)) = resumed(&context, id, headers, now).await else {
+        return login_refused("the interaction is not one that can be continued");
+    };
+    if !matches!(state.stage, Stage::Login | Stage::StepUp) {
+        return login_refused("this interaction is past the point of signing in");
+    }
+    let Some(request) = parse::<FinishAssertion>(body) else {
+        return login_refused("the finish request is not the shape this page posts");
+    };
+    if state.check_csrf(Some(&request.csrf)).is_err() {
+        return login_refused("the finish request carried no usable synchroniser token");
+    }
+    // §5.1: the only credential type this ceremony produces.
+    if request.kind != "public-key" {
+        return login_refused("the browser returned a credential of another type");
+    }
+
+    // Before anything is parsed, for the reason enrolment gives: comparing a
+    // challenge is not consuming it, and this is the statement that makes the
+    // ceremony single-use.
+    let spent = match context
+        .passkeys
+        .spend_assertion_challenge(&presented.digest(), now)
+        .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return login_refused("no challenge was outstanding for this interaction"),
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot spend a challenge");
+            return login_refused("the challenge could not be spent");
+        }
+    };
+    let Ok(challenge) = Challenge::new(spent) else {
+        return login_refused("the stored challenge was shorter than the minimum");
+    };
+
+    let (Some(raw_id), Some(client_data), Some(authenticator_data), Some(signature)) = (
+        decode(&request.raw_id),
+        decode(&request.client_data_json),
+        decode(&request.authenticator_data),
+        decode(&request.signature),
+    ) else {
+        return login_refused("the ceremony's parts are not base64url");
+    };
+
+    let relying_party = match relying_party(context.tenant) {
+        Ok(relying_party) => relying_party,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "this tenant has no usable RP ID");
+            return login_refused("no relying party could be described for this tenant");
+        }
+    };
+
+    // §7.2 step 5. The credential id is the identification: no username was
+    // sent and none is wanted. An unknown id, a disabled credential and a
+    // credential belonging to a disabled account all end at the same refusal.
+    let credential = match context.passkeys.by_credential_id(&raw_id).await {
+        Ok(Some(credential)) => credential,
+        Ok(None) => return login_refused("no usable credential answers to that id"),
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read a credential");
+            return login_refused("the credential could not be read");
+        }
+    };
+    // The RP ID is recorded on the credential rather than assumed, so a tenant
+    // that has moved host does not silently verify old credentials against a
+    // relying party they were never scoped to.
+    if credential.rp_id != relying_party.id() {
+        return login_refused("the credential is scoped to another relying party");
+    }
+    // §7.2 steps 6 and 7. A user handle is optional in the response, and this
+    // server's is the account id — so when one is present it must be that
+    // account's, and when it is absent the credential's own owner is the
+    // answer. Neither case asks the browser to name a user.
+    if let Some(handle) = request.user_handle.as_deref()
+        && decode(handle).as_deref() != Some(credential.user.as_bytes().as_slice())
+    {
+        return login_refused("the user handle is not the credential's owner");
+    }
+
+    let Ok(key) = cose::parse(&credential.public_key) else {
+        tracing::error!(tenant = %context.tenant.id, "a stored credential public key is unreadable");
+        return login_refused("the stored credential public key could not be read");
+    };
+
+    // §7.2 steps 10-21.
+    let verified = match assertion::verify(
+        &relying_party,
+        &challenge,
+        &AssertionResponse {
+            client_data_json: &client_data,
+            authenticator_data: &authenticator_data,
+            signature: &signature,
+        },
+        &key,
+        credential.sign_count,
+        SignCountPolicy::Block,
+    ) {
+        Ok(verified) => verified,
+        Err(AssertionError::SignCountRegressed { presented, stored }) => {
+            return clone_signal(&context, &credential, presented, stored, now).await;
+        }
+        Err(error) => {
+            tracing::info!(
+                %error,
+                tenant = %context.tenant.id,
+                "a passkey assertion was refused"
+            );
+            return login_refused("the authentication ceremony did not verify");
+        }
+    };
+
+    session_from_assertion(&context, &presented, state, &credential, &verified, now).await
+}
+
+/// Everything that happens *after* §7.2 has been satisfied.
+///
+/// Split from [`login_finish`] at the one point where a split cannot reorder a
+/// check: above this line the ceremony is being decided, below it the ceremony
+/// has been decided and a session is being made of it. Nothing here can refuse
+/// an assertion that verified except the account state, which is not part of
+/// §7.2 at all.
+async fn session_from_assertion(
+    context: &PasskeyLoginContext<'_>,
+    presented: &InteractionId,
+    mut state: StoredState,
+    credential: &RegisteredPasskey,
+    verified: &asterius_webauthn::Assertion,
+    now: OffsetDateTime,
+) -> Response {
+    // The account, not just the credential: one that has been disabled since
+    // the credential was registered must not sign in with it.
+    match context.users.by_id(credential.user).await {
+        Ok(Some(account)) if account.status == UserStatus::Active => account,
+        Ok(_) => return login_refused("the account may not authenticate"),
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read an account");
+            return login_refused("the account could not be read");
+        }
+    };
+
+    // §6.1.1: only a counter that advanced is written. An authenticator that
+    // does not count leaves the stored zero alone, so a later assertion is
+    // still compared against zero rather than against a number this server
+    // invented.
+    let advanced = match verified.sign_count {
+        SignCount::Advanced(count) => Some(count),
+        SignCount::NotSupported | SignCount::Regressed { .. } => None,
+    };
+    if let Err(error) = context
+        .passkeys
+        .record_assertion(credential.row, advanced, now)
+        .await
+    {
+        // The assertion verified; refusing the sign-in now would punish a user
+        // for a write this server could not do. The trail below still records
+        // it, and the counter is re-read on the next attempt.
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot record an assertion");
+    }
+
+    // A session id the browser has never held before, for the reason
+    // `interaction::sign_in` gives: an id it held before authenticating is one
+    // an attacker may have planted.
+    let id_value = SessionId::generate();
+    let session = Session::begin(
+        context.tenant.id.clone(),
+        &id_value,
+        *credential.user.as_uuid(),
+        amr(verified.user_verified),
+        now,
+        context.lifetimes,
+    );
+    if let Err(error) = context.sessions.begin(&session).await {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot start a session");
+        return login_refused("the session could not be started");
+    }
+
+    // `ast-2vk.7` decides whether a step-up is needed; until then an
+    // authenticated user goes straight to consent, exactly as the password
+    // path does.
+    if state.stage.may_advance_to(Stage::Consent) {
+        state.stage = Stage::Consent;
+    }
+    let value = serde_json::to_value(&state).unwrap_or_default();
+    if let Err(error) = context
+        .requests
+        .save_interaction_state(&presented.digest(), &value, Some(&session.id_digest), now)
+        .await
+    {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot record interaction progress");
+        return login_refused("the interaction could not be advanced");
+    }
+
+    record_signed_in(context, credential, &verified.origin, now).await;
+
+    // 204 and a cookie. The script navigates to the interaction, which renders
+    // whatever stage it is now at — so the page that follows a passkey sign-in
+    // is the same page that follows a password one.
+    let mut response = (StatusCode::NO_CONTENT, no_store()).into_response();
+    set_session_cookie(&mut response, &id_value);
+    response
+}
+
+/// The `amr` for a passkey sign-in (RFC 8176, OIDC Core §2).
+///
+/// `swk` because this server cannot tell a software authenticator from a
+/// hardware one — nothing in an assertion says, and attestation `none` is what
+/// enrolment asks for, so claiming `hwk` would be asserting something unproved.
+/// `user` is added when the UV bit was set, which is the one extra fact an
+/// assertion does carry. `pin` is never claimed: only the `uvm` extension
+/// would distinguish a PIN from a fingerprint, and no authenticator this
+/// server has met returns it.
+fn amr(user_verified: bool) -> Vec<AuthenticationMethod> {
+    let mut methods = vec![AuthenticationMethod::Passkey];
+    if user_verified {
+        methods.push(AuthenticationMethod::UserVerified);
+    }
+    methods
+}
+
+/// Resolves the interaction behind a passkey request, or `None`.
+///
+/// The same two-credential check the interaction pages make: the id in the
+/// path and the id in the `__Host-` cookie must both be present and equal. A
+/// mismatch destroys the interaction (FAPI 2.0 SP §6.5) — somebody is being
+/// deceived and this server cannot tell which party, so the flow ends for both
+/// — and everything else is one silent `None`, because this is a JSON endpoint
+/// an unauthenticated visitor can reach.
+async fn resumed(
+    context: &PasskeyLoginContext<'_>,
+    id: &str,
+    headers: &HeaderMap,
+    now: OffsetDateTime,
+) -> Option<(InteractionId, StoredState)> {
+    let presented = InteractionId::from_presented(id.to_owned());
+    let from_cookie = interaction::id_from_cookie_header(&cookies(headers));
+
+    if let Err(failure) = asterius_web::Interaction::resume(&presented, from_cookie.as_ref()) {
+        if failure.is_fatal() {
+            if let Err(error) = context
+                .requests
+                .destroy_interaction(&presented.digest())
+                .await
+            {
+                tracing::error!(%error, "cannot destroy a mismatched interaction");
+            }
+            tracing::warn!(
+                tenant = %context.tenant.id,
+                "interaction destroyed: the path and the cookie disagree"
+            );
+        }
+        return None;
+    }
+
+    match context
+        .requests
+        .by_interaction(&presented.digest(), now)
+        .await
+    {
+        Ok(Some(record)) => Some((presented, StoredState::from_stored(&record.state))),
+        Ok(None) => None,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read an interaction");
+            None
+        }
+    }
+}
+
+/// Blocks a credential whose counter went backwards, and says so in the trail.
+///
+/// The bead's rule, and §7.2 step 21's "a cloned authenticator, or a
+/// malfunction": the signature verified, over a challenge issued minutes ago,
+/// and the counter did not advance. Either a copy of this credential exists or
+/// the authenticator is broken, and both are answered the same way — the
+/// credential stops working until somebody looks at the record.
+///
+/// The browser is told the same nothing every other failure gets. The audit
+/// event is where the distinction lives, because it is the one place an
+/// attacker cannot read and an operator has to.
+async fn clone_signal(
+    context: &PasskeyLoginContext<'_>,
+    credential: &RegisteredPasskey,
+    presented: u32,
+    stored: u32,
+    now: OffsetDateTime,
+) -> Response {
+    if let Err(error) = context.passkeys.disable(credential.row, now).await {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot block a cloned credential");
+    }
+
+    let subject = credential.user.as_uuid().to_string();
+    let event = AuditEvent::new(
+        context.tenant.id.clone(),
+        EventType::AUTH_FAILED,
+        Outcome::Failure,
+        Actor::User(subject.clone()),
+        now,
+    )
+    .subject(subject)
+    .detail(
+        Detail::new()
+            .label("kind", "passkey")
+            .label("method", AuthenticationMethod::Passkey.as_str())
+            .label("reason", "sign_count_regression")
+            .credential("credential_id", credential.row.to_string())
+            // Both counters, because "how far behind" is what tells a broken
+            // authenticator apart from a credential that has been copied and
+            // used elsewhere since.
+            .number("presented_sign_count", i64::from(presented))
+            .number("stored_sign_count", i64::from(stored)),
+    );
+    if let Err(failure) = context.audit.record(event).await {
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            "a cloned-authenticator signal was not written to the audit trail"
+        );
+    }
+    tracing::warn!(
+        tenant = %context.tenant.id,
+        presented,
+        stored,
+        "a passkey was blocked: its signature counter went backwards"
+    );
+
+    login_refused("the signature counter went backwards; the credential is blocked")
+}
+
+/// Appends a passkey sign-in to the audit trail.
+async fn record_signed_in(
+    context: &PasskeyLoginContext<'_>,
+    credential: &RegisteredPasskey,
+    origin: &str,
+    now: OffsetDateTime,
+) {
+    let subject = credential.user.as_uuid().to_string();
+    let event = AuditEvent::new(
+        context.tenant.id.clone(),
+        EventType::AUTH_LOGIN,
+        Outcome::Success,
+        Actor::User(subject.clone()),
+        now,
+    )
+    .subject(subject)
+    .detail(
+        Detail::new()
+            .label("kind", "passkey")
+            .label("method", AuthenticationMethod::Passkey.as_str())
+            .credential("credential_id", credential.row.to_string())
+            .text("origin", origin),
+    );
+    if let Err(failure) = context.audit.record(event).await {
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            "a passkey sign-in was not written to the audit trail"
+        );
+    }
+}
+
 /// Who the session cookie says is asking.
 struct SignedIn {
     /// The session's lookup digest — what the enrolment row is keyed by.
@@ -553,6 +1092,31 @@ struct FinishRequest {
     attestation_object: String,
 }
 
+/// What the sign-in script posts once the authenticator has answered.
+///
+/// `id` is absent for the reason [`FinishRequest`] gives: it is the base64url
+/// spelling of `rawId` and neither is trusted for anything but a lookup. What
+/// this one *is* trusted for is that lookup, and the credential it finds is
+/// only used once its own public key has verified the signature — so a wrong
+/// `rawId` finds the wrong key and the ceremony fails.
+#[derive(Debug, Deserialize)]
+struct FinishAssertion {
+    csrf: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "rawId")]
+    raw_id: String,
+    #[serde(rename = "clientDataJSON")]
+    client_data_json: String,
+    #[serde(rename = "authenticatorData")]
+    authenticator_data: String,
+    signature: String,
+    /// The account handle, when the authenticator returned one (§5.2.2).
+    #[serde(default)]
+    #[serde(rename = "userHandle")]
+    user_handle: Option<String>,
+}
+
 /// Reads a JSON body, refusing anything oversized or unparseable.
 fn parse<T: for<'de> Deserialize<'de>>(body: &Bytes) -> Option<T> {
     if body.len() > MAX_BODY {
@@ -601,6 +1165,31 @@ fn refused(reason: &str) -> Response {
         no_store(),
         axum::Json(json!({
             "error": "registration_failed",
+            "correlation_id": correlation,
+        })),
+    )
+        .into_response()
+}
+
+/// The one answer every failed sign-in gets.
+///
+/// [`refused`]'s twin, differing only in the `error` value, which names the
+/// ceremony rather than a reason. Every way an assertion can fail — an
+/// interaction that expired, a challenge already spent, a credential id
+/// nothing answers to, a credential that has been blocked, an origin that is
+/// not ours, a signature that does not verify, an account that has been
+/// disabled — produces this, byte for byte. The one at authentication matters
+/// more than the one at enrolment: here an attacker is testing identifiers,
+/// and any difference between "unknown" and "known but refused" is the answer
+/// they came for.
+fn login_refused(reason: &str) -> Response {
+    let correlation = interaction::correlation_id();
+    tracing::info!(correlation_id = %correlation, reason, "a passkey sign-in was refused");
+    (
+        StatusCode::BAD_REQUEST,
+        no_store(),
+        axum::Json(json!({
+            "error": "authentication_failed",
             "correlation_id": correlation,
         })),
     )

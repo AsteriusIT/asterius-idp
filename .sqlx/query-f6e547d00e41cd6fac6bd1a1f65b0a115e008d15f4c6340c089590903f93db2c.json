@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update auth_requests as current\n                set passkey_challenge = null, passkey_challenge_expires_at = null\n               from (select tenant_id, request_uri_hash, passkey_challenge\n                       from auth_requests\n                      where tenant_id = $1 and interaction_id_hash = $2) as previous\n              where current.tenant_id = previous.tenant_id\n                and current.request_uri_hash = previous.request_uri_hash\n                and current.consumed_at is null\n                and current.expires_at > $3\n                and current.passkey_challenge_expires_at > $3\n                and current.passkey_challenge is not null\n             returning previous.passkey_challenge",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "passkey_challenge",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "f6e547d00e41cd6fac6bd1a1f65b0a115e008d15f4c6340c089590903f93db2c"
+}

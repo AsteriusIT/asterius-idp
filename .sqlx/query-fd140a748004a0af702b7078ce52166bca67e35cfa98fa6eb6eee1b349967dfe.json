@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select credential_id, user_id, passkey_public_key, passkey_sign_count,\n                    passkey_rp_id\n               from credentials\n              where tenant_id = $1\n                and kind = 'passkey'\n                and passkey_credential_id = $2\n                and disabled_at is null",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "credential_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "passkey_public_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "passkey_sign_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 4,
+        "name": "passkey_rp_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "fd140a748004a0af702b7078ce52166bca67e35cfa98fa6eb6eee1b349967dfe"
+}

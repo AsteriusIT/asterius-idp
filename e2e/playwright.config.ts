@@ -49,6 +49,11 @@ export default defineConfig({
     {
       name: 'no-js',
       use: { ...devices['Desktop Chrome'], javaScriptEnabled: false },
+      // The passkey sign-in spec is about what the script does when it runs.
+      // What it does when it does *not* run is asserted in `no-js-flow`, on
+      // the same page, which is where that belongs: a browser without script
+      // must see no passkey button at all.
+      testIgnore: ['**/passkey-signin.spec.ts'],
     },
     {
       name: 'js',

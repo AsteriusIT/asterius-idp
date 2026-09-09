@@ -24,14 +24,18 @@
 //! `script-src 'nonce-…' 'strict-dynamic'` that is hardest to get wrong. The
 //! source audit asserts the absence.
 //!
-//! There are exactly two exceptions, both named rather than pattern-matched.
+//! There are exactly three exceptions, each named rather than
+//! pattern-matched.
 //!
-//! [`PasskeyPage`] (`ast-ndk.7`): `navigator.credentials.create()` is a
-//! JavaScript API, so a WebAuthn registration ceremony cannot be run from
-//! markup at all. Its script is inline, carries the per-response nonce, and
-//! interpolates nothing — every value reaches it through escaped `data-`
-//! attributes. With scripting off the page offers the password path and says
-//! why, rather than a button that cannot work.
+//! [`PasskeyPage`] (`ast-ndk.7`) and [`LoginPage`] (`ast-2vk.4`):
+//! `navigator.credentials.create()` and `navigator.credentials.get()` are
+//! JavaScript APIs, so a WebAuthn ceremony cannot be run from markup at all.
+//! Both scripts are inline, carry the per-response nonce, and interpolate
+//! nothing — every value reaches them through escaped `data-` attributes — and
+//! on both the button starts `hidden` and is revealed by the script that can
+//! use it. What remains without script differs: the enrolment page offers a
+//! link to the password path, and the sign-in page *is* the password path,
+//! form and all.
 //!
 //! [`FormPostPage`] (`ast-gxh.5`): no markup submits a form on its own, and
 //! `<noscript>` renders rather than acts, so the auto-submission a `form_post`
@@ -63,6 +67,22 @@ pub struct ScopeLine {
 }
 
 /// The sign-in page.
+///
+/// # The scripted half is an enhancement, and the form is the mechanism
+///
+/// The password form is the page. It carries a synchroniser token, it posts to
+/// the interaction, and nothing about it depends on script — which is why the
+/// no-JS path this bead's parent asks for is not a fallback anybody has to
+/// maintain: it is the ordinary path.
+///
+/// On top of it sit two things a browser API is the only way to reach.
+/// [`Self::passkey_options_action`] and [`Self::passkey_finish_action`] are
+/// where the script runs a `navigator.credentials.get()` ceremony, behind a
+/// button that starts `hidden` and is revealed by the script that can use it —
+/// `passkey.html`'s pattern, because as there the button *is* the script.
+/// Conditional mediation is the second: the username field asks for it with an
+/// `autocomplete` token, and a browser that has never heard of it ignores the
+/// token.
 #[derive(Debug, Template)]
 #[template(path = "login.html")]
 pub struct LoginPage<'a> {
@@ -70,9 +90,18 @@ pub struct LoginPage<'a> {
     pub locale: &'a str,
     /// The tenant's display name.
     pub tenant_name: &'a str,
-    /// Where the form posts to.
+    /// Where the form posts to, and where a passkey sign-in navigates on
+    /// success — it is the same interaction, at whatever stage it has reached.
     pub action: &'a str,
+    /// Where the script asks for `PublicKeyCredentialRequestOptions`.
+    pub passkey_options_action: &'a str,
+    /// Where the script posts the assertion it got back.
+    pub passkey_finish_action: &'a str,
     /// The synchroniser token for this rendering.
+    ///
+    /// One token, carried by the form as a hidden input and by the script as a
+    /// `data-` attribute: they are two ways to submit the same interaction and
+    /// there is no reason for them to hold different tokens.
     pub csrf: &'a str,
     /// `login_hint` from the request, prefilled into the username field.
     ///
@@ -354,13 +383,17 @@ mod tests {
                 locale: "en",
                 tenant_name: hostile,
                 action: "/interaction/x/login",
+                passkey_options_action: hostile,
+                passkey_finish_action: hostile,
                 csrf: hostile,
                 login_hint: Some(hostile),
                 message: Some(hostile),
                 nonce_attribute: nonce_attribute(&nonce),
             };
             let html = page.render().expect("render");
-            assert_no_injection(&html, hostile);
+            // One script: the sign-in bootstrap the template carries. None of
+            // the hostile values may have produced a second.
+            assert_no_injection_beyond(&html, hostile, 1);
         }
     }
 
@@ -490,6 +523,118 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"data-csrf="the-token""#), "{html}");
+    }
+
+    /// The sign-in page's script, like the enrolment page's, is a constant.
+    #[test]
+    fn the_sign_in_script_interpolates_nothing() {
+        let nonce = nonce();
+        let html = LoginPage {
+            locale: "en",
+            tenant_name: "Demo",
+            action: "/interaction/abc",
+            passkey_options_action: "/interaction/abc/passkey/options",
+            passkey_finish_action: "/interaction/abc/passkey/finish",
+            csrf: "the-token",
+            login_hint: Some("ada"),
+            message: None,
+            nonce_attribute: nonce_attribute(&nonce),
+        }
+        .render()
+        .expect("render");
+        let start = html.find("<script").expect("a script");
+        let body = &html[start..];
+
+        for value in [
+            "/interaction/abc",
+            "/interaction/abc/passkey/options",
+            "the-token",
+            "ada",
+        ] {
+            assert!(
+                !body.contains(value),
+                "{value:?} was interpolated into the script: {body}"
+            );
+        }
+        // ...and they did reach the page, on the attributes the script reads.
+        assert!(
+            html.contains(r#"data-options-url="/interaction/abc/passkey/options""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"data-csrf="the-token""#), "{html}");
+    }
+
+    /// `ast-2vk.4`: the passkey path is the enhancement and the password form
+    /// is the mechanism, so with scripting off the page still signs people in.
+    #[test]
+    fn without_javascript_the_sign_in_page_still_has_its_password_form() {
+        let nonce = nonce();
+        let html = LoginPage {
+            locale: "en",
+            tenant_name: "Demo",
+            action: "/interaction/abc",
+            passkey_options_action: "/interaction/abc/passkey/options",
+            passkey_finish_action: "/interaction/abc/passkey/finish",
+            csrf: "the-token",
+            login_hint: None,
+            message: None,
+            nonce_attribute: nonce_attribute(&nonce),
+        }
+        .render()
+        .expect("render");
+
+        // The form, untouched by any of this.
+        assert!(
+            html.contains(r#"<input type="password" name="password""#),
+            "{html}"
+        );
+        assert!(
+            html.contains("<button type=\"submit\">Sign in</button>"),
+            "{html}"
+        );
+        // The passkey block starts hidden, so no browser shows a button that
+        // cannot work — including one where the script was blocked, which
+        // `<noscript>` would not catch.
+        assert!(html.contains(r#"id="passkey-signin""#), "{html}");
+        let block = html
+            .split(r#"id="passkey-signin""#)
+            .nth(1)
+            .and_then(|rest| rest.split('>').next())
+            .expect("the passkey block");
+        assert!(
+            block.contains("hidden"),
+            "the passkey block is not hidden: {html}"
+        );
+        assert!(html.contains("<noscript>"), "{html}");
+    }
+
+    /// Conditional mediation is asked for in the one place a browser reads it.
+    ///
+    /// The `webauthn` token in `autocomplete` is what lets a browser offer a
+    /// passkey inside its ordinary username dropdown; a browser that has never
+    /// heard of it ignores the token and the field is an ordinary username
+    /// field, which is exactly the "enhancement, not mechanism" claim.
+    #[test]
+    fn the_username_field_asks_for_conditional_mediation() {
+        let nonce = nonce();
+        let html = LoginPage {
+            locale: "en",
+            tenant_name: "Demo",
+            action: "/interaction/abc",
+            passkey_options_action: "/interaction/abc/passkey/options",
+            passkey_finish_action: "/interaction/abc/passkey/finish",
+            csrf: "t",
+            login_hint: None,
+            message: None,
+            nonce_attribute: nonce_attribute(&nonce),
+        }
+        .render()
+        .expect("render");
+
+        assert!(
+            html.contains(r#"autocomplete="username webauthn""#),
+            "{html}"
+        );
     }
 
     /// The acceptance criterion of `ast-ndk.7`: no dead button, and a reason.
@@ -656,24 +801,17 @@ mod tests {
         assert!(html.contains("<style"), "the style block is gone");
     }
 
-    /// Not one `<script>` in the tree. Every page works without JavaScript,
-    /// and a tree with no script is the only `strict-dynamic` that cannot be
-    /// got wrong.
+    /// No page runs script it was not deliberately given.
+    ///
+    /// The three pages here have no reason to carry one at all. The three that
+    /// do — login, passkey enrolment and form post — are named in
+    /// `source_audit::SCRIPTED_TEMPLATES`, each with the reason, and each has
+    /// its own tests below for the nonce, the interpolation and the path that
+    /// works without script.
     #[test]
     fn no_page_contains_a_script_element() {
         let nonce = nonce();
         let pages = [
-            LoginPage {
-                locale: "en",
-                tenant_name: "Demo",
-                action: "/x",
-                csrf: "t",
-                login_hint: None,
-                message: None,
-                nonce_attribute: nonce_attribute(&nonce),
-            }
-            .render()
-            .expect("render"),
             ConsentPage {
                 locale: "en",
                 tenant_name: "Demo",
@@ -719,6 +857,8 @@ mod tests {
                 locale: "en",
                 tenant_name: "Demo",
                 action: "/x",
+                passkey_options_action: "/x/passkey/options",
+                passkey_finish_action: "/x/passkey/finish",
                 csrf: "the-token",
                 login_hint: None,
                 message: None,

@@ -26,7 +26,7 @@ async function approve(page: import('@playwright/test').Page, authorizationUrl: 
   await page.goto(authorizationUrl);
   await page.locator('input[name="username"]').fill(USERNAME);
   await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole('button', { name: 'Sign in' }).click();
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Allow' })).toBeVisible();
 
   // The document that answers the consent POST is the form-post page itself,

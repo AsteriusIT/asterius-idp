@@ -1025,12 +1025,18 @@ fn render(
     offer: Option<&ConsentOffer>,
 ) -> Response {
     let action = format!("/interaction/{id}");
+    // The two endpoints the sign-in script talks to. Built by
+    // `http::passkeys`, so the page and the router cannot disagree about where
+    // they are.
+    let (passkey_options, passkey_finish) = crate::http::passkeys::login_paths(id);
     match stage {
         Stage::Login | Stage::StepUp => Document::render(context.nonce, |nonce| {
             pages::render(&LoginPage {
                 locale: "en",
                 tenant_name: &context.tenant.display_name,
                 action: &action,
+                passkey_options_action: &passkey_options,
+                passkey_finish_action: &passkey_finish,
                 csrf: csrf.expose(),
                 login_hint: None,
                 message,
@@ -1147,7 +1153,7 @@ fn clear(response: &mut Response) {
 /// No `Max-Age`: it is a session cookie, and the session row's own two clocks
 /// are the authority on lifetime. A cookie that outlived the row would only
 /// produce a confusing sign-in loop.
-fn set_session_cookie(response: &mut Response, id: &SessionId) {
+pub(crate) fn set_session_cookie(response: &mut Response, id: &SessionId) {
     let cookie = format!(
         "{}={}; Secure; HttpOnly; SameSite=Lax; Path=/",
         asterius_domain::entities::session::COOKIE_NAME,

@@ -16,6 +16,15 @@ use time::OffsetDateTime;
 /// which a captured challenge is still worth something.
 pub const ENROLMENT_TTL: time::Duration = time::Duration::minutes(5);
 
+/// The longest an authentication challenge may be outstanding.
+///
+/// The same five minutes, for the same reason, and deliberately a separate
+/// constant: the two windows answer to different pages and one of them may
+/// need to move without the other. An authentication challenge is if anything
+/// the more sensitive of the pair — nobody is signed in yet, so it is the one
+/// an attacker probes.
+pub const ASSERTION_TTL: time::Duration = time::Duration::minutes(5);
+
 /// An enrolment page that has been rendered, and what it is waiting for.
 ///
 /// One per session: a second rendering replaces the first, so a browser with
@@ -62,9 +71,35 @@ pub struct NewPasskey {
     pub label: Option<String>,
 }
 
+/// A stored passkey, as an assertion needs it back (WebAuthn L3 §7.2 step 5).
+///
+/// The credential id is absent because it is how this was looked up. What is
+/// here is everything §7.2 then needs: the key to verify with, the counter to
+/// compare against, and the user the credential belongs to — which is the
+/// answer to "who is signing in" in a discoverable-credential flow, where the
+/// browser sent no username at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredPasskey {
+    /// The `credentials` row, which is what an audit record names.
+    pub row: uuid::Uuid,
+    /// Whose it is.
+    pub user: UserId,
+    /// The COSE public key, in the encoding it was registered in.
+    pub public_key: Vec<u8>,
+    /// The counter as of the last accepted assertion, or registration.
+    pub sign_count: u32,
+    /// The RP ID the credential was scoped to, recorded at registration.
+    ///
+    /// Read back and compared rather than assumed: a tenant that has moved
+    /// host has credentials scoped to the old one, and verifying those against
+    /// the new RP ID would be this server telling itself a credential is for
+    /// an origin it is not.
+    pub rp_id: String,
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ENROLMENT_TTL;
+    use super::{ASSERTION_TTL, ENROLMENT_TTL};
 
     /// The bead's ceiling, asserted rather than trusted to a comment: a
     /// constant that drifted upward would widen a replay window silently.
@@ -72,5 +107,14 @@ mod tests {
     fn an_enrolment_is_outstanding_for_no_more_than_five_minutes() {
         assert!(ENROLMENT_TTL <= time::Duration::minutes(5));
         assert!(ENROLMENT_TTL > time::Duration::ZERO);
+    }
+
+    /// The same ceiling on the other ceremony. WebAuthn L3 §13.4.3 wants a
+    /// challenge to be short-lived as well as single-use, and this is the one
+    /// an unauthenticated visitor can ask for.
+    #[test]
+    fn an_authentication_challenge_is_outstanding_for_no_more_than_five_minutes() {
+        assert!(ASSERTION_TTL <= time::Duration::minutes(5));
+        assert!(ASSERTION_TTL > time::Duration::ZERO);
     }
 }
