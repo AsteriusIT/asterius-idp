@@ -21,7 +21,10 @@ plan="$1"
 # Pinned, for the reason everything else here is pinned: the suite's own
 # scripts/requirements.txt names no versions, and a runner that installs
 # whatever is newest is a harness that can break without a commit.
-pip install --quiet --no-cache-dir -r /runner/requirements.txt \
+# `--user`, into PYTHONUSERBASE: this container runs as the caller's uid so
+# that the reports it writes belong to the caller, and that uid owns nothing
+# system-wide.
+pip install --user --quiet --no-cache-dir -r /runner/requirements.txt \
   || { echo "runner: could not install the suite's python dependencies" >&2; exit 69; }
 
 # `--export-dir`: one result archive per plan, which is what a certification

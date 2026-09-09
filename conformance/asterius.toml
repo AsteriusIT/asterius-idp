@@ -44,6 +44,33 @@ max_connections = 8
 # needs a client certificate the suite issues per run and a second ingress —
 # see "What is not covered" in README.md.
 
+# The conformance suite is one address running a plan of 56 modules back to
+# back, and most of those modules exist to make a request the server must
+# refuse — an expired `request_uri`, a client assertion with the wrong `aud`, a
+# replayed authorization code. Every one of those counts against the per-address
+# limits, which count exactly the requests that did *not* succeed. Under the
+# shipped defaults the plan would start being answered 429 somewhere in the
+# middle, and the suite would report a non-conformance that is really our own
+# rate limiter — the most expensive kind of false finding.
+#
+# Raised rather than removed, as in e2e/fixtures/asterius.toml.in: a limit that
+# is still a number stops a runaway loop from filling a table, and the
+# limiter's own behaviour is asserted where it can be asserted precisely, in
+# `crates/server/src/http/limits.rs`.
+[limits]
+par_per_address = 2000
+par_per_client = 2000
+token_per_address = 2000
+token_per_client = 2000
+userinfo_per_address = 2000
+registration_per_address = 2000
+client_configuration_per_address = 2000
+
+# `[login]` is deliberately left at its defaults. The suite signs in once per
+# module and always successfully, so it never approaches those counters, and a
+# harness that relaxes a limit it does not need is a harness that has stopped
+# testing it.
+
 # The issuer's authority is the name the suite reaches, because here the issuer
 # really is a fetch target as well as an identifier: `asterius` is the compose
 # service name, it is the SAN in the run certificate, and it is what the Java

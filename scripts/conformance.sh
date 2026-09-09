@@ -110,6 +110,7 @@ die()  { printf '\nconformance: %s\n' "$*" >&2; exit "${2:-1}"; }
 
 compose() {
   CONFORMANCE_SUITE_VERSION="$SUITE_VERSION" \
+  CONFORMANCE_RUNNER_USER="$(id -u):$(id -g)" \
   CONFORMANCE_SUITE_DIR="$SUITE_DIR" \
   CONFORMANCE_HTTPS_PORT="$HTTPS_PORT" \
   CONFORMANCE_ASTERIUS_PORT="$ASTERIUS_PORT" \

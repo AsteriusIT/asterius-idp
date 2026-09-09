@@ -135,7 +135,15 @@ services:
   runner:
     profiles: ["runner"]
     image: ${CONFORMANCE_RUNNER_IMAGE:-python:3.13-alpine3.20}
+    # The caller's uid, supplied by scripts/conformance.sh. Reports are the one
+    # thing a run leaves behind, and reports a developer cannot delete without
+    # `sudo` — or a CI step cannot read — are a poor thing to leave behind. The
+    # cost is that pip has nowhere system-wide to install to, which is what
+    # PYTHONUSERBASE and `pip install --user` in runner/run.sh are for.
+    user: ${CONFORMANCE_RUNNER_USER:?set CONFORMANCE_RUNNER_USER; scripts/conformance.sh passes the caller's uid:gid}
     environment:
+      HOME: /tmp
+      PYTHONUSERBASE: /tmp/python
       CONFORMANCE_SERVER: https://localhost.emobix.co.uk:8443/
       CONFORMANCE_DEV_MODE: "1"
       # `run-test-plan.py` aborts the whole plan after this many modules in a
