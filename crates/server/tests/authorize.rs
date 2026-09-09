@@ -7,6 +7,7 @@ use asterius_domain::{
     AuthRequestRepository, ClientId, Consumed, DomainError, InteractionRecord,
     InteractionRepository, Issuer, PushedRequest, Tenant, TenantId, TenantStatus,
 };
+use asterius_oidc::consent_memory::MemoryPolicy;
 use asterius_oidc::decision::DecisionPolicy;
 use asterius_oidc::par::MintedRequestUri;
 use asterius_server::http::authorize::{AuthorizeContext, authorize};
@@ -140,11 +141,42 @@ async fn run(store: &Store, params: &[(&str, &str)]) -> axum::response::Response
     run_with(store, params, None).await
 }
 
+/// The grants this user already holds — the consent memory (`ast-uwv.3`).
+///
+/// There is no consent table: what a person has agreed to is what their grants
+/// record, so a fake that returns grants is a fake that returns memories.
+#[derive(Debug, Default)]
+struct Grants(Vec<asterius_domain::Grant>);
+
+#[async_trait::async_trait]
+impl asterius_domain::GrantRepository for Grants {
+    async fn create(&self, _grant: &asterius_domain::Grant) -> Result<(), DomainError> {
+        Ok(())
+    }
+
+    async fn for_subject(
+        &self,
+        _subject: &asterius_domain::SubjectId,
+    ) -> Result<Vec<asterius_domain::Grant>, DomainError> {
+        Ok(self.0.clone())
+    }
+}
+
 /// The same, for a browser that already has a session (`ast-gxh.8`).
 async fn run_with(
     store: &Store,
     params: &[(&str, &str)],
     session: Option<&asterius_domain::Session>,
+) -> axum::response::Response {
+    run_remembering(store, params, session, &Grants::default()).await
+}
+
+/// The same again, for a browser whose user already holds grants.
+async fn run_remembering(
+    store: &Store,
+    params: &[(&str, &str)],
+    session: Option<&asterius_domain::Session>,
+    grants: &Grants,
 ) -> axum::response::Response {
     let tenant = tenant();
     let nonce = Nonce::generate();
@@ -154,7 +186,9 @@ async fn run_with(
             requests: store,
             interactions: store,
             session,
+            grants,
             policy: DecisionPolicy::default(),
+            memory: MemoryPolicy::default(),
             nonce: &nonce,
         },
         &pairs(params),
@@ -466,13 +500,10 @@ async fn prompt_none_without_a_session_redirects_login_required_without_a_page()
 /// `consent_required`, which tells the client to retry *with* a prompt rather
 /// than to sign the user in again.
 ///
-/// Consent is required of every request today because nothing in this server
-/// records that it was given before; `asterius_oidc::decision` documents that
-/// seam, and its table already answers `Interaction::Silent` for the row a
-/// consent memory would fill in. What is asserted here is what this server
-/// actually does, not what it will do.
+/// This user holds no grant for this client, so the consent memory has nothing
+/// to say and the honest answer is that consent is required (`ast-uwv.3`).
 #[tokio::test]
-async fn prompt_none_with_a_usable_session_is_refused_consent_required() {
+async fn prompt_none_with_a_usable_session_and_no_memory_is_refused_consent_required() {
     let minted = MintedRequestUri::generate();
     let store = Store::with(request_with(
         minted.digest(),
@@ -498,6 +529,150 @@ async fn prompt_none_with_a_usable_session_is_refused_consent_required() {
         store.begun.lock().expect("lock").is_empty(),
         "a request that may not display anything reached the interaction"
     );
+}
+
+// ---- consent memory (`ast-uwv.3`) ----------------------------------------
+
+/// A grant this user already holds, covering `scopes`.
+fn held(scopes: &[&str]) -> asterius_domain::Grant {
+    let mut grant = asterius_domain::Grant::new(
+        TenantId::new("demo"),
+        ClientId::new("billing"),
+        OffsetDateTime::now_utc() - time::Duration::days(1),
+    );
+    grant.subject = Some(asterius_domain::SubjectId::new(SUBJECT.to_owned()));
+    grant.scopes = scopes.iter().map(|s| (*s).to_owned()).collect();
+    grant
+}
+
+/// A stored `prompt=none` request asking for `scopes`.
+fn silent_request(digest: &str, scopes: &[&str]) -> PushedRequest {
+    request_with(
+        digest,
+        serde_json::json!({
+            "redirect_uri": "https://rp.example/cb",
+            "prompts": ["none"],
+            "scopes": scopes,
+        }),
+    )
+}
+
+/// The row of `asterius_oidc::decision`'s table that had nothing to fill it in:
+/// everything is in place *including* consent, so the request is answered
+/// without disturbing anybody. Without this a hidden-frame session poll can
+/// never succeed, which is the blockage `ast-gxh.8` recorded at the HTTP level.
+#[tokio::test]
+async fn prompt_none_over_a_remembered_consent_is_answered_silently() {
+    // Arrange: the user has already granted this client exactly this.
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(silent_request(minted.digest(), &["openid", "profile"]));
+    let session = session(time::Duration::minutes(1));
+    let grants = Grants(vec![held(&["openid", "profile"])]);
+
+    // Act.
+    let response = run_remembering(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&session),
+        &grants,
+    )
+    .await;
+
+    // Assert: no refusal — the request continues into the interaction, which
+    // is what every non-refusing decision does.
+    assert!(response.status().is_redirection(), "{}", response.status());
+    let location = response.headers()[header::LOCATION]
+        .to_str()
+        .expect("location");
+    assert!(location.starts_with("/interaction/"), "{location}");
+    assert_eq!(store.begun.lock().expect("lock").len(), 1);
+}
+
+/// The widening rule, at the HTTP level: the same test as
+/// `a_remembered_scope_does_not_widen_to_one_that_was_never_granted` in
+/// `asterius_oidc::consent_memory`, asserted where it matters — a client that
+/// asks for more than was granted is refused rather than answered.
+#[tokio::test]
+async fn a_remembered_consent_does_not_widen_to_a_scope_that_was_never_granted() {
+    // Arrange: `openid` was granted; `payments` never was.
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(silent_request(minted.digest(), &["openid", "payments"]));
+    let session = session(time::Duration::minutes(1));
+    let grants = Grants(vec![held(&["openid"])]);
+
+    // Act.
+    let response = run_remembering(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&session),
+        &grants,
+    )
+    .await;
+
+    // Assert: the new scope has to be consented to, and `prompt=none` forbids
+    // asking, so the client is told so.
+    let location = response.headers()[header::LOCATION]
+        .to_str()
+        .expect("location");
+    assert!(location.contains("error=consent_required"), "{location}");
+}
+
+/// OIDC Core §11: the OP "MUST obtain explicit consent" for offline access. A
+/// consent for ordinary scopes is not that consent, so a client adding
+/// `offline_access` to a request it has made before still meets the screen.
+#[tokio::test]
+async fn offline_access_is_not_covered_by_an_ordinary_remembered_consent() {
+    // Arrange: everything but `offline_access` has been granted.
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(silent_request(
+        minted.digest(),
+        &["openid", "profile", "offline_access"],
+    ));
+    let session = session(time::Duration::minutes(1));
+    let grants = Grants(vec![held(&["openid", "profile"])]);
+
+    // Act.
+    let response = run_remembering(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&session),
+        &grants,
+    )
+    .await;
+
+    // Assert.
+    let location = response.headers()[header::LOCATION]
+        .to_str()
+        .expect("location");
+    assert!(location.contains("error=consent_required"), "{location}");
+}
+
+/// Point 3 of the ticket, end to end: revocation traverses the memory. A grant
+/// the user withdrew must not answer for them at the next request.
+#[tokio::test]
+async fn a_revoked_grant_does_not_answer_for_the_user_again() {
+    // Arrange: the grant that covered this request has been revoked.
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(silent_request(minted.digest(), &["openid", "profile"]));
+    let session = session(time::Duration::minutes(1));
+    let mut revoked = held(&["openid", "profile"]);
+    revoked.revoked_at = Some(OffsetDateTime::now_utc() - time::Duration::hours(1));
+    let grants = Grants(vec![revoked]);
+
+    // Act.
+    let response = run_remembering(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&session),
+        &grants,
+    )
+    .await;
+
+    // Assert.
+    let location = response.headers()[header::LOCATION]
+        .to_str()
+        .expect("location");
+    assert!(location.contains("error=consent_required"), "{location}");
 }
 
 /// §3.1.2.1: `max_age` is measured from `auth_time`, and an authentication

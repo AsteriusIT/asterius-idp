@@ -30,10 +30,12 @@
 
 use crate::http::redirect::SeeOther;
 use asterius_domain::{
-    AuthRequestRepository, ClientId, InteractionRepository, PushedRequest, Session, Tenant,
+    AuthRequestRepository, ClientId, GrantRepository, InteractionRepository, PushedRequest,
+    Session, SubjectId, Tenant,
 };
 use asterius_oidc::authorize::{Prompt, ResponseMode};
 use asterius_oidc::code::AuthorizationResponse;
+use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
 use asterius_oidc::decision::{
     Consent, DecisionPolicy, Interaction, NoAcrPolicy, Requirements, SessionState, Unmet, decide,
 };
@@ -61,8 +63,14 @@ pub struct AuthorizeContext<'a> {
     /// revoked — OIDC Core §3.1.2.1 asks whether the End-User "is logged in",
     /// and none of those three is.
     pub session: Option<&'a Session>,
+    /// The grants this user already holds, for the consent memory
+    /// (`ast-uwv.3`).
+    pub grants: &'a dyn GrantRepository,
     /// What this tenant will do without being asked (`ast-2vk.7`'s seam).
     pub policy: DecisionPolicy,
+    /// Whether this tenant remembers consent, and for how long it remembers an
+    /// `offline_access` one.
+    pub memory: MemoryPolicy,
     /// The CSP nonce for this response.
     pub nonce: &'a Nonce,
 }
@@ -140,23 +148,33 @@ pub async fn authorize(
     // consent user interface for one, and an interaction row is the first step
     // towards displaying one.
     let requirements = requirements(&stored);
-    let hinted_subject = match (&requirements.hinted_subject, context.session) {
-        (Some(_), Some(session)) => subject_of(&stored.client, session.user).await,
+    // The `sub` this client sees for the session's user, resolved whenever
+    // there is a usable session. It used to be resolved only for an
+    // `id_token_hint`, on the grounds that a lookup per browser hit is not
+    // worth a comparison nobody asked for — but the consent memory is keyed by
+    // it (`asterius_oidc::consent_memory`), and a memory that could not name
+    // the person it is about would be a memory about the wrong one. It also
+    // costs the same query the interaction is about to make anyway.
+    let subject = match context.session {
+        Some(session) if session.status(now).is_usable() => {
+            subject_of(&stored.client, session.user).await
+        }
         _ => None,
     };
+    let consent = match &subject {
+        Some(subject) => {
+            remembered_consent(&context, &stored, &SubjectId::new(subject.clone()), now).await
+        }
+        // No subject means no session, or a session whose subject could not be
+        // resolved. Neither is somebody this server can say has consented
+        // before, and the failing-closed reading of "I do not know" is to ask.
+        None => Consent::Required,
+    };
     let state = match context.session {
-        // The subject is resolved only when a verified `id_token_hint` gave
-        // this request somebody to be about. Resolving one otherwise would be
-        // a query — and, for a pairwise client, a stored identifier — per
-        // browser hit, for a comparison nobody asked for.
         Some(session) if session.status(now).is_usable() => SessionState::Active {
             session,
-            subject: hinted_subject.as_deref(),
-            // Consent is asked for every time: nothing in this server records
-            // that it was given before. See `asterius_oidc::decision` — the
-            // decision table has the other row already, and a consent-memory
-            // story is what fills it in.
-            consent: Consent::Required,
+            subject: subject.as_deref(),
+            consent,
         },
         _ => SessionState::None,
     };
@@ -210,6 +228,45 @@ pub async fn authorize(
     // The redirect carries a credential in both the URL and the cookie.
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
+}
+
+/// Whether this request is already covered by a consent this person gave
+/// before (`ast-uwv.3`).
+///
+/// The memory is the grants themselves — there is no consent table, for the
+/// reasons `asterius_oidc::consent_memory` sets out — so this is a read of the
+/// grants the subject holds, folded through the rule that decides which of them
+/// still stand.
+///
+/// # Why a store failure answers `Required`
+///
+/// Because the two ways of being wrong are not symmetrical. A memory that
+/// cannot be read and is treated as "granted" completes an authorization
+/// nobody was asked about; treated as "required", it shows a consent screen to
+/// somebody who has seen it before. The second is an inconvenience and the
+/// first is a consent failure, so the unreadable case takes the same answer as
+/// the empty one.
+async fn remembered_consent(
+    context: &AuthorizeContext<'_>,
+    stored: &PushedRequest,
+    subject: &SubjectId,
+    now: OffsetDateTime,
+) -> Consent {
+    let grants = match context.grants.for_subject(subject).await {
+        Ok(grants) => grants,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                tenant = %context.tenant.id,
+                "cannot read the grants a consent decision depends on"
+            );
+            return Consent::Required;
+        }
+    };
+    let asked = Asked::from_parameters(&stored.parameters);
+    Remembered::of_client(&grants, &stored.client, subject, now)
+        .covers(&asked, context.memory, now)
+        .consent()
 }
 
 /// Reads the decision's inputs back off the stored request.

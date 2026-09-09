@@ -216,8 +216,15 @@ pub const POLICY: &[Retention] = &[
         table: "grants",
         rule: Rule::Kept(
             "a grant is the revocable unit of authority: deleting one deletes \
-             the only row that could revoke the tokens minted from it. Grant \
-             Management ID1 §5.6's unclaimed-grant cleanup is `ast-uwv.4`",
+             the only row that could revoke the tokens minted from it. It is \
+             also the consent record `asterius_oidc::consent_memory` reads, so \
+             a sweep here would forget a consent as well as lose a revocation; \
+             that memory's own lifetime is enforced when it is read — a \
+             standing grant is a standing consent, and an `offline_access` one \
+             stops covering new requests after \
+             `consent_memory::DEFAULT_OFFLINE_ACCESS_MEMORY` without the row \
+             going anywhere. Grant Management ID1 §5.6's unclaimed-grant \
+             cleanup is `ast-uwv.4`",
         ),
     },
     Retention {

@@ -36,13 +36,14 @@
 //! itself is [`Interaction::StepUp`], which this module can already return and
 //! the server does not yet have a screen for.
 //!
-//! **Whether the user has consented before.** Nothing in this server records a
-//! previous consent yet, so the caller passes [`Consent::Required`] and a
-//! `prompt=none` request that has got as far as consent is answered
-//! `consent_required`, which is the correct answer *for a server with no
-//! consent memory*: consent genuinely is required. [`Consent::Granted`] is the
-//! seam a consent-memory story fills in, and the table below already has its
-//! rows — see `a_silent_request_with_everything_in_place_is_answered_silently`.
+//! **Whether the user has consented before.** The caller decides that and
+//! passes the answer in. [`crate::consent_memory`] is what computes it
+//! (`ast-uwv.3`), from the grants the person already holds — this module only
+//! has to know which of the two it was told, and keeping it that way is what
+//! stops the memory's rules leaking into the prompt rules. A caller with no
+//! memory to consult, or one whose store would not answer, passes
+//! [`Consent::Required`] and gets `consent_required`, which is the right answer
+//! for a server that cannot say the user agreed before.
 
 use std::collections::BTreeSet;
 
@@ -138,9 +139,9 @@ pub enum Interaction {
 /// Whether the user has already agreed to what this request asks for.
 ///
 /// A two-valued answer rather than a `bool` because the two are not opposites
-/// in the way a boolean suggests: `Required` is what a server with no memory of
-/// past consent always says, and it is a fact about *this deployment* rather
-/// than about the user.
+/// in the way a boolean suggests: `Required` is also what a caller says when it
+/// does not *know*, so the two variants are "an earlier consent covers this"
+/// and "ask", not "yes" and "no".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Consent {
     /// Recorded previously, and still covers this request.
