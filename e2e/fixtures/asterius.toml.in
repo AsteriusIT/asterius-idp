@@ -48,3 +48,26 @@ mode = "open"
 [[tenant]]
 id = "e2e"
 issuer = "https://127.0.0.1:@PORT@/t/e2e"
+
+# A second tenant, and the only difference that matters is the name in its
+# authority (`ast-kb0`).
+#
+# The RP ID this server derives is the issuer's host with the port removed
+# (`crates/server/src/http/passkeys.rs::relying_party`), and an IP literal is
+# not a domain: `127.0.0.1` is refused before any authenticator, virtual or
+# otherwise, is consulted. So a WebAuthn ceremony cannot run on the tenant
+# above — and the tenant above is not the place to fix it, because its address
+# was chosen for a reason that still holds. It stays on the literal.
+#
+# `localhost` rather than a `.test` name: browsers accept it as an RP ID, the
+# run certificate already carries it in its SAN, and no resolver has to be
+# taught anything. The `::1`-first hazard the note above names is answered
+# rather than accepted: Chromium is pinned to the loopback by
+# `--host-resolver-rules` in `e2e/playwright.config.ts`, and
+# `scripts/browser-tests.sh` will not start the sweep until
+# `https://localhost:@PORT@/readyz` has answered — so a name that resolves away
+# from the bound socket is a precondition failure with a sentence attached
+# rather than a puzzle in an unrelated test.
+[[tenant]]
+id = "e2e-webauthn"
+issuer = "https://localhost:@PORT@/t/e2e-webauthn"

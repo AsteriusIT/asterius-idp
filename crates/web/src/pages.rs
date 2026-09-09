@@ -525,6 +525,24 @@ mod tests {
         assert!(html.contains(r#"data-csrf="the-token""#), "{html}");
     }
 
+    /// `ast-kb0`: a 204 is a success, and the script has to say so.
+    ///
+    /// `/passkeys/finish` answers `204 No Content`, and `Response.json()` on an
+    /// empty body rejects — so a script that parsed every answer reported a
+    /// registration that had *worked* as having failed, and never navigated.
+    /// Nothing in Rust could see it: the endpoint was right and the ceremony
+    /// was stored. `e2e/tests/passkey-ceremony.spec.ts` found it the first time
+    /// a browser ran the ceremony; this is the cheap guard against its return.
+    #[test]
+    fn the_passkey_script_treats_an_empty_answer_as_success() {
+        let html = passkey("ada", None).render().expect("render");
+
+        assert!(
+            html.contains("answer.status === 204"),
+            "the enrolment script parses the empty body a 204 has: {html}"
+        );
+    }
+
     /// The sign-in page's script, like the enrolment page's, is a constant.
     #[test]
     fn the_sign_in_script_interpolates_nothing() {

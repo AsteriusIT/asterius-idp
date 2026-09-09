@@ -33,11 +33,11 @@ repository cares most about and is where the flow runs. **js** is not redundant:
 will not run script, so only a scripted browser can tell a correct nonce from a
 missing one.
 
-The one page in the tree that carries script — `crates/web/templates/passkey.html`,
-exempted by name in `SCRIPTED_TEMPLATES` — has no route yet (`ast-2vk.15` owns
-`/passkeys/options` and `/passkeys/finish`). Until it does, the JS suite
-exercises `'strict-dynamic'` only through the negative proof. The assertion is
-written and marked `fixme` in `tests/csp-sweep.spec.ts`.
+The pages that carry script — `passkey.html` and, since `ast-2vk.4`, the passkey
+block on `login.html` — are exempted by name in `SCRIPTED_TEMPLATES`, and both
+are swept with script enabled: `tests/csp-sweep.spec.ts` runs their nonced
+bootstraps, and `tests/passkey-ceremony.spec.ts` runs a whole WebAuthn ceremony
+through them.
 
 ## The negative proof
 
@@ -86,6 +86,24 @@ and its absence on every other page.
   would be treated as a secure origin over plain HTTP too, which is exactly why
   it is not good enough: it would prove the cookie survives on the one origin
   where the rule is relaxed.
+- There are **two** tenants, and the second one exists for one reason
+  (`ast-kb0`). The RP ID this server derives is the issuer's host with the port
+  removed, so the sweep tenant — issued at `https://127.0.0.1:{port}/t/e2e` —
+  cannot run a WebAuthn ceremony at all: an IP literal is not a domain and
+  Chromium refuses before any authenticator is consulted. The address was
+  chosen deliberately and still is, so `e2e-webauthn` was added on `localhost`
+  beside it rather than moving it. `localhost` and not a `.test` name: browsers
+  accept it as an RP ID, the run certificate already carries it, and no
+  resolver has to be taught anything. The `::1`-first hazard the fixture warns
+  about is answered rather than ignored: Chromium is pinned to the loopback by
+  `--host-resolver-rules`, and `scripts/browser-tests.sh` refuses to start the
+  sweep unless `https://localhost:{port}/readyz` answers, so a name that
+  resolves away from the bound socket is a precondition failure with a sentence
+  attached. Reaching that tenant at `127.0.0.1/t/e2e-webauthn` instead is not
+  an option and should not be made one: `tenancy::resolve` requires the `Host`
+  to be one the tenant answers to, which is what stops
+  `https://anything/t/x/token` minting tokens for an issuer the request never
+  reached.
 - `E2E_RESET_DB=1` drops and recreates the public schema first, for a
   development database that predates a change to the baseline migration.
 

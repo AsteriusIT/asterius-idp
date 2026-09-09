@@ -56,3 +56,25 @@ export const REDIRECT_URI = fromEnv(
 
 /** The `__Host-` cookie the interaction endpoints set. */
 export const INTERACTION_COOKIE = '__Host-asterius_ix';
+
+/**
+ * The WebAuthn tenant's origin, which is a *name* and not an address.
+ *
+ * `ast-kb0`: the RP ID this server derives is the issuer's host with the port
+ * removed, and `127.0.0.1` is not a domain — Chromium refuses such a ceremony
+ * before any authenticator is consulted. `e2e/fixtures/asterius.toml.in`
+ * therefore carries a second tenant on `localhost`, which browsers accept as
+ * an RP ID and which the run certificate already names in its SAN. The sweep
+ * tenant keeps its literal, for the reason that fixture gives.
+ *
+ * The browser is pinned to the loopback for this name by
+ * `--host-resolver-rules` in `playwright.config.ts`, and
+ * `scripts/browser-tests.sh` refuses to start the sweep until this origin has
+ * answered `/readyz` — so the `::1`-first hazard the fixture names is a
+ * precondition with a sentence attached rather than a mystery. See
+ * `passkeys.ts` for why addressing the tenant at `127.0.0.1` is not an option.
+ */
+export const WEBAUTHN_BASE_URL = fromEnv('E2E_WEBAUTHN_BASE_URL', 'https://localhost:9444');
+
+/** The RP ID a credential registered on that tenant is scoped to. */
+export const WEBAUTHN_RP_ID = new URL(WEBAUTHN_BASE_URL).hostname;
