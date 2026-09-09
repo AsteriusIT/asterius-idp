@@ -94,7 +94,9 @@ fuzz_target!(|input: Input| {
     let token = confirmation_token(&input.session_id);
     assert_eq!(token.len(), 64, "a confirmation token is a sha-256 digest");
     assert!(
-        token.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        token
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
         "a confirmation token is lower-case hex, whatever the id: {token:?}"
     );
     assert!(confirmation_token_matches(&input.session_id, &token));
@@ -114,8 +116,8 @@ fuzz_target!(|input: Input| {
     // coincidence is 2^-64, and any id worth protecting is far longer than
     // that. Recoverability for the short ids is covered above instead, by the
     // token being a fixed width and a different id not verifying.
-    let occurrence_could_be_chance = input.session_id.len() < 16
-        && input.session_id.bytes().all(|b| b.is_ascii_hexdigit());
+    let occurrence_could_be_chance =
+        input.session_id.len() < 16 && input.session_id.bytes().all(|b| b.is_ascii_hexdigit());
     assert!(
         input.session_id.is_empty()
             || occurrence_could_be_chance
