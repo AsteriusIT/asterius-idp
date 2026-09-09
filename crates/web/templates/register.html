@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Create an account — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# Account creation. No script: a passkey cannot be enrolled from markup, so
+   enrolment is offered *after* the account exists, on `passkey.html`, which is
+   the page that owns that ceremony and its exemption. Putting a second
+   WebAuthn bootstrap here would be a second script to review for no gain — the
+   account has to exist before a credential can be bound to it either way.
+
+   Every field is labelled and the browser is told what each one is for
+   (`autocomplete`), which is WCAG 2.2 SC 1.3.5 and also the difference between
+   a password manager offering to generate a passphrase and not. #}
+<h2>Create an account</h2>
+{% include "error_summary.html" %}
+
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label>
+  <span>Username</span>
+  <input type="text" name="username" id="username" autocomplete="username"
+         autocapitalize="none" spellcheck="false" required
+         {% if message.is_none() %}autofocus{% endif %}
+         {% if let Some(value) = username %}value="{{ value }}"{% endif %}>
+</label>
+<label>
+  <span>Email address</span>
+  <input type="email" name="email" id="email" autocomplete="email"
+         autocapitalize="none" spellcheck="false" required
+         aria-describedby="email-hint"
+         {% if let Some(value) = email %}value="{{ value }}"{% endif %}>
+  {# Described rather than merely required: SC 3.3.2 asks for instructions, and
+     "we will send you a link" is the instruction that explains the next page. #}
+  <span class="muted" id="email-hint">We will send a link here to confirm it is
+  yours.</span>
+</label>
+<label>
+  <span>Password</span>
+  {# `new-password`, not `current-password`: it is what tells a manager to
+     generate rather than fill. `minlength` states the rule in the markup so the
+     browser can say so before a round trip; the server checks it again, because
+     an attribute is a courtesy and not a control. #}
+  <input type="password" name="password" id="password" autocomplete="new-password"
+         minlength="{{ minimum_password_length }}" required
+         aria-describedby="password-hint">
+  <span class="muted" id="password-hint">At least
+  {{ minimum_password_length }} characters. Length is what matters; a
+  passphrase of ordinary words is fine.</span>
+</label>
+<div class="actions"><button type="submit">Create account</button></div>
+</form>
+
+<p class="muted"><a href="{{ sign_in_href }}">Already have an account?</a></p>
+{% endblock %}

@@ -255,6 +255,27 @@ mod tests {
         files
     }
 
+    /// The one interpolation this crate is allowed to leave unescaped, in the
+    /// spelling `marks_a_value_safe` normalises to.
+    const PERMITTED_SAFE: &str = "{{ nonce_attribute|safe }}";
+
+    /// Whether a template line leaves an interpolation unescaped.
+    ///
+    /// A function rather than a loop body so that the rule can be shown to
+    /// *fire*: see `the_safe_filter_audit_would_catch_a_new_use`. An absence
+    /// check nobody has ever watched fail is an absence check that might be
+    /// matching nothing at all — and this one was. askama accepts whitespace
+    /// around a filter pipe, so `{{ client_name | safe }}` is the same
+    /// template as `{{ client_name|safe }}` and only the second was being
+    /// looked for. The pipes are normalised before the needle is applied.
+    fn marks_a_value_safe(line: &str) -> bool {
+        let mut normalised = line.to_owned();
+        while normalised.contains(" |") || normalised.contains("| ") {
+            normalised = normalised.replace(" |", "|").replace("| ", "|");
+        }
+        normalised.contains("|safe") && !normalised.contains(PERMITTED_SAFE)
+    }
+
     /// The only unescaped interpolation in the tree is the CSP nonce.
     ///
     /// askama escapes automatically, so a template injection here is always
@@ -264,18 +285,12 @@ mod tests {
     /// second `|safe` to `base.html` still fails.
     #[test]
     fn no_template_marks_a_request_value_safe() {
-        const PERMITTED: &str = "{{ nonce_attribute|safe }}";
-
         let mut offenders = Vec::new();
         for (name, source) in templates() {
             for (number, line) in source.lines().enumerate() {
-                if !line.contains("|safe") {
-                    continue;
+                if marks_a_value_safe(line) {
+                    offenders.push(format!("{name}:{}: {}", number + 1, line.trim()));
                 }
-                if line.contains(PERMITTED) {
-                    continue;
-                }
-                offenders.push(format!("{name}:{}: {}", number + 1, line.trim()));
             }
         }
         assert!(
@@ -295,8 +310,120 @@ mod tests {
     fn the_nonce_attribute_is_still_the_one_permitted_interpolation() {
         let found = templates()
             .iter()
-            .any(|(_, source)| source.contains("{{ nonce_attribute|safe }}"));
+            .any(|(_, source)| source.contains(PERMITTED_SAFE));
         assert!(found, "no template renders the CSP nonce any more");
+    }
+
+    /// The `|safe` rule fires on the lines it is there for (`ast-ndk.2`).
+    ///
+    /// The tree passes `no_template_marks_a_request_value_safe` today, which
+    /// is exactly the state in which a matcher that had stopped matching would
+    /// look healthy. So the predicate is run against the lines somebody would
+    /// actually write: a client name rendered as markup, a filter chain ending
+    /// in `safe`, the tenant's own text. Each must be caught, and the nonce
+    /// must not be.
+    #[test]
+    fn the_safe_filter_audit_would_catch_a_new_use() {
+        for hostile in [
+            "<p>{{ client_name|safe }}</p>",
+            "<p>{{ message|safe }}</p>",
+            "{{ login_hint|trim|safe }}",
+            // The spelling that was slipping through: askama does not care
+            // about whitespace around a pipe, and neither may this.
+            "  {{ tenant_name | safe }}",
+            "{{ tenant_name  |  safe }}",
+            "{{ scope.description |safe }}",
+        ] {
+            assert!(
+                marks_a_value_safe(hostile),
+                "the audit would not catch {hostile}"
+            );
+        }
+        assert!(
+            !marks_a_value_safe("<style {{ nonce_attribute|safe }}>"),
+            "the one permitted interpolation is being reported"
+        );
+    }
+
+    /// Every control a user types into is named to a screen reader.
+    ///
+    /// WCAG 2.2 SC 1.3.1 and 3.3.2, as a grep over the markup rather than as
+    /// something an axe run has to find at the far end of a browser. The house
+    /// pattern is a `<label>` wrapping its control, so the check is
+    /// positional: every non-hidden `<input` has to fall between a `<label`
+    /// and the `</label>` that closes it.
+    ///
+    /// Hidden inputs are exempt because they are not controls — a CSRF token
+    /// and a reset token have nothing to announce.
+    #[test]
+    fn every_visible_input_in_a_template_sits_inside_a_label() {
+        let mut offenders = Vec::new();
+        for (name, source) in templates() {
+            let mut depth = 0usize;
+            let mut rest = source.as_str();
+            let mut consumed = 0usize;
+            while let Some(offset) = rest.find('<') {
+                let at = consumed + offset;
+                let tail = &rest[offset..];
+                if tail.starts_with("<label") {
+                    depth += 1;
+                } else if tail.starts_with("</label") {
+                    depth = depth.saturating_sub(1);
+                } else if tail.starts_with("<input") {
+                    let element = &tail[..tail.find('>').map_or(tail.len(), |end| end + 1)];
+                    let hidden = element.contains("type=\"hidden\"");
+                    if !hidden && depth == 0 {
+                        offenders.push(format!("{name}: byte {at}: {}", element.trim()));
+                    }
+                }
+                consumed = at + 1;
+                rest = &source[consumed..];
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a control with no label is a control a screen reader announces as \
+             \"edit text\"; found:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// There is one error summary, and it still manages the focus.
+    ///
+    /// `error_summary.html` is included by every page that can fail, so the
+    /// three attributes that make a failure announce itself and take the caret
+    /// (`role`, `tabindex`, `autofocus`) live in exactly one file — and a page
+    /// that quietly hand-rolled its own would get none of them checked. Both
+    /// halves are asserted: the partial keeps its attributes, and nobody else
+    /// declares an alert.
+    #[test]
+    fn the_error_summary_is_the_only_alert_and_keeps_its_focus_handling() {
+        let templates = templates();
+        let (_, summary) = templates
+            .iter()
+            .find(|(name, _)| name == "error_summary.html")
+            .expect("the shared error summary exists");
+
+        for required in ["role=\"alert\"", "tabindex=\"-1\"", "autofocus"] {
+            assert!(
+                summary.contains(required),
+                "the error summary lost {required}, so a failed submission no \
+                 longer announces itself or takes the focus"
+            );
+        }
+
+        let hand_rolled: Vec<&String> = templates
+            .iter()
+            .filter(|(name, source)| {
+                name != "error_summary.html" && source.contains("role=\"alert\"")
+            })
+            .map(|(name, _)| name)
+            .collect();
+        assert!(
+            hand_rolled.is_empty(),
+            "these pages declare their own alert instead of including \
+             error_summary.html: {hand_rolled:?}"
+        );
     }
 
     /// The templates that may run script, each with the reason it must.

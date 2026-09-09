@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Confirm the code — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# RFC 8628 §3.3.1, and the reason this is a page of its own rather than part of
+   the code entry before it.
+
+   When the user arrives by `verification_uri_complete` the code is already in
+   the URI, so nothing so far has shown that the person at this browser is the
+   person in front of the device. §3.3.1 says the authorization server should
+   display the `user_code` and have the user confirm it matches, and §5.4
+   explains what that buys: an attacker who mails somebody a complete
+   verification URI is relying on the click being the whole ceremony. Showing
+   the code turns the click into a comparison against a device the victim has to
+   actually be looking at.
+
+   The client's name is here for the reason it is on the consent screen, with
+   the same caveat: it is a name chosen at registration, so it is a hint and not
+   an identity. #}
+<h2>Is this the code on your device?</h2>
+{% include "error_summary.html" %}
+<p class="code-display">{{ user_code }}</p>
+<p class="muted">{{ client_name }} is asking to connect. Continue only if this
+code matches the one your device is showing.</p>
+
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+{# Both answers under one token, as on the consent and logout pages: a forged
+   confirmation would connect somebody else's device, and a forged cancellation
+   is a denial of service. #}
+<div class="actions">
+  <button type="submit" name="decision" value="confirm">Yes, continue</button>
+  <button type="submit" name="decision" value="cancel" class="secondary">No, cancel</button>
+</div>
+</form>
+{% endblock %}

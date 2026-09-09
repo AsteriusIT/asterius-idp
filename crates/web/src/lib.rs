@@ -17,6 +17,7 @@ pub mod document;
 pub mod interaction;
 pub mod pages;
 pub mod session;
+mod snapshots;
 mod source_audit;
 
 pub use csp::{FormActionOrigin, InvalidOrigin, Nonce, Policy};

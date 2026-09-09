@@ -1,37 +1,72 @@
-{% extends "base.html" %}
-{% block title %}Set up a passkey — {{ tenant_name }}{% endblock %}
-{% block content %}
-{# The one scripted page in this tree, and the reason
-   `crates/web/src/source_audit.rs` carries a named exemption for it:
-   `navigator.credentials.create()` is a JavaScript API and there is no markup
-   that runs a WebAuthn ceremony. Everything below is arranged so the script is
-   the *only* thing that needs the exemption:
 
-   * one inline block, carrying the per-response nonce, so
-     `script-src 'nonce-…' 'strict-dynamic'` still permits exactly what this
-     server put a nonce on;
-   * no interpolation inside the script. Every value it needs arrives on the
-     `data-` attributes of `#passkey`, which askama escapes like any other
-     attribute, so a hostile `username` or `next_href` is a string handed to
-     `dataset`, never source text;
-   * no inline event handler, because no nonce can allow one.
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 
-   The button starts `hidden` and the script reveals it. That is the no-JS
-   requirement in one attribute: with scripting off — or with the script
-   blocked, which `<noscript>` would *not* catch — there is no button that
-   cannot work, and the password link below is in the markup either way. #}
-{% include "error_summary.html" %}
+<meta name="referrer" content="no-referrer">
+<title>Set up a passkey — Example Tenant</title>
+<style nonce="snapshot-nonce">:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #eee; --bg: #16181c; --muted: #aaa; --line: #444; }
+}
+body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--fg);
+       font: 16px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+main { max-width: 26rem; margin: 0 auto; }
+h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1.5rem; }
+h2 { font-size: 1rem; font-weight: 600; margin: 0 0 .75rem; }
+label { display: block; margin: 0 0 1rem; }
+label span { display: block; margin-bottom: .25rem; }
+input[type=text], input[type=password], input[type=email] {
+  width: 100%; box-sizing: border-box; padding: .5rem;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg); color: var(--fg); font: inherit;
+}
+button { padding: .55rem 1rem; border: 0; border-radius: 4px; font: inherit;
+         cursor: pointer; background: #2f6fdb; color: #fff; }
+button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+.actions { display: flex; gap: .5rem; margin-top: 1.5rem; }
+.scopes { margin: 0 0 1.5rem; padding-left: 1.25rem; }
+.muted { color: var(--muted); font-size: .875rem; }
+.error { border-left: 3px solid #c0392b; padding-left: .75rem; margin-bottom: 1.5rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875rem; }
+label.inline { display: inline; margin: 0; }
+label.inline span { display: inline; }
+/* A one-time code is read off one screen and typed into another, so it is set
+   wide and monospaced: the characters that get confused doing that are 0/O and
+   1/l, and a proportional face is where they look alike. */
+input.code { letter-spacing: .15em; text-transform: uppercase;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.code-display { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                font-size: 1.5rem; letter-spacing: .15em; margin: 0 0 1rem; }
+/* A link that acts as the page's one forward step. It is a link and not a
+   button because it navigates; this only makes it look like the rest. */
+a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
+           border-radius: 4px; background: #2f6fdb; color: #fff; }
+/* SC 2.4.7: the error summary takes the focus after a failed submission, and a
+   focused element a user cannot see is a focus indicator that is not there. */
+[tabindex="-1"]:focus { outline: 2px solid #c0392b; outline-offset: 4px; }
+.error p { margin: 0 0 .25rem; }</style>
+</head>
+<body>
+<main>
+<h1>Example Tenant</h1>
+
+
+
+
 
 <h2>Set up a passkey</h2>
-<p class="muted">Signed in as {{ username }}. A passkey signs you in with your
+<p class="muted">Signed in as ada. A passkey signs you in with your
 device's screen lock instead of a password, and cannot be phished: it only
 works on this site.</p>
 
 <div id="passkey"
-     data-options-url="{{ options_action }}"
-     data-finish-url="{{ finish_action }}"
-     data-next-url="{{ next_href }}"
-     data-csrf="{{ csrf }}"
+     data-options-url="/interaction/abc/passkeys/options"
+     data-finish-url="/interaction/abc/passkeys/finish"
+     data-next-url="/interaction/abc"
+     data-csrf="snapshot-csrf"
      data-working="Follow your device's prompt to finish."
      data-failed="That did not work. Try again, or carry on with your password."
      data-unsupported="This browser or device cannot create a passkey. Your password still works.">
@@ -40,18 +75,17 @@ works on this site.</p>
 </div>
 
 <noscript>
-{# Rendered only when scripting is off, and it says why rather than leaving a
-   page with nothing on it: the ceremony is a browser API call. #}
+
 <p class="error">Creating a passkey needs JavaScript, because it is a browser
 API that a page has to call. JavaScript is switched off here, so there is no
 button — use your password instead.</p>
 </noscript>
 
 <p class="muted">Passwords keep working either way: a passkey is an addition,
-not a replacement. <a href="{{ password_href }}">Continue with your
+not a replacement. <a href="/interaction/abc/password">Continue with your
 password</a>.</p>
 
-<script {{ nonce_attribute|safe }}>
+<script nonce="snapshot-nonce">
 (() => {
   "use strict";
   const root = document.getElementById("passkey");
@@ -135,4 +169,7 @@ password</a>.</p>
   button.hidden = false;
 })();
 </script>
-{% endblock %}
+
+</main>
+</body>
+</html>

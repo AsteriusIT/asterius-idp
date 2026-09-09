@@ -1,4 +1,13 @@
-:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<meta name="referrer" content="no-referrer">
+<title>Log out — Example Tenant</title>
+<style nonce="snapshot-nonce">:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
 @media (prefers-color-scheme: dark) {
   :root { --fg: #eee; --bg: #16181c; --muted: #aaa; --line: #444; }
 }
@@ -38,4 +47,26 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 /* SC 2.4.7: the error summary takes the focus after a failed submission, and a
    focused element a user cannot see is a focus indicator that is not there. */
 [tabindex="-1"]:focus { outline: 2px solid #c0392b; outline-offset: 4px; }
-.error p { margin: 0 0 .25rem; }
+.error p { margin: 0 0 .25rem; }</style>
+</head>
+<body>
+<main>
+<h1>Example Tenant</h1>
+
+
+<h2>Log out of Example Tenant?</h2>
+<p class="muted">Somebody asked to end your session. We could not confirm who,
+so nothing has changed yet.</p>
+
+<form method="post" action="/logout">
+<input type="hidden" name="csrf" value="snapshot-csrf">
+
+<div class="actions">
+  <button type="submit" name="decision" value="logout">Log out</button>
+  <button type="submit" name="decision" value="stay" class="secondary">Stay signed in</button>
+</div>
+</form>
+
+</main>
+</body>
+</html>

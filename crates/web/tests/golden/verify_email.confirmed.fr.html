@@ -1,4 +1,13 @@
-:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<meta name="referrer" content="no-referrer">
+<title>Email confirmed — Example Tenant</title>
+<style nonce="snapshot-nonce">:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
 @media (prefers-color-scheme: dark) {
   :root { --fg: #eee; --bg: #16181c; --muted: #aaa; --line: #444; }
 }
@@ -38,4 +47,19 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 /* SC 2.4.7: the error summary takes the focus after a failed submission, and a
    focused element a user cannot see is a focus indicator that is not there. */
 [tabindex="-1"]:focus { outline: 2px solid #c0392b; outline-offset: 4px; }
-.error p { margin: 0 0 .25rem; }
+.error p { margin: 0 0 .25rem; }</style>
+</head>
+<body>
+<main>
+<h1>Example Tenant</h1>
+
+
+
+<h2>Email confirmed</h2>
+<p class="muted">Thank you. <strong>ada@example.test</strong> is confirmed.</p>
+<div class="actions"><a class="button" href="/login">Continue</a></div>
+
+
+</main>
+</body>
+</html>

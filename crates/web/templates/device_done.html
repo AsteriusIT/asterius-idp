@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}{% if connected %}Device connected{% else %}Device not connected{% endif %} — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# The end of RFC 8628 §3.3 on the browser's side. The device is polling the
+   token endpoint (§3.4) and learns the outcome there, so all this page has to
+   do is tell the person in front of it that they are finished.
+
+   Both outcomes are terminal and neither offers a way back into the flow: a
+   "try again" link here would be a link somebody else could send. The
+   unsuccessful branch names no client and no reason — it is reached after a
+   cancellation, an expiry, or a code that was never issued, and saying which
+   would tell a guesser which of those they hit. #}
+{% if connected %}
+<h2>Device connected</h2>
+<p class="muted">You can go back to {{ client_name }} on your device. This
+browser window is no longer needed.</p>
+{% else %}
+<h2>Device not connected</h2>
+<p class="muted">Nothing was connected and nothing was shared. If you did not
+start this, there is nothing more to do.</p>
+{% endif %}
+{% endblock %}

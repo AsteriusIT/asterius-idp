@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Connect a device — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# RFC 8628 §3.3: the user opens `verification_uri` on a second, browser-capable
+   device and types the `user_code` the first device is showing. This page is
+   the whole of the user's side of the device flow until the code is
+   recognised.
+
+   Nothing on it comes from the device. The code is the only input and it is
+   compared server-side; §5.1 notes that a `user_code` is short enough to be
+   worth guessing, so the failure text says only that the code did not work —
+   never whether it was unknown, already used, or expired, each of which would
+   be an oracle for somebody working through the space. #}
+<h2>Connect a device</h2>
+{% include "error_summary.html" %}
+<p class="muted">Enter the code shown on the device you are setting up.</p>
+
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<label>
+  <span>Code from the device</span>
+  {# Prefilled when the user followed `verification_uri_complete` (§3.3.1), and
+     still an editable field: that URI may have been mistyped or truncated by a
+     mail client, and a read-only value the user cannot correct would strand
+     them with no way forward. #}
+  <input type="text" name="user_code" id="user_code" class="code"
+         autocomplete="one-time-code" autocapitalize="characters"
+         spellcheck="false" required
+         {% if message.is_none() %}autofocus{% endif %}
+         {% if let Some(code) = user_code %}value="{{ code }}"{% endif %}>
+</label>
+<div class="actions"><button type="submit">Continue</button></div>
+</form>
+{% endblock %}

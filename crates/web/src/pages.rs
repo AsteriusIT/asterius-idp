@@ -43,6 +43,23 @@
 //! runs on is a working page without it — a form with a real submit button
 //! that the user presses — which is why the two halves of that acceptance
 //! criterion are not in conflict.
+//!
+//! Everything added since — the device flow's three pages, registration, email
+//! verification and the two password-reset pages (`ast-ndk.2`) — is unscripted,
+//! including its focus management: `autofocus` on the shared error summary is
+//! HTML doing what a page would otherwise need a script for.
+//!
+//! # A fixed set of pages, and tenants change tokens and strings
+//!
+//! The product rule this bead exists to hold is that a tenant supplies no
+//! markup. There is no field on any type here that carries HTML, no template
+//! renders one unescaped, and `crate::source_audit` fails the build if either
+//! stops being true. What a tenant does get is the design tokens of
+//! `style.css` (`ast-ndk.1`) and, once `ast-ndk.5` lands, the strings — which
+//! is why [`LoginPage::locale`] already exists on every page and
+//! does nothing but write the `lang` attribute.
+//!
+//! Every page is pinned as bytes in both locales; see `crate::snapshots`.
 
 use crate::csp::Nonce;
 use askama::Template;
@@ -289,6 +306,239 @@ pub struct FormPostPage<'a> {
     /// The response parameters, each rendered as a hidden input.
     pub fields: Vec<ResponseField>,
     /// The CSP nonce attribute — here it is the auto-submit script's.
+    pub nonce_attribute: String,
+}
+
+/// The code-entry page of the device authorization grant.
+///
+/// RFC 8628 §3.3: the device shows a `user_code` and a `verification_uri`, and
+/// the user types the one at the other on a browser this server can actually
+/// talk to. Everything the flow needs from a person happens on this page and
+/// the two after it.
+///
+/// [`Self::user_code`] is `Some` when the user arrived by
+/// `verification_uri_complete` (§3.3.1) and the code was in the URI. It is a
+/// prefill and nothing more: the field stays editable, because a URI that
+/// arrived by mail may have been wrapped or truncated, and it is still
+/// compared server-side.
+#[derive(Debug, Template)]
+#[template(path = "device.html")]
+pub struct DevicePage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Where the form posts to.
+    pub action: &'a str,
+    /// The synchroniser token for this rendering.
+    pub csrf: &'a str,
+    /// The code from `verification_uri_complete`, if there was one.
+    ///
+    /// Attacker-influenced — anybody can construct that URI — so it is
+    /// escaped like every other value and never trusted as a *decision*, only
+    /// rendered as a prefill.
+    pub user_code: Option<&'a str>,
+    /// A previous failure, if this is a retry.
+    ///
+    /// One fixed string for every reason a code can fail (§5.1): "unknown",
+    /// "expired" and "already used" would each be an oracle for somebody
+    /// working through a short code space.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The "is this the code your device is showing?" page.
+///
+/// RFC 8628 §3.3.1 asks the authorization server to display the `user_code`
+/// and have the user confirm it, and §5.4 says why: a complete verification
+/// URI is a link, and a link is something an attacker can send. Confirming the
+/// code turns the click into a comparison against a device that has to be in
+/// front of the person doing it.
+#[derive(Debug, Template)]
+#[template(path = "device_confirm.html")]
+pub struct DeviceConfirmationPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// The client's registered name. Attacker-chosen at registration time,
+    /// like the one on the consent screen.
+    pub client_name: &'a str,
+    /// The code this server matched, shown for the user to compare.
+    pub user_code: &'a str,
+    /// Where the form posts to.
+    pub action: &'a str,
+    /// The synchroniser token for this rendering.
+    pub csrf: &'a str,
+    /// A previous failure, if this is a retry.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The end of the device flow, in the browser.
+///
+/// The device itself learns the outcome by polling the token endpoint (RFC
+/// 8628 §3.4), so this page exists only to tell the person holding the browser
+/// that they are done. It offers no way back into the flow.
+#[derive(Debug, Template)]
+#[template(path = "device_done.html")]
+pub struct DeviceOutcomePage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Whether the device was authorized.
+    ///
+    /// The unsuccessful rendering names no client and no reason: it is reached
+    /// after a cancellation, an expiry, or a code that was never issued, and
+    /// distinguishing them would answer a question a guesser is asking.
+    pub connected: bool,
+    /// The client's registered name, shown only when the device was connected.
+    pub client_name: &'a str,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The account creation page.
+///
+/// No script: a passkey cannot be enrolled from markup, and enrolment happens
+/// on [`PasskeyPage`] once the account exists, which is where that ceremony
+/// and its `source_audit` exemption already live.
+#[derive(Debug, Template)]
+#[template(path = "register.html")]
+pub struct RegistrationPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Where the form posts to.
+    pub action: &'a str,
+    /// The synchroniser token for this rendering.
+    pub csrf: &'a str,
+    /// What the user typed last time, so a rejected submission does not make
+    /// them type it all again. Their own text, escaped like anyone else's.
+    pub username: Option<&'a str>,
+    /// Likewise for the address.
+    pub email: Option<&'a str>,
+    /// The minimum this tenant accepts, stated in the markup and enforced
+    /// again server-side — an attribute is a courtesy to the browser, never a
+    /// control.
+    pub minimum_password_length: usize,
+    /// Where a user who already has an account goes instead.
+    pub sign_in_href: &'a str,
+    /// A previous failure, if this is a retry.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The email confirmation page, in both of its states.
+///
+/// Waiting for the link to be followed, and the link having been followed. One
+/// template because they are one thing to a user, and because the address is
+/// shown on both: a typo in it is the likeliest reason nothing arrives, and a
+/// user who cannot see what was recorded cannot spot it.
+#[derive(Debug, Template)]
+#[template(path = "verify_email.html")]
+pub struct EmailVerificationPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// The address a link was sent to. The user's own text, escaped.
+    pub email: &'a str,
+    /// Whether the link has been followed.
+    pub verified: bool,
+    /// Where the "send it again" form posts to. A POST because it sends mail,
+    /// and a GET that sends mail is a GET any image tag can fire.
+    pub resend_action: &'a str,
+    /// Where a confirmed user goes next.
+    pub continue_href: &'a str,
+    /// The synchroniser token for this rendering.
+    pub csrf: &'a str,
+    /// A previous failure — an expired link, a resend that was throttled.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The "email me a reset link" form.
+///
+/// The page that answers it is [`PasswordResetSentPage`], and it is the same
+/// page whether or not the address matched anything.
+#[derive(Debug, Template)]
+#[template(path = "password_reset.html")]
+pub struct PasswordResetRequestPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Where the form posts to.
+    pub action: &'a str,
+    /// The synchroniser token for this rendering.
+    pub csrf: &'a str,
+    /// Back to the sign-in page.
+    pub sign_in_href: &'a str,
+    /// A previous failure — a malformed address, a throttled request. Never
+    /// "no such account": see [`PasswordResetSentPage`].
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The neutral answer to a reset request.
+///
+/// It carries no field that could differ between an address this server knows
+/// and one it does not — not the address, not a name, not a count. An account
+/// discovery oracle on a reset form is the textbook one (RFC 9700 §4), and it
+/// does not need a message to leak: a different page would do. The absence is
+/// structural rather than conditional, and a test renders it for both cases and
+/// compares the bytes.
+#[derive(Debug, Template)]
+#[template(path = "password_reset_sent.html")]
+pub struct PasswordResetSentPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Back to the sign-in page.
+    pub sign_in_href: &'a str,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The page a reset link leads to.
+///
+/// The reset token is a hidden field rather than a path segment of
+/// [`Self::action`]: an action is what lands in browser history and in a
+/// `Referer` the day this page gains an outbound link. It is not the
+/// synchroniser token and does not replace it — one says which account, the
+/// other says this submission came from this page.
+#[derive(Debug, Template)]
+#[template(path = "password_new.html")]
+pub struct NewPasswordPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Whose password is being changed, shown so a user with two accounts —
+    /// or an old link — can see which. Display only: no field here chooses an
+    /// account.
+    pub username: &'a str,
+    /// Where the form posts to.
+    pub action: &'a str,
+    /// The synchroniser token for this rendering.
+    pub csrf: &'a str,
+    /// The single-use reset token from the link.
+    pub reset_token: &'a str,
+    /// The minimum this tenant accepts, checked again server-side.
+    pub minimum_password_length: usize,
+    /// A previous failure — the two entries not matching, a password too
+    /// short, a token that has expired.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
     pub nonce_attribute: String,
 }
 
@@ -1201,6 +1451,269 @@ mod tests {
             let html = form_post(hostile, vec![("state", hostile), ("code", hostile)]);
             // One script: the page's own, which must still be the only one.
             assert_no_injection_beyond(&html, hostile, 1);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The device authorization grant (RFC 8628 §3.3)
+    // -----------------------------------------------------------------------
+
+    fn device(user_code: Option<&str>, message: Option<&str>) -> String {
+        render(&DevicePage {
+            locale: "en",
+            tenant_name: "Demo",
+            action: "/device",
+            csrf: "token",
+            user_code,
+            message,
+            nonce_attribute: nonce_attribute(&nonce()),
+        })
+    }
+
+    fn device_confirmation<'a>(client_name: &'a str, user_code: &'a str) -> String {
+        render(&DeviceConfirmationPage {
+            locale: "en",
+            tenant_name: "Demo",
+            client_name,
+            user_code,
+            action: "/device/confirm",
+            csrf: "token",
+            message: None,
+            nonce_attribute: nonce_attribute(&nonce()),
+        })
+    }
+
+    /// The code, the client name and the retry message all land in markup.
+    #[test]
+    fn every_untrusted_value_on_the_device_pages_is_escaped() {
+        for hostile in HOSTILE {
+            assert_no_injection(&device(Some(hostile), Some(hostile)), hostile);
+            assert_no_injection(&device_confirmation(hostile, hostile), hostile);
+        }
+    }
+
+    /// RFC 8628 §3.3.1: the user is shown the code and asked whether it
+    /// matches, which is what §5.4 turns a mailed `verification_uri_complete`
+    /// from a click into.
+    #[test]
+    fn the_confirmation_page_shows_the_code_for_the_user_to_compare() {
+        let html = device_confirmation("Example App", "BDWD-HQPK");
+        assert!(html.contains("BDWD-HQPK"), "{html}");
+        assert!(html.contains("Example App"), "{html}");
+        // Both answers, under one token, as everywhere else in this tree.
+        assert!(html.contains(r#"value="confirm""#), "{html}");
+        assert!(html.contains(r#"value="cancel""#), "{html}");
+        assert_eq!(html.matches(r#"name="csrf""#).count(), 1, "{html}");
+    }
+
+    /// The code entry field is prefilled only when a complete URI carried one
+    /// (§3.3.1), and is editable either way.
+    #[test]
+    fn the_code_field_is_prefilled_only_by_a_complete_verification_uri() {
+        let plain = device(None, None);
+        assert!(!plain.contains("value=\"BDWD"), "{plain}");
+        assert!(plain.contains(r#"name="user_code""#), "{plain}");
+
+        let complete = device(Some("BDWD-HQPK"), None);
+        assert!(complete.contains(r#"value="BDWD-HQPK""#), "{complete}");
+        // Editable: a mail client that wrapped the URI must not strand the user.
+        assert!(!complete.contains("readonly"), "{complete}");
+        assert!(!complete.contains("disabled"), "{complete}");
+    }
+
+    /// A refused or expired device says nothing about which it was.
+    ///
+    /// §5.1: the code space is small enough to walk, and "expired" versus
+    /// "never issued" is the answer that makes walking it worthwhile.
+    #[test]
+    fn an_unconnected_device_names_no_client_and_no_reason() {
+        let refused = render(&DeviceOutcomePage {
+            locale: "en",
+            tenant_name: "Demo",
+            connected: false,
+            client_name: "Example App",
+            nonce_attribute: nonce_attribute(&nonce()),
+        });
+        assert!(!refused.contains("Example App"), "{refused}");
+        for oracle in ["expired", "cancelled", "unknown", "already"] {
+            assert!(
+                !refused.to_lowercase().contains(oracle),
+                "the refusal page says {oracle:?}: {refused}"
+            );
+        }
+
+        let connected = render(&DeviceOutcomePage {
+            locale: "en",
+            tenant_name: "Demo",
+            connected: true,
+            client_name: "Example App",
+            nonce_attribute: nonce_attribute(&nonce()),
+        });
+        assert!(connected.contains("Example App"), "{connected}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Registration, verification and password reset
+    // -----------------------------------------------------------------------
+
+    fn registration<'a>(username: Option<&'a str>, email: Option<&'a str>) -> String {
+        render(&RegistrationPage {
+            locale: "en",
+            tenant_name: "Demo",
+            action: "/register",
+            csrf: "token",
+            username,
+            email,
+            minimum_password_length: 12,
+            sign_in_href: "/login",
+            message: None,
+            nonce_attribute: nonce_attribute(&nonce()),
+        })
+    }
+
+    fn email_verification(email: &str, verified: bool) -> String {
+        render(&EmailVerificationPage {
+            locale: "en",
+            tenant_name: "Demo",
+            email,
+            verified,
+            resend_action: "/register/verify/resend",
+            continue_href: "/login",
+            csrf: "token",
+            message: None,
+            nonce_attribute: nonce_attribute(&nonce()),
+        })
+    }
+
+    fn new_password<'a>(username: &'a str, reset_token: &'a str) -> String {
+        render(&NewPasswordPage {
+            locale: "en",
+            tenant_name: "Demo",
+            username,
+            action: "/password/new",
+            csrf: "token",
+            reset_token,
+            minimum_password_length: 12,
+            message: None,
+            nonce_attribute: nonce_attribute(&nonce()),
+        })
+    }
+
+    /// Everything a user types is a value an attacker can type.
+    #[test]
+    fn every_untrusted_value_on_the_account_pages_is_escaped() {
+        for hostile in HOSTILE {
+            assert_no_injection(&registration(Some(hostile), Some(hostile)), hostile);
+            assert_no_injection(&email_verification(hostile, false), hostile);
+            assert_no_injection(&email_verification(hostile, true), hostile);
+            assert_no_injection(&new_password(hostile, hostile), hostile);
+        }
+    }
+
+    /// The reset confirmation cannot say whether the account exists.
+    ///
+    /// Not "does not": there is no field on [`PasswordResetSentPage`] that
+    /// could differ between an address this server knows and one it does not,
+    /// so the page is the same bytes for both. This test pins that — the
+    /// address, a name, a count, any of them would be the oracle RFC 9700 §4
+    /// warns about.
+    #[test]
+    fn a_reset_confirmation_cannot_reveal_whether_the_account_exists() {
+        let html = render(&PasswordResetSentPage {
+            locale: "en",
+            tenant_name: "Demo",
+            sign_in_href: "/login",
+            nonce_attribute: nonce_attribute(&nonce()),
+        });
+        // The body only: the shared stylesheet in the head has an `@media`
+        // rule in it, and a check that tripped on it would have to be relaxed
+        // into uselessness rather than fixed.
+        let body = html
+            .split_once("<body>")
+            .expect("a rendered page has a body")
+            .1;
+        assert!(!body.contains('@'), "an address reached the page: {body}");
+        for oracle in ["no account", "not found", "unknown", "does not exist"] {
+            assert!(
+                !html.to_lowercase().contains(oracle),
+                "the page says {oracle:?}: {html}"
+            );
+        }
+        // The reassurance a user needs, which is true either way.
+        assert!(html.contains("If there is an account"), "{html}");
+    }
+
+    /// The reset token travels in the body, not in the URL.
+    ///
+    /// A token in the action lands in history and in a `Referer`; a hidden
+    /// field does neither. It is also not the synchroniser token, and both are
+    /// present.
+    #[test]
+    fn the_reset_token_is_a_hidden_field_and_not_the_form_action() {
+        let html = new_password("ada", "reset-token-value");
+        assert!(
+            html.contains(r#"<input type="hidden" name="token" value="reset-token-value">"#),
+            "{html}"
+        );
+        assert!(
+            !html.contains(r#"action="/password/new/reset-token-value""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"name="csrf""#), "{html}");
+    }
+
+    // -----------------------------------------------------------------------
+    // The shared error summary
+    // -----------------------------------------------------------------------
+
+    /// A failure announces itself and takes the focus, with no script.
+    ///
+    /// WCAG 2.2 SC 3.3.1 and 2.4.3. `autofocus` on a `tabindex="-1"` container
+    /// is the whole of the focus management on these pages, which is why none
+    /// of them needs a `SCRIPTED_TEMPLATES` entry to satisfy the criterion.
+    #[test]
+    fn a_failed_submission_announces_itself_and_takes_the_focus() {
+        let failed = device(None, Some("That code did not work."));
+        assert!(failed.contains(r#"role="alert""#), "{failed}");
+        assert!(failed.contains(r#"tabindex="-1""#), "{failed}");
+        assert!(failed.contains("That code did not work."), "{failed}");
+
+        // And the summary is not rendered when there is nothing to report —
+        // an empty alert would take the focus for no reason on every load.
+        let fresh = device(None, None);
+        assert!(!fresh.contains(r#"role="alert""#), "{fresh}");
+    }
+
+    /// Two things may not both want the focus on the same page.
+    ///
+    /// The first field of a fresh form is focused for convenience; the error
+    /// summary is focused because something went wrong. When both would apply
+    /// the summary wins, and the templates express that by dropping the
+    /// field's `autofocus` — HTML's own rule is "first one in document order",
+    /// which would silently pick the wrong one if the summary ever moved.
+    #[test]
+    fn only_one_element_on_a_page_asks_for_the_focus() {
+        for html in [
+            device(None, None),
+            device(None, Some("That code did not work.")),
+            registration(None, None),
+            render(&LoginPage {
+                locale: "en",
+                tenant_name: "Demo",
+                action: "/interaction/abc/login",
+                passkey_options_action: "/interaction/abc/passkeys/options",
+                passkey_finish_action: "/interaction/abc/passkeys/finish",
+                csrf: "token",
+                login_hint: None,
+                message: Some("That did not match."),
+                nonce_attribute: nonce_attribute(&nonce()),
+            }),
+        ] {
+            assert_eq!(
+                html.matches("autofocus").count(),
+                1,
+                "two elements ask for the focus: {html}"
+            );
         }
     }
 
