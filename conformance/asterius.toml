@@ -1,0 +1,53 @@
+# Configuration for the OIDF conformance run. NOT a production configuration.
+#
+# Every key is described, with its type and default, in docs/configuration.md.
+#
+# Two differences from deploy/compose/asterius.toml, and both are the point.
+#
+# `mode = "terminate_tls"`, with a certificate `scripts/conformance.sh` issues
+# for the run. The suite is not a smoke test reaching a loopback port: it
+# inspects the transport, and FAPI 2.0 SP §5.2 requires TLS on every endpoint.
+# A `behind_proxy` stack on cleartext would be a harness that never exercised
+# the transport half of the profile.
+#
+# No `[admin]` table. This deployment is thrown away at the end of the run and
+# has nobody to administer; leaving it out is also what keeps the stack free of
+# any operator-supplied secret.
+#
+# There is no `[registration]` table either. `client_registration=static_client`
+# is the plan variant this harness runs, and the two clients the suite uses are
+# seeded by `fixtures/clients.sql` with the suite's own JWKS and redirect URIs —
+# exactly, byte for byte, because ADR-0005 matches redirect URIs exactly.
+
+log_format = "json"
+
+[server]
+bind = "0.0.0.0:9443"
+mode = "terminate_tls"
+
+[server.tls]
+certificate = "/etc/asterius/tls/cert.pem"
+private_key = "/etc/asterius/tls/key.pem"
+
+[keys]
+# The same obviously-worthless development KEK the example compose stack uses.
+kek_env = "ASTERIUS_KEK"
+
+[database]
+url = "postgres://asterius:asterius@db:5432/asterius"
+max_connections = 8
+
+[features]
+# Everything off is the FAPI 2.0 baseline, and the FAPI2 Security Profile plan
+# needs nothing more: private_key_jwt and DPoP are not features, they are the
+# baseline. `features.mtls` stays off because the mTLS half of the profile
+# needs a client certificate the suite issues per run and a second ingress —
+# see "What is not covered" in README.md.
+
+# The issuer's authority is the name the suite reaches, because here the issuer
+# really is a fetch target as well as an identifier: `asterius` is the compose
+# service name, it is the SAN in the run certificate, and it is what the Java
+# truststore was taught to trust.
+[[tenant]]
+id = "conformance"
+issuer = "https://asterius:9443/t/conformance"

@@ -36,3 +36,9 @@
 # never content.
 .claude/worktrees/
 .claude/grind.local.json
+
+# The OIDF conformance harness: a third-party checkout and per-run material
+# (certificate, truststore, reports). Both are caches of things the harness can
+# recreate; neither is content. See conformance/README.md.
+/conformance/.suite/
+/conformance/.run/

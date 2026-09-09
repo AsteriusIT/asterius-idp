@@ -43,6 +43,14 @@ this shape is safe anywhere real:
 | Replace `ASTERIUS_ADMIN_PASSWORD` with a mounted `admin.password_file` | The variable is fine for a demo you started by hand; a real deployment mounts the admin password from its secret store, and rotating it is an edit to that file and a restart. |
 | Give PostgreSQL real storage and backups | The example uses one local volume and no backup. Losing the database loses every key, grant and session. |
 
+The OpenID Foundation conformance suite is **not** a service in this stack, and
+that is deliberate. It is a test harness rather than a thing anyone deploys, it
+needs its own TLS, its own hostname and its own seeded clients, and bolting it
+onto the example an operator copies would make that example less like a
+deployment rather than more. It lives in `conformance/docker-compose.yml`, which
+brings up its own PostgreSQL and its own Asterius; `make conformance` runs it.
+See `conformance/README.md`.
+
 ## The image
 
 `docker build .` produces a distroless image whose only content is the binary.

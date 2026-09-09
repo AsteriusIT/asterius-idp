@@ -1,0 +1,118 @@
+name: Nightly conformance
+
+# The OpenID Foundation's own suite, against a build of this tree (`ast-83p.8`).
+#
+# Nightly and not per-PR, deliberately. It builds the release image and then
+# drives a browser through every module of the FAPI 2.0 Security Profile Final
+# plan: tens of minutes, against a pipeline whose other jobs finish in three.
+# `ast-83p.15` exists because one job once took 91 % of the run; this one would
+# take more than that, and `ci.yml` is left exactly as it was.
+#
+# What it proves is different in kind from everything in `ci.yml`. Those jobs
+# check the server against our reading of the specifications. This one checks it
+# against the software that decides whether a server may call itself certified.
+#
+# Turning a red run here into a blocked release is `ast-p2l.1`, a separate
+# ticket and a separate decision. This workflow reports; it gates nothing but
+# itself.
+on:
+  schedule:
+    # After the nightly fuzzing run, so two long jobs do not contend for the
+    # same runner minutes.
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: "Plan name with variants (blank: the FAPI2 SP Final plan)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  # The failure step opens an issue; see the note in fuzz-nightly.yml for why
+  # GitHub and not beads.
+  issues: write
+
+jobs:
+  conformance:
+    name: FAPI 2.0 SP Final (private_key_jwt + DPoP)
+    runs-on: ubuntu-latest
+    # Generous, because the whole point is a run that finishes rather than one
+    # that is convenient. A run that hits this has hung, and the artefacts
+    # below say where.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite is a Git checkout pinned by tag *and* commit, and two
+      # container images pinned by digest. Cached on the tag: a new tag is a
+      # cold clone, which is the point at which somebody moved the pin on
+      # purpose.
+      - name: cache the pinned conformance suite
+        uses: actions/cache@v4
+        with:
+          path: conformance/.suite
+          key: conformance-suite-${{ hashFiles('scripts/conformance.sh') }}
+
+      # The script is what a contributor runs locally. Running it here rather
+      # than reimplementing its steps is the same rule the browser sweep
+      # follows in ci.yml: what CI runs and what a developer runs are one file.
+      - name: run the conformance plan
+        env:
+          CONFORMANCE_PLAN: ${{ inputs.plan }}
+        run: ./scripts/conformance.sh
+
+      # Always: a failing run is the one whose report somebody needs. The
+      # archive holds the suite's HTML report per plan and the machine-readable
+      # export a certification submission is made of.
+      - name: upload the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report
+          path: conformance/.run/results/
+          if-no-files-found: error
+          retention-days: 30
+
+      # A red conformance run at 3am that nobody is told about is a
+      # non-conformance nobody fixes. One issue, reopened by comment: the same
+      # module tends to fail every night until it is dealt with, and thirty
+      # identical issues train people to ignore the label.
+      - name: open an issue for the failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="conformance: the nightly FAPI 2.0 SP Final run failed"
+          matches=$(gh issue list --state open --search "\"$title\" in:title" \
+                      --json number,title \
+                      --jq ".[] | select(.title == \"$title\") | .number")
+          existing=$(head -n1 <<<"$matches")
+          body=$(printf '%s\n' \
+            "The OpenID Foundation conformance suite reported a failure." \
+            "" \
+            "Run: $RUN_URL" \
+            "Reports: the \`conformance-report\` artefact on that run — one HTML" \
+            "report per plan, plus the machine-readable export." \
+            "" \
+            "Reproduce locally, with no account and no secret:" \
+            "" \
+            "    make conformance-keep" \
+            "" \
+            "Read conformance/README.md before assuming the server is wrong: an" \
+            "exit code of 69, 70, 71, 72 or 73 is the harness failing, not a" \
+            "finding, and each of them names what it could not do." \
+            "" \
+            "Opened automatically. The tracker of record is beads: file the bead" \
+            "and link it here.")
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "$body"
+            echo "commented on #$existing"
+          else
+            gh label create conformance --color 0E8A16 \
+              --description "Found by the OIDF conformance suite" --force
+            gh issue create --title "$title" --body "$body" --label conformance
+            echo "opened a new issue"
+          fi
