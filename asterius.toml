@@ -1,0 +1,158 @@
+# Asterius configuration.
+#
+# Every key below can be overridden from the environment as
+# ASTERIUS__<SECTION>__<KEY>, upper-cased, with `__` between path segments:
+#
+#   ASTERIUS__DATABASE__URL=postgres://asterius:secret@db:5432/asterius
+#   ASTERIUS__SERVER__BIND=0.0.0.0:9443
+#   ASTERIUS__FEATURES__SSF=true
+#
+# Unknown keys are a startup error, not a warning: a typo in a security flag
+# must never be silently ignored.
+
+# How log lines are rendered: "text" for a terminal, "json" for a log pipeline.
+# Either way every field passes through the redaction formatter first, so a
+# credential cannot reach an appender (RFC 9700 §4.2-4.3).
+log_format = "text"
+
+[server]
+# Address to listen on. Default: "0.0.0.0:9443".
+#
+# Deliberately not 8443. `tailscale serve` binds that port on a node's Tailscale
+# addresses to proxy a local app, which is a common enough development setup
+# that shipping a default which collides with it would waste everyone's first
+# ten minutes.
+bind = "0.0.0.0:9443"
+
+# "terminate_tls" — this process owns the TLS listener (rustls, TLS 1.2/1.3,
+#                   BCP 195 suites only). Requires [server.tls].
+# "behind_proxy"  — a trusted reverse proxy terminates TLS. Default.
+mode = "terminate_tls"
+
+# Largest request body accepted, in bytes. Default 65536. FAPI 2.0 request
+# bodies are small — a PAR request, a token request, a registration document —
+# so anything larger is either a mistake or an attempt. Over the limit: 413.
+request_body_limit_bytes = 65536
+
+# How long a request may take before it is abandoned with 408. Default 10.
+request_timeout_seconds = 10
+
+[server.tls]
+# Required when mode = "terminate_tls", and rejected otherwise: a deployment
+# that configures certificates while running behind a proxy usually believes it
+# is doing TLS and is not.
+#
+# TLS 1.2 and 1.3 only, with the nine BCP 195 cipher suites listed in
+# crates/server/src/http/tls.rs (FAPI 2.0 SP §5.2.1-5.2.2). There is no knob to
+# widen either set.
+certificate = "/etc/asterius/tls/fullchain.pem"
+private_key = "/etc/asterius/tls/privkey.pem"
+
+# Only meaningful when mode = "behind_proxy", and rejected otherwise.
+#
+# `X-Forwarded-For` and `Forwarded` are assertions any client can make, so they
+# are believed only when the immediate peer is listed here. The resolved client
+# address feeds rate limiting, login abuse protection and the audit trail: a
+# spoofable address means a spoofable rate-limit bucket and an audit record
+# naming the wrong person. Default: loopback only.
+# [server.proxy]
+# trusted_cidrs = ["127.0.0.0/8", "::1/128", "10.42.0.0/16"]
+
+# Where the key-encryption key comes from. REQUIRED, with no default: signing
+# keys are encrypted at rest under it, and a key generated on each boot could
+# not open yesterday's rows — the failure would look like corruption rather
+# than like configuration. Set exactly one of these.
+#
+# The value is 32 bytes, base64. Generate one with:
+#     head -c 32 /dev/urandom | base64 > /etc/asterius/kek
+#
+# The server proves at startup that this key can actually decrypt the tenant's
+# active signing key, so a wrong or swapped KEK fails the boot rather than the
+# first token request.
+[keys]
+kek_file = "/etc/asterius/kek"
+# kek_env = "ASTERIUS_KEK"   # visible in /proc/self/environ; prefer the file
+
+[database]
+# Required. Contains a password, so it is held in a Secret<String> and prints
+# as [REDACTED] wherever the configuration is logged.
+url = "postgres://asterius:asterius@localhost:5433/asterius"
+max_connections = 16
+
+# Optional capabilities. Everything is off unless switched on here, and what is
+# switched on is exactly what appears in the discovery metadata and on /readyz.
+#
+# There is no RS256 flag. ADR-0003 removed it: FAPI 2.0 SP §5.4.1 permits only
+# PS256, ES256 and EdDSA, and no client that needs RS256 could satisfy the rest
+# of the profile anyway.
+[features]
+mtls = false             # RFC 8705 client auth and certificate-bound tokens
+grant_management = false # Grant Management for OAuth 2.0 (Implementer's Draft)
+ciba = false             # CIBA Core 1.0, poll and ping
+device_flow = false      # RFC 8628 device authorization grant
+token_exchange = false   # RFC 8693 with delegation chains
+ssf = false              # Shared Signals Framework transmitter, CAEP/RISC
+authzen = false          # AuthZEN Authorization API 1.0
+dpop_nonce = false       # server-issued DPoP nonces (RFC 9449 §8)
+
+# Dynamic client registration — POST /register (RFC 7591 §3).
+#
+# Omit this table entirely and the endpoint registers nobody, answering 403.
+# That is a deliberate departure from RFC 7591 §3, which says an authorization
+# server SHOULD accept registration requests with no authorization: that SHOULD
+# exists so clients can interoperate with servers nobody has agreed with in
+# advance, and a FAPI deployment's clients are counterparties rather than
+# strangers. The cost of the other default is an internet-writable row in
+# `clients`, an unbounded inline JWKS per row, and — once `jwks_uri` fetching
+# lands — an outbound fetch to an address the caller chose.
+#
+# [registration]
+#
+# Required when the table is present. One of:
+#
+#   "closed"               nobody registers. 403.
+#   "initial_access_token" a bearer initial access token is required (RFC 7591
+#                          §3), presented as `Authorization: Bearer <token>`.
+#                          Missing or unrecognised: 401.
+#   "open"                 anybody registers. RFC 7591 §3's SHOULD.
+#
+# mode = "initial_access_token"
+#
+# The tokens, in plaintext, and only meaningful under "initial_access_token".
+# They are hashed at startup — the running process holds only SHA-256 digests,
+# so a core dump or a `Debug` of the configuration contains nothing replayable —
+# and each must be at least 22 characters, which is the 128 bits FAPI 2.0 SP
+# §5.4.1 requires of a credential no end user handles. Generate one with:
+#     head -c 16 /dev/urandom | basenc --base64url | tr -d '='
+#
+# initial_access_tokens = ["vJ8qN2mXbL5-tRw0KePzUA"]
+#
+# NOTE: neither mode is rate-limited yet (`ast-p2l.3`). Until it lands, "open"
+# means an unauthenticated caller can create rows at the speed of the network,
+# and "initial_access_token" means a leaked token can do the same.
+
+# One table per tenant. A tenant is an issuer.
+#
+# The issuer must be an https URL with no query and no fragment (RFC 8414 §2,
+# OIDC Discovery §3). It is normalised once at startup — scheme and host
+# lower-cased, a default :443 dropped, a trailing slash removed — and the
+# canonical form is what appears in every `iss` claim, so two tenants cannot
+# claim the same issuer under two spellings.
+[[tenant]]
+id = "demo"
+issuer = "https://as.example/t/demo"
+
+# The `aud` an access token carries when the authorization request named no
+# `resource` of its own (RFC 8707 §2). RFC 9068 §3 requires the authorization
+# server to supply one: an access token must say which resource server it was
+# minted for, and a token audienced at nothing is a token every resource server
+# has to make its own mind up about.
+#
+# Optional. Defaults to the issuer above, which is the one resource identifier
+# a tenant is always known to own — UserInfo and introspection live under it —
+# so the default means "a token for this server's own protected resources".
+# A deployment fronting a separate API names that API here instead.
+#
+# https, no fragment. Per tenant, not per deployment: `aud` is what a resource
+# server compares to decide a token was meant for it.
+# default_resource = "https://api.example/"

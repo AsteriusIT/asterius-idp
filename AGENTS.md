@@ -125,3 +125,46 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Règles de session — projet Rust
+
+Ces règles sont propres à ce dépôt. En cas de conflit avec un conseil générique
+ci-dessus, elles gagnent ; les instructions explicites de l'utilisateur ou de
+l'orchestrateur gagnent sur tout.
+
+### Rythme de travail (non négociable)
+
+- Pendant l'édition : `cargo check` uniquement (un hook le lance après chaque `.rs` modifié).
+- En fin de tâche, une seule fois : `/verify <filtre>` = fmt → clippy `-D warnings` → `cargo nextest run <filtre>` ciblé.
+- `cargo test` est interdit (hook + permissions). Jamais la suite complète en local : c'est le rôle de la CI sur `main`.
+- Maximum 3 exécutions de nextest par session ; au-delà, le hook refuse.
+
+### Tickets & branches
+
+- Source de vérité : beads (voir le bloc Beads ci-dessus).
+  `bd ready` → `bd update --status in_progress` → travail → `bd close --reason "<résumé>"`.
+- Une branche `claude/<id>` par ticket, dans un worktree isolé. Merge `--no-ff` dans
+  `main` par l'orchestrateur seulement, puis suppression de la branche et `git worktree prune`.
+- Commits : Conventional Commits, `Refs: <id>` en pied de message.
+- Jamais : `push --force`, `reset --hard`, `clean`, modification directe de `main` depuis un worker.
+
+### Mode journée entière
+
+- `/grind [n]` : l'orchestrateur délègue chaque ticket à l'agent `ticket-worker` et
+  ne garde en contexte que son résumé de 10 lignes. Le Stop hook enchaîne les tickets.
+- `/grind-stop` pour arrêter proprement, `/status` pour le tableau de bord (utile depuis le mobile).
+- Un ticket ambigu → `BLOQUE` avec la cause, on passe au suivant. Ne pas deviner.
+
+### Code
+
+- Erreurs : `thiserror` dans les modules de bibliothèque, `anyhow` uniquement dans
+  `main`/binaires. Pas de `unwrap()` hors tests ; `expect("raison")` seulement si
+  l'invariant est documenté.
+- Pas de `#[allow(clippy::...)]` sans commentaire justificatif.
+- Tests unitaires dans le module (`#[cfg(test)]`), tests d'intégration lents marqués
+  `#[ignore]` et lancés par la CI avec `--run-ignored all`.
+- Voir le skill `rust-projet` pour les conventions détaillées.
+
+## Architecture Overview
+
+_Add a brief overview of your project architecture_
