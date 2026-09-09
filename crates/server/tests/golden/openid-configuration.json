@@ -18,11 +18,11 @@
     "acr",
     "amr",
     "azp",
+    "at_hash",
     "sid",
-    "name",
-    "preferred_username",
     "email",
-    "email_verified"
+    "email_verified",
+    "updated_at"
   ],
   "code_challenge_methods_supported": [
     "S256"
