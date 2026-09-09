@@ -17,6 +17,7 @@ libfuzzer-sys = "0.4"
 # `derive(Arbitrary)`, so a target can take a structured input rather than
 # spending its budget teaching a byte string to be JSON.
 arbitrary = { version = "1", features = ["derive"] }
+asterius-admin-api = { path = "../crates/admin-api" }
 asterius-domain = { path = "../crates/domain" }
 asterius-jose = { path = "../crates/jose" }
 asterius-oidc = { path = "../crates/oidc" }
@@ -44,6 +45,27 @@ url = "2"
 [[bin]]
 name = "access_token_claims"
 path = "fuzz_targets/access_token_claims.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admin_cursor"
+path = "fuzz_targets/admin_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admin_fetch_metadata"
+path = "fuzz_targets/admin_fetch_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "admin_idempotency_key"
+path = "fuzz_targets/admin_idempotency_key.rs"
 test = false
 doc = false
 bench = false

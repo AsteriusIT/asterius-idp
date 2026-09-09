@@ -31,7 +31,7 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 
 const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
-const USAGE: &str = "usage: asterius [--config <path>] [--config-reference]\n       \
+const USAGE: &str = "usage: asterius [--config <path>] [--config-reference] [--admin-openapi]\n       \
                      asterius rewrap-kek (--new-kek-file <path> | --new-kek-env <var>) \
                      [--config <path>]";
 
@@ -106,15 +106,12 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         bootstrap_tenants(&repository, &config).await?;
         bootstrap_admin(&store, &kek, config.admin.as_ref()).await?;
 
-        let directory = TenantDirectory::new(Arc::new(repository));
-        let tenant_state = TenantState::new(directory, &config.server);
-        let operations = OperationalRoutes {
-            health: HealthState {
-                store: store.clone(),
-                features: Arc::new(config.features.enabled().map(Feature::as_str).collect()),
-            },
-            metrics,
-        };
+        // One `dyn TenantRepository` for the process, and it is
+        // `ProvisionedTenants`: see `admin_routes` for why that matters.
+        let tenants: Arc<dyn asterius_domain::ports::TenantRepository> = Arc::new(repository);
+        let directory = TenantDirectory::new(Arc::clone(&tenants));
+        let tenant_state = TenantState::new(directory.clone(), &config.server);
+        let operations = operational_routes(&store, &config, metrics);
 
         let signer = prepare_signer(&keys);
 
@@ -185,8 +182,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 signer,
                 dpop,
             })),
-        })
-        .fallback(not_found);
+        });
+
+        let routes = routes
+            .merge(admin_routes(&store, &tenants, directory))
+            .fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
 
         let workers = spawn_workers(
@@ -206,6 +206,61 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         workers.stop().await;
         served
     })
+}
+
+/// The process-level endpoints: `/healthz`, `/readyz` and `/metrics`.
+///
+/// They describe the process rather than a tenant, which is why `app` mounts
+/// them outside tenant resolution — a readiness probe that 404s because the
+/// tenant directory cannot load would report the opposite of the truth.
+fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> OperationalRoutes {
+    OperationalRoutes {
+        health: HealthState {
+            store: store.clone(),
+            features: Arc::new(config.features.enabled().map(Feature::as_str).collect()),
+        },
+        metrics,
+    }
+}
+
+/// The admin API (`ast-f7m.1`), ready to merge into the tenanted router.
+///
+/// Merged into the *tenanted* router rather than mounted beside it, because an
+/// administrator's session is a tenant's session: ADR-0010 keeps
+/// `Session::tenant` non-optional, so "which tenant's sessions do I look this
+/// cookie up in" must be answered before a handler runs. A deployment admin
+/// therefore reaches the API at the reserved tenant's issuer, which is where
+/// their session lives.
+///
+/// `tenants` is the process's one `dyn TenantRepository`, which is
+/// `ProvisionedTenants`: a tenant created through this API gets its signing
+/// keys in the same step, exactly like one declared in the configuration file
+/// (`ast-qa3`).
+///
+/// The client-address layer is applied to these routes only. It copies the
+/// address this crate resolved into the extension the admin API's limiter
+/// reads, and nothing else needs it.
+fn admin_routes(
+    store: &Store,
+    tenants: &Arc<dyn asterius_domain::ports::TenantRepository>,
+    directory: TenantDirectory,
+) -> axum::Router {
+    asterius_admin_api::AdminApi::new(&asterius_admin_api::AdminState {
+        backend: Arc::new(asterius_server::admin::Deployment::new(
+            store.clone(),
+            Arc::clone(tenants),
+            directory,
+        )),
+        // `ast-a05.8` mints the tokens an automation caller would present.
+        // Until it lands the mode answers 401 rather than accepting something
+        // nothing verified.
+        tokens: None,
+        rate_limit: asterius_admin_api::throttle::DEFAULT_LIMIT,
+    })
+    .into_router()
+    .layer(axum::middleware::from_fn(
+        asterius_server::admin::client_address_layer,
+    ))
 }
 
 /// The key store, and the tenant repository the whole process holds.
@@ -479,6 +534,17 @@ impl Invocation {
                 // same build that defines the schema it describes.
                 Some("--config-reference") => {
                     print!("{}", asterius_server::config_reference::render());
+                    std::process::exit(0);
+                }
+                // Prints docs/admin-api-openapi.json and exits, behind a flag
+                // on this binary for the same reason: the document is
+                // generated from the admin API's route registry, so only the
+                // build that owns the registry can produce it. A document
+                // maintained beside the code is `ast-iko` waiting to happen —
+                // there, discovery advertised response modes the server does
+                // not implement.
+                Some("--admin-openapi") => {
+                    print!("{}", asterius_admin_api::openapi::document());
                     std::process::exit(0);
                 }
                 Some("rewrap-kek") => command = Command::RewrapKek(KekSource::Env(String::new())),

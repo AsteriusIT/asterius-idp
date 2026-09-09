@@ -895,6 +895,14 @@ pub enum ReplayPurpose {
     ClientAssertion,
     /// A DPoP proof (RFC 9449 §4.3).
     DpopProof,
+    /// An `Idempotency-Key` presented at a `POST` on the admin API.
+    ///
+    /// The same question — "has this identifier been used before, atomically,
+    /// across replicas?" — so the same port rather than a second table with
+    /// its own race. Namespaced by the administrator who chose the value, for
+    /// the reason the `subject` argument documents: a shared namespace would
+    /// let one administrator burn another's keys.
+    AdminIdempotency,
 }
 
 impl ReplayPurpose {
@@ -904,6 +912,7 @@ impl ReplayPurpose {
         match self {
             Self::ClientAssertion => "client_assertion",
             Self::DpopProof => "dpop_proof",
+            Self::AdminIdempotency => "admin_idempotency",
         }
     }
 }

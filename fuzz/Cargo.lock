@@ -96,10 +96,16 @@ name = "asterius-admin-api"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
+ "async-trait",
  "axum",
+ "base64",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror",
+ "time",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -127,6 +133,7 @@ name = "asterius-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "asterius-admin-api",
  "asterius-domain",
  "asterius-jose",
  "asterius-oidc",
