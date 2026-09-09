@@ -161,6 +161,12 @@ and `scripts/check-fuzz-coverage.sh` fails CI if the matching target is missing
 — or if a target exists that nothing claims, which is how a target survives the
 code it used to cover and sits in CI proving nothing.
 
+The inventory of what is covered lives in [`docs/fuzzing.md`](docs/fuzzing.md),
+along with how the pull-request and nightly runs differ and what happens when a
+crash is found. It is generated — `./scripts/gen-fuzzing-doc.sh > docs/fuzzing.md`
+— and the same gate fails when the committed file is stale, because an
+inventory of coverage that has drifted is worse than none.
+
 ```sh
 rustup toolchain install nightly     # libFuzzer needs it
 cargo install cargo-fuzz
