@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{% if signed_out %}Signed out{% else %}Still signed in{% endif %} — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# The neutral end of a logout. It is what a user sees when there is no
+   post-logout redirect to perform — because the relying party was not
+   identified, because it registered no matching `post_logout_redirect_uris`
+   entry (RP-Initiated Logout 1.0 §3), or because it asked for none.
+
+   Neutral is the requirement rather than the fallback: this page is reached by
+   requests this server could not attribute, so it names no client and offers
+   no link that anybody else chose. #}
+{% if signed_out %}
+<h2>You are signed out</h2>
+<p class="muted">Your session with {{ tenant_name }} has ended. Applications you
+were signed in to may still keep sessions of their own.</p>
+{% else %}
+<h2>You are still signed in</h2>
+<p class="muted">Nothing was changed. Your session with {{ tenant_name }}
+continues.</p>
+{% endif %}
+{% endblock %}

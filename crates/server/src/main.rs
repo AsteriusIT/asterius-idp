@@ -148,6 +148,7 @@ fn run() -> Result<(), String> {
                 // loses by it.
                 code_lifetime: code::clamp_lifetime(code::DEFAULT_LIFETIME),
                 kek: Arc::clone(&kek),
+                keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
                 registration: config.registration.clone(),
                 outbound,
                 audit: Arc::new(PgAuditSink::new(store.pool().clone())),

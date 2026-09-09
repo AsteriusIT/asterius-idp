@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Log out — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# Nothing on this page comes from the relying party.
+
+   OIDC RP-Initiated Logout 1.0 §2 has the OP ask the End-User when it cannot
+   verify the request, and this page is that question. The request that reached
+   it carried no `id_token_hint` this server could verify — so any name, logo
+   or URL it also carried is text an attacker chose, and rendering it would
+   make this server the one displaying "Log out of Example Bank?" on behalf of
+   whoever built the link. The only name here is the provider's own. #}
+<h2>Log out of {{ tenant_name }}?</h2>
+<p class="muted">Somebody asked to end your session. We could not confirm who,
+so nothing has changed yet.</p>
+
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+{# Both answers post under the same token. A forged logout is a denial of
+   service, and a forged "stay signed in" would leave alive a session the user
+   asked to end. #}
+<div class="actions">
+  <button type="submit" name="decision" value="logout">Log out</button>
+  <button type="submit" name="decision" value="stay" class="secondary">Stay signed in</button>
+</div>
+</form>
+{% endblock %}

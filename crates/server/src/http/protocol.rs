@@ -16,6 +16,7 @@ use crate::http::authorize::{self, AuthorizeContext};
 use crate::http::client_configuration::{self, ConfigurationContext};
 use crate::http::dpop::DpopEndpoint;
 use crate::http::interaction::{self, InteractionContext};
+use crate::http::logout;
 use crate::http::par::{self, PushContext};
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::token::{self, TokenContext};
@@ -82,6 +83,14 @@ pub struct ClientEndpoints {
     pub code_lifetime: time::Duration,
     /// Opens the tenant's pairwise salt, which every `sub` derives from.
     pub kek: Arc<dyn asterius_jose::Kek>,
+    /// This deployment's keys, for verifying a token *this server* issued.
+    ///
+    /// The end-session endpoint's `id_token_hint` is the caller: it needs the
+    /// public half of a key that may already have been retired (OIDC
+    /// RP-Initiated Logout 1.0 §4), which is what
+    /// [`KeyStore::public_key`](asterius_domain::KeyStore::public_key)
+    /// resolves and what the published JWKS no longer contains.
+    pub keys: Arc<dyn KeyStore>,
     /// Who may register a client, and how.
     pub registration: RegistrationPolicy,
     /// ADR-0006's one outbound path, for the URLs a registration document
@@ -211,6 +220,16 @@ pub fn routes(state: ProtocolState) -> Router {
                     .delete(client_configuration_remove)
                     .with_state(Arc::clone(&endpoints)),
             )
+            // OIDC RP-Initiated Logout 1.0 §2: both verbs, same parameters.
+            // The GET is what a link in a relying party's user interface is,
+            // and the POST is both a form-encoded request and the answer to
+            // this server's own confirmation page.
+            .route(
+                Endpoint::EndSession.path(),
+                get(end_session)
+                    .post(end_session_form)
+                    .with_state(Arc::clone(&endpoints)),
+            )
             .route(
                 "/interaction/{id}",
                 get(interaction_show)
@@ -231,6 +250,7 @@ pub fn routes(state: ProtocolState) -> Router {
                         | Endpoint::Token
                         | Endpoint::Authorization
                         | Endpoint::Registration
+                        | Endpoint::EndSession
                 ))
         {
             continue;
@@ -576,6 +596,90 @@ async fn run_authorize(
             nonce,
         },
         pairs,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// Builds the context both end-session handlers share.
+fn logout_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    sessions: &'a asterius_store_pg::PgSessionRepository,
+    clients: &'a asterius_store_pg::PgClientRepository,
+    nonce: &'a asterius_web::csp::Nonce,
+    request_id: &'a crate::http::request_id::RequestId,
+) -> logout::LogoutContext<'a> {
+    logout::LogoutContext {
+        tenant,
+        sessions,
+        clients,
+        keys: endpoints.keys.as_ref(),
+        audit: endpoints.audit.as_ref(),
+        nonce,
+        request_id: Some(request_id.as_str()),
+    }
+}
+
+/// `GET /logout` — OIDC RP-Initiated Logout 1.0 §2.
+async fn end_session(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    headers: axum::http::HeaderMap,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    let pairs: Vec<(String, String)> =
+        url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let sessions = scope.sessions();
+    let clients = scope.clients(endpoints.capabilities);
+    logout::show(
+        logout_context(
+            &endpoints,
+            &tenant,
+            &sessions,
+            &clients,
+            &nonce,
+            &request_id,
+        ),
+        &headers,
+        &pairs,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /logout` — the same request, form-encoded, and the confirmation
+/// page's answer.
+async fn end_session_form(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let pairs: Vec<(String, String)> = url::form_urlencoded::parse(&body)
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let sessions = scope.sessions();
+    let clients = scope.clients(endpoints.capabilities);
+    logout::submit(
+        logout_context(
+            &endpoints,
+            &tenant,
+            &sessions,
+            &clients,
+            &nonce,
+            &request_id,
+        ),
+        &headers,
+        &pairs,
         time::OffsetDateTime::now_utc(),
     )
     .await
