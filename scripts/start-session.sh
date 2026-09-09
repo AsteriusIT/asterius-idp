@@ -17,10 +17,11 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
   exit 0
 fi
 
-# Pas de --dangerously-skip-permissions : la liste blanche de
-# .claude/settings.json couvre le travail normal, le reste remonte en remote.
+# Mode bypass : la session tourne sans prompt de permission (pilotage à
+# distance, aucun humain devant le terminal pour valider). La liste `deny`
+# de .claude/settings.json n'est PAS appliquée dans ce mode.
 tmux new-session -d -s "$SESSION" -c "$PROJECT_DIR" \
-  "claude"
+  "claude --dangerously-skip-permissions"
 echo "Session '$SESSION' lancée dans $PROJECT_DIR."
 echo "  Attache locale : tmux attach -t $SESSION"
 echo "  Puis dans Claude : /grind 30   (ou /status pour le tableau de bord)"

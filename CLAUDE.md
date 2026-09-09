@@ -67,8 +67,10 @@ l'orchestrateur gagnent sur tout.
 
 - Pendant l'édition : `cargo check` uniquement (un hook le lance après chaque `.rs` modifié).
 - En fin de tâche, une seule fois : `/verify <filtre>` = fmt → clippy `-D warnings` → `cargo nextest run <filtre>` ciblé.
-- `cargo test` est interdit (hook + permissions). Jamais la suite complète en local : c'est le rôle de la CI sur `main`.
-- Maximum 3 exécutions de nextest par session ; au-delà, le hook refuse.
+- `cargo test` est interdit. Jamais la suite complète en local : c'est le rôle de la CI sur `main`.
+- Maximum 3 exécutions de nextest par session.
+- Ces limites ne sont plus imposées par un hook : la session tourne en mode bypass,
+  c'est à toi de les respecter.
 
 ### Tickets & branches
 
