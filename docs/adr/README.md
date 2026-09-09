@@ -17,4 +17,5 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0006](0006-outbound-fetches-of-client-supplied-urls.md) | How this server dereferences a URL a client chose | Accepted |
 | [0007](0007-webauthn-without-webauthn-rs.md) | WebAuthn relying-party verification is written here, not taken from webauthn-rs | Accepted |
 | [0008](0008-the-pairwise-salt-is-not-cached.md) | The pairwise salt is decrypted per mint and not cached | Accepted |
-| [0009](0009-the-admin-console-is-a-first-party-same-origin-app.md) | The admin console is a first-party same-origin app, not an OAuth client | Proposed |
+| [0009](0009-the-admin-console-is-a-first-party-same-origin-app.md) | The admin console is a first-party same-origin app, not an OAuth client | Accepted |
+| [0010](0010-deployment-admins-live-in-a-reserved-tenant.md) | Deployment admins are users of a reserved tenant | Accepted |

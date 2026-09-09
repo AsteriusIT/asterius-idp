@@ -12,6 +12,21 @@
 //! can rewrite the whole table can rewrite the whole chain. What it removes is
 //! the quiet edit — changing one row and hoping nobody recomputes.
 //!
+//! # A record the reader cannot parse is still an authentic record
+//!
+//! `ast-ju2` closed the door on claim names that collide with a `serde_json`
+//! sentinel, and `ast-dxh` can find rows written before it that carry one.
+//! Such a row is *unparseable*, not *tampered*: its hash is correct, the chain
+//! through it verifies, and it is exactly what the server wrote.
+//!
+//! So the record is never rewritten (`ast-1p1`). Repairing it would break a
+//! chain that is currently sound, in exchange for readability of one row — and
+//! the database refuses `UPDATE` and `DELETE` here precisely so that no code
+//! path can make that trade by accident. A reader that meets a record it
+//! cannot deserialise reports it as opaque, showing its hash and its position,
+//! and carries on: one unreadable row must not cost the readability of the
+//! trail around it.
+//!
 //! # The encoding is the security property
 //!
 //! A hash is only as good as what goes into it. Serialising to JSON and hashing

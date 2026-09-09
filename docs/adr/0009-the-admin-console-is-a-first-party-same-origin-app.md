@@ -1,6 +1,6 @@
 # ADR-0009: The admin console is a first-party same-origin app, not an OAuth client
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-09
 - **Bead:** ast-f7m.2
 - **Deciders:** Quentin RODIC
@@ -125,6 +125,13 @@ deliberately not the first — it is `Lax` rather than `Strict` for the reason
 `session.rs` documents (a top-level navigation back from a relying party is how
 a user arrives), so it does not protect a top-level `GET`, and every
 `/admin/api` route that changes state must therefore refuse `GET`.
+
+That refusal is **structural, not editorial**. `ast-f7m.3` builds it into the
+router — a state-changing route cannot be mounted on `GET` — and a test fails
+if one ever is. A rule that lives only in this document is a rule a reviewer
+has to remember at the moment they are least likely to; `ast-t9k` records the
+same lesson about the logout ordering, where a guarantee described as
+type-enforced turned out to rest on one caller staying private.
 
 The alternatives considered:
 
