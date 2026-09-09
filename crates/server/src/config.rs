@@ -1893,7 +1893,9 @@ mod tests {
         // Assert
         assert_eq!(config.tenants[0].refresh, RefreshPolicy::default());
         assert!(!config.tenants[0].refresh.rotates());
-        assert!(config.tenants[0].refresh.bind_to_dpop_key);
+        // RFC 9449 §5: a confidential client's refresh token is not pinned to
+        // the proof key, and every client here is confidential.
+        assert!(!config.tenants[0].refresh.bind_to_dpop_key);
     }
 
     #[test]

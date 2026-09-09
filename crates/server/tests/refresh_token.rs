@@ -27,19 +27,20 @@ use asterius_domain::entities::tenant::{RefreshPolicy, Rotation};
 use asterius_domain::entities::user::{User, UserStatus};
 use asterius_domain::ports::{SessionRepository, TenantRepository};
 use asterius_domain::{
-    Capabilities, Client, ClientId, ClientRegistration, ClientStatus, Grant, GrantId, Issuer,
-    KeyStore, Kid, RevocationReason, SubjectId, Tenant, TenantId, TenantStatus, UserId,
+    Capabilities, Client, ClientId, ClientRegistration, ClientStatus, CodeBinding, Grant, GrantId,
+    Issuer, KeyStore, Kid, RevocationReason, SubjectId, Tenant, TenantId, TenantStatus, UserId,
 };
 use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
 use asterius_oidc::refresh::MintedRefreshToken;
+use asterius_server::http::authorization_code::AuthorizationCode;
 use asterius_server::http::refresh::RefreshToken;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
 use asterius_server::signing::CachedSigner;
 use asterius_store_pg::{
-    NewRefreshToken, PgAuditSink, PgGrantRepository, PgRefreshTokenRepository, PgSessionRepository,
-    PgTenantRepository, PgUserRepository, Store, TenantKeyStore,
+    NewRefreshToken, PgAuditSink, PgCodeRepository, PgGrantRepository, PgRefreshTokenRepository,
+    PgSessionRepository, PgTenantRepository, PgUserRepository, Store, TenantKeyStore,
 };
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -202,6 +203,15 @@ impl Fixture {
 
     /// A user, the session they authenticated in, and a grant naming both.
     async fn grant(&self, scopes: &[&str]) -> (Grant, Session) {
+        self.grant_claimed(scopes, true).await
+    }
+
+    /// The same, with `claimed_at` left as the consent screen leaves it.
+    ///
+    /// An unclaimed grant is what the authorization endpoint writes; the code
+    /// redemption is what stamps it. A test that seeds the stamp is a test
+    /// that cannot see the redemption failing to write it.
+    async fn grant_claimed(&self, scopes: &[&str], claimed: bool) -> (Grant, Session) {
         let user = UserId::generate();
         let user_id = *user.as_uuid();
         PgUserRepository::new(
@@ -259,7 +269,7 @@ impl Fixture {
             // Claimed at the code redemption that produced this refresh token.
             // A `Pending` grant is one nobody has taken a credential from, and
             // a refresh token is a credential.
-            claimed_at: Some(self.now),
+            claimed_at: claimed.then_some(self.now),
         };
         self.grants().create(&grant).await.expect("store the grant");
         (grant, session)
@@ -305,6 +315,74 @@ impl Fixture {
         minted.expose().to_owned()
     }
 
+    /// Mints a refresh token the way a client actually gets one: by redeeming
+    /// an authorization code at the real token endpoint.
+    ///
+    /// Returns the whole token response, so a caller can assert on the value
+    /// it hands to the client rather than on a value a test wrote itself.
+    async fn refresh_token_from_a_code_redemption(
+        &self,
+        client: &Client,
+        grant: &Grant,
+        jkt: &Kid,
+    ) -> (StatusCode, Value) {
+        let codes = PgCodeRepository::new(self.store.pool().clone(), self.tenant.id.clone());
+        let minted = asterius_oidc::code::MintedCode::generate();
+        codes
+            .issue(
+                minted.digest(),
+                &CodeBinding {
+                    client_id: client.id.as_str().to_owned(),
+                    grant_id: grant.id.clone(),
+                    // RFC 7636 Appendix B's published pair, as in
+                    // `authorization_code.rs`.
+                    code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".to_owned(),
+                    redirect_uri: REDIRECT.to_owned(),
+                    nonce: Some("n-0S6_WzA2Mj".to_owned()),
+                    // RFC 9449 §10: the authorization request pinned the key,
+                    // which is what the conformance suite's client does.
+                    dpop_jkt: Some(jkt.as_str().to_owned()),
+                    expires_at: self.now + Duration::seconds(60),
+                },
+                self.now,
+            )
+            .await
+            .expect("issue the code");
+
+        let grants = self.grants();
+        let refresh_tokens = self.refresh_tokens();
+        let sessions = self.sessions();
+        let users = PgUserRepository::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+            Arc::clone(&self.kek),
+        );
+        let handler = AuthorizationCode {
+            codes: &codes,
+            grants: &grants,
+            refresh_tokens: &refresh_tokens,
+            sessions: &sessions,
+            users: &users,
+            signer: self.signer.as_ref(),
+            proof_key: Some(jkt),
+            now: self.now,
+        };
+        self.post(
+            client,
+            &handler,
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", minted.expose()),
+                ("redirect_uri", REDIRECT),
+                (
+                    "code_verifier",
+                    "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+                ),
+            ],
+        )
+        .await
+    }
+
     /// Runs a token request through the real endpoint and the real handler.
     async fn refresh(
         &self,
@@ -330,7 +408,22 @@ impl Fixture {
             proof_key,
             now: self.now,
         };
-        let handlers: [&dyn GrantHandler; 1] = [&handler];
+        self.post(client, &handler, pairs).await
+    }
+
+    /// Posts one form to the real token endpoint, with one grant handler
+    /// registered.
+    ///
+    /// Shared by the two grants this file drives: `authorization_code`, which
+    /// is where a refresh token comes from, and `refresh_token`, which is
+    /// where it goes.
+    async fn post(
+        &self,
+        client: &Client,
+        handler: &dyn GrantHandler,
+        pairs: &[(&str, &str)],
+    ) -> (StatusCode, Value) {
+        let handlers: [&dyn GrantHandler; 1] = [handler];
 
         let clients = self
             .store
@@ -478,6 +571,46 @@ fn discovery_advertises_the_grant_this_file_implements() {
         advertised.contains(&"refresh_token"),
         "discovery must advertise the grant: {advertised:?}"
     );
+}
+
+// ---- The seam: where a refresh token actually comes from -----------------
+
+db_test! {
+    /// The whole life of a refresh token, through the two real handlers: an
+    /// authorization code mints it, and the refresh grant redeems it, with one
+    /// DPoP key throughout.
+    ///
+    /// This is the case the OIDF suite ran first and this file never did
+    /// (`ast-1h1`). Every other test here seeds its refresh token with
+    /// `Fixture::issue`, so nothing asserted that the row the *code* redemption
+    /// writes is a row the *refresh* redemption accepts.
+    async fn a_refresh_token_minted_by_a_code_redemption_can_be_redeemed(fixture) {
+        // Arrange
+        let client = fixture.client(CLIENT).await;
+        let jkt = thumbprint(1);
+        // Unclaimed, as the authorization endpoint leaves it.
+        let (grant, _) = fixture.grant_claimed(&["openid", "offline_access"], false).await;
+
+        // Act
+        let (issued, tokens) = fixture
+            .refresh_token_from_a_code_redemption(&client, &grant, &jkt)
+            .await;
+        let refresh_token = tokens["refresh_token"]
+            .as_str()
+            .expect("an offline_access grant earns a refresh token")
+            .to_owned();
+        let (status, body) = fixture.present(&client, &refresh_token, &jkt).await;
+
+        // Assert
+        assert_eq!(issued, StatusCode::OK, "{tokens}");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the first refresh of a freshly minted token must be accepted: {body}"
+        );
+        assert_eq!(body["refresh_token"], refresh_token.as_str());
+        fixture.tear_down().await;
+    }
 }
 
 // ---- No rotation: the default, and the FAPI 2.0 requirement ---------------
@@ -651,8 +784,13 @@ db_test! {
 
 db_test! {
     /// The tenant option, doing the thing it exists for: the same token, the
-    /// same client, a different key, and no tokens.
-    async fn a_bound_token_presented_with_another_key_is_refused(fixture) {
+    /// same client, a different key, and no tokens. Opt-in, because the
+    /// default is RFC 9449 §5's rule for a confidential client — see the test
+    /// below, which is the one the OIDF suite runs.
+    async fn a_bound_token_presented_with_another_key_is_refused(fixture, RefreshPolicy {
+        bind_to_dpop_key: true,
+        ..RefreshPolicy::default()
+    }) {
         let client = fixture.client(CLIENT).await;
         let issued_to = thumbprint(1);
         let (grant, _) = fixture.grant(&["openid", "offline_access"]).await;
@@ -667,13 +805,17 @@ db_test! {
 }
 
 db_test! {
-    /// With the option off — RFC 9449 §5's relaxation for a confidential
-    /// client — another key is accepted, and the new access token is bound to
-    /// *that* key rather than to the one the refresh token remembers.
-    async fn an_unbound_tenant_binds_the_new_token_to_the_presented_key(fixture, RefreshPolicy {
-        bind_to_dpop_key: false,
-        ..RefreshPolicy::default()
-    }) {
+    /// RFC 9449 §5, under the *default* policy: a refresh token issued to a
+    /// confidential client — which every client here is — is not bound to the
+    /// proof key, so a new key is accepted and the new access token is bound
+    /// to *that* key rather than to the one the refresh token remembers.
+    ///
+    /// The regression test for `ast-1h1`. The OIDF module
+    /// `fapi2-security-profile-final-refresh-token` mints a fresh DPoP key for
+    /// the refresh request on purpose — "we generate a new key here, to check
+    /// the server handles that correctly" — and this server refused it with
+    /// `invalid_grant`, because the default pinned the key it was issued to.
+    async fn the_default_policy_lets_a_client_refresh_with_a_new_dpop_key(fixture) {
         let client = fixture.client(CLIENT).await;
         let issued_to = thumbprint(1);
         let presented = thumbprint(2);
@@ -980,11 +1122,12 @@ db_test! {
         use asterius_domain::audit::{EventType, Outcome};
 
         let client = fixture.client(CLIENT).await;
-        let jkt = thumbprint(1);
-        let (grant, _) = fixture.grant(&["openid", "offline_access"]).await;
-        let refresh_token = fixture.issue(&grant, &jkt, &["openid", "offline_access"]).await;
+        // Well formed and never issued, which is what a guess looks like.
+        let guessed = MintedRefreshToken::generate();
 
-        let (status, _) = fixture.present(&client, &refresh_token, &thumbprint(9)).await;
+        let (status, _) = fixture
+            .present(&client, guessed.expose(), &thumbprint(1))
+            .await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let events = fixture.audit.events();

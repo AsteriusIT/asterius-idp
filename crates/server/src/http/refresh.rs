@@ -5,16 +5,19 @@
 //! runs with nobody present: the browser is gone, the consent screen was weeks
 //! ago, and what stands in their place is this file.
 //!
-//! # Three things must be true, not one
+//! # Two things must be true, and a third a tenant may ask for
 //!
 //! FAPI 2.0 SP §5.3.2.1 requires the client to authenticate *and* the request
-//! to carry a DPoP proof, and this deployment adds the third: the tenant's
-//! `bind_refresh_to_dpop_key` pins the token to the key it was issued to. So a
-//! stolen refresh token is worth nothing without the client's credentials, and
-//! with them it is still worth nothing without the client's DPoP private key.
-//! That is RFC 9700 §4.14's "sender-constrained or rotation" answered with the
-//! first option, which is the one that does not break a client that loses a
-//! response.
+//! to carry a DPoP proof, so a stolen refresh token is worth nothing without
+//! the client's credentials. That is RFC 9700 §4.14's "sender-constrained or
+//! rotation" answered with the first option, which is the one that does not
+//! break a client that loses a response.
+//!
+//! The third — pinning the token to the DPoP key it was *issued* to — is the
+//! tenant's `bind_to_dpop_key`, and it is off by default because RFC 9449 §5
+//! says a refresh token issued to a confidential client is not bound to the
+//! proof key, every client here being confidential. `check_key_binding` below
+//! is that rule and the option that overrides it.
 //!
 //! # Why the token does not rotate
 //!
@@ -372,18 +375,26 @@ impl RefreshToken<'_> {
         Ok((access_token.as_str().to_owned(), id_token))
     }
 
-    /// RFC 9449 §5, and the tenant's `bind_refresh_to_dpop_key`.
+    /// RFC 9449 §5, and the tenant's `bind_to_dpop_key`.
     ///
-    /// The specification requires the binding for public clients and leaves it
-    /// open for confidential ones, which have authenticated anyway. The tenant
-    /// option is which of the two readings this deployment takes, and the
-    /// strict one is the default.
+    /// §5 binds a refresh token to the proof key when it is issued to a
+    /// *public* client, and says that tokens "issued to confidential clients
+    /// are not bound to the DPoP proof public key because they are already
+    /// sender-constrained with a different existing mechanism". Every client
+    /// here is confidential — `TokenEndpointAuthMethod` has no `none` — so the
+    /// default is off and this check does not run: the client authenticated,
+    /// and the key it proves is the key its *new* access token is bound to.
     ///
-    /// When the option is off, the check is skipped and the *new* access token
-    /// is bound to the key presented with this request rather than to the one
-    /// the refresh token remembers — which is §5's own rule for a confidential
-    /// client, and is what lets a client roll its DPoP key without losing its
-    /// authorizations.
+    /// That is what lets a client roll its DPoP key without losing its
+    /// authorizations, and it is not a hypothetical: the OpenID Foundation's
+    /// `fapi2-security-profile-final-refresh-token` module mints a fresh DPoP
+    /// key for the refresh request precisely to check that a confidential
+    /// client may. `ast-1h1` is the first run of that module, where this server
+    /// refused it with `invalid_grant`.
+    ///
+    /// A tenant that turns the option on gets the stricter reading — the token
+    /// is pinned to the key it was issued to — and pays for it with a client
+    /// that may never roll that key.
     fn check_key_binding(
         policy: &RefreshPolicy,
         record: &RefreshTokenRecord,
