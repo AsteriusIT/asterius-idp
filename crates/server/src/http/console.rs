@@ -37,6 +37,7 @@
 //! opened in one tenant is not a session in another, and this module refuses
 //! one that names a different tenant even if a lookup ever handed it over.
 
+use crate::http::redirect::SeeOther;
 use asterius_domain::entities::session;
 use asterius_domain::{
     FirstPartyDestination, InteractionRepository, Session, SessionRepository, Tenant,
@@ -81,7 +82,8 @@ pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
 /// The assets come from `asterius_admin_api`, which owns the bundle; the entry
 /// document is mounted here, because deciding whether this visitor may see it
 /// needs a session repository and therefore a tenant — and the tenant is what
-/// the layer above has just resolved.
+/// the layer above has just resolved. The redirect from `/admin` to `/admin/`
+/// is mounted here too, for the reason [`slashless`] gives.
 ///
 /// Only `GET` is mounted, on all three. Nothing under `/admin/` changes
 /// anything: the console's writes go to `/admin/api`, which has the
@@ -89,10 +91,46 @@ pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
 /// that could be reached by a top-level navigation is exactly what that ADR
 /// forbids.
 pub fn routes(store: asterius_store_pg::Store, bundle: asterius_admin_api::Bundle) -> Router {
-    asterius_admin_api::console::assets(bundle).route(
-        asterius_admin_api::console::INDEX_PATH,
-        axum::routing::get(index).with_state(ConsoleState { store, bundle }),
+    asterius_admin_api::console::assets(bundle)
+        .merge(slashless())
+        .route(
+            asterius_admin_api::console::INDEX_PATH,
+            axum::routing::get(index).with_state(ConsoleState { store, bundle }),
+        )
+}
+
+/// `/admin` without its trailing slash — a mistake a person makes by typing.
+///
+/// A redirect rather than a second copy of the document, because the console's
+/// asset URLs are relative and only resolve inside `/admin/`. The target is
+/// relative too, so that the `/t/{id}` prefix the tenancy layer has already
+/// stripped — and which no handler below it can see — survives the trip.
+///
+/// It is mounted here, and not beside the assets in
+/// `asterius_admin_api::console`, for the reason [`crate::http::redirect`]
+/// gives: every redirect this codebase emits is a 303 built by [`SeeOther`],
+/// `admin-api` may not depend on this crate (`scripts/check-layering.sh`), and
+/// a 308 open-coded on the other side of that line is exactly what `ast-a8h`
+/// had to undo. Only `GET` is mounted, so a state-changing verb meets the same
+/// 405 here as on every other console route.
+fn slashless() -> Router {
+    Router::new().route(
+        asterius_admin_api::console::BASE_PATH,
+        axum::routing::get(slashless_redirect),
     )
+}
+
+/// Where `/admin` sends the browser: the entry document, named relatively.
+const SLASHLESS_TARGET: &str = "admin/";
+
+/// `GET /admin` — the redirect to `/admin/`.
+async fn slashless_redirect() -> Response {
+    let Ok(redirect) = SeeOther::to(SLASHLESS_TARGET) else {
+        // Unreachable: the target is a compiled-in ASCII path.
+        tracing::error!("the console redirect target is not a usable Location");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    redirect.into_response()
 }
 
 /// What the mounted entry document holds.
@@ -234,9 +272,7 @@ async fn begin(context: &ConsoleContext<'_>, now: OffsetDateTime) -> Response {
     // Relative, for the reason `location_of` gives: the tenant prefix is not
     // visible from here, and `interaction/{id}` resolved against `/t/x/admin/`
     // is this tenant's interaction page.
-    let Ok(redirect) =
-        crate::http::redirect::SeeOther::to(&format!("../interaction/{}", id.expose()))
-    else {
+    let Ok(redirect) = SeeOther::to(&format!("../interaction/{}", id.expose())) else {
         // Unreachable: an interaction id is base64url.
         tracing::error!(tenant = %context.tenant.id, "an interaction id is not a usable Location");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -254,6 +290,71 @@ async fn begin(context: &ConsoleContext<'_>, now: OffsetDateTime) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt as _;
+
+    /// One request against the slash-less route, as axum sees it.
+    async fn slashless_request(verb: &str) -> Response {
+        let request = Request::builder()
+            .method(verb)
+            .uri(asterius_admin_api::console::BASE_PATH)
+            .body(Body::empty())
+            .expect("a request");
+        slashless()
+            .oneshot(request)
+            .await
+            .expect("the router answered")
+    }
+
+    /// A typed `/admin` reaches `/admin/`, with the only redirect status this
+    /// codebase allows.
+    #[tokio::test]
+    async fn the_slashless_path_redirects_with_see_other() {
+        // Arrange / Act
+        let response = slashless_request("GET").await;
+
+        // Assert
+        assert_eq!(response.status().as_u16(), 303);
+        assert_eq!(
+            response.headers().get(header::LOCATION).expect("Location"),
+            SLASHLESS_TARGET
+        );
+    }
+
+    /// The target is relative because the tenancy layer strips `/t/{id}`
+    /// before routing: a root-relative `/admin/` would drop the tenant.
+    #[test]
+    fn the_slashless_target_keeps_a_tenant_prefix() {
+        let base = url::Url::parse("https://as.example/t/demo/admin").expect("a url");
+        let resolved = base.join(SLASHLESS_TARGET).expect("a join");
+        assert_eq!(resolved.path(), "/t/demo/admin/");
+
+        let base = url::Url::parse("https://as.example/admin").expect("a url");
+        let resolved = base.join(SLASHLESS_TARGET).expect("a join");
+        assert_eq!(
+            resolved.path(),
+            asterius_admin_api::console::INDEX_PATH,
+            "the slash-less path must land on the entry document"
+        );
+    }
+
+    /// The mutating-verb guard that `asterius_admin_api::console` applies to
+    /// the rest of `/admin` follows the route to its new home. A 405 rather
+    /// than a 404 is the point: it proves the path is still mounted *and* that
+    /// only `GET` answers there, which a 404 would not distinguish from a
+    /// route lost in the move.
+    #[tokio::test]
+    async fn the_slashless_path_refuses_a_state_changing_verb() {
+        for verb in ["POST", "PUT", "DELETE"] {
+            let response = slashless_request(verb).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{verb} /admin"
+            );
+        }
+    }
 
     /// The destination is a variant, and the mapping is total: every variant
     /// has a path, and no path is a URL somebody could have supplied.
