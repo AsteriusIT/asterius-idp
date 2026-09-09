@@ -1465,6 +1465,10 @@ mod tests {
         );
         object.insert("request_object_signing_alg".to_owned(), json!("ES256"));
         object.insert("scope".to_owned(), json!("openid payments accounts"));
+        object.insert(
+            "post_logout_redirect_uris".to_owned(),
+            json!(["https://rp.example/after-logout"]),
+        );
         let before = registration(&before);
 
         // The same client renaming itself and saying nothing else, which is the
@@ -1498,6 +1502,11 @@ mod tests {
         assert!(
             after.scopes.is_empty(),
             "an omitted scope string was preserved"
+        );
+        assert!(!before.post_logout_redirect_uris.is_empty());
+        assert!(
+            after.post_logout_redirect_uris.is_empty(),
+            "an omitted post_logout_redirect_uris list was preserved"
         );
     }
 

@@ -118,7 +118,7 @@ impl PgClientRepository {
         let row = sqlx::query_as!(
             Row,
             "select client_id, client_name, token_endpoint_auth_method, redirect_uris,
-                    grant_types, response_types, scopes, resources, jwks, jwks_uri,
+                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                     id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,
                     request_object_signing_alg, backchannel_authentication_request_signing_alg,
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
@@ -146,7 +146,7 @@ impl PgClientRepository {
         sqlx::query_as!(
             Row,
             "select client_id, client_name, token_endpoint_auth_method, redirect_uris,
-                    grant_types, response_types, scopes, resources, jwks, jwks_uri,
+                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                     id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,
                     request_object_signing_alg, backchannel_authentication_request_signing_alg,
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
@@ -204,9 +204,10 @@ impl PgClientRepository {
                                   backchannel_authentication_request_signing_alg,
                                   dpop_bound_access_tokens,
                                   tls_client_certificate_bound_access_tokens,
-                                  authorization_details_types, use_mtls_endpoint_aliases, status)
+                                  authorization_details_types, use_mtls_endpoint_aliases, status,
+                                  post_logout_redirect_uris)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22)
+                     $18, $19, $20, $21, $22, $23)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  token_endpoint_auth_method = excluded.token_endpoint_auth_method,
@@ -229,7 +230,8 @@ impl PgClientRepository {
                      excluded.tls_client_certificate_bound_access_tokens,
                  authorization_details_types = excluded.authorization_details_types,
                  use_mtls_endpoint_aliases = excluded.use_mtls_endpoint_aliases,
-                 status = excluded.status",
+                 status = excluded.status,
+                 post_logout_redirect_uris = excluded.post_logout_redirect_uris",
             self.tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
@@ -256,6 +258,7 @@ impl PgClientRepository {
             &lists.authorization_details_types,
             registration.use_mtls_endpoint_aliases,
             client.status.as_str(),
+            &lists.post_logout_redirect_uris,
         )
         .execute(&self.pool)
         .await
@@ -324,11 +327,11 @@ impl PgClientRepository {
                                   dpop_bound_access_tokens,
                                   tls_client_certificate_bound_access_tokens,
                                   authorization_details_types, use_mtls_endpoint_aliases, status,
-                                  registration_access_token_hash)
+                                  registration_access_token_hash, post_logout_redirect_uris)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23)
+                     $18, $19, $20, $21, $22, $23, $24)
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
-                       grant_types, response_types, scopes, resources, jwks, jwks_uri,
+                       post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
                        sector_identifier_uri, request_object_signing_alg,
                        backchannel_authentication_request_signing_alg,
@@ -362,6 +365,7 @@ impl PgClientRepository {
             registration.use_mtls_endpoint_aliases,
             client.status.as_str(),
             &registration_access_token[..],
+            &lists.post_logout_redirect_uris,
         )
         .fetch_one(&self.pool)
         .await
@@ -490,10 +494,11 @@ impl PgClientRepository {
                  dpop_bound_access_tokens = $17,
                  tls_client_certificate_bound_access_tokens = $18,
                  authorization_details_types = $19,
-                 use_mtls_endpoint_aliases = $20
+                 use_mtls_endpoint_aliases = $20,
+                 post_logout_redirect_uris = $21
              where tenant_id = $1 and client_id = $2
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
-                       grant_types, response_types, scopes, resources, jwks, jwks_uri,
+                       post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
                        sector_identifier_uri, request_object_signing_alg,
                        backchannel_authentication_request_signing_alg,
@@ -524,6 +529,7 @@ impl PgClientRepository {
             registration.token_binding.is_certificate_bound(),
             &lists.authorization_details_types,
             registration.use_mtls_endpoint_aliases,
+            &lists.post_logout_redirect_uris,
         )
         .fetch_optional(&self.pool)
         .await
@@ -630,6 +636,7 @@ impl PgClientRepository {
 /// `upsert` down to the statement it is really made of.
 struct ListColumns {
     redirect_uris: Vec<String>,
+    post_logout_redirect_uris: Vec<String>,
     grant_types: Vec<String>,
     response_types: Vec<String>,
     scopes: Vec<String>,
@@ -645,6 +652,7 @@ impl ListColumns {
                 .iter()
                 .map(|uri| uri.as_str().to_owned())
                 .collect(),
+            post_logout_redirect_uris: registration.registered_post_logout_redirect_uris(),
             grant_types: registration
                 .grant_types
                 .iter()
@@ -677,6 +685,7 @@ struct Row {
     client_name: String,
     token_endpoint_auth_method: String,
     redirect_uris: Vec<String>,
+    post_logout_redirect_uris: Vec<String>,
     grant_types: Vec<String>,
     response_types: Vec<String>,
     scopes: Vec<String>,
@@ -719,6 +728,7 @@ impl Row {
             client_name: Some(self.client_name),
             token_endpoint_auth_method: Some(self.token_endpoint_auth_method),
             redirect_uris: Some(self.redirect_uris),
+            post_logout_redirect_uris: Some(self.post_logout_redirect_uris),
             grant_types: Some(self.grant_types),
             response_types: Some(self.response_types),
             scope: Some(self.scopes.join(" ")),

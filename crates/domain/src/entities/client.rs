@@ -74,6 +74,18 @@ pub enum ClientMetadataError {
         /// Why, in fixed text. Never contains the URI itself.
         reason: String,
     },
+    /// A post-logout redirect URI was rejected — OIDC RP-Initiated Logout 1.0
+    /// §3.1. It carries the same RFC 7591 §3.2.2 code as its authorization
+    /// counterpart, because it is the same kind of value being refused for the
+    /// same kind of reason, and a client told `invalid_client_metadata` would
+    /// have to guess which member it was.
+    #[error("post_logout_redirect_uris[{index}]: {reason}")]
+    PostLogoutRedirectUri {
+        /// Which entry, counting from zero.
+        index: usize,
+        /// Why, in fixed text. Never contains the URI itself.
+        reason: String,
+    },
 }
 
 impl ClientMetadataError {
@@ -81,7 +93,7 @@ impl ClientMetadataError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::RedirectUri { .. } => "invalid_redirect_uri",
+            Self::RedirectUri { .. } | Self::PostLogoutRedirectUri { .. } => "invalid_redirect_uri",
             _ => "invalid_client_metadata",
         }
     }
@@ -93,6 +105,7 @@ impl ClientMetadataError {
             Self::Malformed { .. } => "<document>",
             Self::Missing { field } | Self::Rejected { field, .. } => field,
             Self::RedirectUri { .. } => "redirect_uris",
+            Self::PostLogoutRedirectUri { .. } => "post_logout_redirect_uris",
         }
     }
 
@@ -773,6 +786,8 @@ pub struct ClientMetadata {
     pub token_endpoint_auth_method: Option<String>,
     /// RFC 7591 §2.
     pub redirect_uris: Option<Vec<String>>,
+    /// OIDC RP-Initiated Logout 1.0 §3.1.
+    pub post_logout_redirect_uris: Option<Vec<String>>,
     /// RFC 7591 §2.
     pub grant_types: Option<Vec<String>>,
     /// RFC 7591 §2.
@@ -826,6 +841,18 @@ pub struct ClientRegistration {
     pub token_endpoint_auth_method: TokenEndpointAuthMethod,
     /// Registered callbacks, in the order registered, compared byte-exactly.
     pub redirect_uris: Vec<RedirectUri>,
+    /// Registered post-logout callbacks (OIDC RP-Initiated Logout 1.0 §3.1),
+    /// in the order registered.
+    ///
+    /// Admissibility is [`RedirectUri::parse`]'s, the same gate the
+    /// authorization callbacks pass — these are redirect targets too, and a
+    /// second, laxer definition of an acceptable one is exactly what ADR-0005
+    /// exists to prevent. Equivalence, however, is **not**
+    /// [`RedirectUri::is_registered`]: see
+    /// [`accepts_post_logout_redirect_uri`].
+    ///
+    /// [`accepts_post_logout_redirect_uri`]: ClientRegistration::accepts_post_logout_redirect_uri
+    pub post_logout_redirect_uris: Vec<RedirectUri>,
     /// What the client may ask for at the token endpoint.
     pub grant_types: BTreeSet<GrantType>,
     /// Scopes the client may request, from RFC 7591 §2's `scope` string.
@@ -870,6 +897,8 @@ impl ClientRegistration {
 
     /// The most redirect URIs one client may register.
     pub const MAX_REDIRECT_URIS: usize = 32;
+    /// The most post-logout redirect URIs one client may register.
+    pub const MAX_POST_LOGOUT_REDIRECT_URIS: usize = 32;
     /// The most scopes one client may register.
     pub const MAX_SCOPES: usize = 64;
     /// The longest a single scope token may be.
@@ -1005,6 +1034,33 @@ impl ClientRegistration {
         RedirectUri::is_registered(&self.redirect_uris, presented, self.application_type)
     }
 
+    /// The registered `post_logout_redirect_uris`, as the owned strings §3
+    /// compares.
+    ///
+    /// The end-session endpoint matches "byte for byte", with no exception at
+    /// all — not even RFC 8252 §7.3's loopback port, which belongs to the
+    /// authorization callback a native client cannot predict the port of and
+    /// not to a logout link the same client writes down at build time. Handing
+    /// out `&str` rather than `&[RedirectUri]` is what keeps that true: the
+    /// caller cannot reach [`RedirectUri::is_registered`] and pick up the
+    /// exception by accident.
+    #[must_use]
+    pub fn registered_post_logout_redirect_uris(&self) -> Vec<String> {
+        self.post_logout_redirect_uris
+            .iter()
+            .map(|uri| uri.as_str().to_owned())
+            .collect()
+    }
+
+    /// Whether `presented` is one of this client's registered post-logout
+    /// redirect URIs — OIDC RP-Initiated Logout 1.0 §3, exact match.
+    #[must_use]
+    pub fn accepts_post_logout_redirect_uri(&self, presented: &str) -> bool {
+        self.post_logout_redirect_uris
+            .iter()
+            .any(|uri| uri.as_str() == presented)
+    }
+
     /// The `response_types` this registration implies.
     ///
     /// Derived, never stored as an independent fact. RFC 7591 §2.1 ties
@@ -1051,6 +1107,7 @@ impl ClientMetadata {
         let grant_types = self.grant_types(capabilities)?;
         self.check_response_types(&grant_types)?;
         let redirect_uris = self.redirect_uris(application_type, &grant_types)?;
+        let post_logout_redirect_uris = self.post_logout_redirect_uris(application_type)?;
         let jwks = self.jwks()?;
         let (subject_type, sector_identifier_uri) = self.subject(&redirect_uris)?;
         let token_binding = self.token_binding(capabilities)?;
@@ -1063,6 +1120,7 @@ impl ClientMetadata {
             application_type,
             token_endpoint_auth_method,
             redirect_uris,
+            post_logout_redirect_uris,
             grant_types,
             scopes: self.scopes()?,
             resources: BTreeSet::new(),
@@ -1293,6 +1351,64 @@ impl ClientMetadata {
             // second, unreviewed spelling of one callback in the set.
             if RedirectUri::is_registered(&uris, uri.as_str(), application_type) {
                 return Err(ClientMetadataError::RedirectUri {
+                    index,
+                    reason: "duplicates an earlier entry".to_owned(),
+                });
+            }
+            uris.push(uri);
+        }
+        Ok(uris)
+    }
+
+    /// OIDC RP-Initiated Logout 1.0 §3.1 `post_logout_redirect_uris`.
+    ///
+    /// These are redirect targets, and the end-session endpoint sends a browser
+    /// to one on a request that carries no client authentication at all — so
+    /// they go through [`RedirectUri::parse`], the same gate the authorization
+    /// callbacks pass. Writing a second, gentler check here is the mistake
+    /// ADR-0005 exists to forbid: a `post_logout_redirect_uri` with a fragment,
+    /// with userinfo in its authority, over plain `http`, or in a spelling no
+    /// URL parser produces is exactly as dangerous after a logout as before an
+    /// authorization, and rather more likely to be looked at less closely.
+    ///
+    /// Unlike `redirect_uris` this member is never *required*: §3.1 makes it
+    /// optional, and a client that registers none simply cannot be redirected
+    /// after a logout.
+    fn post_logout_redirect_uris(
+        &self,
+        application_type: ApplicationType,
+    ) -> Result<Vec<RedirectUri>, ClientMetadataError> {
+        let raw = self
+            .post_logout_redirect_uris
+            .as_deref()
+            .unwrap_or_default();
+        if raw.is_empty() {
+            return Ok(Vec::new());
+        }
+        if raw.len() > ClientRegistration::MAX_POST_LOGOUT_REDIRECT_URIS {
+            return Err(ClientMetadataError::rejected(
+                "post_logout_redirect_uris",
+                format!(
+                    "must contain at most {} entries",
+                    ClientRegistration::MAX_POST_LOGOUT_REDIRECT_URIS
+                ),
+            ));
+        }
+
+        let mut uris: Vec<RedirectUri> = Vec::with_capacity(raw.len());
+        for (index, entry) in raw.iter().enumerate() {
+            let uri = RedirectUri::parse(entry, application_type).map_err(|error| {
+                ClientMetadataError::PostLogoutRedirectUri {
+                    index,
+                    reason: error.to_string(),
+                }
+            })?;
+            // Byte equality, not `RedirectUri::is_registered`: §3's comparison
+            // has no loopback-port exception, so two native entries differing
+            // only in their port really are two distinct registrations here,
+            // and refusing the second would refuse something usable.
+            if uris.iter().any(|earlier| earlier.as_str() == uri.as_str()) {
+                return Err(ClientMetadataError::PostLogoutRedirectUri {
                     index,
                     reason: "duplicates an earlier entry".to_owned(),
                 });
@@ -2056,6 +2172,97 @@ mod tests {
         object.insert("grant_types".to_owned(), json!(["client_credentials"]));
         object.insert("response_types".to_owned(), json!([]));
         assert_eq!(rejection(&document).field(), "redirect_uris");
+    }
+
+    // -----------------------------------------------------------------------
+    // Post-logout redirect URIs (OIDC RP-Initiated Logout 1.0 §3.1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn post_logout_redirect_uris_are_optional_and_default_to_none() {
+        let client = validate(&minimal()).expect("a valid registration");
+
+        assert!(client.post_logout_redirect_uris.is_empty());
+        assert!(!client.accepts_post_logout_redirect_uri("https://rp.example/after-logout"));
+    }
+
+    #[test]
+    fn a_registered_post_logout_redirect_uri_is_kept_byte_for_byte() {
+        let client = validate(&with(
+            "post_logout_redirect_uris",
+            json!(["https://rp.example/after-logout?tenant=demo"]),
+        ))
+        .expect("a valid registration");
+
+        assert_eq!(
+            client.registered_post_logout_redirect_uris(),
+            vec!["https://rp.example/after-logout?tenant=demo".to_owned()]
+        );
+    }
+
+    /// The whole reason these go through [`RedirectUri::parse`]: a post-logout
+    /// target is a redirect target, and the end-session endpoint takes no
+    /// client authentication at all before honouring one.
+    #[test]
+    fn a_post_logout_redirect_uri_faces_the_same_gate_as_a_callback() {
+        for uri in [
+            "http://rp.example/after-logout",
+            "https://rp.example/after-logout#f",
+            "https://user:pw@rp.example/after-logout",
+            "com.example.app:/after-logout",
+            "https://rp.example/a/../after-logout",
+            "not a url",
+            "",
+        ] {
+            let error = rejection(&with("post_logout_redirect_uris", json!([uri])));
+            assert_eq!(error.field(), "post_logout_redirect_uris", "{uri} passed");
+            assert_eq!(error.code(), "invalid_redirect_uri", "{uri}");
+        }
+    }
+
+    #[test]
+    fn post_logout_redirect_uris_are_a_bounded_set_without_repeats() {
+        let repeated = json!([
+            "https://rp.example/after-logout",
+            "https://rp.example/after-logout"
+        ]);
+        assert_eq!(
+            rejection(&with("post_logout_redirect_uris", repeated)).field(),
+            "post_logout_redirect_uris"
+        );
+
+        let too_many: Vec<String> = (0..=ClientRegistration::MAX_POST_LOGOUT_REDIRECT_URIS)
+            .map(|n| format!("https://rp.example/after-logout/{n}"))
+            .collect();
+        assert_eq!(
+            rejection(&with("post_logout_redirect_uris", json!(too_many))).field(),
+            "post_logout_redirect_uris"
+        );
+    }
+
+    /// §3 is an exact match with no exception, so the RFC 8252 §7.3 loopback
+    /// port a native client's *callback* may vary is not varied here.
+    #[test]
+    fn a_native_clients_post_logout_port_does_not_vary() {
+        let mut document = minimal();
+        let object = document.as_object_mut().expect("object");
+        object.insert("application_type".to_owned(), json!("native"));
+        object.insert("redirect_uris".to_owned(), json!(["http://127.0.0.1:1/cb"]));
+        object.insert(
+            "post_logout_redirect_uris".to_owned(),
+            json!(["http://127.0.0.1:51004/after-logout"]),
+        );
+        let client = validate(&document).expect("a valid native registration");
+
+        assert!(client.accepts_post_logout_redirect_uri("http://127.0.0.1:51004/after-logout"));
+        assert!(
+            !client.accepts_post_logout_redirect_uri("http://127.0.0.1:51005/after-logout"),
+            "a different port was treated as registered"
+        );
+        assert!(
+            client.accepts_redirect_uri("http://127.0.0.1:51005/cb"),
+            "the callback keeps its RFC 8252 §7.3 exception"
+        );
     }
 
     // -----------------------------------------------------------------------

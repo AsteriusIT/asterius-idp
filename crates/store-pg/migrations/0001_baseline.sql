@@ -83,6 +83,10 @@ create table clients (
                                        'self_signed_tls_client_auth')),
     -- Exact-match only: no wildcards, no prefixes (FAPI 2.0 SP §5.3.2.1).
     redirect_uris                  text[]      not null default '{}',
+    -- OIDC RP-Initiated Logout 1.0 §3.1. Matched byte for byte by §3, with no
+    -- exception at all — not even the loopback port `redirect_uris` allows a
+    -- native client to vary.
+    post_logout_redirect_uris      text[]      not null default '{}',
     grant_types                    text[]      not null default '{}',
     response_types                 text[]      not null default '{code}',
     scopes                         text[]      not null default '{}',
