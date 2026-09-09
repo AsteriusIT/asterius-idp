@@ -617,6 +617,12 @@ pub(crate) fn client_information(
             .iter()
             .map(asterius_domain::RedirectUri::as_str)
             .collect::<Vec<_>>(),
+        // OIDC RP-Initiated Logout 1.0 §3.1. Always present, empty array
+        // included: a client reading its own registration back has to be able
+        // to tell "I registered none" — which is what makes every logout of
+        // its users end on the neutral page — from "this server does not
+        // implement the member", and an omitted array says the second.
+        "post_logout_redirect_uris": registration.registered_post_logout_redirect_uris(),
         "grant_types": registration
             .grant_types
             .iter()
@@ -931,6 +937,7 @@ mod tests {
         json!({
             "client_name": "Billing",
             "redirect_uris": ["https://rp.example/cb"],
+            "post_logout_redirect_uris": ["https://rp.example/after-logout"],
             "grant_types": ["authorization_code", "refresh_token"],
             "scope": "openid payments",
             "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
@@ -1186,6 +1193,14 @@ mod tests {
         assert_eq!(body["token_endpoint_auth_method"], json!("private_key_jwt"));
         assert_eq!(body["response_types"], json!(["code"]));
         assert_eq!(body["dpop_bound_access_tokens"], json!(true));
+
+        // OIDC RP-Initiated Logout 1.0 §3.1, echoed exactly: this is the set
+        // the end-session endpoint will compare against, so a client has to be
+        // able to read back what it will have to send.
+        assert_eq!(
+            body["post_logout_redirect_uris"],
+            json!(["https://rp.example/after-logout"])
+        );
 
         // FAPI 2.0 SP §5.3.2.1 permits no shared-secret client authentication,
         // so there is no secret — and RFC 7591 §3.2.1 makes

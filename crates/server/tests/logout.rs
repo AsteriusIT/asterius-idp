@@ -35,6 +35,9 @@ use time::{Duration, OffsetDateTime};
 const ISSUER: &str = "https://as.example/t/demo";
 const CLIENT: &str = "billing";
 const SESSION_COOKIE_VALUE: &str = "a-session-id-that-only-the-browser-holds";
+/// The one post-logout redirect URI [`FakeClients`] registers (§3.1). Every
+/// other spelling in this file is deliberately *not* this string.
+const REGISTERED_POST_LOGOUT: &str = "https://rp.example/after-logout";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -172,6 +175,7 @@ impl ClientRepository for FakeClients {
             &serde_json::to_vec(&json!({
                 "client_name": "Billing",
                 "redirect_uris": ["https://rp.example/cb"],
+                "post_logout_redirect_uris": [REGISTERED_POST_LOGOUT],
                 "grant_types": ["authorization_code"],
                 "scope": "openid",
                 "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
@@ -581,40 +585,84 @@ async fn a_hint_from_another_issuer_identifies_nobody() {
 // §3 — redirection
 // ---------------------------------------------------------------------------
 
-/// Nothing is registered under §3.1 yet, so the exact match cannot succeed and
-/// the neutral page is what a `post_logout_redirect_uri` gets. The direction
-/// matters more than the current answer: an unmatched URI must never become a
-/// `Location`, and the `state` must not be echoed anywhere.
+/// §3, the whole way through: a client registered under §3.1, a verified
+/// `id_token_hint` naming it, and a `post_logout_redirect_uri` equal to what it
+/// registered. The browser is sent onward with the `state` repeated — and only
+/// after the session has actually ended.
 #[tokio::test]
-async fn an_unregistered_post_logout_redirect_uri_is_not_honoured() {
+async fn a_registered_post_logout_redirect_uri_is_honoured_after_the_session_ends() {
     let fixture = Fixture::new();
     let harness = Harness::new(FakeSessions::holding(&digest(), now()), fixture.published());
 
     let hint = fixture.hint(&claims(&json!(CLIENT), now().unix_timestamp() + 600));
-    let (status, headers, body) = harness
+    let (status, headers, _body) = harness
         .get(
             &cookie(),
             &[
                 ("id_token_hint", &hint),
-                (
-                    "post_logout_redirect_uri",
-                    "https://rp.example/after-logout",
-                ),
+                ("post_logout_redirect_uri", REGISTERED_POST_LOGOUT),
                 ("state", "opaque-state"),
             ],
         )
         .await;
 
-    assert_eq!(status, StatusCode::OK, "a redirect was performed");
-    assert!(headers.get(header::LOCATION).is_none(), "{headers:?}");
-    assert!(body.contains("You are signed out"), "{body}");
-    assert!(
-        !body.contains("opaque-state"),
-        "the state was echoed: {body}"
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let location = headers
+        .get(header::LOCATION)
+        .expect("a registered URI must be redirected to")
+        .to_str()
+        .expect("an ASCII Location");
+    // §3: "the `state` parameter … SHOULD be returned … as a query parameter".
+    assert_eq!(
+        location,
+        format!("{REGISTERED_POST_LOGOUT}?state=opaque-state")
     );
-    assert!(!body.contains("rp.example"), "{body}");
-    // The session still ends: the user asked to log out and did.
-    assert!(harness.sessions.was_revoked());
+    assert!(harness.sessions.was_revoked(), "redirected without ending");
+    assert!(cookie_was_cleared(&headers), "{headers:?}");
+}
+
+/// §3's match is byte for byte. Every URI here is a near miss of the one
+/// registered value, and none of them may become a `Location` — an unmatched
+/// URI gets the neutral page, and the `state` is echoed nowhere.
+#[tokio::test]
+async fn an_unregistered_post_logout_redirect_uri_is_not_honoured() {
+    for near in [
+        "https://rp.example/after-logout/",
+        "https://rp.example/after-Logout",
+        "https://rp.example/after-logout?x=1",
+        "https://rp.example.evil/after-logout",
+        "https://rp.example/after-logout2",
+        "http://rp.example/after-logout",
+    ] {
+        let fixture = Fixture::new();
+        let harness = Harness::new(FakeSessions::holding(&digest(), now()), fixture.published());
+
+        let hint = fixture.hint(&claims(&json!(CLIENT), now().unix_timestamp() + 600));
+        let (status, headers, body) = harness
+            .get(
+                &cookie(),
+                &[
+                    ("id_token_hint", &hint),
+                    ("post_logout_redirect_uri", near),
+                    ("state", "opaque-state"),
+                ],
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::OK, "{near} was redirected to");
+        assert!(
+            headers.get(header::LOCATION).is_none(),
+            "{near}: {headers:?}"
+        );
+        assert!(body.contains("You are signed out"), "{body}");
+        assert!(
+            !body.contains("opaque-state"),
+            "the state was echoed: {body}"
+        );
+        assert!(!body.contains("rp.example"), "{body}");
+        // The session still ends: the user asked to log out and did.
+        assert!(harness.sessions.was_revoked());
+    }
 }
 
 /// §3 puts the relying parties before the browser. The participant list is

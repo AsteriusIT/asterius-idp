@@ -33,10 +33,12 @@
 //! anything, and it does not pretend to. Both of those land inside this one
 //! function, which is why the redirect is already gated behind its receipt.
 //!
-//! Registered `post_logout_redirect_uris` (§3.1) are not stored yet either:
-//! [`registered_redirect_uris`] returns the empty set, so every request takes
-//! the "no exact match" branch and gets the neutral logged-out page — the
-//! direction §3 fails in.
+//! Registered `post_logout_redirect_uris` (§3.1) *are* stored, and
+//! [`registered_redirect_uris`] reads them off the identified client's
+//! registration. The comparison stays where it was — [`asterius_oidc::logout`]
+//! — and stays byte-exact; what this file decides is only whose set is
+//! consulted, and it answers "nobody's" for every case it is not certain
+//! about.
 
 use crate::http::redirect::SeeOther;
 use asterius_domain::entities::session::{COOKIE_NAME, SessionRevocation};
@@ -344,12 +346,12 @@ async fn notify_participants(
 /// The registered `post_logout_redirect_uris` of an identified relying party
 /// (§3.1).
 ///
-/// Empty for now: the client registration document does not carry the member
-/// yet, so §3's exact match can never succeed and every request falls to the
-/// neutral logged-out page. That is the safe direction to be incomplete in —
-/// the failure is "the user is not redirected", not "the user is redirected
-/// somewhere unregistered". The client's registration is still loaded, so that
-/// a disabled or deleted client cannot be treated as identified.
+/// Empty whenever anything is less than certain — no identified client, a
+/// client that is gone or disabled, a store that could not be read. Each of
+/// those returns the same empty set, and an empty set can only produce the
+/// neutral logged-out page: a storage error must never widen what counts as
+/// registered, and a disabled client must not keep redirecting users at the
+/// callbacks of a relying party an operator has just turned off.
 async fn registered_redirect_uris(
     context: &LogoutContext<'_>,
     client: Option<&ClientId>,
@@ -358,15 +360,23 @@ async fn registered_redirect_uris(
         return Vec::new();
     };
     match context.clients.find(client).await {
-        Ok(Some(registered)) if registered.is_active() => {
-            // Where `registered.registration.post_logout_redirect_uris` will
-            // be read, once §3.1's member is part of a client registration.
-            Vec::new()
+        Ok(Some(registered)) => {
+            if registered.is_active() {
+                registered
+                    .registration
+                    .registered_post_logout_redirect_uris()
+            } else {
+                tracing::debug!(
+                    tenant = %context.tenant.id,
+                    "an id_token_hint named a disabled client"
+                );
+                Vec::new()
+            }
         }
-        Ok(_) => {
+        Ok(None) => {
             tracing::debug!(
                 tenant = %context.tenant.id,
-                "an id_token_hint named a client that is gone or disabled"
+                "an id_token_hint named a client that is gone"
             );
             Vec::new()
         }

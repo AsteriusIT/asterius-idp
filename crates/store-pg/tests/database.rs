@@ -815,6 +815,10 @@ fn registration_document() -> serde_json::Value {
     json!({
         "client_name": "Billing",
         "redirect_uris": ["https://rp.example/cb"],
+        // OIDC RP-Initiated Logout 1.0 §3.1. In the shared document on purpose:
+        // it then rides through the round trip, the RFC 7592 update and the
+        // "another tenant" tests without any of them having to remember it.
+        "post_logout_redirect_uris": ["https://rp.example/after-logout"],
         "grant_types": ["authorization_code", "refresh_token"],
         "scope": "openid payments",
         "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
@@ -5709,6 +5713,10 @@ mod client_configuration {
                     after.registration.id_token_signed_response_alg.as_str(),
                     "EdDSA",
                     "an omitted algorithm kept its old value"
+                );
+                assert!(
+                    after.registration.post_logout_redirect_uris.is_empty(),
+                    "a post-logout redirect URI the update did not mention survived"
                 );
                 assert!(after.registration.authorization_details_types.is_empty());
                 assert!(after.registration.request_object_signing_alg.is_none());
