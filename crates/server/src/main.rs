@@ -153,6 +153,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             clients: Some(Arc::new(ClientEndpoints {
                 authenticator,
                 store: store.clone(),
+                keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
                 capabilities: config.features,
                 par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
                 // `ast-ndk.2` makes this per tenant. The default is the cap
@@ -161,7 +162,6 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 // loses by it.
                 code_lifetime: code::clamp_lifetime(code::DEFAULT_LIFETIME),
                 kek: Arc::clone(&kek),
-                keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
                 registration: config.registration.clone(),
                 outbound,
                 audit: Arc::new(PgAuditSink::new(store.pool().clone())),

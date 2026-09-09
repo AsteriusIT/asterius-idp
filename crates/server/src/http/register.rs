@@ -54,10 +54,11 @@
 
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
+use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
 use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration, ClientRegistry,
-    ClientStatus, JwksSource, OpaqueToken, Tenant, ct_eq, sha256,
+    ClientStatus, JwksSource, KeyStore, OpaqueToken, Tenant, ct_eq, sha256,
 };
 use asterius_oidc::metadata::Endpoint;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -366,6 +367,12 @@ pub struct RegisterContext<'a> {
     pub tenant: &'a Tenant,
     /// Where the new client is written.
     pub clients: &'a dyn ClientRegistry,
+    /// The tenant's keys, consulted for one question only: whether the
+    /// `id_token_signed_response_alg` the document names is one this tenant
+    /// currently signs with. See this module's `unsignable` for why that is
+    /// asked here and not in the validator — the item is crate-private, so it
+    /// is named rather than linked.
+    pub keys: &'a dyn KeyStore,
     /// What this deployment offers. The document is validated against it, so a
     /// client cannot register for a grant the server does not implement.
     pub capabilities: Capabilities,
@@ -443,6 +450,23 @@ pub async fn register(
             return metadata_error(&failure);
         }
     };
+
+    // The one check the validator cannot make, because it is a fact about this
+    // tenant's keys rather than about the document. Run before the identifier
+    // is minted and before anything is written: a client this deployment could
+    // never issue an ID token to must not exist as a row. It also runs before
+    // the sector fetch below, because it is a local read and refusing here
+    // spares an unreachable client an outbound request.
+    if let Some(refusal) = unsignable(
+        context.keys,
+        context.tenant,
+        registration.id_token_signed_response_alg,
+    )
+    .await
+    {
+        record(&context, now, Outcome::Failure, None, Some(refusal.code())).await;
+        return refusal.into_response();
+    }
 
     // OIDC Registration §5: a pairwise client that named a sector has claimed
     // one, and this is where the claim is checked. It is the only outbound
@@ -887,10 +911,131 @@ pub(crate) fn error(status: StatusCode, code: &str, description: &str) -> Respon
         .into_response()
 }
 
+// ---------------------------------------------------------------------------
+// The algorithm the tenant has to be able to sign with
+// ---------------------------------------------------------------------------
+
+/// Why a tenant cannot honour an `id_token_signed_response_alg`.
+///
+/// Two answers, and not the same answer told twice: one says the document names
+/// something this tenant will never sign, the other says the server could not
+/// find out. A caller acts on the difference — the first is fixed by changing a
+/// field, the second by retrying — so they do not collapse into one refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unsignable {
+    /// The tenant holds no active signing key of that algorithm.
+    NoActiveKey(SigningAlgorithm),
+    /// The tenant's key set could not be read.
+    Unreadable,
+}
+
+impl Unsignable {
+    /// The error code this refusal carries.
+    ///
+    /// RFC 7591 §3.2.2's `invalid_client_metadata` where the document is at
+    /// fault, and RFC 6749 §4.1.2.1's `temporarily_unavailable` where it is
+    /// not — the same borrowing, for the same reason, as the storage failure in
+    /// [`register`].
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::NoActiveKey(_) => "invalid_client_metadata",
+            Self::Unreadable => "temporarily_unavailable",
+        }
+    }
+
+    /// The response a refused caller gets.
+    fn response(self) -> Response {
+        match self {
+            Self::NoActiveKey(algorithm) => error(
+                StatusCode::BAD_REQUEST,
+                self.code(),
+                // The algorithm is named, which looks like the value echoing
+                // this module refuses everywhere else. It is not: the string is
+                // `SigningAlgorithm::as_str`, one of three literals this
+                // workspace owns, reached only after the parser accepted the
+                // document's own spelling. Nothing a caller wrote travels back
+                // out.
+                &format!(
+                    "id_token_signed_response_alg is {algorithm}, and this tenant holds no \
+                     active {algorithm} signing key; every ID token issued to this client \
+                     would be refused"
+                ),
+            ),
+            Self::Unreadable => error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                self.code(),
+                "the tenant's signing keys could not be read",
+            ),
+        }
+    }
+}
+
+impl IntoResponse for Unsignable {
+    fn into_response(self) -> Response {
+        self.response()
+    }
+}
+
+/// Whether the tenant can sign an ID token with `algorithm` today.
+///
+/// # Why this is not in the validator
+///
+/// [`asterius_domain::ClientMetadata::validate`] decides what an acceptable
+/// client is from the document and the deployment's [`Capabilities`], and that
+/// answer is the same for every tenant on every replica. This one is not: it is
+/// a fact about one tenant's key rows at one instant, and folding it in would
+/// give a pure function a database.
+///
+/// # Why it is checked at all, given the race
+///
+/// A key can be retired a second after a registration is accepted, so this is
+/// not a guarantee and does not pretend to be one. `TenantKeyStore::apply_schedule`
+/// staging a key for every [`SigningAlgorithm::ALL`] is what makes the honest
+/// case work, and [`asterius_domain::keys::Signer::sign`] refusing rather than
+/// substituting a key of another algorithm is what keeps the dishonest one
+/// safe. What this adds is the diagnosis. Without it, a client naming an
+/// algorithm its tenant has never held is told nothing until its first token
+/// request fails with
+/// [`DomainError::NoSigningKey`](asterius_domain::DomainError::NoSigningKey) —
+/// a server-side failure, with no field named, at a moment when whoever wrote
+/// the registration document has long stopped looking at it. RFC 7591 §3.2.2
+/// exists to say it while they are.
+///
+/// Only `id_token_signed_response_alg` is checked. `request_object_signing_alg`
+/// and `backchannel_authentication_request_signing_alg` name algorithms the
+/// *client* signs with and this server verifies, so they need no key of ours.
+///
+/// Active is the whole test. A `pending` key does not sign yet and a `retiring`
+/// one has stopped, so a registration honoured by a key in either state is the
+/// same late failure one rotation later.
+pub(crate) async fn unsignable(
+    keys: &dyn KeyStore,
+    tenant: &Tenant,
+    algorithm: SigningAlgorithm,
+) -> Option<Unsignable> {
+    let published = match keys.published_keys(&tenant.id).await {
+        Ok(published) => published,
+        Err(failure) => {
+            tracing::error!(
+                %failure,
+                tenant = %tenant.id,
+                "cannot read the signing keys to validate id_token_signed_response_alg"
+            );
+            return Some(Unsignable::Unreadable);
+        }
+    };
+    let signs = published.iter().any(|key| {
+        key.algorithm == algorithm
+            && key.state == KeyState::Active
+            && key.purpose == KeyPurpose::Signing
+    });
+    (!signs).then_some(Unsignable::NoActiveKey(algorithm))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asterius_domain::{Issuer, TenantId, TenantStatus};
+    use asterius_domain::{Issuer, Kid, PublicKeyRecord, TenantId, TenantStatus};
 
     const TOKEN: &str = "0PIVxTz6ThDcJdxCoWnk8w";
 
@@ -1373,5 +1518,119 @@ mod tests {
             headers.insert(header::CONTENT_TYPE, bad.parse().expect("header"));
             assert!(!is_json(&headers), "{bad:?} was accepted");
         }
+    }
+
+    // ---- the algorithm check ---------------------------------------------
+
+    /// A key set that answers with whatever the test put in it.
+    #[derive(Debug)]
+    struct FakeKeys(Result<Vec<PublicKeyRecord>, ()>);
+
+    impl FakeKeys {
+        /// One key per `(algorithm, state)` pair given.
+        fn holding(keys: &[(SigningAlgorithm, KeyState)]) -> Self {
+            Self(Ok(keys
+                .iter()
+                .enumerate()
+                .map(|(index, (algorithm, state))| PublicKeyRecord {
+                    tenant: TenantId::new("demo"),
+                    kid: Kid::new(format!("k{index}")),
+                    algorithm: *algorithm,
+                    purpose: KeyPurpose::Signing,
+                    state: *state,
+                    public_jwk: json!({}),
+                    created_at: OffsetDateTime::UNIX_EPOCH,
+                })
+                .collect()))
+        }
+
+        fn broken() -> Self {
+            Self(Err(()))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl KeyStore for FakeKeys {
+        async fn published_keys(
+            &self,
+            _tenant: &TenantId,
+        ) -> Result<Vec<PublicKeyRecord>, asterius_domain::DomainError> {
+            self.0
+                .clone()
+                .map_err(|()| asterius_domain::DomainError::Storage("the database is gone".into()))
+        }
+
+        async fn public_key(
+            &self,
+            _tenant: &TenantId,
+            _kid: &Kid,
+        ) -> Result<Option<PublicKeyRecord>, asterius_domain::DomainError> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_algorithm_the_tenant_signs_with_is_honoured() {
+        let keys = FakeKeys::holding(&[(SigningAlgorithm::EdDsa, KeyState::Active)]);
+
+        let refusal = unsignable(&keys, &tenant(), SigningAlgorithm::EdDsa).await;
+
+        assert_eq!(refusal, None);
+    }
+
+    #[tokio::test]
+    async fn an_algorithm_the_tenant_holds_no_key_for_is_refused() {
+        let keys = FakeKeys::holding(&[(SigningAlgorithm::EdDsa, KeyState::Active)]);
+
+        let refusal = unsignable(&keys, &tenant(), SigningAlgorithm::Es256).await;
+
+        assert_eq!(
+            refusal,
+            Some(Unsignable::NoActiveKey(SigningAlgorithm::Es256))
+        );
+    }
+
+    /// A `pending` key does not sign yet and a `retiring` one has stopped, so
+    /// neither may carry a registration that outlives them.
+    #[tokio::test]
+    async fn only_an_active_key_makes_an_algorithm_signable() {
+        for state in [KeyState::Pending, KeyState::Retiring, KeyState::Retired] {
+            let keys = FakeKeys::holding(&[(SigningAlgorithm::Ps256, state)]);
+
+            let refusal = unsignable(&keys, &tenant(), SigningAlgorithm::Ps256).await;
+
+            assert_eq!(
+                refusal,
+                Some(Unsignable::NoActiveKey(SigningAlgorithm::Ps256)),
+                "a {state:?} key was treated as one that signs"
+            );
+        }
+    }
+
+    /// A key set that cannot be read is not a document the caller can fix, so
+    /// it must not be told that it is.
+    #[tokio::test]
+    async fn an_unreadable_key_set_is_not_reported_as_a_bad_document() {
+        let keys = FakeKeys::broken();
+
+        let refusal = unsignable(&keys, &tenant(), SigningAlgorithm::EdDsa).await;
+
+        assert_eq!(refusal, Some(Unsignable::Unreadable));
+        assert_eq!(
+            Unsignable::Unreadable.into_response().status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    /// RFC 7591 §3.2.2: a metadata value the server will not accept is
+    /// `invalid_client_metadata`, at 400.
+    #[test]
+    fn a_missing_key_is_an_rfc_7591_metadata_error() {
+        let refusal = Unsignable::NoActiveKey(SigningAlgorithm::Es256);
+
+        let response = refusal.into_response();
+
+        assert_eq!(refusal.code(), "invalid_client_metadata");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }

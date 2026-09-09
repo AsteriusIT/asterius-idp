@@ -94,6 +94,11 @@ pub struct ClientEndpoints {
     /// verifies an access token against the set `/jwks` publishes, and it is
     /// the same handle so that the two cannot hold different opinions about
     /// which keys are current.
+    ///
+    /// Registration reads it too, to refuse an `id_token_signed_response_alg`
+    /// this tenant holds no active key for. The same handle again, and for the
+    /// same reason: the set that check consults must be the set the deployment
+    /// actually signs from.
     pub keys: Arc<dyn KeyStore>,
     /// Who may register a client, and how.
     pub registration: RegistrationPolicy,
@@ -553,6 +558,7 @@ async fn client_registration(
         RegisterContext {
             tenant: &tenant,
             clients: &clients,
+            keys: endpoints.keys.as_ref(),
             capabilities: endpoints.capabilities,
             outbound: endpoints.outbound.as_ref(),
             policy: &endpoints.registration,
@@ -577,6 +583,7 @@ fn configuration_context<'a>(
         tenant,
         clients,
         configuration: clients,
+        keys: endpoints.keys.as_ref(),
         capabilities: endpoints.capabilities,
         outbound: endpoints.outbound.as_ref(),
         audit: endpoints.audit.as_ref(),
