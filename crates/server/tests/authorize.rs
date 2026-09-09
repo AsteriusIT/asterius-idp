@@ -11,6 +11,7 @@ use asterius_oidc::consent_memory::MemoryPolicy;
 use asterius_oidc::decision::DecisionPolicy;
 use asterius_oidc::par::MintedRequestUri;
 use asterius_server::http::authorize::{AuthorizeContext, authorize};
+use asterius_server::tenancy::MountPrefix;
 use asterius_web::csp::Nonce;
 use asterius_web::interaction::COOKIE_NAME;
 use axum::http::{StatusCode, header};
@@ -190,6 +191,21 @@ async fn run_remembering(
     session: Option<&asterius_domain::Session>,
     grants: &Grants,
 ) -> axum::response::Response {
+    run_mounted(store, params, session, grants, MountPrefix::root()).await
+}
+
+/// The same again, for a request that arrived under a tenant prefix.
+///
+/// Everything else in this file runs at the root, which is the shape of a
+/// host-resolved tenant; `mount` is what a path-resolved one carries
+/// (`ast-295`).
+async fn run_mounted(
+    store: &Store,
+    params: &[(&str, &str)],
+    session: Option<&asterius_domain::Session>,
+    grants: &Grants,
+    mount: MountPrefix,
+) -> axum::response::Response {
     let tenant = tenant();
     let nonce = Nonce::generate();
     authorize(
@@ -202,6 +218,7 @@ async fn run_remembering(
             policy: DecisionPolicy::default(),
             memory: MemoryPolicy::default(),
             nonce: &nonce,
+            mount,
         },
         &pairs(params),
         // The subject this client would see. Fixed, so a test that names a
@@ -285,6 +302,35 @@ async fn a_live_request_redirects_into_an_interaction() {
     );
 
     assert_eq!(store.begun.lock().expect("lock").len(), 1);
+}
+
+/// The same redirect, for a tenant named by the path rather than the host.
+///
+/// `/interaction/{id}` is mounted under the tenant and nowhere else, so a
+/// `Location` without the prefix is a 404 the browser meets on its way to the
+/// login page (`ast-295`).
+#[tokio::test]
+async fn the_redirect_keeps_the_prefix_the_request_arrived_under() {
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(request("billing", minted.digest(), later()));
+
+    let response = run_mounted(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        None,
+        &Grants::default(),
+        MountPrefix::for_tenant(&asterius_domain::TenantId::new("demo")),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 303);
+    let location = response.headers()[header::LOCATION]
+        .to_str()
+        .expect("location");
+    assert!(
+        location.starts_with("/t/demo/interaction/"),
+        "the tenant fell out of the redirect: {location}"
+    );
 }
 
 // ---- the debt ast-gxh.1 recorded ----------------------------------------

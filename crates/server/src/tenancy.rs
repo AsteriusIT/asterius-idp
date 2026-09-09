@@ -177,6 +177,55 @@ impl TenantDirectory {
     }
 }
 
+/// The path prefix this request arrived under, and which routing removed.
+///
+/// Handlers are mounted at `/authorize` and `/interaction/{id}` and never see
+/// `/t/{tenant}` — that is the point of [`layer`], and it is why a handler
+/// cannot forget to scope itself. But a handler that has to *name* a URL back
+/// to the browser — a form action, a `Location`, the path a script fetches —
+/// needs the prefix again: `/interaction/{id}` under `/t/demo` is a 404,
+/// because no route is mounted at the root (`ast-295`).
+///
+/// So the prefix is put back into the request rather than guessed at: the one
+/// place that removed it is the one place that says what it was.
+///
+/// The root form is not a special case anywhere: a host-based tenant genuinely
+/// has no prefix, and `absolute` then returns the handler path unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MountPrefix(String);
+
+impl MountPrefix {
+    /// The empty prefix: routing is mounted at the root of this host.
+    #[must_use]
+    pub fn root() -> Self {
+        Self(String::new())
+    }
+
+    /// The prefix a path-based tenant is served under.
+    #[must_use]
+    pub fn for_tenant(id: &TenantId) -> Self {
+        Self(format!("{}{}", tenancy::TENANT_PREFIX, id.as_str()))
+    }
+
+    /// The prefix itself, `""` or `/t/{tenant}`, never with a trailing slash.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Turns a path as the router matches it into one a browser can use.
+    ///
+    /// `path` is a handler path and so begins with `/`; the result is
+    /// root-absolute, which is what makes it independent of whether the page
+    /// it is embedded in was fetched with a trailing slash. That fragility is
+    /// why option (A) — everything relative — was refused for `ast-295`.
+    #[must_use]
+    pub fn absolute(&self, path: &str) -> String {
+        debug_assert!(path.starts_with('/'), "a handler path is absolute");
+        format!("{}{path}", self.0)
+    }
+}
+
 /// Everything the tenant middleware needs.
 #[derive(Clone, Debug)]
 pub struct TenantState {
@@ -273,6 +322,9 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
     request
         .extensions_mut()
         .insert(Arc::clone(&resolved.tenant));
+    // The prefix routing just removed, so a handler can put it back on a URL
+    // it hands to the browser (`ast-295`).
+    request.extensions_mut().insert(resolved.prefix);
     next.run(request).await
 }
 
@@ -280,6 +332,7 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
 struct Resolved {
     tenant: Arc<Tenant>,
     path: String,
+    prefix: MountPrefix,
 }
 
 async fn resolve(
@@ -325,9 +378,19 @@ async fn resolve(
         return Err(Rejection::NoSuchTenant);
     }
 
+    // Both path forms name the tenant under `/t/{id}`: the path-appending one
+    // is served there, and the path-insertion one
+    // (`/.well-known/x/t/demo`) describes an issuer that is. A host-based
+    // tenant is served at the root and has no prefix to restore.
+    let prefix = route
+        .tenant
+        .as_ref()
+        .map_or_else(MountPrefix::root, MountPrefix::for_tenant);
+
     Ok(Resolved {
         tenant,
         path: route.path,
+        prefix,
     })
 }
 

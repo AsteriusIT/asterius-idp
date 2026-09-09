@@ -79,6 +79,7 @@
 use crate::http::cookies;
 use crate::http::interaction::{record_registered_passkey, set_session_cookie};
 use crate::http::throttle;
+use crate::tenancy::MountPrefix;
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::entities::session::{COOKIE_NAME, Lifetimes, SessionId};
 use asterius_domain::{
@@ -121,11 +122,14 @@ pub const LOGIN_FINISH_PATH: &str = "/interaction/{id}/passkey/finish";
 /// A function rather than a template the page interpolates: the id is
 /// attacker-influenced (it arrives in a URL), and building the path here means
 /// the only place it is joined to a string is one a reviewer can read.
+///
+/// `mount` is the prefix routing removed, so the script fetches the tenant's
+/// endpoints rather than a root path that is mounted nowhere (`ast-295`).
 #[must_use]
-pub fn login_paths(id: &str) -> (String, String) {
+pub fn login_paths(mount: &MountPrefix, id: &str) -> (String, String) {
     (
-        format!("/interaction/{id}/passkey/options"),
-        format!("/interaction/{id}/passkey/finish"),
+        mount.absolute(&format!("/interaction/{id}/passkey/options")),
+        mount.absolute(&format!("/interaction/{id}/passkey/finish")),
     )
 }
 
@@ -155,6 +159,9 @@ pub struct PasskeyContext<'a> {
     pub nonce: &'a Nonce,
     /// Where a created credential is recorded.
     pub audit: &'a dyn AuditSink,
+    /// The prefix this request arrived under, for the URLs the page has to
+    /// spell out (`ast-295`).
+    pub mount: MountPrefix,
 }
 
 impl std::fmt::Debug for PasskeyContext<'_> {
@@ -233,19 +240,24 @@ pub async fn page(
         return error_page(&context, StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    // The page's own endpoints, spelled the way the browser has to ask for
+    // them: under the prefix routing removed (`ast-295`).
+    let options_action = context.mount.absolute(OPTIONS_PATH);
+    let finish_action = context.mount.absolute(FINISH_PATH);
+    let page_href = context.mount.absolute(PAGE_PATH);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&PasskeyPage {
             locale: "en",
             tenant_name: &context.tenant.display_name,
             username: &who.username,
-            options_action: OPTIONS_PATH,
-            finish_action: FINISH_PATH,
+            options_action: &options_action,
+            finish_action: &finish_action,
             // Both are this server's own path. Nothing from the query string
             // reaches either: a "where to go next" parameter on a page reached
             // with a session cookie is an open redirect with extra steps, and
             // the account page that will own this destination is `ast-2vk.3`.
-            next_href: PAGE_PATH,
-            password_href: PAGE_PATH,
+            next_href: &page_href,
+            password_href: &page_href,
             csrf: token.expose(),
             message: None,
             nonce_attribute: nonce_attribute(nonce),

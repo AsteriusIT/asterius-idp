@@ -17,6 +17,7 @@ use asterius_domain::{
     sha256_hex,
 };
 use asterius_server::http::passkeys::{self, PasskeyContext};
+use asterius_server::tenancy::MountPrefix;
 use asterius_web::csp::Nonce;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -322,6 +323,12 @@ impl Fixture {
     }
 
     fn context(&self) -> PasskeyContext<'_> {
+        self.context_mounted(MountPrefix::root())
+    }
+
+    /// The same, for a request that arrived under a tenant prefix
+    /// (`ast-295`).
+    fn context_mounted(&self, mount: MountPrefix) -> PasskeyContext<'_> {
         PasskeyContext {
             tenant: &self.tenant,
             passkeys: &self.passkeys,
@@ -329,6 +336,7 @@ impl Fixture {
             users: &self.users,
             nonce: &self.nonce,
             audit: &self.audit,
+            mount,
         }
     }
 
@@ -384,6 +392,27 @@ async fn without_a_session_cookie_there_is_no_enrolment_page() {
         fixture.passkeys.enrolment.lock().expect("lock").is_none(),
         "an unauthenticated visitor must not open an enrolment"
     );
+}
+
+/// Under a tenant prefix the enrolment page's own endpoints keep it, because
+/// `/passkeys/options` is mounted under the tenant and nowhere else
+/// (`ast-295`).
+#[tokio::test]
+async fn the_enrolment_page_addresses_its_endpoints_under_the_prefix() {
+    // Arrange
+    let now = OffsetDateTime::now_utc();
+    let fixture = Fixture::signed_in(now);
+    let mount = MountPrefix::for_tenant(&asterius_domain::TenantId::new("demo"));
+
+    // Act
+    let response = passkeys::page(fixture.context_mounted(mount), &fixture.cookie(), now).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_of(response).await;
+    for expected in ["/t/demo/passkeys/options", "/t/demo/passkeys/finish"] {
+        assert!(body.contains(expected), "missing {expected}");
+    }
 }
 
 /// A disabled account must not be able to add a credential — least of all one

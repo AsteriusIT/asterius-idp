@@ -15,6 +15,7 @@ use asterius_domain::{
 };
 use asterius_server::http::interaction::{InteractionContext, show, submit};
 use asterius_server::http::throttle::LoginThrottle;
+use asterius_server::tenancy::MountPrefix;
 use asterius_web::csp::Nonce;
 use asterius_web::interaction::{COOKIE_NAME, InteractionId, StoredState};
 use axum::body::Bytes;
@@ -562,6 +563,10 @@ fn context_with<'a>(
         nonce,
         throttle: LoginThrottle::new(&issued.limiter, limits, Some(client())),
         audit: &issued.audit,
+        // The root: these tests call the handlers directly rather than through
+        // the tenancy layer, so nothing removed a prefix. The tests that do
+        // exercise a prefix set this field themselves.
+        mount: MountPrefix::root(),
     }
 }
 
@@ -2314,4 +2319,342 @@ async fn a_form_post_response_ends_the_interaction_and_clears_its_cookie() {
         .filter_map(|v| v.to_str().ok())
         .any(|v| v.starts_with(COOKIE_NAME) && v.contains("Max-Age=0"));
     assert!(cleared, "the interaction cookie outlived the interaction");
+}
+
+// ---- the URLs the page hands back to the browser (ast-295) --------------
+//
+// Every test above calls `show` and `submit` directly, so every one of them
+// sees a router mounted at the root — which is why 116 of them passed while
+// the form action was a 404 for every path-based tenant. These drive the real
+// router, behind the real tenancy layer, and follow the URL the page gives out
+// instead of one the test made up.
+//
+// Both forms of tenancy are exercised, because both are real deployments:
+// `/t/{id}` in the path (several tenants on one authority, which is what
+// `deploy/compose` ships), and resolution by host (one hostname per tenant,
+// which is what the conformance stack runs). The prefix restored is whatever
+// the tenancy layer removed, and for the host form that is legitimately
+// nothing.
+
+/// Everything one browser journey needs, held where two requests can share it.
+struct Journey {
+    store: FakeStore,
+    sessions: FakeSessions,
+    issued: Issued,
+    tenant: Tenant,
+}
+
+/// A tenant directory of exactly one tenant, read-only.
+#[derive(Debug)]
+struct OneTenant(Tenant);
+
+#[async_trait::async_trait]
+impl asterius_domain::ports::TenantRepository for OneTenant {
+    async fn find_by_id(&self, _: &TenantId) -> Result<Option<Tenant>, DomainError> {
+        unimplemented!("the directory only uses list()")
+    }
+    async fn find_by_issuer(&self, _: &Issuer) -> Result<Option<Tenant>, DomainError> {
+        unimplemented!("the directory only uses list()")
+    }
+    async fn find_by_host(&self, _: &str) -> Result<Option<Tenant>, DomainError> {
+        unimplemented!("the directory only uses list()")
+    }
+    async fn list(&self) -> Result<Vec<Tenant>, DomainError> {
+        Ok(vec![self.0.clone()])
+    }
+    async fn upsert(&self, _: &Tenant) -> Result<(), DomainError> {
+        unimplemented!("read-only")
+    }
+    async fn delete(&self, _: &TenantId) -> Result<(), DomainError> {
+        unimplemented!("read-only")
+    }
+}
+
+const TEST_CONFIG: &str = r#"
+    [keys]
+    kek_env = "ASTERIUS_TEST_KEK"
+
+    [database]
+    url = "postgres://asterius@localhost/asterius"
+"#;
+
+/// `GET /interaction/{id}`, as `http::protocol` mounts it.
+async fn show_route(
+    axum::extract::State(journey): axum::extract::State<std::sync::Arc<Journey>>,
+    axum::Extension(nonce): axum::Extension<Nonce>,
+    mount: Option<axum::Extension<MountPrefix>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let issued = Issued::default();
+    let mut context = context(
+        &journey.tenant,
+        &journey.store,
+        &nonce,
+        None,
+        &journey.sessions,
+        &issued,
+    );
+    context.mount = mount.map_or_else(MountPrefix::root, |axum::Extension(prefix)| prefix);
+    show(context, &id, &headers, OffsetDateTime::now_utc()).await
+}
+
+/// `POST /interaction/{id}`, likewise.
+async fn submit_route(
+    axum::extract::State(journey): axum::extract::State<std::sync::Arc<Journey>>,
+    axum::Extension(nonce): axum::Extension<Nonce>,
+    mount: Option<axum::Extension<MountPrefix>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> axum::response::Response {
+    let auth = AlwaysSucceeds;
+    let mut context = context(
+        &journey.tenant,
+        &journey.store,
+        &nonce,
+        Some(&auth),
+        &journey.sessions,
+        &journey.issued,
+    );
+    context.mount = mount.map_or_else(MountPrefix::root, |axum::Extension(prefix)| prefix);
+    submit(context, &id, &headers, &body, OffsetDateTime::now_utc()).await
+}
+
+/// The two interaction routes behind the real tenancy layer.
+fn routed(journey: std::sync::Arc<Journey>) -> axum::Router {
+    let config = asterius_server::config::Config::parse(
+        TEST_CONFIG,
+        std::path::Path::new("asterius.toml"),
+        &BTreeMap::new(),
+    )
+    .expect("valid test config")
+    .server;
+    let directory = asterius_server::tenancy::TenantDirectory::new(std::sync::Arc::new(OneTenant(
+        journey.tenant.clone(),
+    )));
+    let state = asterius_server::tenancy::TenantState::new(directory, &config);
+
+    // Mounted at the bare path, exactly as `http::protocol` mounts it: the
+    // handler never sees `/t/{tenant}`.
+    let routes = axum::Router::new()
+        .route(
+            "/interaction/{id}",
+            axum::routing::get(show_route).post(submit_route),
+        )
+        .with_state(journey)
+        .fallback(asterius_server::http::server::not_found);
+
+    asterius_server::http::server::app(routes, state, None, &config)
+}
+
+/// One live login interaction for `tenant`.
+fn journey_for(tenant: Tenant) -> (std::sync::Arc<Journey>, InteractionId) {
+    let id = InteractionId::generate();
+    let store = FakeStore::with(
+        &id.digest(),
+        serde_json::to_value(StoredState::default()).expect("json"),
+    );
+    (
+        std::sync::Arc::new(Journey {
+            store,
+            sessions: FakeSessions::default(),
+            issued: Issued::default(),
+            tenant,
+        }),
+        id,
+    )
+}
+
+/// The same tenant, served the two ways tenancy resolves one.
+fn tenant_on_host(issuer: &str, custom_host: Option<&str>) -> Tenant {
+    Tenant {
+        issuer: Issuer::parse(issuer).expect("issuer"),
+        custom_host: custom_host.map(str::to_owned),
+        ..tenant()
+    }
+}
+
+/// The value of the first `action="…"` in a page.
+fn action_of(html: &str) -> String {
+    html.split("action=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("no form action in the page: {html}"))
+        .to_owned()
+}
+
+/// The value of an attribute the sign-in script reads.
+fn attribute_of(html: &str, name: &str) -> String {
+    let needle = format!("{name}=\"");
+    html.split(&needle)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("no {name} in the page: {html}"))
+        .to_owned()
+}
+
+/// One request through the assembled application.
+async fn through(
+    router: axum::Router,
+    method: &str,
+    host: &str,
+    path: &str,
+    cookie: &str,
+    body: &str,
+) -> axum::response::Response {
+    use tower::ServiceExt as _;
+
+    let request = axum::http::Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::HOST, host)
+        .header(header::COOKIE, format!("{COOKIE_NAME}={cookie}"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(axum::body::Body::from(body.to_owned()))
+        .expect("a request");
+    router
+        .oneshot(request)
+        .await
+        .expect("the router is infallible")
+}
+
+/// Under `/t/demo`, the login page posts back to a URL that is served.
+///
+/// This is the bug of `ast-295` in one test: before the fix the action was
+/// `/interaction/{id}`, the POST that follows it reached the tenancy layer with
+/// no tenant in the path and no tenant on the host, and the browser met a 404
+/// instead of a session.
+#[tokio::test]
+async fn a_login_under_a_tenant_prefix_posts_back_to_a_url_that_exists() {
+    // Arrange
+    let (journey, id) = journey_for(tenant_on_host("https://as.example/t/demo", None));
+
+    // Act: the page, as the browser was sent to it.
+    let page = through(
+        routed(std::sync::Arc::clone(&journey)),
+        "GET",
+        "as.example",
+        &format!("/t/demo/interaction/{}", id.expose()),
+        id.expose(),
+        "",
+    )
+    .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = body_of(page).await;
+    let action = action_of(&html);
+    let csrf = attribute_of(&html, "name=\"csrf\" value");
+
+    // Assert: the URL the browser will use keeps the tenant.
+    assert_eq!(action, format!("/t/demo/interaction/{}", id.expose()));
+
+    // Act: submit it, to the URL the page gave out and no other.
+    let response = through(
+        routed(journey.clone()),
+        "POST",
+        "as.example",
+        &action,
+        id.expose(),
+        &format!("csrf={csrf}&username=ada&password=hunter2"),
+    )
+    .await;
+
+    // Assert: the route was reached and a session exists.
+    assert_ne!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "the form action is not served"
+    );
+    let created = journey.sessions.0.lock().expect("lock");
+    assert_eq!(created.len(), 1, "no session was created");
+}
+
+/// The two endpoints the sign-in script fetches carry the prefix too.
+#[tokio::test]
+async fn the_passkey_endpoints_on_the_page_carry_the_tenant_prefix() {
+    // Arrange
+    let (journey, id) = journey_for(tenant_on_host("https://as.example/t/demo", None));
+
+    // Act
+    let page = through(
+        routed(journey),
+        "GET",
+        "as.example",
+        &format!("/t/demo/interaction/{}", id.expose()),
+        id.expose(),
+        "",
+    )
+    .await;
+    let html = body_of(page).await;
+
+    // Assert
+    for suffix in ["passkey/options", "passkey/finish"] {
+        let expected = format!("/t/demo/interaction/{}/{suffix}", id.expose());
+        assert!(
+            html.contains(&expected),
+            "the script would fetch a path that is mounted nowhere: {expected} missing"
+        );
+    }
+}
+
+/// A tenant resolved by its hostname is served at the root, and its pages say
+/// so: the prefix put back is the one that was removed, which here is none.
+#[tokio::test]
+async fn a_login_resolved_by_host_keeps_its_root_absolute_urls() {
+    // Arrange
+    let (journey, id) = journey_for(tenant_on_host(
+        "https://login.demo.test",
+        Some("login.demo.test"),
+    ));
+
+    // Act
+    let page = through(
+        routed(std::sync::Arc::clone(&journey)),
+        "GET",
+        "login.demo.test",
+        &format!("/interaction/{}", id.expose()),
+        id.expose(),
+        "",
+    )
+    .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = body_of(page).await;
+    let action = action_of(&html);
+    let csrf = attribute_of(&html, "name=\"csrf\" value");
+
+    // Assert
+    assert_eq!(action, format!("/interaction/{}", id.expose()));
+
+    let response = through(
+        routed(std::sync::Arc::clone(&journey)),
+        "POST",
+        "login.demo.test",
+        &action,
+        id.expose(),
+        &format!("csrf={csrf}&username=ada&password=hunter2"),
+    )
+    .await;
+
+    assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    let created = journey.sessions.0.lock().expect("lock");
+    assert_eq!(created.len(), 1, "no session was created");
+}
+
+/// The root path is not a way into a path-based tenant, and the fix does not
+/// make it one: what makes the prefixed URL work is that it is prefixed.
+#[tokio::test]
+async fn the_root_path_still_reaches_no_path_based_tenant() {
+    let (journey, id) = journey_for(tenant_on_host("https://as.example/t/demo", None));
+
+    let response = through(
+        routed(journey),
+        "GET",
+        "as.example",
+        &format!("/interaction/{}", id.expose()),
+        id.expose(),
+        "",
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }

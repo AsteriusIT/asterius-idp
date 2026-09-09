@@ -23,6 +23,7 @@ use crate::http::refresh::RefreshToken;
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
+use crate::tenancy::MountPrefix;
 use asterius_domain::{Capabilities, KeyStore, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
@@ -887,6 +888,7 @@ async fn authorization_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
@@ -894,7 +896,15 @@ async fn authorization_endpoint(
         url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
-    run_authorize(&endpoints, &tenant, &nonce, &headers, &pairs).await
+    run_authorize(
+        &endpoints,
+        &tenant,
+        &nonce,
+        mount_of(mount),
+        &headers,
+        &pairs,
+    )
+    .await
 }
 
 /// `POST /authorize` — the same request, form-encoded.
@@ -902,13 +912,31 @@ async fn authorization_endpoint_form(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
     let pairs: Vec<(String, String)> = url::form_urlencoded::parse(&body)
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
-    run_authorize(&endpoints, &tenant, &nonce, &headers, &pairs).await
+    run_authorize(
+        &endpoints,
+        &tenant,
+        &nonce,
+        mount_of(mount),
+        &headers,
+        &pairs,
+    )
+    .await
+}
+
+/// The prefix the tenancy layer removed from this request, or the root.
+///
+/// `Option`, like the client address next to it: the extension is that
+/// layer's doing, and a request that reached a handler without it was routed
+/// at the root, which is exactly what the root prefix describes.
+fn mount_of(mount: Option<Extension<MountPrefix>>) -> MountPrefix {
+    mount.map_or_else(MountPrefix::root, |Extension(prefix)| prefix)
 }
 
 /// The half both verbs share.
@@ -921,6 +949,7 @@ async fn run_authorize(
     endpoints: &ClientEndpoints,
     tenant: &Tenant,
     nonce: &asterius_web::csp::Nonce,
+    mount: MountPrefix,
     headers: &axum::http::HeaderMap,
     pairs: &[(String, String)],
 ) -> Response {
@@ -965,6 +994,7 @@ async fn run_authorize(
             policy: decision_policy(),
             memory: memory_policy(),
             nonce,
+            mount,
         },
         pairs,
         // OIDC Core §8.1: the `sub` this client sees, which is the identifier an
@@ -1116,6 +1146,7 @@ async fn interaction_show(
     Path(id): Path<String>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
@@ -1149,6 +1180,7 @@ async fn interaction_show(
             nonce: &nonce,
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),
+            mount: mount_of(mount),
         },
         &id,
         &headers,
@@ -1158,6 +1190,13 @@ async fn interaction_show(
 }
 
 /// `POST /interaction/{id}`.
+//
+// Eight extractors rather than seven. The lint guards call sites, and this
+// function has none: axum builds every argument from the request, so the
+// count costs a reader nothing and costs a caller nobody. The alternative —
+// bundling `tenant` and `mount` behind one `FromRequestParts` — is worth
+// doing when a third handler needs it, not for the second (`ast-295`).
+#[allow(clippy::too_many_arguments)]
 async fn interaction_submit(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
@@ -1168,6 +1207,7 @@ async fn interaction_submit(
     // reason to answer 500. A limiter with no address still counts the
     // account bucket, which is the half that bounds guessing at one user.
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1202,6 +1242,7 @@ async fn interaction_submit(
             nonce: &nonce,
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),
+            mount: mount_of(mount),
         },
         &id,
         &headers,
@@ -1262,6 +1303,7 @@ fn passkey_context<'a>(
     sessions: &'a asterius_store_pg::PgSessionRepository,
     users: &'a asterius_store_pg::PgUserRepository,
     nonce: &'a asterius_web::csp::Nonce,
+    mount: MountPrefix,
 ) -> PasskeyContext<'a> {
     PasskeyContext {
         tenant,
@@ -1270,6 +1312,7 @@ fn passkey_context<'a>(
         users,
         nonce,
         audit: endpoints.audit.as_ref(),
+        mount,
     }
 }
 
@@ -1278,6 +1321,7 @@ async fn passkey_page(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
@@ -1285,7 +1329,15 @@ async fn passkey_page(
     let sessions = scope.sessions();
     let users = scope.users(Arc::clone(&endpoints.kek));
     passkeys::page(
-        passkey_context(&endpoints, &tenant, &passkeys, &sessions, &users, &nonce),
+        passkey_context(
+            &endpoints,
+            &tenant,
+            &passkeys,
+            &sessions,
+            &users,
+            &nonce,
+            mount_of(mount),
+        ),
         &headers,
         time::OffsetDateTime::now_utc(),
     )
@@ -1297,6 +1349,7 @@ async fn passkey_options(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1305,7 +1358,15 @@ async fn passkey_options(
     let sessions = scope.sessions();
     let users = scope.users(Arc::clone(&endpoints.kek));
     passkeys::options(
-        passkey_context(&endpoints, &tenant, &passkeys, &sessions, &users, &nonce),
+        passkey_context(
+            &endpoints,
+            &tenant,
+            &passkeys,
+            &sessions,
+            &users,
+            &nonce,
+            mount_of(mount),
+        ),
         &headers,
         &body,
         time::OffsetDateTime::now_utc(),
@@ -1318,6 +1379,7 @@ async fn passkey_finish(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1326,7 +1388,15 @@ async fn passkey_finish(
     let sessions = scope.sessions();
     let users = scope.users(Arc::clone(&endpoints.kek));
     passkeys::finish(
-        passkey_context(&endpoints, &tenant, &passkeys, &sessions, &users, &nonce),
+        passkey_context(
+            &endpoints,
+            &tenant,
+            &passkeys,
+            &sessions,
+            &users,
+            &nonce,
+            mount_of(mount),
+        ),
         &headers,
         &body,
         time::OffsetDateTime::now_utc(),
