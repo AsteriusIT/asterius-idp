@@ -680,4 +680,45 @@ mod tests {
         assert!(!confirmation_token_matches("session-cookie-value", ""));
         assert_ne!(token, confirmation_token("session-cookie-valu"));
     }
+
+    /// The shape of a token must not vary with the id it came from: a token
+    /// that grew, shrank or left the hex alphabet for some ids would be
+    /// carrying something about them. Degenerate ids are included on purpose —
+    /// `"0"` is the input the `logout_request` fuzz target reported, and the
+    /// answer is that its token is the same 64 lower-case hex characters as
+    /// every other, not that the id is anywhere inside it.
+    #[test]
+    fn a_confirmation_token_has_the_same_shape_whatever_the_session_id() {
+        for session_id in ["", "0", "ff", "\u{0}\u{7f}", &"x".repeat(4096)] {
+            let token = confirmation_token(session_id);
+            assert_eq!(token.len(), 64, "{session_id:?}");
+            assert!(
+                token
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "{session_id:?} produced {token:?}"
+            );
+            assert!(confirmation_token_matches(session_id, &token));
+            assert!(!confirmation_token_matches(
+                &format!("{session_id}0"),
+                &token
+            ));
+        }
+    }
+
+    /// A session id with the width a real one has never appears in its token.
+    /// Below that width an occurrence would be a coincidence of the shared hex
+    /// alphabet rather than a leak, which is why the check lives here on ids
+    /// that are long enough for a hit to mean something.
+    #[test]
+    fn a_full_width_session_id_never_appears_in_its_token() {
+        for session_id in [
+            "0123456789abcdef0123456789abcdef",
+            "ffffffffffffffffffffffffffffffff",
+            "00000000000000000000000000000000",
+        ] {
+            let token = confirmation_token(session_id);
+            assert!(!token.contains(session_id), "{session_id:?} -> {token:?}");
+        }
+    }
 }

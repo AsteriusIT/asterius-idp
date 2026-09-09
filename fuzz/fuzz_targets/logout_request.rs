@@ -93,9 +93,33 @@ fuzz_target!(|input: Input| {
     // the id that produced it verifies.
     let token = confirmation_token(&input.session_id);
     assert_eq!(token.len(), 64, "a confirmation token is a sha-256 digest");
+    assert!(
+        token.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+        "a confirmation token is lower-case hex, whatever the id: {token:?}"
+    );
     assert!(confirmation_token_matches(&input.session_id, &token));
     assert!(
-        input.session_id.is_empty() || !token.contains(&input.session_id),
+        !confirmation_token_matches(&format!("{}\u{0}", input.session_id), &token),
+        "a different session id must not verify against this token"
+    );
+
+    // The id must not survive into its own token. Written as a substring
+    // check, that property only says something about the *derivation* for ids
+    // long enough that an occurrence cannot be chance: a token is 64 hex
+    // characters, so a one- or two-character hex id — `"0"` is the case libFuzzer
+    // found — occurs inside almost every token whatever the derivation, and
+    // the same holds for any other fixed alphabet, digest included. Below that
+    // width the check would be measuring the alphabet, not the leak, so it is
+    // asserted where a hit is evidence: at 16 hex characters the chance of a
+    // coincidence is 2^-64, and any id worth protecting is far longer than
+    // that. Recoverability for the short ids is covered above instead, by the
+    // token being a fixed width and a different id not verifying.
+    let occurrence_could_be_chance = input.session_id.len() < 16
+        && input.session_id.bytes().all(|b| b.is_ascii_hexdigit());
+    assert!(
+        input.session_id.is_empty()
+            || occurrence_could_be_chance
+            || !token.contains(&input.session_id),
         "the session id must not survive into its own token"
     );
 

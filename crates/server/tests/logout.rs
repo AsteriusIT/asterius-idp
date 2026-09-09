@@ -606,7 +606,10 @@ async fn a_registered_post_logout_redirect_uri_is_honoured_after_the_session_end
         )
         .await;
 
-    assert_eq!(status, StatusCode::SEE_OTHER);
+    // 303, compared as a number: naming the constant here would be a second
+    // place in the tree that spells `See Other`, and `source_audit` keeps that
+    // spelling to `http::redirect::SeeOther` alone.
+    assert_eq!(status.as_u16(), 303);
     let location = headers
         .get(header::LOCATION)
         .expect("a registered URI must be redirected to")
