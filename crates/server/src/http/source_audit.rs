@@ -138,6 +138,49 @@ mod tests {
         );
     }
 
+    /// RFC 9113 §8.2.3: a user agent MAY split the cookie list across several
+    /// `cookie` fields, and a server MUST join them before parsing.
+    /// `HeaderMap::get` returns the first field only, so it silently drops
+    /// every cookie that did not happen to be sent first — a bug with no
+    /// symptom until two `__Host-` cookies exist at once, which is every page
+    /// served to a signed-in user mid-flow (`ast-bze`).
+    ///
+    /// The correct read is `http::cookies`, which is `get_all` and a join.
+    /// This is an absence property with an intermittent, client-dependent
+    /// symptom, which is the worst kind to catch in review: the code looks
+    /// right and passes every test written against a single-field request.
+    #[test]
+    fn the_cookie_header_is_never_read_as_a_single_field() {
+        const FORBIDDEN: &[&str] = &[
+            ".get(header::COOKIE)",
+            ".get(&header::COOKIE)",
+            ".get(COOKIE)",
+            ".get(\"cookie\")",
+            ".get(\"Cookie\")",
+        ];
+
+        let mut offenders = Vec::new();
+        for (path, source) in workspace_sources() {
+            // This file names every forbidden spelling in order to look for it.
+            if is_at(&path, "http/source_audit.rs") {
+                continue;
+            }
+            for (number, line) in code_lines(&source) {
+                let condensed: String = line.chars().filter(|c| !c.is_whitespace()).collect();
+                for needle in FORBIDDEN {
+                    if condensed.contains(needle) {
+                        offenders.push(format!("{path}:{number}: {needle}"));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "the cookie list may be split across fields; found:\n  {}\nUse crate::http::cookies.",
+            offenders.join("\n  ")
+        );
+    }
+
     /// FAPI 2.0 SP §5.2.3: the authorization endpoint must not be reachable
     /// from a cross-origin script. The implementation is that no CORS layer
     /// exists; this is what keeps it that way when someone hits a browser

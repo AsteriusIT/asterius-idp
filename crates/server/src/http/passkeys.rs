@@ -36,6 +36,7 @@
 //! registered" in particular would answer a question about somebody else's
 //! account. The real reason goes to the log with a correlation id.
 
+use crate::http::cookies;
 use crate::http::interaction::record_registered_passkey;
 use asterius_domain::entities::session::{COOKIE_NAME, SessionId};
 use asterius_domain::{
@@ -455,24 +456,6 @@ async fn checked_csrf(
     };
     let presented = digest_of(&CsrfToken::from_presented(presented.to_owned()));
     asterius_domain::ct_eq(presented.as_bytes(), enrolment.csrf_digest.as_bytes()).then_some(())
-}
-
-/// Every `Cookie` header the request carries, joined into one list.
-///
-/// Not `HeaderMap::get`. HTTP/2 permits a cookie list to be split across
-/// several `cookie` fields — RFC 9113 §8.2.3 says a user agent MAY do it and
-/// that a server MUST join them before parsing — and Chromium does, so `get`
-/// returns whichever cookie happened to be sent first. That is a bug with no
-/// symptom until two `__Host-` cookies exist at once, which is exactly this
-/// page: the interaction cookie arrives first and the session cookie is
-/// silently missed, so a signed-in user is told they are not signed in.
-fn cookies(headers: &HeaderMap) -> String {
-    headers
-        .get_all(header::COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .collect::<Vec<_>>()
-        .join("; ")
 }
 
 /// The at-rest form of a synchroniser token.
