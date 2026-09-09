@@ -4,6 +4,7 @@
 //! produces — the two-credential rule, the CSRF token, and the fact that a
 //! browser mismatch destroys the interaction rather than re-rendering it.
 
+use asterius_domain::audit::{Actor, AuditEvent, AuditSink, EventType};
 use asterius_domain::{
     AuthenticationMethod, ClientId, CodeBinding, CodeIssuer, CredentialVerifier, DomainError,
     Grant, GrantRepository, InteractionRecord, InteractionRepository, Issuer, Lifetimes,
@@ -345,6 +346,25 @@ async fn body_of(response: axum::response::Response) -> String {
 struct Issued {
     grants: FakeGrants,
     codes: FakeCodes,
+    audit: FakeAudit,
+}
+
+/// The audit trail, in memory.
+#[derive(Debug, Default)]
+struct FakeAudit(Mutex<Vec<AuditEvent>>);
+
+#[async_trait::async_trait]
+impl AuditSink for FakeAudit {
+    async fn record(&self, event: AuditEvent) -> Result<(), DomainError> {
+        self.0.lock().expect("lock").push(event);
+        Ok(())
+    }
+}
+
+impl FakeAudit {
+    fn events(&self) -> Vec<AuditEvent> {
+        self.0.lock().expect("lock").clone()
+    }
 }
 
 fn context<'a>(
@@ -368,6 +388,7 @@ fn context<'a>(
         subjects: &FakeSubjects,
         code_lifetime: asterius_oidc::code::DEFAULT_LIFETIME,
         nonce,
+        audit: &issued.audit,
     }
 }
 
@@ -401,6 +422,36 @@ impl asterius_domain::ClientRepository for FakeClients {
             updated_at: OffsetDateTime::UNIX_EPOCH,
         }))
     }
+}
+
+// ---- the audit trail ---------------------------------------------------
+
+/// The handler's own sink is what a registered passkey must reach: the point
+/// of the field is that a caller does not have to find a trail of its own.
+#[tokio::test]
+async fn a_registered_passkey_reaches_the_handler_sink() {
+    let id = InteractionId::generate();
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "login"}));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let user = UserId::generate();
+    let credential = uuid::Uuid::new_v4();
+
+    asterius_server::http::interaction::record_passkey_registered(
+        &context(&tenant, &store, &nonce, None, &sessions, &issued),
+        &user,
+        &credential,
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    let events = issued.audit.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].event_type, EventType::CREDENTIAL_CREATED);
+    assert_eq!(events[0].tenant, TenantId::new("demo"));
+    assert_eq!(events[0].actor, Actor::User(user.as_uuid().to_string()));
 }
 
 // ---- the two-credential rule (FAPI 2.0 SP §6.5) ------------------------

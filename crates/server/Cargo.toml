@@ -16,6 +16,7 @@ workspace = true
 asterius-admin-api.workspace = true
 asterius-domain.workspace = true
 async-trait.workspace = true
+uuid.workspace = true
 time.workspace = true
 asterius-jose.workspace = true
 asterius-oidc.workspace = true
