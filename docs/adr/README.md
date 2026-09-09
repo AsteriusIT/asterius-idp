@@ -16,3 +16,4 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0005](0005-exact-redirect-uri-matching.md) | Redirect URIs match exactly against the registered set, including under PAR | Accepted |
 | [0006](0006-outbound-fetches-of-client-supplied-urls.md) | How this server dereferences a URL a client chose | Accepted |
 | [0007](0007-webauthn-without-webauthn-rs.md) | WebAuthn relying-party verification is written here, not taken from webauthn-rs | Accepted |
+| [0008](0008-the-pairwise-salt-is-not-cached.md) | The pairwise salt is decrypted per mint and not cached | Accepted |

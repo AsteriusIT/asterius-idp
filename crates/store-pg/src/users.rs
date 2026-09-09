@@ -281,6 +281,15 @@ impl PgUserRepository {
     /// salt. A repeat mint pays it too — it is the same read either way, and
     /// the derivation has to happen before the insert can be attempted.
     ///
+    /// The decrypted salt is not cached, and ADR-0008 (`ast-f12`) is why: this
+    /// method has one production caller, consent completion, which writes the
+    /// subject into the `Grant` that every later issuance reads — so the unwrap
+    /// is once per authorization and not once per `id_token`. A cache would be
+    /// a process-lifetime container of key material bought against an AES-GCM
+    /// open on a path that renders a consent page. If a KMS adapter ever makes
+    /// the unwrap a network call, the cache to build is a TTL-bounded one in
+    /// the composition root, shaped like `CachedSigner`, rather than one here.
+    ///
     /// # Errors
     ///
     /// Returns [`DomainError::Invalid`] when the tenant has no pairwise salt —

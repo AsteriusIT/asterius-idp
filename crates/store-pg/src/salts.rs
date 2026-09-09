@@ -82,6 +82,11 @@ where
 
 /// The tenant's salt, decrypted.
 ///
+/// Decrypted on every call: the plaintext is returned to the caller and dropped
+/// with it, and nothing here holds it between mints. ADR-0008 (`ast-f12`) is
+/// the argument for that, and names the conditions under which it should be
+/// revisited.
+///
 /// # Errors
 ///
 /// Returns [`DomainError::Invalid`] when the tenant has no salt row, and
