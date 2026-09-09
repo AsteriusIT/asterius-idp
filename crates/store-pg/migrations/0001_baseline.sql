@@ -384,7 +384,21 @@ create table credentials (
     passkey_sign_count    bigint      not null default 0,
     passkey_aaguid        uuid,
     passkey_transports    text[],
+    -- The two backup flags of WebAuthn L3 section 6.1.3, kept apart because
+    -- they answer different questions: `eligible` is a property of the
+    -- credential that never changes, `state` is where it is right now. A
+    -- single-device credential that can never be backed up is the one a
+    -- recovery policy has to care about, and only `eligible` says so.
+    passkey_backup_eligible boolean,
     passkey_backup_state  boolean,
+    -- The RP ID the credential was scoped to, recorded rather than assumed: a
+    -- tenant that later moves host must not silently start verifying old
+    -- credentials against a new relying party.
+    passkey_rp_id         text,
+    -- Whether the UV bit was set at registration. A passkey registered without
+    -- user verification is one factor, and a step-up policy (ast-2vk.7) needs
+    -- to know which it is holding.
+    passkey_user_verified boolean,
     label                 text,
     recovery_code_hash    bytea,
     created_at            timestamptz not null default now(),
@@ -399,6 +413,7 @@ create table credentials (
             when 'password'      then password_hash is not null
             when 'passkey'       then passkey_credential_id is not null
                                       and passkey_public_key is not null
+                                      and passkey_rp_id is not null
             when 'recovery_code' then recovery_code_hash is not null
         end
     )
@@ -504,6 +519,41 @@ create table session_clients (
     primary key (tenant_id, session_id, client_id),
     foreign key (tenant_id, session_id)
         references sessions (tenant_id, session_id) on delete cascade
+);
+
+-- One outstanding passkey enrolment per session (WebAuthn L3 section 7.1).
+--
+-- The challenge lives here rather than in `auth_requests.interaction_state`
+-- because enrolment is not part of an authorization: a signed-in user reaches
+-- it with no pushed request behind them. The session is what it is bound to,
+-- and the foreign key is that binding — a challenge cannot outlive, or be
+-- moved to, another session, and signing out deletes it by cascade.
+--
+-- Single use is `spend_challenge`, one `update ... returning` that nulls the
+-- column it read. Comparing a challenge is not consuming it, which is the half
+-- of step 8 that `asterius_webauthn` documents as the caller's.
+create table passkey_enrolments (
+    tenant_id   text        not null,
+    -- The session's lookup digest, so this table holds no id a browser sent.
+    session_id  text        not null,
+    -- SHA-256 of the synchroniser token this page was rendered with. The
+    -- ceremony is two fetches, and neither is a form, so the token cannot come
+    -- from one.
+    csrf_digest text        not null,
+    -- Null between renderings and after a spend: a row with no challenge is a
+    -- page that has been shown and a ceremony that has not started.
+    challenge   bytea,
+    expires_at  timestamptz not null,
+    created_at  timestamptz not null default now(),
+
+    primary key (tenant_id, session_id),
+    foreign key (tenant_id, session_id)
+        references sessions (tenant_id, session_id) on delete cascade,
+    -- WebAuthn L3 section 13.4.3. Enforced here as well as in the type,
+    -- because a short challenge that reached the table would be a replayable
+    -- one and the table is the last place to say no.
+    constraint passkey_enrolments_challenge_is_long_enough
+        check (challenge is null or octet_length(challenge) >= 16)
 );
 
 -- ---------------------------------------------------------------------------

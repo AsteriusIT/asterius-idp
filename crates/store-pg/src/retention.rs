@@ -179,6 +179,21 @@ pub const POLICY: &[Retention] = &[
         rule: Rule::Kept("cascades from `sessions`; a row cannot outlive its session"),
     },
     Retention {
+        table: "passkey_enrolments",
+        rule: Rule::Sweep {
+            // An outstanding registration challenge, five minutes wide. It
+            // cascades from `sessions` too, but a session lives for hours and
+            // the challenge must not: a row kept past `expires_at` is a
+            // challenge that is refused on the clock and still sitting there
+            // to be read.
+            statement: "delete from passkey_enrolments where ctid = any (array(
+                            select ctid from passkey_enrolments
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "auth_requests",
         rule: Rule::Sweep {
             // The pushed parameters and the interaction state: `login_hint`,

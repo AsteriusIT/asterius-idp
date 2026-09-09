@@ -22,7 +22,9 @@ asterius-jose.workspace = true
 asterius-oidc.workspace = true
 asterius-store-pg.workspace = true
 asterius-web.workspace = true
+asterius-webauthn.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 axum.workspace = true
 getrandom.workspace = true
 # `client` on top of the workspace feature set: the JWK Set fetcher in

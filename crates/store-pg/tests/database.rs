@@ -7144,3 +7144,297 @@ db_test! {
         assert!(elsewhere.roles_of(user).await.expect("roles").is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Passkeys
+// ---------------------------------------------------------------------------
+
+mod passkeys {
+    use super::*;
+    use asterius_domain::entities::session::SessionId;
+    use asterius_domain::{
+        AuthenticationMethod, DomainError, ENROLMENT_TTL, Lifetimes, NewPasskey, PasskeyRepository,
+        Session, SessionRepository, UserId,
+    };
+    use asterius_store_pg::{PgPasskeyRepository, PgSessionRepository};
+    use time::Duration;
+
+    fn repo(pool: &PgPool, tenant: &str) -> PgPasskeyRepository {
+        PgPasskeyRepository::new(pool.clone(), TenantId::new(tenant))
+    }
+
+    /// A tenant, a user and a live session, which is what an enrolment hangs
+    /// off. Returns the session's lookup digest.
+    async fn seed_session(pool: &PgPool, tenant: &str, user: uuid::Uuid) -> String {
+        seed_tenant(pool, tenant).await;
+        sqlx::query(
+            "insert into users (tenant_id, user_id, username, status)
+             values ($1, $2, $3, 'active') on conflict do nothing",
+        )
+        .bind(tenant)
+        .bind(user)
+        .bind(user.to_string())
+        .execute(pool)
+        .await
+        .expect("seed user");
+
+        let id = SessionId::generate();
+        PgSessionRepository::new(pool.clone(), TenantId::new(tenant))
+            .begin(&Session::begin(
+                TenantId::new(tenant),
+                &id,
+                user,
+                vec![AuthenticationMethod::Password],
+                OffsetDateTime::now_utc(),
+                Lifetimes::default(),
+            ))
+            .await
+            .expect("begin a session");
+        id.digest()
+    }
+
+    fn a_passkey(user: UserId, credential_id: &[u8]) -> NewPasskey {
+        NewPasskey {
+            user,
+            credential_id: credential_id.to_vec(),
+            public_key: b"a COSE key".to_vec(),
+            sign_count: 0,
+            aaguid: None,
+            backup_eligible: true,
+            backup_state: false,
+            user_verified: true,
+            rp_id: "as.example".to_owned(),
+            label: None,
+        }
+    }
+
+    db_test! {
+        /// The property the whole table exists for: a challenge is spendable
+        /// once. A second finish racing the first gets nothing, which is what
+        /// stops a captured ceremony being replayed.
+        async fn a_challenge_can_be_spent_exactly_once(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let session = seed_session(&db.pool, "demo", uuid::Uuid::new_v4()).await;
+            let repo = repo(&db.pool, "demo");
+            repo.open_enrolment(&session, "a-digest", now + ENROLMENT_TTL).await.expect("open");
+            repo.issue_challenge(&session, &[7u8; 32], now + ENROLMENT_TTL, now)
+                .await
+                .expect("issue");
+
+            // Act
+            let first = repo.spend_challenge(&session, now).await.expect("spend");
+            let second = repo.spend_challenge(&session, now).await.expect("spend again");
+
+            // Assert
+            assert_eq!(first.as_deref(), Some([7u8; 32].as_slice()));
+            assert_eq!(second, None, "a spent challenge must not come back");
+        }
+    }
+
+    db_test! {
+        /// Past its five minutes, a challenge is not there to be spent — even
+        /// though the session it hangs off is still perfectly alive.
+        async fn an_expired_challenge_is_not_spendable(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let session = seed_session(&db.pool, "demo", uuid::Uuid::new_v4()).await;
+            let repo = repo(&db.pool, "demo");
+            repo.open_enrolment(&session, "a-digest", now + ENROLMENT_TTL).await.expect("open");
+            repo.issue_challenge(&session, &[7u8; 32], now + ENROLMENT_TTL, now)
+                .await
+                .expect("issue");
+
+            // Act
+            let spent = repo
+                .spend_challenge(&session, now + ENROLMENT_TTL + Duration::seconds(1))
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(spent, None);
+        }
+    }
+
+    db_test! {
+        /// Rendering the page again starts over: the token that was outstanding
+        /// stops working, and so does the challenge it went with.
+        async fn reopening_an_enrolment_drops_the_outstanding_challenge(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let session = seed_session(&db.pool, "demo", uuid::Uuid::new_v4()).await;
+            let repo = repo(&db.pool, "demo");
+            repo.open_enrolment(&session, "first", now + ENROLMENT_TTL).await.expect("open");
+            repo.issue_challenge(&session, &[7u8; 32], now + ENROLMENT_TTL, now)
+                .await
+                .expect("issue");
+
+            // Act
+            repo.open_enrolment(&session, "second", now + ENROLMENT_TTL).await.expect("reopen");
+
+            // Assert
+            let enrolment = repo.enrolment(&session, now).await.expect("read").expect("present");
+            assert_eq!(enrolment.csrf_digest, "second");
+            assert_eq!(enrolment.challenge, None);
+            assert_eq!(repo.spend_challenge(&session, now).await.expect("spend"), None);
+        }
+    }
+
+    db_test! {
+        /// A challenge cannot be attached to an enrolment that has run out,
+        /// which is what stops a page left open all afternoon from starting a
+        /// ceremony on an old token.
+        async fn an_expired_enrolment_takes_no_new_challenge(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let session = seed_session(&db.pool, "demo", uuid::Uuid::new_v4()).await;
+            let repo = repo(&db.pool, "demo");
+            repo.open_enrolment(&session, "a-digest", now + ENROLMENT_TTL).await.expect("open");
+
+            // Act
+            let issued = repo
+                .issue_challenge(
+                    &session,
+                    &[7u8; 32],
+                    now + ENROLMENT_TTL,
+                    now + ENROLMENT_TTL + Duration::seconds(1),
+                )
+                .await
+                .expect("issue");
+
+            // Assert
+            assert!(!issued);
+        }
+    }
+
+    db_test! {
+        /// Signing out takes the outstanding ceremony with it. The binding is a
+        /// foreign key, so this is the database's answer and not a sweep's.
+        async fn deleting_the_session_deletes_its_enrolment(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let session = seed_session(&db.pool, "demo", uuid::Uuid::new_v4()).await;
+            let repo = repo(&db.pool, "demo");
+            repo.open_enrolment(&session, "a-digest", now + ENROLMENT_TTL).await.expect("open");
+
+            // Act
+            sqlx::query("delete from sessions where tenant_id = $1 and session_id = $2")
+                .bind("demo")
+                .bind(&session)
+                .execute(&db.pool)
+                .await
+                .expect("delete the session");
+
+            // Assert
+            assert_eq!(repo.enrolment(&session, now).await.expect("read"), None);
+        }
+    }
+
+    db_test! {
+        /// §7.1 step 22, enforced by the unique index rather than by a check
+        /// with a race in it: one credential id, once, per tenant.
+        async fn a_credential_id_is_unique_across_the_tenant(db) {
+            // Arrange
+            let first = uuid::Uuid::new_v4();
+            let second = uuid::Uuid::new_v4();
+            seed_session(&db.pool, "demo", first).await;
+            seed_session(&db.pool, "demo", second).await;
+            let repo = repo(&db.pool, "demo");
+            repo.register(&a_passkey(UserId::new(first), b"the-credential-id"))
+                .await
+                .expect("register");
+
+            // Act: a *different* user in the same tenant claims the same id.
+            let again = repo
+                .register(&a_passkey(UserId::new(second), b"the-credential-id"))
+                .await;
+
+            // Assert
+            assert!(
+                matches!(again, Err(DomainError::Conflict(_))),
+                "expected a conflict, got {again:?}"
+            );
+        }
+    }
+
+    db_test! {
+        /// ...and the scope of that rule is the tenant. Two tenants are two
+        /// directories, and an id in one says nothing about the other.
+        async fn the_same_credential_id_may_exist_in_another_tenant(db) {
+            // Arrange
+            let here = uuid::Uuid::new_v4();
+            let there = uuid::Uuid::new_v4();
+            seed_session(&db.pool, "demo", here).await;
+            seed_session(&db.pool, "other", there).await;
+            repo(&db.pool, "demo")
+                .register(&a_passkey(UserId::new(here), b"the-credential-id"))
+                .await
+                .expect("register here");
+
+            // Act
+            let elsewhere = repo(&db.pool, "other")
+                .register(&a_passkey(UserId::new(there), b"the-credential-id"))
+                .await;
+
+            // Assert
+            assert!(elsewhere.is_ok(), "{elsewhere:?}");
+        }
+    }
+
+    db_test! {
+        /// Both backup flags and the sign counter reach the row. A recovery
+        /// policy reads `eligible`; a cloned-authenticator check reads the
+        /// counter; neither can read what was never written.
+        async fn the_flags_and_the_counter_are_stored(db) {
+            // Arrange
+            let user = uuid::Uuid::new_v4();
+            seed_session(&db.pool, "demo", user).await;
+            let mut passkey = a_passkey(UserId::new(user), b"the-credential-id");
+            passkey.sign_count = 42;
+            passkey.backup_eligible = true;
+            passkey.backup_state = true;
+
+            // Act
+            let stored = repo(&db.pool, "demo").register(&passkey).await.expect("register");
+
+            // Assert
+            let row = sqlx::query(
+                "select passkey_backup_eligible, passkey_backup_state, passkey_sign_count,
+                        passkey_rp_id, passkey_user_verified
+                   from credentials where tenant_id = $1 and credential_id = $2",
+            )
+            .bind("demo")
+            .bind(stored)
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the credential back");
+            assert_eq!(row.get::<Option<bool>, _>("passkey_backup_eligible"), Some(true));
+            assert_eq!(row.get::<Option<bool>, _>("passkey_backup_state"), Some(true));
+            assert_eq!(row.get::<i64, _>("passkey_sign_count"), 42);
+            assert_eq!(row.get::<Option<String>, _>("passkey_rp_id").as_deref(), Some("as.example"));
+            assert_eq!(row.get::<Option<bool>, _>("passkey_user_verified"), Some(true));
+        }
+    }
+
+    db_test! {
+        /// `excludeCredentials` is built from this, and it is scoped to one
+        /// user: offering somebody else's credential ids to an authenticator
+        /// would answer a question nobody asked.
+        async fn credential_ids_are_listed_for_one_user_only(db) {
+            // Arrange
+            let mine = uuid::Uuid::new_v4();
+            let theirs = uuid::Uuid::new_v4();
+            seed_session(&db.pool, "demo", mine).await;
+            seed_session(&db.pool, "demo", theirs).await;
+            let repo = repo(&db.pool, "demo");
+            repo.register(&a_passkey(UserId::new(mine), b"mine")).await.expect("register");
+            repo.register(&a_passkey(UserId::new(theirs), b"theirs")).await.expect("register");
+
+            // Act
+            let listed = repo.credential_ids(&UserId::new(mine)).await.expect("list");
+
+            // Assert
+            assert_eq!(listed, vec![b"mine".to_vec()]);
+        }
+    }
+}

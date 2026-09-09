@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select passkey_credential_id\n               from credentials\n              where tenant_id = $1 and user_id = $2 and kind = 'passkey'\n                and disabled_at is null\n                and passkey_credential_id is not null",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "passkey_credential_id",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "2ab0f7297aedae8c6e4947df0ce26f9ab26a6a945699bae04cc7a9643835c20b"
+}

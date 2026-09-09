@@ -18,6 +18,7 @@ use crate::http::dpop::DpopEndpoint;
 use crate::http::interaction::{self, InteractionContext};
 use crate::http::logout;
 use crate::http::par::{self, PushContext};
+use crate::http::passkeys::{self, PasskeyContext};
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
@@ -253,7 +254,23 @@ pub fn routes(state: ProtocolState) -> Router {
                 "/interaction/{id}",
                 get(interaction_show)
                     .post(interaction_submit)
-                    .with_state(endpoints),
+                    .with_state(Arc::clone(&endpoints)),
+            )
+            // Passkey enrolment (`ast-2vk.15`). Not in the endpoint registry,
+            // for the same reason the interaction pages are not: this is the
+            // server's own user interface, reached with a session cookie, and
+            // a client has no business linking into it.
+            .route(
+                passkeys::PAGE_PATH,
+                get(passkey_page).with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                passkeys::OPTIONS_PATH,
+                post(passkey_options).with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                passkeys::FINISH_PATH,
+                post(passkey_finish).with_state(endpoints),
             );
     }
 
@@ -866,6 +883,89 @@ async fn interaction_submit(
             audit: endpoints.audit.as_ref(),
         },
         &id,
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// Builds the context the three passkey routes share.
+///
+/// One helper because the three differ only in what they do with it, and three
+/// copies of a five-field literal is three places for one of them to drift.
+fn passkey_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    passkeys: &'a asterius_store_pg::PgPasskeyRepository,
+    sessions: &'a asterius_store_pg::PgSessionRepository,
+    users: &'a asterius_store_pg::PgUserRepository,
+    nonce: &'a asterius_web::csp::Nonce,
+) -> PasskeyContext<'a> {
+    PasskeyContext {
+        tenant,
+        passkeys,
+        sessions,
+        users,
+        nonce,
+        audit: endpoints.audit.as_ref(),
+    }
+}
+
+/// `GET /passkeys`.
+async fn passkey_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let passkeys = scope.passkeys();
+    let sessions = scope.sessions();
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    passkeys::page(
+        passkey_context(&endpoints, &tenant, &passkeys, &sessions, &users, &nonce),
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /passkeys/options`.
+async fn passkey_options(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let passkeys = scope.passkeys();
+    let sessions = scope.sessions();
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    passkeys::options(
+        passkey_context(&endpoints, &tenant, &passkeys, &sessions, &users, &nonce),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /passkeys/finish`.
+async fn passkey_finish(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let passkeys = scope.passkeys();
+    let sessions = scope.sessions();
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    passkeys::finish(
+        passkey_context(&endpoints, &tenant, &passkeys, &sessions, &users, &nonce),
         &headers,
         &body,
         time::OffsetDateTime::now_utc(),

@@ -383,3 +383,10 @@ impl asterius_domain::SubjectResolver for PgUserRepository {
         Self::subject(self, user, sector).await
     }
 }
+
+#[async_trait::async_trait]
+impl asterius_domain::UserDirectory for PgUserRepository {
+    async fn by_id(&self, id: UserId) -> Result<Option<User>, DomainError> {
+        Self::find(self, id).await
+    }
+}
