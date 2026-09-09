@@ -49,8 +49,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "attestation_object"
+path = "fuzz_targets/attestation_object.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "audit_canonical"
 path = "fuzz_targets/audit_canonical.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "authenticator_data"
+path = "fuzz_targets/authenticator_data.rs"
 test = false
 doc = false
 bench = false
@@ -100,6 +114,13 @@ bench = false
 [[bin]]
 name = "config_parse"
 path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cose_key"
+path = "fuzz_targets/cose_key.rs"
 test = false
 doc = false
 bench = false
@@ -252,6 +273,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "response_mode"
+path = "fuzz_targets/response_mode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tenant_route"
 path = "fuzz_targets/tenant_route.rs"
 test = false
@@ -268,27 +296,6 @@ bench = false
 [[bin]]
 name = "userinfo_presentation"
 path = "fuzz_targets/userinfo_presentation.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "cose_key"
-path = "fuzz_targets/cose_key.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "attestation_object"
-path = "fuzz_targets/attestation_object.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "authenticator_data"
-path = "fuzz_targets/authenticator_data.rs"
 test = false
 doc = false
 bench = false

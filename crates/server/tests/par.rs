@@ -405,6 +405,118 @@ async fn only_the_code_response_type_is_accepted() {
     }
 }
 
+/// `ast-gxh.5`: the mode is decided here and stored, because the response is
+/// what it decides and nothing later should re-parse a parameter.
+#[tokio::test]
+async fn a_response_mode_is_validated_at_the_push_and_stored() {
+    for (sent, stored) in [
+        (None, "query"),
+        (Some("query"), "query"),
+        (Some("form_post"), "form_post"),
+    ] {
+        // --- Arrange ---
+        let mut pairs = valid_pairs();
+        if let Some(sent) = sent {
+            pairs.push(("response_mode", sent));
+        }
+
+        // --- Act ---
+        let (status, _, store) = pushed(&pairs).await;
+
+        // --- Assert ---
+        assert_eq!(status, StatusCode::CREATED, "refused {sent:?}");
+        assert_eq!(
+            store.0.lock().expect("lock")[0].parameters["response_mode"],
+            json!(stored),
+            "sent {sent:?}"
+        );
+    }
+}
+
+/// The second acceptance criterion of `ast-gxh.5`, with the interoperability
+/// note in [`asterius_oidc::authorize::ResponseMode`]: `fragment` belongs to
+/// the flows ADR-0002 does not implement, and answering in `query` instead
+/// would leave a client's security analysis describing a response it never
+/// received.
+#[tokio::test]
+async fn fragment_and_every_unknown_response_mode_are_refused_at_the_push() {
+    for refused in ["fragment", "web_message", "form_post.jwt", "FORM_POST", ""] {
+        let mut pairs = valid_pairs();
+        pairs.push(("response_mode", refused));
+
+        let (status, body, store) = pushed(&pairs).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "accepted {refused:?}");
+        assert_eq!(body["error"], "invalid_request", "{refused:?}");
+        assert!(
+            store.0.lock().expect("lock").is_empty(),
+            "a refused push was stored anyway: {refused:?}"
+        );
+    }
+}
+
+/// The note on the bead, as a refusal.
+///
+/// CSP Level 3 §2.3.1 builds `host-source` out of `host-char = ALPHA / DIGIT /
+/// "-"`, so an IPv6 literal cannot be written in a policy at all. A `form_post`
+/// page for such a client would be served under a policy that forbids its own
+/// submission, so the client learns here — authenticated, at the push — that
+/// the mode is not available to it, rather than a user meeting a page that
+/// cannot work.
+///
+/// The other un-nameable shape, a private-scheme callback, cannot reach this
+/// check: FAPI 2.0 SP §5.3.2.2 item 8 keeps it out of a registration in the
+/// first place.
+#[tokio::test]
+async fn form_post_is_refused_for_a_callback_no_policy_can_name() {
+    // --- Arrange: a native client whose callback is an IPv6 literal ---------
+    const CALLBACK: &str = "https://[::1]:8443/cb";
+    let mut registered = client();
+    registered.registration = ClientRegistration::from_json(
+        &serde_json::to_vec(&json!({
+            "client_name": "Billing",
+            "redirect_uris": [CALLBACK],
+            "grant_types": ["authorization_code"],
+            "scope": "openid profile",
+            "application_type": "native",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        }))
+        .expect("serialise"),
+        Capabilities::default(),
+    )
+    .expect("a valid registration");
+
+    let mut pairs = valid_pairs();
+    pairs.retain(|(k, _)| *k != "redirect_uri");
+    pairs.push(("redirect_uri", CALLBACK));
+
+    // --- Act: the same request in each mode ---------------------------------
+    let accepted = FakeRequests::default();
+    let (query_status, _, _) = run(&pairs, &accepted, Ok(registered.clone())).await;
+
+    let mut with_form_post = pairs.clone();
+    with_form_post.push(("response_mode", "form_post"));
+    let refused = FakeRequests::default();
+    let (status, body, _) = run(&with_form_post, &refused, Ok(registered)).await;
+
+    // --- Assert: only the mode that cannot be served is refused -------------
+    assert_eq!(
+        query_status,
+        StatusCode::CREATED,
+        "the callback is usable in query mode"
+    );
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "accepted form_post to {CALLBACK}"
+    );
+    assert_eq!(body["error"], "invalid_request");
+    assert!(
+        refused.0.lock().expect("lock").is_empty(),
+        "a refused push was stored anyway"
+    );
+}
+
 // ---- the transport -------------------------------------------------------
 
 #[tokio::test]

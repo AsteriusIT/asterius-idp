@@ -87,6 +87,15 @@ pub enum AuthorizationError {
     /// `response_type` is not `code`.
     #[error("unsupported response_type")]
     UnsupportedResponseType,
+    /// `response_mode` is not one this server implements.
+    ///
+    /// `invalid_request` rather than a mode-specific code: OAuth 2.0 Multiple
+    /// Response Type Encoding Practices registers no error for it, and §2.1
+    /// leaves an unsupported mode as a malformed request. Refused *here*, at
+    /// the push, so the client learns it over an authenticated connection
+    /// instead of a browser being sent somewhere it cannot be answered.
+    #[error("response_mode: {0}")]
+    ResponseMode(#[from] UnsupportedResponseMode),
     /// `redirect_uri` is not one this client registered.
     #[error("redirect_uri is not registered for this client")]
     UnregisteredRedirectUri,
@@ -175,6 +184,95 @@ impl Prompt {
     }
 }
 
+/// How the authorization response is delivered (OAuth 2.0 Multiple Response
+/// Type Encoding Practices §2.1).
+///
+/// Two spellings, and they are the two this server advertises in
+/// `response_modes_supported`. A `response_mode` is part of what the client
+/// asked for, so an unrecognised one is refused rather than defaulted to
+/// `query`: a client that spelled `form_post` wrong and got a query response
+/// would be told nothing, and would sit waiting for a POST that never comes.
+///
+/// # Why `fragment` is not here
+///
+/// It has no meaning for this server, and this is the interoperability note
+/// `ast-gxh.5` asks for. §2.1 defines `fragment` as the default for the
+/// implicit and hybrid flows, and ADR-0002 implements neither: the only
+/// `response_type` is `code`, and a fragment is by definition *not* sent to the
+/// server the browser navigates to, so a client would have to run script to
+/// recover the code from it. That is the shape RFC 9700 §2.1.2 tells
+/// implementers to move away from, and the one thing this server's pages are
+/// built not to need.
+///
+/// So a client library that sends `response_mode=fragment` alongside
+/// `response_type=code` — some do, copying a hybrid-flow example — gets
+/// `invalid_request` at the pushed authorization request endpoint, with an
+/// authenticated client on the connection to read it. Silently answering in
+/// `query` would be the worse of the two failures: the client's own security
+/// analysis says the code never reached its server, and it just did.
+/// Deliberately *not* `#[non_exhaustive]`, unlike the error types around it.
+/// The delivery site matches on this value to decide what an authorization
+/// response even is, and a wildcard arm there would answer a mode nobody had
+/// implemented yet by silently sending a query response. Adding a variant
+/// should break that match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResponseMode {
+    /// Appended to the `redirect_uri`'s query string, in a 303.
+    ///
+    /// The default for `response_type=code` (§2.1), and so the mode of every
+    /// request that names none.
+    #[default]
+    Query,
+    /// Posted from a server-rendered page to the `redirect_uri`.
+    ///
+    /// OAuth 2.0 Form Post Response Mode §2. Chosen by clients whose callback
+    /// wants the response in a body rather than in a URL — where it would land
+    /// in the browser history, in a `Referer`, and in every access log on the
+    /// way.
+    FormPost,
+}
+
+impl ResponseMode {
+    /// The wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Query => "query",
+            Self::FormPost => "form_post",
+        }
+    }
+
+    /// Parses a `response_mode` parameter.
+    ///
+    /// Exact, case-sensitive comparison against the two values this server
+    /// implements. §2.1 registers response modes as case-sensitive strings, so
+    /// `Form_Post` is a different value rather than a typo to forgive — and a
+    /// server that folded case here would accept a spelling its own metadata
+    /// does not advertise.
+    ///
+    /// # Errors
+    ///
+    /// [`UnsupportedResponseMode`] for `fragment`, for a registered mode this
+    /// server does not implement, and for anything else at all.
+    // fuzz-target: response_mode
+    pub fn parse(raw: &str) -> Result<Self, UnsupportedResponseMode> {
+        match raw {
+            "query" => Ok(Self::Query),
+            "form_post" => Ok(Self::FormPost),
+            _ => Err(UnsupportedResponseMode),
+        }
+    }
+}
+
+/// A `response_mode` this server does not implement.
+///
+/// One variant, because the client learns one thing: the mode it named is not
+/// available. Which modes *are* is what the discovery document answers, and it
+/// already does — `response_modes_supported` is in every tenant's metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("response_mode is not one this server supports")]
+pub struct UnsupportedResponseMode;
+
 /// An authorization request that has passed every check.
 ///
 /// Construction is the proof: there is no way to build one except through
@@ -193,6 +291,14 @@ pub struct AuthorizationRequest {
     pub client_id: String,
     /// Where the user agent will be sent. Required and exactly registered.
     pub redirect_uri: String,
+    /// How the response reaches that URI (`ast-gxh.5`).
+    ///
+    /// Decided here, at push time, because it decides what the *response* is —
+    /// a 303 or a rendered page — and the code that sends it should read a
+    /// value that was validated rather than re-parse a parameter. A request
+    /// that named no mode carries [`ResponseMode::Query`], which is what §2.1
+    /// says `response_type=code` means.
+    pub response_mode: ResponseMode,
     /// Requested scopes, deduplicated and ordered.
     pub scopes: BTreeSet<String>,
     /// The PKCE challenge. Not optional: FAPI 2.0 SP §5.3.2.2 item 5.
@@ -282,6 +388,15 @@ pub fn validate(
         None => return Err(AuthorizationError::Missing("response_type")),
     }
 
+    // OAuth 2.0 Multiple Response Type Encoding Practices §2.1. Absent means
+    // `query`, which is what §2.1 defines as the default for this
+    // `response_type`; `fragment` and every unregistered spelling are refused
+    // rather than defaulted — see [`ResponseMode`] for why.
+    let response_mode = match params.get("response_mode")? {
+        Some(raw) => ResponseMode::parse(raw)?,
+        None => ResponseMode::default(),
+    };
+
     // FAPI 2.0 SP §5.3.2.2 item 6: required in a pushed request. RFC 6749
     // §3.1.2.3 would let it be omitted when exactly one is registered; the
     // profile withdraws that, and a required parameter is one less case.
@@ -362,6 +477,7 @@ pub fn validate(
     Ok(AuthorizationRequest {
         client_id: client_id.to_owned(),
         redirect_uri: redirect_uri.to_owned(),
+        response_mode,
         scopes,
         code_challenge,
         state,
@@ -619,6 +735,87 @@ mod tests {
                 Err(AuthorizationError::UnsupportedResponseType),
                 "accepted response_type {wrong:?}"
             );
+        }
+    }
+
+    /// §2.1: `query` is what `response_type=code` means when nothing is said.
+    #[test]
+    fn a_request_naming_no_response_mode_is_a_query_response() {
+        // --- Arrange / Act ---
+        let request = with(&[]).expect("the base request is valid");
+
+        // --- Assert ---
+        assert_eq!(request.response_mode, ResponseMode::Query);
+    }
+
+    #[test]
+    fn form_post_is_accepted_and_carried_onto_the_request() {
+        // --- Arrange / Act ---
+        let request = with(&[("response_mode", "form_post")]).expect("a supported mode");
+
+        // --- Assert ---
+        assert_eq!(request.response_mode, ResponseMode::FormPost);
+    }
+
+    /// The acceptance criterion of `ast-gxh.5`, at the endpoint it names.
+    ///
+    /// `fragment` is refused rather than answered in `query`, because a client
+    /// that asked for a mode and got another has been told nothing and will
+    /// look for the response somewhere it is not.
+    #[test]
+    fn fragment_and_every_unknown_mode_are_invalid_request() {
+        for refused in [
+            "fragment",
+            "web_message",
+            "form_post.jwt",
+            "query.jwt",
+            // Case-sensitive: §2.1 registers the values as they are spelled.
+            "FORM_POST",
+            "Query",
+            " form_post",
+            "form_post ",
+            "",
+        ] {
+            // --- Act ---
+            let outcome = refuse(&[("response_mode", refused)]);
+
+            // --- Assert ---
+            assert_eq!(
+                outcome,
+                Err(AuthorizationError::ResponseMode(UnsupportedResponseMode)),
+                "accepted response_mode {refused:?}"
+            );
+            assert_eq!(
+                outcome.expect_err("refused").code(),
+                "invalid_request",
+                "{refused:?}"
+            );
+        }
+    }
+
+    /// RFC 6749 §3.1 again, for the parameter this ticket adds.
+    #[test]
+    fn a_repeated_response_mode_is_refused_rather_than_resolved() {
+        // --- Arrange ---
+        let mut pairs = base();
+        pairs.push(("response_mode".into(), "query".into()));
+        pairs.push(("response_mode".into(), "form_post".into()));
+
+        // --- Act / Assert ---
+        assert_eq!(
+            outcome(pairs),
+            Err(AuthorizationError::DuplicateParameter(
+                "response_mode".to_owned()
+            ))
+        );
+    }
+
+    /// The parser and the spelling agree in both directions, so a mode stored
+    /// as a string and read back is the mode that was validated.
+    #[test]
+    fn every_mode_round_trips_through_its_wire_spelling() {
+        for mode in [ResponseMode::Query, ResponseMode::FormPost] {
+            assert_eq!(ResponseMode::parse(mode.as_str()), Ok(mode));
         }
     }
 

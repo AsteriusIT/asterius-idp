@@ -30,6 +30,7 @@
 //! fixed message, which is what a server that cannot sign anybody in should
 //! do. It does not pretend to authenticate.
 
+use crate::http::form_action_origin;
 use crate::http::redirect::SeeOther;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::session::SessionId;
@@ -38,12 +39,16 @@ use asterius_domain::{
     InteractionRecord, InteractionRepository, Lifetimes, Secret, SectorIdentifier, Session,
     SessionId as DomainSessionId, SessionRepository, SubjectResolver, Tenant, TenantId, UserId,
 };
+use asterius_oidc::authorize::ResponseMode;
 use asterius_oidc::code::{self, AuthorizationResponse, MintedCode};
 use asterius_oidc::consent::{ConsentRequest, Decision};
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
 };
-use asterius_web::pages::{self, ConsentPage, ErrorPage, LoginPage, ScopeLine, nonce_attribute};
+use asterius_web::pages::{
+    self, ConsentPage, ErrorPage, FormPostPage, LoginPage, ResponseField, ScopeLine,
+    nonce_attribute,
+};
 use asterius_web::{Document, FormActionOrigin, csp::Nonce};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -263,26 +268,6 @@ async fn describe(
         ),
         form_action,
     })
-}
-
-/// The one origin a consent form's submission is allowed to end up at.
-///
-/// A browser applies `form-action` to the *redirects* of a submission and not
-/// only to its action, so a consent screen served under `form-action 'self'`
-/// cannot deliver the 303 that carries the authorization code to a client on
-/// another origin (`ast-jsq`). The widening is exactly one origin — the one
-/// belonging to the `redirect_uri` this authorization was validated against
-/// (ADR-0005) — never a raw query parameter, and never the client's whole
-/// registered set, which may span several origins.
-///
-/// `None` for anything a CSP `host-source` cannot express, which is a private
-/// scheme callback: that navigation leaves the browser rather than happening
-/// inside it, and the strict policy stays.
-fn form_action_origin(redirect_uri: &url::Url) -> Option<FormActionOrigin> {
-    // `Origin::ascii_serialization` is `scheme://host[:port]` with a default
-    // port omitted, which is the canonical spelling `FormActionOrigin` accepts;
-    // an opaque origin serialises to `null`, which it refuses.
-    FormActionOrigin::parse(&redirect_uri.origin().ascii_serialization()).ok()
 }
 
 /// `POST /interaction/{id}` — take a decision and advance.
@@ -636,7 +621,32 @@ async fn complete(
         },
     };
 
-    redirect(context, &response, &redirect_uri)
+    // How it is delivered was decided at push time and stored, so this reads
+    // back a validated value rather than parsing anything the browser carried
+    // (`ast-gxh.5`). A record with no `response_mode` is a query response,
+    // which is what it was when it was pushed.
+    let mode = match string("response_mode") {
+        None => ResponseMode::Query,
+        Some(raw) => ResponseMode::parse(&raw).unwrap_or_else(|_| {
+            // Unreachable: `authorize::validate` refused every other spelling
+            // before this row existed. A query response is the safe reading —
+            // the parameters are the same either way, and the client's own
+            // `redirect_uri` is where they go.
+            tracing::error!(
+                tenant = %context.tenant.id,
+                "a stored request names a response_mode this server does not have"
+            );
+            ResponseMode::Query
+        }),
+    };
+
+    match mode {
+        ResponseMode::Query => redirect(context, &response, &redirect_uri),
+        // The third acceptance criterion of `ast-gxh.5` is this line's doing:
+        // `response` is already either a code or an error, so an error reaches
+        // the client the way the client asked to be answered.
+        ResponseMode::FormPost => form_post(context, &response, &redirect_uri),
+    }
 }
 
 /// The approval path: a grant, a code, and the binding that ties them.
@@ -793,6 +803,89 @@ fn redirect(
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    clear(&mut response);
+    response
+}
+
+/// Delivers the authorization response as a page the browser posts to the
+/// client (`ast-gxh.5`).
+///
+/// OAuth 2.0 Form Post Response Mode §2. The parameters are the same ones the
+/// query mode would put in the URL — `AuthorizationResponse::query` produces
+/// both — and they travel as hidden inputs in a form whose action is the
+/// client's registered `redirect_uri`.
+///
+/// Three things are true of the response and none of them is set here.
+/// `Cache-Control: no-store` and the policy come from the document middleware,
+/// which is the only place that writes either; the nonce on the auto-submit
+/// script is the one that middleware drew for this response, because
+/// `Document::render` is the only way to build the page and it takes the nonce.
+/// What *is* set here is the one origin `form-action` may name, and it comes
+/// from the `redirect_uri` this authorization was validated against at push
+/// time — never from a parameter of the request being answered.
+fn form_post(
+    context: &InteractionContext<'_>,
+    response: &AuthorizationResponse,
+    redirect_uri: &str,
+) -> Response {
+    let Ok(url) = url::Url::parse(redirect_uri) else {
+        tracing::error!(tenant = %context.tenant.id, "a registered redirect URI will not parse");
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+    // Unreachable: `http::par` refuses `response_mode=form_post` for a callback
+    // whose origin no policy can name, while the client is still on the
+    // connection to be told. Refusing rather than falling back to a redirect is
+    // the only honest reading if it ever happens — a client that asked for a
+    // POST and got a query has been answered in a mode it did not ask for, and
+    // serving the page under the strict policy would give a browser a form it
+    // is forbidden to submit.
+    let Some(origin) = form_action_origin(&url) else {
+        tracing::error!(
+            tenant = %context.tenant.id,
+            "a stored form_post request has a callback no policy can name"
+        );
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+    let Ok(action) = response.form_action(redirect_uri) else {
+        tracing::error!(tenant = %context.tenant.id, "a registered redirect URI will not parse");
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+
+    let fields = response
+        .query()
+        .into_iter()
+        .map(|(name, value)| ResponseField {
+            name: name.to_owned(),
+            value,
+        })
+        .collect();
+    let document = Document::render(context.nonce, |nonce| {
+        pages::render(&FormPostPage {
+            locale: "en",
+            tenant_name: &context.tenant.display_name,
+            redirect_host: url.host_str().unwrap_or_default(),
+            action: &action,
+            fields,
+            nonce_attribute: nonce_attribute(nonce),
+        })
+    })
+    .with_form_post_to(origin);
+
+    let mut response = document.into_response();
+    // The interaction is spent, so the cookie goes with the response that ends
+    // it — exactly as on the redirect path.
     clear(&mut response);
     response
 }

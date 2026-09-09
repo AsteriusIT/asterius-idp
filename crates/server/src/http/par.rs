@@ -142,6 +142,10 @@ pub async fn push(
         }
     };
 
+    if let Some(refusal) = refuse_an_unservable_form_post(&request) {
+        return refusal;
+    }
+
     // RFC 9449 §10.1 lets a client pin the authorization code to a DPoP key
     // either by sending a proof on this request or by naming the thumbprint in
     // `dpop_jkt`. Both spellings must be supported, and a request that uses
@@ -193,6 +197,40 @@ pub async fn push(
         .into_response()
 }
 
+/// Refuses `response_mode=form_post` for a callback no policy can name.
+///
+/// The page is served under `form-action 'self' <origin>`, and CSP Level 3
+/// §2.3.1 builds `host-source` from `host-char = ALPHA / DIGIT / "-"` — so an
+/// origin a URL parser is happy with may still be one a policy cannot spell,
+/// an IPv6 literal being the case a client can actually register. Serving the
+/// page anyway would mean a browser holding a form its own policy forbids it
+/// to submit, with no error anywhere: the user waits, the client waits.
+///
+/// Refused here rather than at completion, which is the bead's own
+/// recommendation, because here there is an authenticated client on the
+/// connection to be told — half an hour before a user would have met the page.
+///
+/// `None` when the request is servable, which is every request that did not
+/// ask for `form_post`.
+fn refuse_an_unservable_form_post(request: &authorize::AuthorizationRequest) -> Option<Response> {
+    if request.response_mode != authorize::ResponseMode::FormPost {
+        return None;
+    }
+    let nameable = url::Url::parse(&request.redirect_uri)
+        .ok()
+        .as_ref()
+        .and_then(crate::http::form_action_origin)
+        .is_some();
+    (!nameable).then(|| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "response_mode=form_post needs a redirect_uri whose origin a \
+             content security policy can name",
+        )
+    })
+}
+
 /// The path this endpoint is mounted at, from the one registry.
 #[must_use]
 pub const fn path() -> &'static str {
@@ -236,6 +274,10 @@ fn serialise(request: &authorize::AuthorizationRequest) -> serde_json::Value {
     json!({
         "client_id": request.client_id,
         "redirect_uri": request.redirect_uri,
+        // What the response *is*, decided here and read at completion. A
+        // handler that re-parsed `response_mode` from somewhere else would be
+        // a second validator of the same parameter.
+        "response_mode": request.response_mode.as_str(),
         "scopes": request.scopes,
         "code_challenge": request.code_challenge.as_str(),
         "state": request.state,

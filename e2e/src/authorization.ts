@@ -123,6 +123,7 @@ export async function pushAuthorizationRequest(
   discovery: Discovery,
   client: RegisteredClient,
   state: string,
+  responseMode?: string,
 ): Promise<string> {
   const assertion = await clientAssertion(client, discovery.issuer);
   const response = await api.post(discovery.pushed_authorization_request_endpoint, {
@@ -137,6 +138,10 @@ export async function pushAuthorizationRequest(
       code_challenge: PKCE_CHALLENGE,
       code_challenge_method: 'S256',
       state,
+      // Omitted rather than sent as `query` when no mode is asked for: the
+      // default is what almost every request looks like, and a suite that
+      // always named a mode would never exercise it.
+      ...(responseMode === undefined ? {} : { response_mode: responseMode }),
     },
   });
   if (response.status() !== 201) {

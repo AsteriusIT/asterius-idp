@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Returning you to the application — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# The `response_mode=form_post` page (`ast-gxh.5`), and the second template in
+   this tree with a `<script>` in it — named, with its reason, in
+   `crates/web/src/source_audit.rs`.
+
+   The apparent contradiction in the ticket is resolved here rather than in the
+   script: **the button is the page**, and the script is an optimisation on top
+   of it. No markup can submit a form on its own — there is no attribute for
+   it, and `<noscript>` can only render, never act — so a `form_post` response
+   that works with scripting off is a form with a real submit control that the
+   user presses. The script below presses it for them, which is what every
+   other implementation of this response mode does and what clients expect.
+
+   That is the opposite arrangement to `passkey.html`, where the button starts
+   `hidden` and the script reveals it: there, a button without script cannot
+   work, so showing one would be a lie. Here it works perfectly, so it is
+   always visible and never disabled.
+
+   Everything the client is being told is in the hidden inputs, which askama
+   escapes like any other attribute value — `state` in particular is a string
+   the client chose and this server echoes byte for byte, so it reaches the
+   page as data and can never be markup. The script interpolates nothing at
+   all: it names one element by id and submits it. #}
+<h2>Returning you to the application</h2>
+<p class="muted">Your answer is being sent back to {{ redirect_host }}.</p>
+
+<form method="post" action="{{ action }}" id="form-post">
+{% for field in fields %}
+<input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+{% endfor %}
+<div class="actions"><button type="submit">Continue</button></div>
+</form>
+
+<noscript>
+{# Rendered only with scripting off, and it explains why the page is waiting
+   rather than leaving a user looking at a button nobody asked them to press.
+   The button above is not inside this block: it is the page's one control in
+   both configurations, and hiding it here would break the case this block
+   exists for. #}
+<p class="muted">JavaScript is switched off, so this page cannot send the
+answer by itself. Press Continue to finish signing in.</p>
+</noscript>
+
+<script {{ nonce_attribute|safe }}>
+(() => {
+  "use strict";
+  const form = document.getElementById("form-post");
+  if (form) {
+    form.submit();
+  }
+})();
+</script>
+{% endblock %}
