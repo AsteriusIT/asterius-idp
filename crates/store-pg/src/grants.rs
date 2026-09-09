@@ -197,6 +197,40 @@ impl PgGrantRepository {
         row.map(|row| row.into_entity(&self.tenant)).transpose()
     }
 
+    /// Whether an access token's `jti` has been revoked before its own expiry.
+    ///
+    /// The read side of the denylist [`Self::revoke`] writes. A JWT access
+    /// token is verified from its signature and its `exp`, so this is the only
+    /// thing that can tell a resource server the authorization behind a
+    /// perfectly valid token was withdrawn — FAPI 2.0 SP §5.3.4 item 3
+    /// requires the check, and RFC 9068 §6 is the reason it cannot be answered
+    /// from the token alone.
+    ///
+    /// `expires_at` is not consulted. A row outlives nothing useful: it is
+    /// written with the token's own expiry and pruned afterwards, and a token
+    /// past that instant has already failed on `exp` before this is reached.
+    /// Comparing against a clock here would add a way for a skewed one to make
+    /// a revoked token live again.
+    ///
+    /// # Errors
+    ///
+    /// A storage error. Never `false` because the store was unreachable: the
+    /// caller must refuse rather than serve a token it could not check.
+    pub async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
+        sqlx::query_scalar!(
+            "select exists (
+                 select 1 from access_token_denylist
+                 where tenant_id = $1 and jti = $2
+             )",
+            self.tenant.as_str(),
+            jti,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map(|found| found.unwrap_or(false))
+        .map_err(to_domain_error)
+    }
+
     /// Every grant a person has given, newest first.
     ///
     /// What the grants dashboard (`ast-uwv.6`) and Grant Management's query

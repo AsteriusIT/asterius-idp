@@ -347,6 +347,54 @@ impl DpopEndpoint {
         headers: &HeaderMap,
         now: OffsetDateTime,
     ) -> Result<Option<Binding>, Refusal> {
+        self.check_for(tenant, endpoint, method, headers, None, now)
+            .await
+    }
+
+    /// The same check, for a proof that accompanies an access token.
+    ///
+    /// RFC 9449 §4.3 item 12: "if presented to a protected resource in
+    /// conjunction with an access token, ensure that the value of the `ath`
+    /// claim equals the hash of that access token". `bound_to` is that token,
+    /// exactly as it arrived on the wire — the hash is over the string the
+    /// client sent, so anything that re-encoded it would compute a digest of
+    /// something nobody presented.
+    ///
+    /// It is a separate entry point rather than an argument on [`check`]
+    /// because the two callers are different animals. At the token endpoint
+    /// there is no access token yet and §4.2 requires no `ath`; at a protected
+    /// resource there is one and §4.3 requires it. Passing `None` here would
+    /// be a way to turn the resource-server rule off, so the token endpoint
+    /// does not get to pass it at all.
+    ///
+    /// [`check`]: DpopEndpoint::check
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`], as [`check`] — including one for a proof whose `ath` is
+    /// missing or names another token.
+    pub async fn check_with_access_token(
+        &self,
+        tenant: &Tenant,
+        endpoint: Endpoint,
+        method: &Method,
+        headers: &HeaderMap,
+        bound_to: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<Binding>, Refusal> {
+        self.check_for(tenant, endpoint, method, headers, Some(bound_to), now)
+            .await
+    }
+
+    async fn check_for(
+        &self,
+        tenant: &Tenant,
+        endpoint: Endpoint,
+        method: &Method,
+        headers: &HeaderMap,
+        bound_to: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<Option<Binding>, Refusal> {
         let Some(raw) = single_header(headers)? else {
             return Ok(None);
         };
@@ -366,6 +414,11 @@ impl DpopEndpoint {
         let mut expectation = Expectation::new(method.as_str(), &uri).with_max_age(self.max_age);
         if let Some(nonces) = &self.nonces {
             expectation = expectation.requiring_nonce(nonces, issuer);
+        }
+        // RFC 9449 §4.3 item 12. The token as it arrived, not a re-encoding of
+        // it: `ath` hashes the bytes the client sent.
+        if let Some(access_token) = bound_to {
+            expectation = expectation.with_access_token(access_token);
         }
 
         let proof = dpop::check(raw, &expectation, now)

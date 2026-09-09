@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists (\n                 select 1 from access_token_denylist\n                 where tenant_id = $1 and jti = $2\n             )",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c00a1bcff02a2febfdd797c1852c2ce8136c335782137e73db594ac5a8db0399"
+}

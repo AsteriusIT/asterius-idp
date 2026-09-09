@@ -286,6 +286,19 @@ impl AuthorizationCode<'_> {
             self.now,
         )
         .authenticated_by(session.authentication.clone())
+        // RFC 9068 §2.2.3.1's private claim, and the one thing that lets this
+        // deployment's own resource servers find the authorization a token was
+        // minted under: UserInfo (`ast-1sk.3`) resolves claims from the grant
+        // and nothing else, and introspection (`ast-1sk.1`) reports
+        // `grant_id`. Without it, both would have to guess among the grants a
+        // person holds for one client, and a wrong guess releases the claims
+        // of an authorization this token was not minted from.
+        //
+        // It is a correlator — RFC 9068 §6 — and the builder keeps it off by
+        // default for that reason. Turning it on here is a deployment-wide
+        // decision, and making it a tenant option is follow-up work — which a
+        // deployment whose resource servers are all third parties will want.
+        .with_grant_id()
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
 

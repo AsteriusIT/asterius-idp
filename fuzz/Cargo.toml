@@ -266,6 +266,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "userinfo_presentation"
+path = "fuzz_targets/userinfo_presentation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cose_key"
 path = "fuzz_targets/cose_key.rs"
 test = false

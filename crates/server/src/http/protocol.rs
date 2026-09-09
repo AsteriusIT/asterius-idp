@@ -20,6 +20,7 @@ use crate::http::logout;
 use crate::http::par::{self, PushContext};
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::token::{self, TokenContext};
+use crate::http::userinfo;
 use asterius_domain::{Capabilities, KeyStore, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
@@ -85,11 +86,14 @@ pub struct ClientEndpoints {
     pub kek: Arc<dyn asterius_jose::Kek>,
     /// This deployment's keys, for verifying a token *this server* issued.
     ///
-    /// The end-session endpoint's `id_token_hint` is the caller: it needs the
+    /// Two callers. The end-session endpoint's `id_token_hint` needs the
     /// public half of a key that may already have been retired (OIDC
     /// RP-Initiated Logout 1.0 §4), which is what
     /// [`KeyStore::public_key`](asterius_domain::KeyStore::public_key)
-    /// resolves and what the published JWKS no longer contains.
+    /// resolves and what the published JWKS no longer contains; UserInfo
+    /// verifies an access token against the set `/jwks` publishes, and it is
+    /// the same handle so that the two cannot hold different opinions about
+    /// which keys are current.
     pub keys: Arc<dyn KeyStore>,
     /// Who may register a client, and how.
     pub registration: RegistrationPolicy,
@@ -202,6 +206,16 @@ pub fn routes(state: ProtocolState) -> Router {
             // discovers, they are this server's own user interface, and
             // advertising them would invite a client to link straight into
             // one.
+            // OIDC Core §5.3.1 permits GET and POST. Neither carries a body
+            // this endpoint reads: FAPI 2.0 SP §5.3.4 accepts the access token
+            // in the header only, so a form-encoded `access_token` is not a
+            // credential here any more than a query parameter is.
+            .route(
+                Endpoint::UserInfo.path(),
+                get(userinfo_endpoint)
+                    .post(userinfo_endpoint)
+                    .with_state(Arc::clone(&endpoints)),
+            )
             // RFC 7591. No DPoP check: there is no client authentication at
             // this endpoint and no client yet to bind a proof to.
             .route(
@@ -251,6 +265,7 @@ pub fn routes(state: ProtocolState) -> Router {
                         | Endpoint::Authorization
                         | Endpoint::Registration
                         | Endpoint::EndSession
+                        | Endpoint::UserInfo
                 ))
         {
             continue;
@@ -362,6 +377,82 @@ async fn pushed_authorization_request(
         now,
     )
     .await
+}
+
+/// `GET`/`POST /userinfo` — OIDC Core §5.3.
+///
+/// Wiring only. Everything that decides anything is in
+/// [`crate::http::userinfo::userinfo`], which is where the tests are.
+///
+/// The query string is handed over rather than parsed, because the only thing
+/// this endpoint does with it is refuse a request that put a credential there
+/// (FAPI 2.0 SP §5.3.4).
+async fn userinfo_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let source = StoredClaims {
+        grants: scope.grants(),
+        // The KEK is the same one every other user read takes: the claim bag
+        // is encrypted at rest.
+        users: scope.users(Arc::clone(&endpoints.kek)),
+    };
+
+    userinfo::userinfo(
+        userinfo::UserInfoContext {
+            tenant: &tenant,
+            source: &source,
+            keys: endpoints.keys.as_ref(),
+            signer: endpoints.signer.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            // OIDC Core §5.3.2's default. `userinfo_signed_response_alg` is
+            // not a registrable client metadata member yet, and inventing a
+            // per-deployment default would sign responses no client asked to
+            // be signed.
+            signed_response_alg: None,
+            now: time::OffsetDateTime::now_utc(),
+        },
+        &method,
+        &headers,
+        uri.query(),
+    )
+    .await
+}
+
+/// The stored rows behind UserInfo.
+///
+/// Reads only, and exactly three of them. The port is narrow so that this
+/// endpoint cannot reach `revoke` or `claim` through the repository it happens
+/// to hold.
+#[derive(Debug)]
+struct StoredClaims {
+    grants: asterius_store_pg::PgGrantRepository,
+    users: asterius_store_pg::PgUserRepository,
+}
+
+#[async_trait::async_trait]
+impl userinfo::UserInfoSource for StoredClaims {
+    async fn grant(
+        &self,
+        id: &asterius_domain::GrantId,
+    ) -> Result<Option<asterius_domain::Grant>, asterius_domain::DomainError> {
+        self.grants.find(id).await
+    }
+
+    async fn user(
+        &self,
+        id: asterius_domain::UserId,
+    ) -> Result<Option<asterius_domain::User>, asterius_domain::DomainError> {
+        self.users.find(id).await
+    }
+
+    async fn is_denylisted(&self, jti: &str) -> Result<bool, asterius_domain::DomainError> {
+        self.grants.is_denylisted(jti).await
+    }
 }
 
 /// `POST /token` — RFC 6749 §3.2.
