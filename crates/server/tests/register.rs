@@ -10,10 +10,11 @@
 //! and a refused caller must not reach the store at all.
 
 use asterius_domain::audit::{AuditEvent, AuditSink, DetailValue, EventType, Outcome};
+use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
 use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
-    Capabilities, Client, ClientRegistry, DomainError, Issuer, Tenant, TenantId, TenantStatus,
-    sha256,
+    Capabilities, Client, ClientRegistry, DomainError, Issuer, KeyStore, Kid, PublicKeyRecord,
+    Tenant, TenantId, TenantStatus, sha256,
 };
 use asterius_server::http::register::{
     Denial, InitialAccessTokens, MAX_BODY_BYTES, RegisterContext, RegistrationPolicy, register,
@@ -74,6 +75,52 @@ impl ClientRegistry for FakeRegistry {
             updated_at: OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("instant"),
             ..client.clone()
         })
+    }
+}
+
+/// The tenant's key set: one active key per algorithm named, and nothing else.
+///
+/// Registration refuses an `id_token_signed_response_alg` the tenant holds no
+/// active key for, so what this holds is what the endpoint will accept.
+#[derive(Debug)]
+struct FakeKeys(Vec<SigningAlgorithm>);
+
+impl FakeKeys {
+    /// The tenant a boot-time `apply_schedule` leaves behind: every advertised
+    /// algorithm signable.
+    fn provisioned() -> Self {
+        Self(SigningAlgorithm::ALL.to_vec())
+    }
+
+    fn holding(algorithms: &[SigningAlgorithm]) -> Self {
+        Self(algorithms.to_vec())
+    }
+}
+
+#[async_trait::async_trait]
+impl KeyStore for FakeKeys {
+    async fn published_keys(&self, tenant: &TenantId) -> Result<Vec<PublicKeyRecord>, DomainError> {
+        Ok(self
+            .0
+            .iter()
+            .map(|algorithm| PublicKeyRecord {
+                tenant: tenant.clone(),
+                kid: Kid::new(format!("k-{algorithm}")),
+                algorithm: *algorithm,
+                purpose: KeyPurpose::Signing,
+                state: KeyState::Active,
+                public_jwk: json!({}),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+            })
+            .collect())
+    }
+
+    async fn public_key(
+        &self,
+        _tenant: &TenantId,
+        _kid: &Kid,
+    ) -> Result<Option<PublicKeyRecord>, DomainError> {
+        Ok(None)
     }
 }
 
@@ -177,7 +224,8 @@ async fn post(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Response {
-    post_with(
+    post_to(
+        &FakeKeys::provisioned(),
         &FakeOutbound::default(),
         policy,
         registry,
@@ -198,10 +246,33 @@ async fn post_with(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Response {
+    post_to(
+        &FakeKeys::provisioned(),
+        outbound,
+        policy,
+        registry,
+        audit,
+        headers,
+        body,
+    )
+    .await
+}
+
+/// The same request against a tenant holding a chosen set of signing keys.
+async fn post_to(
+    keys: &FakeKeys,
+    outbound: &dyn JwksFetcher,
+    policy: &RegistrationPolicy,
+    registry: &FakeRegistry,
+    audit: &FakeAudit,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
     register(
         RegisterContext {
             tenant: &tenant(),
             clients: registry,
+            keys,
             capabilities: Capabilities::default(),
             policy,
             audit,
@@ -826,4 +897,82 @@ async fn a_sector_identifier_uri_that_is_not_https_is_refused_before_any_fetch()
         body_of(response).await["error"],
         json!("invalid_client_metadata")
     );
+}
+
+/// The bug `ast-a05.13` is about: a document naming an `id_token_signed_response_alg`
+/// its tenant holds no active key for used to be accepted, and the client only
+/// found out at its first token request, as an opaque `NoSigningKey` failure.
+/// RFC 7591 §3.2.2 has a code for exactly this, and now it is used.
+#[tokio::test]
+async fn an_algorithm_the_tenant_cannot_sign_with_is_refused_at_registration() {
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let mut document = document();
+    document["id_token_signed_response_alg"] = json!("ES256");
+    let body = serde_json::to_vec(&document).expect("serialise");
+
+    let response = post_to(
+        // A tenant whose only signing key is the default one.
+        &FakeKeys::holding(&[SigningAlgorithm::EdDsa]),
+        &FakeOutbound::default(),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let rendered = body_of(response).await;
+    assert_eq!(rendered["error"], json!("invalid_client_metadata"));
+    assert!(
+        rendered["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("ES256"),
+        "the description must name the field's value so it can be fixed: {rendered}"
+    );
+    // Nothing was written: a client that could never be issued an ID token must
+    // not exist as a row, and must not consume a `client_id`.
+    assert!(registry.written().is_empty());
+    let events = audit.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].outcome, Outcome::Failure);
+    assert_eq!(
+        events[0].detail.iter().find(|(k, _)| *k == "reason"),
+        Some((
+            &"reason".to_owned(),
+            &DetailValue::Text("invalid_client_metadata".to_owned())
+        ))
+    );
+}
+
+/// The other side of it: a tenant provisioned as `TenantKeyStore::apply_schedule`
+/// leaves one accepts every algorithm the discovery document advertises.
+#[tokio::test]
+async fn every_advertised_algorithm_registers_against_a_provisioned_tenant() {
+    for algorithm in SigningAlgorithm::ALL {
+        let registry = FakeRegistry::default();
+        let audit = FakeAudit::default();
+        let mut document = document();
+        document["id_token_signed_response_alg"] = json!(algorithm.as_str());
+        let body = serde_json::to_vec(&document).expect("serialise");
+
+        let response = post(
+            &gated(),
+            &registry,
+            &audit,
+            &json_headers(Some(&format!("Bearer {TOKEN}"))),
+            &body,
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "{algorithm} refused"
+        );
+        assert_eq!(registry.written().len(), 1);
+    }
 }

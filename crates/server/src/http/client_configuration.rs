@@ -109,14 +109,14 @@
 //!   population this profile does not have.
 
 use crate::http::register::{
-    MAX_BODY_BYTES, bearer, client_information, error, is_json, metadata_error, nqschar,
+    MAX_BODY_BYTES, bearer, client_information, error, is_json, metadata_error, nqschar, unsignable,
 };
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
-    ClientStatus, DomainError, ManagedClient, Tenant, ct_eq, sha256,
+    ClientStatus, DomainError, KeyStore, ManagedClient, Tenant, ct_eq, sha256,
 };
 use asterius_oidc::metadata::Endpoint;
 use axum::Json;
@@ -481,6 +481,11 @@ pub struct ConfigurationContext<'a> {
     pub clients: &'a dyn ClientRepository,
     /// Authenticates, replaces and deprovisions.
     pub configuration: &'a dyn ClientConfiguration,
+    /// The tenant's keys, for the one question an update asks of them: whether
+    /// the `id_token_signed_response_alg` it moves to is one this tenant signs
+    /// with. A `PUT` may change that field, so a check only at registration
+    /// would be a check a client can walk around.
+    pub keys: &'a dyn KeyStore,
     /// What this deployment offers. An update is validated against it, so a
     /// client cannot update its way into a feature the server does not have.
     pub capabilities: Capabilities,
@@ -573,6 +578,59 @@ pub async fn read(
 /// # Errors
 ///
 /// Never returns `Err`, for the same reason as [`read`].
+/// The checks a replacement document owes beyond [`ClientRegistration::from_json`],
+/// each of which needs something outside the document to answer.
+///
+/// Lifted out of [`update`] so that the endpoint's shape — authenticate, parse,
+/// check, replace — stays readable, and because both arms record the same audit
+/// event with only the reason differing. `Some` is the response to return.
+async fn unacceptable(
+    context: &ConfigurationContext<'_>,
+    client_id: &ClientId,
+    now: OffsetDateTime,
+    registration: &ClientRegistration,
+) -> Option<Response> {
+    // The same check `POST /register` makes, for the same reason and at the
+    // same point: an update that moved a live client onto an algorithm this
+    // tenant holds no key for would break every ID token it is issued, and the
+    // client would learn that from a token request rather than from here.
+    if let Some(refusal) = unsignable(
+        context.keys,
+        context.tenant,
+        registration.id_token_signed_response_alg,
+    )
+    .await
+    {
+        record(
+            context,
+            now,
+            EventType::CLIENT_UPDATED,
+            Outcome::Failure,
+            client_id,
+            Some(refusal.code()),
+        )
+        .await;
+        return Some(refusal.into_response());
+    }
+
+    // OIDC Registration §5, as at registration: the sector a client names is
+    // checked before anything derives a `sub` in it.
+    if let Err(failure) = sector::verify(context.outbound, registration).await {
+        record(
+            context,
+            now,
+            EventType::CLIENT_UPDATED,
+            Outcome::Failure,
+            client_id,
+            Some(failure.code()),
+        )
+        .await;
+        return Some(metadata_error(&failure));
+    }
+
+    None
+}
+
 pub async fn update(
     context: &ConfigurationContext<'_>,
     client_id: &str,
@@ -644,19 +702,10 @@ pub async fn update(
         }
     };
 
-    // OIDC Registration §5, as at registration: the sector a client names is
-    // checked before anything derives a `sub` in it.
-    if let Err(failure) = sector::verify(context.outbound, &registration).await {
-        record(
-            context,
-            now,
-            EventType::CLIENT_UPDATED,
-            Outcome::Failure,
-            &client_id,
-            Some(failure.code()),
-        )
-        .await;
-        return metadata_error(&failure);
+    // The two checks the validator cannot make on the document alone: one
+    // about this tenant's keys, one about a host that has to be asked.
+    if let Some(refusal) = unacceptable(context, &client_id, now, &registration).await {
+        return refusal;
     }
 
     let replacement = Client {

@@ -12,11 +12,12 @@
 //! two a request may touch, and a fixture with one client cannot ask it.
 
 use asterius_domain::audit::{AuditEvent, AuditSink, EventType, Outcome};
+use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
 use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
-    ClientStatus, DomainError, Issuer, ManagedClient, OpaqueToken, Tenant, TenantId, TenantStatus,
-    sha256,
+    ClientStatus, DomainError, Issuer, KeyStore, Kid, ManagedClient, OpaqueToken, PublicKeyRecord,
+    Tenant, TenantId, TenantStatus, sha256,
 };
 use asterius_server::http::client_configuration::{ConfigurationContext, read, remove, update};
 use axum::body::Bytes;
@@ -231,11 +232,47 @@ fn client(id: &str, document: &Value) -> Client {
 ///
 /// The second exists for one reason: every "is this token allowed to do this"
 /// question needs a token that is real and belongs to somebody else.
+/// The tenant's key set: one active signing key per algorithm named.
+///
+/// An update may move a client onto another `id_token_signed_response_alg`, and
+/// the endpoint refuses one this tenant cannot sign with, so this is what says
+/// which updates are honourable.
+#[derive(Debug)]
+struct FakeKeys(Vec<SigningAlgorithm>);
+
+#[async_trait::async_trait]
+impl KeyStore for FakeKeys {
+    async fn published_keys(&self, tenant: &TenantId) -> Result<Vec<PublicKeyRecord>, DomainError> {
+        Ok(self
+            .0
+            .iter()
+            .map(|algorithm| PublicKeyRecord {
+                tenant: tenant.clone(),
+                kid: Kid::new(format!("k-{algorithm}")),
+                algorithm: *algorithm,
+                purpose: KeyPurpose::Signing,
+                state: KeyState::Active,
+                public_jwk: json!({}),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+            })
+            .collect())
+    }
+
+    async fn public_key(
+        &self,
+        _tenant: &TenantId,
+        _kid: &Kid,
+    ) -> Result<Option<PublicKeyRecord>, DomainError> {
+        Ok(None)
+    }
+}
+
 struct Fixture {
     tenant: Tenant,
     clients: FakeClients,
     audit: FakeAudit,
     outbound: FakeOutbound,
+    keys: FakeKeys,
     alpha: OpaqueToken,
     beta: OpaqueToken,
 }
@@ -287,9 +324,19 @@ impl Fixture {
             clients,
             audit: FakeAudit::default(),
             outbound: FakeOutbound::default(),
+            // A tenant provisioned as `TenantKeyStore::apply_schedule` leaves
+            // it: one active key per advertised algorithm.
+            keys: FakeKeys(SigningAlgorithm::ALL.to_vec()),
             alpha,
             beta,
         }
+    }
+
+    /// The same fixture on a tenant that signs with `algorithms` and nothing
+    /// else.
+    fn holding_keys(mut self, algorithms: &[SigningAlgorithm]) -> Self {
+        self.keys = FakeKeys(algorithms.to_vec());
+        self
     }
 
     fn context(&self) -> ConfigurationContext<'_> {
@@ -297,6 +344,7 @@ impl Fixture {
             tenant: &self.tenant,
             clients: &self.clients,
             configuration: &self.clients,
+            keys: &self.keys,
             capabilities: Capabilities::default(),
             audit: &self.audit,
             outbound: &self.outbound,
@@ -528,10 +576,12 @@ async fn a_revocation_is_not_visible_in_the_refusal() {
     let sunk = FakeClients::broken();
     let tenant = tenant();
     let audit = FakeAudit::default();
+    let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
     let context = ConfigurationContext {
         tenant: &tenant,
         clients: &sunk,
         configuration: &sunk,
+        keys: &keys,
         capabilities: Capabilities::default(),
         audit: &audit,
         outbound: &FakeOutbound::default(),
@@ -1386,10 +1436,12 @@ async fn a_store_that_cannot_be_reached_is_not_a_refusal() {
     let clients = FakeClients::broken();
     let audit = FakeAudit::default();
     let tenant = tenant();
+    let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
     let context = ConfigurationContext {
         tenant: &tenant,
         clients: &clients,
         configuration: &clients,
+        keys: &keys,
         capabilities: Capabilities::default(),
         audit: &audit,
         outbound: &FakeOutbound::default(),
@@ -1526,10 +1578,12 @@ async fn what_reaches_the_audit_trail_is_what_got_past_the_credential() {
 fn the_postgres_repository_satisfies_both_ports_this_endpoint_holds() {
     fn wire(repository: &asterius_store_pg::PgClientRepository, tenant: &Tenant) {
         let audit = FakeAudit::default();
+        let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
         let _context = ConfigurationContext {
             tenant,
             clients: repository,
             configuration: repository,
+            keys: &keys,
             capabilities: Capabilities::default(),
             audit: &audit,
             outbound: &FakeOutbound::default(),
@@ -1539,4 +1593,42 @@ fn the_postgres_repository_satisfies_both_ports_this_endpoint_holds() {
     // Never called: the assertion is that it compiles, and building a pool
     // would need a database this test does not want.
     let _ = wire;
+}
+
+/// `ast-a05.13`: the registration-time check would be one a client can walk
+/// around if a `PUT` could move it onto an algorithm the tenant holds no key
+/// for. It cannot, and the stored row is left as it was.
+#[tokio::test]
+async fn an_update_onto_an_algorithm_the_tenant_cannot_sign_with_is_refused() {
+    let fixture = Fixture::new().holding_keys(&[SigningAlgorithm::EdDsa]);
+    let before = fixture.clients.row("c.alpha").expect("alpha").client;
+
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "client_id": "c.alpha",
+            "client_name": "Billing",
+            "redirect_uris": ["https://rp.example/cb"],
+            "grant_types": ["authorization_code"],
+            "id_token_signed_response_alg": "ES256",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        }))
+        .expect("serialise"),
+    );
+
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &body,
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let after = fixture.clients.row("c.alpha").expect("alpha").client;
+    assert_eq!(
+        after.registration.id_token_signed_response_alg,
+        before.registration.id_token_signed_response_alg,
+        "a refused update still replaced the row"
+    );
 }
