@@ -1,34 +1,73 @@
-{% extends "base.html" %}
-{% block title %}Sign in — {{ tenant_name }}{% endblock %}
-{% block content %}
-{# The second page in this tree that runs script, and the reason
-   `crates/web/src/source_audit.rs` carries a named exemption for it:
-   `navigator.credentials.get()` is a JavaScript API, so a WebAuthn assertion
-   cannot be produced from markup.
 
-   The shape is `passkey.html`'s, not `form_post.html`'s, and the difference is
-   which control the script drives. On the form-post page the button is the
-   mechanism and the script only presses it, so the button is real and always
-   visible. Here — as at enrolment — the button *is* the script: pressing it
-   with scripting off could do nothing at all. So it starts `hidden` and the
-   script reveals it, and what still works without script is the thing below
-   it, which was always the mechanism: the password form.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 
-   Conditional mediation (autofill) is a third layer on top of that. The
-   username field carries `autocomplete="username webauthn"`, which is what
-   asks a browser to offer passkeys inside its ordinary username dropdown; a
-   browser that does not support it ignores the token and shows the button
-   instead. Nothing depends on it. #}
-{# The shared error summary rather than a bare paragraph: a failed sign-in is
-   the failure a user meets most often, and it is the one that has to announce
-   itself and take the focus. See `error_summary.html`. #}
-{% include "error_summary.html" %}
+<meta name="referrer" content="no-referrer">
+<title>Sign in — Example Tenant</title>
+<style nonce="snapshot-nonce">:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
+@media (prefers-color-scheme: dark) {
+  :root { --fg: #eee; --bg: #16181c; --muted: #aaa; --line: #444; }
+}
+body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--fg);
+       font: 16px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+main { max-width: 26rem; margin: 0 auto; }
+h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1.5rem; }
+h2 { font-size: 1rem; font-weight: 600; margin: 0 0 .75rem; }
+label { display: block; margin: 0 0 1rem; }
+label span { display: block; margin-bottom: .25rem; }
+input[type=text], input[type=password], input[type=email] {
+  width: 100%; box-sizing: border-box; padding: .5rem;
+  border: 1px solid var(--line); border-radius: 4px;
+  background: var(--bg); color: var(--fg); font: inherit;
+}
+button { padding: .55rem 1rem; border: 0; border-radius: 4px; font: inherit;
+         cursor: pointer; background: #2f6fdb; color: #fff; }
+button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+.actions { display: flex; gap: .5rem; margin-top: 1.5rem; }
+.scopes { margin: 0 0 1.5rem; padding-left: 1.25rem; }
+.muted { color: var(--muted); font-size: .875rem; }
+.error { border-left: 3px solid #c0392b; padding-left: .75rem; margin-bottom: 1.5rem; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875rem; }
+label.inline { display: inline; margin: 0; }
+label.inline span { display: inline; }
+/* A one-time code is read off one screen and typed into another, so it is set
+   wide and monospaced: the characters that get confused doing that are 0/O and
+   1/l, and a proportional face is where they look alike. */
+input.code { letter-spacing: .15em; text-transform: uppercase;
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.code-display { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                font-size: 1.5rem; letter-spacing: .15em; margin: 0 0 1rem; }
+/* A link that acts as the page's one forward step. It is a link and not a
+   button because it navigates; this only makes it look like the rest. */
+a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
+           border-radius: 4px; background: #2f6fdb; color: #fff; }
+/* SC 2.4.7: the error summary takes the focus after a failed submission, and a
+   focused element a user cannot see is a focus indicator that is not there. */
+[tabindex="-1"]:focus { outline: 2px solid #c0392b; outline-offset: 4px; }
+.error p { margin: 0 0 .25rem; }</style>
+</head>
+<body>
+<main>
+<h1>Example Tenant</h1>
+
+
+
+
+
+<div class="error" role="alert" tabindex="-1" autofocus>
+<p><strong>There is a problem</strong></p>
+<p>That username and password did not match.</p>
+</div>
+
 
 <div id="passkey-signin"
-     data-options-url="{{ passkey_options_action }}"
-     data-finish-url="{{ passkey_finish_action }}"
-     data-next-url="{{ action }}"
-     data-csrf="{{ csrf }}"
+     data-options-url="/interaction/abc/passkeys/options"
+     data-finish-url="/interaction/abc/passkeys/finish"
+     data-next-url="/interaction/abc/login"
+     data-csrf="snapshot-csrf"
      data-working="Follow your device's prompt to sign in."
      data-failed="That did not work. Sign in with your password instead."
      hidden>
@@ -36,19 +75,16 @@
   <p class="muted" id="passkey-signin-status"></p>
 </div>
 
-<form method="post" action="{{ action }}">
-{# The synchroniser token. Every POST form in this tree carries one; see
-   `crates/web/src/source_audit.rs`, which fails the build if one does not. #}
-<input type="hidden" name="csrf" value="{{ csrf }}">
+<form method="post" action="/interaction/abc/login">
+
+<input type="hidden" name="csrf" value="snapshot-csrf">
 <label>
   <span>Username</span>
-  {# `autofocus` only when nothing went wrong: when it did, the error summary
-     above takes the caret instead, and two elements asking for it would leave
-     HTML's "first in document order" rule to decide. #}
+  
   <input type="text" name="username" id="username" autocomplete="username webauthn"
          autocapitalize="none"
-         {% if message.is_none() %}autofocus{% endif %}
-         spellcheck="false" required{% if let Some(hint) = login_hint %} value="{{ hint }}"{% endif %}>
+         
+         spellcheck="false" required value="ada@example.test">
 </label>
 <label>
   <span>Password</span>
@@ -58,15 +94,13 @@
 </form>
 
 <noscript>
-{# Rendered only when scripting is off. The page still signs people in — the
-   form above is untouched — so this says what is missing rather than
-   apologising for the page. #}
+
 <p class="muted">Signing in with a passkey needs JavaScript, because it is a
 browser API that a page has to call. JavaScript is switched off here, so use
 your username and password.</p>
 </noscript>
 
-<script {{ nonce_attribute|safe }}>
+<script nonce="snapshot-nonce">
 (() => {
   "use strict";
   const root = document.getElementById("passkey-signin");
@@ -166,4 +200,7 @@ your username and password.</p>
   }
 })();
 </script>
-{% endblock %}
+
+</main>
+</body>
+</html>

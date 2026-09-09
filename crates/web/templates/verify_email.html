@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{% if verified %}Email confirmed{% else %}Confirm your email{% endif %} — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# Two states of one thing, so one template: waiting for the link to be
+   followed, and the link having been followed.
+
+   The address is echoed back because a typo in it is the single most likely
+   reason nothing arrives, and a user who cannot see what was recorded cannot
+   spot it. It is escaped like everything else — it is a value the user typed,
+   which is to say a value an attacker can type. #}
+{% if verified %}
+<h2>Email confirmed</h2>
+<p class="muted">Thank you. <strong>{{ email }}</strong> is confirmed.</p>
+<div class="actions"><a class="button" href="{{ continue_href }}">Continue</a></div>
+{% else %}
+<h2>Confirm your email</h2>
+{% include "error_summary.html" %}
+<p class="muted">We sent a link to <strong>{{ email }}</strong>. Open it to
+finish setting up your account. The link stops working after a while, and only
+the newest one works.</p>
+
+{# The only action here, and it is a POST because it sends mail: a GET that
+   sends mail is a GET that any image tag on any page can fire. #}
+<form method="post" action="{{ resend_action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="actions"><button type="submit" class="secondary">Send it again</button></div>
+</form>
+{% endif %}
+{% endblock %}

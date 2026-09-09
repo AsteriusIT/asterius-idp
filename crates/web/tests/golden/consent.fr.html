@@ -1,4 +1,13 @@
-:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<meta name="referrer" content="no-referrer">
+<title>Authorise Example App — Example Tenant</title>
+<style nonce="snapshot-nonce">:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
 @media (prefers-color-scheme: dark) {
   :root { --fg: #eee; --bg: #16181c; --muted: #aaa; --line: #444; }
 }
@@ -38,4 +47,76 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 /* SC 2.4.7: the error summary takes the focus after a failed submission, and a
    focused element a user cannot see is a focus indicator that is not there. */
 [tabindex="-1"]:focus { outline: 2px solid #c0392b; outline-offset: 4px; }
-.error p { margin: 0 0 .25rem; }
+.error p { margin: 0 0 .25rem; }</style>
+</head>
+<body>
+<main>
+<h1>Example Tenant</h1>
+
+<h2>Example App would like access</h2>
+
+
+<p class="muted">You will be returned to <strong>app.example.test</strong>.</p>
+<p class="muted">Signed in as ada.</p>
+
+<form method="post" action="/interaction/abc/consent">
+<input type="hidden" name="csrf" value="snapshot-csrf">
+
+<ul class="scopes">
+
+  <li>
+    
+      
+      <input type="hidden" name="scope" value="openid">
+      Confirm who you are
+      <span class="muted">(required)</span>
+    
+    <span class="muted">(openid)</span>
+  </li>
+
+  <li>
+    
+      <label class="inline">
+        <input type="checkbox" name="scope" value="profile" checked>
+        Read your name and picture
+      </label>
+    
+    <span class="muted">(profile)</span>
+  </li>
+
+  <li>
+    
+      <label class="inline">
+        <input type="checkbox" name="scope" value="payments:read" checked>
+        payments:read
+      </label>
+    
+    <span class="muted">(payments:read)</span>
+  </li>
+
+</ul>
+
+
+<p class="muted">This will let Example App act on your behalf later,
+without you present.</p>
+
+
+
+<p class="muted">Access applies to:</p>
+<ul class="scopes">
+
+  <li>https://api.example.test/</li>
+
+</ul>
+
+
+
+<div class="actions">
+  <button type="submit" name="decision" value="allow">Allow</button>
+  <button type="submit" name="decision" value="deny" class="secondary">Deny</button>
+</div>
+</form>
+
+</main>
+</body>
+</html>

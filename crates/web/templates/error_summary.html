@@ -1,0 +1,22 @@
+{# The one error summary, included by every page that can fail.
+
+   WCAG 2.2 AA, and mostly SC 3.3.1: a failure has to be identified in text,
+   near the top, and reachable. `role="alert"` announces it to a screen reader
+   already on the page; `tabindex="-1"` with `autofocus` puts the caret on it
+   for the far more common case — a fresh render after a POST — without a line
+   of script. HTML does the focus management here, which is why no page that
+   includes this is on the `SCRIPTED_TEMPLATES` list.
+
+   Included rather than copied so that `message` reaches it from the including
+   page's own context: an askama include shares the caller's scope, so every
+   page that includes this has a `message: Option<…>` field and nothing else
+   needs saying.
+
+   The text is this server's, one of a fixed set, never a reason echoed from a
+   request. #}
+{% if let Some(message) = message %}
+<div class="error" role="alert" tabindex="-1" autofocus>
+<p><strong>There is a problem</strong></p>
+<p>{{ message }}</p>
+</div>
+{% endif %}
