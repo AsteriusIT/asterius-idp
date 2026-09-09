@@ -7438,3 +7438,152 @@ mod passkeys {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tenant creation provisions signing keys (`ast-qa3`)
+// ---------------------------------------------------------------------------
+
+use asterius_domain::ports::SystemClock;
+use asterius_store_pg::{ProvisionedTenants, TenantKeyStore};
+
+/// The tenant repository the composition root hands to everything else.
+fn provisioned_tenants(pool: &PgPool) -> ProvisionedTenants {
+    ProvisionedTenants::new(
+        PgTenantRepository::new(pool.clone(), kek()),
+        TenantKeyStore::new(
+            pool.clone(),
+            kek(),
+            Arc::new(PgAuditSink::new(pool.clone())),
+        ),
+        Arc::new(SystemClock),
+    )
+}
+
+/// One active key per advertised algorithm is what a provisioned tenant holds.
+///
+/// Written as a length so that adding a fourth algorithm to
+/// `SigningAlgorithm::ALL` fails the assertions below rather than quietly
+/// leaving one algorithm unprovisioned.
+fn algorithms() -> i64 {
+    i64::try_from(SigningAlgorithm::ALL.len()).expect("three algorithms fit in an i64")
+}
+
+/// How many keys in `state` the tenant holds, whatever the algorithm.
+async fn key_count(pool: &PgPool, tenant: &str, state: &str) -> i64 {
+    sqlx::query_scalar(
+        "select count(*) from signing_keys where tenant_id = $1 and purpose = 'sig' and state = $2",
+    )
+    .bind(tenant)
+    .bind(state)
+    .fetch_one(pool)
+    .await
+    .expect("count keys")
+}
+
+db_test! {
+    /// `ast-qa3`. Provisioning used to happen only in a loop in `main`, so a
+    /// tenant created any other way held no keys and — since `ast-a05.13` —
+    /// refused every client registration until the next restart. Creating one
+    /// now leaves it able to sign every algorithm the discovery document
+    /// advertises, with no boot involved.
+    async fn creating_a_tenant_provisions_a_key_for_every_advertised_algorithm(db) {
+        // Arrange
+        let tenants = provisioned_tenants(&db.pool);
+
+        // Act
+        tenants
+            .upsert(&tenant("provisioned", "https://as.example/t/provisioned"))
+            .await
+            .expect("create the tenant");
+
+        // Assert
+        let store = TenantKeyStore::new(
+            db.pool.clone(),
+            kek(),
+            Arc::new(PgAuditSink::new(db.pool.clone())),
+        );
+        let repository = store.for_tenant(&TenantId::new("provisioned"));
+        for algorithm in SigningAlgorithm::ALL {
+            assert!(
+                repository
+                    .active_signing_key(algorithm)
+                    .await
+                    .expect("read the active key")
+                    .is_some(),
+                "a tenant created off the boot path holds no active {algorithm} key"
+            );
+        }
+    }
+}
+
+db_test! {
+    /// Two replicas starting at the same moment assert the same configuration
+    /// at the same moment. The pass runs under
+    /// `pg_advisory_xact_lock(hashtext(tenant), hashtext('key-rotation'))`, so
+    /// the loser waits and then finds nothing due: one set of keys, not two.
+    /// A second `upsert` — the ordinary case of re-asserting a tenant on every
+    /// boot — must be equally free of new keys.
+    async fn provisioning_a_tenant_twice_at_once_leaves_one_key_per_algorithm(db) {
+        // Arrange
+        let subject = tenant("racing", "https://as.example/t/racing");
+        let one = provisioned_tenants(&db.pool);
+        let two = provisioned_tenants(&db.pool);
+
+        // Act
+        let (first, second) = tokio::join!(one.upsert(&subject), two.upsert(&subject));
+
+        // Assert
+        first.expect("the first writer");
+        second.expect("the second writer");
+        assert_eq!(
+            key_count(&db.pool, "racing", "active").await,
+            algorithms(),
+            "the race produced a key set per writer"
+        );
+        assert_eq!(
+            key_count(&db.pool, "racing", "pending").await,
+            0,
+            "a first provisioning staged a key nobody is waiting to publish"
+        );
+
+        one.upsert(&subject).await.expect("re-assert the tenant");
+        assert_eq!(
+            key_count(&db.pool, "racing", "active").await,
+            algorithms(),
+            "re-asserting a tenant created a second set of keys"
+        );
+    }
+}
+
+db_test! {
+    /// The reserved tenant of `ast-1cj`. It used to get its keys only because
+    /// `main` named it in the startup loop one step after seeding it — a
+    /// guarantee that held by the order of two calls in the composition root.
+    /// The seed provisions it itself now, so the deployment admin's login page
+    /// can mint a session however the seed was reached.
+    async fn the_seeded_reserved_tenant_can_sign_without_the_boot_loop(db) {
+        // Arrange / Act
+        let seeded = admin_seed(&db.pool)
+            .ensure(&deployment_admin("admin"))
+            .await
+            .expect("seed");
+
+        // Assert
+        let store = TenantKeyStore::new(
+            db.pool.clone(),
+            kek(),
+            Arc::new(PgAuditSink::new(db.pool.clone())),
+        );
+        let repository = store.for_tenant(&seeded.tenant);
+        for algorithm in SigningAlgorithm::ALL {
+            assert!(
+                repository
+                    .active_signing_key(algorithm)
+                    .await
+                    .expect("read the active key")
+                    .is_some(),
+                "the reserved tenant holds no active {algorithm} key"
+            );
+        }
+    }
+}

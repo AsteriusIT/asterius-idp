@@ -30,12 +30,15 @@
 //! It is checked against the same policy a user's password is
 //! ([`AcceptedPassword`], NIST SP 800-63B §5.1.1.2) before it is hashed.
 
+use crate::audit::PgAuditSink;
 use crate::error::to_domain_error;
+use crate::key_store::TenantKeyStore;
 use crate::passwords::PgPasswordVerifier;
+use crate::provisioning::ProvisionedTenants;
 use crate::roles::PgRoleRepository;
 use crate::tenants::PgTenantRepository;
 use crate::users::PgUserRepository;
-use asterius_domain::ports::{CredentialVerifier as _, TenantRepository as _};
+use asterius_domain::ports::{CredentialVerifier as _, SystemClock, TenantRepository as _};
 use asterius_domain::{
     AcceptedPassword, Argon2Parameters, ClaimSet, DomainError, Issuer, Role, Secret, Tenant,
     TenantId, TenantStatus, User, UserId, UserStatus,
@@ -167,9 +170,32 @@ impl PgAdminSeed {
     /// wants `is_reserved` reachable from the general tenant path: the admin
     /// API creating a tenant must not be able to reserve one.
     ///
+    /// Written through [`ProvisionedTenants`], so the reserved tenant holds a
+    /// signing key of every advertised algorithm by the time this returns. It
+    /// used to hold them only because `main` happened to name it in the
+    /// startup loop, one step after this one — a guarantee that depended on
+    /// the order of two functions in the composition root, which is the kind
+    /// that survives until the first refactor. The reserved tenant is the one
+    /// whose login page a deployment admin uses, and a login that mints no
+    /// session because the tenant cannot sign is a deployment nobody can
+    /// administer.
+    ///
+    /// The key store is built here rather than injected because there is one
+    /// audit sink for a PostgreSQL deployment and it is this pool: a
+    /// constructor argument would let a caller wire a seed that creates keys
+    /// and records nothing.
+    ///
     /// [`TenantRepository::upsert`]: asterius_domain::ports::TenantRepository::upsert
     async fn reserve_tenant(&self, admin: &DeploymentAdmin) -> Result<(), DomainError> {
-        let tenants = PgTenantRepository::new(self.pool.clone(), Arc::clone(&self.kek));
+        let tenants = ProvisionedTenants::new(
+            PgTenantRepository::new(self.pool.clone(), Arc::clone(&self.kek)),
+            TenantKeyStore::new(
+                self.pool.clone(),
+                Arc::clone(&self.kek),
+                Arc::new(PgAuditSink::new(self.pool.clone())),
+            ),
+            Arc::new(SystemClock),
+        );
         let existing = tenants.find_by_id(&admin.tenant).await?;
 
         let now = OffsetDateTime::now_utc();

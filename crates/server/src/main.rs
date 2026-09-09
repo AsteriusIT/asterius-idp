@@ -23,7 +23,7 @@ use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{
     DeploymentAdmin, PgAdminSeed, PgAuditSink, PgKekRewrap, PgReplayGuard, PgRetention,
-    PgTenantRepository, RewrapOutcome, Store, TenantKeyStore,
+    PgTenantRepository, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -100,7 +100,9 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         });
         tracing::info!(kek = kek.id(), "key-encryption key loaded");
 
-        let repository = PgTenantRepository::new(store.pool().clone(), Arc::clone(&kek));
+        // The key store before the tenants, because creating a tenant now
+        // provisions its signing keys.
+        let (keys, repository) = tenant_repository(&store, &kek);
         bootstrap_tenants(&repository, &config).await?;
         bootstrap_admin(&store, &kek, config.admin.as_ref()).await?;
 
@@ -114,7 +116,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             metrics,
         };
 
-        let (keys, signer) = prepare_keys(&store, &kek, &config).await?;
+        let signer = prepare_signer(&keys);
 
         // Client-facing endpoints: the ones that need an authenticated client
         // and the database. Built here rather than lazily so that a deployment
@@ -200,50 +202,52 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
     })
 }
 
-/// Opens the key store, prepares every configured tenant's keys, and builds
-/// the one object in this process that holds an unwrapped private key.
+/// The key store, and the tenant repository the whole process holds.
 ///
-/// The schedule is applied here rather than left to the sweep so that a
-/// deployment started with the wrong key-encryption key fails at boot, where
-/// somebody is watching, instead of on the first token request. It is the same
-/// call the sweep makes, so there is no separate bootstrap path to diverge
-/// from the steady-state one.
-///
-/// The signer is built here because that is what `PgKeyRepository`'s own
-/// documentation says the composition root is for: signing through the
-/// repository would unwrap the key on every token, which for a cloud KEK is a
-/// network round trip each time.
-async fn prepare_keys(
+/// `ProvisionedTenants` rather than the bare adapter, so that writing a tenant
+/// and giving it signing keys are one step: every consumer here takes the
+/// `TenantRepository` port, and none of them can produce a tenant that holds no
+/// keys and therefore refuses every client registration (`ast-qa3`). It is also
+/// what makes a deployment started with the wrong key-encryption key fail at
+/// boot, where somebody is watching, rather than on the first token request:
+/// the pass opens the active key it just wrote.
+fn tenant_repository(
     store: &Store,
-    kek: &Arc<dyn asterius_jose::kek::Kek>,
-    config: &Config,
-) -> Result<(Arc<TenantKeyStore>, Arc<dyn asterius_domain::keys::Signer>), String> {
+    kek: &Arc<dyn Kek>,
+) -> (Arc<TenantKeyStore>, ProvisionedTenants) {
     let keys = Arc::new(TenantKeyStore::new(
         store.pool().clone(),
         Arc::clone(kek),
         Arc::new(PgAuditSink::new(store.pool().clone())),
     ));
-
-    // The reserved tenant is prepared with the rest: it is a real tenant whose
-    // login page is where a deployment admin signs in, and a login that mints
-    // no session because the tenant has no signing key is a deployment nobody
-    // can administer.
-    let tenants = config
-        .tenants
-        .iter()
-        .map(|tenant| &tenant.id)
-        .chain(config.admin.as_ref().map(|admin| &admin.tenant));
-    for tenant in tenants {
-        keys.apply_schedule(tenant, OffsetDateTime::now_utc())
-            .await
-            .map_err(|e| format!("cannot prepare signing keys for {tenant}: {e}"))?;
-    }
-
-    let signer: Arc<dyn asterius_domain::keys::Signer> = Arc::new(CachedSigner::new(
+    let repository = ProvisionedTenants::new(
+        PgTenantRepository::new(store.pool().clone(), Arc::clone(kek)),
         (*keys).clone(),
         Arc::new(asterius_domain::ports::SystemClock),
-    ));
-    Ok((keys, signer))
+    );
+    (keys, repository)
+}
+
+/// Builds the one object in this process that holds an unwrapped private key.
+///
+/// There is no schedule loop here any more. Provisioning a tenant's keys is
+/// part of writing the tenant (`asterius_store_pg::ProvisionedTenants`), so by
+/// the time this runs every tenant the configuration declares — and the
+/// reserved tenant the admin seed writes — already holds an active key of
+/// every advertised algorithm, and a wrong key-encryption key has already
+/// failed the boot. A loop over the same tenants would repeat work rather than
+/// guarantee anything, and it guaranteed nothing for a tenant created by any
+/// other means, which is the bug it used to hide (`ast-qa3`).
+///
+/// The signer is built here because that is what `PgKeyRepository`'s own
+/// documentation says the composition root is for: signing through the
+/// repository would unwrap the key on every token, which for a cloud KEK is a
+/// network round trip each time.
+fn prepare_signer(keys: &Arc<TenantKeyStore>) -> Arc<dyn asterius_domain::keys::Signer> {
+    Arc::new(CachedSigner::new(
+        (**keys).clone(),
+        Arc::new(asterius_domain::ports::SystemClock),
+    ))
 }
 
 /// The periodic tasks, and the one handle that stops them all.
@@ -531,7 +535,7 @@ impl Invocation {
 /// restart re-asserts the declared shape without disturbing anything else — and
 /// an operator who corrects an issuer in the file sees it applied rather than
 /// silently ignored because the row already existed.
-async fn bootstrap_tenants(repository: &PgTenantRepository, config: &Config) -> Result<(), String> {
+async fn bootstrap_tenants(repository: &ProvisionedTenants, config: &Config) -> Result<(), String> {
     for declared in &config.tenants {
         let existing = repository
             .find_by_id(&declared.id)
