@@ -135,21 +135,31 @@ function Screen({ route, session }: { route: string; session: Session }): JSX.El
 /**
  * What the console shows when the API says 401.
  *
- * The button re-probes rather than navigating somewhere: a *first-party
- * sign-in entry* for the console does not exist yet. ADR-0009 settles that an
- * administrator authenticates through the same login flow as everyone else,
- * and that flow is driven by an authorization request today, so there is no
- * URL here that would start one and come back. Sending the browser to a
- * guessed path would be worse than saying so.
+ * The button reloads *this* document, and that is the whole entry: since
+ * `ast-wr4` the server guards `/admin/`, so a request for it without a session
+ * opens a first-party interaction and answers with the ordinary login page.
+ * No URL is constructed here — `location.reload()` asks for the address the
+ * browser is already at, so the tenant prefix comes along and nothing in this
+ * bundle has to know what it was. It is not `location.href = …` for the same
+ * reason: a page that assembles its own sign-in URL is a page that can be
+ * talked into assembling somebody else's.
+ *
+ * A session that ends mid-visit is the case that gets here now; a visitor with
+ * no session never sees the shell at all.
  */
 function SignedOut({ onRetry }: { onRetry: () => void }): JSX.Element {
   return (
     <main id="content" tabIndex={-1}>
       <h1>Signed out</h1>
-      <p>This console has no session. Sign in to this deployment, then continue.</p>
-      <button type="button" onClick={onRetry}>
-        Check again
+      <p>This console has no session. Sign in again to continue.</p>
+      <button type="button" onClick={() => window.location.reload()}>
+        Sign in
       </button>
+      <p className="muted">
+        <button type="button" onClick={onRetry}>
+          Check again
+        </button>
+      </p>
     </main>
   );
 }

@@ -35,9 +35,10 @@ use crate::http::throttle;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::session::SessionId;
 use asterius_domain::{
-    AuthenticationMethod, CodeBinding, CodeIssuer, CredentialVerifier, Grant, GrantRepository,
-    InteractionRecord, InteractionRepository, Lifetimes, Secret, SectorIdentifier, Session,
-    SessionId as DomainSessionId, SessionRepository, SubjectResolver, Tenant, TenantId, UserId,
+    AuthenticationMethod, ClientRequest, CodeBinding, CodeIssuer, CredentialVerifier,
+    FirstPartyDestination, Grant, GrantRepository, InteractionRecord, InteractionRepository,
+    Lifetimes, Secret, SectorIdentifier, Session, SessionId as DomainSessionId, SessionRepository,
+    SubjectResolver, Tenant, TenantId, UserId,
 };
 use asterius_oidc::authorize::ResponseMode;
 use asterius_oidc::code::{self, AuthorizationResponse, MintedCode};
@@ -243,19 +244,22 @@ struct ConsentOffer {
 
 /// Builds the consent offer for a request, when one is needed.
 ///
-/// Returns `None` for any stage that does not show it, and for a client that
-/// has gone away between the push and now — which renders the error page
-/// rather than a consent screen naming nobody.
+/// Returns `None` for any stage that does not show it, for a client that has
+/// gone away between the push and now — which renders the error page rather
+/// than a consent screen naming nobody — and for an interaction that has no
+/// client at all (ADR-0009), which has nothing to offer and never reaches
+/// [`Stage::Consent`] to be asked.
 async fn describe(
     context: &InteractionContext<'_>,
     record: &InteractionRecord,
 ) -> Option<ConsentOffer> {
-    let client = context.clients.find(&record.client).await.ok()??;
+    let request = record.client_request()?;
+    let client = context.clients.find(&request.client).await.ok()??;
 
     // The redirect URI was validated at push time against this client's
     // registered set, so its host is one the client actually owns — which is
     // what makes showing it worth anything (FAPI 2.0 SP §7).
-    let redirect_uri = record
+    let redirect_uri = request
         .parameters
         .get("redirect_uri")
         .and_then(serde_json::Value::as_str)
@@ -266,7 +270,7 @@ async fn describe(
         .unwrap_or_default();
     let form_action = redirect_uri.as_ref().and_then(form_action_origin);
 
-    let scopes: std::collections::BTreeSet<String> = record
+    let scopes: std::collections::BTreeSet<String> = request
         .parameters
         .get("scopes")
         .and_then(serde_json::Value::as_array)
@@ -278,7 +282,7 @@ async fn describe(
         })
         .unwrap_or_default();
 
-    let resources = record
+    let resources = request
         .parameters
         .get("resources")
         .and_then(serde_json::Value::as_array)
@@ -393,7 +397,7 @@ async fn sign_in(
     };
 
     let attempt = context.throttle.attempt(Some(username));
-    let mut state = match gate(context, presented, state, id, &attempt, now).await {
+    let state = match gate(context, presented, state, id, &attempt, now).await {
         Ok(state) => state,
         Err(response) => return *response,
     };
@@ -402,65 +406,7 @@ async fn sign_in(
         .verify(username, Secret::new(password.to_owned()))
         .await
     {
-        Ok(Some(user)) => {
-            // A session id the browser has never held before. See
-            // `asterius_domain::entities::session`: an id it held
-            // *before* authenticating is one an attacker may have
-            // planted, and this is the moment that stops mattering.
-            let id_value = SessionId::generate();
-            let session = Session::begin(
-                context.tenant.id.clone(),
-                &id_value,
-                user,
-                vec![AuthenticationMethod::Password],
-                now,
-                context.lifetimes,
-            );
-            if let Err(error) = context.sessions.begin(&session).await {
-                tracing::error!(%error, "cannot start a session");
-                return error_page(
-                    context,
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    InteractionError::NotAvailable,
-                );
-            }
-
-            // `ast-2vk.7` decides whether a step-up is needed; until
-            // then an authenticated user goes straight to consent.
-            if state.stage.may_advance_to(Stage::Consent) {
-                state.stage = Stage::Consent;
-            }
-            let token = state.issue_csrf();
-            if let Err(error) =
-                save(context, presented, &state, Some(&session.id_digest), now).await
-            {
-                return *error;
-            }
-
-            // The session was written a line ago, so the record this handler
-            // was resumed with does not name it yet, and the consent memory is
-            // keyed by who is signed in. Carrying the digest across rather than
-            // re-reading the row: it is the same value the `save` above just
-            // stored, and a second read could only disagree with it.
-            let record = InteractionRecord {
-                session: Some(session.id_digest.clone()),
-                ..record.clone()
-            };
-            if let Some(response) =
-                skip_consent_if_remembered(context, presented, state.clone(), &record, now).await
-            {
-                let mut response = response;
-                set_session_cookie(&mut response, &id_value);
-                return response;
-            }
-
-            // Signed in, so the next screen is consent — which needs the
-            // offer.
-            let offer = describe(context, &record).await;
-            let mut response = render(context, state.stage, &token, id, None, offer.as_ref());
-            set_session_cookie(&mut response, &id_value);
-            response
-        }
+        Ok(Some(user)) => authenticated(context, presented, state, id, record, user, now).await,
         // One message for "no such user" and "wrong password". The
         // verifier already equalises the *timing*; this equalises what
         // is said. Both halves are needed — identical text with a
@@ -494,6 +440,98 @@ async fn sign_in(
             )
         }
     }
+}
+
+/// Everything that follows a credential this server accepted.
+///
+/// Split out of [`sign_in`] where the split cannot reorder a check: above the
+/// line a credential is being decided, below it the decision is being made
+/// into a session. It is also the one place a session is created on a password
+/// path — the console's entry (`ast-wr4`) reaches it through the same
+/// [`submit`], not through a login of its own — so the fresh id, the `amr` and
+/// the cookie attributes are one implementation rather than two that agree.
+async fn authenticated(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    mut state: StoredState,
+    id: &str,
+    record: &InteractionRecord,
+    user: uuid::Uuid,
+    now: OffsetDateTime,
+) -> Response {
+    // A session id the browser has never held before. See
+    // `asterius_domain::entities::session`: an id it held
+    // *before* authenticating is one an attacker may have
+    // planted, and this is the moment that stops mattering.
+    let id_value = SessionId::generate();
+    let session = Session::begin(
+        context.tenant.id.clone(),
+        &id_value,
+        user,
+        vec![AuthenticationMethod::Password],
+        now,
+        context.lifetimes,
+    );
+    if let Err(error) = context.sessions.begin(&session).await {
+        tracing::error!(%error, "cannot start a session");
+        return error_page(
+            context,
+            StatusCode::SERVICE_UNAVAILABLE,
+            InteractionError::NotAvailable,
+        );
+    }
+
+    // `ast-2vk.7` decides whether a step-up is needed; until then
+    // an authenticated user goes straight to whatever this interaction
+    // was for — the consent screen for an authorization, the
+    // destination itself for a first-party login, which has nobody to
+    // consent to.
+    let next = Stage::after_login(&record.continuation);
+    if state.stage.may_advance_to(next, &record.continuation) {
+        state.stage = next;
+    }
+
+    // ADR-0009's path. The session is written and the interaction is
+    // over: there is no client, no scope and no screen left, so this
+    // returns before a consent offer is even described.
+    if let Some(destination) = record.continuation.first_party() {
+        state.spend_csrf();
+        if let Err(error) = save(context, presented, &state, Some(&session.id_digest), now).await {
+            return *error;
+        }
+        let mut response = arrive(context, presented, destination, now).await;
+        set_session_cookie(&mut response, &id_value);
+        return response;
+    }
+
+    let token = state.issue_csrf();
+    if let Err(error) = save(context, presented, &state, Some(&session.id_digest), now).await {
+        return *error;
+    }
+
+    // The session was written a line ago, so the record this handler
+    // was resumed with does not name it yet, and the consent memory is
+    // keyed by who is signed in. Carrying the digest across rather than
+    // re-reading the row: it is the same value the `save` above just
+    // stored, and a second read could only disagree with it.
+    let record = InteractionRecord {
+        session: Some(session.id_digest.clone()),
+        ..record.clone()
+    };
+    if let Some(response) =
+        skip_consent_if_remembered(context, presented, state.clone(), &record, now).await
+    {
+        let mut response = response;
+        set_session_cookie(&mut response, &id_value);
+        return response;
+    }
+
+    // Signed in, so the next screen is consent — which needs the
+    // offer.
+    let offer = describe(context, &record).await;
+    let mut response = render(context, state.stage, &token, id, None, offer.as_ref());
+    set_session_cookie(&mut response, &id_value);
+    response
 }
 
 /// Where the consent behind a grant came from.
@@ -602,7 +640,11 @@ async fn skip_consent_if_remembered(
     if state.stage != Stage::Consent {
         return None;
     }
-    let prompted = record
+    // A first-party interaction cannot be here — `Stage::may_advance_to`
+    // refuses `Consent` for one — and if it somehow were, it has no client
+    // whose earlier consent could cover anything.
+    let request = record.client_request()?;
+    let prompted = request
         .parameters
         .get("prompts")
         .and_then(serde_json::Value::as_array)
@@ -627,8 +669,8 @@ async fn skip_consent_if_remembered(
             return None;
         }
     };
-    let asked = Asked::from_parameters(&record.parameters);
-    let covered = Remembered::of_client(&grants, &record.client, &subject, now).covers(
+    let asked = Asked::from_parameters(&request.parameters);
+    let covered = Remembered::of_client(&grants, &request.client, &subject, now).covers(
         &asked,
         context.memory,
         now,
@@ -649,7 +691,10 @@ async fn skip_consent_if_remembered(
     state.decision = Some(StoredDecision::Approved {
         scopes: asked.scopes.iter().cloned().collect(),
     });
-    if !state.stage.may_advance_to(Stage::Response) {
+    if !state
+        .stage
+        .may_advance_to(Stage::Response, &record.continuation)
+    {
         return None;
     }
     state.stage = Stage::Response;
@@ -658,7 +703,7 @@ async fn skip_consent_if_remembered(
 
     tracing::info!(
         tenant = %context.tenant.id,
-        client = %record.client,
+        client = %request.client,
         "the consent screen was skipped: this request is covered by an earlier consent"
     );
     Some(
@@ -689,7 +734,11 @@ async fn subject_of_record(
     if !session.status(now).is_usable() {
         return None;
     }
-    let client = context.clients.find(&record.client).await.ok()??;
+    let client = context
+        .clients
+        .find(&record.client_request()?.client)
+        .await
+        .ok()??;
     let sector = SectorIdentifier::of_client(&client).ok()?;
     context
         .subjects
@@ -772,7 +821,10 @@ async fn decide(
         },
         Decision::Denied => StoredDecision::Denied,
     });
-    if !state.stage.may_advance_to(Stage::Response) {
+    if !state
+        .stage
+        .may_advance_to(Stage::Response, &record.continuation)
+    {
         return error_page(
             context,
             StatusCode::BAD_REQUEST,
@@ -825,8 +877,22 @@ async fn complete(
     source: ConsentSource,
     now: OffsetDateTime,
 ) -> Response {
+    // A decision belongs to an authorization: it is what the user said to a
+    // *client*. A first-party interaction never reaches consent and therefore
+    // never reaches here, so this is a wiring fault rather than a case.
+    let Some(request) = record.client_request() else {
+        tracing::error!(
+            tenant = %context.tenant.id,
+            "a consent decision was recorded for an interaction with no client"
+        );
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
     let string = |name: &str| {
-        record
+        request
             .parameters
             .get(name)
             .and_then(serde_json::Value::as_str)
@@ -871,18 +937,20 @@ async fn complete(
             state,
             issuer,
         },
-        Decision::Approved { scopes } => match mint(context, scopes, record, source, now).await {
-            Ok(code) => AuthorizationResponse::Code {
-                code,
-                state,
-                issuer,
-            },
-            Err(error) => AuthorizationResponse::Error {
-                error,
-                state,
-                issuer,
-            },
-        },
+        Decision::Approved { scopes } => {
+            match mint(context, scopes, request, record, source, now).await {
+                Ok(code) => AuthorizationResponse::Code {
+                    code,
+                    state,
+                    issuer,
+                },
+                Err(error) => AuthorizationResponse::Error {
+                    error,
+                    state,
+                    issuer,
+                },
+            }
+        }
     };
 
     // How it is delivered was decided at push time and stored, so this reads
@@ -922,19 +990,20 @@ async fn complete(
 async fn mint(
     context: &InteractionContext<'_>,
     scopes: &std::collections::BTreeSet<String>,
+    request: &ClientRequest,
     record: &InteractionRecord,
     source: ConsentSource,
     now: OffsetDateTime,
 ) -> Result<String, &'static str> {
     let string = |name: &str| {
-        record
+        request
             .parameters
             .get(name)
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned)
     };
 
-    let Ok(Some(client)) = context.clients.find(&record.client).await else {
+    let Ok(Some(client)) = context.clients.find(&request.client).await else {
         tracing::error!(tenant = %context.tenant.id, "the client went away mid-authorization");
         return Err("server_error");
     };
@@ -974,11 +1043,11 @@ async fn mint(
         }
     };
 
-    let mut grant = Grant::new(context.tenant.id.clone(), record.client.clone(), now);
+    let mut grant = Grant::new(context.tenant.id.clone(), request.client.clone(), now);
     grant.user = Some(user);
     grant.subject = Some(subject);
     grant.scopes = scopes.iter().cloned().collect();
-    grant.resources = record
+    grant.resources = request
         .parameters
         .get("resources")
         .and_then(serde_json::Value::as_array)
@@ -992,7 +1061,7 @@ async fn mint(
     // The consent boundary (`ast-1sk.6`): the claims request the user approved
     // and the language they asked to be answered in are copied onto the grant
     // here, and `claims::resolve_for_grant` reads them from nowhere else.
-    asterius_oidc::claims::record_on_grant(&record.parameters, &mut grant);
+    asterius_oidc::claims::record_on_grant(&request.parameters, &mut grant);
     grant.session = Some(DomainSessionId::new(digest.to_owned()));
     // `claimed_at` stays `None`: Grant Management ID1 §5.6 makes a grant
     // `active` when a credential has been *claimed*, and nothing has been. The
@@ -1015,7 +1084,7 @@ async fn mint(
     };
     let minted = MintedCode::generate();
     let binding = CodeBinding {
-        client_id: record.client.as_str().to_owned(),
+        client_id: request.client.as_str().to_owned(),
         grant_id,
         code_challenge,
         // Byte-for-byte the URI the code is being sent to, so redemption can
@@ -1032,6 +1101,66 @@ async fn mint(
     }
 
     Ok(minted.expose().to_owned())
+}
+
+/// The end of a first-party interaction: the browser goes to the destination.
+///
+/// # Why there is no URL anywhere in this function
+///
+/// `destination` is a [`FirstPartyDestination`] — a variant of a closed enum —
+/// and [`crate::http::console::location_of`] turns it into a compiled-in path.
+/// Nothing the browser sent is consulted, so there is no destination to
+/// validate, no allow-list to keep in step with the router, and no open
+/// redirect to get wrong (ADR-0009, `ast-wr4`). A `next` parameter would put
+/// all three back.
+///
+/// The interaction is spent first, for the reason [`complete`] gives: two tabs
+/// that both submit a login must produce one arrival, and the spend is what
+/// decides which. The interaction cookie goes with the response, because one
+/// left in the browser is one an attacker can keep presenting against a row
+/// that will never answer again.
+async fn arrive(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    destination: FirstPartyDestination,
+    now: OffsetDateTime,
+) -> Response {
+    if let Err(error) = context
+        .requests
+        .complete_interaction(&presented.digest(), now)
+        .await
+    {
+        tracing::warn!(%error, tenant = %context.tenant.id, "nothing live to complete");
+        return error_page(
+            context,
+            StatusCode::BAD_REQUEST,
+            InteractionError::NotAvailable,
+        );
+    }
+
+    let Ok(redirect) =
+        crate::http::redirect::SeeOther::to(crate::http::console::location_of(destination))
+    else {
+        // Unreachable: the location is a `&'static str` in this crate with no
+        // control character in it.
+        tracing::error!(
+            tenant = %context.tenant.id,
+            "a compiled-in destination is not a usable Location"
+        );
+        return error_page(
+            context,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            InteractionError::NotAvailable,
+        );
+    };
+
+    let mut response = redirect.into_response();
+    clear(&mut response);
+    // The response carries a `Set-Cookie` for a fresh session.
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Sends the browser back to the client.

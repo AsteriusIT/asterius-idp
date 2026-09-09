@@ -61,6 +61,18 @@ impl AuthRequestRepository for Store {
 
 #[async_trait::async_trait]
 impl InteractionRepository for Store {
+    /// `/authorize` never opens one: a first-party interaction has no
+    /// `request_uri` behind it, and this store is the authorization one.
+    async fn begin_first_party_interaction(
+        &self,
+        _digest: &str,
+        _destination: asterius_domain::FirstPartyDestination,
+        _expires_at: OffsetDateTime,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     async fn begin_interaction(
         &self,
         request: &str,

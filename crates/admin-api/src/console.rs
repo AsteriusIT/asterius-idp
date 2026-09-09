@@ -146,9 +146,20 @@ struct Index {
     styles: Vec<&'static str>,
 }
 
-/// The console's routes. All of them are `GET`, and none of them changes
-/// anything: this is a static bundle and a rendered document.
-pub fn routes(bundle: Bundle) -> Router {
+/// The console's *unguarded* routes: the redirect to the trailing slash, and
+/// the assets.
+///
+/// The entry document is not here. It is mounted by the composition root
+/// against a handler that has a session repository behind it
+/// (`asterius_server::http::console`), because ADR-0009 makes a session the
+/// console's only credential and `ast-wr4` makes the absence of one an
+/// interaction rather than a blank shell. Serving the document from a router
+/// with no state at all is what made "signed out" a thing the *script* had to
+/// notice; keeping the two apart is what stops it becoming that again.
+///
+/// All of these are `GET`, and none of them changes anything: this is a static
+/// bundle.
+pub fn assets(bundle: Bundle) -> Router {
     Router::new()
         // `/admin` without the slash is a mistake a person makes by typing.
         // A redirect rather than a second copy of the document, because the
@@ -164,29 +175,24 @@ pub fn routes(bundle: Bundle) -> Router {
                 )
             }),
         )
-        .route(INDEX_PATH, get(move |nonce| index(bundle, nonce)))
         .route("/admin/assets/{file}", get(move |file| asset(bundle, file)))
 }
 
-/// `GET /admin/` — the entry document, under this response's nonce.
-#[expect(clippy::unused_async, reason = "axum handlers must be async")]
-async fn index(bundle: Bundle, nonce: Option<axum::Extension<Nonce>>) -> Response {
-    let Some(axum::Extension(nonce)) = nonce else {
-        // Unreachable in the assembled application: `document::layer` wraps
-        // every route. Refused rather than rendered, because a document with
-        // no nonce is a page whose own script the browser will block, and a
-        // blank console is worse than a sentence.
-        tracing::error!("the console was reached without the document middleware");
-        return unavailable("the document middleware is not installed");
-    };
-
+/// The entry document, under this response's nonce.
+///
+/// Takes the nonce rather than reaching for it, because the caller has already
+/// had to have one: `Document::render` cannot be called without it, and the
+/// handler that decides whether this visitor may see the console at all is in
+/// a position to fail properly if the middleware is missing.
+#[must_use]
+pub fn document(bundle: Bundle, nonce: &Nonce) -> Response {
     let Some(script) = bundle.entry_script() else {
         return unavailable(
             "this build carries no console bundle: run `npm run build` in console/ and rebuild",
         );
     };
 
-    Document::render(&nonce, |nonce| {
+    Document::render(nonce, |nonce| {
         Index {
             nonce_attribute: nonce.attribute(),
             script,
@@ -264,6 +270,28 @@ mod tests {
 
     fn bundle() -> Bundle {
         Bundle::new(&FIXTURE, Some(SCRIPT), &STYLES)
+    }
+
+    /// The console as the composition root mounts it: the unguarded
+    /// [`assets`] beside an entry document. `asterius_server::http::console`
+    /// is the real handler for the document — it decides whether this visitor
+    /// has a session at all — and this stands in for the half of it that draws
+    /// the page, so that the properties of the *document* can be asserted
+    /// without a tenant and a session repository.
+    fn routes(bundle: Bundle) -> Router {
+        assets(bundle).route(
+            INDEX_PATH,
+            axum::routing::get(move |nonce: Option<axum::Extension<Nonce>>| async move {
+                let Some(axum::Extension(nonce)) = nonce else {
+                    // What the real handler does with a router that forgot the
+                    // middleware: a document with no nonce is a page whose own
+                    // script the browser will block, and a blank console is
+                    // worse than a sentence.
+                    return unavailable("the document middleware is not installed");
+                };
+                document(bundle, &nonce)
+            }),
+        )
     }
 
     /// A request through the document middleware, which is how the console is

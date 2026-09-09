@@ -159,8 +159,10 @@ impl FakeInteractions {
             digest: digest.to_owned(),
             record: Mutex::new(Some(InteractionRecord {
                 tenant: TenantId::new("demo"),
-                client: ClientId::new("billing"),
-                parameters: json!({}),
+                continuation: asterius_domain::Continuation::for_client(
+                    ClientId::new("billing"),
+                    json!({}),
+                ),
                 state: serde_json::to_value(&progress).expect("a state serialises"),
                 session: None,
                 expires_at: now + time::Duration::minutes(10),
@@ -185,6 +187,19 @@ impl FakeInteractions {
 
 #[async_trait::async_trait]
 impl InteractionRepository for FakeInteractions {
+    /// Not reachable from a passkey ceremony: a first-party interaction is
+    /// opened by the console's entry (`asterius_server::http::console`), never
+    /// by this endpoint.
+    async fn begin_first_party_interaction(
+        &self,
+        _digest: &str,
+        _destination: asterius_domain::FirstPartyDestination,
+        _expires_at: OffsetDateTime,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::NotFound)
+    }
+
     async fn begin_interaction(
         &self,
         _r: &str,

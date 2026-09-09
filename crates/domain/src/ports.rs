@@ -5,9 +5,9 @@
 
 use crate::{
     AuthenticationMethod, Client, ClientId, ClientStatus, CodeBinding, Consumed, DomainError,
-    Enrolment, Grant, InteractionRecord, Issuer, NewPasskey, Participant, PushedRequest,
-    RegisteredPasskey, Secret, SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant,
-    TenantId, User, UserId,
+    Enrolment, FirstPartyDestination, Grant, InteractionRecord, Issuer, NewPasskey, Participant,
+    PushedRequest, RegisteredPasskey, Secret, SectorIdentifier, Session, SessionRevocation,
+    SubjectId, Tenant, TenantId, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -457,6 +457,27 @@ pub trait InteractionRepository: Debug + Send + Sync {
     /// [`DomainError::Storage`] if the delete fails. Absent is not an error —
     /// destroying something already gone is the outcome that was wanted.
     async fn destroy_interaction(&self, interaction_digest: &str) -> Result<(), DomainError>;
+
+    /// Opens an interaction that has no client behind it (ADR-0009).
+    ///
+    /// The first-party surface — today the admin console — needs a session,
+    /// and a session is what the login flow produces. So it opens an
+    /// interaction of its own rather than an authorization: no `request_uri`,
+    /// no client, no scopes, and a destination that is a
+    /// [`FirstPartyDestination`] variant rather than anything a request
+    /// carried.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the id is already in use, which at 256
+    /// bits means the generator is broken. [`DomainError::Storage`] otherwise.
+    async fn begin_first_party_interaction(
+        &self,
+        interaction_digest: &str,
+        destination: FirstPartyDestination,
+        expires_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
 }
 
 /// Verifies a user's credential.

@@ -79,6 +79,15 @@ docs (table_name, column_name, repairable, row_key, doc) as (
            interaction_state
     from auth_requests
     union all
+    -- The console's login (`ast-wr4`) keeps the same progress document in a
+    -- table of its own, because it has no client and therefore no
+    -- `request_uri` to be keyed by.
+    select 'first_party_interactions', 'interaction_state', true,
+           jsonb_build_object('tenant_id', tenant_id,
+                              'interaction_id_hash', encode(interaction_id_hash, 'hex')),
+           interaction_state
+    from first_party_interactions
+    union all
     select 'grants', 'claims', true,
            jsonb_build_object('tenant_id', tenant_id, 'grant_id', grant_id), claims
     from grants
@@ -125,6 +134,7 @@ inventory (table_name, column_name) as (
            ('users', 'claims'),
            ('auth_requests', 'parameters'),
            ('auth_requests', 'interaction_state'),
+           ('first_party_interactions', 'interaction_state'),
            ('grants', 'claims'),
            ('grants', 'authorization_details'),
            ('grants', 'actor_chain'),

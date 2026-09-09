@@ -213,6 +213,20 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "first_party_interactions",
+        rule: Rule::Sweep {
+            // The login progress of somebody entering this server's own
+            // console: a synchroniser digest and a session digest. Nothing a
+            // client pushed, because there is no client — but it is the same
+            // material `auth_requests` holds and it is swept on the same terms.
+            statement: "delete from first_party_interactions where ctid = any (array(
+                            select ctid from first_party_interactions
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "grants",
         rule: Rule::Kept(
             "a grant is the revocable unit of authority: deleting one deletes \

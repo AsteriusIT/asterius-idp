@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into first_party_interactions\n                 (tenant_id, interaction_id_hash, destination, started_at, expires_at)\n             values ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ff24aaa26847354251729a0cc7a01236b5fe4da8d7d53a37a0073e8b86a481b4"
+}

@@ -6,6 +6,7 @@ use axum::http::{HeaderMap, header};
 pub mod authorization_code;
 pub mod authorize;
 pub mod client_configuration;
+pub mod console;
 pub mod deliver;
 pub mod dpop;
 pub mod forwarded;

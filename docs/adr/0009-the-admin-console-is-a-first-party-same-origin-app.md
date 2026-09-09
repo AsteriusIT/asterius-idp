@@ -210,6 +210,23 @@ per tenant, so a tenant-scoped administrator has a natural home and a
 designated tenant or a new kind of principal is a modelling decision that (a)
 does not imply, and it needs its own bead.
 
+**The way in was left open here, and `ast-wr4` closes it.** This ADR says what
+the console is not; it does not say how a session comes to exist for it, and
+the constraint above — that an administrator authenticates through the same
+flow as everyone else — is what made that a real question, because that flow is
+driven by an authorization request. The answer is a **first-party continuation
+of the interaction**: `GET /t/{tenant}/admin/` without a usable session opens
+an interaction whose continuation is `Continuation::FirstParty(AdminConsole)`
+rather than a client's `redirect_uri`, and hands the browser to the ordinary
+`/interaction/{id}` pages. The session is still made by
+`interaction::sign_in` and by nothing else, so the throttle, the rotation, the
+single failure message and the recorded `acr`/`amr` are the same code rather
+than the same intention. The destination is a **variant of a closed enum, never
+a parameter** — there is no `next=`, so there is no URL to validate and no
+allow-list to keep in step with the router. Under ADR-0010 the console lives
+under its tenant's URL space and there is none at the root: a session belongs to
+a tenant, so a tenant administrator signs in under their own.
+
 **Audit.** `AuditActor::Admin(String)` already exists in
 `crates/domain/src/audit/mod.rs`, described there as "an administrator using the
 admin API or console". Under this decision the string it carries is a user

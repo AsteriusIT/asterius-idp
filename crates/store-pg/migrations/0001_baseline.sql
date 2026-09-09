@@ -621,6 +621,49 @@ create index auth_requests_by_interaction
     on auth_requests (tenant_id, interaction_id_hash)
     where interaction_id_hash is not null;
 
+-- An interaction with no client behind it (ADR-0009): a person signing in to
+-- this server's own first-party surface, which today is the admin console.
+--
+-- A table of its own rather than a nullable `client_id` on `auth_requests`.
+-- That column is `not null` with a foreign key because an OAuth authorization
+-- without a client is nonsense, and relaxing it here to make room for a login
+-- that has no client would make that nonsense representable in every row of
+-- the authorization table. The two things share a stage machine, not a shape.
+create table first_party_interactions (
+    tenant_id           text        not null,
+    -- The browser's credential, digested, exactly as in `auth_requests`: a
+    -- leaked row must not yield a resumable interaction.
+    interaction_id_hash bytea       not null,
+    -- Where this interaction ends, as `FirstPartyDestination::as_str` writes
+    -- it. **Not a URL, and never one.** The set of legal values is the set of
+    -- variants of a closed Rust enum, so a row that named a destination the
+    -- binary does not have cannot be finished at all — which is the point: an
+    -- open redirect is impossible here because there is nothing to redirect
+    -- *to* except a compiled-in path.
+    destination         text        not null,
+    -- Login progress, the same opaque document `auth_requests` holds, written
+    -- and read by the same stage machine.
+    interaction_state   jsonb       not null default '{}'::jsonb,
+    session_id          text,
+    started_at          timestamptz not null default now(),
+    expires_at          timestamptz not null,
+    -- Spent when the browser is sent to the destination, so a completed
+    -- interaction cannot be replayed into a second session.
+    consumed_at         timestamptz,
+
+    primary key (tenant_id, interaction_id_hash),
+    -- The same uniqueness `auth_requests.interaction_id_hash` carries. The two
+    -- tables are looked up in a fixed order by one repository, and an id is
+    -- 256 random bits, so a digest naming a row in both is not a case anything
+    -- has to arbitrate.
+    unique (interaction_id_hash),
+    constraint first_party_interactions_destination_is_named
+        check (destination <> '')
+);
+
+create index first_party_interactions_expiring
+    on first_party_interactions (expires_at);
+
 -- A grant is the revocable unit of authority. Every token traces back to one,
 -- which is what makes revocation a single row update rather than a hunt.
 create table grants (

@@ -50,6 +50,34 @@ is relative, and the console routes on the fragment (`#/tenants`) rather than
 on the path, which keeps the document URL — and therefore the base every
 relative URL resolves against — exactly where the server put it.
 
+## How a session starts (`ast-wr4`)
+
+There is one console per tenant, at `/t/{id}/admin/`, and none at the root. A
+session belongs to a tenant (ADR-0010) and the deployment administrator is a
+user of the reserved tenant (`ast-1cj`), so an administrator signs in under
+their own tenant and a session opened in one is not a session in another.
+
+`GET /t/{id}/admin/` without a usable session does not serve this bundle. The
+server opens an **interaction** — the same row the login and consent pages are
+driven by — whose continuation is a first-party destination rather than a
+client's `redirect_uri`, and redirects to `/interaction/{id}`. The visitor then
+meets the ordinary login page, and `interaction::sign_in` produces the session:
+the same rotation, the same throttle, the same one sentence for "no such user"
+and "wrong password", the same recorded `acr`/`amr`. ADR-0009 requires exactly
+that — an administrator authenticates through the same flow as everyone else,
+because a second authentication path is a second thing to get wrong.
+
+**There is no `next` parameter, and there must never be one.** The destination
+is a variant of a closed enum (`FirstPartyDestination`), which the server maps
+to a compiled-in relative path. Nothing a browser sends can move it, so the
+open redirect is impossible rather than guarded. If a future screen needs to be
+returned to, it is a new variant, not a new parameter.
+
+The `SignedOut` screen therefore reloads this document instead of naming a
+sign-in URL: reloading is the entry, and it keeps the tenant prefix without
+this bundle ever knowing what it was. It is reached when a session *ends*
+mid-visit; a visitor who never had one does not get this far.
+
 ## The API, and CSRF
 
 `src/api.ts` is the only place that calls the server. Reads are plain `GET`s;
