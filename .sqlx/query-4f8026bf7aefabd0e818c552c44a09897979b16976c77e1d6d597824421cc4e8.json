@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select counter from rate_limits\n              where tenant_id = $1 and bucket = $2 and window_start = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "counter",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4f8026bf7aefabd0e818c552c44a09897979b16976c77e1d6d597824421cc4e8"
+}

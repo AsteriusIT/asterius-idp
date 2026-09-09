@@ -14,6 +14,7 @@
 //! that data does not leak between scopes.
 
 use asterius_domain::ports::{TenantRepository, TenantScoped};
+use asterius_domain::rate_limit::RateLimitStore as _;
 use asterius_domain::{Issuer, Tenant, TenantId, TenantStatus};
 use asterius_store_pg::{MIGRATOR, PgTenantRepository, Store};
 use sqlx::Row;
@@ -7615,5 +7616,107 @@ db_test! {
                 "the reserved tenant holds no active {algorithm} key"
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rate limits (ast-2vk.9)
+// ---------------------------------------------------------------------------
+
+db_test! {
+    /// The property the whole design rests on: the counter is in the database,
+    /// so two callers — two replicas, in production — that increment the same
+    /// bucket at the same time produce two, not one. A counter per process
+    /// would multiply every configured limit by the replica count.
+    async fn concurrent_increments_of_one_bucket_are_not_lost(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        let store = asterius_store_pg::PgRateLimitStore::new(db.pool.clone());
+        let tenant = TenantId::new("demo");
+        let bucket = asterius_domain::account_bucket("ada");
+        let window = OffsetDateTime::UNIX_EPOCH;
+        let expiry = window + time::Duration::minutes(15);
+
+        // Act
+        let one = store.record(&tenant, &bucket, window, expiry);
+        let two = store.record(&tenant, &bucket, window, expiry);
+        let (first, second) = tokio::join!(one, two);
+
+        // Assert
+        let mut counts = [
+            first.expect("the first increment"),
+            second.expect("the second increment"),
+        ];
+        counts.sort_unstable();
+        assert_eq!(counts, [1, 2], "an increment was lost");
+        assert_eq!(
+            store
+                .count(&tenant, &bucket, window)
+                .await
+                .expect("read the counter"),
+            2
+        );
+    }
+}
+
+db_test! {
+    /// A counter is a per-tenant fact. One tenant's failed sign-ins must not
+    /// lock a user of another tenant out.
+    async fn one_tenants_counter_is_not_another_tenants(db) {
+        // Arrange
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let store = asterius_store_pg::PgRateLimitStore::new(db.pool.clone());
+        let bucket = asterius_domain::account_bucket("ada");
+        let window = OffsetDateTime::UNIX_EPOCH;
+
+        // Act
+        store
+            .record(
+                &TenantId::new("alpha"),
+                &bucket,
+                window,
+                window + time::Duration::minutes(15),
+            )
+            .await
+            .expect("count a failure for alpha");
+
+        // Assert
+        assert_eq!(
+            store
+                .count(&TenantId::new("beta"), &bucket, window)
+                .await
+                .expect("read beta's counter"),
+            0
+        );
+    }
+}
+
+db_test! {
+    /// Windows are separate rows, so the limit lifts when one rolls over
+    /// rather than when somebody remembers to reset it.
+    async fn a_later_window_starts_from_zero(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        let store = asterius_store_pg::PgRateLimitStore::new(db.pool.clone());
+        let tenant = TenantId::new("demo");
+        let bucket = asterius_domain::account_bucket("ada");
+        let first = OffsetDateTime::UNIX_EPOCH;
+        let next = first + time::Duration::minutes(15);
+
+        // Act
+        store
+            .record(&tenant, &bucket, first, next)
+            .await
+            .expect("count a failure");
+
+        // Assert
+        assert_eq!(
+            store
+                .count(&tenant, &bucket, next)
+                .await
+                .expect("read the next window"),
+            0
+        );
     }
 }

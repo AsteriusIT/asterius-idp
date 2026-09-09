@@ -44,6 +44,17 @@ impl EventType {
     pub const AUTH_LOGIN: Self = Self("auth.login");
     /// An authentication attempt failed.
     pub const AUTH_FAILED: Self = Self("auth.failed");
+    /// An authentication attempt was refused before any credential was
+    /// checked, because the address or the identifier had already failed too
+    /// often.
+    ///
+    /// Separate from [`Self::AUTH_FAILED`] because the two answer different
+    /// questions during an incident: a run of failures is somebody guessing,
+    /// and a run of throttles is the limiter holding. Conflating them would
+    /// hide whichever one is rarer. The record names the *bucket* that was
+    /// full, never the identifier that was typed — see
+    /// `asterius_domain::rate_limit`.
+    pub const AUTH_THROTTLED: Self = Self("auth.throttled");
     /// A credential was registered for a user: a passkey, a password, a
     /// recovery code.
     ///
@@ -98,11 +109,12 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
         Self::AUTH_FAILED,
+        Self::AUTH_THROTTLED,
         Self::CREDENTIAL_CREATED,
         Self::CONSENT_GRANTED,
         Self::CONSENT_DENIED,

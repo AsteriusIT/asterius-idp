@@ -21,6 +21,13 @@ pub const TOKENS_ISSUED: &str = "asterius_tokens_issued_total";
 pub const PROTOCOL_ERRORS: &str = "asterius_protocol_errors_total";
 /// Audit records appended.
 pub const AUDIT_EVENTS: &str = "asterius_audit_events_total";
+/// Sign-in attempts refused by the login limiter, by which limit was full.
+///
+/// The label is `ip` or `account` — the *kind* of bucket, never the bucket
+/// itself. Labelling it with the address or the identifier would let one
+/// attacker mint a time series per guess, which is the cardinality problem
+/// this module exists to avoid, and would also publish who is being targeted.
+pub const LOGIN_THROTTLED: &str = "asterius_login_throttled_total";
 /// Always 1, labelled with the build. Gives a scrape something to find even on
 /// an idle server, and lets a dashboard tell which version a replica is running.
 pub const BUILD_INFO: &str = "asterius_build_info";
@@ -61,6 +68,10 @@ impl Metrics {
         metrics::describe_counter!(TOKENS_ISSUED, "Tokens issued by grant type");
         metrics::describe_counter!(PROTOCOL_ERRORS, "Protocol errors by OAuth error code");
         metrics::describe_counter!(AUDIT_EVENTS, "Audit records appended");
+        metrics::describe_counter!(
+            LOGIN_THROTTLED,
+            "Sign-in attempts refused by the login limiter, by limit"
+        );
         metrics::describe_gauge!(BUILD_INFO, "Always 1, labelled with the running build");
         metrics::gauge!(BUILD_INFO, "version" => crate::VERSION).set(1.0);
 
@@ -85,6 +96,11 @@ pub fn token_issued(grant_type: &'static str) {
 /// a message: it becomes a label.
 pub fn protocol_error(code: &'static str) {
     metrics::counter!(PROTOCOL_ERRORS, "code" => code).increment(1);
+}
+
+/// Records one sign-in refused by the limiter.
+pub fn login_throttled(scope: &'static str) {
+    metrics::counter!(LOGIN_THROTTLED, "limit" => scope).increment(1);
 }
 
 /// Records one appended audit record.

@@ -25,8 +25,9 @@
 
 use crate::config::{
     DEFAULT_ADMIN_TENANT, DEFAULT_ADMIN_USERNAME, DEFAULT_BIND, DEFAULT_BODY_LIMIT,
+    DEFAULT_LOGIN_MAX_PER_ACCOUNT, DEFAULT_LOGIN_MAX_PER_ADDRESS, DEFAULT_LOGIN_WINDOW_SECONDS,
     DEFAULT_MAX_CONNECTIONS, DEFAULT_MODE, DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    DEFAULT_TRUSTED_PROXIES, ROOT_TABLE, TransportMode,
+    DEFAULT_TRUSTED_PROXIES, MIN_LOGIN_WINDOW_SECONDS, ROOT_TABLE, TransportMode,
 };
 use crate::http::register::MIN_INITIAL_ACCESS_TOKEN_LEN;
 use crate::observability::LogFormat;
@@ -125,6 +126,7 @@ pub fn sections() -> Vec<Section> {
         keys_table(),
         features_section(),
         registration(),
+        login(),
         tenant(),
         admin(),
     ]
@@ -335,6 +337,52 @@ fn registration() -> Section {
                      the 128 bits FAPI 2.0 SP §5.4.1 requires of a credential no end user \
                      handles."
                 ),
+            ),
+        ],
+    }
+}
+
+/// `[login]`: what bounds online guessing.
+fn login() -> Section {
+    Section {
+        table: "login",
+        heading: "`[login]` — abuse protection at sign-in",
+        blurb: "Failed sign-ins are counted per client address and per typed \
+                identifier, in fixed windows held in the database so that every replica \
+                sees the same counter (NIST SP 800-63B §5.2.2). Both limits apply and \
+                they stop different attacks: the per-account one bounds the guessing of \
+                one password, the per-address one bounds a sweep across many accounts. \
+                The identifier is hashed before it is counted and the bucket exists \
+                whether the account does or not, so a locked-out identifier and one that \
+                was never registered are the same observable.",
+        keys: vec![
+            key(
+                "failure_window_seconds",
+                "integer seconds",
+                DEFAULT_LOGIN_WINDOW_SECONDS.to_string(),
+                &format!(
+                    "How long failures are remembered. At least \
+                     {MIN_LOGIN_WINDOW_SECONDS}: a window shorter than that resets \
+                     before an attacker's attempts add up, which is a limit in name only."
+                ),
+            ),
+            key(
+                "max_failures_per_account",
+                "integer",
+                DEFAULT_LOGIN_MAX_PER_ACCOUNT.to_string(),
+                "Failures tolerated per window against one typed identifier before \
+                 sign-ins are refused with a retry hint. Raising it buys an attacker \
+                 guesses; lowering it makes a targeted lockout of one user cheaper to \
+                 cause.",
+            ),
+            key(
+                "max_failures_per_address",
+                "integer",
+                DEFAULT_LOGIN_MAX_PER_ADDRESS.to_string(),
+                "Failures tolerated per window from one client address. Higher than the \
+                 per-account limit because one address is legitimately many people — an \
+                 office, a carrier's NAT — and because behind a proxy it is only as \
+                 trustworthy as `[server.proxy] trusted_cidrs` makes it.",
             ),
         ],
     }

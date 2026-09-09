@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into rate_limits (tenant_id, bucket, window_start, counter, expires_at)\n                  values ($1, $2, $3, 1, $4)\n             on conflict (tenant_id, bucket, window_start) do update\n                     set counter = rate_limits.counter + 1,\n                         expires_at = greatest(rate_limits.expires_at, excluded.expires_at)\n               returning counter",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "counter",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2abc37e8714715a02f9defdafaf8b1ccdc1345fabf64231cfc0fe964aab4e616"
+}

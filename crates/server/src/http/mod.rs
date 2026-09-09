@@ -19,6 +19,7 @@ pub mod request_id;
 pub mod security_headers;
 pub mod server;
 mod source_audit;
+pub mod throttle;
 pub mod tls;
 pub mod token;
 pub mod userinfo;

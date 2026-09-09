@@ -1,0 +1,343 @@
+//! Fixed-window counters, and the login limits built out of them.
+//!
+//! # Why the state is in the database
+//!
+//! A counter in process memory limits nothing on a deployment with two
+//! replicas: an attacker who reconnects lands on the other one and starts from
+//! zero, and the limit an operator configured is silently multiplied by the
+//! replica count. ADR-0008 makes the same argument about the pairwise-salt
+//! cache, where a per-process view is exact within one process and useless
+//! between replicas. There is no Redis to reach for (ADR-0001: one binary, one
+//! PostgreSQL), so the window counters live in the `rate_limits` table, behind
+//! [`RateLimitStore`], and the increment is one atomic statement.
+//!
+//! # Fixed windows, not sliding ones
+//!
+//! A fixed window admits at most `2 × max` attempts across a window boundary,
+//! which for online guessing is a rounding error against the numbers involved:
+//! ten attempts per quarter hour versus twenty in the worst-aligned quarter
+//! hour is not the difference between safe and unsafe. What it buys is a
+//! counter that is one row and one statement rather than a list of timestamps
+//! per bucket, which matters when the store is the same database that is
+//! serving the login.
+//!
+//! # The account bucket is keyed by what was typed
+//!
+//! [`account_bucket`] hashes the *submitted* username, not a resolved account
+//! id — because there may be no account, and a limiter that only counts
+//! attempts against accounts that exist is an enumeration oracle wearing a
+//! limiter's clothes: ten wrong guesses lock a real account and do nothing at
+//! all for an invented one, and the attacker reads the difference off the
+//! response. Keying by the typed string makes "locked out" and "no such user"
+//! the same observable, which is the property NIST SP 800-63B §5.2.2 asks for
+//! in throttling and OWASP ASVS V2.2 asks for in the messages.
+//!
+//! The username is normalised before it is hashed so that `Alice `, `alice`
+//! and a full-width `ａlice` share one bucket. Without that, case is a free
+//! bypass of the account limit.
+
+use crate::error::DomainError;
+use crate::ids::TenantId;
+use std::fmt::Debug;
+use time::{Duration, OffsetDateTime};
+use unicode_normalization::UnicodeNormalization as _;
+
+/// A counter key: what is being limited, for whom.
+///
+/// A newtype rather than a `String` so that a caller cannot pass a username
+/// where a bucket is wanted. It is opaque and never rendered to a client: the
+/// account form contains a digest precisely so that the table does not become
+/// a list of the usernames people have failed to sign in as.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Bucket(String);
+
+impl Bucket {
+    /// The key as it is stored.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Bucket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The bucket for failed sign-ins from one client address.
+///
+/// The address must be the one resolved from the socket peer and the trusted
+/// proxy set, never a header taken at face value: a client that can choose the
+/// address can choose its own bucket, and the limit stops limiting anything.
+#[must_use]
+pub fn ip_bucket(ip: std::net::IpAddr) -> Bucket {
+    Bucket(format!("login:ip:{ip}"))
+}
+
+/// The bucket for failed sign-ins against one typed identifier.
+///
+/// The identifier is normalised (see [`normalise_username`]) and then hashed,
+/// so the stored key is fixed-length and says nothing about who was targeted.
+#[must_use]
+// fuzz-target: login_bucket
+pub fn account_bucket(username: &str) -> Bucket {
+    Bucket(format!(
+        "login:account:{}",
+        crate::credentials::sha256_hex(normalise_username(username).as_bytes())
+    ))
+}
+
+/// Folds the variations of one typed identifier onto one key.
+///
+/// NFKC first, then lowercase, then trim — in that order, because
+/// compatibility composition can produce characters that are themselves
+/// uppercase or whitespace (`ﬀ`, the ideographic space), and folding them
+/// after the case pass would leave two spellings in different buckets.
+/// Lowercasing is `to_lowercase`, not `to_ascii_lowercase`: an attacker's
+/// script does not restrict itself to ASCII.
+///
+/// This is a *bucketing* key and never a lookup key. The credential lookup
+/// still uses the string as typed, so nothing here changes which account a
+/// password is checked against.
+#[must_use]
+pub fn normalise_username(username: &str) -> String {
+    username
+        .nfkc()
+        .collect::<String>()
+        .to_lowercase()
+        .trim()
+        .to_owned()
+}
+
+/// How many events one bucket may hold, and over how long.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateLimit {
+    /// Events permitted per window. Zero refuses everything, which is a
+    /// legitimate way to switch a method off.
+    pub max: u32,
+    /// How long a window lasts.
+    pub window: Duration,
+}
+
+impl RateLimit {
+    /// The start of the window `now` falls in.
+    ///
+    /// Windows are aligned to the epoch rather than to first use, so every
+    /// replica computes the same boundary from the same clock without
+    /// coordinating. A non-positive window degenerates to a single window
+    /// starting at `now`; configuration cannot produce one — the validator has
+    /// a floor — and defining it here is better than dividing by zero.
+    #[must_use]
+    pub fn window_start(&self, now: OffsetDateTime) -> OffsetDateTime {
+        let seconds = self.window.whole_seconds();
+        if seconds <= 0 {
+            return now;
+        }
+        let elapsed = now.unix_timestamp().rem_euclid(seconds);
+        now - Duration::seconds(elapsed)
+    }
+
+    /// When the window `now` falls in ends, which is when the counter resets.
+    #[must_use]
+    pub fn window_end(&self, now: OffsetDateTime) -> OffsetDateTime {
+        self.window_start(now) + self.window.max(Duration::seconds(1))
+    }
+
+    /// Whether a bucket already holding `counted` events may hold one more.
+    #[must_use]
+    pub const fn admits(&self, counted: u32) -> bool {
+        counted < self.max
+    }
+
+    /// How long until the current window rolls over, at least one second.
+    ///
+    /// The floor is there because this is shown to a person and sent as
+    /// `Retry-After`: "try again in 0 seconds" is worse than saying nothing.
+    #[must_use]
+    pub fn retry_after(&self, now: OffsetDateTime) -> Duration {
+        (self.window_end(now) - now).max(Duration::seconds(1))
+    }
+}
+
+/// What a limiter decided about one attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// The attempt may proceed.
+    Allowed,
+    /// The attempt is refused until the window rolls over.
+    Throttled {
+        /// Which limit was reached, for the metric and the audit record.
+        scope: Scope,
+        /// How long until that window rolls over. Reported to the client as a
+        /// hint, and never less than a second so that it is not a misleading
+        /// "0".
+        retry_after: Duration,
+    },
+}
+
+/// Which of the two login limits an attempt ran into.
+///
+/// Both are needed and they stop different attacks: the account limit bounds
+/// the guessing of one password, and the address limit bounds a sweep across
+/// many accounts, which the account limit never sees because no single account
+/// is tried twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Too many failures from one client address.
+    Address,
+    /// Too many failures against one typed identifier.
+    Account,
+}
+
+impl Scope {
+    /// The label used in metrics and audit details.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Address => "ip",
+            Self::Account => "account",
+        }
+    }
+}
+
+/// The two limits a login is subject to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoginLimits {
+    /// Failures permitted from one client address.
+    pub per_address: RateLimit,
+    /// Failures permitted against one typed identifier.
+    pub per_account: RateLimit,
+}
+
+/// Where fixed-window counters live.
+///
+/// Two methods rather than one "check and increment": a login is limited by
+/// its *failures*, so the read happens before the credential is verified and
+/// the write only if it did not verify. Collapsing them would count every
+/// successful sign-in against the limit.
+///
+/// Deliberately general — a bucket is a string and a window is a timestamp —
+/// so that `ast-p2l.3` can limit other endpoints through the same port and the
+/// same table rather than growing a second limiter.
+#[async_trait::async_trait]
+pub trait RateLimitStore: Debug + Send + Sync {
+    /// How many events `bucket` holds in the window starting at
+    /// `window_start`.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails.
+    async fn count(
+        &self,
+        tenant: &TenantId,
+        bucket: &Bucket,
+        window_start: OffsetDateTime,
+    ) -> Result<u32, DomainError>;
+
+    /// Counts one event in that window, returning the new total.
+    ///
+    /// `expires_at` is when the row stops meaning anything and retention may
+    /// sweep it.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn record(
+        &self,
+        tenant: &TenantId,
+        bucket: &Bucket,
+        window_start: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> Result<u32, DomainError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("a valid timestamp")
+    }
+
+    #[test]
+    fn a_window_starts_on_a_boundary_aligned_to_the_epoch() {
+        let limit = RateLimit {
+            max: 1,
+            window: Duration::minutes(15),
+        };
+
+        let start = limit.window_start(now());
+
+        assert_eq!(start.unix_timestamp() % (15 * 60), 0);
+        assert!(start <= now() && now() < limit.window_end(now()));
+    }
+
+    /// Every replica computes the same boundary, which is what makes one
+    /// counter in the database mean the same thing to all of them.
+    #[test]
+    fn two_instants_in_one_window_agree_on_where_it_starts() {
+        let limit = RateLimit {
+            max: 1,
+            window: Duration::minutes(15),
+        };
+
+        let early = limit.window_start(limit.window_start(now()));
+        let late = limit.window_start(limit.window_end(now()) - Duration::seconds(1));
+
+        assert_eq!(early, late);
+    }
+
+    #[test]
+    fn a_bucket_at_its_limit_admits_nothing_more() {
+        let limit = RateLimit {
+            max: 3,
+            window: Duration::minutes(1),
+        };
+
+        assert!(limit.admits(2));
+        assert!(!limit.admits(3));
+    }
+
+    #[test]
+    fn a_hint_is_never_the_misleading_zero() {
+        let limit = RateLimit {
+            max: 0,
+            window: Duration::minutes(15),
+        };
+        let last_moment = limit.window_end(now()) - Duration::milliseconds(1);
+
+        let hint = limit.retry_after(last_moment);
+
+        assert!(hint >= Duration::seconds(1));
+    }
+
+    #[test]
+    fn case_and_width_variants_of_one_identifier_share_a_bucket() {
+        let plain = account_bucket("alice");
+
+        assert_eq!(account_bucket("  ALICE "), plain);
+        assert_eq!(account_bucket("\u{ff41}lice"), plain);
+    }
+
+    /// Two accounts must not share a limit: one locking the other out would be
+    /// a denial of service anybody could aim.
+    #[test]
+    fn different_identifiers_get_different_buckets() {
+        assert_ne!(account_bucket("alice"), account_bucket("bob"));
+    }
+
+    #[test]
+    fn a_bucket_never_carries_the_identifier_it_counts() {
+        let bucket = account_bucket("alice@example.test");
+
+        assert!(!bucket.as_str().contains("alice"));
+    }
+
+    #[test]
+    fn an_address_bucket_is_not_an_account_bucket() {
+        let address = ip_bucket("198.51.100.7".parse().expect("a literal address"));
+
+        assert_ne!(address, account_bucket("198.51.100.7"));
+    }
+}

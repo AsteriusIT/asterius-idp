@@ -262,6 +262,14 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
     };
 
     rewrite_path(request.uri_mut(), &resolved.path);
+    // The client address, resolved once here rather than in each handler that
+    // wants one. This layer already holds both halves of the question — the
+    // socket peer and the trusted-proxy set — and a handler that resolved it
+    // itself would be a second place for the spoofing rule to be got wrong.
+    // `ast-2vk.9`'s login limiter is the first reader; `ast-p2l.3` and the
+    // audit trail are the next.
+    let client = forwarded::resolve(peer, request.headers(), &state.trusted_proxies);
+    request.extensions_mut().insert(client);
     request
         .extensions_mut()
         .insert(Arc::clone(&resolved.tenant));

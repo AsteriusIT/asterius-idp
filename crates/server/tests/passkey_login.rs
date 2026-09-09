@@ -13,6 +13,7 @@
 
 use asterius_domain::audit::{AuditEvent, AuditSink, DetailValue};
 use asterius_domain::entities::session::{Lifetimes, SessionId};
+use asterius_domain::rate_limit::{Bucket, LoginLimits, RateLimit, RateLimitStore};
 use asterius_domain::{
     AuthenticationMethod, ClaimSet, ClientId, DomainError, Enrolment, InteractionRecord,
     InteractionRepository, NewPasskey, Participant, PasskeyRepository, RegisteredPasskey, Session,
@@ -20,6 +21,7 @@ use asterius_domain::{
     UserId, UserStatus, sha256_hex,
 };
 use asterius_server::http::passkeys::{self, PasskeyLoginContext};
+use asterius_server::http::throttle::LoginThrottle;
 use asterius_web::interaction::{Stage, StoredState};
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{
@@ -31,8 +33,9 @@ use axum::response::Response;
 use base64::Engine as _;
 use ciborium::value::Value;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 // ---- fakes --------------------------------------------------------------
 
@@ -413,6 +416,56 @@ fn client_data(origin: &str, challenge: &[u8]) -> Vec<u8> {
 
 // ---- the fixture --------------------------------------------------------
 
+/// Fixed-window counters in memory. The real ones are rows in `rate_limits`.
+#[derive(Debug, Default)]
+struct FakeLimiter(Mutex<BTreeMap<(String, i64), u32>>);
+
+#[async_trait::async_trait]
+impl RateLimitStore for FakeLimiter {
+    async fn count(
+        &self,
+        _tenant: &TenantId,
+        bucket: &Bucket,
+        window_start: OffsetDateTime,
+    ) -> Result<u32, DomainError> {
+        Ok(*self
+            .0
+            .lock()
+            .expect("lock")
+            .get(&(bucket.as_str().to_owned(), window_start.unix_timestamp()))
+            .unwrap_or(&0))
+    }
+
+    async fn record(
+        &self,
+        _tenant: &TenantId,
+        bucket: &Bucket,
+        window_start: OffsetDateTime,
+        _expires_at: OffsetDateTime,
+    ) -> Result<u32, DomainError> {
+        let mut counters = self.0.lock().expect("lock");
+        let entry = counters
+            .entry((bucket.as_str().to_owned(), window_start.unix_timestamp()))
+            .or_default();
+        *entry += 1;
+        Ok(*entry)
+    }
+}
+
+/// Limits no ordinary ceremony test reaches.
+fn generous_limits() -> LoginLimits {
+    LoginLimits {
+        per_address: RateLimit {
+            max: 1_000,
+            window: Duration::minutes(15),
+        },
+        per_account: RateLimit {
+            max: 1_000,
+            window: Duration::minutes(15),
+        },
+    }
+}
+
 const CSRF: &str = "a-synchroniser-token-for-a-test";
 const ORIGIN: &str = "https://as.example";
 const RP_ID: &str = "as.example";
@@ -424,6 +477,8 @@ struct Fixture {
     sessions: FakeSessions,
     users: FakeUsers,
     audit: FakeAudit,
+    limiter: FakeLimiter,
+    limits: LoginLimits,
     authenticator: Authenticator,
     interaction: asterius_web::interaction::InteractionId,
     user: UserId,
@@ -460,6 +515,8 @@ impl Fixture {
             sessions: FakeSessions::default(),
             users: FakeUsers::active(user),
             audit: FakeAudit::default(),
+            limiter: FakeLimiter::default(),
+            limits: generous_limits(),
             authenticator,
             interaction,
             user,
@@ -475,6 +532,11 @@ impl Fixture {
             users: &self.users,
             lifetimes: Lifetimes::default(),
             audit: &self.audit,
+            throttle: LoginThrottle::new(
+                &self.limiter,
+                self.limits,
+                Some("198.51.100.7".parse().expect("a literal address")),
+            ),
         }
     }
 
@@ -537,6 +599,79 @@ impl Fixture {
         )
         .await
     }
+}
+
+// ---- abuse protection (ast-2vk.9) ---------------------------------------
+
+/// The passkey ceremony names nobody, so the only bucket it has is the client
+/// address — and that is exactly the one that bounds a credential-id sweep.
+#[tokio::test]
+async fn repeated_refused_assertions_from_one_address_are_throttled() {
+    // Arrange
+    let now = OffsetDateTime::now_utc();
+    let mut fixture = Fixture::at_login(now, 0);
+    fixture.limits = LoginLimits {
+        per_address: RateLimit {
+            max: 2,
+            window: Duration::minutes(15),
+        },
+        per_account: RateLimit {
+            max: 2,
+            window: Duration::minutes(15),
+        },
+    };
+    let nonsense = json!({ "csrf": CSRF, "type": "not-a-public-key" });
+
+    // Act
+    for _ in 0..2 {
+        let refused = fixture.finish(&nonsense, now).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    }
+    let throttled = fixture.finish(&nonsense, now).await;
+
+    // Assert
+    assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        throttled.headers().contains_key(header::RETRY_AFTER),
+        "no Retry-After on a throttled assertion"
+    );
+}
+
+/// A refusal that never reached the ceremony is still worth a trail record.
+#[tokio::test]
+async fn a_throttled_assertion_is_audited() {
+    // Arrange
+    let now = OffsetDateTime::now_utc();
+    let mut fixture = Fixture::at_login(now, 0);
+    fixture.limits = LoginLimits {
+        per_address: RateLimit {
+            max: 1,
+            window: Duration::minutes(15),
+        },
+        per_account: RateLimit {
+            max: 1,
+            window: Duration::minutes(15),
+        },
+    };
+    let nonsense = json!({ "csrf": CSRF, "type": "not-a-public-key" });
+
+    // Act
+    fixture.finish(&nonsense, now).await;
+    fixture.finish(&nonsense, now).await;
+
+    // Assert
+    let recorded: Vec<_> = fixture
+        .audit
+        .0
+        .lock()
+        .expect("lock")
+        .iter()
+        .map(|event| event.event_type)
+        .collect();
+    assert!(
+        recorded.contains(&asterius_domain::audit::EventType::AUTH_THROTTLED),
+        "no throttle record: {recorded:?}"
+    );
 }
 
 async fn body_of(response: Response) -> String {

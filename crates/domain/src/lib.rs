@@ -16,6 +16,7 @@ pub mod issuer;
 pub mod json_sentinel;
 pub mod keys;
 pub mod ports;
+pub mod rate_limit;
 pub mod secret;
 mod secret_audit;
 
@@ -49,5 +50,9 @@ pub use ports::{
     AuthRequestRepository, ClientConfiguration, ClientRegistry, ClientRepository, CodeIssuer,
     CredentialVerifier, GrantRepository, InteractionRepository, ManagedClient, PasskeyRepository,
     ReplayCheck, ReplayGuard, ReplayPurpose, SessionRepository, SubjectResolver, UserDirectory,
+};
+pub use rate_limit::{
+    Bucket, Decision as RateLimitDecision, LoginLimits, RateLimit, RateLimitStore,
+    Scope as RateLimitScope, account_bucket, ip_bucket,
 };
 pub use secret::{Secret, ct_eq};
