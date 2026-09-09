@@ -23,6 +23,12 @@
 //!   markup render, in a value that turns out to be attacker-supplied. The
 //!   templates are scanned for it, with one exemption that is named rather
 //!   than pattern-matched.
+//! * A `<script>` in a template is the thing `strict-dynamic` trusts, so the
+//!   templates that may have one are listed by name with the reason they must
+//!   (`SCRIPTED_TEMPLATES`), and each listing is itself checked: one inline
+//!   nonce-carrying block, nothing loaded from elsewhere, and a path through
+//!   the page for a browser that never runs it. Everything not on that list
+//!   still fails the build.
 
 #![cfg(test)]
 
@@ -293,14 +299,40 @@ mod tests {
         assert!(found, "no template renders the CSP nonce any more");
     }
 
-    /// No page runs script, so `strict-dynamic` has nothing to get wrong.
+    /// The templates that may run script, each with the reason it must.
+    ///
+    /// The rule is not "no script" — it is "no script that nobody decided on".
+    /// A page that genuinely needs one adds itself here, deliberately, in a
+    /// diff a reviewer will see; the alternative, relaxing the predicate, buys
+    /// the same page and loses every other page's guarantee.
+    ///
+    /// An entry is only half the exemption; the tests below hold the other
+    /// half. The script has to be inline and nonce-carrying, the page has to
+    /// keep working without it, and `javascript:` URLs and inline event
+    /// handlers stay forbidden here as everywhere — no nonce can allow one.
+    const SCRIPTED_TEMPLATES: &[(&str, &str)] = &[(
+        "passkey.html",
+        "ast-ndk.7: `navigator.credentials.create()` is a JavaScript API, so a \
+         WebAuthn registration ceremony cannot be run from markup. The script \
+         is inline under the per-response nonce and interpolates nothing — its \
+         inputs arrive on escaped `data-` attributes — and with scripting off \
+         the page shows no button, explains why, and offers the password path.",
+    )];
+
+    /// No page runs script it was not deliberately given, so `strict-dynamic`
+    /// has almost nothing to get wrong.
     #[test]
     fn no_template_contains_a_script_element() {
         for (name, source) in templates() {
             let lowered = source.to_lowercase();
+            let permitted = SCRIPTED_TEMPLATES
+                .iter()
+                .any(|(scripted, _)| *scripted == name);
             assert!(
-                !lowered.contains("<script"),
-                "{name} contains a script element"
+                permitted || !lowered.contains("<script"),
+                "{name} contains a script element. If it genuinely cannot work \
+                 without one, add it to SCRIPTED_TEMPLATES with the reason \
+                 rather than weakening this test"
             );
             assert!(
                 !lowered.contains("javascript:"),
@@ -314,6 +346,79 @@ mod tests {
                     "{name} contains an inline {handler} handler"
                 );
             }
+        }
+    }
+
+    /// An exemption is a claim about a file, and the claim is checked.
+    ///
+    /// Three ways an exemption could rot into a hole, all of them silent:
+    /// the named template stops having a script (so the entry is now a blanket
+    /// permission for whatever is added next), it gains a *second* script that
+    /// nobody looked at, or its script loses the nonce and somebody reaches for
+    /// a policy keyword to make the page work again. Each is a failure here.
+    #[test]
+    fn every_scripted_template_is_a_single_nonce_carrying_block() {
+        const NONCED: &str = "<script {{ nonce_attribute|safe }}>";
+
+        let templates = templates();
+        for (name, reason) in SCRIPTED_TEMPLATES {
+            let (_, source) = templates
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .unwrap_or_else(|| panic!("{name} is exempted but no such template exists"));
+
+            assert!(
+                reason.len() > 80,
+                "{name}'s exemption needs a reason a reviewer can weigh, not a label"
+            );
+
+            let scripts = source.matches("<script").count();
+            assert_eq!(
+                scripts, 1,
+                "{name} has {scripts} script elements; the exemption is for one \
+                 reviewed bootstrap, so a second needs its own decision"
+            );
+            assert_eq!(
+                source.matches(NONCED).count(),
+                1,
+                "{name}'s script must open with the per-response nonce, or \
+                 `script-src 'nonce-…'` will block the page it exists for"
+            );
+            // No `src=`: `strict-dynamic` lets the bootstrap load what it
+            // needs, and a remote script on an authorization page is exactly
+            // what RFC 9700 §4.2.4 tells us not to fetch.
+            assert!(
+                !source.contains("<script src") && !source.contains("src=\"http"),
+                "{name} pulls a script from somewhere else"
+            );
+        }
+    }
+
+    /// A scripted page still has to be usable with scripting off.
+    ///
+    /// The acceptance criterion of `ast-ndk.7`, as a grep: the page says why
+    /// the scripted control is missing and offers something that works. A
+    /// `<noscript>` that only apologises would pass the first half and fail a
+    /// user, so a link out of the page is required too.
+    #[test]
+    fn every_scripted_template_offers_a_path_without_script() {
+        for (name, _) in SCRIPTED_TEMPLATES {
+            let (_, source) = templates()
+                .into_iter()
+                .find(|(candidate, _)| candidate == name)
+                .unwrap_or_else(|| panic!("{name} is exempted but no such template exists"));
+            assert!(
+                source.contains("<noscript>"),
+                "{name} runs script and never tells a browser without it what happened"
+            );
+            assert!(
+                source.contains("JavaScript"),
+                "{name}'s fallback must say why the scripted path is missing"
+            );
+            assert!(
+                source.contains("<a href="),
+                "{name}'s fallback must lead somewhere that works, not just explain"
+            );
         }
     }
 
