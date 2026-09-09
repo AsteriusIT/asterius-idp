@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Set up a passkey — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# The one scripted page in this tree, and the reason
+   `crates/web/src/source_audit.rs` carries a named exemption for it:
+   `navigator.credentials.create()` is a JavaScript API and there is no markup
+   that runs a WebAuthn ceremony. Everything below is arranged so the script is
+   the *only* thing that needs the exemption:
+
+   * one inline block, carrying the per-response nonce, so
+     `script-src 'nonce-…' 'strict-dynamic'` still permits exactly what this
+     server put a nonce on;
+   * no interpolation inside the script. Every value it needs arrives on the
+     `data-` attributes of `#passkey`, which askama escapes like any other
+     attribute, so a hostile `username` or `next_href` is a string handed to
+     `dataset`, never source text;
+   * no inline event handler, because no nonce can allow one.
+
+   The button starts `hidden` and the script reveals it. That is the no-JS
+   requirement in one attribute: with scripting off — or with the script
+   blocked, which `<noscript>` would *not* catch — there is no button that
+   cannot work, and the password link below is in the markup either way. #}
+{% if let Some(message) = message %}
+<p class="error">{{ message }}</p>
+{% endif %}
+
+<h2>Set up a passkey</h2>
+<p class="muted">Signed in as {{ username }}. A passkey signs you in with your
+device's screen lock instead of a password, and cannot be phished: it only
+works on this site.</p>
+
+<div id="passkey"
+     data-options-url="{{ options_action }}"
+     data-finish-url="{{ finish_action }}"
+     data-next-url="{{ next_href }}"
+     data-csrf="{{ csrf }}"
+     data-working="Follow your device's prompt to finish."
+     data-failed="That did not work. Try again, or carry on with your password."
+     data-unsupported="This browser or device cannot create a passkey. Your password still works.">
+  <div class="actions"><button type="button" id="passkey-register" hidden>Create a passkey</button></div>
+  <p class="muted" id="passkey-status"></p>
+</div>
+
+<noscript>
+{# Rendered only when scripting is off, and it says why rather than leaving a
+   page with nothing on it: the ceremony is a browser API call. #}
+<p class="error">Creating a passkey needs JavaScript, because it is a browser
+API that a page has to call. JavaScript is switched off here, so there is no
+button — use your password instead.</p>
+</noscript>
+
+<p class="muted">Passwords keep working either way: a passkey is an addition,
+not a replacement. <a href="{{ password_href }}">Continue with your
+password</a>.</p>
+
+<script {{ nonce_attribute|safe }}>
+(() => {
+  "use strict";
+  const root = document.getElementById("passkey");
+  const status = document.getElementById("passkey-status");
+  const button = document.getElementById("passkey-register");
+  if (!root || !status || !button) {
+    return;
+  }
+  const say = (text) => {
+    status.textContent = text;
+  };
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    say(root.dataset.unsupported);
+    return;
+  }
+
+  const decode = (value) => {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(padded + "===".slice((padded.length + 3) % 4));
+    const bytes = new Uint8Array(raw.length);
+    for (let index = 0; index < raw.length; index += 1) {
+      bytes[index] = raw.charCodeAt(index);
+    }
+    return bytes;
+  };
+  const encode = (buffer) => {
+    let raw = "";
+    for (const byte of new Uint8Array(buffer)) {
+      raw += String.fromCharCode(byte);
+    }
+    return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+
+  const post = async (url, body) => {
+    const answer = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!answer.ok) {
+      throw new Error("the server refused the ceremony: " + answer.status);
+    }
+    return answer.json();
+  };
+
+  const register = async () => {
+    button.disabled = true;
+    say(root.dataset.working);
+    const options = await post(root.dataset.optionsUrl, { csrf: root.dataset.csrf });
+    options.challenge = decode(options.challenge);
+    options.user.id = decode(options.user.id);
+    for (const known of options.excludeCredentials || []) {
+      known.id = decode(known.id);
+    }
+    const created = await navigator.credentials.create({ publicKey: options });
+    await post(root.dataset.finishUrl, {
+      csrf: root.dataset.csrf,
+      id: created.id,
+      type: created.type,
+      rawId: encode(created.rawId),
+      clientDataJSON: encode(created.response.clientDataJSON),
+      attestationObject: encode(created.response.attestationObject),
+    });
+    window.location.assign(root.dataset.nextUrl);
+  };
+
+  button.addEventListener("click", () => {
+    register().catch(() => {
+      button.disabled = false;
+      say(root.dataset.failed);
+    });
+  });
+  button.hidden = false;
+})();
+</script>
+{% endblock %}

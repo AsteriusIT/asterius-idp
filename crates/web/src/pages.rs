@@ -20,9 +20,17 @@
 //! # No JavaScript
 //!
 //! Not a preference. Every page must work with scripting disabled
-//! (`ast-2vk.1`), and a tree with no `<script>` in it is the only version of
-//! `script-src 'nonce-…' 'strict-dynamic'` that cannot be got wrong. The
+//! (`ast-2vk.1`), and a tree with almost no `<script>` in it is the version of
+//! `script-src 'nonce-…' 'strict-dynamic'` that is hardest to get wrong. The
 //! source audit asserts the absence.
+//!
+//! There is exactly one exception, and it is named rather than pattern-matched:
+//! [`PasskeyPage`] (`ast-ndk.7`). `navigator.credentials.create()` is a
+//! JavaScript API, so a WebAuthn registration ceremony cannot be run from
+//! markup at all. Its script is inline, carries the per-response nonce, and
+//! interpolates nothing — every value reaches it through escaped `data-`
+//! attributes. With scripting off the page offers the password path and says
+//! why, rather than a button that cannot work.
 
 use crate::csp::Nonce;
 use askama::Template;
@@ -97,6 +105,51 @@ pub struct ConsentPage<'a> {
     /// The synchroniser token for this rendering.
     pub csrf: &'a str,
     /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The passkey enrolment page: the one page in this tree that runs script.
+///
+/// A WebAuthn registration ceremony is a call to
+/// `navigator.credentials.create()`, which no amount of markup can make. So
+/// this page carries one inline bootstrap under the per-response nonce, and
+/// `source_audit` names it as an exemption rather than relaxing the rule for
+/// everyone.
+///
+/// Nothing here is interpolated *into* the script. The endpoints, the token and
+/// the destination arrive on `data-` attributes, which askama escapes like any
+/// other attribute value, so the script's source text is a constant that a
+/// reviewer can read once.
+///
+/// # Without JavaScript
+///
+/// The button is `hidden` in the markup and revealed by the script, so a
+/// browser with scripting off — or one where the script was blocked, which
+/// `<noscript>` does not cover — shows no button at all. The link to
+/// [`Self::password_href`] is unconditional, and the `<noscript>` block says
+/// why the button is missing.
+#[derive(Debug, Template)]
+#[template(path = "passkey.html")]
+pub struct PasskeyPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Who is enrolling, so a user on a shared machine can see it is them.
+    pub username: &'a str,
+    /// Where the script asks for creation options.
+    pub options_action: &'a str,
+    /// Where the script posts the attestation it got back.
+    pub finish_action: &'a str,
+    /// Where the browser goes once a passkey has been stored.
+    pub next_href: &'a str,
+    /// The path that works with no script at all: carry on with a password.
+    pub password_href: &'a str,
+    /// The synchroniser token, sent in the body of both fetches.
+    pub csrf: &'a str,
+    /// A previous failure, if this is a retry. A fixed string, never echoed.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute — here it is the script's, not only the style's.
     pub nonce_attribute: String,
 }
 
@@ -243,6 +296,127 @@ mod tests {
         }
     }
 
+    /// A passkey page with the values a caller would pass.
+    fn passkey<'a>(username: &'a str, message: Option<&'a str>) -> PasskeyPage<'a> {
+        PasskeyPage {
+            locale: "en",
+            tenant_name: "Demo",
+            username,
+            options_action: "/passkeys/options",
+            finish_action: "/passkeys/finish",
+            next_href: "/account",
+            password_href: "/interaction/x/login",
+            csrf: "the-token",
+            message,
+            nonce_attribute: nonce_attribute(&nonce()),
+        }
+    }
+
+    /// The scripted page escapes like every other one.
+    ///
+    /// It matters more here than anywhere: this is the page whose exemption
+    /// lets `strict-dynamic` trust an inline block, so an injected second
+    /// script would inherit that trust.
+    #[test]
+    fn every_untrusted_value_on_the_passkey_page_is_escaped() {
+        for hostile in HOSTILE {
+            let html = passkey(hostile, Some(hostile)).render().expect("render");
+            assert_no_injection_beyond(&html, hostile, 1);
+        }
+    }
+
+    /// One inline block, carrying the nonce the header names.
+    ///
+    /// A script without the nonce is a page that silently does nothing, and a
+    /// second script is one nobody reviewed.
+    #[test]
+    fn the_passkey_page_carries_exactly_one_nonce_carrying_script() {
+        let nonce = nonce();
+        let html = PasskeyPage {
+            nonce_attribute: nonce_attribute(&nonce),
+            ..passkey("ada", None)
+        }
+        .render()
+        .expect("render");
+
+        assert_eq!(html.matches("<script").count(), 1, "{html}");
+        assert!(
+            html.contains(&format!("<script nonce=\"{}\">", nonce.as_str())),
+            "the script did not get the nonce the header will name: {html}"
+        );
+        assert!(
+            !html.contains("<script src"),
+            "the bootstrap must be inline, not fetched: {html}"
+        );
+    }
+
+    /// The ceremony's inputs travel as escaped attributes, never as source.
+    ///
+    /// This is what makes one `<script>` reviewable: its text is a constant.
+    /// A value interpolated into it would be a cross-site scripting bug that
+    /// no amount of HTML escaping fixes, because inside a script element the
+    /// dangerous characters are different ones.
+    #[test]
+    fn the_passkey_script_interpolates_nothing() {
+        let html = passkey("ada", None).render().expect("render");
+        let start = html.find("<script").expect("a script");
+        let body = &html[start..];
+
+        for value in [
+            "/passkeys/options",
+            "/passkeys/finish",
+            "/account",
+            "the-token",
+            "ada",
+        ] {
+            assert!(
+                !body.contains(value),
+                "{value:?} was interpolated into the script: {body}"
+            );
+        }
+        // ...and they did reach the page, on the attributes the script reads.
+        assert!(
+            html.contains(r#"data-options-url="/passkeys/options""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"data-csrf="the-token""#), "{html}");
+    }
+
+    /// The acceptance criterion of `ast-ndk.7`: no dead button, and a reason.
+    ///
+    /// The button is `hidden` in the markup and revealed by the script, so a
+    /// browser that never runs the script never shows a control that cannot
+    /// work — including one where scripting is on but the script was blocked,
+    /// which `<noscript>` does not cover. That is why the password link is
+    /// outside the `<noscript>` and the explanation is inside it.
+    #[test]
+    fn without_javascript_the_passkey_page_explains_and_offers_the_password_path() {
+        let html = passkey("ada", None).render().expect("render");
+
+        assert!(
+            html.contains(r#"<button type="button" id="passkey-register" hidden>"#),
+            "the button must start hidden, or a no-script browser sees a dead control: {html}"
+        );
+
+        let noscript = html
+            .split_once("<noscript>")
+            .and_then(|(_, rest)| rest.split_once("</noscript>"))
+            .map(|(inside, _)| inside.to_owned())
+            .expect("a noscript block");
+        assert!(
+            noscript.contains("JavaScript"),
+            "the fallback must say why the button is missing: {noscript}"
+        );
+
+        // The way out is in the markup unconditionally, not only inside the
+        // `<noscript>`: a blocked script leaves the page with neither.
+        let outside = html.replace(&noscript, "");
+        assert!(
+            outside.contains(r#"<a href="/interaction/x/login">"#),
+            "the password path must survive outside the noscript block: {outside}"
+        );
+    }
+
     /// Escaping means the raw value never reaches the markup verbatim.
     ///
     /// The first version of this banned the substrings `onerror=` and
@@ -255,6 +429,12 @@ mod tests {
     /// change the parse — `< > " ' &` — is replaced, so an input containing
     /// one cannot appear verbatim. That is the property, and it is exact.
     fn assert_no_injection(html: &str, hostile: &str) {
+        assert_no_injection_beyond(html, hostile, 0);
+    }
+
+    /// The same property for a page that legitimately carries `scripts` script
+    /// elements of its own: none of them may have come from the input.
+    fn assert_no_injection_beyond(html: &str, hostile: &str, scripts: usize) {
         const DANGEROUS: [char; 5] = ['<', '>', '"', '\'', '&'];
 
         if hostile.contains(DANGEROUS) {
@@ -268,8 +448,9 @@ mod tests {
         // outcome everything else exists to prevent, and because a future
         // template that interpolated into a `<script>` block would still fail
         // the verbatim check above only by luck.
-        assert!(
-            !html.to_lowercase().contains("<script"),
+        assert_eq!(
+            html.to_lowercase().matches("<script").count(),
+            scripts,
             "a script element appeared for input {hostile:?}"
         );
 

@@ -1,10 +1,17 @@
 {# The one layout. Every page extends it, so the head is written once and the
    nonce cannot be forgotten on a page that needs it.
 
-   There is no <script> tag anywhere in this tree. Every page works with
-   JavaScript disabled, which is a requirement of ast-2vk.1 and also the
-   simplest way to keep `script-src 'nonce-…' 'strict-dynamic'` honest: a
-   policy that permits nothing to run is one nothing can bypass. #}
+   No page here has a <script> tag. Every page works with JavaScript disabled,
+   which is a requirement of ast-2vk.1 and also the simplest way to keep
+   `script-src 'nonce-…' 'strict-dynamic'` honest: a policy that permits
+   nothing to run is one nothing can bypass.
+
+   One template is exempt, by name and with a reason, in
+   `crates/web/src/source_audit.rs`: passkey.html, because
+   `navigator.credentials.create()` is a JavaScript API and no markup can run a
+   WebAuthn ceremony. Its script is inline under this page's nonce, and the
+   page still works — through the password path — for a browser that ignores
+   it. Anything else with a <script> in it fails the build. #}
 <!DOCTYPE html>
 <html lang="{{ locale }}">
 <head>
