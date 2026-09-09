@@ -161,11 +161,17 @@ impl Endpoint {
 /// The grant types this deployment supports.
 ///
 /// `authorization_code` and `refresh_token` are always present; the rest follow
-/// their flags. `client_credentials` is unconditional because a service or
-/// agent client needs it and it has no separate endpoint to gate.
+/// their flags.
+///
+/// `client_credentials` is deliberately absent. A client may register for it,
+/// but no handler serves it at the token endpoint yet (`ast-a05.8`), so a
+/// request for it answers 501. Advertising it would promise a capability this
+/// deployment does not have to the one reader who cannot check — a client
+/// reading discovery once, at registration time. It goes back in with the
+/// grant, and the guard test in `crates/server/tests/token.rs` says so.
 #[must_use]
 pub fn grant_types(capabilities: &Capabilities) -> Vec<&'static str> {
-    let mut grants = vec!["authorization_code", "refresh_token", "client_credentials"];
+    let mut grants = vec!["authorization_code", "refresh_token"];
     if capabilities.token_exchange {
         grants.push("urn:ietf:params:oauth:grant-type:token-exchange");
     }
@@ -620,7 +626,7 @@ mod tests {
     fn grant_types_follow_their_flags() {
         assert_eq!(
             grant_types(&Capabilities::default()),
-            ["authorization_code", "refresh_token", "client_credentials"]
+            ["authorization_code", "refresh_token"]
         );
         let all = grant_types(&all_features());
         assert!(all.contains(&"urn:ietf:params:oauth:grant-type:token-exchange"));

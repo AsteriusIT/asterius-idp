@@ -254,6 +254,51 @@ async fn a_grant_with_no_handler_is_not_implemented() {
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
 }
 
+/// The other half of `a_grant_with_no_handler_is_not_implemented`, and the
+/// mirror of `discovery_advertises_the_grant_this_file_implements` in
+/// `refresh_token.rs`: discovery must not name a grant no handler serves.
+///
+/// `client_credentials` was advertised while the token endpoint answered 501
+/// for it. Discovery is read once, at registration time, by a client that
+/// cannot check — promising a capability there sends it building on something
+/// that is not here. The advertisement goes back in with the handler
+/// (`ast-a05.8`), and this test is what makes the two move together.
+#[tokio::test]
+async fn discovery_does_not_advertise_the_grant_no_file_implements() {
+    // Arrange: a machine client that did register for the grant, so the
+    // request gets past `unauthorized_client` to the handler lookup.
+    let machine = Client {
+        registration: ClientRegistration::from_json(
+            &serde_json::to_vec(&json!({
+                "client_name": "Billing",
+                "grant_types": ["client_credentials"],
+                "response_types": [],
+                "scope": "openid",
+                "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+            }))
+            .expect("serialise"),
+            Capabilities::default(),
+        )
+        .expect("a valid client_credentials registration"),
+        ..client(&["authorization_code", "refresh_token"])
+    };
+
+    // Act
+    let advertised = asterius_oidc::metadata::grant_types(&Capabilities::default());
+    let (status, _, _) = run_with(&[("grant_type", "client_credentials")], &[], Ok(machine)).await;
+
+    // Assert
+    assert_eq!(
+        status,
+        StatusCode::NOT_IMPLEMENTED,
+        "client_credentials has a handler now; re-advertise it and delete this test"
+    );
+    assert!(
+        !advertised.contains(&"client_credentials"),
+        "discovery advertises a grant no handler serves: {advertised:?}"
+    );
+}
+
 /// RFC 6749 §5.2 restricts `error_description` to a printable ASCII subset.
 /// A description that escaped it would break a conforming client's parser.
 #[tokio::test]
