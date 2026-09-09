@@ -22,6 +22,10 @@
 //!   help against a right-to-left override on a consent screen.
 //! * **An accepted name survives its column.** Every accepted name round-trips
 //!   through the JSON the claim bag is stored as.
+//! * **No name `serde_json` reserves gets through.** Such a member makes the
+//!   whole JSONB document unreadable once sorting puts it first, so accepting
+//!   one would make a user row durably unloadable. Restated here rather than
+//!   imported, for the same reason the reserved set above is.
 #![no_main]
 
 use asterius_domain::{Claim, ClaimName, ClaimSet, ClaimSource};
@@ -56,6 +60,12 @@ const SERVER_ISSUED: &[&str] = &[
 /// Claims the `users` row already carries in a column of its own.
 const HELD_IN_A_COLUMN: &[&str] = &["email", "email_verified", "updated_at"];
 
+/// The member names `serde_json` reserves for its private types, restated.
+const SERDE_JSON_SENTINELS: &[&str] = &[
+    "$serde_json::private::RawValue",
+    "$serde_json::private::Number",
+];
+
 /// RFC 5646 §2.1's basic shape, restated: alphabetic primary subtag, then
 /// alphanumeric subtags, each 1 to 8 characters.
 fn is_a_language_tag(tag: &str) -> bool {
@@ -77,7 +87,7 @@ fn is_a_language_tag(tag: &str) -> bool {
 /// would have to tell apart. Half of these are exactly the names that must be
 /// refused, spelled the ways somebody would try.
 fn name(data: &[u8]) -> String {
-    const BASES: [&str; 14] = [
+    const BASES: [&str; 16] = [
         "name",
         "given_name",
         "family_name",
@@ -92,6 +102,8 @@ fn name(data: &[u8]) -> String {
         "",
         "sub ",
         "subject",
+        "$serde_json::private::RawValue",
+        "$serde_json::private::Number",
     ];
     const SUFFIXES: [&str; 12] = [
         "",
@@ -177,6 +189,11 @@ fuzz_target!(|data: &[u8]| {
         !HELD_IN_A_COLUMN.contains(&parsed.base()),
         "a user record was allowed to assert {:?}, which has a column",
         parsed.base()
+    );
+    assert!(
+        !SERDE_JSON_SENTINELS.contains(&parsed.as_str())
+            && !SERDE_JSON_SENTINELS.contains(&parsed.base()),
+        "a name the JSON encoder reserves was accepted: {raw:?}"
     );
 
     // --- the OIDC Core §5.2 split -------------------------------------------
