@@ -28,7 +28,7 @@
 //! interaction is destroyed, because a request whose two halves disagree is one
 //! where somebody is being deceived and there is no way to tell which party.
 
-use asterius_domain::{OpaqueToken, ct_eq, sha256_hex};
+use asterius_domain::{Continuation, OpaqueToken, ct_eq, sha256_hex};
 use std::fmt;
 
 /// The cookie the interaction id travels in.
@@ -164,31 +164,75 @@ pub enum Stage {
 }
 
 impl Stage {
-    /// Whether `next` is a legal move from here.
+    /// Whether `next` is a legal move from here, for an interaction with this
+    /// continuation.
     ///
     /// Forward only, with one exception. The state machine is small enough to
     /// state completely, which is the point: an interaction that could move
     /// backwards is one where a user who has consented can be returned to a
     /// login form and asked again, and an interaction that could skip `Consent`
     /// is a grant nobody agreed to.
+    ///
+    /// # Why the continuation is a parameter
+    ///
+    /// Because the two kinds of interaction have two different machines, and
+    /// the difference is exactly the stage that matters. An authorization must
+    /// pass through [`Stage::Consent`] and may never jump from `Login` to
+    /// `Response`; a first-party login (ADR-0009) has no client to consent to
+    /// and must never *reach* `Consent`. Deciding that here, in the one
+    /// function every transition already goes through, is what makes both
+    /// statements properties of a `match` rather than of a handler that
+    /// remembers to check. Passing the continuation is also what stops the
+    /// first-party arm from being a general "skip consent" switch: nothing can
+    /// ask for `Login -> Response` without holding a
+    /// [`Continuation::FirstParty`], and nothing can build one of those from a
+    /// request parameter.
     #[must_use]
-    pub const fn may_advance_to(self, next: Self) -> bool {
-        matches!(
-            (self, next),
-            (Self::Login, Self::StepUp | Self::Consent)
-                // Re-authentication: a step-up that fails, or a session that
-                // expires mid-interaction, returns to `Login`. That backward
-                // move is the only one, and it costs nothing — it discards
-                // progress rather than granting any.
-                | (Self::StepUp, Self::Consent | Self::Login)
-                | (Self::Consent, Self::Response)
-        )
+    pub const fn may_advance_to(self, next: Self, continuation: &Continuation) -> bool {
+        match continuation {
+            Continuation::Client(_) => matches!(
+                (self, next),
+                (Self::Login, Self::StepUp | Self::Consent)
+                    // Re-authentication: a step-up that fails, or a session
+                    // that expires mid-interaction, returns to `Login`. That
+                    // backward move is the only one, and it costs nothing — it
+                    // discards progress rather than granting any.
+                    | (Self::StepUp, Self::Consent | Self::Login)
+                    | (Self::Consent, Self::Response)
+            ),
+            Continuation::FirstParty(_) => matches!(
+                (self, next),
+                (Self::Login, Self::StepUp | Self::Response)
+                    | (Self::StepUp, Self::Response | Self::Login)
+            ),
+        }
     }
 
     /// Whether this stage still needs the user.
     #[must_use]
     pub const fn is_interactive(self) -> bool {
         !matches!(self, Self::Response)
+    }
+
+    /// Where an authenticated user goes next, given what this interaction is
+    /// for.
+    ///
+    /// The one place that answer is decided, so that "a first-party
+    /// interaction never reaches [`Stage::Consent`]" is a property of a match
+    /// rather than of a handler remembering to check. There is nobody to
+    /// consent *to* when there is no client (ADR-0009): the console is this
+    /// server's own surface, not a third party asking for access to the user's
+    /// account, and a consent screen naming nobody would be a screen that
+    /// teaches people to click through.
+    ///
+    /// `ast-2vk.7` owns the step-up that may come first; this is the stage
+    /// after authentication has done all it is going to do.
+    #[must_use]
+    pub const fn after_login(continuation: &Continuation) -> Self {
+        match continuation {
+            Continuation::Client(_) => Self::Consent,
+            Continuation::FirstParty(_) => Self::Response,
+        }
     }
 }
 
@@ -409,8 +453,12 @@ impl Interaction {
     /// # Errors
     ///
     /// [`InteractionError::IllegalTransition`] if the state machine forbids it.
-    pub fn advance(&mut self, next: Stage) -> Result<(), InteractionError> {
-        if self.stage.may_advance_to(next) {
+    pub fn advance(
+        &mut self,
+        next: Stage,
+        continuation: &Continuation,
+    ) -> Result<(), InteractionError> {
+        if self.stage.may_advance_to(next, continuation) {
             self.stage = next;
             Ok(())
         } else {
@@ -843,6 +891,19 @@ mod tests {
 
     // ---- the state machine ----------------------------------------------
 
+    /// An authorization, for the transition tests.
+    fn authorization() -> Continuation {
+        Continuation::for_client(
+            asterius_domain::ClientId::new("billing"),
+            serde_json::json!({}),
+        )
+    }
+
+    /// A first-party login, for the same.
+    const fn console() -> Continuation {
+        Continuation::FirstParty(asterius_domain::FirstPartyDestination::AdminConsole)
+    }
+
     #[test]
     fn the_state_machine_allows_exactly_these_moves() {
         use Stage::{Consent, Login, Response, StepUp};
@@ -857,7 +918,7 @@ mod tests {
             for to in [Login, StepUp, Consent, Response] {
                 let expected = legal.contains(&(from, to));
                 assert_eq!(
-                    from.may_advance_to(to),
+                    from.may_advance_to(to, &authorization()),
                     expected,
                     "{from:?} -> {to:?} should be {}",
                     if expected { "legal" } else { "refused" }
@@ -866,20 +927,80 @@ mod tests {
         }
     }
 
+    /// The other machine, stated as completely as the first. `Consent` is
+    /// absent from both sides of every legal pair, which is the criterion
+    /// `ast-wr4` states: there is no client to consent to, so the screen is not
+    /// skipped by a flag — it is unreachable.
+    #[test]
+    fn a_first_party_interaction_allows_exactly_these_moves() {
+        use Stage::{Consent, Login, Response, StepUp};
+        let legal = [
+            (Login, StepUp),
+            (Login, Response),
+            (StepUp, Response),
+            (StepUp, Login),
+        ];
+        for from in [Login, StepUp, Consent, Response] {
+            for to in [Login, StepUp, Consent, Response] {
+                let expected = legal.contains(&(from, to));
+                assert_eq!(
+                    from.may_advance_to(to, &console()),
+                    expected,
+                    "{from:?} -> {to:?} should be {}",
+                    if expected { "legal" } else { "refused" }
+                );
+            }
+        }
+    }
+
+    /// The criterion on its own, so that an edit to the table above cannot
+    /// quietly permit it: no stage of a first-party interaction moves to
+    /// `Consent`, and the stage after login is the destination.
+    #[test]
+    fn a_first_party_interaction_can_never_reach_consent() {
+        for from in [Stage::Login, Stage::StepUp, Stage::Consent, Stage::Response] {
+            assert!(
+                !from.may_advance_to(Stage::Consent, &console()),
+                "{from:?} reached a consent screen with nobody to consent to"
+            );
+        }
+        assert_eq!(Stage::after_login(&console()), Stage::Response);
+        assert_eq!(Stage::after_login(&authorization()), Stage::Consent);
+    }
+
+    /// The mirror: the first-party arm is not a way for an authorization to
+    /// skip the screen.
+    #[test]
+    fn an_authorization_can_never_jump_from_login_to_the_response() {
+        assert!(!Stage::Login.may_advance_to(Stage::Response, &authorization()));
+        assert!(!Stage::StepUp.may_advance_to(Stage::Response, &authorization()));
+    }
+
     /// The two moves that matter most, stated on their own so a future edit to
     /// the table above cannot quietly permit them.
     #[test]
     fn consent_can_never_be_skipped_and_never_replayed() {
         use Stage::{Consent, Login, Response, StepUp};
-        assert!(!Login.may_advance_to(Response), "a grant nobody agreed to");
-        assert!(!StepUp.may_advance_to(Response), "a grant nobody agreed to");
+        let authorization = authorization();
         assert!(
-            !Response.may_advance_to(Consent),
+            !Login.may_advance_to(Response, &authorization),
+            "a grant nobody agreed to"
+        );
+        assert!(
+            !StepUp.may_advance_to(Response, &authorization),
+            "a grant nobody agreed to"
+        );
+        assert!(
+            !Response.may_advance_to(Consent, &authorization),
             "a decided interaction must not be re-decided"
         );
         for stage in [Login, StepUp, Consent, Response] {
             assert!(
-                !Response.may_advance_to(stage),
+                !Response.may_advance_to(stage, &authorization),
+                "Response is terminal, but moves to {stage:?}"
+            );
+            assert!(
+                !Response.may_advance_to(stage, &console()),
                 "Response is terminal, but moves to {stage:?}"
             );
         }
@@ -887,10 +1008,11 @@ mod tests {
 
     #[test]
     fn a_user_who_has_consented_is_never_sent_back_to_a_login_form() {
-        assert!(!Stage::Consent.may_advance_to(Stage::Login));
-        assert!(!Stage::Response.may_advance_to(Stage::Login));
+        assert!(!Stage::Consent.may_advance_to(Stage::Login, &authorization()));
+        assert!(!Stage::Response.may_advance_to(Stage::Login, &authorization()));
         // The one legal backward move discards progress rather than granting.
-        assert!(Stage::StepUp.may_advance_to(Stage::Login));
+        assert!(Stage::StepUp.may_advance_to(Stage::Login, &authorization()));
+        assert!(Stage::StepUp.may_advance_to(Stage::Login, &console()));
     }
 
     #[test]
@@ -903,12 +1025,14 @@ mod tests {
             expires_at: time::OffsetDateTime::now_utc() + time::Duration::minutes(10),
         };
         assert_eq!(
-            interaction.advance(Stage::Response),
+            interaction.advance(Stage::Response, &authorization()),
             Err(InteractionError::IllegalTransition)
         );
         assert_eq!(interaction.stage, Stage::Login, "the stage moved anyway");
 
-        interaction.advance(Stage::Consent).expect("legal");
+        interaction
+            .advance(Stage::Consent, &authorization())
+            .expect("legal");
         assert_eq!(interaction.stage, Stage::Consent);
     }
 

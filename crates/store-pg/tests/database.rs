@@ -3716,8 +3716,11 @@ mod interactions {
                 .await
                 .expect("read")
                 .expect("the interaction must resolve");
-            assert_eq!(found.client.as_str(), "billing");
-            assert_eq!(found.parameters, pushed.parameters);
+            let request = found
+                .client_request()
+                .expect("an authorization names its client");
+            assert_eq!(request.client.as_str(), "billing");
+            assert_eq!(request.parameters, pushed.parameters);
 
             // The client's credential still works on the same row.
             assert!(
@@ -3726,6 +3729,91 @@ mod interactions {
                     .expect("peek")
                     .is_some()
             );
+        }
+    }
+
+    db_test! {
+        /// The other kind of interaction (ADR-0009, `ast-wr4`): no client, no
+        /// `request_uri`, and a destination that is a variant. One repository
+        /// answers for both kinds, so the login pages reach this row through
+        /// exactly the statements they reach an authorization through.
+        async fn a_first_party_interaction_round_trips_without_a_client(db) {
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let now = OffsetDateTime::now_utc();
+            let ix = digest("a-console-visitor");
+
+            repo.begin_first_party_interaction(
+                &ix,
+                asterius_domain::FirstPartyDestination::AdminConsole,
+                now + time::Duration::minutes(10),
+                now,
+            )
+            .await
+            .expect("begin");
+
+            let found: InteractionRecord = repo
+                .by_interaction(&ix, now)
+                .await
+                .expect("read")
+                .expect("the interaction must resolve");
+            assert!(
+                found.client_request().is_none(),
+                "a first-party interaction named a client"
+            );
+            assert_eq!(
+                found.continuation.first_party(),
+                Some(asterius_domain::FirstPartyDestination::AdminConsole)
+            );
+
+            // Progress and the session digest are written by the same call the
+            // authorization path makes.
+            repo.save_interaction_state(
+                &ix,
+                &serde_json::json!({"stage": "login"}),
+                Some("a-session-digest"),
+                now,
+            )
+            .await
+            .expect("save");
+            let found = repo
+                .by_interaction(&ix, now)
+                .await
+                .expect("read")
+                .expect("still live")
+                ;
+            assert_eq!(found.session.as_deref(), Some("a-session-digest"));
+
+            // Spent once. A second completion must not open a second session.
+            repo.complete_interaction(&ix, now).await.expect("complete");
+            assert!(repo.complete_interaction(&ix, now).await.is_err());
+            assert!(
+                repo.by_interaction(&ix, now).await.expect("read").is_none(),
+                "a spent interaction still resolves"
+            );
+        }
+    }
+
+    db_test! {
+        /// A browser mismatch destroys the interaction whichever table it is
+        /// in (FAPI 2.0 SP §6.5): the destroy does not first have to work out
+        /// which kind it was, because the case where that guess is wrong is
+        /// exactly the case somebody is being deceived in.
+        async fn destroying_reaches_a_first_party_interaction_too(db) {
+            let repo = PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let now = OffsetDateTime::now_utc();
+            let ix = digest("a-mismatched-visitor");
+            repo.begin_first_party_interaction(
+                &ix,
+                asterius_domain::FirstPartyDestination::AdminConsole,
+                now + time::Duration::minutes(10),
+                now,
+            )
+            .await
+            .expect("begin");
+
+            repo.destroy_interaction(&ix).await.expect("destroy");
+
+            assert!(repo.by_interaction(&ix, now).await.expect("read").is_none());
         }
     }
 
@@ -6174,6 +6262,7 @@ mod retention {
             .expect("seed session");
 
             seed_passkey_enrolment(pool, tenant, label, expires).await;
+            seed_first_party_interaction(pool, tenant, label, expires).await;
 
             sqlx::query(
                 "insert into auth_requests (tenant_id, request_uri_hash, client_id,
@@ -6280,6 +6369,33 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed passkey enrolment");
+    }
+
+    /// The console's login (`ast-wr4`), in the table that holds the
+    /// interactions with no client behind them. Without a row here the sweep
+    /// has nothing to delete and the criterion above cannot see whether the
+    /// rule works.
+    async fn seed_first_party_interaction(
+        pool: &PgPool,
+        tenant: &str,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into first_party_interactions (tenant_id, interaction_id_hash,
+                                                   destination, expires_at)
+             values ($1, $2, 'admin_console', $3)",
+        )
+        .bind(tenant)
+        // The tenant is part of the digest because the column is unique across
+        // the table, as an interaction id is across a deployment: two tenants
+        // seeded in one database must not collide where two browsers never
+        // would.
+        .bind(asterius_domain::sha256(format!("console-{tenant}-{label}").as_bytes()).to_vec())
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed first-party interaction");
     }
 
     /// The outbox is aged rather than expiring, and only a terminal row is ever

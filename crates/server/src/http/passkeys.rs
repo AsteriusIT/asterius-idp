@@ -82,9 +82,9 @@ use crate::http::throttle;
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::entities::session::{COOKIE_NAME, Lifetimes, SessionId};
 use asterius_domain::{
-    ASSERTION_TTL, AuditSink, AuthenticationMethod, ENROLMENT_TTL, InteractionRepository,
-    NewPasskey, OpaqueToken, PasskeyRepository, RegisteredPasskey, Session, SessionRepository,
-    Tenant, UserDirectory, UserId, UserStatus, sha256, sha256_hex,
+    ASSERTION_TTL, AuditSink, AuthenticationMethod, ENROLMENT_TTL, InteractionRecord,
+    InteractionRepository, NewPasskey, OpaqueToken, PasskeyRepository, RegisteredPasskey, Session,
+    SessionRepository, Tenant, UserDirectory, UserId, UserStatus, sha256, sha256_hex,
 };
 use asterius_web::interaction::{self, CsrfToken, InteractionId, Stage, StoredState};
 use asterius_web::pages::{self, ErrorPage, PasskeyPage, nonce_attribute};
@@ -496,7 +496,7 @@ pub async fn login_options(
     body: &Bytes,
     now: OffsetDateTime,
 ) -> Response {
-    let Some((presented, state)) = resumed(&context, id, headers, now).await else {
+    let Some((presented, state, _record)) = resumed(&context, id, headers, now).await else {
         return login_refused("the interaction is not one that can be continued");
     };
     // Only the stages that are still asking who this is. A request that has
@@ -610,7 +610,7 @@ async fn assertion_ceremony(
     body: &Bytes,
     now: OffsetDateTime,
 ) -> Response {
-    let Some((presented, state)) = resumed(context, id, headers, now).await else {
+    let Some((presented, state, record)) = resumed(context, id, headers, now).await else {
         return login_refused("the interaction is not one that can be continued");
     };
     if !matches!(state.stage, Stage::Login | Stage::StepUp) {
@@ -722,7 +722,30 @@ async fn assertion_ceremony(
         }
     };
 
-    session_from_assertion(context, &presented, state, &credential, &verified, now).await
+    let signed_in = VerifiedAssertion {
+        state,
+        record: &record,
+        credential: &credential,
+        verified: &verified,
+    };
+    session_from_assertion(context, &presented, signed_in, now).await
+}
+
+/// A ceremony that verified, and the interaction it belongs to.
+///
+/// One argument rather than four because they travel together and always did:
+/// the progress being advanced, what the interaction is *for* — which is what
+/// decides the stage after login — the credential that answered, and what the
+/// assertion proved.
+struct VerifiedAssertion<'a> {
+    /// Progress through the interaction, about to be advanced.
+    state: StoredState,
+    /// What the interaction is for, which decides the stage after login.
+    record: &'a InteractionRecord,
+    /// The credential that signed.
+    credential: &'a RegisteredPasskey,
+    /// The verified assertion.
+    verified: &'a asterius_webauthn::Assertion,
 }
 
 /// Everything that happens *after* §7.2 has been satisfied.
@@ -735,11 +758,15 @@ async fn assertion_ceremony(
 async fn session_from_assertion(
     context: &PasskeyLoginContext<'_>,
     presented: &InteractionId,
-    mut state: StoredState,
-    credential: &RegisteredPasskey,
-    verified: &asterius_webauthn::Assertion,
+    signed_in: VerifiedAssertion<'_>,
     now: OffsetDateTime,
 ) -> Response {
+    let VerifiedAssertion {
+        mut state,
+        record,
+        credential,
+        verified,
+    } = signed_in;
     // The account, not just the credential: one that has been disabled since
     // the credential was registered must not sign in with it.
     match context.users.by_id(credential.user).await {
@@ -788,10 +815,12 @@ async fn session_from_assertion(
     }
 
     // `ast-2vk.7` decides whether a step-up is needed; until then an
-    // authenticated user goes straight to consent, exactly as the password
-    // path does.
-    if state.stage.may_advance_to(Stage::Consent) {
-        state.stage = Stage::Consent;
+    // authenticated user goes straight to whatever the interaction was for,
+    // exactly as the password path does — the continuation decides, not this
+    // handler.
+    let next = Stage::after_login(&record.continuation);
+    if state.stage.may_advance_to(next, &record.continuation) {
+        state.stage = next;
     }
     let value = serde_json::to_value(&state).unwrap_or_default();
     if let Err(error) = context
@@ -843,7 +872,7 @@ async fn resumed(
     id: &str,
     headers: &HeaderMap,
     now: OffsetDateTime,
-) -> Option<(InteractionId, StoredState)> {
+) -> Option<(InteractionId, StoredState, InteractionRecord)> {
     let presented = InteractionId::from_presented(id.to_owned());
     let from_cookie = interaction::id_from_cookie_header(&cookies(headers));
 
@@ -869,7 +898,10 @@ async fn resumed(
         .by_interaction(&presented.digest(), now)
         .await
     {
-        Ok(Some(record)) => Some((presented, StoredState::from_stored(&record.state))),
+        Ok(Some(record)) => {
+            let state = StoredState::from_stored(&record.state);
+            Some((presented, state, record))
+        }
         Ok(None) => None,
         Err(error) => {
             tracing::error!(%error, tenant = %context.tenant.id, "cannot read an interaction");

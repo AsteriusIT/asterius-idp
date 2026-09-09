@@ -10,8 +10,8 @@
 
 use crate::error::to_domain_error;
 use asterius_domain::{
-    AuthRequestRepository, ClientId, Consumed, DomainError, InteractionRecord, PushedRequest,
-    TenantId,
+    AuthRequestRepository, ClientId, Consumed, Continuation, DomainError, FirstPartyDestination,
+    InteractionRecord, PushedRequest, TenantId,
 };
 use serde_json::Value;
 use sqlx::postgres::PgPool;
@@ -257,14 +257,23 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
         .await
         .map_err(to_domain_error)?;
 
-        Ok(row.map(|row| InteractionRecord {
-            tenant: self.tenant.clone(),
-            client: ClientId::new(row.client_id),
-            parameters: row.parameters,
-            state: row.interaction_state,
-            session: row.session_id,
-            expires_at: row.expires_at,
-        }))
+        if let Some(row) = row {
+            return Ok(Some(InteractionRecord {
+                tenant: self.tenant.clone(),
+                continuation: Continuation::for_client(
+                    ClientId::new(row.client_id),
+                    row.parameters,
+                ),
+                state: row.interaction_state,
+                session: row.session_id,
+                expires_at: row.expires_at,
+            }));
+        }
+
+        // The other table. An interaction is one of two things (ADR-0009) and
+        // the browser's credential does not say which, so a miss here is a
+        // question for the first-party rows rather than an answer.
+        self.first_party_by_interaction(&interaction, now).await
     }
 
     async fn save_interaction_state(
@@ -277,6 +286,27 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
         let interaction = Self::digest_bytes(interaction_digest)?;
         let updated = sqlx::query!(
             "update auth_requests
+                set interaction_state = $3, session_id = coalesce($4, session_id)
+              where tenant_id = $1
+                and interaction_id_hash = $2
+                and consumed_at is null
+                and expires_at > $5",
+            self.tenant.as_str(),
+            interaction,
+            state,
+            session,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        if updated.rows_affected() == 1 {
+            return Ok(());
+        }
+
+        let updated = sqlx::query!(
+            "update first_party_interactions
                 set interaction_state = $3, session_id = coalesce($4, session_id)
               where tenant_id = $1
                 and interaction_id_hash = $2
@@ -327,6 +357,25 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
         .map_err(to_domain_error)?;
 
         if spent.rows_affected() == 1 {
+            return Ok(());
+        }
+
+        let spent = sqlx::query!(
+            "update first_party_interactions
+                set consumed_at = $3
+              where tenant_id = $1
+                and interaction_id_hash = $2
+                and consumed_at is null
+                and expires_at > $3",
+            self.tenant.as_str(),
+            interaction,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        if spent.rows_affected() == 1 {
             Ok(())
         } else {
             Err(DomainError::NotFound)
@@ -343,8 +392,100 @@ impl asterius_domain::InteractionRepository for PgAuthRequestRepository {
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?;
+        // Both tables, unconditionally. A destroy is what a browser mismatch
+        // produces (FAPI 2.0 SP §6.5), and it must not depend on this
+        // repository first working out which kind of interaction the id names:
+        // the case where that lookup is wrong is exactly the case somebody is
+        // being deceived in.
+        sqlx::query!(
+            "delete from first_party_interactions
+              where tenant_id = $1 and interaction_id_hash = $2",
+            self.tenant.as_str(),
+            interaction,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
         // Absent is success: destroying something already gone is the outcome
         // that was wanted.
         Ok(())
+    }
+
+    async fn begin_first_party_interaction(
+        &self,
+        interaction_digest: &str,
+        destination: FirstPartyDestination,
+        expires_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let interaction = Self::digest_bytes(interaction_digest)?;
+        sqlx::query!(
+            "insert into first_party_interactions
+                 (tenant_id, interaction_id_hash, destination, started_at, expires_at)
+             values ($1, $2, $3, $4, $5)",
+            self.tenant.as_str(),
+            interaction,
+            destination.as_str(),
+            now,
+            expires_at,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|error| match &error {
+            // At 256 bits this is a broken generator, not bad luck, and it is
+            // worth being told apart from a storage failure.
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                DomainError::Conflict("interaction id already in use".to_owned())
+            }
+            _ => to_domain_error(error),
+        })?;
+        Ok(())
+    }
+}
+
+impl PgAuthRequestRepository {
+    /// The first-party half of [`by_interaction`](InteractionRepository::by_interaction).
+    ///
+    /// A row whose `destination` this binary cannot name is treated as no row
+    /// at all: it was written by a newer binary, and the honest answer to "what
+    /// is this interaction for" is that this process does not know. Sending the
+    /// user somewhere of this binary's choosing would be answering a question
+    /// nobody asked it.
+    async fn first_party_by_interaction(
+        &self,
+        interaction: &[u8],
+        now: OffsetDateTime,
+    ) -> Result<Option<InteractionRecord>, DomainError> {
+        let row = sqlx::query!(
+            "select destination, interaction_state, session_id, expires_at
+               from first_party_interactions
+              where tenant_id = $1
+                and interaction_id_hash = $2
+                and consumed_at is null
+                and expires_at > $3",
+            self.tenant.as_str(),
+            interaction,
+            now,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        let Some(row) = row else { return Ok(None) };
+        let Some(destination) = FirstPartyDestination::parse(&row.destination) else {
+            tracing::error!(
+                tenant = %self.tenant,
+                "an interaction names a first-party destination this build does not have"
+            );
+            return Ok(None);
+        };
+
+        Ok(Some(InteractionRecord {
+            tenant: self.tenant.clone(),
+            continuation: Continuation::FirstParty(destination),
+            state: row.interaction_state,
+            session: row.session_id,
+            expires_at: row.expires_at,
+        }))
     }
 }

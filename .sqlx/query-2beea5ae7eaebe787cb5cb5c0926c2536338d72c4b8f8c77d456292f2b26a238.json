@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update first_party_interactions\n                set consumed_at = $3\n              where tenant_id = $1\n                and interaction_id_hash = $2\n                and consumed_at is null\n                and expires_at > $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2beea5ae7eaebe787cb5cb5c0926c2536338d72c4b8f8c77d456292f2b26a238"
+}

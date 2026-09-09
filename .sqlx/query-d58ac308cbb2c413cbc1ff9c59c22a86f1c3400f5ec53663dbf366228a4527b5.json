@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from first_party_interactions\n              where tenant_id = $1 and interaction_id_hash = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d58ac308cbb2c413cbc1ff9c59c22a86f1c3400f5ec53663dbf366228a4527b5"
+}

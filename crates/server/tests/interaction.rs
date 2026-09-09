@@ -7,10 +7,11 @@
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, EventType};
 use asterius_domain::rate_limit::{Bucket, RateLimitStore};
 use asterius_domain::{
-    AuthenticationMethod, ClientId, CodeBinding, CodeIssuer, CredentialVerifier, DomainError,
-    Grant, GrantRepository, InteractionRecord, InteractionRepository, Issuer, Lifetimes,
-    LoginLimits, Participant, RateLimit, Secret, SectorIdentifier, Session, SessionRepository,
-    SessionRevocation, SubjectId, SubjectResolver, Tenant, TenantId, TenantStatus, UserId,
+    AuthenticationMethod, ClientId, CodeBinding, CodeIssuer, Continuation, CredentialVerifier,
+    DomainError, FirstPartyDestination, Grant, GrantRepository, InteractionRecord,
+    InteractionRepository, Issuer, Lifetimes, LoginLimits, Participant, RateLimit, Secret,
+    SectorIdentifier, Session, SessionRepository, SessionRevocation, SubjectId, SubjectResolver,
+    Tenant, TenantId, TenantStatus, UserId,
 };
 use asterius_server::http::interaction::{InteractionContext, show, submit};
 use asterius_server::http::throttle::LoginThrottle;
@@ -25,6 +26,14 @@ use std::sync::Mutex;
 use time::{Duration, OffsetDateTime};
 
 const ISSUER: &str = "https://as.example/t/demo";
+
+/// The only redirect status this server emits, spelled as a number.
+///
+/// Not `StatusCode::SEE_OTHER`: `http::source_audit` confines that constant to
+/// `http::redirect`, so that a redirect is always *built* by the helper. A test
+/// asserting what came back is not building one, and the number says the same
+/// thing.
+const SEE_OTHER: u16 = 303;
 
 /// One interaction, in memory.
 #[derive(Debug, Default)]
@@ -41,18 +50,20 @@ impl FakeStore {
             digest.to_owned(),
             InteractionRecord {
                 tenant: TenantId::new("demo"),
-                client: ClientId::new("billing"),
-                // What `asterius_server::http::par::serialise` writes, which
-                // is what the consent screen is built from.
-                parameters: serde_json::json!({
+                continuation: Continuation::for_client(
+                    ClientId::new("billing"),
+                    // What `asterius_server::http::par::serialise` writes,
+                    // which is what the consent screen is built from.
+                    serde_json::json!({
                     "redirect_uri": "https://rp.example/cb",
                     "scopes": ["openid", "payments"],
                     "resources": [],
                     // FAPI 2.0 SP §5.3.2.2 item 5 makes PKCE mandatory, so
                     // every stored request has one.
                     "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
-                    "nonce": "n-0S6_WzA2Mj",
-                }),
+                        "nonce": "n-0S6_WzA2Mj",
+                    }),
+                ),
                 state,
                 session: None,
                 expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
@@ -70,35 +81,58 @@ impl FakeStore {
         self
     }
 
+    /// Edits the stored authorization parameters in place.
+    ///
+    /// The fake is built with a client continuation, so the parameters are
+    /// there; a first-party interaction has none, which is what
+    /// [`FakeStore::first_party`] is for.
+    fn with_parameters(&self, edit: impl FnOnce(&mut Value)) {
+        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
+            match &mut record.continuation {
+                Continuation::Client(request) => edit(&mut request.parameters),
+                Continuation::FirstParty(_) => panic!("this interaction has no parameters"),
+            }
+        }
+    }
+
+    /// Replaces the continuation with a first-party one: no client, no
+    /// redirect URI, no scopes (ADR-0009).
+    fn first_party(self) -> Self {
+        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
+            record.continuation = Continuation::FirstParty(FirstPartyDestination::AdminConsole);
+        }
+        self
+    }
+
     /// Sets the stored `response_mode`, which is what decides whether the
     /// authorization response is a redirect or a rendered form (`ast-gxh.5`).
     fn responding_with(&self, mode: &str) {
-        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
-            record.parameters["response_mode"] = Value::String(mode.to_owned());
-        }
+        self.with_parameters(|parameters| {
+            parameters["response_mode"] = Value::String(mode.to_owned());
+        });
     }
 
     /// Sets the stored `prompt` values, which `http::par` writes as an array.
     fn prompting(&self, prompt: &str) {
-        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
-            record.parameters["prompts"] = serde_json::json!([prompt]);
-        }
+        self.with_parameters(|parameters| {
+            parameters["prompts"] = serde_json::json!([prompt]);
+        });
     }
 
     /// Pins the stored request to a DPoP key, as `http::par::serialise` does
     /// for a push that named one (RFC 9449 §10.1).
     fn pinned_to(&self, thumbprint: &str) {
-        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
-            record.parameters["dpop_jkt"] = Value::String(thumbprint.to_owned());
-        }
+        self.with_parameters(|parameters| {
+            parameters["dpop_jkt"] = Value::String(thumbprint.to_owned());
+        });
     }
 
     /// Replaces the stored `redirect_uri`, for the policy the consent screen is
     /// served under.
     fn redirecting_to(&self, redirect_uri: &str) {
-        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
-            record.parameters["redirect_uri"] = Value::String(redirect_uri.to_owned());
-        }
+        self.with_parameters(|parameters| {
+            parameters["redirect_uri"] = Value::String(redirect_uri.to_owned());
+        });
     }
 
     fn was_completed(&self, digest: &str) -> bool {
@@ -128,6 +162,26 @@ impl FakeStore {
 
 #[async_trait::async_trait]
 impl InteractionRepository for FakeStore {
+    async fn begin_first_party_interaction(
+        &self,
+        digest: &str,
+        destination: FirstPartyDestination,
+        expires_at: OffsetDateTime,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        *self.record.lock().expect("lock") = Some((
+            digest.to_owned(),
+            InteractionRecord {
+                tenant: TenantId::new("demo"),
+                continuation: Continuation::FirstParty(destination),
+                state: serde_json::json!({}),
+                session: None,
+                expires_at,
+            },
+        ));
+        Ok(())
+    }
+
     async fn begin_interaction(
         &self,
         _r: &str,
@@ -963,6 +1017,286 @@ async fn signing_in_creates_a_session_and_sets_its_cookie() {
     assert!(
         !cookie.contains(&created[0].id_digest),
         "the digest was sent to the browser instead of the id"
+    );
+}
+
+// ---- the first-party continuation (ast-wr4, ADR-0009) -------------------
+
+/// Signs in against an interaction whose continuation is the admin console,
+/// with whatever extra form fields a caller wants to smuggle in.
+async fn sign_in_to_the_console(
+    extra: &str,
+) -> (axum::response::Response, FakeSessions, FakeStore, String) {
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store =
+        FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json")).first_party();
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let auth = AlwaysSucceeds;
+
+    let response = submit(
+        context(&tenant, &store, &nonce, Some(&auth), &sessions, &issued),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=hunter2{extra}",
+            token.expose()
+        )),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    (response, sessions, store, id.digest())
+}
+
+/// The header this response sends the browser to.
+fn location(response: &axum::response::Response) -> String {
+    response
+        .headers()
+        .get(header::LOCATION)
+        .expect("a Location")
+        .to_str()
+        .expect("ascii")
+        .to_owned()
+}
+
+/// The first criterion: a console login ends at the console, through the
+/// interaction pages and not through a consent screen.
+#[tokio::test]
+async fn a_first_party_login_ends_at_its_destination() {
+    // Arrange / Act
+    let (response, _, store, digest) = sign_in_to_the_console("").await;
+
+    // Assert
+    assert_eq!(response.status().as_u16(), SEE_OTHER);
+    assert_eq!(location(&response), "../admin/");
+    assert!(
+        store.was_completed(&digest),
+        "the interaction was not spent: a second submission could open a second session"
+    );
+}
+
+/// The criterion this bead exists for. A browser can put anything it likes in
+/// the form; the destination is a variant of a closed enum, so none of it can
+/// move the redirect. There is no allow-list to defeat because there is no
+/// list.
+#[tokio::test]
+async fn nothing_the_browser_sends_can_move_the_destination() {
+    for hostile in [
+        "&next=https://evil.example/",
+        "&redirect_uri=https://evil.example/",
+        "&destination=https://evil.example/",
+        "&continuation=admin_console&next=//evil.example",
+        "&next=/admin/../../evil",
+        "&destination=admin_console%0d%0aLocation:+https://evil.example/",
+    ] {
+        // Arrange / Act
+        let (response, _, _, _) = sign_in_to_the_console(hostile).await;
+
+        // Assert
+        assert_eq!(response.status().as_u16(), SEE_OTHER, "for {hostile}");
+        assert_eq!(
+            location(&response),
+            "../admin/",
+            "a request field reached the destination: {hostile}"
+        );
+    }
+}
+
+/// The same session, from the same code. Both continuations go through
+/// `interaction::submit` -> `sign_in`, so both get the rotation-safe fresh id,
+/// the `amr` and the cookie attributes — and this asserts they are the *same*
+/// facts rather than two similar ones.
+#[tokio::test]
+async fn a_console_login_and_an_authorization_login_open_the_same_kind_of_session() {
+    // Arrange / Act: the first-party path.
+    let (first_party, console_sessions, _, _) = sign_in_to_the_console("").await;
+
+    // The authorization path, through the very same entry point.
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let client_sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let auth = AlwaysSucceeds;
+    let authorization = submit(
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&auth),
+            &client_sessions,
+            &issued,
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=hunter2",
+            token.expose()
+        )),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert: one session each, and the same shape.
+    let console = console_sessions.0.lock().expect("lock");
+    let client = client_sessions.0.lock().expect("lock");
+    assert_eq!(console.len(), 1, "the console path opened no session");
+    assert_eq!(client.len(), 1, "the authorization path opened no session");
+    assert_eq!(console[0].user, client[0].user);
+    assert_eq!(console[0].amr, client[0].amr);
+    assert_eq!(console[0].acr, client[0].acr);
+    // A fresh id on both, and never the digest.
+    assert_ne!(
+        console[0].id_digest, client[0].id_digest,
+        "two sign-ins produced one session id"
+    );
+
+    for (response, session) in [(&first_party, &console[0]), (&authorization, &client[0])] {
+        let cookie = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find(|v| v.starts_with("__Host-asterius_session="))
+            .expect("no session cookie");
+        for attribute in ["Secure", "HttpOnly", "SameSite=Lax", "Path=/"] {
+            assert!(cookie.contains(attribute), "missing {attribute}: {cookie}");
+        }
+        assert!(
+            !cookie.contains(&session.id_digest),
+            "the digest was sent to the browser instead of the id"
+        );
+    }
+}
+
+/// One sentence for "no such user" and for "wrong password", on this path as
+/// on the other. The console is where an administrator signs in, which is the
+/// account worth enumerating.
+#[tokio::test]
+async fn a_console_login_says_the_same_thing_to_every_failure() {
+    let mut said = Vec::new();
+    for verifier in [&AlwaysRefuses as &dyn CredentialVerifier, &AlwaysRefuses] {
+        let id = InteractionId::generate();
+        let mut state = StoredState::default();
+        let token = state.issue_csrf();
+        let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"))
+            .first_party();
+        let tenant = tenant();
+        let nonce = Nonce::generate();
+        let sessions = FakeSessions::default();
+        let issued = Issued::default();
+
+        let response = submit(
+            context(&tenant, &store, &nonce, Some(verifier), &sessions, &issued),
+            id.expose(),
+            &cookie_header(id.expose()),
+            &Bytes::from(format!(
+                "csrf={}&username=ada&password=wrong",
+                token.expose()
+            )),
+            OffsetDateTime::now_utc(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK, "a refusal is a page");
+        assert!(sessions.0.lock().expect("lock").is_empty());
+        // Only the message. Everything else on the page is per-rendering —
+        // the interaction id, a fresh synchroniser token — and comparing whole
+        // documents would compare those instead of what was *said*.
+        let body = body_of(response).await;
+        let start = body.find("role=\"alert\"").expect("an error summary");
+        let end = body[start..].find("</div>").expect("a closed summary") + start;
+        said.push(body[start..end].to_owned());
+    }
+    assert_eq!(said[0], said[1]);
+    assert!(
+        said[0].contains("Those details did not match."),
+        "the shared message is not the one shown: {}",
+        said[0]
+    );
+}
+
+/// A first-party interaction has no client, no redirect URI and no scopes, and
+/// nothing on this path asks for one. Rendering its login page is the same
+/// page every other login gets.
+#[tokio::test]
+async fn a_first_party_interaction_renders_the_ordinary_login_page() {
+    // Arrange
+    let id = InteractionId::generate();
+    let store = FakeStore::with(
+        &id.digest(),
+        serde_json::to_value(StoredState::default()).expect("json"),
+    )
+    .first_party();
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    // Act
+    let response = show(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_of(response).await;
+    assert!(
+        body.contains("name=\"password\""),
+        "not the login page: {body}"
+    );
+    assert!(
+        !body.contains("name=\"decision\""),
+        "a consent form was rendered for an interaction with nobody to consent to"
+    );
+}
+
+/// The stage machine refuses it, and so does the handler: a first-party
+/// interaction parked at `Consent` — which nothing can put it in — has no
+/// offer to render and is refused rather than shown an empty screen.
+#[tokio::test]
+async fn a_first_party_interaction_cannot_be_shown_a_consent_screen() {
+    // Arrange: a state that should not exist, written by hand.
+    let id = InteractionId::generate();
+    let state = StoredState {
+        stage: asterius_web::interaction::Stage::Consent,
+        csrf_digest: None,
+        decision: None,
+    };
+    let store =
+        FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json")).first_party();
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    // Act
+    let response = show(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_of(response).await;
+    assert!(
+        !body.contains("name=\"decision\""),
+        "a consent form was rendered with no client behind it"
     );
 }
 
