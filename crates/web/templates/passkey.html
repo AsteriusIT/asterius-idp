@@ -98,7 +98,13 @@ password</a>.</p>
     if (!answer.ok) {
       throw new Error("the server refused the ceremony: " + answer.status);
     }
-    return answer.json();
+    // The finish endpoint answers 204, and Response.json() on an empty body
+    // rejects. Without this line an enrolment that *succeeded* was reported to
+    // the user as having failed and never navigated — which is what
+    // e2e/tests/passkey-ceremony.spec.ts found the first time a browser
+    // actually ran this ceremony (ast-kb0). The URLs stay on the dataset: a
+    // literal here would be interpolation by another name.
+    return answer.status === 204 ? null : answer.json();
   };
 
   const register = async () => {

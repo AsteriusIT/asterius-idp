@@ -16,7 +16,7 @@
  * source-level assertion cannot see.
  */
 import { defineConfig, devices } from '@playwright/test';
-import { CALLBACK_HOST } from './src/environment.js';
+import { CALLBACK_HOST, WEBAUTHN_RP_ID } from './src/environment.js';
 
 export default defineConfig({
   testDir: './tests',
@@ -40,7 +40,15 @@ export default defineConfig({
       // performs or refuses — which is the whole subject of `ast-jsq` — with no
       // way for a code to leave the machine. Interception cannot stand in for
       // it: Playwright is never offered the redirect hop of a form submission.
-      args: [`--host-resolver-rules=MAP ${CALLBACK_HOST} 127.0.0.1`],
+      //
+      // The WebAuthn tenant's name is mapped for a different reason: it is a
+      // real name the browser really connects to, and the server bound one
+      // address. Pinning it is how `ast-kb0` answers the `::1`-first hazard
+      // `e2e/fixtures/asterius.toml.in` names, rather than hoping for a
+      // resolution order.
+      args: [
+        `--host-resolver-rules=MAP ${CALLBACK_HOST} 127.0.0.1,MAP ${WEBAUTHN_RP_ID} 127.0.0.1`,
+      ],
     },
     trace: process.env.CI ? 'retain-on-failure' : 'off',
     screenshot: 'only-on-failure',
@@ -53,7 +61,7 @@ export default defineConfig({
       // What it does when it does *not* run is asserted in `no-js-flow`, on
       // the same page, which is where that belongs: a browser without script
       // must see no passkey button at all.
-      testIgnore: ['**/passkey-signin.spec.ts'],
+      testIgnore: ['**/passkey-signin.spec.ts', '**/passkey-ceremony.spec.ts'],
     },
     {
       name: 'js',

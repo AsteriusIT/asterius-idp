@@ -9,17 +9,14 @@
  * the moment the bootstrap lost its nonce or reached for an inline handler.
  * The `csp` fixture fails this file if the browser refuses anything.
  *
- * # What is deliberately not here yet
+ * # What is not here, and where it is instead
  *
- * The ceremony itself, driven by Chromium's virtual authenticator over CDP.
- * The RP ID this server derives is the issuer's host, and the sweep's fixture
- * issuer is `https://127.0.0.1:{port}/t/e2e` — an IP literal, which WebAuthn
- * does not accept as an RP ID and which Chromium refuses before any
- * authenticator, virtual or otherwise, is consulted. Making that test possible
- * means moving the fixture tenant onto a name, and `e2e/fixtures/asterius.toml.in`
- * chose the address on purpose (a name that may resolve to `::1` first is a way
- * for a run to fail for a reason that has nothing to do with the code). So it
- * is a fixture decision to take deliberately rather than a line to add here.
+ * The ceremony itself. It cannot run on this tenant at all: the RP ID is the
+ * issuer's host, this issuer's is `127.0.0.1`, and an IP literal is not a
+ * domain — Chromium refuses before any authenticator is consulted. `ast-kb0`
+ * added a second tenant on a name rather than moving this one, and the
+ * enrolment-then-sign-in walk lives in `passkey-ceremony.spec.ts`. So what is
+ * asserted below is the page, on the tenant the rest of the sweep uses.
  */
 import { expect, test } from '../src/fixtures.js';
 import { PASSWORD, USERNAME } from '../src/environment.js';

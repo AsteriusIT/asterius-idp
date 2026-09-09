@@ -37,6 +37,11 @@ BASE_URL="https://127.0.0.1:${PORT}"
 # in e2e/src/environment.ts; they are passed explicitly so that changing one
 # here changes it in one place.
 TENANT="e2e"
+# The second tenant, whose only reason to exist is that its issuer names a host
+# rather than an address: an IP literal is not a valid WebAuthn RP ID, so the
+# ceremony cannot run on the tenant above. See e2e/fixtures/asterius.toml.in.
+WEBAUTHN_TENANT="e2e-webauthn"
+WEBAUTHN_BASE_URL="https://localhost:${PORT}"
 USERNAME="sweep@example.test"
 PASSWORD="correct horse battery staple"
 # Argon2id, m=19456 t=2 p=1, of the password above. See e2e/fixtures/seed.sql.
@@ -134,6 +139,20 @@ until [ "$(curl --silent --insecure --output /dev/null --write-out '%{http_code}
 done
 printf '%s/readyz answers 200\n' "$BASE_URL"
 
+# The WebAuthn tenant is reached by name, and the server bound one address. If
+# `localhost` resolves somewhere that is not the socket above, every ceremony
+# in the sweep fails for a reason that has nothing to do with the code — which
+# is precisely the hazard the note in the fixture warns about. Say so here,
+# once, instead of letting it surface as a browser timeout.
+if [ "$(curl --silent --insecure --output /dev/null --write-out '%{http_code}' \
+          --max-time 5 "${WEBAUTHN_BASE_URL}/readyz" 2>/dev/null)" != "200" ]; then
+  printf '%s/readyz does not answer, so `localhost` does not reach the server socket.\n' \
+    "$WEBAUTHN_BASE_URL" >&2
+  printf 'The WebAuthn tenant needs a name for its RP ID; check what localhost resolves to.\n' >&2
+  exit 1
+fi
+printf '%s/readyz answers 200 as well\n' "$WEBAUTHN_BASE_URL"
+
 # --- 5. the fixture data ----------------------------------------------------
 # After the server, not before: booting upserts the configured tenants, and that
 # upsert writes `custom_host` back to NULL. See e2e/fixtures/seed.sql.
@@ -147,6 +166,18 @@ psql_run --quiet --no-psqlrc \
   -f - < e2e/fixtures/seed.sql
 printf 'seeded tenant %s and user %s\n' "$TENANT" "$USERNAME"
 
+# The same fixture again, for the WebAuthn tenant. Not a second file: the seed
+# is parameterised by tenant already, its identifiers are primary-key-scoped to
+# one, and a copy would be a second place to forget to change the password.
+psql_run --quiet --no-psqlrc \
+  -v ON_ERROR_STOP=1 \
+  -v "tenant=${WEBAUTHN_TENANT}" \
+  -v "host=localhost:${PORT}" \
+  -v "username=${USERNAME}" \
+  -v "hash=${PASSWORD_HASH}" \
+  -f - < e2e/fixtures/seed.sql
+printf 'seeded tenant %s and user %s\n' "$WEBAUTHN_TENANT" "$USERNAME"
+
 # --- 6. the sweep -----------------------------------------------------------
 step "playwright"
 cd "$root/e2e"
@@ -158,6 +189,7 @@ else
 fi
 
 E2E_BASE_URL="$BASE_URL" \
+E2E_WEBAUTHN_BASE_URL="$WEBAUTHN_BASE_URL" \
 E2E_USERNAME="$USERNAME" \
 E2E_PASSWORD="$PASSWORD" \
   npx playwright test "$@"
