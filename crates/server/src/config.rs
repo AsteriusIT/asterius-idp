@@ -19,7 +19,8 @@ use crate::http::register::{
 };
 use crate::observability::LogFormat;
 use asterius_domain::{
-    Capabilities, Issuer, LoginLimits, RateLimit, RefreshPolicy, Rotation, Secret, TenantId,
+    Capabilities, EndpointLimit, EndpointLimits, Issuer, LoginLimits, RateLimit, RefreshPolicy,
+    Rotation, Secret, TenantId,
 };
 use ipnet::IpNet;
 use serde::Deserialize;
@@ -65,6 +66,8 @@ pub struct Config {
     pub admin: Option<AdminConfig>,
     /// How many failed sign-ins are tolerated, and over what window.
     pub login: LoginLimits,
+    /// What each protocol endpoint permits per window (`ast-p2l.3`).
+    pub limits: EndpointLimits,
 }
 
 /// Listener and transport settings.
@@ -323,6 +326,8 @@ struct RawConfig {
     admin: Option<RawAdmin>,
     #[serde(default)]
     login: RawLogin,
+    #[serde(default)]
+    limits: RawLimits,
 }
 
 /// The `[login]` table.
@@ -339,6 +344,29 @@ struct RawLogin {
     failure_window_seconds: Option<u64>,
     max_failures_per_account: Option<u32>,
     max_failures_per_address: Option<u32>,
+}
+
+/// The `[limits]` table: what the protocol endpoints permit per window.
+///
+/// A `#[serde(default)]` struct for the reason `[login]` is one — an
+/// unlimited `/register` or `/token` is not a shape this server offers, so a
+/// deployment that says nothing still gets the defaults below.
+///
+/// One window for every endpoint rather than one per endpoint. The numbers
+/// that differ between endpoints are the *maxima*, which is where the
+/// difference in legitimate traffic actually lies; a per-endpoint window would
+/// be five more knobs that mostly change what "per minute" means.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLimits {
+    window_seconds: Option<u64>,
+    registration_per_address: Option<u32>,
+    client_configuration_per_address: Option<u32>,
+    par_per_address: Option<u32>,
+    par_per_client: Option<u32>,
+    token_per_address: Option<u32>,
+    token_per_client: Option<u32>,
+    userinfo_per_address: Option<u32>,
 }
 
 /// The `[registration]` table.
@@ -504,6 +532,75 @@ pub(crate) const DEFAULT_LOGIN_MAX_PER_ADDRESS: u32 = 100;
 /// The shortest counting window an operator may configure.
 pub(crate) const MIN_LOGIN_WINDOW_SECONDS: u64 = 30;
 
+/// How long protocol-endpoint requests are counted for.
+///
+/// A minute, against the login limiter's quarter of an hour, because these
+/// limits bound *load* rather than guessing. A caller that is refused has
+/// usually made a mistake in its retry loop, and fifteen minutes of refusals
+/// for a burst that lasted five seconds is an outage rather than a defence.
+pub(crate) const DEFAULT_LIMIT_WINDOW_SECONDS: u64 = 60;
+
+/// The shortest per-endpoint window an operator may configure.
+///
+/// Below this a fixed window admits `2 × max` in a stretch barely longer than
+/// the window itself, which is not a limit anybody reasoned about.
+pub(crate) const MIN_LIMIT_WINDOW_SECONDS: u64 = 10;
+
+/// `POST /register` — RFC 7591 — per address, per window.
+///
+/// The tightest of the five, and the only endpoint here reachable with no
+/// credential of any kind when `[registration] mode = "open"`: every accepted
+/// request creates a row that lives until somebody deletes it. Twenty a minute
+/// is far above what a person integrating a client does and far below what
+/// filling a table takes.
+pub(crate) const DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS: u32 = 20;
+
+/// RFC 7592 client configuration — per address, per window.
+///
+/// A management endpoint: a client reads or updates its own registration
+/// rarely, and a caller trying many registration access tokens against it is
+/// the thing to stop (`ast-m9c.11`). Higher than registration because a read
+/// costs a query rather than a row.
+pub(crate) const DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS: u32 = 60;
+
+/// `POST /par` — RFC 9126 — per address, per window.
+///
+/// One row per accepted request, so this is a write endpoint like
+/// registration; but it needs an authenticated client, so an anonymous flood
+/// is refused before it stores anything, and the address limit is here for the
+/// requests that never authenticate.
+pub(crate) const DEFAULT_LIMIT_PAR_PER_ADDRESS: u32 = 60;
+
+/// `POST /par` per authenticated client, per window.
+///
+/// An order of magnitude above the address limit: one client is legitimately
+/// many users starting authorization at once, and this is the number that has
+/// to fit a busy relying party rather than a suspicious address.
+pub(crate) const DEFAULT_LIMIT_PAR_PER_CLIENT: u32 = 600;
+
+/// `POST /token` — per address, per window.
+///
+/// Every attempt costs a signature verification and a database round trip, and
+/// replaying an authorization code revokes the grant it belongs to (OIDC Core
+/// §3.1.3.2), so an abusive caller here has a side effect as well as a cost.
+pub(crate) const DEFAULT_LIMIT_TOKEN_PER_ADDRESS: u32 = 120;
+
+/// `POST /token` per authenticated client, per window.
+///
+/// The busiest endpoint a working deployment has: every authorization and
+/// every refresh passes through it. Twenty a second sustained is a great deal
+/// of one client and still a bound.
+pub(crate) const DEFAULT_LIMIT_TOKEN_PER_CLIENT: u32 = 1200;
+
+/// UserInfo — per address, per window.
+///
+/// The most generous, because its callers are resource servers rather than
+/// browsers: a handful of machines making a request per API call each, all
+/// behind one address. A limit sized for a browser would break a working
+/// deployment on the day it got busy, and the endpoint is a read of claims the
+/// caller already holds a token for.
+pub(crate) const DEFAULT_LIMIT_USERINFO_PER_ADDRESS: u32 = 600;
+
 /// The seeded admin's login identifier when `[admin]` does not name one.
 pub(crate) const DEFAULT_ADMIN_USERNAME: &str = "admin";
 
@@ -617,6 +714,7 @@ impl RawConfig {
         let registration = validate_registration(self.registration, &mut errors);
         let admin = validate_admin(self.admin, &tenants, &mut errors);
         let login = validate_login(&self.login, &mut errors);
+        let limits = validate_limits(&self.limits, &mut errors);
 
         errors.finish(Config {
             server,
@@ -628,6 +726,7 @@ impl RawConfig {
             registration,
             admin,
             login,
+            limits,
         })
     }
 }
@@ -680,6 +779,100 @@ fn validate_login(raw: &RawLogin, errors: &mut Collector) -> LoginLimits {
                     .unwrap_or(DEFAULT_LOGIN_MAX_PER_ACCOUNT),
             ),
             window,
+        },
+    }
+}
+
+/// Turns the `[limits]` table into the per-endpoint limits the wiring applies.
+///
+/// Every maximum is refused at zero, for the reason the login maxima are: zero
+/// is spellable and it means "this endpoint answers 429 to everybody", which
+/// is a way to switch the token endpoint off by typing one character. An
+/// operator who wants an endpoint closed turns the feature off.
+///
+/// The window has a floor for the mirror reason: a two-second window resets
+/// before a burst can be recognised as one.
+fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
+    let seconds = raw.window_seconds.unwrap_or(DEFAULT_LIMIT_WINDOW_SECONDS);
+    if seconds < MIN_LIMIT_WINDOW_SECONDS {
+        errors.problem(
+            "limits.window_seconds",
+            format!(
+                "must be at least {MIN_LIMIT_WINDOW_SECONDS}: a shorter window resets before a burst adds up"
+            ),
+        );
+    }
+    let window = time::Duration::seconds(
+        i64::try_from(seconds.max(MIN_LIMIT_WINDOW_SECONDS)).unwrap_or(i64::MAX),
+    );
+
+    let mut limit = |key: &str, configured: Option<u32>, default: u32| -> RateLimit {
+        let max = configured.unwrap_or(default);
+        if max == 0 {
+            errors.problem(
+                key,
+                "must be at least 1: zero refuses every request to that endpoint",
+            );
+        }
+        RateLimit {
+            max: max.max(1),
+            window,
+        }
+    };
+
+    EndpointLimits {
+        registration: EndpointLimit {
+            per_address: limit(
+                "limits.registration_per_address",
+                raw.registration_per_address,
+                DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS,
+            ),
+            // No client bucket: RFC 7591 §3 registration has no client yet, by
+            // definition. There is nothing authenticated to charge.
+            per_client: None,
+        },
+        client_configuration: EndpointLimit {
+            per_address: limit(
+                "limits.client_configuration_per_address",
+                raw.client_configuration_per_address,
+                DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS,
+            ),
+            per_client: None,
+        },
+        par: EndpointLimit {
+            per_address: limit(
+                "limits.par_per_address",
+                raw.par_per_address,
+                DEFAULT_LIMIT_PAR_PER_ADDRESS,
+            ),
+            per_client: Some(limit(
+                "limits.par_per_client",
+                raw.par_per_client,
+                DEFAULT_LIMIT_PAR_PER_CLIENT,
+            )),
+        },
+        token: EndpointLimit {
+            per_address: limit(
+                "limits.token_per_address",
+                raw.token_per_address,
+                DEFAULT_LIMIT_TOKEN_PER_ADDRESS,
+            ),
+            per_client: Some(limit(
+                "limits.token_per_client",
+                raw.token_per_client,
+                DEFAULT_LIMIT_TOKEN_PER_CLIENT,
+            )),
+        },
+        userinfo: EndpointLimit {
+            per_address: limit(
+                "limits.userinfo_per_address",
+                raw.userinfo_per_address,
+                DEFAULT_LIMIT_USERINFO_PER_ADDRESS,
+            ),
+            // UserInfo presents an access token, not a `client_id`. Reading a
+            // client out of a token before it is verified would be trusting a
+            // string the caller wrote, so the address bucket holds it alone.
+            per_client: None,
         },
     }
 }
@@ -1270,6 +1463,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("tenant.refresh", accepted_keys::<RawRefresh>()),
         ("admin", accepted_keys::<RawAdmin>()),
         ("login", accepted_keys::<RawLogin>()),
+        ("limits", accepted_keys::<RawLimits>()),
     ]
     .into_iter()
     .collect()
@@ -1403,6 +1597,99 @@ mod tests {
             problems
                 .paths()
                 .any(|path| path == "login.max_failures_per_account"),
+            "{problems}"
+        );
+    }
+
+    /// An unlimited `/register` is not a shape this server offers, so saying
+    /// nothing about it still produces limits.
+    #[test]
+    fn a_deployment_that_says_nothing_about_endpoints_still_has_limits() {
+        // Arrange & Act
+        let config = parse(MINIMAL).expect("minimal config should be valid");
+
+        // Assert
+        assert_eq!(
+            config.limits.registration.per_address.max,
+            DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS
+        );
+        assert_eq!(
+            config.limits.token.per_client.map(|limit| limit.max),
+            Some(DEFAULT_LIMIT_TOKEN_PER_CLIENT)
+        );
+    }
+
+    /// The endpoints do not share one number: a limit sized for UserInfo's
+    /// resource servers would be no limit at all on registration.
+    #[test]
+    fn endpoints_do_not_all_get_the_same_default() {
+        // Arrange & Act
+        let config = parse(MINIMAL).expect("minimal config should be valid");
+
+        // Assert
+        assert!(
+            config.limits.registration.per_address.max < config.limits.userinfo.per_address.max
+        );
+    }
+
+    #[test]
+    fn endpoint_limits_are_read_from_the_file() {
+        // Arrange
+        let text =
+            format!("{MINIMAL}\n[limits]\nwindow_seconds = 30\nregistration_per_address = 3\n");
+
+        // Act
+        let config = parse(&text).expect("a valid limits table");
+
+        // Assert
+        assert_eq!(config.limits.registration.per_address.max, 3);
+        assert_eq!(
+            config
+                .limits
+                .registration
+                .per_address
+                .window
+                .whole_seconds(),
+            30
+        );
+        // A key nobody touched keeps its default rather than collapsing onto
+        // the one that was set.
+        assert_eq!(
+            config.limits.token.per_address.max,
+            DEFAULT_LIMIT_TOKEN_PER_ADDRESS
+        );
+    }
+
+    /// Zero is spellable and would answer 429 to every caller of that
+    /// endpoint.
+    #[test]
+    fn an_endpoint_limit_of_zero_is_refused() {
+        // Arrange
+        let text = format!("{MINIMAL}\n[limits]\ntoken_per_client = 0\n");
+
+        // Act
+        let problems = problems(parse(&text));
+
+        // Assert
+        assert!(
+            problems
+                .paths()
+                .any(|path| path == "limits.token_per_client"),
+            "{problems}"
+        );
+    }
+
+    #[test]
+    fn an_endpoint_window_below_the_floor_is_refused() {
+        // Arrange
+        let text = format!("{MINIMAL}\n[limits]\nwindow_seconds = 1\n");
+
+        // Act
+        let problems = problems(parse(&text));
+
+        // Assert
+        assert!(
+            problems.paths().any(|path| path == "limits.window_seconds"),
             "{problems}"
         );
     }

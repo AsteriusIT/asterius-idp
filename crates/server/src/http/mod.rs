@@ -12,6 +12,7 @@ pub mod forwarded;
 pub mod id_token_hint;
 pub mod interaction;
 pub mod issuance;
+pub mod limits;
 pub mod logout;
 pub mod par;
 pub mod passkeys;

@@ -179,6 +179,9 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 // What bounds online guessing (`ast-2vk.9`). Validated at
                 // load, so the handlers get numbers rather than opinions.
                 login_limits: config.login,
+                // What bounds abuse of the endpoints a client talks to
+                // (`ast-p2l.3`). Validated at load, like the login limits.
+                endpoint_limits: config.limits,
                 signer,
                 dpop,
             })),

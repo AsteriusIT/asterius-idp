@@ -55,6 +55,18 @@ impl EventType {
     /// full, never the identifier that was typed — see
     /// `asterius_domain::rate_limit`.
     pub const AUTH_THROTTLED: Self = Self("auth.throttled");
+    /// A request to a protocol endpoint was refused by the per-endpoint
+    /// limiter before the endpoint did any work (`ast-p2l.3`).
+    ///
+    /// Not [`Self::AUTH_THROTTLED`]: nobody was authenticating. A run of these
+    /// says a caller is hammering `/register` or `/token`, which is a
+    /// different incident with a different response, and one type covering
+    /// both would make each invisible inside the other.
+    ///
+    /// One record per bucket per window, not one per request: the limiter
+    /// keeps a marker of its own so that an attacker cannot make the trail
+    /// grow with the flood it is reporting.
+    pub const REQUEST_THROTTLED: Self = Self("request.throttled");
     /// A credential was registered for a user: a passkey, a password, a
     /// recovery code.
     ///
@@ -120,12 +132,13 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
         Self::AUTH_FAILED,
         Self::AUTH_THROTTLED,
+        Self::REQUEST_THROTTLED,
         Self::CREDENTIAL_CREATED,
         Self::CONSENT_GRANTED,
         Self::CONSENT_DENIED,
