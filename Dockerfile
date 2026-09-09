@@ -20,6 +20,19 @@
 # and a static build we cannot reproduce is worth less than a distroless one we
 # can. `deploy/README.md` records this as a deliberate, revisitable choice.
 
+# --- console ---------------------------------------------------------------
+# The admin console is embedded in the binary (ADR-0009: one binary and one
+# PostgreSQL), so its bundle has to exist before cargo runs. Its own stage, so
+# that Node never reaches the build stage and a change to a `.rs` file does not
+# reinstall npm packages.
+FROM node:22-bookworm-slim AS console
+
+WORKDIR /console
+COPY console/package.json console/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY console/ ./
+RUN npm run build
+
 # --- build -----------------------------------------------------------------
 # The toolchain is pinned to the workspace's `rust-version`. Pin it by digest
 # before cutting a release: a tag can be re-pointed, and a release build should
@@ -43,6 +56,10 @@ ENV SQLX_OFFLINE=true
 ENV CARGO_INCREMENTAL=0
 
 COPY . .
+# After the sources, so it is not overwritten: `console/dist` is gitignored and
+# therefore absent from the context. Without it `build.rs` embeds nothing and
+# the console answers 503.
+COPY --from=console /console/dist ./console/dist
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \

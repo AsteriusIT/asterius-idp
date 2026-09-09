@@ -112,9 +112,14 @@ sed -e "s|@PORT@|${PORT}|g" \
     e2e/fixtures/asterius.toml.in > "$run_dir/asterius.toml"
 
 # --- 4. the server ----------------------------------------------------------
+# The console is embedded in the binary, so it is built before cargo runs
+# (`ast-f7m.3`). Skipped when a prebuilt binary was handed in: rebuilding the
+# bundle would not change that binary, and saying so is better than a bundle
+# that silently does not match what is being tested.
 step "server"
 binary="${ASTERIUS_BIN:-}"
 if [ -z "$binary" ]; then
+  ./scripts/build-console.sh
   cargo build --bin asterius
   binary="$(cargo metadata --format-version 1 --no-deps \
     | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/debug/asterius"

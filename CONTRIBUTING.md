@@ -76,9 +76,24 @@ properties that no Rust test can observe. One script starts everything:
 ./scripts/browser-tests.sh --headed     # watch it happen
 ```
 
-Node and Playwright live in `e2e/` and nowhere else, with pinned versions and a
-committed lockfile. `e2e/README.md` explains what the sweep proves and what it
-does not yet cover.
+Node lives in two directories and nowhere else, both with exact versions and a
+committed lockfile: `e2e/` for Playwright, and `console/` for the admin
+console. `e2e/README.md` explains what the sweep proves and what it does not
+yet cover.
+
+The console is a React bundle **embedded in the binary** (ADR-0009), so it is
+built before cargo:
+
+```sh
+make console                    # or ./scripts/build-console.sh
+cargo build --bin asterius      # embeds console/dist
+```
+
+A checkout without Node still compiles: `crates/admin-api/build.rs` then embeds
+an empty bundle and `/admin/` answers 503 naming the command that was not run.
+`scripts/browser-tests.sh`, the CI browser job and the release image all build
+it first. `console/README.md` explains why there is no `index.html` and no dev
+server.
 
 `sqlx` checks queries against a live database at compile time. After changing
 any SQL, regenerate the offline data and commit it, or CI (which builds with

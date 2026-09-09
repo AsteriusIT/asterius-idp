@@ -186,6 +186,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
 
         let routes = routes
             .merge(admin_routes(&store, &tenants, directory))
+            .merge(console_routes())
             .fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
 
@@ -261,6 +262,21 @@ fn admin_routes(
     .layer(axum::middleware::from_fn(
         asterius_server::admin::client_address_layer,
     ))
+}
+
+/// The admin console (`ast-f7m.3`), served from inside the binary.
+///
+/// Merged into the *tenanted* router beside the admin API, and for the same
+/// reason: the console's credential is a session, and a session belongs to a
+/// tenant, so the shell has to be reached at the issuer whose sessions it will
+/// use. Nothing here reads the database — it is a rendered document and a
+/// table of embedded bytes — so it takes no state.
+///
+/// A build made without `console/dist` carries an empty bundle and answers 503
+/// with a sentence naming the missing step. The routes exist either way, so
+/// that a deployment's URL space does not depend on how the binary was built.
+fn console_routes() -> axum::Router {
+    asterius_admin_api::console::routes(asterius_admin_api::Bundle::embedded())
 }
 
 /// The key store, and the tenant repository the whole process holds.
