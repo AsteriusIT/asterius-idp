@@ -66,8 +66,25 @@ const TOKENS: [&str; 12] = [
     "https://api.example/v1?x=1",
 ];
 
+/// Language tag candidates for `claims_locales` (OIDC Core §5.2), the refused
+/// spellings mixed in with the accepted ones. A tag is not free text: it is
+/// read back on every issuance and used to choose between the stored spellings
+/// of a claim.
+const TAGS: [&str; 8] = [
+    "fr",
+    "fr-CA",
+    "ja-Kana-JP",
+    "fr_CA",
+    "-fr",
+    "",
+    "abcdefghi",
+    "français",
+];
+
 #[derive(Arbitrary, Debug)]
 struct Input {
+    locale_picks: Vec<u8>,
+    locale_free: String,
     scope_picks: Vec<u8>,
     scope_free: String,
     resource_picks: Vec<u8>,
@@ -90,10 +107,14 @@ fn json(pick: u8) -> serde_json::Value {
 }
 
 fn strings(picks: &[u8], free: &str) -> Vec<String> {
+    picked(picks, free, &TOKENS)
+}
+
+fn picked(picks: &[u8], free: &str, corpus: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = picks
         .iter()
         .take(80)
-        .map(|pick| TOKENS[usize::from(*pick) % TOKENS.len()].to_owned())
+        .map(|pick| corpus[usize::from(*pick) % corpus.len()].to_owned())
         .collect();
     out.push(free.to_owned());
     out
@@ -113,6 +134,7 @@ fuzz_target!(|input: Input| {
         subject: input.subject.clone(),
         scopes: strings(&input.scope_picks, &input.scope_free),
         claims: json(input.claims),
+        claims_locales: picked(&input.locale_picks, &input.locale_free, &TAGS),
         authorization_details: json(input.authorization_details),
         resources: strings(&input.resource_picks, &input.resource_free),
         actor_chain: json(input.actor_chain),

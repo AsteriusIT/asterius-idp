@@ -27,7 +27,7 @@
 use asterius_domain::entities::client::{ClientRegistration, RedirectUri};
 use std::collections::BTreeSet;
 
-use crate::claims::{ClaimsRequest, ClaimsRequestError};
+use crate::claims::{ClaimsLocales, ClaimsRequest, ClaimsRequestError};
 use crate::form::{Duplicated, Parameters};
 use crate::pkce::{CodeChallenge, PkceError};
 
@@ -222,6 +222,15 @@ pub struct AuthorizationRequest {
     /// checked. Re-parsing a raw string at the token endpoint would be a
     /// second parser with a second set of bounds.
     pub claims: ClaimsRequest,
+    /// The OIDC Core §5.2 `claims_locales` preference, in the order the client
+    /// gave it. Empty when the client expressed none.
+    ///
+    /// Carried on the request — and from there onto the grant — rather than
+    /// read at issuance, because it is a property of *this* authorization. A
+    /// token request arriving an hour later has no `claims_locales` parameter
+    /// and no business inventing one, and a refresh must keep answering in the
+    /// language the authorization asked for.
+    pub claims_locales: ClaimsLocales,
     /// Whether `openid` was requested, which is what makes this OIDC rather
     /// than plain OAuth.
     pub openid: bool,
@@ -331,6 +340,11 @@ pub fn validate(
         .transpose()?
         .unwrap_or_default();
 
+    // OIDC Core §5.2. Never an error: a language preference is a hint about
+    // presentation, and `ClaimsLocales::parse` drops what it cannot read so a
+    // client that misspells a tag gets the fallback rather than a refusal.
+    let claims_locales = ClaimsLocales::parse(params.get("claims_locales")?);
+
     // RFC 9449 §10. Validated as a JWK thumbprint's shape only; binding it to
     // an actual proof is `ast-a05.4`.
     let dpop_jkt = params
@@ -359,6 +373,7 @@ pub fn validate(
         resources,
         dpop_jkt,
         claims,
+        claims_locales,
         openid,
     })
 }
@@ -869,5 +884,32 @@ mod tests {
             validate(&Parameters::from_pairs(pairs), CLIENT, &registration()),
             Err(AuthorizationError::DuplicateParameter(_))
         ));
+    }
+
+    /// OIDC Core §5.2. Read here so that the preference travels with the
+    /// authorization it was expressed in, and never refused: a language
+    /// preference is a hint about presentation, so a client that misspells a
+    /// tag gets the fallback rather than an error page.
+    #[test]
+    fn claims_locales_is_parsed_in_preference_order_and_never_refuses() {
+        let request = with(&[("claims_locales", "ja-Kana-JP fr-CA fr")])
+            .expect("a well-shaped claims_locales");
+        assert_eq!(
+            request.claims_locales.preferences(),
+            ["ja-Kana-JP", "fr-CA", "fr"]
+        );
+
+        // A tag that is not shaped like one is dropped, and the rest stand.
+        let salvaged =
+            with(&[("claims_locales", "fr_CA en")]).expect("a misspelled tag is not an error");
+        assert_eq!(salvaged.claims_locales.preferences(), ["en"]);
+
+        // Absent is the same as expressing no preference.
+        assert!(
+            with(&[])
+                .expect("no claims_locales")
+                .claims_locales
+                .is_empty()
+        );
     }
 }

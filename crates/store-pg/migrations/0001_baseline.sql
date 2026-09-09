@@ -450,7 +450,17 @@ create table grants (
     -- into a token as a subject every other empty subject compares equal to.
     subject               text        check (subject <> ''),
     scopes                text[]      not null default '{}',
+    -- The OIDC Core §5.5 `claims` request this authorization covers, as the
+    -- parser accepted it and not as the client wrote it: `ClaimsRequest` is
+    -- serialised canonically here, so a member this server declines to
+    -- understand never reaches the row that records what a person agreed to.
     claims                jsonb       not null default '{}'::jsonb,
+    -- OIDC Core §5.2 `claims_locales`, most preferred first. Ordered, so an
+    -- array and not a set: "ordered by preference" is the whole parameter.
+    -- A column rather than a member of `claims` because it is not part of the
+    -- §5.5 request object, and a reader parsing that column as one would have
+    -- to know to skip it.
+    claims_locales        text[]      not null default '{}',
     authorization_details jsonb       not null default '[]'::jsonb,
     resources             text[]      not null default '{}',
     -- RFC 8693 `act` chain, innermost actor last. Present only for tokens
