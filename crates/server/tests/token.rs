@@ -74,6 +74,7 @@ fn tenant() -> Tenant {
         custom_host: None,
         display_name: "demo".into(),
         status: TenantStatus::Active,
+        refresh: asterius_domain::RefreshPolicy::default(),
         created_at: time::OffsetDateTime::UNIX_EPOCH,
         updated_at: time::OffsetDateTime::UNIX_EPOCH,
     }

@@ -80,6 +80,17 @@ impl EventType {
     pub const TOKEN_REFUSED: Self = Self("token.refused");
     /// A token was exchanged for a narrower one (RFC 8693).
     pub const TOKEN_EXCHANGED: Self = Self("token.exchanged");
+    /// A refresh token was presented at the token endpoint (RFC 6749 §6).
+    ///
+    /// Distinct from [`EventType::TOKEN_ISSUED`] because it answers a
+    /// different question. An issuance says an authorization was acted on with
+    /// a user present; a refresh says it was acted on without one, possibly
+    /// months later, and the trail of them is how an operator sees that an
+    /// integration nobody remembers approving is still running. The refusals
+    /// are recorded under the same type with [`Outcome::Failure`]: a run of
+    /// them against one grant is a stolen token being tried, and splitting
+    /// them across two types would hide that behind a join.
+    pub const TOKEN_REFRESHED: Self = Self("token.refreshed");
     /// A grant was revoked.
     pub const GRANT_REVOKED: Self = Self("grant.revoked");
     /// A session was revoked.
@@ -109,7 +120,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -124,6 +135,7 @@ impl EventType {
         Self::TOKEN_ISSUED,
         Self::TOKEN_REFUSED,
         Self::TOKEN_EXCHANGED,
+        Self::TOKEN_REFRESHED,
         Self::GRANT_REVOKED,
         Self::SESSION_REVOKED,
         Self::CLIENT_AUTHENTICATED,

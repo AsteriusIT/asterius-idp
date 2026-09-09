@@ -88,6 +88,7 @@ fn tenant(id: &str, issuer: &str) -> Tenant {
         custom_host: None,
         display_name: format!("Tenant {id}"),
         status: TenantStatus::Active,
+        refresh: asterius_domain::RefreshPolicy::default(),
         created_at: OffsetDateTime::UNIX_EPOCH,
         updated_at: OffsetDateTime::UNIX_EPOCH,
     }
@@ -4036,8 +4037,9 @@ mod grants {
         label: &str,
     ) {
         sqlx::query(
-            "insert into refresh_tokens (tenant_id, token_hash, grant_id, client_id, dpop_jkt)
-             values ($1, $2, $3::uuid, 'billing', 'a-thumbprint')",
+            "insert into refresh_tokens (tenant_id, token_hash, grant_id, client_id, dpop_jkt,
+                                         absolute_expires_at)
+             values ($1, $2, $3::uuid, 'billing', 'a-thumbprint', now() + interval '30 days')",
         )
         .bind(tenant)
         .bind(asterius_domain::sha256(label.as_bytes()).to_vec())
@@ -5842,8 +5844,10 @@ mod client_configuration {
             .expect("seed a grant");
             sqlx::query(
                 "insert into refresh_tokens
-                     (tenant_id, token_hash, grant_id, client_id, dpop_jkt)
-                 values ('demo', sha256('rt'::bytea), $1::uuid, 'c.abc', 'a-thumbprint')",
+                     (tenant_id, token_hash, grant_id, client_id, dpop_jkt,
+                      absolute_expires_at)
+                 values ('demo', sha256('rt'::bytea), $1::uuid, 'c.abc', 'a-thumbprint',
+                         now() + interval '30 days')",
             )
             .bind(grant)
             .execute(&db.pool)
@@ -6202,7 +6206,7 @@ mod retention {
 
             sqlx::query(
                 "insert into refresh_tokens (tenant_id, token_hash, grant_id, client_id,
-                                             dpop_jkt, expires_at)
+                                             dpop_jkt, absolute_expires_at)
                  values ($1, $2, $3, 'billing', 'a-thumbprint', $4)",
             )
             .bind(tenant)
@@ -7718,5 +7722,314 @@ db_test! {
                 .expect("read the next window"),
             0
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Refresh tokens (`ast-a05.5`)
+// ---------------------------------------------------------------------------
+
+/// The repository behind the `refresh_token` grant.
+///
+/// The grant's own behaviour is `crates/server/tests/refresh_token.rs`. What
+/// is here is the part only the database can answer: that the two expiry
+/// columns behave differently, that supersession is atomic, and that the
+/// redemption is an index lookup rather than a scan of the tenant's tokens.
+mod refresh_tokens {
+    use super::*;
+    use asterius_domain::{Grant, GrantId};
+    use asterius_store_pg::{
+        NewRefreshToken, PgGrantRepository, PgRefreshTokenRepository, Presentation,
+    };
+    use std::collections::BTreeSet;
+    use time::Duration;
+
+    /// A tenant, a client and a grant for the tokens to hang off.
+    async fn seed(pool: &PgPool) -> GrantId {
+        seed_tenant(pool, "demo").await;
+        Store::from_pool(pool.clone())
+            .scope(TenantId::new("demo"))
+            .clients(Capabilities::default())
+            .upsert(&client("demo", "billing", &registration_document()))
+            .await
+            .expect("seed client");
+
+        let grants = PgGrantRepository::new(pool.clone(), TenantId::new("demo"));
+        let mut grant = Grant::new(
+            TenantId::new("demo"),
+            ClientId::new("billing"),
+            OffsetDateTime::now_utc(),
+        );
+        grant.subject = Some(SubjectId::new("alice"));
+        grant.user = Some(UserId::generate());
+        grant.scopes = ["openid", "offline_access"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        grants.create(&grant).await.expect("seed grant");
+        grant.id
+    }
+
+    /// A whole-second instant.
+    ///
+    /// `timestamptz` stores microseconds and `OffsetDateTime::now_utc()`
+    /// carries nanoseconds, so a deadline written and read back is not the
+    /// value that went in. These tests compare stored deadlines exactly —
+    /// which is the point of them — so the instant they are built from has to
+    /// be one the column can hold.
+    fn fixed_instant() -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("a fixed instant")
+    }
+
+    fn scopes() -> BTreeSet<String> {
+        ["openid".to_owned(), "offline_access".to_owned()].into()
+    }
+
+    fn token(
+        grant: &GrantId,
+        absolute: OffsetDateTime,
+        idle: Option<OffsetDateTime>,
+    ) -> NewRefreshToken {
+        NewRefreshToken {
+            grant: grant.clone(),
+            client: ClientId::new("billing"),
+            scopes: scopes(),
+            dpop_jkt: "a-thumbprint".to_owned(),
+            absolute_expires_at: absolute,
+            idle_expires_at: idle,
+        }
+    }
+
+    db_test! {
+        /// The two clocks, and the difference between them. Using a token
+        /// pushes the idle deadline out and leaves the absolute one exactly
+        /// where it was — which is the whole reason they are two columns.
+        async fn using_a_token_moves_the_idle_deadline_and_not_the_absolute_one(db) {
+            // Arrange
+            let grant = seed(&db.pool).await;
+            let repo = PgRefreshTokenRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let now = fixed_instant();
+            let absolute = now + Duration::days(30);
+            repo.issue("aa".repeat(32).as_str(), &token(&grant, absolute, Some(now + Duration::hours(1))), now)
+                .await
+                .expect("issue");
+
+            // Act
+            let accepted = repo
+                .redeem(
+                    "aa".repeat(32).as_str(),
+                    now,
+                    Duration::ZERO,
+                    Some(now + Duration::days(14)),
+                )
+                .await
+                .expect("redeem");
+
+            // Assert
+            let Presentation::Accepted(record) = accepted else {
+                panic!("a live token was refused");
+            };
+            assert_eq!(record.absolute_expires_at, absolute);
+            let (idle, stored_absolute): (Option<OffsetDateTime>, OffsetDateTime) = sqlx::query_as(
+                "select idle_expires_at, absolute_expires_at from refresh_tokens
+                  where tenant_id = 'demo' and token_hash = $1",
+            )
+            .bind(hex::decode("aa".repeat(32)).expect("hex"))
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row back");
+            assert_eq!(
+                stored_absolute, absolute,
+                "the absolute deadline moved when the token was used"
+            );
+            assert!(
+                idle.expect("an idle deadline") > now + Duration::days(13),
+                "the idle deadline was not pushed out"
+            );
+        }
+    }
+
+    db_test! {
+        /// The idle deadline is capped at the absolute one in the statement
+        /// that writes it, not only by the `CHECK` that would abort the
+        /// transaction. A tenant whose idle window is longer than what is left
+        /// of the absolute lifetime must still be able to refresh.
+        async fn a_pushed_idle_deadline_never_passes_the_absolute_one(db) {
+            // Arrange
+            let grant = seed(&db.pool).await;
+            let repo = PgRefreshTokenRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let now = fixed_instant();
+            let absolute = now + Duration::hours(1);
+            repo.issue("bb".repeat(32).as_str(), &token(&grant, absolute, Some(now + Duration::minutes(5))), now)
+                .await
+                .expect("issue");
+
+            // Act
+            let accepted = repo
+                .redeem(
+                    "bb".repeat(32).as_str(),
+                    now,
+                    Duration::ZERO,
+                    Some(now + Duration::days(14)),
+                )
+                .await
+                .expect("redeem");
+
+            // Assert
+            assert!(matches!(accepted, Presentation::Accepted(_)));
+            let idle: Option<OffsetDateTime> = sqlx::query_scalar(
+                "select idle_expires_at from refresh_tokens
+                  where tenant_id = 'demo' and token_hash = $1",
+            )
+            .bind(hex::decode("bb".repeat(32)).expect("hex"))
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row back");
+            assert_eq!(idle, Some(absolute));
+        }
+    }
+
+    db_test! {
+        /// Supersession writes both rows or neither. A replacement whose
+        /// digest already exists must not leave the old token stamped: the
+        /// client would then hold nothing this server accepts.
+        async fn a_failed_supersession_leaves_the_old_token_live(db) {
+            // Arrange
+            let grant = seed(&db.pool).await;
+            let repo = PgRefreshTokenRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let now = fixed_instant();
+            let absolute = now + Duration::days(30);
+            repo.issue("cc".repeat(32).as_str(), &token(&grant, absolute, None), now)
+                .await
+                .expect("issue the old token");
+            // The replacement's digest is already taken, so the insert fails.
+            repo.issue("dd".repeat(32).as_str(), &token(&grant, absolute, None), now)
+                .await
+                .expect("issue the collider");
+
+            // Act
+            let failed = repo
+                .supersede(
+                    "cc".repeat(32).as_str(),
+                    "dd".repeat(32).as_str(),
+                    &token(&grant, absolute, None),
+                    now,
+                )
+                .await;
+
+            // Assert
+            assert!(failed.is_err(), "a colliding replacement was accepted");
+            let superseded: Option<OffsetDateTime> = sqlx::query_scalar(
+                "select superseded_at from refresh_tokens
+                  where tenant_id = 'demo' and token_hash = $1",
+            )
+            .bind(hex::decode("cc".repeat(32)).expect("hex"))
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row back");
+            assert_eq!(
+                superseded, None,
+                "the old token was stamped by a supersession that did not happen"
+            );
+        }
+    }
+
+    db_test! {
+        /// A second refresh inside the grace window does not push the window
+        /// out. `coalesce` keeps the first stamp, so the window is a window
+        /// rather than a lease the holder of a stolen token can renew.
+        async fn superseding_twice_keeps_the_first_stamp(db) {
+            // Arrange
+            let grant = seed(&db.pool).await;
+            let repo = PgRefreshTokenRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let now = fixed_instant();
+            let absolute = now + Duration::days(30);
+            repo.issue("ee".repeat(32).as_str(), &token(&grant, absolute, None), now)
+                .await
+                .expect("issue");
+            repo.supersede("ee".repeat(32).as_str(), &"ff".repeat(32), &token(&grant, absolute, None), now)
+                .await
+                .expect("first supersession");
+
+            // Act
+            repo.supersede(
+                "ee".repeat(32).as_str(),
+                &"ab".repeat(32),
+                &token(&grant, absolute, None),
+                now + Duration::minutes(30),
+            )
+            .await
+            .expect("second supersession");
+
+            // Assert
+            let stamped: OffsetDateTime = sqlx::query_scalar(
+                "select superseded_at from refresh_tokens
+                  where tenant_id = 'demo' and token_hash = $1",
+            )
+            .bind(hex::decode("ee".repeat(32)).expect("hex"))
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row back");
+            assert!(
+                stamped < now + Duration::minutes(1),
+                "a retry pushed the grace window out"
+            );
+        }
+    }
+
+    db_test! {
+        /// `ast-m9c.11`'s lesson, applied here: a predicate with no index is a
+        /// scan of the tenant wearing a `where` clause. The redemption reads
+        /// one row by the primary key, and a tenant with a realistic number of
+        /// live tokens is where a planner would show otherwise.
+        async fn the_redemption_is_planned_as_an_index_lookup(db) {
+            // Arrange
+            let grant = seed(&db.pool).await;
+            sqlx::query(
+                "insert into refresh_tokens (tenant_id, token_hash, grant_id, client_id,
+                                             dpop_jkt, absolute_expires_at)
+                 select 'demo', sha256(g::text::bytea), $1::uuid, 'billing', 'a-thumbprint',
+                        now() + interval '30 days'
+                 from generate_series(1, 5000) g",
+            )
+            .bind(grant.as_str())
+            .execute(&db.pool)
+            .await
+            .expect("fill the tenant");
+            sqlx::query("analyze refresh_tokens").execute(&db.pool).await.expect("analyze");
+
+            // Act — `redeem`'s statement, verbatim, planner left alone.
+            let plan: Vec<String> = sqlx::query_scalar(
+                "explain (costs off)
+                 update refresh_tokens
+                    set last_used_at = $3,
+                        idle_expires_at = $5
+                  where tenant_id = $1
+                    and token_hash = $2
+                    and revoked_at is null
+                    and absolute_expires_at > $3
+                    and (idle_expires_at is null or idle_expires_at > $3)
+                    and (superseded_at is null or superseded_at > $4)",
+            )
+            .bind("demo")
+            .bind(asterius_domain::sha256(b"1").to_vec())
+            .bind(OffsetDateTime::now_utc())
+            .bind(OffsetDateTime::now_utc())
+            .bind(Option::<OffsetDateTime>::None)
+            .fetch_all(&db.pool)
+            .await
+            .expect("explain the redemption");
+            let plan = plan.join("\n");
+
+            // Assert
+            assert!(
+                plan.contains("refresh_tokens_pkey"),
+                "the redemption did not use the primary key:\n{plan}"
+            );
+            assert!(
+                !plan.contains("Seq Scan"),
+                "the redemption fell back to a scan of the tenant:\n{plan}"
+            );
+        }
     }
 }

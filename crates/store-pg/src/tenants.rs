@@ -9,7 +9,7 @@
 use crate::error::to_domain_error;
 use crate::salts;
 use asterius_domain::ports::TenantRepository;
-use asterius_domain::{DomainError, Issuer, Tenant, TenantId, TenantStatus};
+use asterius_domain::{DomainError, Issuer, RefreshPolicy, Tenant, TenantId, TenantStatus};
 use asterius_jose::Kek;
 use sqlx::postgres::PgPool;
 use std::sync::Arc;
@@ -50,6 +50,10 @@ struct Row {
     display_name: String,
     default_resource: String,
     status: String,
+    /// Per-tenant policy. Only `refresh` is read today; the column is the one
+    /// place a tenant's policy lives, so a reader takes the whole document and
+    /// picks the member it understands.
+    settings: serde_json::Value,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
 }
@@ -71,8 +75,16 @@ impl Row {
             "disabled" => TenantStatus::Disabled,
             other => return Err(DomainError::invalid("status", format!("unknown: {other}"))),
         };
+        // A stored refresh policy that no longer parses fails the read rather
+        // than falling back to the defaults, for the reason the issuer above
+        // is re-parsed: a tenant whose `bind_to_dpop_key` quietly reverted to
+        // this file's idea of a default is a security setting an operator
+        // believes is in force and is not.
+        let refresh = RefreshPolicy::from_json(self.settings.get("refresh"))
+            .map_err(|e| DomainError::invalid("settings.refresh", e.to_string()))?;
         Ok(Tenant {
             id: TenantId::new(self.tenant_id),
+            refresh,
             issuer,
             custom_host: self.custom_host,
             display_name: self.display_name,
@@ -90,7 +102,7 @@ impl TenantRepository for PgTenantRepository {
         let row = sqlx::query_as!(
             Row,
             "select tenant_id, issuer, custom_host, display_name, default_resource, status,
-                    created_at, updated_at
+                    settings, created_at, updated_at
              from tenants
              where tenant_id = $1",
             id.as_str()
@@ -105,7 +117,7 @@ impl TenantRepository for PgTenantRepository {
         let row = sqlx::query_as!(
             Row,
             "select tenant_id, issuer, custom_host, display_name, default_resource, status,
-                    created_at, updated_at
+                    settings, created_at, updated_at
              from tenants
              where issuer = $1",
             issuer.as_str()
@@ -120,7 +132,7 @@ impl TenantRepository for PgTenantRepository {
         let row = sqlx::query_as!(
             Row,
             "select tenant_id, issuer, custom_host, display_name, default_resource, status,
-                    created_at, updated_at
+                    settings, created_at, updated_at
              from tenants
              where custom_host = $1",
             host
@@ -135,7 +147,7 @@ impl TenantRepository for PgTenantRepository {
         sqlx::query_as!(
             Row,
             "select tenant_id, issuer, custom_host, display_name, default_resource, status,
-                    created_at, updated_at
+                    settings, created_at, updated_at
              from tenants
              order by tenant_id"
         )
@@ -158,22 +170,32 @@ impl TenantRepository for PgTenantRepository {
     async fn upsert(&self, tenant: &Tenant) -> Result<(), DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
 
+        // `settings` is merged rather than replaced: `refresh` is the only
+        // member this server understands today, and an upsert that wrote the
+        // whole document would silently drop whatever a later story — or an
+        // operator — put beside it. `||` on `jsonb` is a shallow merge, which
+        // is what is wanted here: the `refresh` member is replaced whole,
+        // because a policy read half from the file and half from the row is
+        // not a policy anybody wrote.
         sqlx::query!(
             "insert into tenants
-                 (tenant_id, issuer, custom_host, display_name, default_resource, status)
-             values ($1, $2, $3, $4, $5, $6)
+                 (tenant_id, issuer, custom_host, display_name, default_resource, status,
+                  settings)
+             values ($1, $2, $3, $4, $5, $6, jsonb_build_object('refresh', $7::jsonb))
              on conflict (tenant_id) do update
              set issuer = excluded.issuer,
                  custom_host = excluded.custom_host,
                  display_name = excluded.display_name,
                  default_resource = excluded.default_resource,
-                 status = excluded.status",
+                 status = excluded.status,
+                 settings = tenants.settings || excluded.settings",
             tenant.id.as_str(),
             tenant.issuer.as_str(),
             tenant.custom_host.as_deref(),
             tenant.display_name,
             tenant.default_resource,
-            tenant.status.as_str()
+            tenant.status.as_str(),
+            tenant.refresh.to_json(),
         )
         .execute(&mut *transaction)
         .await

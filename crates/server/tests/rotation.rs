@@ -133,6 +133,7 @@ impl Fixture {
                 display_name: "Rotation".to_owned(),
                 default_resource: "https://api.example/".to_owned(),
                 status: TenantStatus::Active,
+                refresh: asterius_domain::RefreshPolicy::default(),
                 created_at: now,
                 updated_at: now,
             })
@@ -186,6 +187,7 @@ impl Fixture {
                 display_name: "Rotation".to_owned(),
                 default_resource: "https://api.example/".to_owned(),
                 status: TenantStatus::Active,
+                refresh: asterius_domain::RefreshPolicy::default(),
                 created_at: self.clock.now(),
                 updated_at: self.clock.now(),
             })

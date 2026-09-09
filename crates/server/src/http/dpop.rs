@@ -701,6 +701,7 @@ mod tests {
             custom_host: None,
             display_name: "demo".to_owned(),
             status: asterius_domain::TenantStatus::Active,
+            refresh: asterius_domain::RefreshPolicy::default(),
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
         };

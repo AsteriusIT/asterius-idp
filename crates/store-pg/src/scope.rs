@@ -5,6 +5,7 @@ use crate::clients::PgClientRepository;
 use crate::codes::PgCodeRepository;
 use crate::grants::PgGrantRepository;
 use crate::passkeys::PgPasskeyRepository;
+use crate::refresh::PgRefreshTokenRepository;
 use crate::sessions::PgSessionRepository;
 use crate::users::PgUserRepository;
 use asterius_domain::ports::TenantScoped;
@@ -54,6 +55,12 @@ impl<'a> TenantScope<'a> {
     #[must_use]
     pub fn codes(&self) -> PgCodeRepository {
         PgCodeRepository::new(self.pool.clone(), self.tenant.clone())
+    }
+
+    /// The refresh-token repository for this tenant.
+    #[must_use]
+    pub fn refresh_tokens(&self) -> PgRefreshTokenRepository {
+        PgRefreshTokenRepository::new(self.pool.clone(), self.tenant.clone())
     }
 
     /// The session repository for this tenant.

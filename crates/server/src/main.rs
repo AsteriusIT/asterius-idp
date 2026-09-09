@@ -559,6 +559,11 @@ async fn bootstrap_tenants(repository: &ProvisionedTenants, config: &Config) -> 
             // decommissioned.
             default_resource: declared.default_resource.clone(),
             status: existing.as_ref().map_or(TenantStatus::Active, |t| t.status),
+            // Config wins here too, and for the same reason `default_resource`
+            // does: a refresh policy is a security setting an operator edits
+            // in the file, and one that silently outlived the file is a
+            // rotation window somebody believes they closed.
+            refresh: declared.refresh,
             created_at: OffsetDateTime::now_utc(),
             updated_at: OffsetDateTime::now_utc(),
         };

@@ -31,6 +31,9 @@ use crate::config::{
 };
 use crate::http::register::MIN_INITIAL_ACCESS_TOKEN_LEN;
 use crate::observability::LogFormat;
+use asterius_domain::entities::tenant::{
+    DEFAULT_REFRESH_ABSOLUTE_LIFETIME, DEFAULT_REFRESH_IDLE_LIFETIME,
+};
 use asterius_domain::{Capabilities, Feature};
 use std::fmt::Write as _;
 
@@ -128,6 +131,7 @@ pub fn sections() -> Vec<Section> {
         registration(),
         login(),
         tenant(),
+        tenant_refresh(),
         admin(),
     ]
 }
@@ -420,6 +424,81 @@ fn tenant() -> Section {
                  no `resource` of its own (RFC 8707 §2, RFC 9068 §3). The default means \
                  \"a token for this server's own protected resources\"; a deployment \
                  fronting a separate API names that API here.",
+            ),
+        ],
+    }
+}
+
+/// `[tenant.refresh]`: what a tenant does with refresh tokens.
+fn tenant_refresh() -> Section {
+    Section {
+        table: "tenant.refresh",
+        heading: "`[tenant.refresh]` — refresh tokens",
+        blurb: "Omit the table and this tenant gets FAPI 2.0 SP's position: no rotation, a \
+                refresh token that only works with the DPoP key it was issued to, and the \
+                lifetimes below. The table is per tenant because how long an authorization \
+                may be acted on without the user present is a question two tenants of one \
+                deployment routinely answer differently.",
+        keys: vec![
+            key(
+                "absolute_lifetime_seconds",
+                "positive integer",
+                format!(
+                    "`{}` (30 days)",
+                    DEFAULT_REFRESH_ABSOLUTE_LIFETIME.whole_seconds()
+                ),
+                "How long a refresh token may live at all. It never moves: using the token \
+                 does not push it out, which is what makes it the one deadline an attacker \
+                 holding the token cannot extend. Past it the client sends the user through \
+                 authorization again.",
+            ),
+            key(
+                "idle_lifetime_seconds",
+                "positive integer, or `0` to disable",
+                format!(
+                    "`{}` (14 days)",
+                    DEFAULT_REFRESH_IDLE_LIFETIME.whole_seconds()
+                ),
+                "How long the token may sit unused. Every successful refresh pushes it out, \
+                 so it answers \"is this integration still in use\" rather than \"is this \
+                 authorization still fresh\". Capped at `absolute_lifetime_seconds`, because \
+                 a longer value is not a stricter setting but one with no effect. `0` \
+                 switches the idle clock off; the absolute deadline still runs.",
+            ),
+            key(
+                "bind_to_dpop_key",
+                "boolean",
+                "`true`".to_owned(),
+                "Whether the refresh token may only be presented with the DPoP key it was \
+                 issued to (RFC 9449 §5). Required for public clients; on by default for \
+                 confidential ones too, which is the stricter reading — a refresh token \
+                 copied out of a client's store is then useless without that client's DPoP \
+                 private key as well as its credentials. Turning it off means a \
+                 confidential client may refresh with any key it proves, and the new access \
+                 token is bound to that key.",
+            ),
+            key(
+                "rotation",
+                "`\"none\"` or `\"migration\"`",
+                "`\"none\"`".to_owned(),
+                "FAPI 2.0 SP §5.3.2.1 item 9: an authorization server \"shall not use \
+                 refresh token rotation except in extraordinary circumstances\". `\"none\"` \
+                 returns the same token unchanged. `\"migration\"` is Note 1's exception and \
+                 exists for one purpose — moving off a server that rotated, where clients in \
+                 the field discard a refresh token they did not just receive. It is not a \
+                 hardening measure, it is a compatibility shim, and it is meant to be \
+                 switched off again.",
+            ),
+            key(
+                "rotation_grace_seconds",
+                "positive integer, at most 3600",
+                "**required** with `rotation = \"migration\"`, and refused otherwise".to_owned(),
+                "How long the superseded token stays acceptable, so a client that crashed \
+                 between receiving the response and storing it can retry. It is a window in \
+                 which two refresh tokens are live for one grant, which is the state \
+                 rotation exists to eliminate — hence the hour ceiling and hence the \
+                 refusal to accept the key at all under `rotation = \"none\"`, where it \
+                 would describe something the server does not do.",
             ),
         ],
     }

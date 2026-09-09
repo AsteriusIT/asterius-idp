@@ -241,13 +241,19 @@ pub const POLICY: &[Retention] = &[
     Retention {
         table: "refresh_tokens",
         rule: Rule::Sweep {
-            // `expires_at` is nullable — a refresh token may have none — and a
-            // null must not be swept. Revoked-but-unexpired rows stay too: the
-            // token is still presentable and the row is what refuses it.
+            // Swept on the *absolute* deadline and on nothing else. The idle
+            // deadline is the wrong column for this: it is a rule the
+            // redemption applies, and deleting the row on it would make the
+            // purge job the thing that decides whether a token is dead. The
+            // absolute deadline is the instant past which no reading of the
+            // row can accept the token, so it is the instant the row stops
+            // being evidence of anything.
+            //
+            // Revoked-but-unexpired rows stay: the token is still presentable
+            // and this row is what refuses it.
             statement: "delete from refresh_tokens where ctid = any (array(
                             select ctid from refresh_tokens
-                             where tenant_id = $1
-                               and expires_at is not null and expires_at <= $2
+                             where tenant_id = $1 and absolute_expires_at <= $2
                              limit $3))",
             grace: Duration::ZERO,
         },

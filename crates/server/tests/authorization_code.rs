@@ -32,8 +32,8 @@ use asterius_server::http::authorization_code::AuthorizationCode;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
 use asterius_server::signing::CachedSigner;
 use asterius_store_pg::{
-    PgAuditSink, PgCodeRepository, PgGrantRepository, PgSessionRepository, PgTenantRepository,
-    PgUserRepository, Store, TenantKeyStore,
+    PgAuditSink, PgCodeRepository, PgGrantRepository, PgRefreshTokenRepository,
+    PgSessionRepository, PgTenantRepository, PgUserRepository, Store, TenantKeyStore,
 };
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -108,6 +108,7 @@ impl Fixture {
             display_name: "Codes".to_owned(),
             default_resource: RESOURCE.to_owned(),
             status: TenantStatus::Active,
+            refresh: asterius_domain::RefreshPolicy::default(),
             created_at: now,
             updated_at: now,
         };
@@ -142,6 +143,10 @@ impl Fixture {
 
     fn grants(&self) -> PgGrantRepository {
         PgGrantRepository::new(self.store.pool().clone(), self.tenant.id.clone())
+    }
+
+    fn refresh_tokens(&self) -> PgRefreshTokenRepository {
+        PgRefreshTokenRepository::new(self.store.pool().clone(), self.tenant.id.clone())
     }
 
     fn sessions(&self) -> PgSessionRepository {
@@ -313,6 +318,7 @@ impl Fixture {
     ) -> (StatusCode, Value) {
         let codes = self.codes();
         let grants = self.grants();
+        let refresh_tokens = self.refresh_tokens();
         let sessions = self.sessions();
         let users = PgUserRepository::new(
             self.store.pool().clone(),
@@ -322,6 +328,7 @@ impl Fixture {
         let handler = AuthorizationCode {
             codes: &codes,
             grants: &grants,
+            refresh_tokens: &refresh_tokens,
             sessions: &sessions,
             users: &users,
             signer: self.signer.as_ref(),

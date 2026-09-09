@@ -726,30 +726,60 @@ create index authorization_codes_expiring on authorization_codes (expires_at);
 -- Tokens
 -- ---------------------------------------------------------------------------
 
+-- Opaque, never stored in the clear: the column holds the SHA-256 of the value
+-- handed to the client, the same treatment `clients.registration_access_token_hash`
+-- and the pairwise salt get. A database dump is then a list of digests rather
+-- than a list of live credentials (RFC 6749 §10.4, RFC 9700 §4.14).
+--
+-- The primary key is `(tenant_id, token_hash)`, which is also the only lookup
+-- this table has: redemption reads one row by both halves of that key, so there
+-- is no predicate here that could degrade into a scan of the tenant.
 create table refresh_tokens (
     tenant_id    text        not null,
     token_hash   bytea       not null,
     grant_id     uuid        not null,
     client_id    text        not null,
+    -- The scopes this token may be refreshed for (RFC 6749 §6: "the scope of
+    -- the access request … MUST NOT include any scope not originally granted").
+    -- Recorded per token rather than read from the grant, because a token may
+    -- have been issued for a narrowed set and must not widen back to the
+    -- grant's on a later refresh.
+    scopes       text[]      not null default '{}',
     -- Sender constraint, one of the two. FAPI 2.0 forbids bearer refresh
     -- tokens, so exactly one of these is always present.
     dpop_jkt     text,
     cert_thumbprint bytea,
     issued_at    timestamptz not null default now(),
-    expires_at   timestamptz,
+    -- The two expiries are two different rules and are deliberately two
+    -- columns. The absolute one is fixed at issuance and never moves: it is
+    -- the only deadline an attacker holding the token cannot push out by
+    -- using it. The idle one is rewritten on every successful refresh and
+    -- answers "is this integration still in use". Collapsing them into one
+    -- column would mean whichever rule wrote last is the rule that applies.
+    absolute_expires_at timestamptz not null,
+    idle_expires_at     timestamptz,
     last_used_at timestamptz,
     revoked_at   timestamptz,
+    -- Set only under the migration rotation mode (FAPI 2.0 SP §5.3.2.1 item 9,
+    -- Note 1), when a refresh issued a replacement. The superseded token stays
+    -- acceptable for the tenant's grace window so that a client which lost the
+    -- response can retry, and then stops.
+    superseded_at timestamptz,
 
     primary key (tenant_id, token_hash),
     foreign key (tenant_id, grant_id)
         references grants (tenant_id, grant_id) on delete cascade,
     constraint refresh_tokens_are_sender_constrained
-        check ((dpop_jkt is null) <> (cert_thumbprint is null))
+        check ((dpop_jkt is null) <> (cert_thumbprint is null)),
+    -- The idle deadline is a floor under the absolute one, never past it: a
+    -- row where it were later would describe a token whose idle rule can never
+    -- fire, which is a policy nobody wrote.
+    constraint refresh_tokens_idle_within_absolute
+        check (idle_expires_at is null or idle_expires_at <= absolute_expires_at)
 );
 
 create index refresh_tokens_by_grant on refresh_tokens (tenant_id, grant_id);
-create index refresh_tokens_expiring on refresh_tokens (expires_at)
-    where expires_at is not null;
+create index refresh_tokens_expiring on refresh_tokens (absolute_expires_at);
 
 -- Denylist for JWT access tokens revoked before their own expiry. Rows are
 -- pruned once `expires_at` passes, because after that the token fails on `exp`
