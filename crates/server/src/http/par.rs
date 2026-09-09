@@ -47,6 +47,14 @@ pub struct PushContext<'a> {
     pub clients: &'a dyn ClientRepository,
     /// This tenant's pushed requests.
     pub requests: &'a dyn AuthRequestRepository,
+    /// This tenant's published and retired keys, for the `id_token_hint`.
+    ///
+    /// OIDC Core §3.1.2.1 says the hint "MUST be validated", and this is the
+    /// endpoint where a validation can still be reported to the client that
+    /// sent it rather than to a browser.
+    pub keys: &'a dyn asterius_domain::KeyStore,
+    /// What this tenant offers, as the request validator sees it.
+    pub policy: authorize::AuthorizationPolicy,
     /// How long a reference lives, already clamped by
     /// `asterius_oidc::par::clamp_lifetime`.
     pub lifetime: time::Duration,
@@ -131,7 +139,12 @@ pub async fn push(
     // The request itself. Everything the client asked for is checked here,
     // once, while it is still a request and not yet a flow.
     let parameters = Parameters::from_pairs(pairs);
-    let request = match authorize::validate(&parameters, client.id.as_str(), &client.registration) {
+    let request = match authorize::validate(
+        &parameters,
+        client.id.as_str(),
+        &client.registration,
+        context.policy,
+    ) {
         Ok(request) => request,
         Err(failure) => {
             return error(
@@ -140,6 +153,15 @@ pub async fn push(
                 &failure.to_string(),
             );
         }
+    };
+
+    // OIDC Core §3.1.2.1: an `id_token_hint` "MUST be validated". Here, while
+    // the client that sent it is still on the connection — the browser that
+    // arrives at `/authorize` later has no way to be told, and would meet a
+    // request that could never be answered.
+    let hinted_subject = match hinted_subject(&context, &client, &request, now).await {
+        Ok(subject) => subject,
+        Err(refusal) => return *refusal,
     };
 
     if let Some(refusal) = refuse_an_unservable_form_post(&request) {
@@ -156,6 +178,25 @@ pub async fn push(
             Err(refusal) => return refusal.into_response(),
         };
 
+    stored(&context, &client, &request, hinted_subject, dpop_jkt, now).await
+}
+
+/// Stores the validated request and answers with its reference.
+///
+/// Split from [`push`] so that the endpoint reads as the sequence of checks it
+/// is, and this reads as the one write it is.
+///
+/// # Errors
+///
+/// Never returns `Err`; every outcome is a `Response` (RFC 9126 §2.2 and §2.3).
+async fn stored(
+    context: &PushContext<'_>,
+    client: &Client,
+    request: &authorize::AuthorizationRequest,
+    hinted_subject: Option<String>,
+    dpop_jkt: Option<String>,
+    now: OffsetDateTime,
+) -> Response {
     // The reference. Minted after validation, so a rejected push leaves
     // nothing behind to expire.
     let minted = MintedRequestUri::generate();
@@ -164,7 +205,7 @@ pub async fn push(
         tenant: context.tenant.id.clone(),
         request_uri_digest: minted.digest().to_owned(),
         client: client.id.clone(),
-        parameters: serialise(&request),
+        parameters: serialise(request, hinted_subject.as_deref()),
         dpop_jkt,
         pushed_at: now,
         expires_at,
@@ -195,6 +236,67 @@ pub async fn push(
         })),
     )
         .into_response()
+}
+
+/// Validates the `id_token_hint` and returns the subject it names.
+///
+/// OIDC Core §3.1.2.1: the parameter is an "ID Token previously issued by the
+/// Authorization Server", and §2's rules about `aud` and `azp` say who it was
+/// issued to. Three things must hold, and a request that breaks any of them is
+/// refused rather than continued without the hint:
+///
+/// * it verifies against this tenant's keys, retired ones included, and is not
+///   refused for being expired — `id_token_hint::verified_claims` is that half,
+///   shared with the logout endpoint;
+/// * its audience is **this** client, which the logout endpoint cannot check
+///   because it is what the hint is being read *for*;
+/// * it names a `sub`, which is the whole reason the parameter is read here.
+///
+/// Dropping a hint that fails would be the dangerous reading: the client asked
+/// for an authorization *about a particular person*, and answering about
+/// whoever happens to be signed in is exactly the confusion the parameter
+/// exists to prevent.
+///
+/// `Ok(None)` when the request carried no hint, which is most requests.
+///
+/// # Errors
+///
+/// The RFC 6749 §5.2 error response to send instead of a `request_uri`.
+async fn hinted_subject(
+    context: &PushContext<'_>,
+    client: &Client,
+    request: &authorize::AuthorizationRequest,
+    now: OffsetDateTime,
+) -> Result<Option<String>, Box<Response>> {
+    let Some(hint) = request.id_token_hint.as_deref() else {
+        return Ok(None);
+    };
+    let refused = || {
+        // One message for "did not verify", "for another client" and "no
+        // subject". A client that could tell them apart could probe this
+        // tenant's key set with tokens it did not receive.
+        Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "id_token_hint is not an ID token this server issued to this client",
+        ))
+    };
+    let Some(claims) =
+        crate::http::id_token_hint::verified_claims(context.keys, context.tenant, hint, now).await
+    else {
+        return Err(refused());
+    };
+    if !crate::http::id_token_hint::names_client(&claims, client.id.as_str()) {
+        tracing::warn!(
+            tenant = %context.tenant.id,
+            "an id_token_hint issued to another client was pushed"
+        );
+        return Err(refused());
+    }
+    match crate::http::id_token_hint::subject(&claims) {
+        Some(subject) => Ok(Some(subject.to_owned())),
+        None => Err(refused()),
+    }
 }
 
 /// Refuses `response_mode=form_post` for a callback no policy can name.
@@ -270,7 +372,10 @@ fn is_form_encoded(headers: &HeaderMap) -> bool {
 /// stored rather than an automatic one. The `code_challenge` is stored as the
 /// string it is: it is a public value (RFC 7636 §4.2), and the verifier — the
 /// secret half — never reaches this server until redemption.
-fn serialise(request: &authorize::AuthorizationRequest) -> serde_json::Value {
+fn serialise(
+    request: &authorize::AuthorizationRequest,
+    hinted_subject: Option<&str>,
+) -> serde_json::Value {
     json!({
         "client_id": request.client_id,
         "redirect_uri": request.redirect_uri,
@@ -286,6 +391,13 @@ fn serialise(request: &authorize::AuthorizationRequest) -> serde_json::Value {
         "max_age": request.max_age,
         "acr_values": request.acr_values,
         "login_hint": request.login_hint,
+        // The *subject* the `id_token_hint` named, never the hint itself. The
+        // token is a credential-shaped string with a signature on it and no
+        // further use once it has been verified; what the decision at
+        // `/authorize` needs is the one claim it was read for, and storing the
+        // rest would be keeping somebody's ID token in a row that outlives the
+        // connection it arrived on.
+        "id_token_hint_sub": hinted_subject,
         "resources": request.resources,
         "dpop_jkt": request.dpop_jkt,
         // The *parsed* request, canonically serialised, and not the document

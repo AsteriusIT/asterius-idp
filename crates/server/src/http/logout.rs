@@ -46,14 +46,12 @@ use crate::http::redirect::SeeOther;
 use asterius_domain::entities::session::{COOKIE_NAME, SessionRevocation};
 use asterius_domain::{
     Actor, AuditEvent, AuditSink, ClientId, ClientRepository, Detail, EventType, KeyStore, Outcome,
-    Session, SessionRepository, SigningAlgorithm, Tenant,
+    Session, SessionRepository, Tenant,
 };
-use asterius_jose::verify::{self, Policy, TypRule};
 use asterius_oidc::logout::{
     Disposition, LogoutRequest, LogoutRequestError, Notified, RedirectTarget, client_from_hint,
     confirmation_token, confirmation_token_matches, disposition, identify,
 };
-use asterius_oidc::tokens::id_token::ID_TOKEN_TYP;
 use asterius_web::interaction::{self, InteractionError};
 use asterius_web::pages::{
     self, ErrorPage, LoggedOutPage, LogoutConfirmationPage, nonce_attribute,
@@ -61,7 +59,6 @@ use asterius_web::pages::{
 use asterius_web::{Document, csp::Nonce};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use serde_json::{Value, json};
 use time::OffsetDateTime;
 
 /// What the end-session handlers need.
@@ -413,51 +410,10 @@ async fn hinted_client(
     hint: Option<&str>,
     now: OffsetDateTime,
 ) -> Option<ClientId> {
-    let hint = hint?;
-    let unverified = asterius_jose::jws::parse(hint).ok()?;
-    let kid = unverified.kid();
-
-    // The candidate keys are fetched before verification, because the resolver
-    // is synchronous and because a `kid` must narrow an already-trusted set
-    // rather than be followed.
-    let mut jwks: Vec<Value> = Vec::new();
-    if let Some(kid) = &kid {
-        match context.keys.public_key(&context.tenant.id, kid).await {
-            Ok(Some(record)) => jwks.push(record.public_jwk),
-            Ok(None) => {}
-            Err(error) => {
-                tracing::error!(%error, tenant = %context.tenant.id, "cannot read a key for an id_token_hint");
-                return None;
-            }
-        }
-    }
-    if jwks.is_empty() {
-        match context.keys.published_keys(&context.tenant.id).await {
-            Ok(records) => jwks.extend(records.into_iter().map(|record| record.public_jwk)),
-            Err(error) => {
-                tracing::error!(%error, tenant = %context.tenant.id, "cannot read the key set for an id_token_hint");
-                return None;
-            }
-        }
-    }
-    let resolver = asterius_jose::keys_from_jwk_set(&json!({"keys": jwks})).ok()?;
-
-    let policy = Policy::new(
-        TypRule::Exactly(ID_TOKEN_TYP),
-        SigningAlgorithm::ALL.to_vec(),
-    )
-    .issued_by(context.tenant.issuer.as_str().to_owned())
-    .accepting_expired();
-
-    match verify::verify(hint, &policy, &resolver, now) {
-        Ok(verified) => client_from_hint(&verified.claims),
-        Err(error) => {
-            // Debug, not warn: a stale hint from a client that has since been
-            // rotated is ordinary, and the user still gets a usable page.
-            tracing::debug!(%error, tenant = %context.tenant.id, "an id_token_hint did not verify");
-            None
-        }
-    }
+    let claims =
+        crate::http::id_token_hint::verified_claims(context.keys, context.tenant, hint?, now)
+            .await?;
+    client_from_hint(&claims)
 }
 
 /// The session behind the cookie, if it is one that may still be used.

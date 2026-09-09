@@ -253,7 +253,12 @@ pub fn provider_metadata(issuer: &Issuer, capabilities: &Capabilities) -> Value 
             "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp",
             "sid", "name", "preferred_username", "email", "email_verified",
         ],
-        "prompt_values_supported": ["none", "login", "consent", "select_account", "create"],
+        // OpenID Connect Prompt Create 1.0 §4. Rendered from the same policy
+        // the pushed-request validator consults, never written out here: a
+        // tenant that advertised `create` while refusing it would be telling
+        // clients to send a value it rejects (`ast-gxh.8`).
+        "prompt_values_supported":
+            crate::authorize::AuthorizationPolicy::default().prompt_values_supported(),
         "acr_values_supported": ["urn:mace:incommon:iap:silver"],
         "ui_locales_supported": ["en"],
 

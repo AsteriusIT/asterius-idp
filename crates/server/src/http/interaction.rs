@@ -31,7 +31,6 @@
 //! do. It does not pretend to authenticate.
 
 use crate::http::form_action_origin;
-use crate::http::redirect::SeeOther;
 use crate::http::throttle;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::session::SessionId;
@@ -46,10 +45,7 @@ use asterius_oidc::consent::{ConsentRequest, Decision};
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
 };
-use asterius_web::pages::{
-    self, ConsentPage, ErrorPage, FormPostPage, LoginPage, ResponseField, ScopeLine,
-    nonce_attribute,
-};
+use asterius_web::pages::{self, ConsentPage, ErrorPage, LoginPage, ScopeLine, nonce_attribute};
 use asterius_web::{Document, FormActionOrigin, csp::Nonce};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -805,116 +801,60 @@ fn redirect(
     response: &AuthorizationResponse,
     redirect_uri: &str,
 ) -> Response {
-    let Ok(location) = response.redirect_url(redirect_uri) else {
-        tracing::error!(tenant = %context.tenant.id, "a registered redirect URI will not parse");
-        return error_page(
-            context,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            InteractionError::NotAvailable,
-        );
-    };
-    // Through `SeeOther`, never open-coded: 303 is the status FAPI 2.0 SP
-    // §5.3.2.2 items 10–11 leave available, and the helper is also where
-    // response splitting through `Location` is refused.
-    let Ok(see_other) = SeeOther::to(&location) else {
-        tracing::error!(tenant = %context.tenant.id, "a redirect location is not a header value");
-        return error_page(
-            context,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            InteractionError::NotAvailable,
-        );
-    };
+    deliver(context, ResponseMode::Query, response, redirect_uri)
+}
 
-    let mut response = see_other.into_response();
-    // The URL in this header carries an authorization code.
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    clear(&mut response);
-    response
+/// Builds the authorization response and clears the spent interaction.
+///
+/// The shape of the response is `http::deliver`'s, shared with `/authorize` so
+/// that there is one implementation of what a `query` and a `form_post`
+/// response are. What stays here is the cookie: the interaction is spent by the
+/// time this is reached, and one left in the browser is one an attacker can
+/// keep presenting against a row that will never answer again.
+fn deliver(
+    context: &InteractionContext<'_>,
+    mode: ResponseMode,
+    response: &AuthorizationResponse,
+    redirect_uri: &str,
+) -> Response {
+    match crate::http::deliver::build(context.tenant, context.nonce, mode, response, redirect_uri) {
+        Ok(mut response) => {
+            clear(&mut response);
+            response
+        }
+        Err(error) => {
+            // Unreachable: the redirect URI was matched against the client's
+            // registration at the push, and `http::par` refuses a `form_post`
+            // whose origin no policy can name while the client is still on the
+            // connection to be told.
+            tracing::error!(
+                %error,
+                tenant = %context.tenant.id,
+                "a validated redirect URI cannot carry its own response"
+            );
+            error_page(
+                context,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                InteractionError::NotAvailable,
+            )
+        }
+    }
 }
 
 /// Delivers the authorization response as a page the browser posts to the
 /// client (`ast-gxh.5`).
 ///
-/// OAuth 2.0 Form Post Response Mode §2. The parameters are the same ones the
-/// query mode would put in the URL — `AuthorizationResponse::query` produces
-/// both — and they travel as hidden inputs in a form whose action is the
-/// client's registered `redirect_uri`.
-///
-/// Three things are true of the response and none of them is set here.
-/// `Cache-Control: no-store` and the policy come from the document middleware,
-/// which is the only place that writes either; the nonce on the auto-submit
-/// script is the one that middleware drew for this response, because
-/// `Document::render` is the only way to build the page and it takes the nonce.
-/// What *is* set here is the one origin `form-action` may name, and it comes
-/// from the `redirect_uri` this authorization was validated against at push
-/// time — never from a parameter of the request being answered.
+/// The page itself is `http::deliver`'s, shared with `/authorize`: one
+/// implementation of OAuth 2.0 Form Post Response Mode §2, one place that names
+/// the single origin `form-action` may reach, and one place that draws the
+/// nonce. What this adds is the interaction's own cookie, spent with the
+/// response that ends it — exactly as on the redirect path.
 fn form_post(
     context: &InteractionContext<'_>,
     response: &AuthorizationResponse,
     redirect_uri: &str,
 ) -> Response {
-    let Ok(url) = url::Url::parse(redirect_uri) else {
-        tracing::error!(tenant = %context.tenant.id, "a registered redirect URI will not parse");
-        return error_page(
-            context,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            InteractionError::NotAvailable,
-        );
-    };
-    // Unreachable: `http::par` refuses `response_mode=form_post` for a callback
-    // whose origin no policy can name, while the client is still on the
-    // connection to be told. Refusing rather than falling back to a redirect is
-    // the only honest reading if it ever happens — a client that asked for a
-    // POST and got a query has been answered in a mode it did not ask for, and
-    // serving the page under the strict policy would give a browser a form it
-    // is forbidden to submit.
-    let Some(origin) = form_action_origin(&url) else {
-        tracing::error!(
-            tenant = %context.tenant.id,
-            "a stored form_post request has a callback no policy can name"
-        );
-        return error_page(
-            context,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            InteractionError::NotAvailable,
-        );
-    };
-    let Ok(action) = response.form_action(redirect_uri) else {
-        tracing::error!(tenant = %context.tenant.id, "a registered redirect URI will not parse");
-        return error_page(
-            context,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            InteractionError::NotAvailable,
-        );
-    };
-
-    let fields = response
-        .query()
-        .into_iter()
-        .map(|(name, value)| ResponseField {
-            name: name.to_owned(),
-            value,
-        })
-        .collect();
-    let document = Document::render(context.nonce, |nonce| {
-        pages::render(&FormPostPage {
-            locale: "en",
-            tenant_name: &context.tenant.display_name,
-            redirect_host: url.host_str().unwrap_or_default(),
-            action: &action,
-            fields,
-            nonce_attribute: nonce_attribute(nonce),
-        })
-    })
-    .with_form_post_to(origin);
-
-    let mut response = document.into_response();
-    // The interaction is spent, so the cookie goes with the response that ends
-    // it — exactly as on the redirect path.
-    clear(&mut response);
-    response
+    deliver(context, ResponseMode::FormPost, response, redirect_uri)
 }
 
 /// Re-renders the current stage with a message and a fresh token.
@@ -1277,6 +1217,7 @@ pub(crate) fn set_session_cookie(response: &mut Response, id: &SessionId) {
 mod tests {
     use super::*;
     use asterius_domain::audit::{DetailValue, fingerprint};
+    use axum::http::HeaderValue;
 
     /// The `ast-bze` site: `resume` reads the interaction cookie, and a client
     /// is free to put it in a *second* `cookie` field (RFC 9113 §8.2.3). The

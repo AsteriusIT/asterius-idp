@@ -53,8 +53,7 @@
     "none",
     "login",
     "consent",
-    "select_account",
-    "create"
+    "select_account"
   ],
   "pushed_authorization_request_endpoint": "https://as.example/t/demo/par",
   "registration_endpoint": "https://as.example/t/demo/register",
