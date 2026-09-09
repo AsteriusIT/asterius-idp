@@ -6015,3 +6015,525 @@ mod client_configuration {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Retention (`ast-p2l.4`)
+// ---------------------------------------------------------------------------
+
+mod retention {
+    use super::*;
+    use asterius_store_pg::{POLICY, PgRetention, Rule, SweepOutcome};
+    use time::Duration;
+
+    fn sweeper(pool: &PgPool) -> PgRetention {
+        PgRetention::new(pool.clone())
+    }
+
+    fn now() -> OffsetDateTime {
+        // A round instant rather than the wall clock, so a failure is
+        // reproducible and the seeded offsets are readable.
+        OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("a valid instant")
+    }
+
+    /// Every table the policy sweeps, in policy order.
+    fn swept_tables() -> Vec<&'static str> {
+        POLICY
+            .iter()
+            .filter(|entry| matches!(entry.rule, Rule::Sweep { .. }))
+            .map(|entry| entry.table)
+            .collect()
+    }
+
+    async fn count(pool: &PgPool, table: &str, tenant: &str) -> i64 {
+        // The table name is a compile-time constant from `POLICY`, never input.
+        sqlx::query_scalar(&format!(
+            "select count(*) from {table} where tenant_id = $1"
+        ))
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .unwrap_or_else(|e| panic!("count {table}: {e}"))
+    }
+
+    /// Puts one expired row and one live row in every swept table.
+    ///
+    /// "Expired" is two days behind `now`, which is past the longest grace in
+    /// the policy bar the outbox's; the outbox rows are seeded separately at
+    /// eight days. Written as raw SQL because most of these tables belong to
+    /// stories that have not landed yet, and what this test needs is the row,
+    /// not the repository that will eventually write it.
+    async fn seed(pool: &PgPool, tenant: &str) {
+        let user = uuid::Uuid::from_u128(0x5e_ed);
+        let grant = uuid::Uuid::from_u128(0x9_2a_47);
+
+        seed_owners(pool, tenant, user, grant).await;
+        for (label, expires) in [
+            ("stale", now() - Duration::days(2)),
+            ("fresh", now() + Duration::hours(1)),
+        ] {
+            seed_expiring_rows(pool, tenant, user, grant, label, expires).await;
+        }
+        seed_outbox(pool, tenant).await;
+    }
+
+    /// The rows everything else hangs off: the tenant, one client, one user and
+    /// one grant. None of them is swept.
+    async fn seed_owners(pool: &PgPool, tenant: &str, user: uuid::Uuid, grant: uuid::Uuid) {
+        seed_tenant(pool, tenant).await;
+
+        sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks)
+             values ($1, 'billing', 'Billing', 'private_key_jwt', '{\"keys\":[]}'::jsonb)",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("seed client");
+
+        sqlx::query("insert into users (tenant_id, user_id, username) values ($1, $2, 'alice')")
+            .bind(tenant)
+            .bind(user)
+            .execute(pool)
+            .await
+            .expect("seed user");
+
+        sqlx::query(
+            "insert into grants (tenant_id, grant_id, client_id, user_id)
+             values ($1, $2, 'billing', $3)",
+        )
+        .bind(tenant)
+        .bind(grant)
+        .bind(user)
+        .execute(pool)
+        .await
+        .expect("seed grant");
+    }
+
+    /// One row per swept expiry-driven table, expiring at `expires`.
+    async fn seed_expiring_rows(
+        pool: &PgPool,
+        tenant: &str,
+        user: uuid::Uuid,
+        grant: uuid::Uuid,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        let old = now() - Duration::days(2);
+        {
+            sqlx::query(
+                "insert into client_keys (tenant_id, client_id, kid, jwk, expires_at)
+                 values ($1, 'billing', $2, '{}'::jsonb, $3)",
+            )
+            .bind(tenant)
+            .bind(label)
+            .bind(expires)
+            .execute(pool)
+            .await
+            .expect("seed client key");
+
+            sqlx::query(
+                "insert into sessions (tenant_id, session_id, public_sid, user_id,
+                                       authenticated_at, expires_at, idle_expires_at)
+                 values ($1, $2, $2, $3, $4, $5, $5)",
+            )
+            .bind(tenant)
+            .bind(label)
+            .bind(user)
+            .bind(old)
+            .bind(expires)
+            .execute(pool)
+            .await
+            .expect("seed session");
+
+            sqlx::query(
+                "insert into auth_requests (tenant_id, request_uri_hash, client_id,
+                                            parameters, expires_at)
+                 values ($1, $2, 'billing', '{}'::jsonb, $3)",
+            )
+            .bind(tenant)
+            .bind(asterius_domain::sha256(label.as_bytes()).to_vec())
+            .bind(expires)
+            .execute(pool)
+            .await
+            .expect("seed auth request");
+
+            // A code's lifetime is capped at 60 seconds by the schema, so the
+            // stale one is old by virtue of when it was issued.
+            sqlx::query(
+                "insert into authorization_codes
+                     (tenant_id, code_hash, client_id, grant_id, code_challenge,
+                      redirect_uri, issued_at, expires_at)
+                 values ($1, $2, 'billing', $3, 'a-challenge',
+                         'https://client.example/cb', $4, $4 + interval '60 seconds')",
+            )
+            .bind(tenant)
+            .bind(asterius_domain::sha256(label.as_bytes()).to_vec())
+            .bind(grant)
+            .bind(if label == "stale" { old } else { now() })
+            .execute(pool)
+            .await
+            .expect("seed authorization code");
+
+            sqlx::query(
+                "insert into refresh_tokens (tenant_id, token_hash, grant_id, client_id,
+                                             dpop_jkt, expires_at)
+                 values ($1, $2, $3, 'billing', 'a-thumbprint', $4)",
+            )
+            .bind(tenant)
+            .bind(asterius_domain::sha256(label.as_bytes()).to_vec())
+            .bind(grant)
+            .bind(expires)
+            .execute(pool)
+            .await
+            .expect("seed refresh token");
+
+            sqlx::query(
+                "insert into access_token_denylist (tenant_id, jti, grant_id, expires_at)
+                 values ($1, $2, $3, $4)",
+            )
+            .bind(tenant)
+            .bind(label)
+            .bind(grant)
+            .bind(expires)
+            .execute(pool)
+            .await
+            .expect("seed denylist entry");
+
+            sqlx::query(
+                "insert into jti_replay (tenant_id, purpose, subject, jti_hash, expires_at)
+                 values ($1, 'client_assertion', 'billing', $2, $3)",
+            )
+            .bind(tenant)
+            .bind(asterius_domain::sha256(label.as_bytes()).to_vec())
+            .bind(expires)
+            .execute(pool)
+            .await
+            .expect("seed replay marker");
+
+            sqlx::query(
+                "insert into rate_limits (tenant_id, bucket, window_start, expires_at)
+                 values ($1, $2, $3, $4)",
+            )
+            .bind(tenant)
+            .bind(label)
+            .bind(old)
+            .bind(expires)
+            .execute(pool)
+            .await
+            .expect("seed rate limit");
+        }
+    }
+
+    /// The outbox is aged rather than expiring, and only a terminal row is ever
+    /// swept: `pending` is work still owed, however old it looks.
+    async fn seed_outbox(pool: &PgPool, tenant: &str) {
+        sqlx::query(
+            "insert into outbox (tenant_id, kind, destination, payload, status,
+                                 created_at, delivered_at)
+             values ($1, 'logout_token', 'https://rp.example/bc', '{}'::jsonb,
+                     'delivered', $2, $2),
+                    ($1, 'logout_token', 'https://rp.example/bc', '{}'::jsonb,
+                     'delivered', $3, $3),
+                    ($1, 'logout_token', 'https://rp.example/bc', '{}'::jsonb,
+                     'pending', $2, null)",
+        )
+        .bind(tenant)
+        .bind(now() - Duration::days(8))
+        .bind(now())
+        .execute(pool)
+        .await
+        .expect("seed outbox");
+    }
+
+    db_test! {
+        /// The first acceptance criterion, table by table: seed an expired row
+        /// and a live one everywhere, sweep, and require that exactly the
+        /// expired one is gone. Driven off `POLICY` rather than a hand-written
+        /// list, so a rule added without a seeded row fails here rather than
+        /// being untested.
+        async fn a_sweep_removes_the_expired_row_from_every_swept_table(db) {
+            seed(&db.pool, "demo").await;
+
+            let outcome = sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+            let SweepOutcome::Swept(sweep) = outcome else {
+                panic!("an uncontended sweep must do the work");
+            };
+
+            for table in swept_tables() {
+                let remaining = count(&db.pool, table, "demo").await;
+                let expected = if table == "outbox" { 2 } else { 1 };
+                assert_eq!(
+                    remaining, expected,
+                    "{table} has {remaining} rows after the sweep, expected {expected}; \
+                     swept {:?}",
+                    sweep.deleted
+                );
+                assert!(
+                    sweep.deleted.iter().any(|(swept, count)| *swept == table && *count > 0),
+                    "{table} lost rows but the sweep did not report them: {:?}",
+                    sweep.deleted
+                );
+            }
+            assert!(!sweep.more_to_do, "one row per table is not a backlog");
+        }
+    }
+
+    db_test! {
+        /// The live rows are the other half of the criterion: a sweep that
+        /// deleted everything would pass the test above and sign every user out.
+        async fn a_sweep_leaves_the_live_row_alone(db) {
+            seed(&db.pool, "demo").await;
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            let live: i64 = sqlx::query_scalar(
+                "select count(*) from sessions where tenant_id = $1 and session_id = 'fresh'",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count live sessions");
+            assert_eq!(live, 1, "a live session was swept");
+
+            let pending: i64 = sqlx::query_scalar(
+                "select count(*) from outbox where tenant_id = $1 and status = 'pending'",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count pending outbox rows");
+            assert_eq!(pending, 1, "an undelivered notification was swept");
+        }
+    }
+
+    db_test! {
+        /// A kept table stays kept. `grants` is the one that matters: deleting
+        /// a grant deletes the only row that could revoke the tokens minted
+        /// from it, and the cascade would take the codes and refresh tokens
+        /// with it.
+        async fn a_sweep_does_not_touch_a_table_the_policy_keeps(db) {
+            seed(&db.pool, "demo").await;
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            for kept in POLICY
+                .iter()
+                .filter(|entry| matches!(entry.rule, Rule::Kept(_)))
+                .map(|entry| entry.table)
+                .filter(|table| !matches!(*table, "session_clients" | "audit_events"
+                                                | "subject_identifiers" | "credentials"
+                                                | "signing_keys" | "key_rotation_schedules"
+                                                | "tenant_pairwise_salts"))
+            {
+                assert!(
+                    count(&db.pool, kept, "demo").await > 0,
+                    "{kept} is kept by the policy but the sweep emptied it"
+                );
+            }
+        }
+    }
+
+    db_test! {
+        /// Nothing left to do is not an error, and a second sweep must not
+        /// report work it did not do.
+        async fn a_second_sweep_finds_nothing(db) {
+            seed(&db.pool, "demo").await;
+            let tenant = TenantId::new("demo");
+            sweeper(&db.pool).sweep_tenant(&tenant, now()).await.expect("first");
+
+            let SweepOutcome::Swept(again) = sweeper(&db.pool)
+                .sweep_tenant(&tenant, now())
+                .await
+                .expect("second")
+            else {
+                panic!("the lock was not released by the first sweep");
+            };
+            assert_eq!(again.total(), 0, "a second sweep deleted {:?}", again.deleted);
+        }
+    }
+
+    db_test! {
+        /// "Safe to run concurrently", deterministically: hold the tenant's
+        /// advisory lock the way another replica would, and require the sweep
+        /// to decline rather than to wait or to work anyway.
+        ///
+        /// A lock the sweep merely *takes* would pass a race-based test by
+        /// luck. This one cannot: the lock is already held when the sweep
+        /// starts, so a sweep that ignored it would delete the seeded rows and
+        /// a sweep that waited for it would never return.
+        async fn a_tenant_another_replica_is_sweeping_is_left_alone(db) {
+            seed(&db.pool, "demo").await;
+            let tenant = TenantId::new("demo");
+
+            // The other replica: its own connection, its own session lock.
+            let mut replica = db.pool.acquire().await.expect("a second connection");
+            let held: bool = sqlx::query_scalar(
+                "select pg_try_advisory_lock(hashtext($1), hashtext('retention'))",
+            )
+            .bind(tenant.as_str())
+            .fetch_one(&mut *replica)
+            .await
+            .expect("take the lock");
+            assert!(held, "the lock was not free to begin with");
+
+            let before = count(&db.pool, "jti_replay", "demo").await;
+            let outcome = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                sweeper(&db.pool).sweep_tenant(&tenant, now()),
+            )
+            .await
+            .expect("a contended sweep must return rather than wait")
+            .expect("sweep");
+
+            assert_eq!(outcome, SweepOutcome::Busy);
+            assert_eq!(
+                count(&db.pool, "jti_replay", "demo").await,
+                before,
+                "a sweep that could not take the lock deleted rows anyway"
+            );
+
+            // And once the other replica is done, the next sweep proceeds.
+            sqlx::query("select pg_advisory_unlock(hashtext($1), hashtext('retention'))")
+                .bind(tenant.as_str())
+                .execute(&mut *replica)
+                .await
+                .expect("release");
+            drop(replica);
+
+            let SweepOutcome::Swept(sweep) = sweeper(&db.pool)
+                .sweep_tenant(&tenant, now())
+                .await
+                .expect("sweep")
+            else {
+                panic!("the released lock was not available");
+            };
+            assert!(sweep.total() > 0, "the deferred work was never done");
+        }
+    }
+
+    db_test! {
+        /// The lock is per tenant, so one busy tenant does not stop the others.
+        /// Getting this wrong turns a large tenant's backlog into every
+        /// tenant's outage, which is the failure a global lock would cause.
+        async fn one_tenant_being_swept_does_not_block_another(db) {
+            seed(&db.pool, "demo").await;
+            seed(&db.pool, "other").await;
+
+            let mut replica = db.pool.acquire().await.expect("a second connection");
+            sqlx::query("select pg_try_advisory_lock(hashtext($1), hashtext('retention'))")
+                .bind("demo")
+                .execute(&mut *replica)
+                .await
+                .expect("take demo's lock");
+
+            let SweepOutcome::Swept(sweep) = sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("other"), now())
+                .await
+                .expect("sweep other")
+            else {
+                panic!("another tenant's lock blocked this one");
+            };
+            assert!(sweep.total() > 0);
+        }
+    }
+
+    db_test! {
+        /// The race itself, run for real: four sweeps of one tenant at once.
+        /// Whichever wins, the expired rows are gone exactly once and nobody
+        /// errors — the property a production deployment of two replicas needs.
+        async fn concurrent_sweeps_of_one_tenant_do_the_work_once(db) {
+            seed(&db.pool, "demo").await;
+            let tenant = TenantId::new("demo");
+            let expired_replay_rows = 1;
+
+            let one = sweeper(&db.pool);
+            let two = sweeper(&db.pool);
+            let three = sweeper(&db.pool);
+            let four = sweeper(&db.pool);
+            // `join!` polls all four on one task, so they interleave at every
+            // await point inside the sweep — which is where the lock is taken.
+            let outcomes = tokio::join!(
+                one.sweep_tenant(&tenant, now()),
+                two.sweep_tenant(&tenant, now()),
+                three.sweep_tenant(&tenant, now()),
+                four.sweep_tenant(&tenant, now()),
+            );
+            let outcomes = [outcomes.0, outcomes.1, outcomes.2, outcomes.3];
+
+            let mut deleted = 0_u64;
+            let mut swept = 0;
+            for outcome in outcomes {
+                match outcome.expect("no sweep may fail") {
+                    SweepOutcome::Swept(sweep) => {
+                        swept += 1;
+                        deleted += sweep
+                            .deleted
+                            .iter()
+                            .filter(|(table, _)| *table == "jti_replay")
+                            .map(|(_, count)| count)
+                            .sum::<u64>();
+                    }
+                    SweepOutcome::Busy => {}
+                }
+            }
+
+            assert!(swept >= 1, "every replica declined; nothing was ever swept");
+            assert_eq!(
+                deleted, expired_replay_rows,
+                "the expired replay marker was deleted {deleted} times across {swept} sweeps"
+            );
+            assert_eq!(count(&db.pool, "jti_replay", "demo").await, 1, "the live marker went too");
+        }
+    }
+
+    db_test! {
+        /// The failure mode this module exists to prevent: a migration adds an
+        /// ephemeral table, nobody thinks about retention, and it accumulates
+        /// silently for a year. The policy is compared with the live schema, so
+        /// the omission is a failing test rather than a discovery.
+        async fn the_policy_names_every_table_in_the_schema(db) {
+            let tables: Vec<String> = sqlx::query_scalar(
+                "select table_name from information_schema.tables
+                  where table_schema = $1 and table_type = 'BASE TABLE'
+                    and table_name <> '_sqlx_migrations'
+                  order by table_name",
+            )
+            .bind(db.schema())
+            .fetch_all(&db.pool)
+            .await
+            .expect("read information_schema");
+            assert!(tables.len() > 10, "the schema looks empty: {tables:?}");
+
+            let policy: std::collections::BTreeSet<&str> =
+                POLICY.iter().map(|entry| entry.table).collect();
+
+            let unruled: Vec<&String> = tables
+                .iter()
+                .filter(|table| !policy.contains(table.as_str()))
+                .collect();
+            assert!(
+                unruled.is_empty(),
+                "these tables have no retention rule: {unruled:?}\n\
+                 Add each to asterius_store_pg::retention::POLICY, as a Sweep if its \
+                 rows expire or as a Kept with the reason they do not."
+            );
+
+            let stale: Vec<&&str> = policy
+                .iter()
+                .filter(|table| !tables.iter().any(|existing| existing == *table))
+                .collect();
+            assert!(
+                stale.is_empty(),
+                "these rules name tables that no longer exist: {stale:?}"
+            );
+        }
+    }
+}

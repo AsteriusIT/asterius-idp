@@ -11,6 +11,7 @@ pub mod config_reference;
 pub mod http;
 pub mod observability;
 pub mod outbound;
+pub mod retention;
 pub mod rotation;
 pub mod signing;
 pub mod tenancy;
