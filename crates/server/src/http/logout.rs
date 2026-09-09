@@ -163,11 +163,11 @@ async fn handle(
         Err(error) => return malformed(context, &error),
     };
 
-    let presented = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|header| interaction::cookie_value(header, COOKIE_NAME))
-        .map(ToOwned::to_owned);
+    // Every `cookie` field, not just the first (ast-bze): a logout that misses
+    // the session cookie ends nothing and shows the neutral page, so the user
+    // believes they are signed out while they are not.
+    let cookies = crate::http::cookies(headers);
+    let presented = interaction::cookie_value(&cookies, COOKIE_NAME).map(ToOwned::to_owned);
     let session = match live_session(context, presented.as_deref(), now).await {
         Ok(session) => session,
         Err(response) => return *response,
@@ -616,5 +616,35 @@ fn error_page(
 fn clear_session_cookie(response: &mut Response) {
     if let Ok(value) = asterius_web::session::clear_cookie().parse() {
         response.headers_mut().append(header::SET_COOKIE, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `ast-bze` site: a logout that misses the session cookie ends
+    /// nothing and shows the neutral page, so the user believes they are
+    /// signed out while they are not. HTTP/2 lets the client send the session
+    /// cookie in a second `cookie` field (RFC 9113 §8.2.3), and it does.
+    #[test]
+    fn the_session_cookie_is_read_from_a_second_cookie_field() {
+        // Arrange
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-asterius_ix=an-interaction"),
+        );
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-asterius_session=a-session"),
+        );
+
+        // Act
+        let cookies = crate::http::cookies(&headers);
+        let presented = interaction::cookie_value(&cookies, COOKIE_NAME);
+
+        // Assert
+        assert_eq!(presented, Some("a-session"));
     }
 }

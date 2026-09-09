@@ -1,6 +1,7 @@
 //! HTTP transport: router assembly, middleware and the listener.
 
 use asterius_web::FormActionOrigin;
+use axum::http::{HeaderMap, header};
 
 pub mod authorization_code;
 pub mod authorize;
@@ -50,6 +51,66 @@ pub(crate) fn form_action_origin(redirect_uri: &url::Url) -> Option<FormActionOr
     FormActionOrigin::parse(&redirect_uri.origin().ascii_serialization()).ok()
 }
 
+/// Every `Cookie` header the request carries, joined into one list.
+///
+/// Not `HeaderMap::get`. HTTP/2 permits a cookie list to be split across
+/// several `cookie` fields — RFC 9113 §8.2.3 says a user agent MAY do it and
+/// that a server MUST join them before parsing — and Chromium does, so `get`
+/// returns whichever cookie happened to be sent first. That is a bug with no
+/// symptom until two `__Host-` cookies exist at once, which is every page this
+/// server serves to a signed-in user mid-flow: the interaction cookie arrives
+/// first and the session cookie is silently missed, so the user is told they
+/// are not signed in (`ast-bze`).
+///
+/// Shared by the three readers — the interaction resume, the logout handler
+/// and the passkey page — because the mistake is the same one at each and one
+/// site left behind is the whole bug still present.
+pub(crate) fn cookies(headers: &HeaderMap) -> String {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 pub use redirect::SeeOther;
 pub use request_id::RequestId;
 pub use server::{serve, shutdown_signal, with_middleware};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderValue;
+
+    /// RFC 9113 §8.2.3: the list may arrive split, and the server joins it
+    /// before parsing. `HeaderMap::get` would have returned the first field
+    /// only, which is the whole of `ast-bze`.
+    #[test]
+    fn cookie_fields_split_across_http2_frames_are_joined() {
+        // Arrange
+        let mut headers = HeaderMap::new();
+        headers.append(header::COOKIE, HeaderValue::from_static("first=one"));
+        headers.append(header::COOKIE, HeaderValue::from_static("second=two"));
+
+        // Act
+        let joined = cookies(&headers);
+
+        // Assert
+        assert_eq!(joined, "first=one; second=two");
+    }
+
+    /// A request with no cookie at all is an empty list, not a stray separator
+    /// a parser would read as an empty pair.
+    #[test]
+    fn no_cookie_field_is_an_empty_list() {
+        // Arrange
+        let headers = HeaderMap::new();
+
+        // Act
+        let joined = cookies(&headers);
+
+        // Assert
+        assert_eq!(joined, "");
+    }
+}

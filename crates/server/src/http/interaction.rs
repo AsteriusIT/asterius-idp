@@ -935,10 +935,9 @@ async fn resume(
     now: OffsetDateTime,
 ) -> Result<(InteractionId, StoredState, InteractionRecord), Box<Response>> {
     let presented = InteractionId::from_presented(id.to_owned());
-    let from_cookie = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(interaction::id_from_cookie_header);
+    // Every `cookie` field, not just the first: HTTP/2 lets a client split the
+    // list, and this page always has two `__Host-` cookies in flight (ast-bze).
+    let from_cookie = interaction::id_from_cookie_header(&crate::http::cookies(headers));
 
     if let Err(failure) = asterius_web::Interaction::resume(&presented, from_cookie.as_ref()) {
         if failure.is_fatal() {
@@ -1163,6 +1162,33 @@ fn set_session_cookie(response: &mut Response, id: &SessionId) {
 mod tests {
     use super::*;
     use asterius_domain::audit::{DetailValue, fingerprint};
+
+    /// The `ast-bze` site: `resume` reads the interaction cookie, and a client
+    /// is free to put it in a *second* `cookie` field (RFC 9113 §8.2.3). The
+    /// session cookie coming first is the ordinary case for a signed-in user
+    /// mid-flow, and reading only the first field made it a silent 401.
+    #[test]
+    fn the_interaction_cookie_is_read_from_a_second_cookie_field() {
+        // Arrange
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-asterius_session=a-session"),
+        );
+        headers.append(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-asterius_ix=an-interaction"),
+        );
+
+        // Act
+        let found = interaction::id_from_cookie_header(&crate::http::cookies(&headers));
+
+        // Assert
+        assert_eq!(
+            found.map(|id| id.expose().to_owned()),
+            Some("an-interaction".to_owned())
+        );
+    }
 
     fn registered() -> (TenantId, UserId, uuid::Uuid, AuditEvent) {
         let tenant = TenantId::new("demo");
