@@ -26,12 +26,15 @@ export interface StartedFlow {
  * exercised the replay path rather than the flow: RFC 9126 §2.2 makes a
  * `request_uri` single-use.
  */
-export async function startAuthorization(api: APIRequestContext): Promise<StartedFlow> {
+export async function startAuthorization(
+  api: APIRequestContext,
+  responseMode?: string,
+): Promise<StartedFlow> {
   const discovery = await discover(api, BASE_URL);
   const client = await registerClient(api, discovery, REDIRECT_URI);
   const state = `sweep-${crypto.randomUUID()}`;
   return {
-    authorizationUrl: await pushAuthorizationRequest(api, discovery, client, state),
+    authorizationUrl: await pushAuthorizationRequest(api, discovery, client, state, responseMode),
     state,
     redirectUri: REDIRECT_URI,
   };

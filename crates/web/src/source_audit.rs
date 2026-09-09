@@ -310,14 +310,49 @@ mod tests {
     /// half. The script has to be inline and nonce-carrying, the page has to
     /// keep working without it, and `javascript:` URLs and inline event
     /// handlers stay forbidden here as everywhere — no nonce can allow one.
-    const SCRIPTED_TEMPLATES: &[(&str, &str)] = &[(
-        "passkey.html",
-        "ast-ndk.7: `navigator.credentials.create()` is a JavaScript API, so a \
-         WebAuthn registration ceremony cannot be run from markup. The script \
-         is inline under the per-response nonce and interpolates nothing — its \
-         inputs arrive on escaped `data-` attributes — and with scripting off \
-         the page shows no button, explains why, and offers the password path.",
-    )];
+    const SCRIPTED_TEMPLATES: &[ScriptedTemplate] = &[
+        ScriptedTemplate {
+            name: "passkey.html",
+            reason: "ast-ndk.7: `navigator.credentials.create()` is a JavaScript API, so a \
+                     WebAuthn registration ceremony cannot be run from markup. The script \
+                     is inline under the per-response nonce and interpolates nothing — its \
+                     inputs arrive on escaped `data-` attributes — and with scripting off \
+                     the page shows no button, explains why, and offers the password path.",
+            // The button here cannot work without script, so the page must
+            // lead somewhere that can: the password path.
+            without_script: "<a href=",
+        },
+        ScriptedTemplate {
+            name: "form_post.html",
+            reason: "ast-gxh.5: a form cannot submit itself. No HTML attribute does it and \
+                     `<noscript>` renders rather than acts, so the auto-submission clients \
+                     expect of `response_mode=form_post` is one inline line under the \
+                     per-response nonce, interpolating nothing and naming one element by \
+                     id. The page under it works pressed by hand: the submit button is \
+                     real, visible and never disabled, which is the mirror image of \
+                     passkey.html and the reason both halves of the criterion hold.",
+            // The inverse of the passkey page: the control the script drives is
+            // the same control a user without script presses.
+            without_script: "<button type=\"submit\">",
+        },
+    ];
+
+    /// A template that may carry a `<script>`, and the claims made for it.
+    ///
+    /// The reason is for a reviewer; `without_script` is for the machine. A
+    /// scripted page has to keep working without its script, but *what* that
+    /// means differs per page — a link out of the passkey page, a submit
+    /// button on the form-post page — and a test that accepted either for both
+    /// would pass for a passkey page that had quietly lost its password link.
+    /// So each entry names its own, and the test looks for that one.
+    struct ScriptedTemplate {
+        /// The file, in `crates/web/templates/`.
+        name: &'static str,
+        /// Why this page cannot be written without script.
+        reason: &'static str,
+        /// The markup that still works when the script does not run.
+        without_script: &'static str,
+    }
 
     /// No page runs script it was not deliberately given, so `strict-dynamic`
     /// has almost nothing to get wrong.
@@ -327,7 +362,7 @@ mod tests {
             let lowered = source.to_lowercase();
             let permitted = SCRIPTED_TEMPLATES
                 .iter()
-                .any(|(scripted, _)| *scripted == name);
+                .any(|scripted| scripted.name == name);
             assert!(
                 permitted || !lowered.contains("<script"),
                 "{name} contains a script element. If it genuinely cannot work \
@@ -361,7 +396,7 @@ mod tests {
         const NONCED: &str = "<script {{ nonce_attribute|safe }}>";
 
         let templates = templates();
-        for (name, reason) in SCRIPTED_TEMPLATES {
+        for ScriptedTemplate { name, reason, .. } in SCRIPTED_TEMPLATES {
             let (_, source) = templates
                 .iter()
                 .find(|(candidate, _)| candidate == name)
@@ -396,13 +431,24 @@ mod tests {
 
     /// A scripted page still has to be usable with scripting off.
     ///
-    /// The acceptance criterion of `ast-ndk.7`, as a grep: the page says why
-    /// the scripted control is missing and offers something that works. A
-    /// `<noscript>` that only apologises would pass the first half and fail a
-    /// user, so a link out of the page is required too.
+    /// The acceptance criterion of `ast-ndk.7`, and then of `ast-gxh.5`, as a
+    /// grep: the page says why it is behaving differently and offers something
+    /// that works. A `<noscript>` that only apologises would pass the first
+    /// half and fail a user, so the control is required too — and it is the
+    /// control that entry *declared*, not any control at all. The passkey page
+    /// leads out to the password path because its own button cannot work
+    /// unscripted; the form-post page keeps a submit button because its button
+    /// is the whole mechanism and the script only presses it. Accepting either
+    /// marker for both pages would let the passkey page lose its password link
+    /// and still pass.
     #[test]
     fn every_scripted_template_offers_a_path_without_script() {
-        for (name, _) in SCRIPTED_TEMPLATES {
+        for ScriptedTemplate {
+            name,
+            without_script,
+            ..
+        } in SCRIPTED_TEMPLATES
+        {
             let (_, source) = templates()
                 .into_iter()
                 .find(|(candidate, _)| candidate == name)
@@ -416,13 +462,33 @@ mod tests {
                 "{name}'s fallback must say why the scripted path is missing"
             );
             assert!(
-                source.contains("<a href="),
-                "{name}'s fallback must lead somewhere that works, not just explain"
+                source.contains(without_script),
+                "{name} declares {without_script} as what still works without \
+                 script, and the template does not contain it"
             );
         }
     }
 
-    /// Every form that posts carries a synchroniser token.
+    /// The one form in this tree that posts somewhere other than back here.
+    ///
+    /// A synchroniser token defends *this* server's state-changing endpoints,
+    /// and `form_post.html` posts to the client's `redirect_uri` (`ast-gxh.5`).
+    /// A token on it would be a value of ours handed to a third party, and it
+    /// would protect nothing: the thing that makes the submission trustworthy
+    /// to the client is the authorization code in the body, which is single-use
+    /// and bound to the PKCE challenge that client pushed.
+    ///
+    /// Named here rather than pattern-matched, so that a second cross-origin
+    /// form is a decision somebody writes down.
+    const CROSS_ORIGIN_FORM_TEMPLATES: &[(&str, &str)] = &[(
+        "form_post.html",
+        "ast-gxh.5: the action is the client's registered redirect_uri, so a \
+         CSRF token would be one of our values posted to somebody else. What \
+         authenticates this submission to the client is the single-use, \
+         PKCE-bound code it carries.",
+    )];
+
+    /// Every form that posts back here carries a synchroniser token.
     ///
     /// The check is on the template rather than on a rendered page, so a new
     /// form added without one fails immediately rather than when somebody
@@ -430,11 +496,64 @@ mod tests {
     #[test]
     fn every_post_form_in_a_template_carries_a_csrf_field() {
         for (name, source) in templates() {
+            if CROSS_ORIGIN_FORM_TEMPLATES
+                .iter()
+                .any(|(exempt, _)| *exempt == name)
+            {
+                continue;
+            }
             let forms = source.matches("method=\"post\"").count();
             let tokens = source.matches("name=\"csrf\"").count();
             assert_eq!(
                 forms, tokens,
                 "{name} has {forms} POST form(s) and {tokens} CSRF field(s)"
+            );
+        }
+    }
+
+    /// The exemption above is a claim, and the claim is checked.
+    ///
+    /// Two ways it could rot. The named template stops being cross-origin —
+    /// its form posts back here after all — and the exemption is now a hole in
+    /// the CSRF rule for whatever is added to that page next; or it keeps
+    /// posting to the client and somebody adds a token anyway, which sends a
+    /// value of ours to a third party. Both fail here.
+    #[test]
+    fn a_cross_origin_form_posts_to_the_client_and_carries_no_token() {
+        let templates = templates();
+        for (name, reason) in CROSS_ORIGIN_FORM_TEMPLATES {
+            let (_, source) = templates
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+                .unwrap_or_else(|| panic!("{name} is exempted but no such template exists"));
+
+            assert!(
+                reason.len() > 80,
+                "{name}'s exemption needs a reason a reviewer can weigh, not a label"
+            );
+            assert_eq!(
+                source.matches("method=\"post\"").count(),
+                1,
+                "{name} is exempted for one cross-origin form, so a second \
+                 needs its own decision"
+            );
+            assert_eq!(
+                source.matches("name=\"csrf\"").count(),
+                0,
+                "{name} posts to the client, so a synchroniser token on it \
+                 would be handed to a third party"
+            );
+            // The action is a whole URI this server was given, not a path it
+            // routes: a template posting to `/interaction/…` is same-origin and
+            // has no business on this list.
+            assert!(
+                source.contains("action=\"{{ action }}\""),
+                "{name}'s form does not post to an interpolated action"
+            );
+            assert!(
+                !source.contains("action=\"/"),
+                "{name} posts to a path on this server, so it is not \
+                 cross-origin and needs the token like every other form"
             );
         }
     }

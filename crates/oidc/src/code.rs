@@ -155,7 +155,14 @@ pub enum AuthorizationResponse {
 }
 
 impl AuthorizationResponse {
-    /// The query parameters, in the order they will appear.
+    /// The response parameters, in the order they will appear.
+    ///
+    /// Named for the query mode, and used unchanged by `form_post`
+    /// (`ast-gxh.5`), where each pair becomes a hidden input: OAuth 2.0 Form
+    /// Post Response Mode §2 sends "all response parameters" in the body, and
+    /// they are the same parameters. One producer, so a mode cannot ship a
+    /// response the other would not have.
+    ///
     ///
     /// `iss` is on *both* variants. RFC 9207 §2: "the authorization server
     /// MUST indicate its identity by including the `iss` parameter in the
@@ -240,6 +247,45 @@ impl AuthorizationResponse {
             for (name, value) in self.query() {
                 query.append_pair(name, &value);
             }
+        }
+        Ok(url.into())
+    }
+
+    /// The `action` of a `form_post` page's form (`ast-gxh.5`).
+    ///
+    /// The same URI the query mode would redirect to, with this response's own
+    /// parameters left out of it: in OAuth 2.0 Form Post Response Mode §2 they
+    /// travel in the body, as `application/x-www-form-urlencoded`, and putting
+    /// them in both places would be one response saying two things.
+    ///
+    /// What is *kept* is whatever the client registered — a `?tenant=x` stays
+    /// on the action, because a form submission preserves the action's query
+    /// string and the client asked for it. What is dropped is [`RESERVED`], for
+    /// the reason [`Self::redirect_url`] drops it and one more: a callback that
+    /// merges its query and its body into a single bag — `$_REQUEST` in PHP,
+    /// `req.query`/`req.body` flattened in more than one Node framework — would
+    /// otherwise read a registered `?code=already` and this response's real
+    /// code as the same parameter, and the winner is the framework's choice
+    /// rather than ours.
+    ///
+    /// # Errors
+    ///
+    /// [`MalformedRedirect`] if the stored URI will not parse — unreachable in
+    /// practice, since it was validated at registration, and refused rather
+    /// than guessed at if it ever happens.
+    pub fn form_action(&self, redirect_uri: &str) -> Result<String, MalformedRedirect> {
+        let mut url = url::Url::parse(redirect_uri).map_err(|_| MalformedRedirect)?;
+
+        let kept: Vec<(String, String)> = url
+            .query_pairs()
+            .filter(|(name, _)| !RESERVED.contains(&name.as_ref()))
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+        // `None` rather than an empty query: a trailing `?` on the action of a
+        // form nobody asked to carry one is a URL the client did not register.
+        url.set_query(None);
+        if !kept.is_empty() {
+            url.query_pairs_mut().extend_pairs(&kept);
         }
         Ok(url.into())
     }
@@ -484,5 +530,100 @@ mod tests {
             issuer: ISSUER.into(),
         };
         assert_eq!(response.redirect_url("not a url"), Err(MalformedRedirect));
+    }
+
+    /// `ast-gxh.5`: the action is the registered URI, and the response is not
+    /// in it — §2 puts every response parameter in the body.
+    #[test]
+    fn a_form_post_action_is_the_redirect_uri_without_the_response_in_it() {
+        // --- Arrange ---
+        let response = AuthorizationResponse::Code {
+            code: "abc".into(),
+            state: Some("xyz".into()),
+            issuer: ISSUER.into(),
+        };
+
+        // --- Act ---
+        let action = response
+            .form_action("https://rp.example/cb")
+            .expect("a parseable redirect URI");
+
+        // --- Assert ---
+        assert_eq!(action, "https://rp.example/cb");
+        for owned in ["code", "state", "iss"] {
+            assert!(!action.contains(owned), "{action}");
+        }
+    }
+
+    /// A registration's own query survives, because a form submission carries
+    /// the action's query string and the client asked for it.
+    #[test]
+    fn a_registered_query_parameter_stays_on_the_action() {
+        let action = AuthorizationResponse::Error {
+            error: "access_denied",
+            state: None,
+            issuer: ISSUER.into(),
+        }
+        .form_action("https://rp.example/cb?tenant=x")
+        .expect("a parseable redirect URI");
+
+        assert_eq!(action, "https://rp.example/cb?tenant=x");
+    }
+
+    /// The same defence `redirect_url` makes, in the mode where a callback is
+    /// most likely to merge its query with its body.
+    #[test]
+    fn a_registered_response_parameter_is_dropped_from_the_action() {
+        let action = AuthorizationResponse::Code {
+            code: "issued".into(),
+            state: Some("real".into()),
+            issuer: ISSUER.into(),
+        }
+        .form_action("https://rp.example/cb?code=already&state=forged&iss=https://evil&keep=1")
+        .expect("a parseable redirect URI");
+
+        assert_eq!(action, "https://rp.example/cb?keep=1");
+    }
+
+    /// The two modes send the same parameters, so a client cannot be told one
+    /// thing by a redirect and another by a page.
+    #[test]
+    fn both_modes_carry_the_same_response_parameters() {
+        let response = AuthorizationResponse::Code {
+            code: "abc".into(),
+            state: Some("xyz".into()),
+            issuer: ISSUER.into(),
+        };
+
+        let url = url::Url::parse(
+            &response
+                .redirect_url("https://rp.example/cb")
+                .expect("a URL"),
+        )
+        .expect("parses");
+        let redirected: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        let posted: Vec<(String, String)> = response
+            .query()
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v))
+            .collect();
+
+        assert_eq!(redirected, posted);
+    }
+
+    #[test]
+    fn an_unparseable_redirect_uri_has_no_form_action() {
+        assert_eq!(
+            AuthorizationResponse::Error {
+                error: "access_denied",
+                state: None,
+                issuer: ISSUER.into(),
+            }
+            .form_action("not a url"),
+            Err(MalformedRedirect)
+        );
     }
 }

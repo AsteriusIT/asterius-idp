@@ -66,6 +66,14 @@ impl FakeStore {
         self
     }
 
+    /// Sets the stored `response_mode`, which is what decides whether the
+    /// authorization response is a redirect or a rendered form (`ast-gxh.5`).
+    fn responding_with(&self, mode: &str) {
+        if let Some((_, record)) = self.record.lock().expect("lock").as_mut() {
+            record.parameters["response_mode"] = Value::String(mode.to_owned());
+        }
+    }
+
     /// Replaces the stored `redirect_uri`, for the policy the consent screen is
     /// served under.
     fn redirecting_to(&self, redirect_uri: &str) {
@@ -1347,4 +1355,161 @@ async fn a_private_scheme_callback_widens_nothing() {
     let policy = policy_of(&show_page(&at, &issued).await);
 
     assert!(policy.contains("form-action 'self';"), "{policy}");
+}
+
+// ---- response_mode=form_post (ast-gxh.5) ---------------------------------
+
+/// The body of a response, with the form-post page's own assertions applied.
+async fn form_post_page(response: axum::response::Response) -> String {
+    assert_eq!(response.status(), StatusCode::OK, "not a rendered page");
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(
+        response.headers().get(header::LOCATION).is_none(),
+        "a form_post response redirected as well"
+    );
+    body_of(response).await
+}
+
+/// The first acceptance criterion of `ast-gxh.5`, at the endpoint that
+/// produces the response.
+#[tokio::test]
+async fn an_approval_in_form_post_mode_renders_a_form_to_the_client() {
+    // --- Arrange ---
+    let at = at_consent();
+    at.store.responding_with("form_post");
+    let issued = Issued::default();
+
+    // --- Act ---
+    let response = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+    let html = form_post_page(response).await;
+
+    // --- Assert ---
+    assert!(html.contains(r#"method="post""#), "{html}");
+    assert!(
+        html.contains(r#"action="https://rp.example/cb""#),
+        "the action is not the registered redirect_uri: {html}"
+    );
+    let code = issued
+        .codes
+        .0
+        .lock()
+        .expect("lock")
+        .first()
+        .map(|(digest, _)| digest.clone())
+        .expect("a code was minted");
+    assert!(
+        html.contains(r#"<input type="hidden" name="code" value=""#),
+        "the page carries no code: {html}"
+    );
+    assert!(!code.is_empty());
+    assert!(
+        html.contains(&format!(
+            r#"<input type="hidden" name="iss" value="{ISSUER}">"#
+        )),
+        "RFC 9207: no iss on the form: {html}"
+    );
+    // The button a browser without script presses, and the one line that
+    // presses it for every other browser.
+    assert!(html.contains(r#"<button type="submit">"#), "{html}");
+    assert_eq!(html.matches("<script").count(), 1, "{html}");
+}
+
+/// The third acceptance criterion, which is the easy one to forget: a client
+/// that asked to be answered by POST is answered by POST when the answer is a
+/// refusal.
+#[tokio::test]
+async fn a_denial_in_form_post_mode_is_also_a_form() {
+    let at = at_consent();
+    at.store.responding_with("form_post");
+    let issued = Issued::default();
+
+    let response = submit_decision(&at, &issued, &format!("csrf={}&decision=deny", at.csrf)).await;
+    let html = form_post_page(response).await;
+
+    assert!(
+        html.contains(r#"<input type="hidden" name="error" value="access_denied">"#),
+        "{html}"
+    );
+    assert!(!html.contains(r#"name="code""#), "a refusal carried a code");
+}
+
+/// The fourth: the policy this page is served under names the client's origin
+/// and nothing else, so the browser is allowed to make exactly this
+/// submission.
+#[tokio::test]
+async fn the_form_post_page_widens_form_action_by_the_client_origin_alone() {
+    let at = at_consent();
+    at.store.responding_with("form_post");
+    let issued = Issued::default();
+
+    let response = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+
+    let policy = response
+        .extensions()
+        .get::<asterius_web::Policy>()
+        .expect("the page carries no policy")
+        .header_value(&Nonce::generate());
+    assert!(
+        policy.contains("form-action 'self' https://rp.example;"),
+        "{policy}"
+    );
+    assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
+}
+
+/// A stored request that named no mode is what every request was before this
+/// existed, and it still redirects.
+#[tokio::test]
+async fn a_request_with_no_stored_mode_still_redirects() {
+    let at = at_consent();
+    let issued = Issued::default();
+
+    let response = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), 303);
+    assert_eq!(location_of(&response).host_str(), Some("rp.example"));
+}
+
+/// The interaction is spent by either delivery, so the cookie goes with both.
+#[tokio::test]
+async fn a_form_post_response_ends_the_interaction_and_clears_its_cookie() {
+    let at = at_consent();
+    at.store.responding_with("form_post");
+    let issued = Issued::default();
+
+    let response = submit_decision(
+        &at,
+        &issued,
+        &format!("csrf={}&decision=allow&scope=openid", at.csrf),
+    )
+    .await;
+
+    assert!(at.store.was_completed(&at.id.digest()));
+    let cleared = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.starts_with(COOKIE_NAME) && v.contains("Max-Age=0"));
+    assert!(cleared, "the interaction cookie outlived the interaction");
 }

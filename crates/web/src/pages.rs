@@ -24,13 +24,21 @@
 //! `script-src 'nonce-…' 'strict-dynamic'` that is hardest to get wrong. The
 //! source audit asserts the absence.
 //!
-//! There is exactly one exception, and it is named rather than pattern-matched:
-//! [`PasskeyPage`] (`ast-ndk.7`). `navigator.credentials.create()` is a
+//! There are exactly two exceptions, both named rather than pattern-matched.
+//!
+//! [`PasskeyPage`] (`ast-ndk.7`): `navigator.credentials.create()` is a
 //! JavaScript API, so a WebAuthn registration ceremony cannot be run from
 //! markup at all. Its script is inline, carries the per-response nonce, and
 //! interpolates nothing — every value reaches it through escaped `data-`
 //! attributes. With scripting off the page offers the password path and says
 //! why, rather than a button that cannot work.
+//!
+//! [`FormPostPage`] (`ast-gxh.5`): no markup submits a form on its own, and
+//! `<noscript>` renders rather than acts, so the auto-submission a `form_post`
+//! response mode is expected to perform needs one line of script. The page it
+//! runs on is a working page without it — a form with a real submit button
+//! that the user presses — which is why the two halves of that acceptance
+//! criterion are not in conflict.
 
 use crate::csp::Nonce;
 use askama::Template;
@@ -189,6 +197,69 @@ pub struct PasskeyPage<'a> {
     /// A previous failure, if this is a retry. A fixed string, never echoed.
     pub message: Option<&'a str>,
     /// The CSP nonce attribute — here it is the script's, not only the style's.
+    pub nonce_attribute: String,
+}
+
+/// One response parameter, as a hidden input on the `form_post` page.
+///
+/// A pair rather than a struct with three named fields, because the page is
+/// whatever `AuthorizationResponse::query` produced and this type should not
+/// be a second opinion about which parameters exist. Both halves are escaped
+/// by the template: `state` is a string the client chose, echoed back byte for
+/// byte, and it lands in an attribute value.
+#[derive(Debug, Clone)]
+pub struct ResponseField {
+    /// The parameter name — `code`, `state`, `iss` or `error`.
+    pub name: String,
+    /// Its value.
+    pub value: String,
+}
+
+/// The `response_mode=form_post` page (`ast-gxh.5`).
+///
+/// OAuth 2.0 Form Post Response Mode §2: the authorization response is
+/// delivered by a form this server renders and the browser POSTs to the
+/// client's `redirect_uri`, instead of by a redirect that carries it in a URL.
+///
+/// # The second scripted page in this tree, and why it is scripted
+///
+/// A form cannot submit itself. There is no HTML attribute for it and
+/// `<noscript>` can only render markup, never act — so "auto-submit" and
+/// "works without JavaScript" are only contradictory if the button is the
+/// script's creation. Here it is not: the page is a form with a real, visible,
+/// always-enabled submit button, and the inline script — under the
+/// per-response nonce, interpolating nothing — presses it for the
+/// overwhelmingly common case where script runs.
+///
+/// That is deliberately the mirror image of [`PasskeyPage`], whose button
+/// starts `hidden` and is revealed by its script. The rule underneath both is
+/// the same: what a browser without script shows must be something that works.
+/// There, a WebAuthn button without script cannot; here, the button is the
+/// whole mechanism.
+///
+/// # The policy this page needs
+///
+/// It is the only page in this server that submits anywhere but back to this
+/// server, so it is served with `form-action 'self' <the client's origin>` —
+/// [`crate::Document::with_form_post_to`], one origin, taken from the
+/// `redirect_uri` this authorization was validated against at push time and
+/// never from a parameter of the request that renders it.
+#[derive(Debug, Template)]
+#[template(path = "form_post.html")]
+pub struct FormPostPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// The host the answer is being sent to, so the page says where the
+    /// browser is about to go. Registered by the client and validated at push
+    /// time, like the one the consent screen shows.
+    pub redirect_host: &'a str,
+    /// The form's `action`: the client's `redirect_uri`.
+    pub action: &'a str,
+    /// The response parameters, each rendered as a hidden input.
+    pub fields: Vec<ResponseField>,
+    /// The CSP nonce attribute — here it is the auto-submit script's.
     pub nonce_attribute: String,
 }
 
@@ -842,6 +913,136 @@ mod tests {
                 !html.to_lowercase().contains(&remote.to_lowercase()),
                 "the page pulls a remote asset ({remote}): {html}"
             );
+        }
+    }
+
+    fn form_post(action: &str, fields: Vec<(&str, &str)>) -> String {
+        let nonce = nonce();
+        FormPostPage {
+            locale: "en",
+            tenant_name: "Demo",
+            redirect_host: "rp.example",
+            action,
+            fields: fields
+                .into_iter()
+                .map(|(name, value)| ResponseField {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                })
+                .collect(),
+            nonce_attribute: nonce_attribute(&nonce),
+        }
+        .render()
+        .expect("render")
+    }
+
+    /// The acceptance criterion of `ast-gxh.5`, as far as markup can carry it.
+    #[test]
+    fn the_form_post_page_posts_every_response_parameter_to_the_redirect_uri() {
+        // --- Arrange / Act ---
+        let html = form_post(
+            "https://rp.example/cb",
+            vec![
+                ("code", "the-code"),
+                ("state", "the-state"),
+                ("iss", "https://as.example/t/demo"),
+            ],
+        );
+
+        // --- Assert ---
+        assert!(html.contains(r#"method="post""#), "{html}");
+        assert!(html.contains(r#"action="https://rp.example/cb""#), "{html}");
+        for (name, value) in [
+            ("code", "the-code"),
+            ("state", "the-state"),
+            ("iss", "https://as.example/t/demo"),
+        ] {
+            assert!(
+                html.contains(&format!(
+                    r#"<input type="hidden" name="{name}" value="{value}">"#
+                )),
+                "{name} is not on the form: {html}"
+            );
+        }
+    }
+
+    /// An error response travels the same way, or a client that asked for
+    /// `form_post` is left waiting for a POST that went out as a query.
+    #[test]
+    fn an_error_response_uses_the_same_page() {
+        let html = form_post(
+            "https://rp.example/cb",
+            vec![("error", "access_denied"), ("iss", "https://as.example")],
+        );
+
+        assert!(
+            html.contains(r#"<input type="hidden" name="error" value="access_denied">"#),
+            "{html}"
+        );
+        assert!(!html.contains(r#"name="code""#), "{html}");
+    }
+
+    /// The half of "auto-submit, without JavaScript" that markup owns: the
+    /// button is real, visible and not disabled, so a browser that never runs
+    /// the script has a control that works.
+    #[test]
+    fn the_form_post_button_works_without_the_script() {
+        let html = form_post("https://rp.example/cb", vec![("code", "c")]);
+
+        assert!(
+            html.contains(r#"<button type="submit">Continue</button>"#),
+            "{html}"
+        );
+        assert!(!html.contains("hidden>Continue"), "{html}");
+        assert!(!html.contains("disabled"), "{html}");
+        // The button is outside `<noscript>`: inside it, the one case it
+        // exists for — script blocked rather than disabled — would lose it.
+        let noscript = html.find("<noscript>").expect("a noscript block");
+        let button = html.find("<button").expect("a button");
+        assert!(button < noscript, "the button is inside <noscript>: {html}");
+    }
+
+    /// The other half: one inline script, carrying this response's nonce, and
+    /// nothing interpolated into it.
+    #[test]
+    fn the_auto_submit_script_carries_the_nonce_and_interpolates_nothing() {
+        let nonce = nonce();
+        let html = FormPostPage {
+            locale: "en",
+            tenant_name: "Demo",
+            redirect_host: "rp.example",
+            action: "https://rp.example/cb",
+            fields: vec![ResponseField {
+                name: "code".into(),
+                value: "the-code".into(),
+            }],
+            nonce_attribute: nonce_attribute(&nonce),
+        }
+        .render()
+        .expect("render");
+
+        assert_eq!(html.matches("<script").count(), 1, "{html}");
+        assert!(
+            html.contains(&format!("<script nonce=\"{}\">", nonce.as_str())),
+            "{html}"
+        );
+        let script = &html[html.find("<script").expect("a script")..];
+        let script = &script[..script.find("</script>").expect("a closed script")];
+        assert!(
+            !script.contains("the-code") && !script.contains("rp.example"),
+            "a response value reached the script's source text: {script}"
+        );
+        assert!(!html.contains("<script src"), "{html}");
+    }
+
+    /// Everything on this page is a value from a request or a registration,
+    /// and all of it lands in an attribute.
+    #[test]
+    fn a_hostile_state_or_redirect_uri_cannot_break_out_of_the_form() {
+        for hostile in HOSTILE {
+            let html = form_post(hostile, vec![("state", hostile), ("code", hostile)]);
+            // One script: the page's own, which must still be the only one.
+            assert_no_injection_beyond(&html, hostile, 1);
         }
     }
 
