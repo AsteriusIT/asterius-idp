@@ -44,6 +44,7 @@
 
 pub mod auth;
 pub mod backend;
+pub mod console;
 pub mod csrf;
 pub mod error;
 pub mod idempotency;
@@ -55,6 +56,7 @@ pub mod router;
 pub mod throttle;
 
 pub use backend::{AdminBackend, AdminTokens, PresentedToken, TokenPrincipal};
+pub use console::{Asset, Bundle};
 pub use error::AdminError;
 pub use operations::{Effect, Method, Mutating, Operation, Safe};
 pub use rbac::{Authority, Held, Reach};

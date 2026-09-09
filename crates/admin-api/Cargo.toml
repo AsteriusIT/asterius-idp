@@ -13,7 +13,13 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+askama.workspace = true
 asterius-domain.workspace = true
+# The console's entry document is HTML, and `asterius_web::Document` is the one
+# type in the workspace that produces it: it cannot be built without the
+# per-response CSP nonce, which is exactly the guarantee ADR-0009 asks of the
+# console shell.
+asterius-web.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true

@@ -233,7 +233,12 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: e2e/package-lock.json
+          # Two lockfiles: the sweep's own, and the console's — which
+          # `scripts/browser-tests.sh` builds before cargo, because the bundle
+          # is embedded in the binary under test (`ast-f7m.3`).
+          cache-dependency-path: |
+            e2e/package-lock.json
+            console/package-lock.json
 
       # Cached across runs and keyed on the lockfile: the browser is ~150 MB and
       # changes only when @playwright/test does.

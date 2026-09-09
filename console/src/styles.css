@@ -1,0 +1,107 @@
+/*
+ * The console's one stylesheet.
+ *
+ * System fonts only: `font-src 'self'` forbids a web font from anywhere else,
+ * and a console that reached a font CDN would be a third-party request from
+ * the most privileged page this deployment serves.
+ *
+ * Colours are declared in both schemes rather than forcing one, and every
+ * pairing here clears WCAG 2.2 AA contrast on normal text.
+ */
+:root {
+  color-scheme: light dark;
+  --ink: #14181f;
+  --paper: #ffffff;
+  --muted: #4a5260;
+  --rule: #d3d8e0;
+  --accent: #1b4fbf;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8ecf3;
+    --paper: #12151b;
+    --muted: #a6b0c0;
+    --rule: #2c323d;
+    --accent: #8fb0ff;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 0 1rem 3rem;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+header,
+nav,
+main {
+  max-width: 60rem;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.4rem;
+}
+
+.who {
+  color: var(--muted);
+  margin-top: -0.75rem;
+}
+
+nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 0 0 0.75rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+a {
+  color: var(--accent);
+}
+
+a[aria-current='page'] {
+  font-weight: 700;
+  text-decoration: none;
+}
+
+/* Visible on focus only, which is when it is useful and the only time it may
+   be hidden from a mouse user without hiding it from a keyboard one. */
+.skip {
+  position: absolute;
+  left: -100vw;
+}
+
+.skip:focus {
+  position: static;
+  display: inline-block;
+  margin: 0.5rem 0;
+}
+
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+dt {
+  font-weight: 700;
+}
+
+dd {
+  margin: 0 0 0.75rem;
+}
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.9rem;
+  color: var(--paper);
+  background: var(--accent);
+  border: 1px solid transparent;
+  border-radius: 0.25rem;
+}

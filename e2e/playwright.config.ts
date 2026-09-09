@@ -61,7 +61,15 @@ export default defineConfig({
       // What it does when it does *not* run is asserted in `no-js-flow`, on
       // the same page, which is where that belongs: a browser without script
       // must see no passkey button at all.
-      testIgnore: ['**/passkey-signin.spec.ts', '**/passkey-ceremony.spec.ts'],
+      // The console spec is ignored here for the same reason: an admin console
+      // *is* script, and what a browser without it sees is the `<noscript>`
+      // block, which `crates/admin-api/src/console.rs` asserts from the
+      // template side.
+      testIgnore: [
+        '**/passkey-signin.spec.ts',
+        '**/passkey-ceremony.spec.ts',
+        '**/console.spec.ts',
+      ],
     },
     {
       name: 'js',

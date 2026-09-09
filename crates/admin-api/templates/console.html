@@ -1,0 +1,37 @@
+{# The console's entry document, and the reason it is rendered rather than
+   emitted by the bundler: every tag below carries this response's CSP nonce,
+   and the nonce changes per response (CSP Level 3 §7.1). A static index.html
+   would either name a stale nonce or name none, and under
+   `script-src 'nonce-…' 'strict-dynamic'` a script with no nonce does not run.
+
+   Every URL here is relative. The document is served at `/admin/`, and a
+   tenant may be reached at `/t/{id}/admin/` — a root-relative URL would drop
+   that prefix. See `crates/admin-api/src/console.rs`.
+
+   One script element, external and nonced, checked by
+   `the_console_template_contains_one_nonced_external_script_and_nothing_inline`.
+   Nothing inline: no style block, no event handler, no javascript: URL. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{# Also sent as a header. Repeated here because a page saved to disk keeps the
+   meta and loses the header, and an admin console in a Downloads folder should
+   still not name this deployment to anyone it links to. #}
+<meta name="referrer" content="no-referrer">
+<title>Asterius console</title>
+{%- for style in styles %}
+<link rel="stylesheet" href="{{ style }}" {{ nonce_attribute|safe }}>
+{%- endfor %}
+</head>
+<body>
+<div id="console"></div>
+<noscript>
+<h1>Asterius console</h1>
+<p>This console needs JavaScript. The end-user pages of this server — sign-in,
+consent and sign-out — do not, and work without it.</p>
+</noscript>
+<script type="module" src="{{ script }}" {{ nonce_attribute|safe }}></script>
+</body>
+</html>

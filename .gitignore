@@ -12,6 +12,13 @@
 # Local environment
 .env
 
+# The console's toolchain and its output. `console/dist` is embedded into the
+# binary by crates/admin-api/build.rs and is rebuilt by
+# ./scripts/build-console.sh; committing a bundle would be committing a
+# compiler's output. `package-lock.json` *is* committed.
+node_modules/
+/console/dist/
+
 # cargo-fuzz
 /fuzz/target/
 /fuzz/artifacts/

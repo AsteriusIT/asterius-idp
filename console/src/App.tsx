@@ -1,0 +1,164 @@
+import { useCallback, useEffect, useState } from 'react';
+import type { JSX } from 'react';
+import { ApiError, loadSession, type Session } from './api';
+import { visibleTo } from './navigation';
+import { hrefOf, routeOf } from './routes';
+
+/**
+ * What the shell is doing, as one value.
+ *
+ * `signed-out` is a state and not an error, because it has its own screen and
+ * its own action: the API answered 401, so whatever the console was showing is
+ * no longer backed by a session and must not be left on screen.
+ */
+type Shell =
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'ready'; readonly session: Session }
+  | { readonly kind: 'signed-out' }
+  | { readonly kind: 'failed'; readonly message: string };
+
+export function App(): JSX.Element {
+  const [shell, setShell] = useState<Shell>({ kind: 'loading' });
+  const [route, setRoute] = useState(() => routeOf(window.location.hash));
+
+  useEffect(() => {
+    const onHashChange = (): void => setRoute(routeOf(window.location.hash));
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  const probe = useCallback(() => {
+    setShell({ kind: 'loading' });
+    loadSession().then(
+      (session) => setShell({ kind: 'ready', session }),
+      (error: unknown) => {
+        if (error instanceof ApiError && error.isUnauthenticated) {
+          setShell({ kind: 'signed-out' });
+          return;
+        }
+        setShell({
+          kind: 'failed',
+          message: error instanceof Error ? error.message : 'the console could not start',
+        });
+      },
+    );
+  }, []);
+
+  useEffect(probe, [probe]);
+
+  if (shell.kind === 'loading') {
+    return <Notice heading="Loading" body="Reading the session." />;
+  }
+  if (shell.kind === 'signed-out') {
+    return <SignedOut onRetry={probe} />;
+  }
+  if (shell.kind === 'failed') {
+    return <Notice heading="The console could not start" body={shell.message} />;
+  }
+
+  const destinations = visibleTo(shell.session.roles);
+  const current = destinations.some((destination) => destination.route === route)
+    ? route
+    : (destinations[0]?.route ?? route);
+
+  return (
+    <>
+      <a className="skip" href={`${hrefOf(current)}`} onClick={focusMain}>
+        Skip to content
+      </a>
+      <header>
+        <h1>Asterius console</h1>
+        <p className="who">
+          Signed in to <strong>{shell.session.tenant}</strong>
+        </p>
+      </header>
+      <nav aria-label="Console sections">
+        <ul>
+          {destinations.map((destination) => (
+            <li key={destination.route}>
+              <a
+                href={hrefOf(destination.route)}
+                aria-current={destination.route === current ? 'page' : undefined}
+              >
+                {destination.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+      <main id="content" tabIndex={-1}>
+        <Screen route={current} session={shell.session} />
+      </main>
+    </>
+  );
+}
+
+/** Moves keyboard focus to the content, which a fragment link alone does not. */
+function focusMain(): void {
+  document.getElementById('content')?.focus();
+}
+
+/**
+ * The screen for one route.
+ *
+ * Every one but the overview is a placeholder naming the bead that fills it
+ * in. The scaffold ships the shell — the document, the policy, the session,
+ * the navigation — and nothing that would have to be rewritten by the six
+ * tickets that follow it.
+ */
+function Screen({ route, session }: { route: string; session: Session }): JSX.Element {
+  if (route === 'overview') {
+    return (
+      <>
+        <h2>Overview</h2>
+        <dl>
+          <dt>Tenant</dt>
+          <dd>{session.tenant}</dd>
+          <dt>User</dt>
+          <dd>{session.user}</dd>
+          <dt>Roles</dt>
+          <dd>{session.roles.length > 0 ? session.roles.join(', ') : 'none'}</dd>
+        </dl>
+      </>
+    );
+  }
+
+  const destination = visibleTo(session.roles).find((candidate) => candidate.route === route);
+  return (
+    <>
+      <h2>{destination?.label ?? 'Not found'}</h2>
+      <p>This screen arrives with {destination?.bead ?? 'a later bead'}.</p>
+    </>
+  );
+}
+
+/**
+ * What the console shows when the API says 401.
+ *
+ * The button re-probes rather than navigating somewhere: a *first-party
+ * sign-in entry* for the console does not exist yet. ADR-0009 settles that an
+ * administrator authenticates through the same login flow as everyone else,
+ * and that flow is driven by an authorization request today, so there is no
+ * URL here that would start one and come back. Sending the browser to a
+ * guessed path would be worse than saying so.
+ */
+function SignedOut({ onRetry }: { onRetry: () => void }): JSX.Element {
+  return (
+    <main id="content" tabIndex={-1}>
+      <h1>Signed out</h1>
+      <p>This console has no session. Sign in to this deployment, then continue.</p>
+      <button type="button" onClick={onRetry}>
+        Check again
+      </button>
+    </main>
+  );
+}
+
+function Notice({ heading, body }: { heading: string; body: string }): JSX.Element {
+  return (
+    <main id="content" tabIndex={-1}>
+      <h1>{heading}</h1>
+      <p>{body}</p>
+    </main>
+  );
+}
