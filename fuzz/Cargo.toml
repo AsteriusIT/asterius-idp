@@ -196,6 +196,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "logout_request"
+path = "fuzz_targets/logout_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "pairwise_subject"
 path = "fuzz_targets/pairwise_subject.rs"
 test = false

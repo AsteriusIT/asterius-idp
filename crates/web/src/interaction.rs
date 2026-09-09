@@ -475,15 +475,32 @@ pub fn clear_cookie() -> String {
 // fuzz-target: interaction_cookie
 #[must_use]
 pub fn id_from_cookie_header(header: &str) -> Option<InteractionId> {
+    cookie_value(header, COOKIE_NAME).map(|value| InteractionId::from_presented(value.to_owned()))
+}
+
+/// Reads exactly one cookie value out of a `Cookie` header.
+///
+/// The rules are [`id_from_cookie_header`]'s, and they are here so that every
+/// `__Host-` cookie this server reads — the interaction's and the session's —
+/// is read by one function rather than by two that could come to disagree:
+///
+/// * the name matches byte for byte, because cookie names are case-sensitive
+///   and a parser that also accepted `asterius_ix` would throw away the
+///   browser-enforced guarantees the `__Host-` prefix exists to provide;
+/// * a repeated cookie yields nothing rather than a choice, for the reason
+///   RFC 6749 §3.1 gives about repeated parameters — if two intermediaries
+///   disagree about which one counts, one request is validated and a different
+///   one runs;
+/// * an empty value is not a value.
+#[must_use]
+pub fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     let mut found = None;
     for pair in header.split(';') {
         let pair = pair.trim();
-        let Some((name, value)) = pair.split_once('=') else {
+        let Some((candidate, value)) = pair.split_once('=') else {
             continue;
         };
-        // Byte-exact. Cookie names are case-sensitive, and the `__Host-`
-        // prefix means nothing if a differently-cased spelling is honoured.
-        if name != COOKIE_NAME {
+        if candidate != name {
             continue;
         }
         if found.is_some() {
@@ -494,9 +511,9 @@ pub fn id_from_cookie_header(header: &str) -> Option<InteractionId> {
         if value.is_empty() {
             return None;
         }
-        found = Some(value.to_owned());
+        found = Some(value);
     }
-    found.map(InteractionId::from_presented)
+    found
 }
 
 /// Compares a submitted CSRF token with the issued one.

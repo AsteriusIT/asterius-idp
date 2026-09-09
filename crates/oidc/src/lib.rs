@@ -12,6 +12,7 @@ pub mod client_auth;
 pub mod code;
 pub mod consent;
 pub mod form;
+pub mod logout;
 pub mod metadata;
 pub mod par;
 pub mod pkce;

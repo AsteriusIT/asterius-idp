@@ -108,6 +108,45 @@ pub struct ConsentPage<'a> {
     pub nonce_attribute: String,
 }
 
+/// The logout confirmation question.
+///
+/// OIDC RP-Initiated Logout 1.0 §2: the OP asks the End-User whether to log
+/// out when it cannot verify the request. The page therefore carries **no**
+/// relying-party name, logo or URL — see the template for why that is a
+/// security property rather than a missing feature — and it is rendered
+/// before anything about the session has changed.
+#[derive(Debug, Template)]
+#[template(path = "logout_confirm.html")]
+pub struct LogoutConfirmationPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name. The only name on the page.
+    pub tenant_name: &'a str,
+    /// Where the form posts to.
+    pub action: &'a str,
+    /// The synchroniser token for this rendering.
+    pub csrf: &'a str,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
+/// The neutral end of a logout.
+///
+/// Shown when there is no post-logout redirect to perform (§3), and when the
+/// user chose to stay signed in. It names the provider and nothing else.
+#[derive(Debug, Template)]
+#[template(path = "logged_out.html")]
+pub struct LoggedOutPage<'a> {
+    /// BCP 47 tag.
+    pub locale: &'a str,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Whether the session was actually ended.
+    pub signed_out: bool,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+}
+
 /// The passkey enrolment page: the one page in this tree that runs script.
 ///
 /// A WebAuthn registration ceremony is a call to
@@ -415,6 +454,69 @@ mod tests {
             outside.contains(r#"<a href="/interaction/x/login">"#),
             "the password path must survive outside the noscript block: {outside}"
         );
+    }
+
+    /// The logout pages carry the tenant's name, and nothing else escapes it.
+    #[test]
+    fn every_untrusted_value_on_the_logout_pages_is_escaped() {
+        for hostile in HOSTILE {
+            let nonce = nonce();
+            let confirmation = LogoutConfirmationPage {
+                locale: "en",
+                tenant_name: hostile,
+                action: "/logout",
+                csrf: hostile,
+                nonce_attribute: nonce_attribute(&nonce),
+            }
+            .render()
+            .expect("render");
+            assert_no_injection(&confirmation, hostile);
+
+            for signed_out in [true, false] {
+                let html = LoggedOutPage {
+                    locale: "en",
+                    tenant_name: hostile,
+                    signed_out,
+                    nonce_attribute: nonce_attribute(&nonce),
+                }
+                .render()
+                .expect("render");
+                assert_no_injection(&html, hostile);
+            }
+        }
+    }
+
+    /// The anti-phishing rule of RP-Initiated Logout 1.0 §2, asserted rather
+    /// than trusted: the confirmation page is reached by a request nobody
+    /// verified, so the template must have no field a client could fill.
+    #[test]
+    fn the_confirmation_page_can_render_no_relying_party_text() {
+        let nonce = nonce();
+        let html = LogoutConfirmationPage {
+            locale: "en",
+            tenant_name: "Demo",
+            action: "/logout",
+            csrf: "the-token",
+            nonce_attribute: nonce_attribute(&nonce),
+        }
+        .render()
+        .expect("render");
+
+        assert!(html.contains("Log out of Demo?"));
+        assert!(
+            html.contains(r#"<input type="hidden" name="csrf" value="the-token">"#),
+            "a forged logout is a denial of service: {html}"
+        );
+        assert!(html.contains(r#"value="logout""#) && html.contains(r#"value="stay""#));
+        // A source-level check, because the field that would carry a client's
+        // name is one somebody could add later without noticing what it is.
+        let source = include_str!("../templates/logout_confirm.html");
+        for forbidden in ["client_name", "logo", "redirect", "post_logout"] {
+            assert!(
+                !source.contains(&format!("{{{{ {forbidden}")),
+                "the confirmation page renders {forbidden}, which the relying party chooses"
+            );
+        }
     }
 
     /// Escaping means the raw value never reaches the markup verbatim.

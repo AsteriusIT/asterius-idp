@@ -68,6 +68,14 @@ pub struct Policy {
     pub expected_audience: Option<String>,
     /// Whether `exp` is required. It usually is.
     pub require_expiry: bool,
+    /// Whether an `exp` that has already passed is tolerated.
+    ///
+    /// Almost never. The one caller is the `id_token_hint` of an RP-initiated
+    /// logout request: OIDC RP-Initiated Logout 1.0 §4 says the OP "SHOULD
+    /// accept ID Tokens when the `aud` Claim [...] even if they are expired",
+    /// because the hint is used to *name* a relying party and a session that is
+    /// being ended, never to authorise anything.
+    pub accept_expired: bool,
     /// How far ahead an `iat` or `nbf` may be. Clamped to [`MAX_FUTURE_SKEW`].
     pub future_skew: Duration,
     /// Largest accepted token.
@@ -158,6 +166,7 @@ impl Policy {
             expected_issuer: None,
             expected_audience: None,
             require_expiry: true,
+            accept_expired: false,
             future_skew: DEFAULT_FUTURE_SKEW,
             max_bytes: DEFAULT_MAX_BYTES,
         }
@@ -191,6 +200,18 @@ impl Policy {
     #[must_use]
     pub const fn without_expiry(mut self) -> Self {
         self.require_expiry = false;
+        self
+    }
+
+    /// Accepts a token whose `exp` has passed.
+    ///
+    /// Only for a token that is read as a *hint* rather than believed as a
+    /// credential — see [`Policy::accept_expired`]. `exp` is still required to
+    /// be present unless [`Policy::without_expiry`] says otherwise, so this
+    /// widens what is accepted without erasing the claim.
+    #[must_use]
+    pub const fn accepting_expired(mut self) -> Self {
+        self.accept_expired = true;
         self
     }
 }
@@ -425,7 +446,7 @@ fn check_claims(
     // "nearly valid"; the whole point of a short lifetime is that it ends.
     match numeric_claim(claims, "exp") {
         Some(exp) => {
-            if exp <= unix_now {
+            if exp <= unix_now && !policy.accept_expired {
                 return Err(VerificationError::Expired { expired_at: exp });
             }
         }
@@ -832,6 +853,32 @@ mod tests {
                 "exp at {offset}s was accepted"
             );
         }
+    }
+
+    /// OIDC RP-Initiated Logout 1.0 §4: an `id_token_hint` names a relying
+    /// party and a session, so an expired one is still a usable hint. The
+    /// claim must still be there — this widens the check, it does not remove
+    /// it.
+    #[test]
+    fn an_expired_token_is_accepted_when_the_caller_reads_it_as_a_hint() {
+        let mut claims = valid_claims();
+        claims["exp"] = json!(now().unix_timestamp() - 86_400);
+        let (token, resolver) = token_with(SigningAlgorithm::EdDsa, TYP, &claims);
+
+        assert!(matches!(
+            verify(&token, &policy(), &resolver, now()),
+            Err(VerificationError::Expired { .. })
+        ));
+        assert!(verify(&token, &policy().accepting_expired(), &resolver, now()).is_ok());
+
+        let mut without = valid_claims();
+        without.as_object_mut().expect("object").remove("exp");
+        let (token, resolver) = token_with(SigningAlgorithm::EdDsa, TYP, &without);
+        assert_eq!(
+            verify(&token, &policy().accepting_expired(), &resolver, now()),
+            Err(VerificationError::MissingClaim("exp")),
+            "accepting an expired token must not make the claim optional"
+        );
     }
 
     #[test]

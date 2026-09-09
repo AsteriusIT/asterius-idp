@@ -6,6 +6,7 @@ pub mod client_configuration;
 pub mod dpop;
 pub mod forwarded;
 pub mod interaction;
+pub mod logout;
 pub mod par;
 pub mod protocol;
 pub mod redirect;
