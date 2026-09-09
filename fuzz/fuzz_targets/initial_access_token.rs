@@ -152,9 +152,11 @@ fuzz_target!(|input: Input| {
             // An admitted request carried a bearer credential that is
             // byte-for-byte one of the configured tokens. Checked against the
             // header the fuzzer built, not against anything the code returned.
-            let header = rendered.as_deref().expect("admitted a request with no header");
-            let credential = presented(header)
-                .expect("admitted a request whose scheme is not Bearer");
+            let header = rendered
+                .as_deref()
+                .expect("admitted a request with no header");
+            let credential =
+                presented(header).expect("admitted a request whose scheme is not Bearer");
             assert!(
                 CONFIGURED.contains(&credential),
                 "admitted a credential that was never configured: {credential:?}"
@@ -163,7 +165,9 @@ fuzz_target!(|input: Input| {
             // accepted credential is the configured token exactly, so a token
             // issued in one spelling cannot be spent in another.
             assert!(
-                CONFIGURED.iter().any(|known| known.as_bytes() == credential.as_bytes()),
+                CONFIGURED
+                    .iter()
+                    .any(|known| known.as_bytes() == credential.as_bytes()),
                 "an admitted credential is not byte-identical to a configured one"
             );
         }

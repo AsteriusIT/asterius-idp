@@ -96,10 +96,7 @@ fn document(input: &Input) -> String {
             NAMES[usize::from(*name) % NAMES.len()]
         };
         let entry = ENTRIES[usize::from(*entry) % ENTRIES.len()];
-        let member = format!(
-            "{}:{entry}",
-            serde_json::Value::String(name.to_owned())
-        );
+        let member = format!("{}:{entry}", serde_json::Value::String(name.to_owned()));
         if *in_id_token {
             id_token.push(member);
         } else {
@@ -187,7 +184,10 @@ fuzz_target!(|input: Input| {
                         serde_json::Value::Array(entry.accepted_values().to_vec()),
                     );
                 }
-                object.insert(claim.as_str().to_owned(), serde_json::Value::Object(members));
+                object.insert(
+                    claim.as_str().to_owned(),
+                    serde_json::Value::Object(members),
+                );
             }
             sections.insert(member.to_owned(), serde_json::Value::Object(object));
         }

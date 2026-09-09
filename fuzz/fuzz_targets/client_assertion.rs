@@ -29,11 +29,11 @@
 //! type wrong value, right issuer wrapped in an array, boundary expiries.
 #![no_main]
 
+use arbitrary::Arbitrary;
 use asterius_oidc::client_auth::{
     Assertion, AssertionRules, Attempt, Audiences, CLIENT_ASSERTION_TYPE, ClientAuthError,
     DEFAULT_MAX_ASSERTION_LIFETIME, MAX_JTI_LEN, Method, check_assertion,
 };
-use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
@@ -190,7 +190,9 @@ fn check_claim_rules(input: &Input) {
 
     // `aud` was a string, and one this endpoint permits. Restated here from
     // the specification rather than by asking the code under test.
-    let aud = claims.get("aud").expect("an accepted assertion carries aud");
+    let aud = claims
+        .get("aud")
+        .expect("an accepted assertion carries aud");
     let aud = aud
         .as_str()
         .expect("FAPI 2.0 SP §5.3.2.1 item 8: accepted a non-string aud");
@@ -205,7 +207,10 @@ fn check_claim_rules(input: &Input) {
             .get(claim)
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("accepted an assertion whose {claim} is not a string"));
-        assert_eq!(value, CLIENT, "accepted an assertion whose {claim} is not the client");
+        assert_eq!(
+            value, CLIENT,
+            "accepted an assertion whose {claim} is not the client"
+        );
     }
 
     // The `jti` is usable: the replay defence has something to remember, and
@@ -228,10 +233,7 @@ fn check_claim_rules(input: &Input) {
         "accepted an assertion living {} past the ceiling",
         expires_at - now() - rules.max_lifetime
     );
-    assert!(
-        expires_at > now(),
-        "accepted an already-expired assertion"
-    );
+    assert!(expires_at > now(), "accepted an already-expired assertion");
 }
 
 fn render_exp(choice: &ExpChoice) -> Option<Value> {
@@ -298,10 +300,7 @@ fn check_method_selection(input: &Input) {
 
     // A method is never selected from nothing.
     assert!(
-        !matches!(
-            attempt.method(),
-            Ok(_) if !input.has_assertion && !input.has_certificate
-        ),
+        attempt.method().is_err() || input.has_assertion || input.has_certificate,
         "selected a method from a request with no credential"
     );
 

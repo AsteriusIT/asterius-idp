@@ -12,7 +12,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 fuzz_target!(|data: &[u8]| {
-    let Ok(text) = std::str::from_utf8(data) else { return };
+    let Ok(text) = std::str::from_utf8(data) else {
+        return;
+    };
 
     // Half the input becomes an environment override, so the merge path is
     // exercised as well as the parser. The split has to land on a character
@@ -20,13 +22,21 @@ fuzz_target!(|data: &[u8]| {
     // how this target crashed on its first run, in the harness rather than in
     // the parser.
     let midpoint = text.chars().count() / 2;
-    let split = text.char_indices().nth(midpoint).map_or(text.len(), |(index, _)| index);
+    let split = text
+        .char_indices()
+        .nth(midpoint)
+        .map_or(text.len(), |(index, _)| index);
     let mut env = BTreeMap::new();
     if split < text.len() {
-        env.insert("ASTERIUS__DATABASE__URL".to_owned(), text[split..].to_owned());
+        env.insert(
+            "ASTERIUS__DATABASE__URL".to_owned(),
+            text[split..].to_owned(),
+        );
     }
 
-    let Ok(config) = Config::parse(text, Path::new("fuzz.toml"), &env) else { return };
+    let Ok(config) = Config::parse(text, Path::new("fuzz.toml"), &env) else {
+        return;
+    };
 
     // Anything accepted must satisfy what the rest of the server assumes.
     for tenant in &config.tenants {

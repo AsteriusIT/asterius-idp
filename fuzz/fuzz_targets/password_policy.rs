@@ -30,7 +30,11 @@ fuzz_target!(|data: &[u8]| {
 
     // Normalisation is total and idempotent.
     let once = normalise(candidate);
-    assert_eq!(normalise(&once), once, "NFKC is not idempotent for {candidate:?}");
+    assert_eq!(
+        normalise(&once),
+        once,
+        "NFKC is not idempotent for {candidate:?}"
+    );
 
     // What the deny list is shown.
     let mut seen: Option<String> = None;
@@ -70,13 +74,22 @@ fuzz_target!(|data: &[u8]| {
             );
 
             // The deny list must have been consulted before acceptance.
-            assert!(seen.is_some(), "a password was accepted without a deny-list check");
+            assert!(
+                seen.is_some(),
+                "a password was accepted without a deny-list check"
+            );
         }
         Err(PasswordError::TooShort) => {
-            assert!(once.chars().count() < MIN_LENGTH, "refused a long-enough password");
+            assert!(
+                once.chars().count() < MIN_LENGTH,
+                "refused a long-enough password"
+            );
         }
         Err(PasswordError::TooLong) => {
-            assert!(once.chars().count() > MAX_LENGTH, "refused a short-enough password");
+            assert!(
+                once.chars().count() > MAX_LENGTH,
+                "refused a short-enough password"
+            );
         }
         Err(PasswordError::TooCommon) => {
             unreachable!("the fixture never says a password is common");
