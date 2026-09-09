@@ -132,6 +132,9 @@ pub struct ClientEndpoints {
     /// multiplied by the replica count, which is the same argument ADR-0008
     /// makes about the pairwise-salt cache.
     pub login_limits: asterius_domain::LoginLimits,
+    /// What each protocol endpoint permits per window (`ast-p2l.3`), already
+    /// validated, so the wiring applies numbers rather than opinions.
+    pub endpoint_limits: asterius_domain::EndpointLimits,
     /// Validates DPoP proofs on every endpoint that takes one.
     ///
     /// Always present: the *decision* about whether proofs are required lives
@@ -373,8 +376,37 @@ async fn jwks(
 async fn pushed_authorization_request(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
+    // `Option`, because the extension is the tenancy layer's doing: a request
+    // that arrived without it is a wiring fault, and a limiter with no address
+    // still holds the client bucket rather than answering 500.
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
+) -> Response {
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    let claimed = crate::http::limits::claimed_client_id(&body);
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::PushedAuthorizationRequest,
+        claimed.as_deref(),
+        async || pushed_authorization_request_inner(&endpoints, &tenant, &headers, &body).await,
+    )
+    .await
+}
+
+/// The push itself, once the limiter has admitted it.
+async fn pushed_authorization_request_inner(
+    endpoints: &ClientEndpoints,
+    tenant: &Arc<Tenant>,
+    headers: &axum::http::HeaderMap,
+    body: &axum::body::Bytes,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
@@ -387,10 +419,10 @@ async fn pushed_authorization_request(
     let binding = match endpoints
         .dpop
         .check(
-            &tenant,
+            tenant,
             Endpoint::PushedAuthorizationRequest,
             &axum::http::Method::POST,
-            &headers,
+            headers,
             now,
         )
         .await
@@ -400,20 +432,20 @@ async fn pushed_authorization_request(
     };
 
     let authenticator = Arc::clone(&endpoints.authenticator);
-    let tenant_for_auth = Arc::clone(&tenant);
+    let tenant_for_auth = Arc::clone(tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
 
     par::push(
         PushContext {
-            tenant: &tenant,
+            tenant,
             clients: &clients,
             requests: &requests,
             keys: endpoints.keys.as_ref(),
             policy: authorization_policy(),
             lifetime: endpoints.par_lifetime,
         },
-        &headers,
-        &body,
+        headers,
+        body,
         async |attempt: &Attempt<'_>, rules: &AssertionRules| {
             authenticator
                 .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
@@ -436,9 +468,41 @@ async fn pushed_authorization_request(
 async fn userinfo_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
+) -> Response {
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    // The address bucket alone. The caller is a resource server presenting an
+    // access token, and the client it belongs to is inside a token this code
+    // has not verified yet — reading a bucket key out of it would be trusting
+    // a string the caller wrote. The limit is correspondingly the most
+    // generous of the five, because one address here is legitimately a fleet
+    // of resource servers rather than one browser.
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::UserInfo,
+        None,
+        async || userinfo_endpoint_inner(&endpoints, &tenant, &method, &uri, &headers).await,
+    )
+    .await
+}
+
+/// The UserInfo response itself, once the limiter has admitted the request.
+async fn userinfo_endpoint_inner(
+    endpoints: &ClientEndpoints,
+    tenant: &Arc<Tenant>,
+    method: &axum::http::Method,
+    uri: &axum::http::Uri,
+    headers: &axum::http::HeaderMap,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let source = StoredClaims {
@@ -450,7 +514,7 @@ async fn userinfo_endpoint(
 
     userinfo::userinfo(
         userinfo::UserInfoContext {
-            tenant: &tenant,
+            tenant,
             source: &source,
             keys: endpoints.keys.as_ref(),
             signer: endpoints.signer.as_ref(),
@@ -462,8 +526,8 @@ async fn userinfo_endpoint(
             signed_response_alg: None,
             now: time::OffsetDateTime::now_utc(),
         },
-        &method,
-        &headers,
+        method,
+        headers,
         uri.query(),
     )
     .await
@@ -511,8 +575,34 @@ impl userinfo::UserInfoSource for StoredClaims {
 async fn token_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
+) -> Response {
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    let claimed = crate::http::limits::claimed_client_id(&body);
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::Token,
+        claimed.as_deref(),
+        async || token_endpoint_inner(&endpoints, &tenant, &headers, &body).await,
+    )
+    .await
+}
+
+/// The token request itself, once the limiter has admitted it.
+async fn token_endpoint_inner(
+    endpoints: &ClientEndpoints,
+    tenant: &Arc<Tenant>,
+    headers: &axum::http::HeaderMap,
+    body: &axum::body::Bytes,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
@@ -521,10 +611,10 @@ async fn token_endpoint(
     let binding = match endpoints
         .dpop
         .check(
-            &tenant,
+            tenant,
             Endpoint::Token,
             &axum::http::Method::POST,
-            &headers,
+            headers,
             now,
         )
         .await
@@ -534,7 +624,7 @@ async fn token_endpoint(
     };
 
     let authenticator = Arc::clone(&endpoints.authenticator);
-    let tenant_for_auth = Arc::clone(&tenant);
+    let tenant_for_auth = Arc::clone(tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
 
     // The grant handler is built here, per request, rather than held on
@@ -576,13 +666,13 @@ async fn token_endpoint(
 
     let mut response = token::token(
         TokenContext {
-            tenant: &tenant,
+            tenant,
             clients: &clients,
             capabilities: endpoints.capabilities,
             grants: &[&authorization_code, &refresh_token],
         },
-        &headers,
-        &body,
+        headers,
+        body,
         async |attempt: &Attempt<'_>, rules: &AssertionRules| {
             authenticator
                 .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
@@ -605,14 +695,44 @@ async fn client_registration(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
+) -> Response {
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    // No client bucket: RFC 7591 §3 is where a client comes from, so there is
+    // no authenticated client to charge and the address holds it alone. This
+    // is the endpoint an unauthenticated caller reaches most easily, which is
+    // why its address limit is the tightest of the five.
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::Registration,
+        None,
+        async || client_registration_inner(&endpoints, &tenant, &request_id, &headers, &body).await,
+    )
+    .await
+}
+
+/// The registration itself, once the limiter has admitted it.
+async fn client_registration_inner(
+    endpoints: &ClientEndpoints,
+    tenant: &Arc<Tenant>,
+    request_id: &crate::http::request_id::RequestId,
+    headers: &axum::http::HeaderMap,
+    body: &axum::body::Bytes,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
     register::register(
         RegisterContext {
-            tenant: &tenant,
+            tenant,
             clients: &clients,
             keys: endpoints.keys.as_ref(),
             capabilities: endpoints.capabilities,
@@ -621,8 +741,8 @@ async fn client_registration(
             audit: endpoints.audit.as_ref(),
             request_id: Some(request_id.as_str()),
         },
-        &headers,
-        &body,
+        headers,
+        body,
         time::OffsetDateTime::now_utc(),
     )
     .await
@@ -652,16 +772,38 @@ async fn client_configuration_read(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     Path(client_id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let scope = endpoints.store.scope(tenant.id.clone());
-    let clients = scope.clients(endpoints.capabilities);
-    client_configuration::read(
-        &configuration_context(&endpoints, &tenant, &clients, &request_id),
-        &client_id,
-        &headers,
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
         time::OffsetDateTime::now_utc(),
+    );
+    // The address bucket alone, deliberately. The `client_id` here is a path
+    // segment anybody can write, and the credential is the registration access
+    // token; charging a bucket named by the path would let a caller spend a
+    // registration's budget by guessing at its id, which is exactly the
+    // guessing this limit is meant to bound (`ast-m9c.11`).
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::ClientConfiguration,
+        None,
+        async || {
+            let scope = endpoints.store.scope(tenant.id.clone());
+            let clients = scope.clients(endpoints.capabilities);
+            client_configuration::read(
+                &configuration_context(&endpoints, &tenant, &clients, &request_id),
+                &client_id,
+                &headers,
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+        },
     )
     .await
 }
@@ -671,18 +813,35 @@ async fn client_configuration_update(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     Path(client_id): Path<String>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let scope = endpoints.store.scope(tenant.id.clone());
-    let clients = scope.clients(endpoints.capabilities);
-    client_configuration::update(
-        &configuration_context(&endpoints, &tenant, &clients, &request_id),
-        &client_id,
-        &headers,
-        &body,
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
         time::OffsetDateTime::now_utc(),
+    );
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::ClientConfiguration,
+        None,
+        async || {
+            let scope = endpoints.store.scope(tenant.id.clone());
+            let clients = scope.clients(endpoints.capabilities);
+            client_configuration::update(
+                &configuration_context(&endpoints, &tenant, &clients, &request_id),
+                &client_id,
+                &headers,
+                &body,
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+        },
     )
     .await
 }
@@ -692,16 +851,33 @@ async fn client_configuration_remove(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     Path(client_id): Path<String>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let scope = endpoints.store.scope(tenant.id.clone());
-    let clients = scope.clients(endpoints.capabilities);
-    client_configuration::remove(
-        &configuration_context(&endpoints, &tenant, &clients, &request_id),
-        &client_id,
-        &headers,
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
         time::OffsetDateTime::now_utc(),
+    );
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::ClientConfiguration,
+        None,
+        async || {
+            let scope = endpoints.store.scope(tenant.id.clone());
+            let clients = scope.clients(endpoints.capabilities);
+            client_configuration::remove(
+                &configuration_context(&endpoints, &tenant, &clients, &request_id),
+                &client_id,
+                &headers,
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+        },
     )
     .await
 }
@@ -1016,6 +1192,30 @@ async fn interaction_submit(
     .await
 }
 
+/// The per-endpoint limiter for one request (`ast-p2l.3`).
+///
+/// Built per request because the client address is part of it, exactly like
+/// [`throttle`], and over the same store: one table, one mechanism, two sets
+/// of buckets.
+fn endpoint_limits<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    limiter: &'a asterius_store_pg::PgRateLimitStore,
+    client: Option<&crate::http::forwarded::ClientAddr>,
+    now: time::OffsetDateTime,
+) -> crate::http::limits::LimitContext<'a> {
+    crate::http::limits::LimitContext {
+        tenant: &tenant.id,
+        throttle: crate::http::limits::EndpointThrottle::new(
+            limiter,
+            endpoints.endpoint_limits,
+            client.map(|client| client.ip),
+        ),
+        audit: endpoints.audit.as_ref(),
+        now,
+    }
+}
+
 /// The login limiter for one request.
 ///
 /// Built per request because the client address is part of it. The store
@@ -1231,4 +1431,42 @@ fn cacheable_json(document: &Value, max_age: u32) -> Response {
         body,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use asterius_domain::LimitedEndpoint;
+
+    /// Every endpoint the domain says has limits must be handed to the
+    /// limiter here, and every call must be at a route this file mounts.
+    ///
+    /// A source assertion rather than a request, because what can go wrong is
+    /// an *omission*: somebody adds an endpoint to the registry, mounts it,
+    /// and never wires the guard. No request against the endpoints that do
+    /// exist would notice, which is precisely why the list is checked against
+    /// the wiring rather than against a reviewer's memory (`ast-p2l.3`).
+    #[test]
+    fn every_limited_endpoint_is_wired_to_the_limiter() {
+        // Arrange
+        let source = include_str!("protocol.rs");
+
+        for endpoint in LimitedEndpoint::ALL {
+            // Act
+            let variant = match endpoint {
+                LimitedEndpoint::Registration => "LimitedEndpoint::Registration",
+                LimitedEndpoint::ClientConfiguration => "LimitedEndpoint::ClientConfiguration",
+                LimitedEndpoint::PushedAuthorizationRequest => {
+                    "LimitedEndpoint::PushedAuthorizationRequest"
+                }
+                LimitedEndpoint::Token => "LimitedEndpoint::Token",
+                LimitedEndpoint::UserInfo => "LimitedEndpoint::UserInfo",
+            };
+
+            // Assert
+            assert!(
+                source.contains(variant),
+                "{endpoint} has limits but no handler passes it to `limits::guard`"
+            );
+        }
+    }
 }

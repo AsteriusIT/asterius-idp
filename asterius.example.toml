@@ -249,3 +249,30 @@ issuer = "https://as.example/t/demo"
 # failure_window_seconds = 900     # default 900, minimum 30
 # max_failures_per_account = 10    # default 10
 # max_failures_per_address = 100   # default 100
+
+# What bounds abuse of the endpoints a client talks to (`ast-p2l.3`).
+#
+# The same fixed windows and the same table as [login], counting requests
+# rather than failures: the cost at these endpoints is the work itself — /par
+# stores a row, /token verifies a signature, /register creates a client — so
+# the work is what is counted, whether or not it succeeded.
+#
+# A *successful* request from a client that authenticated is charged to that
+# client; everything else is charged to the address it came from. That is what
+# keeps one busy relying party from spending the budget of everyone behind the
+# same NAT, and what stops anybody from exhausting a competitor's budget by
+# naming their client_id in a request that fails.
+#
+# The numbers deliberately differ per endpoint. A limit sized for UserInfo's
+# resource servers would be no limit at all on /register, which is the one
+# endpoint here that needs no credential and creates a row per request.
+#
+# [limits]
+# window_seconds = 60                       # default 60, minimum 10
+# registration_per_address = 20             # default 20
+# client_configuration_per_address = 60     # default 60
+# par_per_address = 60                      # default 60
+# par_per_client = 600                      # default 600
+# token_per_address = 120                   # default 120
+# token_per_client = 1200                   # default 1200
+# userinfo_per_address = 600                # default 600

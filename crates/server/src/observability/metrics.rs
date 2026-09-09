@@ -28,6 +28,14 @@ pub const AUDIT_EVENTS: &str = "asterius_audit_events_total";
 /// attacker mint a time series per guess, which is the cardinality problem
 /// this module exists to avoid, and would also publish who is being targeted.
 pub const LOGIN_THROTTLED: &str = "asterius_login_throttled_total";
+/// Requests refused by the per-endpoint limiter, by endpoint and by which
+/// limit was full (`ast-p2l.3`).
+///
+/// Both labels are drawn from closed sets the server owns —
+/// `asterius_domain::rate_limit::LimitedEndpoint` and the limit scope — for
+/// the reason [`LOGIN_THROTTLED`] gives: a label a caller can choose is a way
+/// for one caller to mint a time series per request.
+pub const ENDPOINT_THROTTLED: &str = "asterius_endpoint_throttled_total";
 /// Always 1, labelled with the build. Gives a scrape something to find even on
 /// an idle server, and lets a dashboard tell which version a replica is running.
 pub const BUILD_INFO: &str = "asterius_build_info";
@@ -72,6 +80,10 @@ impl Metrics {
             LOGIN_THROTTLED,
             "Sign-in attempts refused by the login limiter, by limit"
         );
+        metrics::describe_counter!(
+            ENDPOINT_THROTTLED,
+            "Requests refused by the per-endpoint limiter, by endpoint and limit"
+        );
         metrics::describe_gauge!(BUILD_INFO, "Always 1, labelled with the running build");
         metrics::gauge!(BUILD_INFO, "version" => crate::VERSION).set(1.0);
 
@@ -101,6 +113,11 @@ pub fn protocol_error(code: &'static str) {
 /// Records one sign-in refused by the limiter.
 pub fn login_throttled(scope: &'static str) {
     metrics::counter!(LOGIN_THROTTLED, "limit" => scope).increment(1);
+}
+
+/// Records one request refused by the per-endpoint limiter.
+pub fn endpoint_throttled(endpoint: &'static str, scope: &'static str) {
+    metrics::counter!(ENDPOINT_THROTTLED, "endpoint" => endpoint, "limit" => scope).increment(1);
 }
 
 /// Records one appended audit record.

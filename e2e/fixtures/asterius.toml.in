@@ -4,7 +4,7 @@
 # and @DATABASE_URL@ and writes the result into a run directory it deletes
 # afterwards. Every key is described in docs/configuration.md.
 #
-# Two differences from deploy/compose/asterius.toml, and both are the point.
+# Three differences from deploy/compose/asterius.toml, and each is the point.
 #
 # `mode = "terminate_tls"` with a certificate generated for the run, rather than
 # `behind_proxy` on plain HTTP. The sweep has to prove that a real browser keeps
@@ -39,6 +39,25 @@ kek_env = "ASTERIUS_KEK"
 
 [registration]
 mode = "open"
+
+# The whole sweep is one address, running flows in parallel as fast as a
+# browser can: every test registers its own client and then pushes, redeems and
+# reads on behalf of it. Under the shipped defaults that is indistinguishable
+# from the abuse `[limits]` exists to stop, and the sweep would fail as a 429
+# somewhere in the middle of an unrelated assertion — which is exactly the
+# confusing failure to avoid.
+#
+# So the limits are raised here rather than removed: the sweep's job is to
+# prove the flows work in a real browser, and the limiter's own behaviour is
+# asserted where it can be asserted precisely, in
+# `crates/server/src/http/limits.rs`. A limit that is still a number means a
+# runaway loop in a test stops rather than filling a table.
+[limits]
+registration_per_address = 1000
+client_configuration_per_address = 1000
+par_per_address = 1000
+token_per_address = 1000
+userinfo_per_address = 1000
 
 # The issuer is an identifier rather than a fetch target (RFC 8414 §2), but here
 # it is also where the browser really goes, so its authority is the address the

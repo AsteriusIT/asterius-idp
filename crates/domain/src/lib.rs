@@ -52,7 +52,8 @@ pub use ports::{
     ReplayCheck, ReplayGuard, ReplayPurpose, SessionRepository, SubjectResolver, UserDirectory,
 };
 pub use rate_limit::{
-    Bucket, Decision as RateLimitDecision, LoginLimits, RateLimit, RateLimitStore,
-    Scope as RateLimitScope, account_bucket, ip_bucket,
+    Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,
+    LoginLimits, RateLimit, RateLimitStore, Scope as RateLimitScope, account_bucket,
+    audited_once_bucket, endpoint_address_bucket, endpoint_client_bucket, ip_bucket,
 };
 pub use secret::{Secret, ct_eq};

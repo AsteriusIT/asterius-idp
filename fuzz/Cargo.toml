@@ -147,6 +147,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "endpoint_bucket"
+path = "fuzz_targets/endpoint_bucket.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "forwarded_resolve"
 path = "fuzz_targets/forwarded_resolve.rs"
 test = false

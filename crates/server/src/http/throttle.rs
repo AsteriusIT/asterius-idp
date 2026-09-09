@@ -256,10 +256,7 @@ pub async fn record_throttled(
     refused: Refused,
     now: OffsetDateTime,
 ) {
-    crate::observability::metrics::login_throttled(match refused.scope {
-        Scope::Address => "ip",
-        Scope::Account => "account",
-    });
+    crate::observability::metrics::login_throttled(refused.scope.as_str());
     if let Err(failure) = audit.record(throttled_event(tenant, refused, now)).await {
         tracing::error!(
             %failure,

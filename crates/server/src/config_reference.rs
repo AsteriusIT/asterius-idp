@@ -25,9 +25,14 @@
 
 use crate::config::{
     DEFAULT_ADMIN_TENANT, DEFAULT_ADMIN_USERNAME, DEFAULT_BIND, DEFAULT_BODY_LIMIT,
+    DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_ADDRESS,
+    DEFAULT_LIMIT_PAR_PER_CLIENT, DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS,
+    DEFAULT_LIMIT_TOKEN_PER_ADDRESS, DEFAULT_LIMIT_TOKEN_PER_CLIENT,
+    DEFAULT_LIMIT_USERINFO_PER_ADDRESS, DEFAULT_LIMIT_WINDOW_SECONDS,
     DEFAULT_LOGIN_MAX_PER_ACCOUNT, DEFAULT_LOGIN_MAX_PER_ADDRESS, DEFAULT_LOGIN_WINDOW_SECONDS,
     DEFAULT_MAX_CONNECTIONS, DEFAULT_MODE, DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    DEFAULT_TRUSTED_PROXIES, MIN_LOGIN_WINDOW_SECONDS, ROOT_TABLE, TransportMode,
+    DEFAULT_TRUSTED_PROXIES, MIN_LIMIT_WINDOW_SECONDS, MIN_LOGIN_WINDOW_SECONDS, ROOT_TABLE,
+    TransportMode,
 };
 use crate::http::register::MIN_INITIAL_ACCESS_TOKEN_LEN;
 use crate::observability::LogFormat;
@@ -130,6 +135,7 @@ pub fn sections() -> Vec<Section> {
         features_section(),
         registration(),
         login(),
+        limits(),
         tenant(),
         tenant_refresh(),
         admin(),
@@ -387,6 +393,106 @@ fn login() -> Section {
                  per-account limit because one address is legitimately many people — an \
                  office, a carrier's NAT — and because behind a proxy it is only as \
                  trustworthy as `[server.proxy] trusted_cidrs` makes it.",
+            ),
+        ],
+    }
+}
+
+/// `[limits]`: what each protocol endpoint permits per window.
+fn limits() -> Section {
+    Section {
+        table: "limits",
+        heading: "`[limits]` — abuse protection at the protocol endpoints",
+        blurb: "Requests — not failures — are counted per endpoint, in the same \
+                fixed windows and the same database table the sign-in limiter uses, so \
+                every replica sees one counter. A **successful** request from a client \
+                that authenticated is charged to that client; everything else is \
+                charged to the address it came from. That is what keeps one busy \
+                relying party from spending the budget of everyone behind the same \
+                NAT, and what stops a caller from exhausting a competitor's budget by \
+                naming their `client_id` in a request that fails. Exceeding a limit is \
+                answered with 429 and `Retry-After`, counted in \
+                `asterius_endpoint_throttled_total`, and written to the audit trail \
+                once per window rather than once per request. `/authorize` and the \
+                interaction pages are not here: the sign-in behind them is bounded by \
+                `[login]`, and a second counter over the same requests would halve a \
+                number set once.",
+        keys: vec![
+            key(
+                "window_seconds",
+                "integer seconds",
+                DEFAULT_LIMIT_WINDOW_SECONDS.to_string(),
+                &format!(
+                    "How long requests are counted for, for every endpoint below. At \
+                     least {MIN_LIMIT_WINDOW_SECONDS}. Shorter than `[login]`'s window \
+                     on purpose: these limits bound load rather than guessing, and a \
+                     caller refused for a quarter of an hour over a five-second burst \
+                     is an outage rather than a defence."
+                ),
+            ),
+            key(
+                "registration_per_address",
+                "integer",
+                DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS.to_string(),
+                "Requests per window to `POST /register` (RFC 7591) from one address. \
+                 The tightest limit here: with `[registration] mode = \"open\"` this is \
+                 the one endpoint that both needs no credential and creates a row per \
+                 accepted request. There is no per-client limit, because registration \
+                 is where a client comes from.",
+            ),
+            key(
+                "client_configuration_per_address",
+                "integer",
+                DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS.to_string(),
+                "Requests per window to the RFC 7592 configuration endpoint from one \
+                 address. What it bounds is a caller trying registration access tokens \
+                 against a client id it guessed; the bucket is the address and never \
+                 the id in the path, which anybody can write.",
+            ),
+            key(
+                "par_per_address",
+                "integer",
+                DEFAULT_LIMIT_PAR_PER_ADDRESS.to_string(),
+                "Requests per window to `POST /par` (RFC 9126) from one address, for \
+                 requests that do not end in a successful push. Each accepted request \
+                 stores a row, so an abusive caller here fills a table.",
+            ),
+            key(
+                "par_per_client",
+                "integer",
+                DEFAULT_LIMIT_PAR_PER_CLIENT.to_string(),
+                "Successful pushes per window by one authenticated client. An order of \
+                 magnitude above the address limit, because one relying party is \
+                 legitimately many users starting authorization at once.",
+            ),
+            key(
+                "token_per_address",
+                "integer",
+                DEFAULT_LIMIT_TOKEN_PER_ADDRESS.to_string(),
+                "Requests per window to `POST /token` from one address, for requests \
+                 that do not end in a token. Every attempt costs a signature \
+                 verification, and replaying an authorization code revokes the grant it \
+                 belongs to, so abuse here has a side effect as well as a cost.",
+            ),
+            key(
+                "token_per_client",
+                "integer",
+                DEFAULT_LIMIT_TOKEN_PER_CLIENT.to_string(),
+                "Successful token responses per window for one authenticated client. \
+                 The busiest endpoint a working deployment has — every authorization \
+                 and every refresh passes through it — so this is the number to raise \
+                 first when a large client is refused.",
+            ),
+            key(
+                "userinfo_per_address",
+                "integer",
+                DEFAULT_LIMIT_USERINFO_PER_ADDRESS.to_string(),
+                "Requests per window to UserInfo from one address. The most generous \
+                 of the five: its callers are resource servers rather than browsers, so \
+                 one address is legitimately a fleet making a request per API call. \
+                 There is no per-client limit, because the caller presents an access \
+                 token and reading a client out of it before verifying it would be \
+                 trusting a string the caller wrote.",
             ),
         ],
     }

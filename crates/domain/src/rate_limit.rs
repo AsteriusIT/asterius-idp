@@ -188,6 +188,9 @@ pub enum Scope {
     Address,
     /// Too many failures against one typed identifier.
     Account,
+    /// Too many requests to one endpoint from one authenticated client
+    /// (`ast-p2l.3`).
+    Client,
 }
 
 impl Scope {
@@ -197,6 +200,7 @@ impl Scope {
         match self {
             Self::Address => "ip",
             Self::Account => "account",
+            Self::Client => "client",
         }
     }
 }
@@ -250,6 +254,163 @@ pub trait RateLimitStore: Debug + Send + Sync {
         window_start: OffsetDateTime,
         expires_at: OffsetDateTime,
     ) -> Result<u32, DomainError>;
+}
+
+// ---------------------------------------------------------------------------
+// Per-endpoint request limits (`ast-p2l.3`)
+// ---------------------------------------------------------------------------
+
+/// An endpoint whose *requests* are counted, rather than its failures.
+///
+/// A closed set rather than a string, for two reasons. It is a metric label,
+/// and a label a caller could choose is a way to mint time series; and it is
+/// half of a bucket key, so a free-form name would let one endpoint's counter
+/// be spent from another's.
+///
+/// The set is the endpoints that are both built and reachable without having
+/// already passed a limiter. `/authorize` and `/interaction` are absent
+/// deliberately: the sign-in they lead to is bounded by the login limiter
+/// (`ast-2vk.9`), and a second counter over the same requests would silently
+/// halve a number an operator configured once. `/introspect` and `/revoke` are
+/// absent because they are not built — they answer 501 — and limiting a
+/// constant answer limits nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LimitedEndpoint {
+    /// `POST /register` — RFC 7591 dynamic client registration.
+    Registration,
+    /// `GET`/`PUT`/`DELETE /register/{client_id}` — RFC 7592.
+    ClientConfiguration,
+    /// `POST /par` — RFC 9126.
+    PushedAuthorizationRequest,
+    /// `POST /token` — RFC 6749 §3.2.
+    Token,
+    /// `GET`/`POST /userinfo` — OIDC Core §5.3.
+    UserInfo,
+}
+
+impl LimitedEndpoint {
+    /// Every endpoint that has limits, so a caller can iterate over them
+    /// without writing the list a second time.
+    pub const ALL: [Self; 5] = [
+        Self::Registration,
+        Self::ClientConfiguration,
+        Self::PushedAuthorizationRequest,
+        Self::Token,
+        Self::UserInfo,
+    ];
+
+    /// The name used in bucket keys, metric labels and audit details.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Registration => "registration",
+            Self::ClientConfiguration => "client_configuration",
+            Self::PushedAuthorizationRequest => "par",
+            Self::Token => "token",
+            Self::UserInfo => "userinfo",
+        }
+    }
+}
+
+impl std::fmt::Display for LimitedEndpoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The bucket for requests to one endpoint from one client address.
+///
+/// Namespaced per endpoint, so that a busy `/token` cannot spend the budget
+/// `/register` was given: the two numbers bound different abuse and would
+/// otherwise be one number.
+///
+/// The address must be the one resolved from the socket peer and the trusted
+/// proxy set, for the reason [`ip_bucket`] gives: a caller who can choose the
+/// address can choose its own bucket.
+#[must_use]
+pub fn endpoint_address_bucket(endpoint: LimitedEndpoint, ip: std::net::IpAddr) -> Bucket {
+    Bucket(format!("ep:{}:ip:{ip}", endpoint.as_str()))
+}
+
+/// The bucket for requests to one endpoint from one *authenticated* client.
+///
+/// Hashed, like [`account_bucket`] and for two of the same reasons. A
+/// `client_id` arrives in a request body and may be a megabyte long, and a key
+/// derived from it has to stay a bounded row; and a raw id could contain the
+/// separator, so `client_id = "x:ip:198.51.100.7"` would otherwise name an
+/// address bucket. A client id is not a secret — the digest hides nothing
+/// anybody wants — but a fixed-length opaque key cannot be made to name a
+/// bucket it should not.
+#[must_use]
+// fuzz-target: endpoint_bucket
+pub fn endpoint_client_bucket(endpoint: LimitedEndpoint, client_id: &str) -> Bucket {
+    Bucket(format!(
+        "ep:{}:client:{}",
+        endpoint.as_str(),
+        crate::credentials::sha256_hex(client_id.as_bytes())
+    ))
+}
+
+/// The marker that says "this bucket has already been written to the trail in
+/// this window".
+///
+/// A counter of its own rather than a flag on the first one, because the
+/// counter it shadows keeps rising while an attacker keeps knocking, and the
+/// trail is to hold one record per window rather than one per request: a trail
+/// an attacker can grow without bound is a way to bury everything else in it.
+/// [`RateLimitStore::record`] returns the new total, so "is this the first
+/// refusal in this window" is the answer `1`.
+#[must_use]
+pub fn audited_once_bucket(bucket: &Bucket) -> Bucket {
+    Bucket(format!("audited:{}", bucket.0))
+}
+
+/// What one endpoint permits, per window.
+///
+/// The address limit always exists. The client limit exists only where a
+/// request can prove which client it belongs to, and where it does, a
+/// *successful* request is charged there instead of to the address — which is
+/// what keeps one busy legitimate client from spending the budget of every
+/// other caller behind the same NAT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointLimit {
+    /// Requests permitted from one client address.
+    pub per_address: RateLimit,
+    /// Requests permitted from one authenticated client, where the endpoint
+    /// has one to charge.
+    pub per_client: Option<RateLimit>,
+}
+
+/// Every endpoint's limits, as one deployment configured them.
+///
+/// A field per endpoint rather than a map: a map can be missing an entry, and
+/// a missing entry is an unlimited endpoint that nothing would report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointLimits {
+    /// `POST /register`.
+    pub registration: EndpointLimit,
+    /// The RFC 7592 client configuration endpoint.
+    pub client_configuration: EndpointLimit,
+    /// `POST /par`.
+    pub par: EndpointLimit,
+    /// `POST /token`.
+    pub token: EndpointLimit,
+    /// UserInfo.
+    pub userinfo: EndpointLimit,
+}
+
+impl EndpointLimits {
+    /// The limits one endpoint is subject to.
+    #[must_use]
+    pub const fn for_endpoint(&self, endpoint: LimitedEndpoint) -> EndpointLimit {
+        match endpoint {
+            LimitedEndpoint::Registration => self.registration,
+            LimitedEndpoint::ClientConfiguration => self.client_configuration,
+            LimitedEndpoint::PushedAuthorizationRequest => self.par,
+            LimitedEndpoint::Token => self.token,
+            LimitedEndpoint::UserInfo => self.userinfo,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +493,72 @@ mod tests {
         let bucket = account_bucket("alice@example.test");
 
         assert!(!bucket.as_str().contains("alice"));
+    }
+
+    /// One endpoint's budget must not be spendable from another's, or the
+    /// number an operator set for `/register` is really a number about
+    /// `/token` too.
+    #[test]
+    fn two_endpoints_count_one_address_separately() {
+        // Arrange
+        let address = "198.51.100.7".parse().expect("a literal address");
+
+        // Act
+        let registration = endpoint_address_bucket(LimitedEndpoint::Registration, address);
+        let token = endpoint_address_bucket(LimitedEndpoint::Token, address);
+
+        // Assert
+        assert_ne!(registration, token);
+    }
+
+    /// A client id is chosen by whoever registers, so a separator in one must
+    /// not be able to name an address bucket.
+    #[test]
+    fn a_client_id_containing_a_separator_cannot_name_an_address_bucket() {
+        // Arrange
+        let address = "198.51.100.7".parse().expect("a literal address");
+        let hostile = "x:ip:198.51.100.7";
+
+        // Act
+        let bucket = endpoint_client_bucket(LimitedEndpoint::Token, hostile);
+
+        // Assert
+        assert_ne!(
+            bucket,
+            endpoint_address_bucket(LimitedEndpoint::Token, address)
+        );
+        assert!(!bucket.as_str().contains("198.51.100.7"));
+    }
+
+    /// A megabyte in `client_id` must not become a megabyte-wide key.
+    #[test]
+    fn a_client_bucket_is_bounded_whatever_the_client_id_was() {
+        // Arrange
+        let long = "c".repeat(100_000);
+
+        // Act
+        let bucket = endpoint_client_bucket(LimitedEndpoint::PushedAuthorizationRequest, &long);
+
+        // Assert
+        assert_eq!(bucket.as_str().len(), "ep:par:client:".len() + 64);
+    }
+
+    /// The audit marker shadows a bucket without colliding with it: if it did,
+    /// deciding "have I already written this" would consume the budget it is
+    /// deciding about.
+    #[test]
+    fn an_audit_marker_is_not_the_bucket_it_shadows() {
+        // Arrange
+        let bucket = endpoint_address_bucket(
+            LimitedEndpoint::Registration,
+            "198.51.100.7".parse().expect("a literal address"),
+        );
+
+        // Act
+        let marker = audited_once_bucket(&bucket);
+
+        // Assert
+        assert_ne!(marker, bucket);
     }
 
     #[test]
