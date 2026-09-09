@@ -75,6 +75,26 @@ pub fn ip_bucket(ip: std::net::IpAddr) -> Bucket {
     Bucket(format!("login:ip:{ip}"))
 }
 
+/// The bucket for one client address at the admin API (`ast-f7m.1`).
+///
+/// Deliberately its own prefix rather than a share of [`ip_bucket`]'s: an
+/// administrator working through the console and an attacker guessing
+/// passwords at the login form are not the same traffic, and one limit for
+/// both would let a burst of failed sign-ins lock an operator out of the
+/// surface they need to respond with — or, the other way round, spend the
+/// login budget on ordinary console use.
+///
+/// Not a [`LimitedEndpoint`] either, and that is the same argument once more.
+/// That enum is the *protocol* surface a client reaches, whose limits an
+/// operator tunes against traffic they do not control; `/admin/api` is one
+/// first-party console making many small calls per screen, and its number
+/// bounds something else entirely. A shared enum would be one name for two
+/// decisions.
+#[must_use]
+pub fn admin_api_bucket(ip: std::net::IpAddr) -> Bucket {
+    Bucket(format!("admin:ip:{ip}"))
+}
+
 /// The bucket for failed sign-ins against one typed identifier.
 ///
 /// The identifier is normalised (see [`normalise_username`]) and then hashed,

@@ -796,9 +796,12 @@ create table access_token_denylist (
 
 create index access_token_denylist_expiring on access_token_denylist (expires_at);
 
--- Single-use enforcement for `jti` values in client assertions and DPoP
--- proofs. Keyed by digest because the `jti` is chosen by the client and can be
--- arbitrarily long.
+-- Single-use enforcement for identifiers a caller chooses and may present only
+-- once: `jti` values in client assertions and DPoP proofs, and the
+-- `Idempotency-Key` of an admin API `POST` (`ast-f7m.1`), which is the same
+-- question — has this been seen, atomically, across replicas — and therefore
+-- the same table rather than a second one with its own race. Keyed by digest
+-- because the value is chosen by the caller and can be arbitrarily long.
 --
 -- `subject` is who chose the value: the `client_id` for a client assertion,
 -- the key thumbprint for a DPoP proof. It is part of the key because RFC 7523
@@ -809,7 +812,8 @@ create index access_token_denylist_expiring on access_token_denylist (expires_at
 create table jti_replay (
     tenant_id  text        not null,
     purpose    text        not null
-               check (purpose in ('client_assertion', 'dpop_proof')),
+               check (purpose in ('client_assertion', 'dpop_proof',
+                                  'admin_idempotency')),
     subject    text        not null,
     jti_hash   bytea       not null,
     seen_at    timestamptz not null default now(),

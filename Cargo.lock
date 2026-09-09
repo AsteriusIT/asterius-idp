@@ -87,10 +87,19 @@ name = "asterius-admin-api"
 version = "0.0.0"
 dependencies = [
  "asterius-domain",
+ "async-trait",
  "axum",
+ "base64",
+ "http-body-util",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror",
+ "time",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

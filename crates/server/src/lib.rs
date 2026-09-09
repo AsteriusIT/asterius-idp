@@ -5,6 +5,7 @@
 //! router.
 #![forbid(unsafe_code)]
 
+pub mod admin;
 pub mod client_auth;
 pub mod config;
 pub mod config_reference;
