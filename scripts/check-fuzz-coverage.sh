@@ -72,26 +72,30 @@ fi
 # ordinary `cargo check` never touches it, and the nightly fuzzing job is the
 # only thing that builds it — once a day, long after the change.
 #
-# `cargo-fuzz` needs nightly. When it is absent this reports a skip rather than
-# passing quietly: a gate that cannot say whether it ran is worse than one that
-# says it did not.
+# Stable, deliberately. `cargo fuzz` needs nightly to *instrument* a target,
+# but nothing here is instrumented: the question is whether the code compiles,
+# and `cargo check` answers it under the toolchain CI already has. The previous
+# version asked for nightly and merely warned when it was absent, so on the
+# `lint` job — which installs stable — this gate reported a skip and passed,
+# which is how it managed to exist while `jws_parse.rs` was broken.
 if [[ "$status" -eq 0 ]]; then
-  if rustup toolchain list 2>/dev/null | grep -q '^nightly'; then
-    echo "building every fuzz target (nightly)..."
-    # `CARGO_BUILD_TARGET` is unset for this build. If the environment points
-    # at a target whose standard library is not installed — a musl triple on a
-    # gnu host, say — this fails with "can't find crate for `core`", which says
-    # nothing about the code under test. The host default is what we want: the
-    # question here is whether the targets compile, not for what.
-    if (cd fuzz && env -u CARGO_BUILD_TARGET cargo +nightly check --bins --quiet); then
-      echo "fuzz targets build"
-    else
-      echo "FUZZ TARGET DOES NOT COMPILE: see the errors above" >&2
-      echo "  a target that does not build covers nothing" >&2
-      status=1
-    fi
+  echo "checking that every fuzz target compiles..."
+  # `CARGO_BUILD_TARGET` is unset for this build. If the environment points at
+  # a target whose standard library is not installed — a musl triple on a gnu
+  # host, say — this fails with "can't find crate for `core`", which says
+  # nothing about the code under test. The host default is what we want: the
+  # question here is whether the targets compile, not for what.
+  #
+  # `SQLX_OFFLINE` for the same reason clippy sets it: the targets reach
+  # `asterius-server`, whose queries are checked at compile time, and this gate
+  # must not need a database. `sqlx-check` proves the committed data is current.
+  if env -u CARGO_BUILD_TARGET SQLX_OFFLINE=true \
+       cargo check --manifest-path fuzz/Cargo.toml --bins --quiet; then
+    echo "fuzz targets build"
   else
-    echo "fuzz targets NOT built: no nightly toolchain (install with 'rustup toolchain install nightly')" >&2
+    echo "FUZZ TARGET DOES NOT COMPILE: see the errors above" >&2
+    echo "  a target that does not build covers nothing" >&2
+    status=1
   fi
 fi
 
