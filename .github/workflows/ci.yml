@@ -30,7 +30,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The fuzz crate is its own workspace with its own target directory, and
+      # the `fuzz coverage` step below compiles it. Cache both, or that step
+      # rebuilds the dependency tree from cold on every run.
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target\nfuzz -> fuzz/target"
 
       - name: cargo fmt
         run: cargo fmt --all --check
@@ -48,7 +53,10 @@ jobs:
       - name: ports-and-adapters layering
         run: ./scripts/check-layering.sh
 
-      # Definition of done: every parser and validator has a fuzz target.
+      # Definition of done: every parser and validator has a fuzz target — and
+      # one that still compiles. The fuzz crate is outside the workspace, so
+      # this step is the only thing in the pipeline that type-checks it before
+      # the nightly fuzzing job does, hours later.
       - name: fuzz coverage
         run: ./scripts/check-fuzz-coverage.sh
 

@@ -13,6 +13,8 @@
 
 use asterius_domain::SigningAlgorithm;
 use asterius_jose::{SigningKey, jws};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use libfuzzer_sys::fuzz_target;
 use std::sync::OnceLock;
 
@@ -41,12 +43,23 @@ fuzz_target!(|data: &[u8]| {
         unverified.claimed_alg()
     );
 
-    // Whatever `typ` the token claims, reporting it must not panic and must
-    // not invent one. The *judgement* moved to `verify::Policy`, which is
-    // where the type rules are now tested; here the only claim is that the
-    // header is reported faithfully.
-    let claimed_typ = unverified.claimed_typ().map(ToOwned::to_owned);
-    assert_eq!(unverified.claimed_typ(), claimed_typ.as_deref());
+    // Whatever `typ` the token claims, reporting it must not invent one. The
+    // *judgement* moved to `verify::Policy`, which is where the type rules are
+    // now tested; what is left for this target is that the header is reported
+    // faithfully, so the oracle is the header segment decoded here rather than
+    // the parser's own answer — comparing the parser to itself would assert
+    // nothing.
+    let header = text
+        .split('.')
+        .next()
+        .and_then(|segment| URL_SAFE_NO_PAD.decode(segment).ok())
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .expect("a token that parsed has a base64url JSON header");
+    assert_eq!(
+        unverified.claimed_typ(),
+        header.get("typ").and_then(serde_json::Value::as_str),
+        "claimed_typ does not match the header the token actually carries"
+    );
 
     // No key here signed this input, so nothing may verify against one. A pass
     // would mean a forged token had been accepted.
