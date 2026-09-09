@@ -205,7 +205,7 @@ async fn stored(
         tenant: context.tenant.id.clone(),
         request_uri_digest: minted.digest().to_owned(),
         client: client.id.clone(),
-        parameters: serialise(request, hinted_subject.as_deref()),
+        parameters: serialise(request, hinted_subject.as_deref(), dpop_jkt.as_deref()),
         dpop_jkt,
         pushed_at: now,
         expires_at,
@@ -375,6 +375,7 @@ fn is_form_encoded(headers: &HeaderMap) -> bool {
 fn serialise(
     request: &authorize::AuthorizationRequest,
     hinted_subject: Option<&str>,
+    dpop_jkt: Option<&str>,
 ) -> serde_json::Value {
     json!({
         "client_id": request.client_id,
@@ -399,7 +400,15 @@ fn serialise(
         // connection it arrived on.
         "id_token_hint_sub": hinted_subject,
         "resources": request.resources,
-        "dpop_jkt": request.dpop_jkt,
+        // The *reconciled* pin, never `request.dpop_jkt`. RFC 9449 §10.1 lets a
+        // client pin the code by naming the thumbprint or by attaching a proof
+        // to the push, and `reconcile_par_key` has already decided which key
+        // that is. Storing the raw parameter here would drop the pin of every
+        // client that used the header spelling: the code issuer builds the
+        // binding from these parameters and never sees the column beside them,
+        // so the code would be issued unpinned and the token endpoint would
+        // have nothing to compare the presented proof against (`ast-36g`).
+        "dpop_jkt": dpop_jkt,
         // The *parsed* request, canonically serialised, and not the document
         // the client sent. This is what will be copied onto the grant when the
         // user consents, and a grant records the decision: a member this
