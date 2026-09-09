@@ -235,8 +235,17 @@ impl ReleasableClaim {
     /// §5.5 says members of the `claims` object that are not understood are
     /// ignored, and a `sub` in a claims request is exactly a member this
     /// server declines to understand.
+    ///
+    /// A [`serde_json` sentinel](SERDE_JSON_SENTINELS) is refused here too, so
+    /// that no such name can ever *key* a released claim: every map this type
+    /// keys is serialised into JSON someone else parses — the ID token, the
+    /// UserInfo response, the copy kept on the grant — and a member with one
+    /// of those names is a document `serde_json` will not read back.
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
+        if is_serde_json_sentinel(raw) {
+            return None;
+        }
         UserAttribute::parse(raw).map_or_else(
             || ClaimName::parse(raw).ok().map(Self::Stored),
             |attribute| Some(Self::Attribute(attribute)),
@@ -250,6 +259,57 @@ impl ReleasableClaim {
             Self::Attribute(attribute) => attribute.as_str(),
             Self::Stored(name) => name.as_str(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// serde_json's private sentinels
+// ---------------------------------------------------------------------------
+
+/// The member names `serde_json` reserves for its own use.
+///
+/// These are not claim names and not JSON syntax: they are the struct names
+/// `serde_json` uses to smuggle its `RawValue` and arbitrary-precision `Number`
+/// types through `serde`. When the corresponding feature is on — and features
+/// are unified across a whole binary, so a dependency several crates away
+/// decides this, not us — the *deserialiser* recognises an object whose first
+/// member has one of these names and demands the shape the feature expects,
+/// failing the parse of the whole document otherwise.
+///
+/// Two consequences, both of which this module has to refuse:
+///
+/// * Parsing stops being a function of the document alone. `{"a":{},"$…":{}}`
+///   parses and `{"$…":{},"a":{}}` does not, so the same request accepted at
+///   the pushed authorization request is refused once storage has written the
+///   members back in `serde_json`'s own (sorted) order — which is exactly the
+///   round trip a grant performs on every token issuance.
+/// * Anything this server *emits* with such a member — an ID token, a UserInfo
+///   response — is a document a relying party using `serde_json` cannot read.
+///
+/// The name is client-controlled, so this cannot be left to chance. Both are
+/// listed, not only the one whose feature happens to be enabled today: the
+/// enabling crate can change under us with a `cargo update`.
+pub const SERDE_JSON_SENTINELS: [&str; 2] = [
+    "$serde_json::private::RawValue",
+    "$serde_json::private::Number",
+];
+
+/// Whether a member name is one `serde_json` reserves.
+fn is_serde_json_sentinel(name: &str) -> bool {
+    SERDE_JSON_SENTINELS.contains(&name)
+}
+
+/// Whether any object anywhere in `value` has a member `serde_json` reserves.
+///
+/// Recursive, and safe to be for the same reason [`depth`] is: `serde_json`
+/// refuses input nested past its own recursion limit before this ever runs.
+fn names_a_serde_json_sentinel(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(names_a_serde_json_sentinel),
+        Value::Object(members) => members.iter().any(|(name, member)| {
+            is_serde_json_sentinel(name) || names_a_serde_json_sentinel(member)
+        }),
+        _ => false,
     }
 }
 
@@ -387,6 +447,16 @@ pub enum ClaimsRequestError {
         ClaimsRequest::MAX_DEPTH
     )]
     TooDeep,
+    /// Some object in the parameter has a member `serde_json` reserves — see
+    /// [`SERDE_JSON_SENTINELS`].
+    ///
+    /// The same document can also be reported as [`Malformed`](Self::Malformed)
+    /// instead: when the sentinel is the object's *first* member, `serde_json`
+    /// fails the document itself and this check never runs. Which of the two
+    /// comes back depends on member order; that either one does is what
+    /// matters.
+    #[error("the claims parameter names a member reserved by the JSON encoder")]
+    ReservedMemberName,
     /// More members than [`ClaimsRequest::MAX_CLAIMS`] in one section.
     #[error(
         "one section of the claims parameter names more than {} claims",
@@ -535,6 +605,16 @@ impl ClaimsRequest {
             serde_json::from_str(raw).map_err(|_| ClaimsRequestError::Malformed)?;
         if depth(&document) > Self::MAX_DEPTH {
             return Err(ClaimsRequestError::TooDeep);
+        }
+        // Refused rather than ignored, and refused for the whole document
+        // rather than for the member that carries the name. Ignoring would
+        // keep the accepted request unrepresentable: `value` and `values` hold
+        // arbitrary JSON verbatim, so a sentinel nested inside one survives
+        // into what is stored and breaks the *next* read. And a client that
+        // sends one has not asked for a claim — no such claim exists — it has
+        // aimed a JSON encoder at the storage this server reads back.
+        if names_a_serde_json_sentinel(&document) {
+            return Err(ClaimsRequestError::ReservedMemberName);
         }
         let Value::Object(root) = document else {
             return Err(ClaimsRequestError::NotAnObject);
@@ -1252,6 +1332,62 @@ mod tests {
                 ClaimsRequest::parse(raw),
                 Err(expected.clone()),
                 "parsing {raw:?}"
+            );
+        }
+    }
+
+    /// `serde_json`'s private sentinels, found by the `claims_request` fuzz
+    /// target (crash `60bf10bb…`, kept in `fuzz/corpus/claims_request/`).
+    ///
+    /// With the `raw_value` feature on — which any dependency in the binary
+    /// can turn on for everyone — `serde_json` refuses a whole document whose
+    /// first object member is one of these names, and accepts the very same
+    /// document when the name comes second. The parameter was therefore
+    /// accepted at the pushed request and refused when read back from the
+    /// grant, because storage rewrites the members in sorted order and `$`
+    /// sorts first. Refused now, in every order and at every depth.
+    #[test]
+    fn a_claims_parameter_naming_a_serde_json_sentinel_is_refused() {
+        for raw in [
+            // The crash, as the fuzz target built it.
+            r#"{"id_token":{"sub":{"essential":true},"$serde_json::private::RawValue":{"essential":"true"}},"userinfo":{},"transaction":{"nested":{"deeper":[1,2,3]}}}"#,
+            // The same request as storage would write it back.
+            r#"{"id_token":{"$serde_json::private::RawValue":{}},"userinfo":{}}"#,
+            // The other sentinel: its feature is off today, and a `cargo
+            // update` is all it would take.
+            r#"{"userinfo":{"name":null,"$serde_json::private::Number":{}}}"#,
+            // Not a member name of a section — a member name of the arbitrary
+            // JSON a client may park in `value` and `values`, which is stored
+            // verbatim and re-read with the rest.
+            r#"{"userinfo":{"name":{"value":{"a":1,"$serde_json::private::RawValue":{}}}}}"#,
+            r#"{"userinfo":{"name":{"values":[{"a":1,"$serde_json::private::RawValue":{}}]}}}"#,
+            // A member of neither section, which §5.5 would otherwise ignore.
+            r#"{"userinfo":{},"$serde_json::private::RawValue":{}}"#,
+        ] {
+            let refused = ClaimsRequest::parse(raw);
+            // `Malformed` is the answer when `serde_json` itself rejected the
+            // document first — which of the two comes back depends on the
+            // member order and on a feature flag, so the assertion is that it
+            // is one of them rather than which.
+            assert!(
+                matches!(
+                    refused,
+                    Err(ClaimsRequestError::ReservedMemberName | ClaimsRequestError::Malformed)
+                ),
+                "a serde_json sentinel was accepted in {raw:?}: {refused:?}"
+            );
+        }
+    }
+
+    /// The same guarantee stated structurally: no such name can key a map that
+    /// this server serialises back out, whatever route it arrived by.
+    #[test]
+    fn a_serde_json_sentinel_is_not_a_releasable_claim() {
+        for name in SERDE_JSON_SENTINELS {
+            assert_eq!(
+                ReleasableClaim::parse(name),
+                None,
+                "{name:?} became a releasable claim"
             );
         }
     }

@@ -15,7 +15,12 @@
 # cargo-fuzz
 /fuzz/target/
 /fuzz/artifacts/
-/fuzz/corpus/
+# The corpus a run grows is a cache, carried between nightly runs by
+# actions/cache and not worth a diff. The inputs that once *crashed* a target
+# are not: they are the regression suite, and a cache that expires is no place
+# to keep one. Those are committed, per target, by hand.
+/fuzz/corpus/*
+!/fuzz/corpus/claims_request/
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.
