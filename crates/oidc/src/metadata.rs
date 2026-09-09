@@ -206,6 +206,55 @@ fn algorithms() -> Vec<&'static str> {
         .collect()
 }
 
+/// The claims a client may see, from the two places that can produce one.
+///
+/// OIDC Discovery §3's `claims_supported`, assembled rather than written out:
+/// [`ID_TOKEN_CLAIMS`] is what [`crate::tokens::id_token`] asserts about the
+/// exchange, and [`crate::claims::claims_from_user_columns`] is what
+/// [`crate::claims::resolve`] can produce about the person for *any* user.
+///
+/// What is deliberately absent is the [`ClaimSet`](asterius_domain::ClaimSet):
+/// `name`, `preferred_username` and the rest of OIDC Core §5.4 are released on
+/// request, but only to a user who happens to have them stored, and a tenant's
+/// static document is in no position to say who does. The list used to name
+/// two of them, and the OpenID Foundation suite duly asked for both and got
+/// neither (`ast-8p1`). See [`crate::claims::claims_from_user_columns`] for why a
+/// short list is the honest one and a long list is not.
+fn claims_supported() -> Vec<&'static str> {
+    let mut names = ID_TOKEN_CLAIMS.to_vec();
+    names.extend(crate::claims::claims_from_user_columns());
+    names
+}
+
+/// The claims this server puts in an ID token about the exchange itself.
+///
+/// In the order OIDC Core §2 lists them, then the two this server adds:
+/// `at_hash` (§3.1.3.6) and `sid`.
+///
+/// `sid` is Back-Channel Logout 1.0 §2.1, and it is here on purpose. It is a
+/// registered JWT claim, it is emitted precisely because
+/// `backchannel_logout_session_supported` is advertised, and a logout token
+/// that could not name the session it ends would make the feature useless.
+/// The conformance suite's `CheckForUnexpectedClaimsInIdToken` flags it as a
+/// name it does not know — its own message allows for "extensions the test
+/// suite is unaware of", and its `ValidateIdTokenStandardClaims` list simply
+/// predates Back-Channel Logout. The claim stays; the WARNING is the suite's
+/// gap, not this server's (`ast-8p1`).
+pub(crate) const ID_TOKEN_CLAIMS: &[&str] = &[
+    "iss",
+    "sub",
+    "aud",
+    "exp",
+    "iat",
+    "auth_time",
+    "nonce",
+    "acr",
+    "amr",
+    "azp",
+    "at_hash",
+    "sid",
+];
+
 /// Builds the provider metadata document for one tenant.
 ///
 /// The same document serves OIDC Discovery §3 and RFC 8414 §2 — §5 of RFC 8414
@@ -255,10 +304,7 @@ pub fn provider_metadata(issuer: &Issuer, capabilities: &Capabilities) -> Value 
         "claims_parameter_supported": true,
 
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
-        "claims_supported": [
-            "iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "acr", "amr", "azp",
-            "sid", "name", "preferred_username", "email", "email_verified",
-        ],
+        "claims_supported": claims_supported(),
         // OpenID Connect Prompt Create 1.0 §4. Rendered from the same policy
         // the pushed-request validator consults, never written out here: a
         // tenant that advertised `create` while refusing it would be telling
@@ -332,6 +378,8 @@ pub fn provider_metadata(issuer: &Issuer, capabilities: &Capabilities) -> Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asterius_domain::{ClaimSet, TenantId, User, UserId, UserStatus};
+    use time::OffsetDateTime;
 
     fn issuer() -> Issuer {
         Issuer::parse("https://as.example/t/demo").expect("test issuer")
@@ -669,5 +717,79 @@ mod tests {
                 "self_signed_tls_client_auth"
             ]
         );
+    }
+
+    // ---- claims_supported ------------------------------------------------
+
+    /// The finding that opened `ast-8p1`, as a test.
+    ///
+    /// The OpenID Foundation suite reads `claims_supported`, asks for every
+    /// standard claim it names through the `claims` parameter, and fails the
+    /// server for each one that comes back in neither the ID token nor the
+    /// UserInfo response. The document named `name` and `preferred_username`;
+    /// both live only in a user's [`ClaimSet`], so a user who has neither got
+    /// neither, and the promise was the defect rather than the resolver.
+    ///
+    /// The user here has no stored claims at all, which is the point: what a
+    /// tenant-wide document promises has to hold for the emptiest account the
+    /// schema permits, because the document is written before anyone knows
+    /// which account will authenticate.
+    #[test]
+    fn every_identity_claim_advertised_resolves_for_a_user_with_no_stored_claims() {
+        // Arrange.
+        let user = User {
+            tenant: TenantId::new("demo"),
+            id: UserId::generate(),
+            username: "ada".to_owned(),
+            email: Some("ada@example.test".to_owned()),
+            email_verified: true,
+            status: UserStatus::Active,
+            claims: ClaimSet::new(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        let identity: Vec<&str> = claims_supported()
+            .into_iter()
+            .filter(|name| !ID_TOKEN_CLAIMS.contains(name))
+            .collect();
+        assert!(
+            !identity.is_empty(),
+            "a document that promises no identity claim at all is not the fix"
+        );
+        let requested = crate::claims::ClaimsRequest::from_json(&json!({
+            "userinfo": identity
+                .iter()
+                .map(|name| ((*name).to_owned(), Value::Null))
+                .collect::<serde_json::Map<String, Value>>(),
+        }))
+        .expect("the advertised names are requestable");
+
+        // Act: the grant's scopes are empty, so the `claims` parameter is the
+        // only thing under test.
+        let resolved = crate::claims::resolve(
+            &user,
+            &std::collections::BTreeSet::new(),
+            &requested,
+            &crate::claims::ClaimsLocales::default(),
+        );
+
+        // Assert.
+        let missing: Vec<&&str> = identity
+            .iter()
+            .filter(|name| {
+                !resolved.userinfo.contains_key(**name) && !resolved.id_token.contains_key(**name)
+            })
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "advertised but not delivered: {missing:?}"
+        );
+    }
+
+    /// `sid` is advertised on purpose, and the ID token builder's own test
+    /// checks the converse — that it emits nothing this list omits.
+    #[test]
+    fn sid_is_advertised_because_the_id_token_carries_one() {
+        assert!(claims_supported().contains(&"sid"));
     }
 }

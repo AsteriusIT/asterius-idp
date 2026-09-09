@@ -187,16 +187,56 @@ impl UserAttribute {
         }
     }
 
+    /// Every column-backed claim.
+    ///
+    /// The list [`UserAttribute::parse`] searches and the list
+    /// [`claims_from_user_columns`] publishes are the same list, so a variant
+    /// added here becomes resolvable and advertised in one edit rather than
+    /// two.
+    pub const ALL: [Self; 3] = [Self::Email, Self::EmailVerified, Self::UpdatedAt];
+
     /// Matches a column-backed claim by its exact name.
     ///
     /// Exact, and so no language tag: an address a unique index enforces has
     /// one spelling, and `email#de` is not a translation of it.
     #[must_use]
     fn parse(raw: &str) -> Option<Self> {
-        [Self::Email, Self::EmailVerified, Self::UpdatedAt]
+        Self::ALL
             .into_iter()
             .find(|attribute| attribute.as_str() == raw)
     }
+}
+
+/// The identity claims this server can produce for *any* user.
+///
+/// These are the [`UserAttribute`]s: claims backed by a `users` column, which
+/// every row has because the schema says so. They are the only identity claims
+/// a *static* document may promise.
+///
+/// The contrast with [`claims_from_scopes`] is the whole point. `name`,
+/// `preferred_username` and the rest of OIDC Core §5.4 live in the user's
+/// [`ClaimSet`], which is deployment data: whether any user has a `name` is
+/// something the operator decided, not something this code guarantees. A
+/// discovery document is one array for a whole tenant and cannot be
+/// conditioned on the user who has not authenticated yet, so advertising them
+/// there is a promise the resolver is in no position to keep — which is
+/// exactly what the conformance suite reported (`ast-8p1`).
+///
+/// Under-promising is what OIDC Discovery §3 allows: `claims_supported` is
+/// "the Claim Names of the Claims that the OpenID Provider MAY be able to
+/// supply values for", with the explicit note that "this might not be an
+/// exhaustive list". A stored `name` is still released when a client asks for
+/// it; it is simply not advertised in advance. Over-promising has no such
+/// licence, and is what makes a client's request fail for no stated reason.
+#[must_use]
+pub fn claims_from_user_columns() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = UserAttribute::ALL
+        .iter()
+        .copied()
+        .map(UserAttribute::as_str)
+        .collect();
+    names.sort_unstable();
+    names
 }
 
 /// A claim name that resolution is *allowed* to produce.
@@ -1120,6 +1160,49 @@ mod tests {
         // about, and this list feeds a metadata document rather than replacing
         // it.
         assert!(!advertised.contains(&"sub"));
+    }
+
+    /// The column-backed half of `claims_supported`, and the property that
+    /// makes it safe to advertise: every name in it resolves for a user whose
+    /// claim set is empty (`ast-8p1`).
+    #[test]
+    fn every_column_backed_claim_resolves_without_a_stored_claim() {
+        // Arrange: the same user, stripped of everything the operator loads.
+        let mut user = a_user();
+        user.claims = ClaimSet::new();
+
+        for name in claims_from_user_columns() {
+            // Act.
+            let claim = ReleasableClaim::parse(name).expect("an advertised name is releasable");
+            let value = project(&user, &claim, &ClaimsLocales::default());
+
+            // Assert.
+            assert!(
+                value.is_some(),
+                "{name} is advertised but resolves to nothing"
+            );
+        }
+    }
+
+    /// `preferred_username` is not one of them, and the reason is in
+    /// [`User::username`]: the login identifier is unique, may not be changed
+    /// freely, and is not a display preference. Projecting it under that name
+    /// would release an account identifier as a nickname (`ast-2vk.8` owns the
+    /// real claim).
+    #[test]
+    fn the_login_identifier_is_never_released_as_preferred_username() {
+        // Arrange.
+        let mut user = a_user();
+        user.claims = ClaimSet::new();
+        user.username = "ada".to_owned();
+        let claim = ReleasableClaim::parse("preferred_username").expect("a releasable name");
+
+        // Act.
+        let value = project(&user, &claim, &ClaimsLocales::default());
+
+        // Assert.
+        assert_eq!(value, None);
+        assert!(!claims_from_user_columns().contains(&"preferred_username"));
     }
 
     // -----------------------------------------------------------------------

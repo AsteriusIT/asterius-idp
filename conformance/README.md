@@ -147,10 +147,19 @@ At the pinned release, on the plan above, **56 modules run**. What did not pass:
   `400 {"error":"invalid_grant","error_description":"the refresh token cannot be redeemed"}`.
   The suite expected `200` (`CheckTokenEndpointHttpStatus200`, RFC 6749 §5.1).
 * `fapi2-security-profile-final-test-claims-parameter-identity-claims` —
-  **WARNING**, twice. `EnsureIdentityClaimsContainRequestedClaims`: the claims
-  requested through the `claims` parameter were not all returned, although they
-  are listed in `claims_supported`. `CheckForUnexpectedClaimsInIdToken`: the
-  `id_token` carries a claim name the suite does not know.
+  **WARNING**, twice; both settled by `ast-8p1`.
+  `EnsureIdentityClaimsContainRequestedClaims`: the claims requested through the
+  `claims` parameter were not all returned, although they are listed in
+  `claims_supported`. The two missing ones were `name` and
+  `preferred_username`, which exist only in a user's claim set — deployment
+  data a tenant-wide document cannot promise. `claims_supported` is now
+  assembled from the ID token builder and the `users` columns, and no longer
+  names them. `CheckForUnexpectedClaimsInIdToken`: the `id_token` carries a
+  claim name the suite does not know, and the name is `sid`. It is kept: it is
+  a registered claim, Back-Channel Logout 1.0 §2.1 requires it whenever
+  `backchannel_logout_session_supported` is advertised, and the suite's
+  `ValidateIdTokenStandardClaims` list simply predates that specification.
+  Expect this half of the WARNING to persist.
 * `fapi2-security-profile-final-user-rejects-authentication` — **FAILED**, and
   this one is the harness rather than the server: the browser script always
   presses *Allow*, because the module that needs *Deny* and the module that needs
