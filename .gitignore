@@ -21,7 +21,12 @@
 # to keep one. Those are committed, per target, by hand.
 /fuzz/corpus/*
 !/fuzz/corpus/claims_request/
+# Un-ignoring the directory would carry every input a run grew with it,
+# so re-ignore its contents and keep only the crashes back.
+/fuzz/corpus/claims_request/*
+!/fuzz/corpus/claims_request/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.
 .claude/worktrees/
+.claude/grind.local.json

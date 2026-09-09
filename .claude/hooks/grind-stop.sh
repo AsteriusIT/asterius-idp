@@ -26,7 +26,9 @@ deactivate() {
 
 [ "$ITER" -ge "$MAX" ] && deactivate "max_iterations ($MAX) atteint"
 
-NEXT="$(bd ready -n 1 --json 2>/dev/null | jq -r '.[0].id // empty')"
+# Les epics sont des conteneurs, pas du travail delegable : on prend le premier
+# ticket concret du backlog pret.
+NEXT="$(bd ready --limit 0 --json 2>/dev/null | jq -r '[.[] | select(.issue_type != "epic")] | .[0].id // empty')"
 [ -z "$NEXT" ] && deactivate "backlog vide (bd ready ne renvoie rien)"
 
 if [ "$NEXT" = "$LAST" ]; then
