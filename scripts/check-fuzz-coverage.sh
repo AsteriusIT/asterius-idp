@@ -64,6 +64,23 @@ if [[ "$on_disk" != "$registered" ]]; then
   status=1
 fi
 
+# The committed inventory must be the one the tree implies.
+#
+# The definition of done asks for the list of parsers and their targets to be
+# committed, in `docs/fuzzing.md`. A list of 35 rows kept by hand is wrong from
+# the first parser added — and a stale inventory of what is fuzzed is worse
+# than none, because it answers "is this covered?" with a confident yes that
+# stopped being true. So the file is rendered by a script and this compares the
+# two, the way `config_reference.rs` does for `docs/configuration.md`.
+if [[ "$status" -eq 0 ]]; then
+  if ! diff -u docs/fuzzing.md <(./scripts/gen-fuzzing-doc.sh) >/dev/null; then
+    echo "docs/fuzzing.md IS STALE:" >&2
+    diff -u docs/fuzzing.md <(./scripts/gen-fuzzing-doc.sh) >&2 || true
+    echo "  run: ./scripts/gen-fuzzing-doc.sh > docs/fuzzing.md" >&2
+    status=1
+  fi
+fi
+
 # The same formatting rules as the workspace.
 #
 # `fuzz` is its own workspace, so `cargo fmt --all` at the root walks straight

@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: read
+  # The crash step opens an issue; see it for why GitHub and not beads.
+  issues: write
 
 jobs:
   # The target list is read from `fuzz/Cargo.toml` rather than written out
@@ -74,6 +76,24 @@ jobs:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
 
+      # The corpus, as an artefact as well as a cache entry.
+      #
+      # The cache is what the next run reads, but it is not readable by a
+      # person: entries expire after seven days of not being hit, cannot be
+      # downloaded from the UI, and are scoped in ways that make them awkward
+      # to compare between branches. An artefact is how you get the inputs onto
+      # a laptop to minimise them, re-run them under a debugger, or seed a new
+      # target from an old one's corpus. Retention is short because the cache,
+      # not this, is the mechanism that carries coverage forward.
+      - name: upload the corpus
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-${{ matrix.target }}
+          path: fuzz/corpus/${{ matrix.target }}/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: upload any crash that was found
         if: failure()
         uses: actions/upload-artifact@v4
@@ -81,3 +101,57 @@ jobs:
           name: crash-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/
           if-no-files-found: ignore
+
+      # A crash at 2am that nobody is told about is a crash nobody fixes.
+      #
+      # A GitHub issue, deliberately, even though this project tracks work in
+      # beads: beads lives in a local Dolt database that a runner has no access
+      # to, so the alternative to this is no notification at all. The issue is
+      # the alarm, not the ticket — triage still creates the bead.
+      #
+      # One issue per target, reopened by comment rather than duplicated: a
+      # target that crashes tends to crash every night until it is fixed, and
+      # thirty identical issues train people to ignore the label.
+      - name: open an issue for the crash
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ matrix.target }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="fuzz: $TARGET crashed"
+          # The title is quoted inside the search string: it contains a colon,
+          # which GitHub's search syntax would otherwise read as a qualifier.
+          # The --jq filter then insists on an exact match, because search is
+          # fuzzy and commenting on somebody else's issue is worse than opening
+          # a duplicate. Captured before `head` rather than piped into it: with
+          # `pipefail`, a `head` that closes early turns into a failed step.
+          matches=$(gh issue list --state open --search "\"$title\" in:title" \
+                      --json number,title \
+                      --jq ".[] | select(.title == \"$title\") | .number")
+          existing=$(head -n1 <<<"$matches")
+          body=$(printf '%s\n' \
+            "\`$TARGET\` failed in the nightly fuzzing run." \
+            "" \
+            "Run: $RUN_URL" \
+            "Crashing input: the \`crash-$TARGET\` artefact on that run." \
+            "" \
+            "Reproduce:" \
+            "" \
+            "    cargo +nightly fuzz run --target x86_64-unknown-linux-gnu $TARGET path/to/crash-input" \
+            "" \
+            "Opened automatically. The tracker of record is beads: file the bead" \
+            "and link it here.")
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "$body"
+            echo "commented on #$existing"
+          else
+            # Idempotent: `gh issue create --label` is a hard error when the
+            # label does not exist, which would turn the notification into a
+            # second failure and no notification.
+            gh label create fuzz --color B60205 \
+              --description "Found by the fuzzer" --force
+            gh issue create --title "$title" --body "$body" --label fuzz
+            echo "opened a new issue"
+          fi

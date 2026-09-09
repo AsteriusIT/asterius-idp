@@ -17,6 +17,15 @@ permissions:
   issues: write
 
 jobs:
+  # cargo-deny and not cargo-audit, and not both.
+  #
+  # They read the same database — RustSec's advisory-db — and `cargo deny check
+  # advisories` is a superset of what `cargo audit` reports: the same
+  # advisories, plus unmaintained and yanked crates, plus the bans, licence and
+  # source policies in deny.toml, from one lockfile pass. Running both would
+  # mean a second runner, a second tool to keep installed and a second place to
+  # write an exception for the same finding — cost without signal. If cargo-deny
+  # ever stops tracking advisory-db, this is the comment to come back to.
   advisories:
     name: cargo-deny advisories
     runs-on: ubuntu-latest
@@ -27,3 +36,23 @@ jobs:
         with:
           tool: cargo-deny
       - run: cargo deny check advisories bans licenses sources
+
+  # -------------------------------------------------------------------------
+  # The definition of done asks for zero `unsafe` expressions in first-party
+  # crates, counted rather than grepped. `scripts/check-geiger.sh` says why
+  # this lives here and not in ci.yml: geiger is minutes rather than seconds,
+  # and what it measures changes with `Cargo.lock`, which is one of the paths
+  # that triggers this workflow. Every commit is still covered by
+  # `#![forbid(unsafe_code)]` and by `check-no-unsafe.sh` in the `lint` job.
+  # -------------------------------------------------------------------------
+  geiger:
+    name: cargo-geiger (no unsafe in first-party crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-geiger
+      - run: ./scripts/check-geiger.sh

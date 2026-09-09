@@ -33,4 +33,8 @@ RUSTDOCFLAGS="-D warnings" SQLX_OFFLINE=true run cargo doc --workspace --no-deps
 
 run cargo deny check
 
+# Not `./scripts/check-geiger.sh`: it needs cargo-geiger, which takes minutes to
+# install and minutes to run, and its answer only changes when Cargo.lock does.
+# It runs in audit.yml, on a schedule and on any manifest change.
+
 printf '\n\033[32mall checks passed\033[0m\n'
