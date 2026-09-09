@@ -81,11 +81,29 @@ for member in "${members[@]}"; do
   # unrecognised format or no output at all are all treated as failures below,
   # so a genuine geiger error — which produces no usable report — still fails
   # the job, and the captured stderr is printed when it does.
+  #
+  # `CARGO_TERM_COLOR=never` is not cosmetic, it is the second half of `ast-yxu`.
+  # `Swatinem/rust-cache` exports `CARGO_TERM_COLOR: always` for every step of
+  # the job, and cargo-geiger prints its table through cargo's shell, so on the
+  # runner every row came out wrapped in SGR escapes:
+  #
+  #   ESC[32m0/0  0/0  0/0  0/0  0/0  ESC[0m  ESC[32m:)ESC[0m ESC[32masterius-admin-api 0.0.0ESC[0m
+  #
+  # which no anchored pattern below can match. The gate then failed closed on
+  # its own report — correct behaviour, wrong conclusion. Colour is turned off
+  # at the source here, and stripped again after the fact below, because a
+  # gate that only works when the environment happens to be uncoloured is a
+  # gate that will break again on the next action that exports a colour knob.
   geiger_status=0
   report="$(
-    SQLX_OFFLINE=true cargo geiger --all-features --output-format Ascii \
+    SQLX_OFFLINE=true CARGO_TERM_COLOR=never NO_COLOR=1 \
+      cargo geiger --all-features --output-format Ascii \
       --manifest-path "$manifest" 2>"$errfile"
   )" || geiger_status=$?
+
+  # Belt and braces: drop any ANSI escape sequence that survived. `$'\033'`
+  # rather than `\x1b` so this does not depend on GNU sed.
+  report="$(sed $'s/\033\\[[0-9;]*[a-zA-Z]//g' <<<"$report")"
 
   # Geiger's rows are five `used/total` columns — functions, expressions,
   # impls, traits, methods — then a symbol, then `<name> <version>`. The root

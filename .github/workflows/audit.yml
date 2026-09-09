@@ -52,7 +52,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Pinned, and the pin is load-bearing for a gate that parses a table:
+      # install-action has no manifest for cargo-geiger and falls back to
+      # cargo-binstall, which resolves `latest` at run time — so an upstream
+      # release could change the report format under us on a day nobody
+      # touched this repository, and the failure would look like the one
+      # `ast-yxu` chased. 0.13.0 is the version whose output
+      # `scripts/check-geiger.sh` is written against and was verified with.
+      # Bump deliberately, and re-read the parsing comments when you do.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-geiger
+          tool: cargo-geiger@0.13.0
       - run: ./scripts/check-geiger.sh
