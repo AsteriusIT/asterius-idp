@@ -358,20 +358,27 @@ struct RawTenant {
 /// and colliding with it means the server will not start on a machine that is
 /// doing something entirely reasonable. 9443 keeps the "TLS on a high port"
 /// convention without the clash.
-const DEFAULT_BIND: &str = "0.0.0.0:9443";
-const DEFAULT_MAX_CONNECTIONS: u32 = 16;
+pub(crate) const DEFAULT_BIND: &str = "0.0.0.0:9443";
+pub(crate) const DEFAULT_MAX_CONNECTIONS: u32 = 16;
+
+/// A deployment that says nothing is assumed to be behind a terminator.
+///
+/// The safer default of the two: `terminate_tls` without usable key material
+/// cannot start at all, whereas a proxy that is not there shows up as a
+/// refused connection rather than as cleartext on the wire.
+pub(crate) const DEFAULT_MODE: TransportMode = TransportMode::BehindProxy;
 
 /// FAPI 2.0 request bodies are small: a PAR request, a token request, a
 /// registration document. 64 KiB is generous for all of them and cheap to
 /// refuse above.
-const DEFAULT_BODY_LIMIT: usize = 64 * 1024;
+pub(crate) const DEFAULT_BODY_LIMIT: usize = 64 * 1024;
 
 /// Long enough for a slow client on a bad link, short enough that holding a
 /// connection open is not a denial-of-service primitive.
-const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 10;
+pub(crate) const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 10;
 
 /// Believed by default: nothing but this machine.
-const DEFAULT_TRUSTED_PROXIES: [&str; 2] = ["127.0.0.0/8", "::1/128"];
+pub(crate) const DEFAULT_TRUSTED_PROXIES: [&str; 2] = ["127.0.0.0/8", "::1/128"];
 
 // ---------------------------------------------------------------------------
 // Loading
@@ -493,7 +500,7 @@ impl RawConfig {
 
 impl RawServer {
     fn validate(self, errors: &mut Collector) -> ServerConfig {
-        let mode = self.mode.unwrap_or(TransportMode::BehindProxy);
+        let mode = self.mode.unwrap_or(DEFAULT_MODE);
 
         let bind = match self.bind.as_deref().unwrap_or(DEFAULT_BIND).parse() {
             Ok(addr) => addr,
@@ -842,6 +849,75 @@ fn set_path(
     }
     cursor.insert(last.clone(), value);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Introspection, for the generated reference
+// ---------------------------------------------------------------------------
+
+/// The name of every table in the file, paired with the keys its deserializer
+/// accepts.
+///
+/// Read *out of the deserializers* rather than listed by hand. A reference
+/// document maintained alongside the schema diverges from it on the first key
+/// somebody adds; one derived from the schema cannot, and
+/// [`crate::config_reference`] turns this into a test that fails the moment the
+/// two disagree.
+///
+/// The trick is `deny_unknown_fields`: offer a struct a key it does not know
+/// and serde's error names every key it does. That is the same mechanism an
+/// operator's typo hits, so what this reports is exactly what the file accepts.
+#[must_use]
+pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
+    [
+        (ROOT_TABLE, accepted_keys::<RawConfig>()),
+        ("server", accepted_keys::<RawServer>()),
+        ("server.tls", accepted_keys::<RawTls>()),
+        ("server.proxy", accepted_keys::<RawProxy>()),
+        ("database", accepted_keys::<RawDatabase>()),
+        ("features", accepted_keys::<Capabilities>()),
+        ("keys", accepted_keys::<RawKeys>()),
+        ("registration", accepted_keys::<RawRegistration>()),
+        ("tenant", accepted_keys::<RawTenant>()),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// How [`declared_keys`] names the top level of the file.
+pub const ROOT_TABLE: &str = "<root>";
+
+/// The keys one table's deserializer accepts, in declaration order.
+fn accepted_keys<T: serde::de::DeserializeOwned>() -> Vec<String> {
+    // A key no table will ever declare, so the error is always the one we want.
+    const PROBE: &str = "asterius-probe-for-an-unknown-key";
+
+    let mut table = toml::Table::new();
+    table.insert(PROBE.to_owned(), toml::Value::Boolean(false));
+    match T::deserialize(toml::Value::Table(table)) {
+        // Only reachable if a table loses `deny_unknown_fields`, which would
+        // also mean an operator's typo is silently ignored. Empty here makes
+        // the reference test fail rather than quietly document nothing.
+        Ok(_) => Vec::new(),
+        Err(error) => expected_keys(&error.to_string()),
+    }
+}
+
+/// Pulls the key names out of serde's "unknown field" message.
+///
+/// Serde renders it as "unknown field X, expected one of A, B", with each name
+/// in backticks — or "expected A" for a table with a single key.
+fn expected_keys(message: &str) -> Vec<String> {
+    message
+        .split_once(", expected")
+        .map(|(_, tail)| {
+            tail.split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

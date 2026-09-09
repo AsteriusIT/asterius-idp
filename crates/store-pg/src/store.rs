@@ -42,6 +42,22 @@ impl Store {
 
     /// Applies any migrations the database has not seen.
     ///
+    /// Called once at startup, before the listener binds, so that a rollout is
+    /// one operation rather than a migration job somebody has to remember. That
+    /// only works because the migration runs under a PostgreSQL *advisory
+    /// lock*: `sqlx` takes `pg_advisory_lock` for the length of the run, so when
+    /// three replicas of a new version start at once, one migrates and the other
+    /// two wait and then find there is nothing to do. Without it the losers
+    /// would race on `create table` and crash-loop through the rollout.
+    ///
+    /// The lock is session-level and released when the connection returns to
+    /// the pool, so a process that dies mid-migration does not leave the next
+    /// one blocked forever — it leaves a half-applied migration, which is what
+    /// the per-migration transaction is for.
+    ///
+    /// The lock is a `sqlx` default, and a default is not a guarantee until
+    /// something fails when it changes, so a test below pins it.
+    ///
     /// # Errors
     ///
     /// Returns a migration error if a migration fails or if an already-applied
@@ -102,5 +118,34 @@ impl Store {
     #[must_use]
     pub fn scope(&self, tenant: TenantId) -> TenantScope<'_> {
         TenantScope::new(&self.pool, tenant)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATOR;
+
+    /// Concurrent replicas must not race each other through the schema.
+    ///
+    /// `sqlx` locks by default, so this test asserts a default rather than a
+    /// line of our own code — deliberately. Migrations-on-start is only safe
+    /// because of it, and an upgrade that silently flipped it would show up as
+    /// a crash-looping rollout at the worst possible moment.
+    #[test]
+    fn migrations_are_serialised_by_an_advisory_lock() {
+        assert!(
+            MIGRATOR.locking,
+            "the migrator must take an advisory lock: without it, replicas starting together \
+             race on the same DDL"
+        );
+    }
+
+    /// A migration is only ever added, never edited: `sqlx` records a checksum
+    /// and refuses a file that changed after it was applied. This keeps the
+    /// embedded set non-empty, so that `migrations_applied` — which compares
+    /// counts — cannot pass vacuously against an empty database.
+    #[test]
+    fn the_binary_embeds_at_least_the_baseline_migration() {
+        assert!(MIGRATOR.iter().count() >= 1);
     }
 }

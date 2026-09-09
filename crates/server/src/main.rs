@@ -27,7 +27,7 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 
 const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
-const USAGE: &str = "usage: asterius [--config <path>]";
+const USAGE: &str = "usage: asterius [--config <path>] [--config-reference]";
 
 fn main() -> ExitCode {
     match run() {
@@ -305,6 +305,14 @@ fn config_path() -> Result<PathBuf, String> {
             }
             Some("--help" | "-h") => {
                 println!("{USAGE}");
+                std::process::exit(0);
+            }
+            // Prints docs/configuration.md and exits. It lives behind a flag
+            // on the server binary rather than in a generator of its own so
+            // that the document can only ever be produced by the same build
+            // that defines the schema it describes.
+            Some("--config-reference") => {
+                print!("{}", asterius_server::config_reference::render());
                 std::process::exit(0);
             }
             _ => {
