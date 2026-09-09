@@ -72,6 +72,7 @@ fn tenant(id: &str, issuer: &str, custom_host: Option<&str>, status: TenantStatu
         custom_host: custom_host.map(str::to_owned),
         display_name: id.to_owned(),
         status,
+        refresh: asterius_domain::RefreshPolicy::default(),
         created_at: OffsetDateTime::UNIX_EPOCH,
         updated_at: OffsetDateTime::UNIX_EPOCH,
     }

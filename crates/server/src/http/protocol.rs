@@ -19,6 +19,7 @@ use crate::http::interaction::{self, InteractionContext};
 use crate::http::logout;
 use crate::http::par::{self, PushContext};
 use crate::http::passkeys::{self, PasskeyContext, PasskeyLoginContext};
+use crate::http::refresh::RefreshToken;
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
@@ -543,6 +544,7 @@ async fn token_endpoint(
     // same way, by computing the proof key at the edge and handing it down.
     let codes = scope.codes();
     let grants = scope.grants();
+    let refresh_tokens = scope.refresh_tokens();
     let sessions = scope.sessions();
     // Read only, to project the claims the grant covers into the ID token
     // (OIDC Core §5.4, §5.5). The KEK is the same one every other user read
@@ -551,9 +553,23 @@ async fn token_endpoint(
     let authorization_code = AuthorizationCode {
         codes: &codes,
         grants: &grants,
+        refresh_tokens: &refresh_tokens,
         sessions: &sessions,
         users: &users,
         signer: endpoints.signer.as_ref(),
+        proof_key: binding.as_ref().map(|binding| &binding.jkt),
+        now,
+    };
+    // The same repositories, and deliberately the same `now` and proof key:
+    // whichever grant the request turns out to be, it is judged against one
+    // clock reading and one proven key.
+    let refresh_token = RefreshToken {
+        tokens: &refresh_tokens,
+        grants: &grants,
+        sessions: &sessions,
+        users: &users,
+        signer: endpoints.signer.as_ref(),
+        audit: endpoints.audit.as_ref(),
         proof_key: binding.as_ref().map(|binding| &binding.jkt),
         now,
     };
@@ -563,7 +579,7 @@ async fn token_endpoint(
             tenant: &tenant,
             clients: &clients,
             capabilities: endpoints.capabilities,
-            grants: &[&authorization_code],
+            grants: &[&authorization_code, &refresh_token],
         },
         &headers,
         &body,

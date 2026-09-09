@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update refresh_tokens\n                set superseded_at = coalesce(superseded_at, $3)\n              where tenant_id = $1 and token_hash = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2dd1367f427a3bba2a157a59fc5f38546a264617da7efd49b452335fdc6254be"
+}

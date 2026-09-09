@@ -35,9 +35,9 @@ pub use entities::{
     ApplicationType, Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client,
     ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantError,
     GrantRecord, GrantStatus, GrantType, JwksSource, LiveAccessToken, PairwiseSalt, RedirectUri,
-    RedirectUriError, RevocationReason, Role, RoleScope, SectorIdentifier, SubjectError,
-    SubjectType, Tenant, TenantStatus, TokenBinding, TokenEndpointAuthMethod, User, UserId,
-    UserRole, UserStatus,
+    RedirectUriError, RefreshPolicy, RefreshPolicyError, RevocationReason, Role, RoleScope,
+    Rotation, SectorIdentifier, SubjectError, SubjectType, Tenant, TenantStatus, TokenBinding,
+    TokenEndpointAuthMethod, User, UserId, UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};

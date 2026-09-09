@@ -1316,6 +1316,7 @@ mod tests {
             custom_host: custom_host.map(ToOwned::to_owned),
             display_name: "Demo".to_owned(),
             status: TenantStatus::Active,
+            refresh: asterius_domain::RefreshPolicy::default(),
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
         }

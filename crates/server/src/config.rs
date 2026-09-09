@@ -18,7 +18,9 @@ use crate::http::register::{
     InitialAccessTokens, MIN_INITIAL_ACCESS_TOKEN_LEN, RegistrationPolicy,
 };
 use crate::observability::LogFormat;
-use asterius_domain::{Capabilities, Issuer, LoginLimits, RateLimit, Secret, TenantId};
+use asterius_domain::{
+    Capabilities, Issuer, LoginLimits, RateLimit, RefreshPolicy, Rotation, Secret, TenantId,
+};
 use ipnet::IpNet;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -142,6 +144,11 @@ pub struct TenantConfig {
     /// resources rather than one every resource server should accept. A
     /// deployment fronting a separate API sets it explicitly.
     pub default_resource: String,
+    /// What this tenant does with refresh tokens.
+    ///
+    /// Absent from the file means FAPI 2.0 SP's position: no rotation, and a
+    /// refresh token that only works with the DPoP key it was issued to.
+    pub refresh: RefreshPolicy,
 }
 
 /// The deployment admin seeded at boot (ADR-0010).
@@ -425,6 +432,18 @@ struct RawTenant {
     // problem with a key path, rather than a serde error that hides the rest.
     issuer: Option<String>,
     default_resource: Option<String>,
+    refresh: Option<RawRefresh>,
+}
+
+/// `[tenant.refresh]`: what this tenant does with refresh tokens.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRefresh {
+    absolute_lifetime_seconds: Option<i64>,
+    idle_lifetime_seconds: Option<i64>,
+    bind_to_dpop_key: Option<bool>,
+    rotation: Option<String>,
+    rotation_grace_seconds: Option<i64>,
 }
 
 /// Default listener address.
@@ -932,16 +951,128 @@ fn validate_tenants(raw: Vec<RawTenant>, errors: &mut Collector) -> Vec<TenantCo
             },
         };
 
+        let refresh = validate_refresh(index, tenant.refresh, errors);
+
         if let (Some(id), Some(issuer)) = (id, issuer) {
             let default_resource = default_resource.unwrap_or_else(|| issuer.as_str().to_owned());
             tenants.push(TenantConfig {
                 id,
                 issuer,
                 default_resource,
+                refresh,
             });
         }
     }
     tenants
+}
+
+/// Validates `[tenant.refresh]`.
+///
+/// Every problem is reported with its key path rather than folded into a
+/// default, and one combination is refused outright: a `rotation_grace_seconds`
+/// beside `rotation = "none"`. A grace window is only meaningful while tokens
+/// are being superseded, so a file that sets one under the non-rotating mode
+/// describes something the server will not do — and an operator who wrote it
+/// believes rotation is on.
+///
+/// The mirror of that is also refused: `rotation = "migration"` with no window,
+/// because the whole point of the migration mode is that it is time-boxed.
+fn validate_refresh(
+    index: usize,
+    raw: Option<RawRefresh>,
+    errors: &mut Collector,
+) -> RefreshPolicy {
+    let default = RefreshPolicy::default();
+    let Some(raw) = raw else {
+        return default;
+    };
+
+    let absolute = match positive_seconds(
+        index,
+        "absolute_lifetime_seconds",
+        raw.absolute_lifetime_seconds,
+        errors,
+    ) {
+        Some(duration) => duration,
+        None => default.absolute_lifetime,
+    };
+
+    // Zero is a value here rather than a mistake: it means "no idle clock",
+    // which is a policy a long-lived machine integration legitimately wants.
+    // Negative is still a mistake.
+    let idle = match raw.idle_lifetime_seconds {
+        None => default.idle_lifetime,
+        Some(0) => None,
+        Some(_) => positive_seconds(
+            index,
+            "idle_lifetime_seconds",
+            raw.idle_lifetime_seconds,
+            errors,
+        )
+        .or(default.idle_lifetime),
+    };
+
+    let grace = positive_seconds(
+        index,
+        "rotation_grace_seconds",
+        raw.rotation_grace_seconds,
+        errors,
+    );
+
+    let rotation = match raw.rotation.as_deref() {
+        None | Some("none") => {
+            if grace.is_some() {
+                errors.problem(
+                    format!("tenant[{index}].refresh.rotation_grace_seconds"),
+                    "a grace window has no meaning without rotation = \"migration\"".to_owned(),
+                );
+            }
+            Rotation::None
+        }
+        Some("migration") => {
+            if let Some(grace) = grace {
+                Rotation::Migration { grace }
+            } else {
+                // The mode is time-boxed by definition, so it cannot be turned
+                // on without saying for how long.
+                errors.missing(format!("tenant[{index}].refresh.rotation_grace_seconds"));
+                Rotation::None
+            }
+        }
+        Some(other) => {
+            errors.problem(
+                format!("tenant[{index}].refresh.rotation"),
+                format!("unknown rotation mode {other:?}; expected \"none\" or \"migration\""),
+            );
+            Rotation::None
+        }
+    };
+
+    RefreshPolicy {
+        absolute_lifetime: absolute,
+        idle_lifetime: idle,
+        bind_to_dpop_key: raw.bind_to_dpop_key.unwrap_or(default.bind_to_dpop_key),
+        rotation,
+    }
+    .clamped()
+}
+
+/// Reads one `…_seconds` key, reporting anything that is not positive.
+fn positive_seconds(
+    index: usize,
+    key: &str,
+    value: Option<i64>,
+    errors: &mut Collector,
+) -> Option<time::Duration> {
+    let value = value?;
+    if value <= 0 {
+        errors.problem(
+            format!("tenant[{index}].refresh.{key}"),
+            format!("must be a positive number of seconds, not {value}"),
+        );
+        return None;
+    }
+    Some(time::Duration::seconds(value))
 }
 
 /// Validates `[admin]`, the deployment admin seeded at boot (ADR-0010).
@@ -1136,6 +1267,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("keys", accepted_keys::<RawKeys>()),
         ("registration", accepted_keys::<RawRegistration>()),
         ("tenant", accepted_keys::<RawTenant>()),
+        ("tenant.refresh", accepted_keys::<RawRefresh>()),
         ("admin", accepted_keys::<RawAdmin>()),
         ("login", accepted_keys::<RawLogin>()),
     ]
@@ -1464,6 +1596,122 @@ mod tests {
     /// the one identifier a tenant is always known to own — UserInfo and
     /// introspection live under it. An operator who names nothing gets that
     /// rather than a token audienced at nothing.
+    /// FAPI 2.0 SP §5.3.2.1 item 9. A file that says nothing about refresh
+    /// tokens produces the compliant policy, not a permissive one.
+    #[test]
+    fn a_tenant_with_no_refresh_table_gets_the_fapi_default() {
+        // Arrange / Act
+        let config = parse(MINIMAL).expect("valid");
+
+        // Assert
+        assert_eq!(config.tenants[0].refresh, RefreshPolicy::default());
+        assert!(!config.tenants[0].refresh.rotates());
+        assert!(config.tenants[0].refresh.bind_to_dpop_key);
+    }
+
+    #[test]
+    fn a_migration_rotation_is_read_with_its_grace_window() {
+        // Arrange
+        let text = format!(
+            "{MINIMAL}\n[tenant.refresh]\nrotation = \"migration\"\n\
+             rotation_grace_seconds = 45\n"
+        );
+
+        // Act
+        let config = parse(&text).expect("valid");
+
+        // Assert
+        assert_eq!(
+            config.tenants[0].refresh.rotation,
+            Rotation::Migration {
+                grace: time::Duration::seconds(45)
+            }
+        );
+    }
+
+    /// The mode is time-boxed by definition, so it cannot be turned on
+    /// without saying for how long a superseded token stays acceptable.
+    #[test]
+    fn a_migration_rotation_without_a_grace_window_is_refused() {
+        // Arrange
+        let text = format!("{MINIMAL}\n[tenant.refresh]\nrotation = \"migration\"\n");
+
+        // Act
+        let error = parse(&text).expect_err("must be refused");
+
+        // Assert
+        let ConfigError::Invalid(problems) = error else {
+            panic!("expected a validation failure");
+        };
+        assert_eq!(
+            problems.paths().collect::<Vec<_>>(),
+            ["tenant[0].refresh.rotation_grace_seconds"]
+        );
+    }
+
+    /// The mirror image, and the one worth refusing rather than ignoring: an
+    /// operator who wrote a grace window believes rotation is on.
+    #[test]
+    fn a_grace_window_without_rotation_is_refused() {
+        // Arrange
+        let text = format!("{MINIMAL}\n[tenant.refresh]\nrotation_grace_seconds = 45\n");
+
+        // Act
+        let error = parse(&text).expect_err("must be refused");
+
+        // Assert
+        let ConfigError::Invalid(problems) = error else {
+            panic!("expected a validation failure");
+        };
+        assert_eq!(
+            problems.paths().collect::<Vec<_>>(),
+            ["tenant[0].refresh.rotation_grace_seconds"]
+        );
+    }
+
+    /// Zero is a policy — a machine integration with no idle clock — and a
+    /// negative number is a mistake. They must not be read as the same thing.
+    #[test]
+    fn a_zero_idle_lifetime_disables_the_idle_clock_and_a_negative_one_is_refused() {
+        // Arrange
+        let disabled = format!("{MINIMAL}\n[tenant.refresh]\nidle_lifetime_seconds = 0\n");
+        let negative = format!("{MINIMAL}\n[tenant.refresh]\nidle_lifetime_seconds = -1\n");
+
+        // Act
+        let config = parse(&disabled).expect("zero is a policy");
+        let error = parse(&negative).expect_err("negative is a mistake");
+
+        // Assert
+        assert_eq!(config.tenants[0].refresh.idle_lifetime, None);
+        let ConfigError::Invalid(problems) = error else {
+            panic!("expected a validation failure");
+        };
+        assert_eq!(
+            problems.paths().collect::<Vec<_>>(),
+            ["tenant[0].refresh.idle_lifetime_seconds"]
+        );
+    }
+
+    /// An idle window past the absolute deadline is a setting with no effect,
+    /// so it is clamped rather than obeyed or ignored.
+    #[test]
+    fn an_idle_window_longer_than_the_absolute_lifetime_is_clamped() {
+        // Arrange
+        let text = format!(
+            "{MINIMAL}\n[tenant.refresh]\nabsolute_lifetime_seconds = 3600\n\
+             idle_lifetime_seconds = 86400\n"
+        );
+
+        // Act
+        let config = parse(&text).expect("valid");
+
+        // Assert
+        assert_eq!(
+            config.tenants[0].refresh.idle_lifetime,
+            Some(time::Duration::hours(1))
+        );
+    }
+
     #[test]
     fn a_tenant_that_names_no_default_resource_is_audienced_at_its_issuer() {
         let text = "[keys]\nkek_env = \"K\"\n\n[database]\nurl = \"x\"\n\n[[tenant]]\nid = \"demo\"\n\

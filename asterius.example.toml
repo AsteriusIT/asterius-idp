@@ -157,6 +157,47 @@ issuer = "https://as.example/t/demo"
 # server compares to decide a token was meant for it.
 # default_resource = "https://api.example/"
 
+# What this tenant does with refresh tokens (RFC 6749 §6, FAPI 2.0 SP
+# §5.3.2.1).
+#
+# Omit the table entirely and you get the profile's position, which is the one
+# you want: no rotation, and a refresh token that only works when presented
+# with the DPoP key it was issued to.
+#
+# [tenant.refresh]
+#
+# How long a refresh token may live at all, counted from issuance. It never
+# moves — using the token does not push it out — which is what makes it the one
+# deadline somebody holding a stolen token cannot extend. Default 30 days.
+# absolute_lifetime_seconds = 2592000
+#
+# How long it may sit unused. This one *does* move: every successful refresh
+# pushes it out, so it asks whether the integration is still in use rather than
+# whether the authorization is still fresh. Capped at the absolute lifetime.
+# `0` switches the idle clock off entirely. Default 14 days.
+# idle_lifetime_seconds = 1209600
+#
+# Whether the token may only be presented with the DPoP key it was issued to
+# (RFC 9449 §5). On by default, which is the stricter of the two readings the
+# RFC leaves open for a confidential client: with it on, a refresh token copied
+# out of a client's store is useless without that client's DPoP private key as
+# well as its credentials.
+# bind_to_dpop_key = true
+#
+# FAPI 2.0 SP §5.3.2.1 item 9: an authorization server "shall not use refresh
+# token rotation except in extraordinary circumstances". `"migration"` is
+# Note 1's exception and exists for exactly one situation — moving off a server
+# that rotated, where clients in the field discard any refresh token they did
+# not just receive. It is a compatibility shim, not a hardening measure, and it
+# is meant to be turned off again once the fleet has been through it.
+# rotation = "none"
+#
+# Required with `rotation = "migration"`, and refused without it. How long the
+# superseded token stays acceptable, so a client that crashed between receiving
+# the response and storing it can retry. At most an hour: it is a window in
+# which two refresh tokens are live for one grant.
+# rotation_grace_seconds = 30
+
 # The deployment admin (ADR-0010).
 #
 # Omit this table and nothing is seeded: an account that administers every

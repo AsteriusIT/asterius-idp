@@ -217,6 +217,12 @@ impl PgAdminSeed {
                 // Not forced active: an operator who suspended this tenant did
                 // it on purpose, and a restart is not consent to undo it.
                 status: existing.as_ref().map_or(TenantStatus::Active, |t| t.status),
+                // Whatever the row already said, or the FAPI 2.0 default. The
+                // seed re-asserts the admin tenant on every boot and must not
+                // be the thing that reverts a refresh policy an operator set.
+                refresh: existing
+                    .as_ref()
+                    .map_or_else(Default::default, |t| t.refresh),
                 created_at: now,
                 updated_at: now,
             })

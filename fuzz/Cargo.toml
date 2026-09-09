@@ -280,6 +280,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "refresh_token"
+path = "fuzz_targets/refresh_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "refresh_token_scope"
+path = "fuzz_targets/refresh_token_scope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "request_uri"
 path = "fuzz_targets/request_uri.rs"
 test = false

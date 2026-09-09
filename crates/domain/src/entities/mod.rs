@@ -19,7 +19,7 @@ pub use grant::{
     ClaimedGrant, Grant, GrantError, GrantRecord, GrantStatus, LiveAccessToken, RevocationReason,
 };
 pub use role::{Role, RoleScope, UserRole};
-pub use tenant::{Tenant, TenantStatus};
+pub use tenant::{RefreshPolicy, RefreshPolicyError, Rotation, Tenant, TenantStatus};
 pub use user::{
     Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier,
     SubjectError, User, UserId, UserStatus,

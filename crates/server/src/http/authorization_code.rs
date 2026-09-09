@@ -37,16 +37,19 @@ use asterius_domain::ports::SessionRepository;
 use asterius_domain::{Client, DomainError, Grant, Kid, Tenant};
 use asterius_oidc::form::Parameters;
 use asterius_oidc::tokens::JwtId;
-use asterius_oidc::tokens::access::{AccessToken, Audience, Authentication, Confirmation};
-use asterius_oidc::tokens::id_token::IdToken;
+use asterius_oidc::tokens::access::{AccessToken, Confirmation};
 use asterius_oidc::{code, pkce};
-use asterius_store_pg::{PgCodeRepository, PgGrantRepository, PgUserRepository, Redemption};
+use asterius_store_pg::{
+    NewRefreshToken, PgCodeRepository, PgGrantRepository, PgRefreshTokenRepository,
+    PgUserRepository, Redemption,
+};
 use axum::Json;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use time::OffsetDateTime;
 
 use crate::http::dpop;
+use crate::http::issuance;
 use crate::http::token::{GrantHandler, not_issued, refused};
 
 /// What every refusal in this file says.
@@ -70,6 +73,9 @@ pub struct AuthorizationCode<'a> {
     pub codes: &'a PgCodeRepository,
     /// Grants for this tenant.
     pub grants: &'a PgGrantRepository,
+    /// Refresh tokens for this tenant, written only when the grant carries
+    /// `offline_access` (OIDC Core §11).
+    pub refresh_tokens: &'a PgRefreshTokenRepository,
     /// Sessions for this tenant, for `auth_time`, `acr` and `amr`.
     pub sessions: &'a dyn SessionRepository,
     /// Users for this tenant, read only to resolve the claims the grant
@@ -98,37 +104,6 @@ impl std::fmt::Debug for AuthorizationCode<'_> {
             .field("now", &self.now)
             .finish_non_exhaustive()
     }
-}
-
-/// What the session the grant was made in contributes to the tokens.
-///
-/// The two travel together because they come from one row and mean nothing
-/// apart: `auth_time`, `acr` and `amr` say *when and how* the person
-/// authenticated, and `sid` names the session they did it in.
-struct SessionFacts {
-    authentication: Authentication,
-    /// The session's public identifier, never its lookup digest.
-    sid: String,
-}
-
-/// What one redemption contributes to its ID token.
-///
-/// A struct rather than five more parameters, because four of the five are
-/// values this redemption computed a moment earlier and the fifth — `released`
-/// — is the one a reader has to be able to see is *the grant's*. A signature
-/// long enough that its arguments are matched by position is a signature in
-/// which the request's claims could be passed instead.
-struct IdTokenParts<'a> {
-    /// The authority the tokens are minted from.
-    claimed: &'a asterius_domain::ClaimedGrant,
-    /// `auth_time`, `acr`, `amr` and `sid`.
-    session: &'a SessionFacts,
-    /// The signed access token, for OIDC Core §3.1.3.6's `at_hash`.
-    access_token: &'a str,
-    /// `nonce`, echoed byte-exact when the authorization request carried one.
-    nonce: Option<&'a str>,
-    /// The claims the grant covers, from `claims::resolve_for_grant`.
-    released: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Why a redemption stopped.
@@ -253,21 +228,9 @@ impl AuthorizationCode<'_> {
         }
         let claimed = self.grants.claim(&binding.grant_id, self.now).await?;
 
-        let session = self.authentication(&grant).await?;
+        let session = issuance::session_facts(self.sessions, &grant).await?;
 
-        // RFC 9068 §3: an access token must name a resource. `of_grant` is
-        // `None` until resource indicators land (`ast-gxh.7`), and the tenant's
-        // configured default is what fills it — chosen by an operator rather
-        // than invented at signing time.
-        let audience = match Audience::of_grant(&grant) {
-            Some(audience) => audience,
-            None => Audience::new([tenant.default_resource.as_str()]).map_err(|_| {
-                Failure::Server(DomainError::invalid(
-                    "default_resource",
-                    "this tenant's default resource is not a usable audience",
-                ))
-            })?,
-        };
+        let audience = issuance::audience(tenant, &grant)?;
 
         let confirmation = Confirmation::dpop(jkt).map_err(|_| {
             Failure::Server(DomainError::invalid(
@@ -316,15 +279,27 @@ impl AuthorizationCode<'_> {
         // the grant is an OpenID Connect one. `openid` is on the grant rather
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
-            let parts = IdTokenParts {
+            let parts = issuance::IdTokenParts {
                 claimed: &claimed,
                 session: &session,
                 access_token: access_token.as_str(),
                 nonce: binding.nonce.as_deref(),
-                // From the grant, never from the request. See `released_claims`.
-                released: self.released_claims(&grant).await?,
+                // From the grant, never from the request. See
+                // `issuance::released_claims`.
+                released: issuance::released_claims(self.users, &grant).await?,
             };
-            Some(self.sign_id_token(tenant, client, parts).await?)
+            Some(issuance::sign_id_token(self.signer, tenant, client, parts, self.now).await?)
+        } else {
+            None
+        };
+
+        // OIDC Core §11: `offline_access` is what asks for a refresh token,
+        // and the scope is on the *grant* rather than on this request because
+        // it was settled at consent. A code flow without it gets an access
+        // token and nothing else, which is the ordinary case and the one that
+        // leaves no long-lived credential behind to steal.
+        let refresh_token = if grant.scopes.contains("offline_access") {
+            Some(self.issue_refresh_token(tenant, &grant, jkt).await?)
         } else {
             None
         };
@@ -333,7 +308,54 @@ impl AuthorizationCode<'_> {
             &grant,
             access_token.as_str(),
             id_token.as_deref(),
+            refresh_token.as_deref(),
         ))
+    }
+
+    /// Mints the refresh token an `offline_access` grant earns.
+    ///
+    /// The value is generated here, handed to the client once, and never
+    /// stored: what reaches the database is its SHA-256 (`ast-a05.5`). The two
+    /// deadlines come from the tenant's policy and are computed against
+    /// `self.now`, the same instant every other check in this redemption used.
+    ///
+    /// It is bound to the DPoP key this redemption proved. FAPI 2.0 forbids a
+    /// bearer refresh token and the schema says so with a `CHECK`, so there is
+    /// no path here that could write one.
+    async fn issue_refresh_token(
+        &self,
+        tenant: &Tenant,
+        grant: &Grant,
+        jkt: &Kid,
+    ) -> Result<String, Failure> {
+        let policy = tenant.refresh;
+        let absolute_expires_at = self.now + policy.absolute_lifetime;
+        let minted = asterius_oidc::refresh::MintedRefreshToken::generate();
+
+        self.refresh_tokens
+            .issue(
+                minted.digest(),
+                &NewRefreshToken {
+                    grant: grant.id.clone(),
+                    client: grant.client.clone(),
+                    // The granted set, not the request's: a refresh token is
+                    // the authority to come back later, and it comes back for
+                    // what the user approved. Narrowing happens at the refresh
+                    // itself (RFC 6749 §6), where it is the client's choice.
+                    scopes: grant.scopes.clone(),
+                    dpop_jkt: jkt.as_str().to_owned(),
+                    absolute_expires_at,
+                    idle_expires_at: policy
+                        .idle_lifetime
+                        // Capped at the absolute deadline, which the schema
+                        // also refuses to store the other way round.
+                        .map(|idle| (self.now + idle).min(absolute_expires_at)),
+                },
+                self.now,
+            )
+            .await?;
+
+        Ok(minted.expose().to_owned())
     }
 
     /// OIDC Core §3.1.3.2 and threat model A1/G1 on `ast-a05.2`.
@@ -404,151 +426,16 @@ impl AuthorizationCode<'_> {
         })
     }
 
-    /// `auth_time`, `acr` and `amr`, from the session the grant was made in.
-    ///
-    /// Not optional, and not defaulted. OIDC Core §2 makes `auth_time` a
-    /// statement about when the user actually authenticated; inventing one
-    /// from the grant's own timestamps would produce a claim a relying party
-    /// uses for step-up decisions and that this server cannot stand behind. A
-    /// grant whose session has gone is a server-side inconsistency, so it is
-    /// reported as one rather than papered over.
-    async fn authentication(&self, grant: &Grant) -> Result<SessionFacts, Failure> {
-        let digest = grant.session.as_ref().ok_or_else(|| {
-            Failure::Server(DomainError::invalid(
-                "grant",
-                "an authorization_code grant names no session",
-            ))
-        })?;
-        let session = self.sessions.find(digest.as_str()).await?.ok_or_else(|| {
-            Failure::Server(DomainError::invalid(
-                "session",
-                "the session this grant was made in no longer exists",
-            ))
-        })?;
-
-        Ok(SessionFacts {
-            authentication: Authentication {
-                authenticated_at: session.authenticated_at,
-                acr: session.acr.clone(),
-                amr: session
-                    .amr
-                    .iter()
-                    .map(|method| method.as_str().to_owned())
-                    .collect(),
-            },
-            // Not `id_digest`: that is the lookup key and it is rewritten on
-            // every rotation. See `Session::public_sid` (`ast-o4u.5`).
-            sid: session.public_sid.clone(),
-        })
-    }
-
-    /// The claims this grant releases into its ID token.
-    ///
-    /// Read from the grant and from the user row, and from nothing else. The
-    /// authorization request is not consulted: it says what a client asked
-    /// for, and an hour and a consent screen separate that from what this
-    /// token may carry.
-    ///
-    /// A grant with no user, or whose user is gone, is a server-side
-    /// inconsistency and is reported as one — the same treatment
-    /// [`Self::authentication`] gives a vanished session. Releasing nothing
-    /// instead would mint an authentication assertion about somebody this
-    /// server can no longer describe.
-    async fn released_claims(
-        &self,
-        grant: &Grant,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, Failure> {
-        let id = grant.user.ok_or_else(|| {
-            Failure::Server(DomainError::invalid(
-                "grant",
-                "an authorization_code grant names no user",
-            ))
-        })?;
-        let user = self.users.find(id).await?.ok_or_else(|| {
-            Failure::Server(DomainError::invalid(
-                "user",
-                "the user this grant was made for no longer exists",
-            ))
-        })?;
-        let resolved = asterius_oidc::claims::resolve_for_grant(&user, grant).map_err(|error| {
-            // The request was validated at PAR and re-serialised canonically
-            // onto the grant, so a stored one that no longer parses is a
-            // damaged row rather than a bad request.
-            Failure::Server(DomainError::invalid("claims", error.to_string()))
-        })?;
-        Ok(resolved.id_token)
-    }
-
-    /// Builds and signs the ID token.
-    ///
-    /// The access token is signed first and handed in whole, because OIDC Core
-    /// §3.1.3.6's `at_hash` is over the *signed* token and is computed under
-    /// the ID token's own `alg`. The algorithm is the client's registered
-    /// `id_token_signed_response_alg`, carried into the signer rather than left
-    /// to whichever key it would otherwise reach for — a tenant with no key of
-    /// that algorithm refuses (`ast-a05.12`, `ast-a05.14`).
-    ///
-    /// `sid` is the session's `public_sid`, never its `id_digest`: the digest
-    /// is the lookup key the session store takes, and it is rewritten on every
-    /// rotation, while OIDC Back-Channel Logout 1.0 §2.4 needs a value a
-    /// relying party can still recognise afterwards (`ast-o4u.5`).
-    async fn sign_id_token(
-        &self,
-        tenant: &Tenant,
-        client: &Client,
-        parts: IdTokenParts<'_>,
-    ) -> Result<String, Failure> {
-        let IdTokenParts {
-            claimed,
-            session,
-            access_token,
-            nonce,
-            released,
-        } = parts;
-        let mut builder = IdToken::new(
-            &tenant.issuer,
-            claimed,
-            client.registration.id_token_signed_response_alg,
-            session.authentication.clone(),
-            access_token,
-            self.now,
-        );
-        // OIDC Core §3.1.3.7 item 11: echoed byte-exact, and only when the
-        // authorization request carried one.
-        if let Some(nonce) = nonce {
-            builder = builder.with_nonce(nonce);
-        }
-        builder = builder.for_session(
-            asterius_oidc::tokens::id_token::Session::new(&asterius_domain::SessionId::new(
-                session.sid.clone(),
-            ))
-            .map_err(|e| Failure::Server(DomainError::invalid("sid", e.to_string())))?,
-        );
-        // `releasing` takes a plain map, so `IdToken::build` re-checks it
-        // against `ClaimName::SERVER_ISSUED` rather than trusting that it came
-        // from `claims::resolve`.
-        builder = builder.releasing(released);
-        let unsigned = builder
-            .build()
-            .map_err(|e| Failure::Server(DomainError::invalid("id_token", e.to_string())))?;
-
-        let signed = self
-            .signer
-            .sign(
-                &tenant.id,
-                unsigned.required_algorithm(),
-                unsigned.typ(),
-                unsigned.claims(),
-            )
-            .await?;
-        Ok(signed.as_str().to_owned())
-    }
-
     /// RFC 6749 §5.1 and OIDC Core §3.1.3.3.
     ///
     /// `Cache-Control` is not set here: the token endpoint applies it to every
     /// response, so that it cannot be the one thing a grant forgets.
-    fn response(grant: &Grant, access_token: &str, id_token: Option<&str>) -> Response {
+    fn response(
+        grant: &Grant,
+        access_token: &str,
+        id_token: Option<&str>,
+        refresh_token: Option<&str>,
+    ) -> Response {
         let mut body = json!({
             "access_token": access_token,
             // RFC 9449 §5: a DPoP-bound access token is `DPoP`, not `Bearer`,
@@ -569,6 +456,13 @@ impl AuthorizationCode<'_> {
             && let Some(object) = body.as_object_mut()
         {
             object.insert("id_token".to_owned(), json!(id_token));
+        }
+        // RFC 6749 §5.1 makes `refresh_token` OPTIONAL, and it is present
+        // exactly when the grant carries `offline_access` (OIDC Core §11).
+        if let Some(refresh_token) = refresh_token
+            && let Some(object) = body.as_object_mut()
+        {
+            object.insert("refresh_token".to_owned(), json!(refresh_token));
         }
         (axum::http::StatusCode::OK, Json(body)).into_response()
     }
