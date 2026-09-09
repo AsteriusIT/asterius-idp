@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into credentials\n                 (tenant_id, credential_id, user_id, kind, password_hash, label)\n             values ($1, $2, $3, 'password', $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fe9a771ce7a1e6df9216942902b149bdfe3b3c752f27aa623c8dbf545908be6a"
+}

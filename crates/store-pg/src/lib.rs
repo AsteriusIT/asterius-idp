@@ -7,6 +7,7 @@
 //! [ADR-0001](../../../docs/adr/0001-modular-monolith.md).
 #![forbid(unsafe_code)]
 
+mod admin_seed;
 mod audit;
 mod auth_requests;
 mod clients;
@@ -19,6 +20,7 @@ mod passwords;
 mod replay;
 mod retention;
 mod rewrap;
+mod roles;
 mod salts;
 mod scope;
 mod sessions;
@@ -27,6 +29,7 @@ mod store;
 mod tenants;
 mod users;
 
+pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;
 pub use clients::PgClientRepository;
@@ -39,6 +42,7 @@ pub use passwords::PgPasswordVerifier;
 pub use replay::PgReplayGuard;
 pub use retention::{POLICY, PgRetention, Retention, Rule, Sweep, SweepOutcome};
 pub use rewrap::{PgKekRewrap, Rewrap, RewrapOutcome};
+pub use roles::PgRoleRepository;
 pub use scope::TenantScope;
 pub use sessions::PgSessionRepository;
 pub use store::{MIGRATOR, Store};

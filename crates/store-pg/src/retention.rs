@@ -154,6 +154,13 @@ pub const POLICY: &[Retention] = &[
         rule: Rule::Kept("a passkey or password lives as long as its account"),
     },
     Retention {
+        table: "user_roles",
+        rule: Rule::Kept(
+            "authority is granted and revoked by a person: a deployment admin \
+             whose role expired on a timer is a deployment nobody can administer",
+        ),
+    },
+    Retention {
         table: "sessions",
         rule: Rule::Sweep {
             // The absolute deadline only, matching

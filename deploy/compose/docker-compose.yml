@@ -44,6 +44,16 @@ services:
       # mounts it as a file rather than passing it in the environment, where it
       # is readable through /proc/self/environ.
       ASTERIUS_KEK: "YXN0ZXJpdXMtZGV2LWtlay1ub3QtYS1zZWNyZXQhISE="
+      # The deployment admin's initial password, from *your* environment and
+      # not from this file. A literal here would be a credential shared by
+      # every copy of this repository, and `docker compose up` failing with
+      # this message is better than a stack that starts with a known admin
+      # password:
+      #
+      #     export ASTERIUS_ADMIN_PASSWORD="$(head -c 24 /dev/urandom | base64)"
+      #
+      # Production mounts a file and sets `admin.password_file` instead.
+      ASTERIUS_ADMIN_PASSWORD: ${ASTERIUS_ADMIN_PASSWORD:?export ASTERIUS_ADMIN_PASSWORD before starting the stack; it seeds the deployment admin}
     ports:
       # Loopback only. The stack terminates no TLS (see asterius.toml), so
       # exposing it on 0.0.0.0 would publish an OpenID Provider over cleartext.

@@ -14,15 +14,22 @@ short.
 ## The example stack
 
 ```sh
+export ASTERIUS_ADMIN_PASSWORD="$(head -c 24 /dev/urandom | base64)"
 docker compose -f deploy/compose/docker-compose.yml up --build -d
 ./scripts/smoke-test.sh
 ```
+
+The password is exported rather than written into the compose file on purpose:
+it seeds the deployment admin, and a literal in a file everybody clones is a
+credential everybody has. The stack refuses to start without it.
 
 The smoke test asserts what an operator would check by hand: the process is
 alive, it is ready (which means the database answered *and* every migration
 compiled into the binary is recorded applied), the `demo` tenant answers on both
 well-known forms, its JWKS publishes a public key and no private one, an unknown
-tenant is a 404 — and the container is running non-root, read-only and without a
+tenant is a 404, the seeded deployment admin exists in the reserved tenant with
+a deployment-scoped role and authenticated at boot, the reserved tenant refuses
+to be deleted — and the container is running non-root, read-only and without a
 shell.
 
 Everything in that stack is a development value, and every file says so. Before
@@ -33,6 +40,7 @@ this shape is safe anywhere real:
 | Terminate TLS, in front or in-process | The example speaks cleartext on the loopback. FAPI 2.0 SP §5.2 requires TLS on every endpoint. |
 | Replace `ASTERIUS_KEK` with a mounted `keys.kek_file` | The example KEK is in the compose file, and an environment variable is readable through `/proc/self/environ`. |
 | Replace the database password | `asterius:asterius` is not a credential. |
+| Replace `ASTERIUS_ADMIN_PASSWORD` with a mounted `admin.password_file` | The variable is fine for a demo you started by hand; a real deployment mounts the admin password from its secret store, and rotating it is an edit to that file and a restart. |
 | Give PostgreSQL real storage and backups | The example uses one local volume and no backup. Losing the database loses every key, grant and session. |
 
 ## The image

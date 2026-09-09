@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select role, granted_at from user_roles\n              where tenant_id = $1 and user_id = $2\n              order by role",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "granted_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "de88df497ff0fb1f1c95cb22a3a0727278413aa811a7bccc1d8f0f49fdda6bc5"
+}

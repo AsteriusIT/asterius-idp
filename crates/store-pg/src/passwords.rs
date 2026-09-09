@@ -87,6 +87,26 @@ impl PgPasswordVerifier {
         hash(&argon2(self.parameters), password).map_err(|e| DomainError::Storage(Box::new(e)))
     }
 
+    /// Whether `password` is the one behind `stored`.
+    ///
+    /// No database, no user, and deliberately no dummy verification: this is
+    /// not a login path. Its one caller is the deployment-admin seed, which
+    /// asks "is the configured password already the stored one?" so that a
+    /// restart does not rewrite a hash it does not need to. There is no
+    /// enumeration to hide, because the caller already holds both values.
+    ///
+    /// An unparseable stored hash is `false` rather than an error: it cannot
+    /// verify anything, and the caller's next move — replace it — is the same
+    /// either way.
+    #[must_use]
+    pub fn matches(&self, stored: &str, password: &str) -> bool {
+        PasswordHash::new(stored).is_ok_and(|parsed| {
+            argon2(self.parameters)
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok()
+        })
+    }
+
     /// Whether a stored hash was computed with weaker parameters than these.
     ///
     /// Used to rehash on the next successful login — the only moment the

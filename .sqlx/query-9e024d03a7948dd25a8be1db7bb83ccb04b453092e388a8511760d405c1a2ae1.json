@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into user_roles (tenant_id, user_id, role, tenant_is_reserved)\n             select $1, $2, $3, t.is_reserved\n               from tenants t\n              where t.tenant_id = $1\n             on conflict (tenant_id, user_id, role) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9e024d03a7948dd25a8be1db7bb83ccb04b453092e388a8511760d405c1a2ae1"
+}

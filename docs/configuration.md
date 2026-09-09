@@ -112,9 +112,21 @@ A tenant is an issuer. This array is the source of truth for which tenants exist
 | `tenant.issuer` | https URL, no query, no fragment | **required** | Normalised once at startup — scheme and host lower-cased, a default `:443` dropped, a trailing slash removed — and the canonical form is what appears in every `iss` claim (RFC 8414 §2, OIDC Discovery §3). |
 | `tenant.default_resource` | https URL, no fragment | the tenant's `issuer` | The `aud` an access token carries when the authorization request named no `resource` of its own (RFC 8707 §2, RFC 9068 §3). The default means "a token for this server's own protected resources"; a deployment fronting a separate API names that API here. |
 
+## `[admin]` — the deployment admin
+
+Omit the table and nothing is seeded. A deployment admin is a user of a *reserved tenant* holding a deployment-scoped role (ADR-0010): the tenant is created if it is absent, marked reserved, and cannot be deleted afterwards — the cascade from `tenants` is what would otherwise remove every admin in one statement. The seed runs on every boot and is idempotent; it finishes by verifying the configured password through the ordinary login verifier, and the server refuses to start if the account it just asserted could not sign in.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `admin.tenant` | string | `"admin"` | The reserved tenant's id. It must not also be declared as a `[[tenant]]`: the seed is what creates and marks it. Discoverable by anyone who can list tenants, deliberately — an admin surface that hides where its authority lives is harder to audit, not safer. |
+| `admin.issuer` | https URL, no query, no fragment | **required** when `[admin]` is present | The reserved tenant is a real tenant and needs an issuer like any other, with the same normalisation and the same host check. Its login surface therefore deserves the same scrutiny as any tenant's. |
+| `admin.username` | string | `"admin"` | The login identifier, unique within the reserved tenant. |
+| `admin.password_file` | path (**points at a secret**) | **required**, unless `password_env` is set | The production shape: a file the orchestrator mounts read-only. Leading and trailing whitespace is stripped, so a trailing newline is not part of the password. |
+| `admin.password_env` | variable name (**names a secret**) | **required**, unless `password_file` is set | The named variable, injected by the orchestrator. Readable through `/proc/self/environ`, so the file is preferred. There is no key that takes the password itself: a credential written in the file is a credential in version control and in every copy of the image. |
+
 ## Secret sources
 
-Four values in this file are credentials, and each has a supported production
+Five values in this file are credentials, and each has a supported production
 shape. Nothing here belongs in an image layer, in a `docker-compose.yml` or in
 version control; the example stack under `deploy/compose/` uses obvious
 development values and says so in every file.
@@ -126,6 +138,7 @@ development values and says so in every file.
 | Database password | `database.url` | `ASTERIUS__DATABASE__URL` from the same secret store. The value is held redacted in the process and prints as `[REDACTED]` wherever the configuration is logged. |
 | TLS private key | `server.tls.private_key` | A read-only mount, rotated by whatever issues the certificate. The process reads it at startup. |
 | Initial access tokens | `registration.initial_access_tokens` | Only needed under `mode = "initial_access_token"`. Hashed at startup, so the running process holds nothing replayable. |
+| Deployment admin password | `admin.password_file`, `admin.password_env` | A read-only mount, or a variable from the same secret store. Hashed with Argon2id at startup, so the database holds no plaintext; the source is read on every boot, which is what makes rotating it an edit to the secret and a restart. |
 
 Rotating the key-encryption key is not a restart with a new value: the old key
 must still be able to open existing rows while they are re-wrapped. Until the

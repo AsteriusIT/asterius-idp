@@ -18,6 +18,9 @@
 #   TIMEOUT    seconds to wait for readiness. Default 90
 #   CONTAINER  compose service to inspect for the container hardening checks.
 #              Default asterius; set to "" to skip them.
+#   ADMIN_TENANT   the reserved tenant the deployment admin lives in.
+#                  Default admin. Set to "" to skip the admin checks.
+#   ADMIN_USERNAME the seeded admin's login identifier. Default admin.
 set -euo pipefail
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:9443}"
@@ -25,6 +28,8 @@ TENANT="${TENANT:-demo}"
 ISSUER="${ISSUER:-https://localhost:9443/t/${TENANT}}"
 TIMEOUT="${TIMEOUT:-90}"
 CONTAINER="${CONTAINER:-asterius}"
+ADMIN_TENANT="${ADMIN_TENANT:-admin}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 COMPOSE_FILE="${COMPOSE_FILE:-$(dirname "$0")/../deploy/compose/docker-compose.yml}"
 
 # The `Host` header decides which tenant a request is speaking to, and it has
@@ -143,7 +148,65 @@ printf '\nisolation\n'
 expect_eq "an unknown tenant is 404, not a default one" \
   "$(status_of /t/does-not-exist/.well-known/openid-configuration)" "404"
 
-# --- 6. the container is hardened -------------------------------------------
+# --- 6. the deployment is administrable ------------------------------------
+# ADR-0010: a deployment admin is a user of a reserved tenant holding a
+# deployment-scoped role. This is the half of `ast-p2l.7`'s acceptance
+# criterion that the tenant checks above do not cover — "an admin seeded".
+#
+# Asserted against the database rather than over HTTP because the admin API is
+# not built yet (`ast-f7m.3`); when it is, the login half of this becomes a
+# request like any other. What is *not* deferred is authentication: the server
+# verifies the seeded password through the ordinary login verifier at boot and
+# refuses to start otherwise, so the log line below is the proof that the
+# credential in the database matches the configured one.
+if [ -n "$ADMIN_TENANT" ] && command -v docker >/dev/null 2>&1; then
+  printf '\ndeployment admin (reserved tenant %s)\n' "$ADMIN_TENANT"
+
+  psql() {
+    docker compose -f "$COMPOSE_FILE" exec -T db \
+      psql -U asterius -d asterius -tAc "$1" 2>/dev/null | tr -d '[:space:]'
+  }
+
+  if [ -z "$(docker compose -f "$COMPOSE_FILE" ps -q db 2>/dev/null || true)" ]; then
+    printf '  skip  no running db container to inspect\n'
+  else
+    expect_eq "the reserved tenant exists and is marked reserved" \
+      "$(psql "select is_reserved from tenants where tenant_id = '${ADMIN_TENANT}'")" "t"
+
+    expect_eq "the seeded admin holds a deployment-scoped role" \
+      "$(psql "select count(*) from user_roles r
+                 join users u on u.tenant_id = r.tenant_id and u.user_id = r.user_id
+                where r.tenant_id = '${ADMIN_TENANT}'
+                  and u.username = '${ADMIN_USERNAME}'
+                  and r.role = 'deployment_admin'")" "1"
+
+    expect_eq "the seeded admin has a password credential" \
+      "$(psql "select count(*) from credentials c
+                 join users u on u.tenant_id = c.tenant_id and u.user_id = c.user_id
+                where c.tenant_id = '${ADMIN_TENANT}'
+                  and u.username = '${ADMIN_USERNAME}'
+                  and c.kind = 'password'
+                  and c.password_hash like '\$argon2id\$%'")" "1"
+
+    # The credential is only as good as the login that accepts it. The server
+    # ran that login at boot, against the password the configuration names.
+    if docker compose -f "$COMPOSE_FILE" logs "$CONTAINER" 2>/dev/null \
+         | grep -q 'deployment admin ready'; then
+      pass "the seeded admin authenticated with the configured password at boot"
+    else
+      fail "the server logged no successful deployment-admin seed"
+    fi
+
+    # Protection 1 of ADR-0010, enforced in the database: the cascade that
+    # removes an ordinary tenant's users must not be able to reach a deployment
+    # admin. Nothing is deleted — the statement is refused.
+    psql "delete from tenants where tenant_id = '${ADMIN_TENANT}'" >/dev/null 2>&1 || true
+    expect_eq "the reserved tenant refuses to be deleted" \
+      "$(psql "select count(*) from tenants where tenant_id = '${ADMIN_TENANT}'")" "1"
+  fi
+fi
+
+# --- 7. the container is hardened -------------------------------------------
 # Asserted through `docker inspect` rather than by running anything inside the
 # container: there is nothing in there to run, which is the point.
 if [ -n "$CONTAINER" ] && command -v docker >/dev/null 2>&1; then

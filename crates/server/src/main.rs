@@ -2,14 +2,14 @@
 #![forbid(unsafe_code)]
 
 use asterius_domain::ports::TenantRepository as _;
-use asterius_domain::{Argon2Parameters, Lifetimes, ReplayGuard};
+use asterius_domain::{Argon2Parameters, Lifetimes, ReplayGuard, Secret};
 use asterius_domain::{Feature, Tenant, TenantStatus};
 use asterius_jose::LocalKek;
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::kek::Kek;
 use asterius_oidc::{code, par};
 use asterius_server::client_auth::ClientAuthenticator;
-use asterius_server::config::KekSource;
+use asterius_server::config::{AdminConfig, KekSource, PasswordSource};
 use asterius_server::http::dpop::DpopEndpoint;
 use asterius_server::http::protocol::{self, ClientEndpoints, ProtocolState};
 use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
@@ -22,8 +22,8 @@ use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{
-    PgAuditSink, PgKekRewrap, PgReplayGuard, PgRetention, PgTenantRepository, RewrapOutcome, Store,
-    TenantKeyStore,
+    DeploymentAdmin, PgAdminSeed, PgAuditSink, PgKekRewrap, PgReplayGuard, PgRetention,
+    PgTenantRepository, RewrapOutcome, Store, TenantKeyStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -102,6 +102,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
 
         let repository = PgTenantRepository::new(store.pool().clone(), Arc::clone(&kek));
         bootstrap_tenants(&repository, &config).await?;
+        bootstrap_admin(&store, &kek, config.admin.as_ref()).await?;
 
         let directory = TenantDirectory::new(Arc::new(repository));
         let tenant_state = TenantState::new(directory, &config.server);
@@ -223,10 +224,19 @@ async fn prepare_keys(
         Arc::new(PgAuditSink::new(store.pool().clone())),
     ));
 
-    for tenant in &config.tenants {
-        keys.apply_schedule(&tenant.id, OffsetDateTime::now_utc())
+    // The reserved tenant is prepared with the rest: it is a real tenant whose
+    // login page is where a deployment admin signs in, and a login that mints
+    // no session because the tenant has no signing key is a deployment nobody
+    // can administer.
+    let tenants = config
+        .tenants
+        .iter()
+        .map(|tenant| &tenant.id)
+        .chain(config.admin.as_ref().map(|admin| &admin.tenant));
+    for tenant in tenants {
+        keys.apply_schedule(tenant, OffsetDateTime::now_utc())
             .await
-            .map_err(|e| format!("cannot prepare signing keys for {}: {e}", tenant.id))?;
+            .map_err(|e| format!("cannot prepare signing keys for {tenant}: {e}"))?;
     }
 
     let signer: Arc<dyn asterius_domain::keys::Signer> = Arc::new(CachedSigner::new(
@@ -562,10 +572,95 @@ async fn bootstrap_tenants(repository: &PgTenantRepository, config: &Config) -> 
     Ok(())
 }
 
+/// Seeds the deployment admin the configuration declares (ADR-0010).
+///
+/// The reserved tenant, a user in it, a password and a deployment-scoped role,
+/// re-asserted idempotently on every boot exactly as `[[tenant]]` is. Nothing
+/// happens when `[admin]` is absent: an account that administers every tenant
+/// in the process is something an operator asks for.
+///
+/// A seeded admin that cannot sign in stops the boot. It is the one thing this
+/// function exists to produce, the failure is silent everywhere else — the
+/// console simply refuses a correct password — and a deployment nobody can
+/// administer should fail while somebody is watching.
+async fn bootstrap_admin(
+    store: &Store,
+    kek: &Arc<dyn Kek>,
+    admin: Option<&AdminConfig>,
+) -> Result<(), String> {
+    let Some(admin) = admin else {
+        tracing::info!("no [admin] table: no deployment admin is seeded");
+        return Ok(());
+    };
+
+    let password = read_password(&admin.password)?;
+    let seed = PgAdminSeed::new(
+        store.pool().clone(),
+        Arc::clone(kek),
+        // The same floor every other password in the deployment is hashed at.
+        // `ast-2vk.15` makes it configurable; until then a seeded admin must
+        // not be hashed more cheaply than a user.
+        Argon2Parameters::default(),
+    );
+
+    let seeded = seed
+        .ensure(&DeploymentAdmin {
+            tenant: admin.tenant.clone(),
+            issuer: admin.issuer.clone(),
+            username: admin.username.clone(),
+            password,
+        })
+        .await
+        .map_err(|e| format!("cannot seed the deployment admin: {e}"))?;
+
+    if !seeded.can_authenticate {
+        return Err(format!(
+            "the deployment admin {} in tenant {} cannot authenticate with the \
+             configured password: the account or its credential is disabled. Re-enable \
+             it, or remove [admin] if the deployment is meant to have no seeded admin",
+            admin.username, seeded.tenant
+        ));
+    }
+
+    tracing::info!(
+        tenant = %seeded.tenant,
+        username = %admin.username,
+        user = %seeded.user.as_uuid(),
+        new = seeded.created,
+        "deployment admin ready"
+    );
+    Ok(())
+}
+
+/// Reads the deployment admin's initial password from wherever it is kept.
+///
+/// Trimmed, because the usual way to write a secret to a file adds a newline
+/// and a password that silently includes one is a password that only works
+/// from that file. Never in the configuration file itself: see
+/// [`PasswordSource`].
+fn read_password(source: &PasswordSource) -> Result<Secret<String>, String> {
+    let raw = match source {
+        PasswordSource::File(path) => std::fs::read_to_string(path).map_err(|e| {
+            format!(
+                "cannot read the admin password from {}: {e}",
+                path.display()
+            )
+        })?,
+        PasswordSource::Env(variable) => std::env::var(variable).map_err(|_| {
+            format!("the admin password variable {variable} is not set in the environment")
+        })?,
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("the configured admin password is empty".to_owned());
+    }
+    Ok(Secret::new(trimmed.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Command, Invocation};
-    use asterius_server::config::KekSource;
+    use super::{Command, Invocation, read_password};
+    use asterius_server::config::{KekSource, PasswordSource};
     use std::ffi::OsString;
     use std::path::PathBuf;
 
@@ -647,6 +742,59 @@ mod tests {
         assert_eq!(
             invocation.config,
             PathBuf::from("/etc/asterius/asterius.toml")
+        );
+    }
+
+    // ---- the deployment admin's password ---------------------------------
+
+    /// Writes `content` to a uniquely named file under the temporary
+    /// directory. No `tempfile` dependency for three tests, and the name
+    /// carries the process id so parallel runs cannot collide.
+    fn a_file_containing(content: &str, tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "asterius-admin-password-{}-{tag}",
+            std::process::id()
+        ));
+        std::fs::write(&path, content).expect("write the fixture");
+        path
+    }
+
+    /// The usual way to put a secret in a file leaves a newline at the end of
+    /// it, and a password that silently includes one only works from that file.
+    #[test]
+    fn a_password_file_is_read_without_its_surrounding_whitespace() {
+        let path = a_file_containing("  a long enough passphrase\n", "trailing");
+
+        let password = read_password(&PasswordSource::File(path.clone())).expect("read");
+
+        assert_eq!(password.expose(), "a long enough passphrase");
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// An empty file is an orchestrator that mounted the wrong secret, not a
+    /// deployment that meant to have a password of nothing.
+    #[test]
+    fn an_empty_password_file_is_refused() {
+        let path = a_file_containing("\n", "empty");
+
+        let refused = read_password(&PasswordSource::File(path.clone()));
+
+        assert!(refused.is_err(), "an empty password was accepted");
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// The message names the variable, because that is what the operator has
+    /// to go and set.
+    #[test]
+    fn an_unset_password_variable_names_itself_in_the_error() {
+        let refused = read_password(&PasswordSource::Env(
+            "ASTERIUS_A_VARIABLE_NOTHING_SETS".to_owned(),
+        ))
+        .expect_err("an unset variable cannot yield a password");
+
+        assert!(
+            refused.contains("ASTERIUS_A_VARIABLE_NOTHING_SETS"),
+            "{refused}"
         );
     }
 }
