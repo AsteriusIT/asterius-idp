@@ -1,0 +1,10 @@
+# What the conformance suite's scripts/run-test-plan.py imports.
+#
+# The suite's own scripts/requirements.txt names these two packages and no
+# versions. Pinned here instead, next to the suite pin in
+# scripts/conformance.sh: an unpinned dependency is how `ast-yxu` happened, and
+# the runner is the one part of this harness that reads the suite's output.
+#
+# Update them together with the suite pin; conformance/README.md says how.
+httpx==0.28.1
+pyparsing==3.3.2

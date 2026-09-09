@@ -1,0 +1,165 @@
+# The OpenID Foundation conformance suite, pointed at a freshly built Asterius.
+#
+# Not started by hand: `scripts/conformance.sh` (`make conformance`) generates
+# the certificate and the Java truststore this file mounts, and neither is in
+# the tree. Running `docker compose -f
+# conformance/docker-compose.yml up` on its own fails on the missing bind
+# mounts, which is the intended answer — a stack that started with defaults
+# would be a harness testing nothing.
+#
+# Everything talks to everything else over the compose network, by service
+# name, over TLS. That is deliberate: FAPI 2.0 SP §5.2 requires TLS on every
+# endpoint, and a harness that tested cleartext would be testing a deployment
+# nobody may run. `asterius` is therefore reached at `https://asterius:9443`
+# from inside, and the published loopback port exists only so a human — and the
+# readiness wait — can see it.
+#
+# `nginx`, `server` and `mongodb` are the conformance suite's own three
+# services, taken from its `docker-compose-prebuilt.yml` at the pinned release.
+# The `localhost.emobix.co.uk` alias is copied from there and is load-bearing:
+# it is a public name that resolves to 127.0.0.1, so the suite's own base URL
+# has to resolve to the ingress from inside the network too.
+name: asterius-conformance
+
+services:
+  # --- the system under test ------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    environment:
+      # Development credentials for a disposable volume on an unpublished port.
+      POSTGRES_USER: asterius
+      POSTGRES_PASSWORD: asterius
+      POSTGRES_DB: asterius
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U asterius -d asterius"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  asterius:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # The same obviously-worthless development KEK as
+      # deploy/compose/docker-compose.yml. There is no `[admin]` table in the
+      # conformance configuration, so unlike that stack this one needs no
+      # operator-supplied secret at all: nothing here is confidential, and
+      # nothing here may be copied into a deployment.
+      ASTERIUS_KEK: "YXN0ZXJpdXMtZGV2LWtlay1ub3QtYS1zZWNyZXQhISE="
+    ports:
+      # Loopback only, and only so that the harness can poll /readyz and a
+      # human can open the tenant. The suite never uses this port.
+      - "127.0.0.1:${CONFORMANCE_ASTERIUS_PORT:-9543}:9443"
+    volumes:
+      - ./asterius.toml:/etc/asterius/asterius.toml:ro
+      - ./.run/tls:/etc/asterius/tls:ro
+    # The hardening of deploy/compose/docker-compose.yml, unchanged. The suite
+    # must exercise the container an operator would run, not a relaxed one.
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # --- the conformance suite ------------------------------------------------
+  mongodb:
+    image: ${CONFORMANCE_MONGODB_IMAGE:-mongo:6.0.13}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "500k"
+        max-file: "5"
+
+  nginx:
+    image: registry.gitlab.com/openid/conformance-suite/nginx:${CONFORMANCE_SUITE_VERSION:?set CONFORMANCE_SUITE_VERSION; scripts/conformance.sh pins it}
+    networks:
+      default:
+        aliases:
+          # Lets the suite's outbound requests to its own public hostname reach
+          # nginx; in-container DNS otherwise sends them to 127.0.0.1.
+          - localhost.emobix.co.uk
+    ports:
+      # The suite's own base URL is `https://localhost.emobix.co.uk:8443`
+      # inside the network whatever this publishes, because that is the port
+      # nginx listens on and the alias above resolves to. The host side is
+      # variable only so the harness can run on a machine where 8443 is
+      # already taken; the links in an exported report will still say 8443.
+      - "127.0.0.1:${CONFORMANCE_HTTPS_PORT:-8443}:8443"
+    depends_on:
+      - server
+
+  server:
+    image: registry.gitlab.com/openid/conformance-suite:${CONFORMANCE_SUITE_VERSION:?set CONFORMANCE_SUITE_VERSION; scripts/conformance.sh pins it}
+    environment:
+      BASE_URL: https://localhost.emobix.co.uk:8443
+      BASE_MTLS_URL: https://localhost.emobix.co.uk:8444
+      MONGODB_HOST: mongodb
+      SPRING_PROFILES_ACTIVE: dev
+      # dev mode: no login, no API token. The suite is on a private network
+      # here and nothing in it is reachable from outside the compose project.
+      #
+      # The truststore is the whole reason this service takes extra arguments:
+      # Asterius presents a certificate this harness issued minutes ago, and
+      # the JVM's default trust store has never heard of it. `.run/truststore`
+      # is the JDK's own `cacerts` with that one certificate added — the public
+      # roots are still there, because the suite also fetches its own base URL.
+      JAVA_EXTRA_ARGS: >-
+        -Djavax.net.ssl.trustStore=/certs/truststore.p12
+        -Djavax.net.ssl.trustStoreType=PKCS12
+        -Djavax.net.ssl.trustStorePassword=changeit
+      OIDC_GOOGLE_CLIENTID: unused
+      OIDC_GOOGLE_SECRET: unused
+      OIDC_GITLAB_CLIENTID: unused
+      OIDC_GITLAB_SECRET: unused
+    volumes:
+      - ./.run/truststore.p12:/certs/truststore.p12:ro
+    depends_on:
+      - mongodb
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "2"
+
+  # --- the runner -----------------------------------------------------------
+  # Started by `docker compose run`, never by `up`: it is the thing that
+  # finishes. Its command lives in scripts/conformance.sh so that what runs is
+  # visible in one place.
+  runner:
+    profiles: ["runner"]
+    image: ${CONFORMANCE_RUNNER_IMAGE:-python:3.13-alpine3.20}
+    # The caller's uid, supplied by scripts/conformance.sh. Reports are the one
+    # thing a run leaves behind, and reports a developer cannot delete without
+    # `sudo` — or a CI step cannot read — are a poor thing to leave behind. The
+    # cost is that pip has nowhere system-wide to install to, which is what
+    # PYTHONUSERBASE and `pip install --user` in runner/run.sh are for.
+    user: ${CONFORMANCE_RUNNER_USER:?set CONFORMANCE_RUNNER_USER; scripts/conformance.sh passes the caller's uid:gid}
+    environment:
+      HOME: /tmp
+      PYTHONUSERBASE: /tmp/python
+      CONFORMANCE_SERVER: https://localhost.emobix.co.uk:8443/
+      CONFORMANCE_DEV_MODE: "1"
+      # `run-test-plan.py` aborts the whole plan after this many modules in a
+      # row fail to run to completion; its default is 3. That default exists to
+      # stop a doomed run against a dead server from grinding for an hour, and
+      # it is a good default — but three modules in a row that need a human to
+      # press "deny" or to look at an error page are not a dead server, and at 3
+      # the last fourteen PAR modules of this plan were never reached at all.
+      # Raised, not removed: a genuinely dead server still gives up in minutes.
+      CONFORMANCE_MAX_CONSECUTIVE_FAILURES: "8"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    volumes:
+      - ${CONFORMANCE_SUITE_DIR:?set CONFORMANCE_SUITE_DIR; scripts/conformance.sh checks the suite out}:/suite:ro
+      - ./plans:/plans:ro
+      - ./runner:/runner:ro
+      - ./.run/results:/results
+    working_dir: /suite/scripts
+    depends_on:
+      - nginx

@@ -1,0 +1,78 @@
+{
+  "alias": "asterius",
+  "description": "Asterius, FAPI 2.0 Security Profile Final, private_key_jwt + DPoP",
+  "server": {
+    "discoveryUrl": "https://asterius:9443/t/conformance/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-client-1",
+    "scope": "openid profile email offline_access",
+    "jwks": {
+      "keys": [
+        {
+          "kty": "EC",
+          "crv": "P-256",
+          "kid": "conformance-client-1",
+          "alg": "ES256",
+          "use": "sig",
+          "x": "MA2eNkmY5sAXSu-SBFYtznr7228gOHu8EF8bYJddq6Y",
+          "y": "jCfP8-emWtbbtfS9XxDl_FLNKD6TphE2qsebEo7jEYY",
+          "d": "iObW5Ro96H_ifwDWjeIxKtX4ep4EUUombiwQzQYtb0o"
+        }
+      ]
+    }
+  },
+  "client2": {
+    "client_id": "conformance-client-2",
+    "scope": "openid profile email offline_access",
+    "jwks": {
+      "keys": [
+        {
+          "kty": "EC",
+          "crv": "P-256",
+          "kid": "conformance-client-2",
+          "alg": "ES256",
+          "use": "sig",
+          "x": "dwNPa4IWhiZPjqSB79dLv-s9xKC_cU9xg8hK6S9WUbM",
+          "y": "zciohqTxZ-Ts3_sU93yA6wzcTIOqz9Q1sDAz_ZZOvIQ",
+          "d": "U3Zq-kvZT-PbGYXzI-VcjekhbpYoBazMEfsOH7vQrqQ"
+        }
+      ]
+    }
+  },
+  "resource": {
+    "resourceUrl": "https://asterius:9443/t/conformance/userinfo"
+  },
+  "browser": [
+    {
+      "match": "https://asterius:9443/t/conformance/authorize*",
+      "tasks": [
+        {
+          "task": "Login",
+          "optional": true,
+          "match": "https://asterius:9443/interaction/*",
+          "commands": [
+            ["text", "name", "username", "conformance@example.test", "optional"],
+            ["text", "name", "password", "correct horse battery staple", "optional"],
+            ["click", "xpath", "//form//button[@type='submit']"]
+          ]
+        },
+        {
+          "task": "Consent",
+          "optional": true,
+          "match": "https://asterius:9443/interaction/*",
+          "commands": [
+            ["click", "xpath", "//button[@name='decision' and @value='allow']"]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "match": "https://localhost.emobix.co.uk:8443/test/a/asterius/callback*",
+          "commands": [
+            ["wait", "id", "submission_complete", 10]
+          ]
+        }
+      ]
+    }
+  ]
+}
