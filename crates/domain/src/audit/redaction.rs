@@ -37,6 +37,9 @@ pub enum Sensitive {
     /// A long, high-entropy opaque string: an authorization code, a refresh
     /// token, a `request_uri`, a device code, a registration access token.
     OpaqueCredential,
+    /// The `user:password` part of a URL — a database DSN, a proxy URL, an
+    /// authority that reads as one.
+    Userinfo,
 }
 
 impl Sensitive {
@@ -48,6 +51,7 @@ impl Sensitive {
             Self::AuthorizationHeader => "authorization",
             Self::PemBlock => "pem",
             Self::OpaqueCredential => "credential",
+            Self::Userinfo => "userinfo",
         }
     }
 }
@@ -116,7 +120,55 @@ pub fn redact(value: &str) -> String {
         // recorded in the first place.
         return format!("{REDACTED}{}:{}]", kind.tag(), short_fingerprint(value));
     }
-    redact_embedded(value)
+    // Userinfo first: the scanner below splits on `@` and `/`, so by the time
+    // it runs there is no URL left to recognise — only a bare `user:password`
+    // token, which is short and wordlike and passes.
+    redact_embedded(&redact_userinfo(value))
+}
+
+/// Replaces the `user:password@` of every URL in `value`, keeping the rest.
+///
+/// This is the shape a background worker leaks. A sweep that fails logs its
+/// error, and a `sqlx` error carries the connection string that produced it —
+/// password and all — into a line nobody thought of as handling credentials.
+/// RFC 9700 §4.2 is about exactly that: the credential that leaks is the one
+/// nobody classified as one.
+///
+/// Scheme, host, port and path survive, because they are why the line was
+/// written. Only the userinfo goes, and it goes to a fingerprint, so two
+/// occurrences of one DSN still match.
+fn redact_userinfo(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+
+    while let Some(marker) = rest.find("://") {
+        let (before, after) = rest.split_at(marker + "://".len());
+        out.push_str(before);
+        rest = after;
+
+        // The authority runs to the first delimiter; RFC 3986 §3.2 puts the
+        // userinfo before the last `@` inside it.
+        let end = rest
+            .find(|c: char| matches!(c, '/' | '?' | '#' | '"' | ',' | ')') || c.is_whitespace())
+            .unwrap_or(rest.len());
+        let (authority, tail) = rest.split_at(end);
+        rest = tail;
+
+        if let Some(at) = authority.rfind('@') {
+            let (userinfo, host) = authority.split_at(at);
+            out.push_str(REDACTED);
+            out.push_str(Sensitive::Userinfo.tag());
+            out.push(':');
+            out.push_str(&short_fingerprint(userinfo));
+            out.push(']');
+            out.push_str(host);
+        } else {
+            out.push_str(authority);
+        }
+    }
+
+    out.push_str(rest);
+    out
 }
 
 /// Scans `value` for credential-shaped runs and replaces each one in place.
@@ -147,6 +199,13 @@ fn is_token_character(character: char) -> bool {
 
 fn flush(out: &mut String, token: &mut String) {
     if token.is_empty() {
+        return;
+    }
+    // A marker left by an earlier pass is not a credential, and hashing it
+    // again would replace an informative tag with a meaningless one.
+    if token.starts_with(REDACTED.trim_start_matches('[')) {
+        out.push_str(token);
+        token.clear();
         return;
     }
     match classify(token) {
@@ -470,6 +529,60 @@ mod tests {
             redacted,
             redact("Xy8Jp1lMoQ6uS3vX0aB7cE2fG5iK9zR4tU-dV_hN1mP")
         );
+    }
+
+    /// The worker's leak: a background sweep logs the error it failed with, and
+    /// a `sqlx` error quotes the connection string that produced it.
+    #[test]
+    fn a_connection_string_loses_its_password_and_keeps_its_host() {
+        let error = "pool timed out connecting to \
+                     postgres://asterius:hunter2@db.internal:5432/asterius";
+        let redacted = redact(error);
+
+        assert!(!redacted.contains("hunter2"), "{redacted}");
+        assert!(!redacted.contains("asterius:hunter2"), "{redacted}");
+        assert!(redacted.contains("redacted:userinfo:"), "{redacted}");
+        // The half of the line that made it worth logging.
+        assert!(redacted.contains("db.internal:5432"), "{redacted}");
+        assert!(redacted.contains("pool timed out"), "{redacted}");
+    }
+
+    #[test]
+    fn a_url_without_userinfo_is_left_alone() {
+        for url in [
+            "https://client.example/callback",
+            "postgres://db.internal:5432/asterius",
+            "https://issuer.example/.well-known/openid-configuration",
+        ] {
+            assert_eq!(redact(url), url, "{url} was over-redacted");
+        }
+    }
+
+    /// An authority that reads as userinfo is the open-redirect trick from the
+    /// threat model. Redacting it is right — it is credential-shaped by
+    /// construction — but the host it actually resolves to must survive, or the
+    /// log stops explaining what happened.
+    #[test]
+    fn an_authority_that_reads_as_userinfo_keeps_its_real_host() {
+        let redacted = redact("redirect to http://127.0.0.1:51004@evil.example/cb refused");
+        assert!(redacted.contains("evil.example"), "{redacted}");
+        assert!(!redacted.contains("127.0.0.1:51004@"), "{redacted}");
+    }
+
+    /// Two mentions of one DSN have to match, or an operator cannot tell
+    /// whether two failures came from the same place.
+    #[test]
+    fn one_connection_string_redacts_to_one_marker() {
+        let first = redact("connecting to postgres://a:b@host/db");
+        let second = redact("still connecting to postgres://a:b@host/db");
+        let marker = |line: &str| {
+            line.split_whitespace()
+                .find(|word| word.contains("redacted:userinfo:"))
+                .expect("a marker")
+                .to_owned()
+        };
+        assert_eq!(marker(&first), marker(&second));
+        assert_ne!(marker(&first), marker(&redact("postgres://a:c@host/db")));
     }
 
     #[test]

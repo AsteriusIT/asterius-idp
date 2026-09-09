@@ -300,6 +300,38 @@ impl Detail {
         self
     }
 
+    /// Records *who* an event concerns, without recording their identity.
+    ///
+    /// For an email address, a username, a phone number, an IP address, a user
+    /// agent — the personal data that has no business being legible in a trail
+    /// that is deliberately kept for years, copied into a SIEM and read by
+    /// whoever is on call (FAPI 2.0 SP §7; GDPR data minimisation).
+    ///
+    /// [`Self::text`] does not cover this and cannot: the scanner looks for
+    /// credential *shapes*, and `alice@example.com` is not one. Recorded
+    /// through `text` it is stored verbatim.
+    ///
+    /// The digest is [`redaction::fingerprint`] — the same function
+    /// [`Self::credential`] uses, deliberately, rather than a second hashing
+    /// scheme with its own salt and its own bugs. Two consequences, both
+    /// intended: the same value fingerprints identically wherever it appears,
+    /// so an investigator can follow one person across a trail; and the digest
+    /// is unsalted, so somebody holding both the trail and a list of candidate
+    /// addresses can confirm a guess. That is the same bargain the log
+    /// formatter strikes for `sub` — correlation is most of why the record
+    /// exists, and confirming a guess requires already having it.
+    ///
+    /// Use [`Self::credential`] for a secret and this for a person. They hash
+    /// alike; what differs is what a reader may conclude from a match.
+    #[must_use]
+    pub fn pii(mut self, key: &str, value: impl AsRef<str>) -> Self {
+        self.0.insert(
+            key.to_owned(),
+            DetailValue::Fingerprint(redaction::fingerprint(value.as_ref())),
+        );
+        self
+    }
+
     /// Rebuilds a text entry read back from storage, without redacting again.
     ///
     /// Redaction happens once, on the way in. Applying it a second time would
@@ -538,6 +570,42 @@ mod tests {
         let issued = Detail::new().credential("code", code);
         let redeemed = Detail::new().credential("code", code);
         assert_eq!(issued, redeemed, "a trail cannot be followed across events");
+    }
+
+    /// The gap `pii` closes: an email address is not credential-shaped, so the
+    /// scanner passes it through and `text` stores it verbatim.
+    #[test]
+    fn personal_data_is_stored_as_a_digest_rather_than_as_itself() {
+        let email = "alice@example.com";
+        let careless = Detail::new().text("email", email);
+        assert!(
+            format!("{careless:?}").contains(email),
+            "this test is pointless unless `text` really would have stored it"
+        );
+
+        let minimised = Detail::new().pii("email", email);
+        let rendered = format!("{minimised:?}");
+        assert!(
+            !rendered.contains(email),
+            "personal data reached the trail: {rendered}"
+        );
+        assert!(rendered.contains("Fingerprint"));
+    }
+
+    /// One hashing scheme, not two: `pii` and `credential` agree, so a value
+    /// recorded through either can be matched against the other and there is
+    /// only one function to get wrong.
+    #[test]
+    fn personal_data_and_credentials_share_one_fingerprint_scheme() {
+        let value = "alice@example.com";
+        assert_eq!(
+            Detail::new().pii("who", value),
+            Detail::new().credential("who", value)
+        );
+        assert_ne!(
+            Detail::new().pii("who", value),
+            Detail::new().pii("who", "bob@example.com")
+        );
     }
 
     #[test]

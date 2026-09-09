@@ -16,11 +16,14 @@ use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, sh
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::outbound::HttpsJwksFetcher;
+use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
 use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::{Config, VERSION};
-use asterius_store_pg::{PgAuditSink, PgReplayGuard, PgTenantRepository, Store, TenantKeyStore};
+use asterius_store_pg::{
+    PgAuditSink, PgReplayGuard, PgRetention, PgTenantRepository, Store, TenantKeyStore,
+};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -167,12 +170,11 @@ fn run() -> Result<(), String> {
         .fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
 
-        let (stop_sweep, sweeper) = spawn_rotation(
+        let workers = spawn_workers(
             (*keys).clone(),
-            Arc::new(PgTenantRepository::new(
-                store.pool().clone(),
-                Arc::clone(&kek),
-            )),
+            PgRetention::new(store.pool().clone()),
+            &store,
+            &kek,
         );
 
         let served = serve(&config.server, app, shutdown_signal())
@@ -182,8 +184,7 @@ fn run() -> Result<(), String> {
         // Stopped after the listener, not before: a request already in flight
         // may still sign something, and a sweep that is mid-transaction should
         // be allowed to finish it rather than be dropped.
-        let _ = stop_sweep.send(true);
-        let _ = sweeper.await;
+        workers.stop().await;
         served
     })
 }
@@ -225,26 +226,72 @@ async fn prepare_keys(
     Ok((keys, signer))
 }
 
-/// Starts the key rotation sweep and hands back the way to stop it.
+/// The periodic tasks, and the one handle that stops them all.
 ///
-/// Rotation, from here on, is something that happens rather than something a
-/// restart does (`ast-mxc.9`). The schedule loop in `run` prepares the
-/// configured tenants once and fails loudly if it cannot; this keeps every
-/// tenant's schedule applied for the life of the process, including tenants
-/// created through the admin API after boot.
-fn spawn_rotation(
+/// They share a stop channel because they share a lifetime: both run for as
+/// long as the listener does, and both must be allowed to finish the pass they
+/// are in rather than be dropped mid-transaction.
+struct Workers {
+    stop: tokio::sync::watch::Sender<bool>,
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Workers {
+    /// Asks every task to stop and waits for each to finish its current pass.
+    async fn stop(self) {
+        let _ = self.stop.send(true);
+        for handle in self.handles {
+            let _ = handle.await;
+        }
+    }
+}
+
+/// Starts the background sweeps.
+///
+/// **Rotation** is what makes key rotation something that happens rather than
+/// something a restart does (`ast-mxc.9`): `prepare_keys` applies the
+/// configured tenants' schedules once at boot and fails loudly if it cannot,
+/// and this keeps every tenant's schedule applied for the life of the process,
+/// including tenants created through the admin API afterwards.
+///
+/// **Retention** applies `asterius_store_pg::retention::POLICY`, which names
+/// every table in the schema as swept or kept. Not optional and not
+/// configurable off: a deployment that does not sweep accumulates expired
+/// codes, PAR parameters, session fingerprints and replay markers forever, and
+/// the point of storing a credential's digest for sixty seconds is that it is
+/// gone afterwards (RFC 9700 §4.2-4.3, FAPI 2.0 SP §7). Safe on every replica
+/// at once: it takes a per-tenant advisory lock and skips a tenant somebody
+/// else is already sweeping.
+fn spawn_workers(
     keys: TenantKeyStore,
-    tenants: Arc<PgTenantRepository>,
-) -> (
-    tokio::sync::watch::Sender<bool>,
-    tokio::task::JoinHandle<()>,
-) {
-    let sweep = RotationSweep::new(keys, tenants, Arc::new(asterius_domain::ports::SystemClock));
-    let (stop, mut stopping) = tokio::sync::watch::channel(false);
-    let handle = tokio::spawn(sweep.run(async move {
-        let _ = stopping.changed().await;
-    }));
-    (stop, handle)
+    retention: PgRetention,
+    store: &Store,
+    kek: &Arc<dyn Kek>,
+) -> Workers {
+    let clock = Arc::new(asterius_domain::ports::SystemClock);
+    let tenants_for_rotation = Arc::new(PgTenantRepository::new(
+        store.pool().clone(),
+        Arc::clone(kek),
+    ));
+    let tenants_for_retention = Arc::new(PgTenantRepository::new(
+        store.pool().clone(),
+        Arc::clone(kek),
+    ));
+
+    let rotation = RotationSweep::new(keys, tenants_for_rotation, Arc::clone(&clock) as Arc<_>);
+    let retention = RetentionSweep::new(retention, tenants_for_retention, clock);
+
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let handles = vec![
+        tokio::spawn(rotation.run(stopped(stopping.clone()))),
+        tokio::spawn(retention.run(stopped(stopping))),
+    ];
+    Workers { stop, handles }
+}
+
+/// Resolves when the stop channel says so.
+async fn stopped(mut stopping: tokio::sync::watch::Receiver<bool>) {
+    let _ = stopping.changed().await;
 }
 
 /// Writes the tenants declared in the configuration into the database.

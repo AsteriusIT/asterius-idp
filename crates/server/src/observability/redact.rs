@@ -56,7 +56,25 @@ const SECRET_BY_NAME: &[&str] = &[
 
 /// Field names holding a user identity, which is pseudonymised rather than
 /// removed so that lines can still be correlated.
-const IDENTITY_BY_NAME: &[&str] = &["sub", "subject", "username", "email", "login_hint"];
+///
+/// Matched on the whole name or on a `_`-separated suffix, so `admin_email`
+/// and `owner_username` are covered without being listed. The suffix boundary
+/// matters: a plain `ends_with` would make `resub` an identity.
+const IDENTITY_BY_NAME: &[&str] = &[
+    "sub",
+    "subject",
+    "username",
+    "email",
+    "login_hint",
+    // The admin console's vocabulary (`ast-f7m`): whoever is signed in to it
+    // is a named human, and an admin action is the one most worth logging and
+    // the one whose actor is most obviously personal data.
+    "actor",
+    "admin",
+    "user",
+    "on_behalf_of",
+    "phone_number",
+];
 
 /// Decides what a single field's rendered value should be.
 #[must_use]
@@ -70,7 +88,10 @@ pub fn redact_field(name: &str, value: &str) -> String {
         return format!("[redacted:{}]", &redaction::fingerprint(value)[..16]);
     }
 
-    if IDENTITY_BY_NAME.iter().any(|identity| lowered == *identity) {
+    if IDENTITY_BY_NAME
+        .iter()
+        .any(|identity| lowered == *identity || lowered.ends_with(&format!("_{identity}")))
+    {
         return format!("sha256:{}", &redaction::fingerprint(value)[..16]);
     }
 
@@ -199,6 +220,28 @@ mod tests {
         assert!(!first.contains("alice"), "{first}");
         assert!(first.starts_with("sha256:"));
         assert_ne!(first, redact_field("sub", "bob@example.com"));
+    }
+
+    /// The admin console is first-party and its actor is a named person, so
+    /// the fields it will log are identities under another spelling.
+    #[test]
+    fn an_identity_is_recognised_through_a_qualified_field_name() {
+        for name in ["admin_email", "actor_username", "owner_sub", "user_email"] {
+            let rendered = redact_field(name, "alice@example.com");
+            assert!(!rendered.contains("alice"), "{name} leaked: {rendered}");
+            assert!(rendered.starts_with("sha256:"), "{name}: {rendered}");
+        }
+    }
+
+    /// The suffix rule has a boundary, or every field ending in the letters of
+    /// an identity becomes one.
+    #[test]
+    fn a_field_that_merely_ends_in_those_letters_is_not_an_identity() {
+        assert_eq!(redact_field("resub", "later"), "later");
+        assert_eq!(
+            redact_field("issuer", "https://as.example"),
+            "https://as.example"
+        );
     }
 
     #[test]
