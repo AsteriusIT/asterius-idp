@@ -29,6 +29,7 @@
 //! success path.
 
 use crate::http::redirect::SeeOther;
+use crate::tenancy::MountPrefix;
 use asterius_domain::{
     AuthRequestRepository, ClientId, GrantRepository, InteractionRepository, PushedRequest,
     Session, SubjectId, Tenant,
@@ -73,6 +74,9 @@ pub struct AuthorizeContext<'a> {
     pub memory: MemoryPolicy,
     /// The CSP nonce for this response.
     pub nonce: &'a Nonce,
+    /// The prefix routing removed from this request's path, put back on the
+    /// `Location` that sends the browser into the interaction (`ast-295`).
+    pub mount: MountPrefix,
 }
 
 impl std::fmt::Debug for AuthorizeContext<'_> {
@@ -214,7 +218,13 @@ pub async fn authorize(
     // GET the interaction page expects, and the helper is also where response
     // splitting through a `Location` is refused. FAPI 2.0 SP §5.3.2.2 items
     // 10–11 forbid 307 outright.
-    let Ok(redirect) = SeeOther::to(&format!("/interaction/{}", id.expose())) else {
+    // Under the prefix the tenancy layer removed: the interaction lives at
+    // `/t/{tenant}/interaction/{id}`, and a root-absolute `Location` would
+    // send the browser to a path this server mounts nothing at (`ast-295`).
+    let target = context
+        .mount
+        .absolute(&format!("/interaction/{}", id.expose()));
+    let Ok(redirect) = SeeOther::to(&target) else {
         // Unreachable: the id is base64url. Refusing rather than sending a
         // header we could not build is the only safe reading.
         return error_page(&context, StatusCode::INTERNAL_SERVER_ERROR);

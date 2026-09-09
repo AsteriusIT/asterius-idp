@@ -32,6 +32,7 @@
 
 use crate::http::form_action_origin;
 use crate::http::throttle;
+use crate::tenancy::MountPrefix;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::session::SessionId;
 use asterius_domain::{
@@ -106,6 +107,12 @@ pub struct InteractionContext<'a> {
     /// credential of theirs comes into existence, and neither is something the
     /// trail can be missing. [`record_passkey_registered`] is the first user.
     pub audit: &'a dyn AuditSink,
+    /// The prefix routing removed from this request's path (`ast-295`).
+    ///
+    /// Every URL this handler hands to the browser — the form action, the
+    /// paths the sign-in script fetches — has to carry it back, because
+    /// `/interaction/{id}` is mounted under the tenant and nowhere else.
+    pub mount: MountPrefix,
 }
 
 impl std::fmt::Debug for InteractionContext<'_> {
@@ -1445,11 +1452,13 @@ fn render(
     message: Option<&str>,
     offer: Option<&ConsentOffer>,
 ) -> Response {
-    let action = format!("/interaction/{id}");
+    // Under the prefix the tenancy layer removed: this page is served at
+    // `/t/{tenant}/interaction/{id}` and posts back to itself (`ast-295`).
+    let action = context.mount.absolute(&format!("/interaction/{id}"));
     // The two endpoints the sign-in script talks to. Built by
     // `http::passkeys`, so the page and the router cannot disagree about where
     // they are.
-    let (passkey_options, passkey_finish) = crate::http::passkeys::login_paths(id);
+    let (passkey_options, passkey_finish) = crate::http::passkeys::login_paths(&context.mount, id);
     match stage {
         Stage::Login | Stage::StepUp => Document::render(context.nonce, |nonce| {
             pages::render(&LoginPage {
