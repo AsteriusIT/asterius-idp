@@ -188,6 +188,21 @@ what stops it; this bead builds the control and its test.*
 | A1, A5 | G1, G4 | Reads a credential or a person's identity out of a log written by a background worker — a sweep's `sqlx` error quotes the connection string that produced it, password and all, and no request handler was ever in scope to sanitise it | Redaction is a property of the log *formatter*, not of the call site, so a worker line is redacted like any other; the scanner also strips the `user:password@` of any URL while keeping the host, which is the half that made the line worth writing. A workspace-wide test fails on any subscriber built without `RedactingFields`, naming the file and line — which is what will cover the admin console the day it installs one | `ast-p2l.4`, `ast-83p.5` |
 | A1, A5 | G4 | Reads a user's email address, username or phone number out of the audit trail — the one artefact deliberately kept for years, copied into a SIEM and read by whoever is on call. The credential scanner does not help: `alice@example.com` is not credential-shaped | `Detail::pii` records personal data as the same deterministic fingerprint `Detail::credential` uses, so one person can still be followed across a trail without their identity being in it, and there is one hashing scheme to get right rather than two | `ast-p2l.4` |
 
+### Admin console (first-party, same-origin)
+
+[ADR-0009](adr/0009-the-admin-console-is-a-first-party-same-origin-app.md)
+decides that the console authenticates with the IdP's own session cookie rather
+than as an OAuth client, because FAPI 2.0 SP §5.3.2.1 item 3 admits confidential
+clients only and RFC 6749 §2.1 makes a browser bundle a public client. That
+choice *moves* two risks rather than removing them, and these are the two rows.
+Both controls are built by `ast-f7m.3`; today `crates/admin-api` is a stub, so
+the surface they describe does not yet exist.
+
+| Attacker | Goal | Attack it enables | Control | Bead |
+|---|---|---|---|---|
+| A1 | G1, G3 | CSRF against `/admin/api`: the console is authorised by an ambient `__Host-asterius_session` cookie, which the browser attaches to a cross-site request as it never would an `Authorization` header, so a page an administrator visits can create a client, rotate a key or delete a tenant on their behalf (RFC 9700 §4.7) | Three layers, none trusted alone. A synchroniser token bound to the session — not to an interaction row, which the existing `Interaction::issue_csrf` machinery needs and a JSON API does not have — compared in constant time on every non-`GET`. An `Origin` / `Sec-Fetch-Site` check, so a request whose browser says it came from elsewhere is refused before the token is read. `SameSite=Lax` on the cookie last of all, because `session.rs` documents why it is `Lax` and not `Strict`: it does not cover a top-level `GET`, which is why every state-changing `/admin/api` route refuses that verb | `ast-f7m.2`, `ast-f7m.3` |
+| A1 | G1, G2, G3 | XSS on the IdP's origin becomes an administrator session compromise, not a defacement: the console runs same-origin with the login and consent pages, so injected script cannot read the `HttpOnly` cookie but can issue `fetch` calls that carry it, and can read the CSRF token the page must contain to be usable at all | The nonce-based policy in `crates/web/src/csp.rs` is the primary control rather than a defence in depth: `default-src 'none'`, `script-src 'nonce-…' 'strict-dynamic'`, no `'unsafe-inline'` and no `'unsafe-eval'` — the workspace source audit fails the build if either appears. The console widens no directive: it is served from `'self'`, calls `'self'` under `connect-src`, and its entry document is rendered by the server so every script, stylesheet and modulepreload tag carries the per-response nonce, which a bundler's static `index.html` cannot. `frame-ancestors 'none'` and `base-uri 'none'` close the framing and base-tag variants | `ast-f7m.2`, `ast-f7m.3`, `ast-jsq` |
+
 ### 4. Agent-specific threats (G4)
 
 FAPI's attacker model has no notion of a principal acting for another principal.
