@@ -17,6 +17,7 @@ pub mod server;
 mod source_audit;
 pub mod tls;
 pub mod token;
+pub mod userinfo;
 
 pub use redirect::SeeOther;
 pub use request_id::RequestId;
