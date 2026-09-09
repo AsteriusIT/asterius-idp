@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into credentials\n                 (tenant_id, credential_id, user_id, kind,\n                  passkey_credential_id, passkey_public_key, passkey_sign_count,\n                  passkey_aaguid, passkey_backup_eligible, passkey_backup_state,\n                  passkey_rp_id, passkey_user_verified, label)\n             values ($1, $2, $3, 'passkey', $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Uuid",
+        "Bool",
+        "Bool",
+        "Text",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1073a2a4ee4a2052fb104532e67de37f094e5556909a0fb5ab0262a021f120ae"
+}

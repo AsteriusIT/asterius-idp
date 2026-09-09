@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select csrf_digest, challenge, expires_at\n               from passkey_enrolments\n              where tenant_id = $1 and session_id = $2 and expires_at > $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "csrf_digest",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "challenge",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "56e147a3467e52eefa0861d0612318714f535b5320bac5cfd04b991217ed213d"
+}

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update passkey_enrolments as current\n                set challenge = null\n               from (select tenant_id, session_id, challenge\n                       from passkey_enrolments\n                      where tenant_id = $1 and session_id = $2) as previous\n              where current.tenant_id = previous.tenant_id\n                and current.session_id = previous.session_id\n                and current.expires_at > $3\n                and current.challenge is not null\n             returning previous.challenge",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "challenge",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "106cf194cc600dd4f251ffdecd296595b80600677fc28b64aad416343293ce5e"
+}

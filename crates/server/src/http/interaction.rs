@@ -158,11 +158,29 @@ pub async fn record_passkey_registered(
     credential: &uuid::Uuid,
     now: OffsetDateTime,
 ) {
-    let event = passkey_registered_event(&context.tenant.id, user, credential, now);
-    if let Err(failure) = context.audit.record(event).await {
+    record_registered_passkey(context.audit, &context.tenant.id, user, credential, now).await;
+}
+
+/// The same record, for a caller holding a sink and a tenant rather than the
+/// whole context.
+///
+/// `crate::http::passkeys` is that caller: enrolment happens outside any
+/// authorization, so it has no interaction, no client and no consent offer —
+/// eight of the ten things [`InteractionContext`] carries. Both entry points
+/// exist so that neither has to assemble state it does not use, and both go
+/// through [`passkey_registered_event`], so there is one shape of this record.
+pub async fn record_registered_passkey(
+    audit: &dyn AuditSink,
+    tenant: &TenantId,
+    user: &UserId,
+    credential: &uuid::Uuid,
+    now: OffsetDateTime,
+) {
+    let event = passkey_registered_event(tenant, user, credential, now);
+    if let Err(failure) = audit.record(event).await {
         tracing::error!(
             %failure,
-            tenant = %context.tenant.id,
+            tenant = %tenant,
             "a registered passkey was not written to the audit trail"
         );
     }

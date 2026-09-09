@@ -5,8 +5,8 @@
 
 use crate::{
     AuthenticationMethod, Client, ClientId, ClientStatus, CodeBinding, Consumed, DomainError,
-    Grant, InteractionRecord, Issuer, Participant, PushedRequest, Secret, SectorIdentifier,
-    Session, SessionRevocation, SubjectId, Tenant, TenantId, UserId,
+    Enrolment, Grant, InteractionRecord, Issuer, NewPasskey, Participant, PushedRequest, Secret,
+    SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant, TenantId, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -490,6 +490,118 @@ pub trait CredentialVerifier: Debug + Send + Sync {
         username: &str,
         password: Secret<String>,
     ) -> Result<Option<uuid::Uuid>, DomainError>;
+}
+
+/// Reads an account back by its identifier.
+///
+/// Deliberately one method. A page that has authenticated somebody through a
+/// session cookie holds a [`UserId`] and needs the account behind it — to name
+/// the person on screen, and to refuse a credential to an account that is no
+/// longer allowed to authenticate. That is not enough to justify exposing the
+/// whole user repository through a port, and the display-name question proper
+/// (`preferred_username`, locales, claims) is `ast-2vk.8`.
+#[async_trait::async_trait]
+pub trait UserDirectory: Debug + Send + Sync {
+    /// The account, or `None` if this tenant has no such user.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails.
+    async fn by_id(&self, id: UserId) -> Result<Option<User>, DomainError>;
+}
+
+/// Outstanding passkey enrolments and the credentials they produce.
+///
+/// One port rather than two because the challenge and the credential are the
+/// two ends of a single ceremony, and a handler that could reach one without
+/// the other could spend a challenge with nowhere to put the result.
+///
+/// # Why the challenge is stored rather than signed
+///
+/// A self-contained, signed challenge would need no table, and it would also
+/// have no way to be *spent*. Single use is the property that matters most
+/// here (WebAuthn L3 §13.4.3), and single use is a row that can be deleted.
+#[async_trait::async_trait]
+pub trait PasskeyRepository: Debug + Send + Sync {
+    /// Opens — or reopens — the enrolment belonging to `session`.
+    ///
+    /// Called when the page is rendered. A second call replaces the first,
+    /// including any challenge it had outstanding: the page a user is looking
+    /// at is the one whose token works.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails, or
+    /// [`DomainError::NotFound`] if the session is not one this tenant has.
+    async fn open_enrolment(
+        &self,
+        session_digest: &str,
+        csrf_digest: &str,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Attaches a freshly drawn challenge to an unexpired enrolment.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails. A missing or expired
+    /// enrolment is `Ok(false)`, which is an ordinary outcome: the page was
+    /// left open.
+    async fn issue_challenge(
+        &self,
+        session_digest: &str,
+        challenge: &[u8],
+        expires_at: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError>;
+
+    /// Reads the enrolment for `session`, if it has not expired.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails.
+    async fn enrolment(
+        &self,
+        session_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<Enrolment>, DomainError>;
+
+    /// Takes the outstanding challenge and removes it in the same statement.
+    ///
+    /// The whole point of this method: an implementation that read and then
+    /// deleted would let two concurrent finishes both succeed against one
+    /// challenge, which is the replay the challenge exists to prevent.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the statement fails. No outstanding
+    /// challenge is `Ok(None)`.
+    async fn spend_challenge(
+        &self,
+        session_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<Vec<u8>>, DomainError>;
+
+    /// Stores a verified credential and returns the id of its row.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if this credential id is already registered
+    /// **anywhere in the tenant** — the unique index is what decides that, not
+    /// a prior read, because a prior read races. [`DomainError::Storage`]
+    /// otherwise.
+    async fn register(&self, passkey: &NewPasskey) -> Result<uuid::Uuid, DomainError>;
+
+    /// The credential ids this user already has, for `excludeCredentials`.
+    ///
+    /// A courtesy rather than a control: it stops an authenticator offering to
+    /// make a second credential for an account it already holds one for. The
+    /// enforcement is the unique index.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails.
+    async fn credential_ids(&self, user: &UserId) -> Result<Vec<Vec<u8>>, DomainError>;
 }
 
 /// Server-side sessions for one tenant.

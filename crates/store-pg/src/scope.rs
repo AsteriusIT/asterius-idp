@@ -4,6 +4,7 @@ use crate::auth_requests::PgAuthRequestRepository;
 use crate::clients::PgClientRepository;
 use crate::codes::PgCodeRepository;
 use crate::grants::PgGrantRepository;
+use crate::passkeys::PgPasskeyRepository;
 use crate::sessions::PgSessionRepository;
 use crate::users::PgUserRepository;
 use asterius_domain::ports::TenantScoped;
@@ -71,6 +72,17 @@ impl<'a> TenantScope<'a> {
     #[must_use]
     pub fn grants(&self) -> PgGrantRepository {
         PgGrantRepository::new(self.pool.clone(), self.tenant.clone())
+    }
+
+    /// The passkey repository for this tenant.
+    ///
+    /// Tenant-scoped like everything else here, and that is what makes
+    /// credential-id uniqueness a tenant property rather than a global one:
+    /// the unique index is over `(tenant_id, passkey_credential_id)`, and no
+    /// query can reach a row outside the scope that found it.
+    #[must_use]
+    pub fn passkeys(&self) -> PgPasskeyRepository {
+        PgPasskeyRepository::new(self.pool.clone(), self.tenant.clone())
     }
 }
 

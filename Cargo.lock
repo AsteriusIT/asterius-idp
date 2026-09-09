@@ -161,6 +161,7 @@ dependencies = [
  "asterius-oidc",
  "asterius-store-pg",
  "asterius-web",
+ "asterius-webauthn",
  "async-trait",
  "axum",
  "base64",

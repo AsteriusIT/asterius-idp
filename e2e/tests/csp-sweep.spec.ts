@@ -110,16 +110,52 @@ test('the consent page is served the strict policy and violates none of it', asy
 
 /**
  * The one page in the tree that runs script — `crates/web/templates/passkey.html`,
- * exempted by name in `SCRIPTED_TEMPLATES` — has no route yet: `ast-2vk.15`
- * owns `/passkeys/options` and `/passkeys/finish` and has not landed. Until it
- * does there is no URL at which a browser can be shown the page, so the JS
- * suite exercises `'strict-dynamic'` only through the negative proof in
- * `csp-gate.spec.ts`.
+ * exempted by name in `SCRIPTED_TEMPLATES` — and therefore the only place the
+ * JS suite exercises `script-src 'nonce-…' 'strict-dynamic'` positively. Every
+ * other assertion about that directive is a negative one: `csp-gate.spec.ts`
+ * proves an *un*-nonced script is refused, which a page with no script at all
+ * cannot distinguish from a policy that permits nothing.
  *
- * Left as a `fixme` rather than deleted: it is the assertion the day the route
- * exists, and a skipped test that names its blocker is visible in every run.
+ * Reached with a session cookie, so the arrangement is a real sign-in. The
+ * ceremony itself is not driven here: `navigator.credentials.create()` needs an
+ * authenticator, and what this asserts is that the page is served, policed and
+ * *runs*.
  */
-test.fixme(
-  'the passkey page runs its nonced script and violates nothing (needs ast-2vk.15)',
-  async () => {},
-);
+test('the passkey page runs its nonced script and violates nothing', async ({ page, request }) => {
+  // Arrange: enrolment hangs off a session, and a session comes from signing in.
+  const flow = await startAuthorization(request);
+  await page.goto(flow.authorizationUrl);
+  await page.locator('input[name="username"]').fill(USERNAME);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await Promise.all([
+    page.waitForResponse((candidate) => candidate.request().method() === 'POST'),
+    page.getByRole('button', { name: 'Sign in' }).click(),
+  ]);
+
+  // Act
+  const response = await page.goto(`${BASE_URL}/passkeys`);
+
+  // Assert
+  expect(response?.status(), 'a signed-in user must be able to reach enrolment').toBe(200);
+  await expectStrictPolicy(response?.headers()['content-security-policy'] ?? null);
+  // Nothing here submits anywhere, so the consent screen's one widening
+  // (`ast-jsq`) must not have followed the session onto this page.
+  expectNoWidening(response?.headers()['content-security-policy'] ?? null);
+  // `ast-ndk.7`'s no-JS requirement, asserted through the wiring rather than
+  // through the template: the password path is in the markup either way.
+  await expect(page.getByRole('link', { name: /password/i })).toBeVisible();
+
+  if (test.info().project.name === 'js') {
+    // The script ran. Either it revealed the button, or it found no WebAuthn
+    // API and said so — both are it executing under the nonce, and which one
+    // depends on the browser rather than on this server.
+    const revealed = await page.locator('#passkey-register').isVisible();
+    const explained = (await page.locator('#passkey-status').innerText()).trim().length > 0;
+    expect(revealed || explained, 'the nonced inline script did not run').toBe(true);
+  } else {
+    // With scripting off there is no button that cannot work — which is the
+    // whole reason it starts `hidden` and is revealed rather than disabled.
+    await expect(page.locator('#passkey-register')).toBeHidden();
+  }
+  // The fixture asserts the absence of violations at teardown.
+});

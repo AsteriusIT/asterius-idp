@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into passkey_enrolments\n                 (tenant_id, session_id, csrf_digest, challenge, expires_at)\n             values ($1, $2, $3, null, $4)\n             on conflict (tenant_id, session_id) do update\n                set csrf_digest = excluded.csrf_digest,\n                    challenge   = null,\n                    expires_at  = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d79147b2e308c35d0cdc70f857596a3405d0b2aa5e9f7ba6f4a0b8e1ae55b14a"
+}
