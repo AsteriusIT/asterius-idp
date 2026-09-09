@@ -28,6 +28,9 @@
 !/fuzz/corpus/logout_request/
 /fuzz/corpus/logout_request/*
 !/fuzz/corpus/logout_request/crash-*
+!/fuzz/corpus/redaction_scan/
+/fuzz/corpus/redaction_scan/*
+!/fuzz/corpus/redaction_scan/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.

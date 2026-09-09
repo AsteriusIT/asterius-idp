@@ -307,7 +307,12 @@ pub struct Sweep {
     /// Rows deleted, per table, in [`POLICY`] order. Tables that lost nothing
     /// are absent, so a quiet sweep logs nothing.
     pub deleted: Vec<(&'static str, u64)>,
-    /// Whether a table hit [`MAX_BATCHES`] and still had rows to give.
+    /// Whether a table hit its per-sweep batch ceiling and still had rows to
+    /// give, so a caller can tell "nothing left" from "still catching up".
+    ///
+    /// The ceiling itself is not part of this contract — it bounds one pass,
+    /// not the work — so what a caller does with a `true` is schedule another
+    /// sweep, not compute how much is left.
     pub more_to_do: bool,
 }
 

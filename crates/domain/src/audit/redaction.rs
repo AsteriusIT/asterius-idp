@@ -54,6 +54,19 @@ impl Sensitive {
             Self::Userinfo => "userinfo",
         }
     }
+
+    /// The inverse of [`Sensitive::tag`], used to recognise this module's own
+    /// markers rather than guessing at them by prefix.
+    fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "jwt" => Some(Self::Jwt),
+            "authorization" => Some(Self::AuthorizationHeader),
+            "pem" => Some(Self::PemBlock),
+            "credential" => Some(Self::OpaqueCredential),
+            "userinfo" => Some(Self::Userinfo),
+            _ => None,
+        }
+    }
 }
 
 /// The shortest opaque string treated as a credential.
@@ -154,16 +167,22 @@ fn redact_userinfo(value: &str) -> String {
         let (authority, tail) = rest.split_at(end);
         rest = tail;
 
-        if let Some(at) = authority.rfind('@') {
-            let (userinfo, host) = authority.split_at(at);
-            out.push_str(REDACTED);
-            out.push_str(Sensitive::Userinfo.tag());
-            out.push(':');
-            out.push_str(&short_fingerprint(userinfo));
-            out.push(']');
-            out.push_str(host);
-        } else {
-            out.push_str(authority);
+        match authority.rfind('@') {
+            // A marker left by an earlier pass is not a userinfo. Hashing it
+            // again would produce a *different* fingerprint for the same DSN,
+            // which silently breaks the correlation the fingerprint exists for
+            // and, on the audit path, the hash chain over the stored record.
+            Some(at) if is_marker(&authority[..at]) => out.push_str(authority),
+            Some(at) => {
+                let (userinfo, host) = authority.split_at(at);
+                out.push_str(REDACTED);
+                out.push_str(Sensitive::Userinfo.tag());
+                out.push(':');
+                out.push_str(&short_fingerprint(userinfo));
+                out.push(']');
+                out.push_str(host);
+            }
+            None => out.push_str(authority),
         }
     }
 
@@ -202,8 +221,9 @@ fn flush(out: &mut String, token: &mut String) {
         return;
     }
     // A marker left by an earlier pass is not a credential, and hashing it
-    // again would replace an informative tag with a meaningless one.
-    if token.starts_with(REDACTED.trim_start_matches('[')) {
+    // again would replace an informative tag with a meaningless one. The
+    // brackets are not token characters, so what is seen here is the body.
+    if is_marker_body(token) {
         out.push_str(token);
         token.clear();
         return;
@@ -236,10 +256,43 @@ pub fn fingerprint(secret: &str) -> String {
     hex::encode(Sha256::digest(secret.as_bytes()))
 }
 
-/// The first 16 hex characters of a [`fingerprint`], for inline use.
+/// The number of hex characters of a [`fingerprint`] kept inline.
+///
+/// 64 bits, which is far more than enough to tell two credentials apart in one
+/// incident's worth of log lines, and short enough to leave the line readable.
+const SHORT_FINGERPRINT_LEN: usize = 16;
+
+/// The first [`SHORT_FINGERPRINT_LEN`] hex characters of a [`fingerprint`], for
+/// inline use.
 #[must_use]
 fn short_fingerprint(secret: &str) -> String {
-    fingerprint(secret)[..16].to_owned()
+    fingerprint(secret)[..SHORT_FINGERPRINT_LEN].to_owned()
+}
+
+/// Whether `value` is exactly one marker this module wrote: `[redacted:<tag>:
+/// <digest>]`.
+///
+/// Recognising a marker by its full shape rather than by its `[redacted:`
+/// prefix is what keeps the guards below from becoming a leak of their own: a
+/// log line carrying `postgres://[redacted:userinfo:x]:hunter2@host` is *not* a
+/// marker, and its password still has to go.
+fn is_marker(value: &str) -> bool {
+    value
+        .strip_prefix(REDACTED)
+        .and_then(|rest| rest.strip_suffix(']'))
+        .is_some_and(is_marker_body)
+}
+
+/// The inside of a marker: a tag this module emits, then a short fingerprint.
+fn is_marker_body(body: &str) -> bool {
+    let Some((tag, digest)) = body.split_once(':') else {
+        return false;
+    };
+    Sensitive::from_tag(tag).is_some()
+        && digest.len() == SHORT_FINGERPRINT_LEN
+        && digest
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Three non-empty base64url segments separated by dots.
@@ -683,5 +736,43 @@ mod tests {
     fn redaction_is_idempotent() {
         let once = redact("Zx9Kq2mNpR7vT4wY1bC8dF3gH6jL0aS5uV-eW_iO2nQ");
         assert_eq!(redact(&once), once, "a redacted value was redacted again");
+    }
+
+    /// The `redaction_scan` crash: a URL's userinfo was replaced by a marker,
+    /// and the next pass read that marker as a userinfo and hashed it again.
+    ///
+    /// Nothing was re-exposed — the password stayed gone — but the marker
+    /// changed value, so two records of one DSN stopped correlating and a
+    /// record re-rendered after storage no longer matched the hash chained
+    /// over it.
+    #[test]
+    fn redacting_a_url_twice_keeps_the_first_marker() {
+        let once = redact("pool timed out: postgres://asterius:hunter2@db.internal:5432/asterius");
+        assert_eq!(redact(&once), once, "the marker was hashed a second time");
+        assert!(!once.contains("hunter2"), "{once}");
+    }
+
+    /// The minimised fuzz input, which is a URL whose authority is a single
+    /// control character before the `@`.
+    #[test]
+    fn redaction_is_idempotent_on_the_fuzz_crash() {
+        let crash = "C9\0\0\0NJYz~:://\0@\0\0\0\0\0\0\0\0\u{f}\r+-";
+        let once = redact(crash);
+        assert_eq!(redact(&once), once, "redaction is not idempotent");
+    }
+
+    /// Recognising an earlier pass's work must not become a way to smuggle a
+    /// credential past it: only a whole, well-formed marker is skipped.
+    #[test]
+    fn a_forged_marker_does_not_shield_a_password() {
+        for line in [
+            "postgres://[redacted:userinfo:0000000000000000]:hunter2@db.internal/asterius",
+            "postgres://[redacted:userinfo:zzzz]:hunter2@db.internal/asterius",
+            "postgres://[redacted:nonsense:0000000000000000]:hunter2@db.internal/asterius",
+        ] {
+            let redacted = redact(line);
+            assert!(!redacted.contains("hunter2"), "{redacted}");
+            assert_eq!(redact(&redacted), redacted, "{redacted}");
+        }
     }
 }
