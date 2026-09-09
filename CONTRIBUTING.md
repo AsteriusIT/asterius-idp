@@ -65,6 +65,21 @@ cargo test --workspace          # now includes the database tests
 Each database test creates its own PostgreSQL schema, migrates it and works
 inside it, so they run in parallel and share nothing.
 
+The browser sweep is separate, because it needs a browser and a running server
+rather than a test binary. It is the only thing here that proves the end-user
+pages work with JavaScript disabled, that Chromium keeps the `__Host-` cookies
+we set, and that no page provokes a CSP violation — all browser-enforced
+properties that no Rust test can observe. One script starts everything:
+
+```sh
+./scripts/browser-tests.sh              # both suites, ~1 minute after the first run
+./scripts/browser-tests.sh --headed     # watch it happen
+```
+
+Node and Playwright live in `e2e/` and nowhere else, with pinned versions and a
+committed lockfile. `e2e/README.md` explains what the sweep proves and what it
+does not yet cover.
+
 `sqlx` checks queries against a live database at compile time. After changing
 any SQL, regenerate the offline data and commit it, or CI (which builds with
 `SQLX_OFFLINE=true` and no database) will fail:
