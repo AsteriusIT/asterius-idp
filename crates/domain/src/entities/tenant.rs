@@ -90,8 +90,10 @@ impl TenantStatus {
 /// The defaults are FAPI 2.0 SP's position rather than a compromise:
 /// [`Rotation::None`], because §5.3.2.1 item 9 says an authorization server
 /// "shall not use refresh token rotation except in extraordinary
-/// circumstances"; and `bind_to_dpop_key` on, because §5.3.2.1 item 5 wants a
-/// refresh token sender-constrained rather than merely accompanied by a proof.
+/// circumstances"; and `bind_to_dpop_key` off, because RFC 9449 §5 says a
+/// refresh token issued to a *confidential* client is not bound to the DPoP
+/// key — and every client here is confidential
+/// ([`super::client::TokenEndpointAuthMethod`] has no `none`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RefreshPolicy {
     /// How long a refresh token may live at all, counted from issuance.
@@ -115,11 +117,24 @@ pub struct RefreshPolicy {
     /// Whether a refresh token may only be presented with the DPoP key it was
     /// issued to.
     ///
-    /// RFC 9449 §5 requires this of public clients and leaves it open for
-    /// confidential ones, which authenticate anyway. On is the stricter
-    /// reading and the default: a refresh token copied out of a confidential
-    /// client's store is then useless without that client's DPoP private key
-    /// as well as its credentials.
+    /// **Off by default, and that is the specification's answer rather than a
+    /// relaxation.** RFC 9449 §5 binds a refresh token to the proof key when
+    /// it is issued to a *public* client, and says in the same paragraph that
+    /// tokens "issued to confidential clients are not bound to the DPoP proof
+    /// public key because they are already sender-constrained with a different
+    /// existing mechanism" — the client authentication FAPI 2.0 SP §5.3.2.1
+    /// item 3 requires. This server registers no public client at all
+    /// ([`super::client::TokenEndpointAuthMethod`] has no `none`), so the
+    /// binding is never the one the RFC mandates, and a client is entitled to
+    /// present a *new* DPoP key when it refreshes.
+    ///
+    /// Turning it on is a local hardening with a cost that has to be stated: a
+    /// refresh token copied out of a client's store is then useless without
+    /// that client's DPoP private key as well as its credentials, but a client
+    /// that rolls its DPoP key — which RFC 9449 permits at any time, and which
+    /// the OpenID Foundation's conformance suite does on purpose in
+    /// `fapi2-security-profile-final-refresh-token` — loses its
+    /// authorizations. `ast-1h1` is that failure, found by the suite.
     pub bind_to_dpop_key: bool,
     /// Whether a refresh reissues the token or hands back the same one.
     pub rotation: Rotation,
@@ -184,7 +199,7 @@ impl Default for RefreshPolicy {
         Self {
             absolute_lifetime: DEFAULT_REFRESH_ABSOLUTE_LIFETIME,
             idle_lifetime: Some(DEFAULT_REFRESH_IDLE_LIFETIME),
-            bind_to_dpop_key: true,
+            bind_to_dpop_key: false,
             rotation: Rotation::None,
         }
     }
@@ -373,11 +388,13 @@ mod tests {
         assert!(!rotates, "FAPI 2.0 forbids rotation by default");
     }
 
-    /// The other half of the default: a refresh token is sender-constrained
-    /// unless a tenant explicitly relaxes it.
+    /// The other half of the default, and RFC 9449 §5 rather than a
+    /// convenience: every client here authenticates, so its refresh token is
+    /// already sender-constrained and pinning the DPoP key on top of that is a
+    /// choice a tenant makes, not the specification's position.
     #[test]
-    fn the_default_policy_binds_to_the_dpop_key() {
-        assert!(RefreshPolicy::default().bind_to_dpop_key);
+    fn the_default_policy_does_not_pin_the_dpop_key() {
+        assert!(!RefreshPolicy::default().bind_to_dpop_key);
     }
 
     /// An idle window past the absolute deadline is a setting with no effect.

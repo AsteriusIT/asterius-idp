@@ -574,14 +574,16 @@ fn tenant_refresh() -> Section {
             key(
                 "bind_to_dpop_key",
                 "boolean",
-                "`true`".to_owned(),
+                "`false`".to_owned(),
                 "Whether the refresh token may only be presented with the DPoP key it was \
-                 issued to (RFC 9449 §5). Required for public clients; on by default for \
-                 confidential ones too, which is the stricter reading — a refresh token \
-                 copied out of a client's store is then useless without that client's DPoP \
-                 private key as well as its credentials. Turning it off means a \
-                 confidential client may refresh with any key it proves, and the new access \
-                 token is bound to that key.",
+                 issued to. Off by default because that is RFC 9449 §5: a refresh token \
+                 issued to a *confidential* client is not bound to the proof key, being \
+                 sender-constrained by client authentication already, and this server \
+                 registers no public clients. A client may therefore roll its DPoP key and \
+                 keep its authorizations, and the new access token is bound to the key it \
+                 proves. Turning it on is a local hardening — a refresh token copied out of \
+                 a client's store is then useless without that client's DPoP private key as \
+                 well — and it breaks any client that rolls that key.",
             ),
             key(
                 "rotation",
