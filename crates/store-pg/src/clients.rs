@@ -80,6 +80,10 @@ impl asterius_domain::ClientConfiguration for PgClientRepository {
     async fn deprovision(&self, client_id: &ClientId) -> Result<(), DomainError> {
         Self::delete(self, client_id).await
     }
+
+    async fn revoke_registration_access_token(&self, digest: &[u8; 32]) -> Result<(), DomainError> {
+        Self::revoke_registration_access_token(self, digest).await
+    }
 }
 
 impl TenantScoped for PgClientRepository {
@@ -559,6 +563,61 @@ impl PgClientRepository {
         .map_err(to_domain_error)?;
         if result.rows_affected() == 0 {
             return Err(DomainError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Nulls a registration access token digest wherever this tenant holds it.
+    ///
+    /// One statement, resolved by `clients_by_registration_access_token` — the
+    /// partial index the baseline carries for this caller and no other. That is
+    /// the whole reason the method can exist: it runs on a request that has not
+    /// authenticated, so a sequential scan over `clients` would turn RFC 7592's
+    /// housekeeping SHOULD into a denial-of-service primitive. The database test
+    /// reads the plan back rather than trusting the index to be chosen.
+    ///
+    /// `where ... is not null` is not redundant with the digest equality: it is
+    /// what makes the predicate match the partial index's own, so the planner
+    /// may use it.
+    ///
+    /// A digest no client holds updates no rows and writes nothing — no row
+    /// version, no `updated_at`, no WAL beyond an empty transaction — which is
+    /// what keeps a caller sweeping `client_id`s from leaving a trail.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. Never
+    /// `NotFound`: "no client held this" is the ordinary case here, not a
+    /// failure, and the caller has already decided to refuse.
+    pub async fn revoke_registration_access_token(
+        &self,
+        digest: &[u8; 32],
+    ) -> Result<(), DomainError> {
+        let result = sqlx::query!(
+            "update clients set registration_access_token_hash = null
+             where tenant_id = $1
+               and registration_access_token_hash = $2
+               and registration_access_token_hash is not null",
+            self.tenant.as_str(),
+            digest.as_slice()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        // At `warn`, and only when something was actually burned. This is the
+        // one record of an event whose victim is usually its owner: a client
+        // that mistyped its configuration URL has just lost its only credential
+        // and will arrive asking why, and the answer has to exist somewhere.
+        // The digest is not logged — it is the credential's identity, and a log
+        // line is not where it belongs. The requester learns none of this.
+        if result.rows_affected() > 0 {
+            tracing::warn!(
+                tenant = %self.tenant.as_str(),
+                clients = result.rows_affected(),
+                "revoked a registration access token presented at a client it does not manage \
+                 (RFC 7592 2.1); that client now has no credential and must be re-registered"
+            );
         }
         Ok(())
     }

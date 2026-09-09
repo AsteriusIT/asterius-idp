@@ -25,6 +25,7 @@ use axum::response::Response;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use time::OffsetDateTime;
 
 const ISSUER: &str = "https://as.example/t/demo";
@@ -47,6 +48,10 @@ struct Row {
 struct FakeClients {
     rows: Mutex<BTreeMap<String, Row>>,
     broken: bool,
+    /// How many times the endpoint asked for a revocation.
+    revocations: AtomicUsize,
+    /// How many rows those revocations actually cleared.
+    revoked: AtomicUsize,
 }
 
 impl FakeClients {
@@ -70,6 +75,14 @@ impl FakeClients {
 
     fn ids(&self) -> Vec<String> {
         self.rows.lock().expect("lock").keys().cloned().collect()
+    }
+
+    /// How many times a revocation was attempted, and how many rows it hit.
+    fn revocations(&self) -> (usize, usize) {
+        (
+            self.revocations.load(Ordering::Relaxed),
+            self.revoked.load(Ordering::Relaxed),
+        )
     }
 
     fn storage_failure() -> DomainError {
@@ -128,6 +141,26 @@ impl ClientConfiguration for FakeClients {
             .remove(client_id.as_str())
             .map(|_| ())
             .ok_or(DomainError::NotFound)
+    }
+
+    /// The statement, as a scan the fake can afford: null the digest column of
+    /// whichever rows hold it, and count the calls so a test can prove that a
+    /// digest nobody holds still wrote nothing.
+    ///
+    /// Returns `()` like the port does, so nothing in the endpoint can branch
+    /// on whether a credential was found.
+    async fn revoke_registration_access_token(&self, digest: &[u8; 32]) -> Result<(), DomainError> {
+        self.revocations.fetch_add(1, Ordering::Relaxed);
+        if self.broken {
+            return Err(Self::storage_failure());
+        }
+        for row in self.rows.lock().expect("lock").values_mut() {
+            if row.registration_access_token == Some(*digest) {
+                row.registration_access_token = None;
+                self.revoked.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -333,6 +366,17 @@ async fn a_token_for_one_client_does_nothing_at_another_clients_url() {
     let fixture = Fixture::new();
     let body = Bytes::from(serde_json::to_vec(&document()).expect("serialise"));
 
+    // The pairing is what is under test, so establish first that this token is
+    // accepted at its own URL. It will not be by the end of this test.
+    let before = read(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        now(),
+    )
+    .await;
+    assert_eq!(before.status(), StatusCode::OK);
+
     // Alpha's token, entirely valid, presented at beta's URL.
     let got = read(&fixture.context(), "c.beta", &bearer(&fixture.alpha), now()).await;
     assert_eq!(got.status(), StatusCode::UNAUTHORIZED);
@@ -354,9 +398,43 @@ async fn a_token_for_one_client_does_nothing_at_another_clients_url() {
     assert_eq!(fixture.clients.ids(), vec!["c.alpha", "c.beta"]);
     let beta = fixture.clients.row("c.beta").expect("beta survives");
     assert_eq!(beta.client.registration.client_name, "Billing");
+    assert!(
+        beta.registration_access_token.is_some(),
+        "beta lost its own credential because somebody else knocked on its door"
+    );
+}
 
-    // And alpha's own token still works at alpha's URL, so the refusal above
-    // was about the pairing and not about the token.
+/// RFC 7592 §2.1/§2.2/§2.3: a registration access token presented for a client
+/// that does not exist "SHOULD be immediately revoked".
+///
+/// The acceptance criterion in one test: a token used at a `client_id` it does
+/// not manage is burned where it does live, so its *own* client's next request
+/// — the one that would have succeeded a moment earlier — is a 401.
+///
+/// This is a deliberate lockout. There is no client secret on this server and
+/// no way to re-issue a registration access token, so the client has to
+/// register again. See `burn` in the endpoint for why that trade is taken.
+#[tokio::test]
+async fn a_token_used_at_the_wrong_client_stops_working_at_its_own() {
+    let fixture = Fixture::new();
+
+    // Alpha knocks on beta's door once.
+    let wrong = read(&fixture.context(), "c.beta", &bearer(&fixture.alpha), now()).await;
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+    // The digest is gone from alpha's row, which is where it lived.
+    let alpha = fixture.clients.row("c.alpha").expect("alpha survives");
+    assert_eq!(
+        alpha.registration_access_token, None,
+        "the misused token was not revoked"
+    );
+    assert_eq!(
+        fixture.clients.revocations(),
+        (1, 1),
+        "one statement, one row"
+    );
+
+    // And alpha can no longer manage itself.
     let mine = read(
         &fixture.context(),
         "c.alpha",
@@ -364,7 +442,180 @@ async fn a_token_for_one_client_does_nothing_at_another_clients_url() {
         now(),
     )
     .await;
-    assert_eq!(mine.status(), StatusCode::OK);
+    assert_eq!(mine.status(), StatusCode::UNAUTHORIZED);
+
+    // The client itself is untouched: only the credential was withdrawn, so it
+    // keeps serving its users while its operator re-registers it.
+    assert_eq!(fixture.clients.ids(), vec!["c.alpha", "c.beta"]);
+    assert_eq!(
+        alpha.client.registration.client_name,
+        fixture
+            .clients
+            .row("c.alpha")
+            .expect("alpha survives")
+            .client
+            .registration
+            .client_name
+    );
+}
+
+/// A token no client holds is refused without writing anything.
+///
+/// The other half of the acceptance criterion, and the one that keeps the
+/// revocation from being a write amplifier: an anonymous caller sweeping
+/// `client_id`s with a made-up bearer token gets a 401 per attempt and leaves
+/// no row version behind it. The revocation is still *attempted* every time —
+/// that is what makes the two cases take the same path — but it hits nothing.
+#[tokio::test]
+async fn a_token_no_client_holds_revokes_nothing() {
+    let fixture = Fixture::new();
+    let stranger = OpaqueToken::generate();
+
+    for client_id in ["c.nobody", "c.alpha", "c.beta"] {
+        let got = read(&fixture.context(), client_id, &bearer(&stranger), now()).await;
+        assert_eq!(got.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    let (attempted, hit) = fixture.clients.revocations();
+    assert_eq!(attempted, 3, "the revocation path was not taken every time");
+    assert_eq!(hit, 0, "a token nobody holds wrote to a row");
+    for client_id in ["c.alpha", "c.beta"] {
+        assert!(
+            fixture
+                .clients
+                .row(client_id)
+                .expect("survives")
+                .registration_access_token
+                .is_some(),
+            "{client_id} lost its credential to a token it never held"
+        );
+    }
+}
+
+/// The revocation must not be observable, so a refusal that burned a credential
+/// and one that found nothing to burn are the same bytes.
+///
+/// Without this the endpoint is an oracle for "is this string somebody's
+/// registration access token", answered without authenticating — a better
+/// primitive than the one the revocation takes away. Status, challenge and body
+/// are all compared, and so is the case where the store cannot be reached at
+/// all: a 503 that meant "your token was worth revoking" would be the same leak
+/// wearing a different code.
+#[tokio::test]
+async fn a_revocation_is_not_visible_in_the_refusal() {
+    let fixture = Fixture::new();
+    let stranger = OpaqueToken::generate();
+
+    // A real token at the wrong door: this one revokes.
+    let burned =
+        refusal(read(&fixture.context(), "c.beta", &bearer(&fixture.alpha), now()).await).await;
+    assert_eq!(fixture.clients.revocations(), (1, 1));
+
+    // A token nobody holds: this one does not.
+    let nothing =
+        refusal(read(&fixture.context(), "c.beta", &bearer(&stranger), now()).await).await;
+    assert_eq!(fixture.clients.revocations(), (2, 1));
+
+    assert_eq!(
+        burned, nothing,
+        "the response says whether the token was worth revoking"
+    );
+    assert_eq!(burned.0, StatusCode::UNAUTHORIZED);
+
+    // And a store that cannot carry out the revocation answers the same way it
+    // would have if it could. `broken` fails the lookup too, so the comparison
+    // is against the refusal the endpoint has always given for that.
+    let sunk = FakeClients::broken();
+    let tenant = tenant();
+    let audit = FakeAudit::default();
+    let context = ConfigurationContext {
+        tenant: &tenant,
+        clients: &sunk,
+        configuration: &sunk,
+        capabilities: Capabilities::default(),
+        audit: &audit,
+        outbound: &FakeOutbound::default(),
+        request_id: Some("req-1"),
+    };
+    let unavailable = read(&context, "c.beta", &bearer(&fixture.alpha), now()).await;
+    assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// A `client_id` too long to be one is refused without reaching the store, and
+/// the token that arrived with it is still burned.
+///
+/// The over-long path segment is the shape of "presented for a client that does
+/// not exist" that never gets as far as a lookup, and it would be the way to
+/// use a leaked token against this endpoint for free if the revocation only
+/// hung off the digest comparison.
+#[tokio::test]
+async fn an_impossible_client_id_still_burns_the_token_it_arrived_with() {
+    let fixture = Fixture::new();
+    let over_long = "c.".to_owned() + &"a".repeat(300);
+
+    let got = read(
+        &fixture.context(),
+        &over_long,
+        &bearer(&fixture.alpha),
+        now(),
+    )
+    .await;
+    assert_eq!(got.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(fixture.clients.revocations(), (1, 1));
+    assert_eq!(
+        fixture
+            .clients
+            .row("c.alpha")
+            .expect("alpha survives")
+            .registration_access_token,
+        None
+    );
+}
+
+/// A request with no credential at all revokes nothing.
+///
+/// There is no digest to revoke by, and the statement must not run on an empty
+/// or defaulted value: `where registration_access_token_hash = <all zeroes>`
+/// would be a real predicate against a real column.
+#[tokio::test]
+async fn a_request_with_no_credential_revokes_nothing() {
+    let fixture = Fixture::new();
+
+    let got = read(&fixture.context(), "c.alpha", &headers(None), now()).await;
+    assert_eq!(got.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(fixture.clients.revocations(), (0, 0));
+}
+
+/// A token that fits does not get burned by the endpoint that checks it.
+///
+/// The guard against the obvious way to write this wrong: a revocation placed
+/// after the comparison rather than on its failing branch would make the first
+/// successful management request the last one.
+#[tokio::test]
+async fn a_token_that_fits_survives_being_used() {
+    let fixture = Fixture::new();
+
+    for _ in 0..3 {
+        let got = read(
+            &fixture.context(),
+            "c.alpha",
+            &bearer(&fixture.alpha),
+            now(),
+        )
+        .await;
+        assert_eq!(got.status(), StatusCode::OK);
+    }
+
+    assert_eq!(fixture.clients.revocations(), (0, 0));
+    assert!(
+        fixture
+            .clients
+            .row("c.alpha")
+            .expect("alpha survives")
+            .registration_access_token
+            .is_some(),
+        "a client lost its credential by using it correctly"
+    );
 }
 
 /// OIDC Registration §4.4: "for security reasons, to inhibit brute force
@@ -1180,15 +1431,24 @@ async fn what_reaches_the_audit_trail_is_what_got_past_the_credential() {
         .expect("serialise"),
     );
 
-    // Four refusals, none of which got past the credential.
+    // Three refusals, none of which got past the credential.
     let _ = read(&fixture.context(), "c.alpha", &headers(None), now()).await;
     let _ = read(&fixture.context(), "c.alpha", &bearer(&stranger), now()).await;
     let _ = read(&fixture.context(), "c.nobody", &bearer(&stranger), now()).await;
-    let _ = read(&fixture.context(), "c.beta", &bearer(&fixture.alpha), now()).await;
     assert!(
         fixture.audit.events().is_empty(),
         "a refusal before authentication was audited: {:?}",
         fixture.audit.events()
+    );
+
+    // The fourth — a real token at another client's URL — is silent too, and it
+    // needs its own fixture because it burns the token it arrived with.
+    let misused = Fixture::new();
+    let _ = read(&misused.context(), "c.beta", &bearer(&misused.alpha), now()).await;
+    assert!(
+        misused.audit.events().is_empty(),
+        "a revocation was audited: {:?}",
+        misused.audit.events()
     );
 
     // Three successes, one per verb, each under its own event type and naming

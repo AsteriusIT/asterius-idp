@@ -62,24 +62,35 @@
 //! primitive pointed at the one table that cannot be deleted from. Everything
 //! after a successful authentication is audited.
 //!
+//! # A token that turns up at the wrong door is burned
+//!
+//! RFC 7592 §2.1, §2.2 and §2.3 each say that a registration access token
+//! presented for a client that does not exist "SHOULD be immediately revoked",
+//! and this endpoint honours it: a credential that does not manage the
+//! `client_id` in the path is nulled out of whichever client in the tenant does
+//! hold it, before the 401 is written. The two shapes of the mistake — a
+//! `client_id` that names nothing and a `client_id` that names somebody else —
+//! go through the same statement, and a digest no client holds writes nothing
+//! at all.
+//!
+//! Two properties make that safe to do on an unauthenticated request, and
+//! [`burn`] carries the argument for both:
+//!
+//! * **It is one indexed statement, never a scan.** `clients` grew a partial
+//!   index on `(tenant_id, registration_access_token_hash)` for this caller
+//!   alone; without it, honouring the SHOULD would hand an anonymous requester
+//!   a full table scan per attempt.
+//! * **The refusal does not change.** Byte for byte, revoked or not, so the
+//!   endpoint is not an oracle for "is this string somebody's registration
+//!   access token".
+//!
+//! It is also a real loss for the client it happens to: this server issues no
+//! client secret, so that token was the client's only credential and there is
+//! no re-issue path. [`burn`] weighs that against what a leaked token can do
+//! with unlimited attempts, and says why the trade lands where it does.
+//!
 //! # What this endpoint deliberately does not do
 //!
-//! * **It does not revoke the presented token when it does not fit.** RFC 7592
-//!   §2.1 says a token presented for a client that does not exist "SHOULD be
-//!   immediately revoked". Honouring it means finding a credential by its
-//!   digest across the tenant's clients, on a request that has not
-//!   authenticated: `clients` has no index on
-//!   `registration_access_token_hash`, so that is a sequential scan per hostile
-//!   request at an endpoint that is not yet behind the rate limiter
-//!   (`ast-p2l.3`). The value bought is small — a registration access token is
-//!   scoped to exactly one client, so a token that matched would be one whose
-//!   holder already has full read, replace and delete over that client, and
-//!   revoking it afterwards takes nothing back — and the cost is not: this
-//!   server issues no client secret (FAPI 2.0 SP §5.3.2.1), so the registration
-//!   access token is a client's only credential and has no re-issue path. A
-//!   client that mistyped its configuration URL once would be locked out for
-//!   good, which is the situation RFC 7592 §5 tells implementers to avoid.
-//!   `ast-m9c.11` carries the index and the revocation together.
 //! * **It does not rotate the token on a read or an update.** RFC 7592 §5
 //!   permits it ("MAY be rotated when the developer or client does a read or
 //!   update operation") and OIDC Registration §4.3 argues against doing it on a
@@ -783,6 +794,76 @@ fn admits(stored: Option<[u8; 32]>, presented: &[u8; 32]) -> bool {
     ct_eq(&stored.unwrap_or(*DECOY), presented) & stored.is_some()
 }
 
+/// Revokes a credential that did not fit, and refuses either way.
+///
+/// RFC 7592 §2.1, §2.2 and §2.3 each say that a registration access token
+/// presented for a client that does not exist "SHOULD be immediately revoked".
+/// This is where that happens, and it covers both shapes of the mistake with
+/// one statement: a `client_id` that names nothing, and a `client_id` that
+/// names a real client the token does not manage. The statement asks who holds
+/// the presented digest, not who the path named, so the two cases differ only
+/// in whether a row comes back.
+///
+/// # What this costs, and why it is still right
+///
+/// This server issues no client secret (FAPI 2.0 SP §5.3.2.1), so the
+/// registration access token is a client's **only** credential and there is no
+/// re-issue path. Revoking it is therefore permanent: a client that mistyped
+/// its configuration URL once loses the ability to read, update or delete its
+/// own registration for good, and has to register again. RFC 7592 §5 names that
+/// state as one to avoid, and the decision here is to accept it rather than
+/// keep a credential alive after it has been seen used at the wrong door.
+///
+/// The reasoning is about who is holding the token when this fires. Its
+/// legitimate owner has a `registration_client_uri` the server handed it, so
+/// the wrong URL is a typo made by a human once, not something a running client
+/// does. A token that arrives at a `client_id` it does not manage is much more
+/// often one that leaked — into a log, a bug report, an environment shared with
+/// something else — and is being tried against identifiers by somebody probing
+/// for the door it opens. Burning it on the first wrong try turns a leaked
+/// credential's first misuse into its last, which is the only moment at which
+/// this server can act on the leak at all: after a correct use there is nothing
+/// left to protect. The cost falls on a client that can re-register in one
+/// request; the benefit is that a leaked token has one attempt, not unlimited
+/// ones.
+///
+/// The lockout is loud where it needs to be — the store logs a warning when a
+/// row was actually hit — and silent where it must be: see below.
+///
+/// # Why the answer cannot say what happened
+///
+/// The return is [`Refusal::Invalid`] unconditionally, and every input to it is
+/// a constant of this module, so the response is byte-identical whether the
+/// digest matched a client, matched nothing, or the revocation failed outright.
+/// If it were not, this endpoint would be an oracle for "is this string
+/// somebody's registration access token", answered without authenticating —
+/// which is a better primitive than the one revocation takes away.
+///
+/// A storage failure is logged and swallowed for the same reason. Turning it
+/// into [`Denied::Unavailable`] would make a 503 mean "your token was worth
+/// revoking", and the caller has already earned its 401 on evidence that does
+/// not depend on this statement succeeding.
+///
+/// What is left is timing: a revocation that hits a row does a write and one
+/// that does not does not, so the two are not equal to a stopwatch. Closing
+/// that would mean writing unconditionally to a decoy row on every failed
+/// management request, which buys less than it costs on an endpoint whose
+/// entire input is a public identifier and a string the caller already knows.
+async fn burn(context: &ConfigurationContext<'_>, presented: &[u8; 32]) -> Denied {
+    if let Err(failure) = context
+        .configuration
+        .revoke_registration_access_token(presented)
+        .await
+    {
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            "could not revoke a registration access token presented at the wrong client"
+        );
+    }
+    Denied::Refused(Refusal::Invalid)
+}
+
 /// Whether this request may act on this client.
 ///
 /// The whole authorization decision for the endpoint. Three things have to be
@@ -793,9 +874,11 @@ fn admits(stored: Option<[u8; 32]>, presented: &[u8; 32]) -> bool {
 /// 2. It is the digest stored for **the client this URL names**. OIDC
 ///    Registration §4.1: the client a configuration URL identifies "MUST be
 ///    matched against the Client to which the Registration Access Token was
-///    issued". There is no lookup by token, so a token for another client
-///    cannot be matched here even by accident — the only digest this function
-///    ever sees is the one belonging to the path.
+///    issued". Nothing looks a client up *by* the presented token, so a token
+///    for another client cannot be admitted here even by accident — the only
+///    stored digest this function compares against is the one belonging to the
+///    path. The lookup by digest exists ([`burn`]), but it only ever revokes;
+///    it can never admit.
 /// 3. The client is not suspended.
 async fn authenticate(
     context: &ConfigurationContext<'_>,
@@ -805,8 +888,15 @@ async fn authenticate(
     let Some(presented) = bearer(headers) else {
         return Err(Denied::Refused(Refusal::Missing));
     };
+    // Hashed before the database is asked anything, because every path from
+    // here that refuses also revokes, and the revocation needs the digest.
+    let presented = sha256(presented.as_bytes());
     if client_id.as_str().len() > MAX_CLIENT_ID_LEN {
-        return Err(Denied::Refused(Refusal::Invalid));
+        // No client this long exists, so this is RFC 7592 §2.1's "presented for
+        // a client that does not exist" as surely as a well-formed identifier
+        // that names nothing. The path segment never reaches the database; the
+        // digest does.
+        return Err(burn(context, &presented).await);
     }
 
     let managed = match context.configuration.managed(client_id).await {
@@ -822,8 +912,8 @@ async fn authenticate(
     };
 
     let stored = managed.as_ref().and_then(|m| m.registration_access_token);
-    if !admits(stored, &sha256(presented.as_bytes())) {
-        return Err(Denied::Refused(Refusal::Invalid));
+    if !admits(stored, &presented) {
+        return Err(burn(context, &presented).await);
     }
 
     let managed = managed.expect("a digest was compared, so the client exists");
