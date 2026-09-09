@@ -153,6 +153,26 @@ create trigger clients_set_updated_at before update on clients
 create index clients_by_agent_owner on clients (tenant_id, agent_owner_sub)
     where is_agent;
 
+-- Resolves a registration access token by its digest, within one tenant.
+--
+-- The only lookup in the schema that goes from a credential to its row rather
+-- than from an identifier to it, and it exists for one caller: RFC 7592
+-- §2.1/§2.2/§2.3 say a registration access token presented for a client that
+-- does not exist "SHOULD be immediately revoked", and revoking it means finding
+-- whichever client holds that digest. Without this index that is a sequential
+-- scan of every client in the deployment, driven by an unauthenticated request
+-- — so the index is not a performance nicety, it is what makes honouring the
+-- SHOULD safe at all (`ast-m9c.11`).
+--
+-- Partial, on `not null`, because a client that was created through the admin
+-- API has no registration access token and would otherwise put a null in the
+-- index for nothing. Not unique: two clients holding the same digest is a
+-- CSPRNG failure, and a unique index would turn it into a write error at
+-- registration time instead of leaving the revocation to null both rows.
+create index clients_by_registration_access_token
+    on clients (tenant_id, registration_access_token_hash)
+    where registration_access_token_hash is not null;
+
 -- Client keys resolved from `jwks_uri`, cached with an expiry so that a key
 -- rotation at the client is picked up without a fetch on every request.
 create table client_keys (

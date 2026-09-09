@@ -1339,6 +1339,232 @@ db_test! {
 }
 
 db_test! {
+    /// RFC 7592 §2.1/§2.2/§2.3: a registration access token presented for a
+    /// client it does not manage is revoked, wherever in the tenant it lives.
+    ///
+    /// The statement is keyed on the credential, not on a `client_id`, so this
+    /// is the one place in the schema where a digest finds its own row. What
+    /// the test pins is the blast radius: the digest column of the holder is
+    /// nulled and nothing else in the row moves, so the client keeps serving
+    /// its users and only loses the ability to manage its registration.
+    async fn revoking_a_digest_clears_it_from_whichever_client_holds_it(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+
+        let digest = [7_u8; 32];
+        repo.register(&client("demo", "c.alpha", &registration_document()), &digest)
+            .await
+            .expect("alpha registers");
+        repo.register(&client("demo", "c.beta", &registration_document()), &[8_u8; 32])
+            .await
+            .expect("beta registers");
+
+        repo.revoke_registration_access_token(&digest).await.expect("revoke");
+
+        let rows: Vec<(String, Option<Vec<u8>>)> = sqlx::query_as(
+            "select client_id, registration_access_token_hash from clients
+             where tenant_id = 'demo' order by client_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the digests");
+        assert_eq!(rows[0], ("c.alpha".to_owned(), None), "the holder kept its credential");
+        assert_eq!(
+            rows[1],
+            ("c.beta".to_owned(), Some(vec![8_u8; 32])),
+            "a bystander lost its credential"
+        );
+
+        // The client is still a client. Only the credential went.
+        let alpha = repo.find(&ClientId::new("c.alpha")).await.expect("find").expect("present");
+        assert_eq!(alpha.registration.client_name, "Billing");
+        assert!(alpha.is_active());
+    }
+}
+
+db_test! {
+    /// A digest no client holds writes nothing.
+    ///
+    /// This is the case an anonymous caller can reach at will, so it has to be
+    /// free: no row version, no `updated_at`, no error. `updated_at` is the
+    /// observable here because the row's trigger moves it on any write, so an
+    /// unchanged timestamp is proof that the statement matched nothing rather
+    /// than that it wrote the same bytes back.
+    async fn revoking_a_digest_nobody_holds_writes_nothing(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        repo.register(&client("demo", "c.alpha", &registration_document()), &[9_u8; 32])
+            .await
+            .expect("alpha registers");
+
+        let before: OffsetDateTime = sqlx::query_scalar(
+            "select updated_at from clients where tenant_id = 'demo' and client_id = 'c.alpha'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read updated_at");
+
+        repo.revoke_registration_access_token(&[0_u8; 32]).await.expect("revoke nothing");
+        repo.revoke_registration_access_token(&[255_u8; 32]).await.expect("revoke nothing");
+
+        let (after, digest): (OffsetDateTime, Option<Vec<u8>>) = sqlx::query_as(
+            "select updated_at, registration_access_token_hash from clients
+             where tenant_id = 'demo' and client_id = 'c.alpha'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read the row");
+        assert_eq!(after, before, "a digest nobody holds touched a row");
+        assert_eq!(digest, Some(vec![9_u8; 32]));
+    }
+}
+
+db_test! {
+    /// A digest presented at one tenant cannot revoke another tenant's
+    /// credential, even when both tenants hold the same bytes.
+    ///
+    /// Two tenants holding one digest is a CSPRNG failure rather than something
+    /// to expect, but the predicate has to be right for the reason every other
+    /// statement here is tenant-scoped: this one runs on a request that has not
+    /// authenticated, so a missing `tenant_id` would let anybody who can reach
+    /// one tenant's endpoint burn a credential in another.
+    async fn a_revocation_stops_at_the_tenant_boundary(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let store = Store::from_pool(db.pool.clone());
+        let alpha = store.scope(TenantId::new("alpha")).clients(Capabilities::default());
+        let beta = store.scope(TenantId::new("beta")).clients(Capabilities::default());
+
+        let shared = [11_u8; 32];
+        alpha.register(&client("alpha", "c.abc", &registration_document()), &shared)
+            .await
+            .expect("alpha registers");
+        beta.register(&client("beta", "c.abc", &registration_document()), &shared)
+            .await
+            .expect("beta registers");
+
+        alpha.revoke_registration_access_token(&shared).await.expect("revoke");
+
+        let rows: Vec<(String, Option<Vec<u8>>)> = sqlx::query_as(
+            "select tenant_id, registration_access_token_hash from clients
+             where client_id = 'c.abc' order by tenant_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the digests");
+        assert_eq!(rows[0], ("alpha".to_owned(), None));
+        assert_eq!(
+            rows[1],
+            ("beta".to_owned(), Some(shared.to_vec())),
+            "one tenant's revocation reached into another"
+        );
+    }
+}
+
+db_test! {
+    /// The revocation resolves through `clients_by_registration_access_token`
+    /// and is never a sequential scan.
+    ///
+    /// The reason the statement is allowed to exist at all: it runs on an
+    /// unauthenticated request, so a scan of `clients` per attempt would make
+    /// honouring RFC 7592's SHOULD a denial-of-service primitive.
+    ///
+    /// The plan is read back rather than assumed, because the failure this
+    /// guards against is silent: the statement keeps working, slowly, for ever.
+    /// Two ways to get it wrong, and the plan catches both — a predicate that
+    /// does not imply the partial index's own `where ... is not null` leaves
+    /// the index unusable, and a predicate that merely narrows by `tenant_id`
+    /// gets served by `clients_pkey` with the digest as a filter, which is a
+    /// scan of the tenant wearing an index's name.
+    ///
+    /// The table is filled first and `analyze`d, because a planner with no
+    /// statistics has no reason to prefer anything: the question is what
+    /// happens at the size a deployment actually has, not at three rows. The
+    /// row count is small enough to insert in one statement and large enough
+    /// that a scan is the wrong answer.
+    async fn the_revocation_is_planned_as_an_index_lookup(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        repo.register(&client("demo", "c.alpha", &registration_document()), &[13_u8; 32])
+            .await
+            .expect("alpha registers");
+
+        // A tenant with a realistic number of clients, each holding its own
+        // digest. Written straight to the table: what is under test is the
+        // planner, and 5000 registrations through the repository would only
+        // make the test slow.
+        sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks,
+                                  registration_access_token_hash)
+             select 'demo', 'c.bulk.' || g, 'Bulk', 'private_key_jwt',
+                    '{\"keys\": []}'::jsonb, sha256(g::text::bytea)
+             from generate_series(1, 5000) g",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("fill the tenant");
+        sqlx::query("analyze clients").execute(&db.pool).await.expect("analyze");
+
+        // The statement `revoke_registration_access_token` runs, verbatim, and
+        // with the planner left entirely alone.
+        let plan: Vec<String> = sqlx::query_scalar(
+            "explain (costs off)
+             update clients set registration_access_token_hash = null
+             where tenant_id = $1
+               and registration_access_token_hash = $2
+               and registration_access_token_hash is not null",
+        )
+        .bind("demo")
+        .bind([13_u8; 32].as_slice())
+        .fetch_all(&db.pool)
+        .await
+        .expect("explain the revocation");
+        let plan = plan.join("\n");
+
+        assert!(
+            plan.contains("clients_by_registration_access_token"),
+            "the revocation did not use its index:\n{plan}"
+        );
+        assert!(
+            !plan.contains("Seq Scan"),
+            "the revocation fell back to a scan:\n{plan}"
+        );
+        assert!(
+            !plan.contains("clients_pkey"),
+            "the revocation scanned the tenant through the primary key:\n{plan}"
+        );
+    }
+}
+
+db_test! {
+    /// The index is partial, so a client with no registration access token is
+    /// not in it.
+    ///
+    /// Admin-created clients have no such token and are the majority in a
+    /// mature deployment; indexing their nulls would pay for the whole table to
+    /// serve a lookup that can never match them.
+    async fn the_token_index_covers_only_clients_that_have_one(db) {
+        let predicate: Option<String> = sqlx::query_scalar(
+            "select pg_get_expr(i.indpred, i.indrelid)
+             from pg_index i join pg_class c on c.oid = i.indexrelid
+             where c.relname = 'clients_by_registration_access_token'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("the index exists");
+        let predicate = predicate.expect("the index is partial");
+        assert!(
+            predicate.contains("registration_access_token_hash IS NOT NULL"),
+            "the index is not restricted to clients that hold a token: {predicate}"
+        );
+    }
+}
+
+db_test! {
     /// Registering into a tenant that does not exist is a conflict, not a
     /// storage failure and not a row. The foreign key is what makes it so, and
     /// this asserts the mapping rather than the constraint: a caller that got

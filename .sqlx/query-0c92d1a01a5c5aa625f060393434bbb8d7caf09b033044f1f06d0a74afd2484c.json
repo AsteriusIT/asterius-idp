@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update clients set registration_access_token_hash = null\n             where tenant_id = $1\n               and registration_access_token_hash = $2\n               and registration_access_token_hash is not null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0c92d1a01a5c5aa625f060393434bbb8d7caf09b033044f1f06d0a74afd2484c"
+}

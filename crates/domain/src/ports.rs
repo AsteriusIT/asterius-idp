@@ -277,6 +277,38 @@ pub trait ClientConfiguration: Debug + Send + Sync {
     /// [`DomainError::NotFound`] if no such client exists in this tenant, or a
     /// storage error.
     async fn deprovision(&self, client_id: &ClientId) -> Result<(), DomainError>;
+
+    /// Burns a registration access token wherever in this tenant it is held.
+    ///
+    /// The credential-side counterpart of [`Self::managed`]: that one asks
+    /// "what does this `client_id` hold", this one asks "who holds this
+    /// digest", and the answer is thrown away rather than returned. RFC 7592
+    /// §2.1, §2.2 and §2.3 each say a registration access token presented for a
+    /// client that does not exist "SHOULD be immediately revoked", so a token
+    /// that turns up at the wrong configuration URL stops working everywhere,
+    /// including at the URL where it would have worked.
+    ///
+    /// **Returns nothing on purpose.** Whether a row was hit is the one fact
+    /// the caller must not learn: OIDC Registration §4.4 requires the refusal
+    /// for "no such client" and for "the token is invalid" to be the same
+    /// answer, and a `bool` here is a value a future branch could be written
+    /// against. An implementation that wants to record the difference does so
+    /// in its own logs, where the requester cannot read it.
+    ///
+    /// Scoped to the tenant like every other method on this port, and that is
+    /// load-bearing rather than incidental: a digest presented at one tenant
+    /// must not be able to revoke another tenant's credential.
+    ///
+    /// Implementations must resolve the digest by index. A caller reaches this
+    /// on an unauthenticated request, so a scan would make the revocation
+    /// itself the denial-of-service.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. A caller has
+    /// already decided to refuse by the time it gets here, so the failure is
+    /// worth logging and must not change the answer.
+    async fn revoke_registration_access_token(&self, digest: &[u8; 32]) -> Result<(), DomainError>;
 }
 
 /// Stores pushed authorization requests for one tenant.
