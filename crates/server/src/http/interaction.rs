@@ -31,11 +31,12 @@
 //! do. It does not pretend to authenticate.
 
 use crate::http::redirect::SeeOther;
+use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::session::SessionId;
 use asterius_domain::{
     AuthenticationMethod, CodeBinding, CodeIssuer, CredentialVerifier, Grant, GrantRepository,
     InteractionRecord, InteractionRepository, Lifetimes, Secret, SectorIdentifier, Session,
-    SessionId as DomainSessionId, SessionRepository, SubjectResolver, Tenant, UserId,
+    SessionId as DomainSessionId, SessionRepository, SubjectResolver, Tenant, TenantId, UserId,
 };
 use asterius_oidc::code::{self, AuthorizationResponse, MintedCode};
 use asterius_oidc::consent::{ConsentRequest, Decision};
@@ -84,11 +85,81 @@ pub struct InteractionContext<'a> {
     pub code_lifetime: Duration,
     /// The CSP nonce the document middleware drew for this response.
     pub nonce: &'a Nonce,
+    /// Where the security-relevant things that happen here are recorded.
+    ///
+    /// The interaction endpoints are where a person authenticates and where a
+    /// credential of theirs comes into existence, and neither is something the
+    /// trail can be missing. [`record_passkey_registered`] is the first user.
+    pub audit: &'a dyn AuditSink,
 }
 
 impl std::fmt::Debug for InteractionContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InteractionContext").finish_non_exhaustive()
+    }
+}
+
+/// Builds the trail record for a passkey that has just been registered.
+///
+/// Separate from [`record_passkey_registered`] so the shape of the event can be
+/// asserted without a sink, a tenant and eight repositories.
+///
+/// Three identities are named, and each answers a different question. The
+/// tenant says whose directory grew a credential; the subject and the
+/// [`Actor::User`] say for whom, and they are the same person here because a
+/// passkey is registered by its owner and by nobody else — an operator adding
+/// a credential to somebody else's account would be an [`Actor::Admin`] event,
+/// which this is not. The credential is named by the digest of its row id
+/// rather than by the id: `Detail::text` classifies a UUID as
+/// credential-shaped and would redact it anyway, and a digest is how the rest
+/// of this trail says *which* one. It is deterministic, so every
+/// `credential.*` event about one passkey lines up, and an investigator
+/// holding the row id can hash it to find them.
+#[must_use]
+pub fn passkey_registered_event(
+    tenant: &TenantId,
+    user: &UserId,
+    credential: &uuid::Uuid,
+    now: OffsetDateTime,
+) -> AuditEvent {
+    let subject = user.as_uuid().to_string();
+    AuditEvent::new(
+        tenant.clone(),
+        EventType::CREDENTIAL_CREATED,
+        Outcome::Success,
+        Actor::User(subject.clone()),
+        now,
+    )
+    .subject(subject)
+    .detail(
+        Detail::new()
+            .label("kind", "passkey")
+            .label("method", AuthenticationMethod::Passkey.as_str())
+            .credential("credential_id", credential.to_string()),
+    )
+}
+
+/// Appends a registered passkey to the audit trail.
+///
+/// A failure is logged and does not propagate, which is the call
+/// `http::register` makes and for the same reason: the credential row is
+/// already committed by the time this runs, and failing the ceremony
+/// afterwards would leave a user holding an authenticator the server told them
+/// had not been registered. The transactional outbox (`ast-0ju.9`) is what
+/// closes that gap for good.
+pub async fn record_passkey_registered(
+    context: &InteractionContext<'_>,
+    user: &UserId,
+    credential: &uuid::Uuid,
+    now: OffsetDateTime,
+) {
+    let event = passkey_registered_event(&context.tenant.id, user, credential, now);
+    if let Err(failure) = context.audit.record(event).await {
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            "a registered passkey was not written to the audit trail"
+        );
     }
 }
 
@@ -922,5 +993,73 @@ fn set_session_cookie(response: &mut Response, id: &SessionId) {
     );
     if let Ok(value) = cookie.parse() {
         response.headers_mut().append(header::SET_COOKIE, value);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use asterius_domain::audit::{DetailValue, fingerprint};
+
+    fn registered() -> (TenantId, UserId, uuid::Uuid, AuditEvent) {
+        let tenant = TenantId::new("demo");
+        let user = UserId::generate();
+        let credential = uuid::Uuid::new_v4();
+        let event = passkey_registered_event(
+            &tenant,
+            &user,
+            &credential,
+            OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("a valid timestamp"),
+        );
+        (tenant, user, credential, event)
+    }
+
+    #[test]
+    fn a_registered_passkey_is_recorded_against_its_tenant_and_user() {
+        let (tenant, user, _, event) = registered();
+
+        assert_eq!(event.tenant, tenant);
+        assert_eq!(event.subject, Some(user.as_uuid().to_string()));
+        assert_eq!(event.actor, Actor::User(user.as_uuid().to_string()));
+    }
+
+    #[test]
+    fn a_registered_passkey_is_recorded_as_a_created_credential() {
+        let (_, _, _, event) = registered();
+
+        assert_eq!(event.event_type, EventType::CREDENTIAL_CREATED);
+        assert_eq!(event.outcome, Outcome::Success);
+    }
+
+    #[test]
+    fn a_registered_passkey_names_the_credential_row_by_digest() {
+        let (_, _, credential, event) = registered();
+
+        let recorded = event
+            .detail
+            .iter()
+            .find(|(key, _)| key.as_str() == "credential_id")
+            .map(|(_, value)| value.clone());
+
+        assert_eq!(
+            recorded,
+            Some(DetailValue::Fingerprint(fingerprint(
+                &credential.to_string()
+            )))
+        );
+    }
+
+    /// A digest is only useful if the same credential always produces it.
+    #[test]
+    fn the_same_credential_is_named_the_same_way_twice() {
+        let tenant = TenantId::new("demo");
+        let user = UserId::generate();
+        let credential = uuid::Uuid::new_v4();
+        let now = OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("a valid timestamp");
+
+        let first = passkey_registered_event(&tenant, &user, &credential, now);
+        let second = passkey_registered_event(&tenant, &user, &credential, now);
+
+        assert_eq!(first.detail, second.detail);
     }
 }

@@ -44,6 +44,15 @@ impl EventType {
     pub const AUTH_LOGIN: Self = Self("auth.login");
     /// An authentication attempt failed.
     pub const AUTH_FAILED: Self = Self("auth.failed");
+    /// A credential was registered for a user: a passkey, a password, a
+    /// recovery code.
+    ///
+    /// The event names the user it belongs to and the credential row it
+    /// created, so that a credential nobody recognises can be traced back to
+    /// the ceremony that produced it. It is also the trail half of the CAEP
+    /// `credential-change` (create) signal; the signal itself is emitted
+    /// elsewhere.
+    pub const CREDENTIAL_CREATED: Self = Self("credential.created");
     /// A user granted consent.
     pub const CONSENT_GRANTED: Self = Self("consent.granted");
     /// A user refused consent.
@@ -89,11 +98,12 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
         Self::AUTH_FAILED,
+        Self::CREDENTIAL_CREATED,
         Self::CONSENT_GRANTED,
         Self::CONSENT_DENIED,
         Self::CODE_ISSUED,
@@ -470,6 +480,20 @@ mod tests {
                 "{event} is not lower snake case"
             );
         }
+    }
+
+    /// `EventType::ALL` is what `row_to_event` resolves a stored spelling
+    /// through, so a variant missing from it is an event that can be written
+    /// and never read back.
+    #[test]
+    fn a_created_credential_has_an_event_type_that_round_trips_through_all() {
+        let stored = EventType::CREDENTIAL_CREATED.as_str();
+
+        let found = EventType::ALL
+            .into_iter()
+            .find(|candidate| candidate.as_str() == stored);
+
+        assert_eq!(found, Some(EventType::CREDENTIAL_CREATED));
     }
 
     #[test]
