@@ -10,6 +10,7 @@
 //! and a refused caller must not reach the store at all.
 
 use asterius_domain::audit::{AuditEvent, AuditSink, DetailValue, EventType, Outcome};
+use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientRegistry, DomainError, Issuer, Tenant, TenantId, TenantStatus,
     sha256,
@@ -141,8 +142,56 @@ fn gated() -> RegistrationPolicy {
     RegistrationPolicy::Gated(InitialAccessTokens::from_tokens([TOKEN]))
 }
 
+/// The outbound path, answered from memory.
+///
+/// `None` is a fetch that fails, which is what every test that registers no
+/// `sector_identifier_uri` should see: nothing must dereference anything for
+/// those, and a fetcher that would succeed could not prove it.
+#[derive(Debug, Default)]
+struct FakeOutbound {
+    document: Option<Vec<u8>>,
+}
+
+impl FakeOutbound {
+    fn serving(document: &Value) -> Self {
+        Self {
+            document: Some(document.to_string().into_bytes()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl JwksFetcher for FakeOutbound {
+    async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
+        self.document
+            .clone()
+            .ok_or_else(|| DomainError::invalid("sector_identifier_uri", "unreachable"))
+    }
+}
+
 /// Runs one request against a fresh registry and audit sink.
 async fn post(
+    policy: &RegistrationPolicy,
+    registry: &FakeRegistry,
+    audit: &FakeAudit,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    post_with(
+        &FakeOutbound::default(),
+        policy,
+        registry,
+        audit,
+        headers,
+        body,
+    )
+    .await
+}
+
+/// [`post`], with the outbound path spelt out for the registrations that use
+/// it.
+async fn post_with(
+    outbound: &dyn JwksFetcher,
     policy: &RegistrationPolicy,
     registry: &FakeRegistry,
     audit: &FakeAudit,
@@ -156,6 +205,7 @@ async fn post(
             capabilities: Capabilities::default(),
             policy,
             audit,
+            outbound,
             request_id: Some("req-1"),
         },
         headers,
@@ -649,5 +699,131 @@ async fn a_store_that_refuses_the_write_is_not_reported_as_a_bad_document() {
             // classified this string as a credential and stored a digest.
             &DetailValue::Text("temporarily_unavailable".to_owned())
         ))
+    );
+}
+
+// ---- sector identifiers (OIDC Registration §5) ----------------------------
+
+/// A pairwise registration across two hosts, which must name a sector and
+/// therefore owes the §5 fetch.
+fn pairwise_document() -> Value {
+    let mut document = document();
+    let object = document.as_object_mut().expect("object");
+    object.insert(
+        "redirect_uris".to_owned(),
+        json!(["https://a.rp.example/cb", "https://b.rp.example/cb"]),
+    );
+    object.insert("subject_type".to_owned(), json!("pairwise"));
+    object.insert(
+        "sector_identifier_uri".to_owned(),
+        json!("https://rp.example/sector.json"),
+    );
+    document
+}
+
+/// The success path: the sector's owner lists both callbacks, so the client has
+/// shown it belongs to the sector it named.
+#[tokio::test]
+async fn a_pairwise_client_whose_sector_lists_its_redirect_uris_is_registered() {
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let outbound = FakeOutbound::serving(&json!([
+        "https://a.rp.example/cb",
+        "https://b.rp.example/cb"
+    ]));
+
+    let response = post_with(
+        &outbound,
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(None),
+        pairwise_document().to_string().as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+/// Naming a sector the client does not control must not register: it would be
+/// handed the `sub` values of everyone else in that sector.
+#[tokio::test]
+async fn a_pairwise_client_missing_from_its_sector_document_is_refused() {
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let outbound = FakeOutbound::serving(&json!(["https://a.rp.example/cb"]));
+
+    let response = post_with(
+        &outbound,
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(None),
+        pairwise_document().to_string().as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_client_metadata")
+    );
+}
+
+/// A sector that cannot be fetched — no answer, or an address the ADR-0006
+/// guard refuses — fails closed rather than being taken on trust.
+#[tokio::test]
+async fn a_pairwise_client_whose_sector_cannot_be_fetched_is_refused() {
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+
+    let response = post_with(
+        &FakeOutbound::default(),
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(None),
+        pairwise_document().to_string().as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_client_metadata")
+    );
+}
+
+/// A `sector_identifier_uri` that is not https never reaches the fetcher: the
+/// document is refused by validation, so no address is ever dereferenced.
+#[tokio::test]
+async fn a_sector_identifier_uri_that_is_not_https_is_refused_before_any_fetch() {
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let mut document = pairwise_document();
+    document.as_object_mut().expect("object").insert(
+        "sector_identifier_uri".to_owned(),
+        json!("http://rp.example/sector.json"),
+    );
+
+    let response = post_with(
+        // Serving the document that would have satisfied §5: the refusal must
+        // come from the scheme, not from the fetch failing.
+        &FakeOutbound::serving(&json!([
+            "https://a.rp.example/cb",
+            "https://b.rp.example/cb"
+        ])),
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(None),
+        document.to_string().as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_client_metadata")
     );
 }

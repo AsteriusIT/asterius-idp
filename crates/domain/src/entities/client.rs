@@ -103,6 +103,17 @@ impl ClientMetadataError {
         }
     }
 
+    /// The URL this field carries could not be dereferenced.
+    ///
+    /// The reason is fixed text: what actually went wrong — a refused address,
+    /// a timeout, a 404 — is for the operator's log, and telling a registering
+    /// client which of them it was would turn the endpoint into a probe for
+    /// the network this server sits in.
+    #[must_use]
+    pub fn unreachable(field: &'static str) -> Self {
+        Self::rejected(field, "could not be fetched")
+    }
+
     fn needs(field: &'static str, feature: Feature) -> Self {
         Self::rejected(
             field,
@@ -905,6 +916,74 @@ impl ClientRegistration {
         metadata.validate(capabilities)
     }
 
+    /// The `sector_identifier_uri` this registration still owes a fetch, if
+    /// any.
+    ///
+    /// `Some` only for a pairwise client that named one: a public client cannot
+    /// carry the field at all ([`ClientMetadata::validate`] refuses it), and a
+    /// pairwise client that named none takes its sector from its single
+    /// redirect host, which it demonstrably controls already.
+    #[must_use]
+    pub fn sector_identifier_uri_to_verify(&self) -> Option<&str> {
+        if self.subject_type == SubjectType::Pairwise {
+            self.sector_identifier_uri.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Checks a fetched `sector_identifier_uri` document against this
+    /// registration — OIDC Registration §5.
+    ///
+    /// The document is "a JSON file containing an array of `redirect_uri`
+    /// values", and §5 requires the authorization server to verify that the
+    /// `redirect_uris` registered here are *all* in it. That check is the only
+    /// thing tying a client to the sector it names: without it any client may
+    /// claim any sector, and two unrelated clients claiming one sector are
+    /// handed the same `sub` for the same user — which is the correlation
+    /// pairwise subjects exist to prevent, defeated for both of them.
+    ///
+    /// Comparison is byte-exact, as ADR-0005 makes it everywhere a redirect URI
+    /// is compared: a document listing a URI that merely normalises to a
+    /// registered one has not shown that the sector's owner knows about the
+    /// registered one.
+    ///
+    /// This is pure — the fetching is `asterius_server::outbound` and ADR-0006
+    /// governs it. The split is what keeps the rule testable without a socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientMetadataError::Rejected`] when the document is not a
+    /// JSON array of strings, or omits any registered redirect URI.
+    pub fn check_sector_identifier_document(
+        &self,
+        document: &[u8],
+    ) -> Result<(), ClientMetadataError> {
+        const FIELD: &str = "sector_identifier_uri";
+        let listed: Vec<String> = serde_json::from_slice(document).map_err(|_| {
+            ClientMetadataError::rejected(
+                FIELD,
+                "must serve a JSON array of redirect URI strings (OIDC Registration §5)",
+            )
+        })?;
+        let listed: BTreeSet<&str> = listed.iter().map(String::as_str).collect();
+        if self
+            .redirect_uris
+            .iter()
+            .any(|uri| !listed.contains(uri.as_str()))
+        {
+            // Which URI is missing is not said: the answer is in the document
+            // the client published, and repeating a registered redirect URI in
+            // an error body is how a registration endpoint becomes a way to
+            // read one back.
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                "must list every registered redirect_uri (OIDC Registration §5)",
+            ));
+        }
+        Ok(())
+    }
+
     /// Whether the client may use `grant`.
     #[must_use]
     pub fn allows(&self, grant: GrantType) -> bool {
@@ -1292,9 +1371,10 @@ impl ClientMetadata {
             }
             (SubjectType::Public, None) => Ok((subject_type, None)),
             (SubjectType::Pairwise, Some(uri)) => {
-                // Fetching the document and checking that it lists every
-                // registered redirect URI (OIDC Registration §5) is I/O, and
-                // belongs with the other outbound fetches in `ast-mxc.5`.
+                // The document itself is fetched and checked against the
+                // registered redirect URIs by
+                // [`ClientRegistration::check_sector_identifier_document`],
+                // over the ADR-0006 outbound path — I/O, so not here.
                 https_url(FIELD, uri)?;
                 Ok((subject_type, Some(uri.to_owned())))
             }
@@ -2486,6 +2566,117 @@ mod tests {
             json!("http://rp.example/sector.json"),
         );
         assert_eq!(rejection(&insecure).field(), "sector_identifier_uri");
+    }
+
+    /// Builds the pairwise registration whose sector document the tests below
+    /// judge: two redirect hosts, so the sector must be named rather than
+    /// inferred.
+    fn pairwise_across_two_hosts() -> ClientRegistration {
+        let mut document = with("subject_type", json!("pairwise"));
+        let object = document.as_object_mut().expect("object");
+        object.insert(
+            "redirect_uris".to_owned(),
+            json!(["https://a.rp.example/cb", "https://b.rp.example/cb"]),
+        );
+        object.insert(
+            "sector_identifier_uri".to_owned(),
+            json!("https://rp.example/sector.json"),
+        );
+        validate(&document).expect("a pairwise client naming its sector")
+    }
+
+    /// OIDC Registration §5: the document must list every registered redirect
+    /// URI, which is the only evidence the client controls the sector it named.
+    #[test]
+    fn a_sector_document_listing_every_redirect_uri_is_accepted() {
+        let registration = pairwise_across_two_hosts();
+        let document = json!(["https://a.rp.example/cb", "https://b.rp.example/cb"]).to_string();
+
+        let outcome = registration.check_sector_identifier_document(document.as_bytes());
+
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    /// A document may cover more clients than this one; extra entries are the
+    /// normal case for a sector shared by several registrations.
+    #[test]
+    fn a_sector_document_may_list_redirect_uris_this_client_did_not_register() {
+        let registration = pairwise_across_two_hosts();
+        let document = json!([
+            "https://a.rp.example/cb",
+            "https://b.rp.example/cb",
+            "https://c.rp.example/cb"
+        ])
+        .to_string();
+
+        let outcome = registration.check_sector_identifier_document(document.as_bytes());
+
+        assert!(outcome.is_ok(), "{outcome:?}");
+    }
+
+    /// The failure this whole check exists for: a client naming a sector whose
+    /// owner never listed its callback.
+    #[test]
+    fn a_sector_document_omitting_a_registered_redirect_uri_is_refused() {
+        let registration = pairwise_across_two_hosts();
+        let document = json!(["https://a.rp.example/cb"]).to_string();
+
+        let error = registration
+            .check_sector_identifier_document(document.as_bytes())
+            .expect_err("an incomplete document must be refused");
+
+        assert_eq!(error.field(), "sector_identifier_uri");
+        assert_eq!(error.code(), "invalid_client_metadata");
+    }
+
+    /// ADR-0005 compares redirect URIs byte for byte, and a sector document is
+    /// no place to relax it: a trailing slash is a different callback.
+    #[test]
+    fn a_sector_document_must_match_a_redirect_uri_byte_for_byte() {
+        let registration = pairwise_across_two_hosts();
+        let document = json!(["https://a.rp.example/cb/", "https://b.rp.example/cb"]).to_string();
+
+        let error = registration
+            .check_sector_identifier_document(document.as_bytes())
+            .expect_err("a near miss must be refused");
+
+        assert_eq!(error.field(), "sector_identifier_uri");
+    }
+
+    /// Anything but an array of strings — an HTML error page, an object, a
+    /// list of numbers — is not the document §5 describes.
+    #[test]
+    fn a_sector_document_that_is_not_an_array_of_strings_is_refused() {
+        let registration = pairwise_across_two_hosts();
+        for body in [b"<!doctype html>".as_slice(), b"{}", b"[1, 2]", b"[]", b""] {
+            let error = registration
+                .check_sector_identifier_document(body)
+                .expect_err("must be refused");
+            assert_eq!(error.field(), "sector_identifier_uri");
+        }
+    }
+
+    /// Only a pairwise client that named a sector owes a fetch: a public one
+    /// cannot carry the field, and a pairwise one without it takes the sector
+    /// from the single redirect host it already proved it controls.
+    #[test]
+    fn only_a_pairwise_client_that_named_a_sector_owes_a_fetch() {
+        assert_eq!(
+            pairwise_across_two_hosts().sector_identifier_uri_to_verify(),
+            Some("https://rp.example/sector.json")
+        );
+        assert_eq!(
+            validate(&with("subject_type", json!("pairwise")))
+                .expect("one redirect host")
+                .sector_identifier_uri_to_verify(),
+            None
+        );
+        assert_eq!(
+            validate(&minimal())
+                .expect("a public client")
+                .sector_identifier_uri_to_verify(),
+            None
+        );
     }
 
     #[test]
