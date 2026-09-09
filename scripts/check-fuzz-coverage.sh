@@ -47,20 +47,21 @@ while read -r target; do
   fi
 done <<<"$present"
 
-# The registry must match the directory exactly.
+# The registry must match the directory exactly, in both directions.
 #
-# `scripts/sync-fuzz-registry.sh` derives it, so this only catches a hand edit
-# that got it wrong — which has happened three times in one day, every time
-# while resolving a merge conflict whose markers landed inside a `[[bin]]`
-# block.
-on_disk="$(ls fuzz/fuzz_targets/*.rs 2>/dev/null | xargs -n1 basename | sed 's/\.rs$//' | sort)"
-registered="$(awk '/^\[\[bin\]\]/ { in_bin = 1; next }
-                   in_bin && /^name = / { gsub(/^name = "|"$/, ""); print; in_bin = 0 }' \
-              fuzz/Cargo.toml | sort)"
-if [[ "$on_disk" != "$registered" ]]; then
-  echo "FUZZ REGISTRY OUT OF STEP with fuzz/fuzz_targets/:" >&2
-  diff <(echo "$on_disk") <(echo "$registered") >&2 || true
-  echo "  run: ./scripts/sync-fuzz-registry.sh" >&2
+# A file with no `[[bin]]` passes the marker check above — the file exists —
+# and escapes the compile check below, which only builds what the manifest
+# declares: it is never built and never fuzzed while looking covered. Four
+# WebAuthn parsers, the ones reading bytes an authenticator handed us, sat in
+# that state on `main`. A `[[bin]]` with no file is the mirror image and breaks
+# the crate's build.
+#
+# `scripts/sync-fuzz-registry.sh --check` renders the manifest it would write
+# and reports every difference. The gate asks the generator rather than parsing
+# the manifest a second time here, so the two cannot drift apart in their idea
+# of what is registered — and it fails closed when the enumeration is empty or
+# the manifest unreadable.
+if ! ./scripts/sync-fuzz-registry.sh --check; then
   status=1
 fi
 
