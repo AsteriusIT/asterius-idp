@@ -317,13 +317,13 @@ fn check_nonces(input: &Input) {
     assert!(!NonceIssuer::from_secret(b"a different secret").accepts(&nonce, AUDIENCE, issued_at));
 
     // Arbitrary text is never a nonce. (It could be, with probability 2^-128.)
-    if let NonceClaim::Text(text) = &input.nonce {
-        if text != &nonce {
-            assert!(
-                !issuer.accepts(text, AUDIENCE, issued_at),
-                "arbitrary text {text:?} was accepted as a nonce"
-            );
-        }
+    if let NonceClaim::Text(text) = &input.nonce
+        && text != &nonce
+    {
+        assert!(
+            !issuer.accepts(text, AUDIENCE, issued_at),
+            "arbitrary text {text:?} was accepted as a nonce"
+        );
     }
 }
 

@@ -57,7 +57,14 @@ jobs:
       # one that still compiles. The fuzz crate is outside the workspace, so
       # this step is the only thing in the pipeline that type-checks it before
       # the nightly fuzzing job does, hours later.
-      - name: fuzz coverage
+      #
+      # For the same reason it also runs rustfmt and clippy over `fuzz/`: the
+      # two steps above are workspace-wide and stop at the workspace boundary,
+      # which is how 24 targets came to be unformatted. Inside this script
+      # rather than as steps here, so `./scripts/check.sh` catches the drift
+      # locally instead of on a runner, and inside this job rather than a new
+      # one, which would be a whole runner for a few seconds of work.
+      - name: fuzz coverage, formatting and lints
         run: ./scripts/check-fuzz-coverage.sh
 
       # Belt and braces around the forbid attribute: an `unsafe` block that

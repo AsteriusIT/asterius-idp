@@ -27,7 +27,7 @@
 #![no_main]
 
 use arbitrary::Arbitrary;
-use asterius_oidc::code::{AuthorizationResponse, MalformedCode, MintedCode, digest_of};
+use asterius_oidc::code::{AuthorizationResponse, MintedCode, digest_of};
 use libfuzzer_sys::fuzz_target;
 
 /// Registered redirect URIs, spelled the ways a registration document can hold
@@ -74,22 +74,21 @@ fn pick<'a>(table: &[&'a str], index: u8) -> &'a str {
 fuzz_target!(|input: Input| {
     // --- digest_of ---------------------------------------------------------
 
-    match digest_of(&input.presented) {
-        Ok(digest) => {
-            // What is handed to the store must be a lookup key, not a value
-            // that will be spliced into anything.
-            assert_eq!(digest.len(), 64, "not a SHA-256 digest: {digest:?}");
-            assert!(
-                digest.bytes().all(|b| b.is_ascii_hexdigit()),
-                "a digest outside hex: {digest:?}"
-            );
-            assert_eq!(
-                digest,
-                digest_of(&input.presented).expect("accepted once, accepted twice"),
-                "digesting is not deterministic"
-            );
-        }
-        Err(MalformedCode) => {}
+    // A rejected code has nothing to assert about: `MalformedCode` is the only
+    // error the digest can return.
+    if let Ok(digest) = digest_of(&input.presented) {
+        // What is handed to the store must be a lookup key, not a value
+        // that will be spliced into anything.
+        assert_eq!(digest.len(), 64, "not a SHA-256 digest: {digest:?}");
+        assert!(
+            digest.bytes().all(|b| b.is_ascii_hexdigit()),
+            "a digest outside hex: {digest:?}"
+        );
+        assert_eq!(
+            digest,
+            digest_of(&input.presented).expect("accepted once, accepted twice"),
+            "digesting is not deterministic"
+        );
     }
 
     // A minted code always passes its own check, and digests to what the

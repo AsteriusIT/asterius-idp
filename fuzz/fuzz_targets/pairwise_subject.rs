@@ -110,9 +110,7 @@ impl<'a> Source<'a> {
     fn salt(&mut self) -> [u8; 32] {
         let mut bytes = [0_u8; 32];
         let fill = self.byte();
-        for slot in &mut bytes {
-            *slot = fill;
-        }
+        bytes.fill(fill);
         let vary = usize::from(self.byte()) % 32;
         bytes[vary] = self.byte();
         bytes

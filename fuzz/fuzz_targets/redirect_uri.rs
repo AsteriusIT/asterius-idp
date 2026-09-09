@@ -129,7 +129,7 @@ fuzz_target!(|data: &[u8]| {
     let mut components = Components::new(data);
     // The first byte decides the client type, so one corpus entry exercises
     // both sides of the FAPI 2.0 SP §5.3.2.2 item 8 rule.
-    let application_type = if components.byte() % 2 == 0 {
+    let application_type = if components.byte().is_multiple_of(2) {
         ApplicationType::Web
     } else {
         ApplicationType::Native

@@ -300,10 +300,7 @@ fn check_method_selection(input: &Input) {
 
     // A method is never selected from nothing.
     assert!(
-        !matches!(
-            attempt.method(),
-            Ok(_) if !input.has_assertion && !input.has_certificate
-        ),
+        attempt.method().is_err() || input.has_assertion || input.has_certificate,
         "selected a method from a request with no credential"
     );
 
