@@ -7,9 +7,9 @@ use crate::{
     AuthenticationMethod, AuthorizationDetailsType, Client, ClientId, ClientMetadataError,
     ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError, Enrolment,
     FirstPartyDestination, Grant, InitialAccessToken, InitialAccessTokenReservation,
-    InteractionRecord, Issuer, NewInitialAccessToken, NewPasskey, Participant, PushedRequest,
-    RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session, SessionRevocation,
-    SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
+    InteractionRecord, IssuedRecovery, Issuer, NewInitialAccessToken, NewPasskey, Participant,
+    PushedRequest, RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session,
+    SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -1526,6 +1526,90 @@ pub trait ReplayGuard: Debug + Send + Sync {
         jti: &str,
         expires_at: OffsetDateTime,
     ) -> Result<ReplayCheck, DomainError>;
+}
+
+/// The single-use tokens an account recovery is carried by.
+///
+/// # Why `spend` is one method and not a read plus a delete
+///
+/// Single use is the entire security of the mechanism, and single use is a
+/// property of one statement. A store that read the row, let the handler check
+/// it, and deleted it afterwards would give two requests arriving together two
+/// successful resets from one mailed link — which is exactly what somebody who
+/// obtained the link once, and races the real owner, wants.
+///
+/// # Why the store never returns the token
+///
+/// It never has it. Rows hold [`crate::RecoveryToken::digest`] and callers
+/// look up by digest, so a database copy contains no usable reset link
+/// (NIST SP 800-63B §5.1.1.2 on storing authenticator secrets; OWASP's Forgot
+/// Password Cheat Sheet says the same about reset tokens).
+#[async_trait::async_trait]
+pub trait RecoveryTokenStore: Debug + Send + Sync {
+    /// Writes a freshly drawn token and invalidates every earlier one for the
+    /// same user, in one statement.
+    ///
+    /// Invalidating the earlier ones is not tidiness. A person who clicks
+    /// "send me a link" three times has three live account takeovers sitting
+    /// in a mailbox, and the two they did not use are the two nobody will
+    /// notice being used. The newest link is the one that works.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn issue(&self, issued: &IssuedRecovery) -> Result<(), DomainError>;
+
+    /// Consumes the token behind `digest`, returning whose account it resets.
+    ///
+    /// Atomic, and it is the only place expiry is enforced against a clock the
+    /// caller does not control. `Ok(None)` covers every ordinary refusal —
+    /// unknown, already spent, expired, invalidated by a credential change —
+    /// as one answer, because a browser that could tell them apart could probe
+    /// for live reset links.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the statement fails.
+    async fn spend(&self, digest: &str, now: OffsetDateTime)
+    -> Result<Option<UserId>, DomainError>;
+
+    /// Whose account this token resets, without spending it.
+    ///
+    /// For rendering the page a link leads to: it names the account so that
+    /// somebody holding an old link, or two accounts, can see which one they
+    /// are about to change. It applies the same expiry predicate as
+    /// [`Self::spend`] so that a dead link produces an error page instead of a
+    /// form that will fail after the person has typed a password twice.
+    ///
+    /// This is not a weaker `spend` and must never be used in its place: a
+    /// handler that peeked, decided, and then wrote would have reintroduced
+    /// exactly the two-statement race `spend` exists to close. Nothing here
+    /// is an oracle — the caller already holds a 256-bit token, so learning
+    /// whether *that* token is live tells them nothing they could not learn by
+    /// submitting the form.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails.
+    async fn peek(&self, digest: &str, now: OffsetDateTime) -> Result<Option<UserId>, DomainError>;
+
+    /// Invalidates every outstanding token for one user.
+    ///
+    /// Called when a credential changes by any route — a reset that completed,
+    /// a password changed from a signed-in session, an administrator. A live
+    /// reset link that survives the change it was meant to cause is a way back
+    /// in for whoever prompted it.
+    ///
+    /// Returns how many were invalidated, for the trail.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn invalidate_for_user(
+        &self,
+        user: UserId,
+        now: OffsetDateTime,
+    ) -> Result<u64, DomainError>;
 }
 
 #[cfg(test)]

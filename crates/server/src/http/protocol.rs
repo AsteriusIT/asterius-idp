@@ -20,6 +20,7 @@ use crate::http::interaction::{self, InteractionContext};
 use crate::http::logout;
 use crate::http::par::{self, PushContext};
 use crate::http::passkeys::{self, PasskeyContext, PasskeyLoginContext};
+use crate::http::recovery;
 use crate::http::refresh::RefreshToken;
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::revocation;
@@ -347,7 +348,27 @@ pub fn routes(state: ProtocolState) -> Router {
             )
             .route(
                 passkeys::LOGIN_FINISH_PATH,
-                post(passkey_login_finish).with_state(endpoints),
+                post(passkey_login_finish).with_state(Arc::clone(&endpoints)),
+            )
+            // Account recovery (`ast-2vk.10`). Not in the endpoint registry,
+            // for the reason the interaction pages and the passkey pages are
+            // not: this is the server's own user interface. It is the one part
+            // of it a person reaches with no credential at all, which is why
+            // every request through it is limited and recorded.
+            //
+            // Both verbs on both paths, and no script on either: the whole
+            // flow is two forms and a link (`ast-ndk.4`).
+            .route(
+                recovery::REQUEST_PATH,
+                get(recovery_request_page)
+                    .post(recovery_request_submit)
+                    .with_state(Arc::clone(&endpoints)),
+            )
+            .route(
+                recovery::NEW_PASSWORD_PATH,
+                get(recovery_new_password_page)
+                    .post(recovery_new_password_submit)
+                    .with_state(endpoints),
             );
     }
 
@@ -1936,6 +1957,184 @@ fn throttle<'a>(
         endpoints.login_limits,
         client.map(|client| client.ip),
     )
+}
+
+/// Builds the context the four recovery routes share.
+///
+/// One helper for the same reason `passkey_context` is one: four copies of a
+/// ten-field literal is four places for one of them to drift, and the field
+/// that would drift is the limiter.
+#[allow(clippy::too_many_arguments)]
+fn recovery_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    users: &'a asterius_store_pg::PgUserRepository,
+    passwords: Option<&'a asterius_store_pg::PgPasswordVerifier>,
+    tokens: &'a asterius_store_pg::PgRecoveryTokens,
+    mail: &'a asterius_store_pg::PgOutboxMailSender,
+    sessions: &'a asterius_store_pg::PgSessionRepository,
+    limiter: &'a asterius_store_pg::PgRateLimitStore,
+    client: Option<&crate::http::forwarded::ClientAddr>,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: MountPrefix,
+) -> recovery::RecoveryContext<'a> {
+    recovery::RecoveryContext {
+        tenant,
+        users,
+        passwords,
+        tokens,
+        mail,
+        sessions,
+        audit: endpoints.audit.as_ref(),
+        throttle: throttle(endpoints, limiter, client),
+        nonce,
+        mount,
+    }
+}
+
+/// `GET /recovery` — the form that asks for an address.
+async fn recovery_request_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let tokens = scope.recovery_tokens();
+    let mail = scope.mail();
+    let sessions = scope.sessions();
+    let passwords = endpoints.passwords(&tenant.id);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    recovery::show_request(&recovery_context(
+        &endpoints,
+        &tenant,
+        &users,
+        passwords.as_ref(),
+        &tokens,
+        &mail,
+        &sessions,
+        &limiter,
+        client.as_deref(),
+        &nonce,
+        mount_of(mount),
+    ))
+}
+
+/// `POST /recovery` — draw a token and hand a message to the sender.
+#[allow(clippy::too_many_arguments)]
+async fn recovery_request_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let tokens = scope.recovery_tokens();
+    let mail = scope.mail();
+    let sessions = scope.sessions();
+    let passwords = endpoints.passwords(&tenant.id);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    recovery::submit_request(
+        &recovery_context(
+            &endpoints,
+            &tenant,
+            &users,
+            passwords.as_ref(),
+            &tokens,
+            &mail,
+            &sessions,
+            &limiter,
+            client.as_deref(),
+            &nonce,
+            mount_of(mount),
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /recovery/new?token=…` — the page the mailed link leads to.
+#[allow(clippy::too_many_arguments)]
+async fn recovery_new_password_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    uri: axum::http::Uri,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let tokens = scope.recovery_tokens();
+    let mail = scope.mail();
+    let sessions = scope.sessions();
+    let passwords = endpoints.passwords(&tenant.id);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    recovery::show_new_password(
+        &recovery_context(
+            &endpoints,
+            &tenant,
+            &users,
+            passwords.as_ref(),
+            &tokens,
+            &mail,
+            &sessions,
+            &limiter,
+            client.as_deref(),
+            &nonce,
+            mount_of(mount),
+        ),
+        uri.query(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /recovery/new` — spend the token and set the credential.
+#[allow(clippy::too_many_arguments)]
+async fn recovery_new_password_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let tokens = scope.recovery_tokens();
+    let mail = scope.mail();
+    let sessions = scope.sessions();
+    let passwords = endpoints.passwords(&tenant.id);
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    recovery::submit_new_password(
+        &recovery_context(
+            &endpoints,
+            &tenant,
+            &users,
+            passwords.as_ref(),
+            &tokens,
+            &mail,
+            &sessions,
+            &limiter,
+            client.as_deref(),
+            &nonce,
+            mount_of(mount),
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
 }
 
 /// Builds the context the three passkey routes share.

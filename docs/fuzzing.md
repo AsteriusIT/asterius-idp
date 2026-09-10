@@ -136,6 +136,7 @@ The 61 targets below cover 79 declared entry points. Generated from the
 | `password_policy` | `normalise` | `crates/domain/src/entities/password.rs` |
 | `pkce` | `CodeChallenge::parse` | `crates/oidc/src/pkce.rs` |
 | `pkce` | `CodeVerifier::parse` | `crates/oidc/src/pkce.rs` |
+| `recovery_token` | `RecoveryToken::parse` | `crates/domain/src/entities/recovery.rs` |
 | `redaction_scan` | `classify` | `crates/domain/src/audit/redaction.rs` |
 | `redirect_uri` | `RedirectUri::parse` | `crates/domain/src/entities/client.rs` |
 | `refresh_token` | `digest_of` | `crates/oidc/src/refresh.rs` |

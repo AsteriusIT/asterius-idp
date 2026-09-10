@@ -16,6 +16,7 @@ pub mod issuer;
 pub mod json_sentinel;
 pub mod keys;
 pub mod limits;
+pub mod notification;
 pub mod ports;
 pub mod rate_limit;
 pub mod secret;
@@ -45,15 +46,16 @@ pub use entities::{
     ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client, ClientMetadata,
     ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantAuthentication, GrantError,
     GrantRecord, GrantStatus, GrantType, InitialAccessToken, InitialAccessTokenReservation,
-    InvalidAuthorizationDetails, InvalidTarget, JsonSchema, JsonSchemaError, JwksRequirement,
-    JwksSource, LiveAccessToken, MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, NewInitialAccessToken,
-    PairwiseSalt, PasskeyEnrolment, PolicyViolation, RedirectUri, RedirectUriError, RefreshPolicy,
-    RefreshPolicyError, RegistrationMode, RegistrationPolicy, RegistrationPolicyError,
-    ResourceIdentifier, ResourceRegistry, ResourceServer, RevocationReason, Role, RoleScope,
-    Rotation, RuleId, SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule,
-    SubjectError, SubjectType, Tenant, TenantSettings, TenantSettingsError, TenantStatus,
-    TlsClientAuthSubject, TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User, UserId,
-    UserRole, UserStatus,
+    InvalidAuthorizationDetails, InvalidTarget, IssuedRecovery, JsonSchema, JsonSchemaError,
+    JwksRequirement, JwksSource, LiveAccessToken, MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN,
+    NewInitialAccessToken, PairwiseSalt, PasskeyEnrolment, PolicyViolation, RECOVERY_LIFETIME,
+    RECOVERY_TOKEN_BITS, RecoveryToken, RecoveryTokenError, RedirectUri, RedirectUriError,
+    RefreshPolicy, RefreshPolicyError, RegistrationMode, RegistrationPolicy,
+    RegistrationPolicyError, ResourceIdentifier, ResourceRegistry, ResourceServer,
+    RevocationReason, Role, RoleScope, Rotation, RuleId, SectorIdentifier, SoftwareStatementIssuer,
+    SoftwareStatementRule, SubjectError, SubjectType, Tenant, TenantSettings, TenantSettingsError,
+    TenantStatus, TlsClientAuthSubject, TokenBinding, TokenEndpointAuthMethod, TokenLifetimes,
+    User, UserId, UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
@@ -66,12 +68,13 @@ pub use keys::{
     PublicKeyRecord, RotationSchedule, Signer, SigningAlgorithm,
 };
 pub use limits::MAX_JWT_BYTES;
+pub use notification::{MailSender, Notification, NotificationKind};
 pub use ports::{
     AuthRequestRepository, AuthorizationDetailsTypeRepository, ClientAdministration,
     ClientConfiguration, ClientRegistry, ClientRepository, ClientUsageRecorder, CodeIssuer,
     CredentialVerifier, GrantAmendments, GrantRepository, InitialAccessTokenStore,
     InteractionRepository, ManagedClient, PasskeyRepository, PreviousRegistrationAccessToken,
-    ReplayCheck, ReplayGuard, ReplayPurpose, ResourceServerRepository, SessionRepository,
+    RecoveryTokenStore, ReplayCheck, ReplayGuard, ReplayPurpose, ResourceServerRepository, SessionRepository,
     SubjectResolver, TenantSettingsRepository, UserDirectory,
 };
 pub use rate_limit::{

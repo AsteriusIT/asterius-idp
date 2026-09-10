@@ -368,6 +368,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "recovery_token"
+path = "fuzz_targets/recovery_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "redaction_scan"
 path = "fuzz_targets/redaction_scan.rs"
 test = false

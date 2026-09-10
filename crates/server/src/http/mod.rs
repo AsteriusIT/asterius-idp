@@ -20,6 +20,7 @@ pub mod logout;
 pub mod par;
 pub mod passkeys;
 pub mod protocol;
+pub mod recovery;
 pub mod redirect;
 pub mod refresh;
 pub mod register;

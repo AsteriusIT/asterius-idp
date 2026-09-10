@@ -188,6 +188,54 @@ Requests — not failures — are counted per endpoint, in the same fixed window
 | `limits.token_per_client` | integer | 1200 | Successful token responses per window for one authenticated client. The busiest endpoint a working deployment has — every authorization and every refresh passes through it — so this is the number to raise first when a large client is refused. |
 | `limits.userinfo_per_address` | integer | 600 | Requests per window to UserInfo from one address. The most generous of the five: its callers are resource servers rather than browsers, so one address is legitimately a fleet making a request per API call. There is no per-client limit, because the caller presents an access token and reading a client out of it before verifying it would be trusting a string the caller wrote. |
 
+## Account recovery and mail — read this before enabling passwords
+
+**This repository ships no mail sender, and nothing you configure here will
+make one appear.** Account recovery is built and wired; delivery is not.
+
+The recovery pages (`GET|POST /recovery`, `GET|POST /recovery/new`) are mounted
+whenever the deployment has the database wiring for the interaction pages —
+there is no flag. Requesting a link produces a real single-use token and hands
+a message to the configured `MailSender`. The only adapter in this repository
+is a **journal**: it writes the message to the transactional `outbox` table,
+logs that it queued it, and delivers nothing. `delivered_at` stays null,
+because it was not delivered.
+
+That shape is deliberate rather than a stub. A deployment gets a complete,
+queryable record of which recovery links were produced and for whom, tests can
+read the link a browser would have been mailed, and nobody is misled into
+thinking mail works. Wiring a real sender means implementing
+`asterius_domain::MailSender` — one method, `send(&Notification)` — and
+substituting it where `asterius_store_pg::PgOutboxMailSender` is built. There
+is deliberately no SMTP dependency anywhere in the protocol crates; the
+layering check enforces that.
+
+**Operational consequences, in order of how much they will cost you:**
+
+* **Nobody can recover an account until you wire a sender.** Until then the
+  outbox is the only place the link exists — an operator can read it out and
+  pass it on, which is a manual process and should be treated as one.
+* **Treat the outbox as a credential store.** An `account_recovery` row
+  contains a live reset link until the token behind it expires, fifteen minutes
+  later. Keep retention on that table short and its access narrow. The
+  retention sweep already ages it; the default is not tuned for this.
+* **The mail path is now inside the trust boundary of every account with an
+  address.** A gateway that expands links to preview them will spend them. A
+  shared inbox is a shared account. See `docs/threat-model.md`, "Account
+  recovery".
+* **Recovery sets a password.** An account whose only credential was a passkey
+  is recovered onto a weaker method. A deployment that wants passkeys only
+  should leave `[admin]`/password material unconfigured, which makes the
+  new-password step refuse rather than downgrade.
+* **Requests are counted against `[login]`'s buckets**, not a limiter of their
+  own: a burst of reset requests for one identifier consumes the same budget a
+  burst of wrong passwords would. Size `login.max_failures_per_account` with
+  that in mind.
+
+Recovery mail is not the only thing the journal carries: a completed recovery
+also queues a `credential_changed` notice to the account. That one has nothing
+to click, on purpose.
+
 ## `[[tenant]]` — one table per tenant
 
 A tenant is an issuer. This array is the source of truth for which tenants exist at boot; the admin API adds more at runtime. The upsert is idempotent, so a restart re-asserts the declared shape.

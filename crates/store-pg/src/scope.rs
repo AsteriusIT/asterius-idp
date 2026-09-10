@@ -114,6 +114,21 @@ impl<'a> TenantScope<'a> {
     pub fn passkeys(&self) -> PgPasskeyRepository {
         PgPasskeyRepository::new(self.pool.clone(), self.tenant.clone())
     }
+
+    /// The account-recovery tokens for this tenant (`ast-2vk.10`).
+    #[must_use]
+    pub fn recovery_tokens(&self) -> crate::PgRecoveryTokens {
+        crate::PgRecoveryTokens::new(self.pool.clone(), self.tenant.clone())
+    }
+
+    /// The journal mail sender for this tenant.
+    ///
+    /// Scoped like everything else, so an outbox row can never be written
+    /// under a tenant other than the one the request resolved to.
+    #[must_use]
+    pub fn mail(&self) -> crate::PgOutboxMailSender {
+        crate::PgOutboxMailSender::new(self.pool.clone(), self.tenant.clone())
+    }
 }
 
 impl TenantScoped for TenantScope<'_> {

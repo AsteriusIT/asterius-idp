@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update recovery_tokens\n                set consumed_at = $3, consumed_reason = $4\n              where tenant_id = $1 and user_id = $2 and consumed_at is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c10b00497b015fe5eb3b7241b5999a73bc9ea254ebe340e61e729ed2b43a6291"
+}

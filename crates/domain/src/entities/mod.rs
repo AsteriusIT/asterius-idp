@@ -9,6 +9,7 @@ pub mod grant;
 pub mod initial_access_token;
 pub mod passkey;
 pub mod password;
+pub mod recovery;
 pub mod registration_policy;
 pub mod resource_server;
 pub mod role;
@@ -36,6 +37,9 @@ pub use grant::{
 pub use initial_access_token::{
     InitialAccessToken, MAX_LABEL_LEN as MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, NewInitialAccessToken,
     Reservation as InitialAccessTokenReservation,
+};
+pub use recovery::{
+    IssuedRecovery, RECOVERY_LIFETIME, RECOVERY_TOKEN_BITS, RecoveryToken, RecoveryTokenError,
 };
 pub use registration_policy::{
     JwksRequirement, PolicyViolation, RegistrationMode, RegistrationPolicy,
