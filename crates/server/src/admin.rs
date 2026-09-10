@@ -18,6 +18,7 @@
 //! handed one.
 
 use asterius_admin_api::{AdminBackend, ClientAddress};
+use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::{TenantRepository, TenantSettingsRepository};
 use asterius_domain::{
     AuditSink, DomainError, RateLimitStore, ReplayGuard, Role, Session, SessionRepository as _,
@@ -39,6 +40,7 @@ use crate::tenant_settings::SettingsDirectory;
 pub struct Deployment {
     store: Store,
     tenants: Arc<dyn TenantRepository>,
+    keys: Arc<dyn KeyAdministration>,
     directory: TenantDirectory,
     settings: SettingsDirectory,
 }
@@ -55,16 +57,25 @@ impl Deployment {
     /// `tenants` must be the process's `dyn TenantRepository` — the
     /// `ProvisionedTenants` one — and not a repository built here. See the
     /// module documentation for what goes wrong otherwise.
+    ///
+    /// `keys` is the process's `TenantKeyStore`, for a sharper version of the
+    /// same reason: it holds the key-encryption key this deployment was started
+    /// with, and a repository assembled here would seal a rotated key under
+    /// whatever KEK this module could reach. The failure would be a key that
+    /// does not decrypt on the next boot — after the rotation, on somebody
+    /// else's shift.
     #[must_use]
     pub const fn new(
         store: Store,
         tenants: Arc<dyn TenantRepository>,
+        keys: Arc<dyn KeyAdministration>,
         directory: TenantDirectory,
         settings: SettingsDirectory,
     ) -> Self {
         Self {
             store,
             tenants,
+            keys,
             directory,
             settings,
         }
@@ -98,6 +109,10 @@ impl AdminBackend for Deployment {
 
     fn tenant_settings(&self) -> Arc<dyn TenantSettingsRepository> {
         Arc::new(PgTenantSettings::new(self.store.pool().clone()))
+    }
+
+    fn keys(&self) -> Arc<dyn KeyAdministration> {
+        Arc::clone(&self.keys)
     }
 
     fn audit(&self) -> Arc<dyn AuditSink> {

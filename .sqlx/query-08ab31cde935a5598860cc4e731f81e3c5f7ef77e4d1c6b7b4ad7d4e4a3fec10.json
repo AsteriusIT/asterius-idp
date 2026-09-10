@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select alg, state from signing_keys\n             where tenant_id = $1 and kid = $2 and purpose = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "alg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "state",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "08ab31cde935a5598860cc4e731f81e3c5f7ef77e4d1c6b7b4ad7d4e4a3fec10"
+}

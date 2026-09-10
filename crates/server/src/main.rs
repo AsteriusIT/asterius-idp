@@ -193,7 +193,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         });
 
         let routes = routes
-            .merge(admin_routes(&store, &tenants, directory, settings))
+            .merge(admin_routes(&store, &tenants, &keys, directory, settings))
             .merge(console_routes(&store))
             .fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
@@ -252,6 +252,7 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 fn admin_routes(
     store: &Store,
     tenants: &Arc<dyn asterius_domain::ports::TenantRepository>,
+    keys: &Arc<TenantKeyStore>,
     directory: TenantDirectory,
     settings: SettingsDirectory,
 ) -> axum::Router {
@@ -259,6 +260,7 @@ fn admin_routes(
         backend: Arc::new(asterius_server::admin::Deployment::new(
             store.clone(),
             Arc::clone(tenants),
+            Arc::clone(keys) as Arc<dyn asterius_domain::KeyAdministration>,
             directory,
             settings,
         )),

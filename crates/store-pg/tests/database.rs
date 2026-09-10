@@ -2068,6 +2068,242 @@ db_test! {
     }
 }
 
+db_test! {
+    /// **The acceptance criterion of `ast-f7m.7`, against the real schema.**
+    ///
+    /// An operator pressing "rotate and sign immediately" must end with a new
+    /// `kid` signing *and* the one it replaced still in the JWK Set. OIDC Core
+    /// §10.1.1 asks for the second half in as many words — the set "SHOULD
+    /// retain recently decommissioned signing keys for a reasonable period of
+    /// time to facilitate a smooth transition" — and without it every token
+    /// issued a minute before the rotation stops verifying.
+    async fn an_immediate_rotation_activates_a_new_kid_and_keeps_the_previous_published(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+
+        // Arrange: a tenant already signing, as every live tenant is.
+        let incumbent = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("first key")
+            .created
+            .expect("a first key is created active");
+
+        // Act: stage a successor and promote it in the same breath, well
+        // inside the propagation period.
+        let staged = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("a successor was staged");
+        let promoted = repo.activate(&staged, operator(), t0).await.expect("activate");
+
+        // Assert
+        assert_eq!(promoted.activated.as_ref(), Some(&staged));
+        assert_eq!(
+            promoted.superseded.as_ref(),
+            Some(&incumbent),
+            "the rotation did not report which key it displaced"
+        );
+
+        let published = published(&repo, "demo").await;
+        assert_eq!(
+            published.iter().find(|(kid, _)| kid == &staged).map(|(_, state)| *state),
+            Some(KeyState::Active),
+            "the new key is not signing: {published:?}"
+        );
+        assert_eq!(
+            published.iter().find(|(kid, _)| kid == &incumbent).map(|(_, state)| *state),
+            Some(KeyState::Retiring),
+            "the superseded key left the JWK Set, so tokens it signed stop \
+             verifying: {published:?}"
+        );
+
+        // And exactly one key signs: the partial unique index is what makes
+        // "which key signs this" have one answer.
+        let active: i64 = sqlx::query_scalar(
+            "select count(*) from signing_keys
+             where tenant_id = 'demo' and alg = 'EdDSA' and purpose = 'sig' and state = 'active'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+        assert_eq!(active, 1);
+    }
+}
+
+db_test! {
+    /// Retiring the key an algorithm signs with would leave the tenant unable
+    /// to issue a token of that algorithm — a denial of service one click deep,
+    /// reachable by a mis-click and reached for deliberately by anybody who has
+    /// got into the console. Rotation is the operation that replaces an active
+    /// key, and it puts the successor in place first.
+    async fn the_active_key_is_not_retirable(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        let active = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("first key")
+            .created
+            .expect("created");
+
+        let refused = repo.retire(&active, operator(), t0).await;
+
+        assert!(
+            matches!(refused, Err(DomainError::Conflict(_))),
+            "the active key was retirable: {refused:?}"
+        );
+        assert_eq!(
+            published(&repo, "demo").await,
+            [(active, KeyState::Active)],
+            "a refused retirement changed the key set"
+        );
+    }
+}
+
+db_test! {
+    /// A staged key an operator no longer wants never signed anything, so
+    /// dropping it costs nothing — and the schema anticipates it: a key retired
+    /// straight out of `pending` needs only the final stamp.
+    async fn a_staged_key_can_be_retired_before_it_ever_signs(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        let active = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("first key")
+            .created
+            .expect("created");
+        let staged = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("staged");
+
+        let retired = repo.retire(&staged, operator(), t0).await.expect("retire");
+
+        assert_eq!(retired.retired, vec![staged.clone()]);
+        assert_eq!(
+            published(&repo, "demo").await,
+            [(active, KeyState::Active)],
+            "a retired key is still published"
+        );
+        // The row stays, so the kid is never reused and an incident review can
+        // still see the key existed.
+        let inventory: Vec<(Kid, KeyState)> = repo
+            .inventory()
+            .await
+            .expect("inventory")
+            .into_iter()
+            .map(|key| (key.kid, key.state))
+            .collect();
+        assert!(
+            inventory.contains(&(staged, KeyState::Retired)),
+            "the retired key left the inventory: {inventory:?}"
+        );
+    }
+}
+
+db_test! {
+    /// A `kid` this tenant does not hold is not a key it can retire, whichever
+    /// tenant does hold it. The repository is scoped to one tenant and every
+    /// statement binds it, so a `kid` copied from a sibling's console finds
+    /// nothing.
+    async fn a_kid_from_another_tenant_is_not_found(db) {
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let t0 = epoch();
+        let alphas = keys(&db.pool, "alpha")
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("created");
+
+        let refused = keys(&db.pool, "beta").retire(&alphas, operator(), t0).await;
+
+        assert!(
+            matches!(refused, Err(DomainError::NotFound)),
+            "one tenant retired another's key: {refused:?}"
+        );
+    }
+}
+
+db_test! {
+    /// A key that has stopped signing is never brought back. The reason it
+    /// stopped may have been a compromise, and "reactivate" is the one button
+    /// that would undo an incident response.
+    async fn a_key_that_stopped_signing_is_not_reactivated(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        let first = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("first key")
+            .created
+            .expect("created");
+        let second = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("staged");
+        repo.activate(&second, operator(), t0).await.expect("promote the successor");
+
+        let refused = repo.activate(&first, operator(), t0).await;
+
+        assert!(
+            matches!(refused, Err(DomainError::Conflict(_))),
+            "a retiring key was made to sign again: {refused:?}"
+        );
+    }
+}
+
+db_test! {
+    /// The console's inventory is wider than the JWK Set on purpose: a retired
+    /// key must not be published, and an operator asking "what happened to that
+    /// kid?" is asking about exactly the keys the JWK Set no longer names.
+    async fn the_inventory_shows_keys_the_jwk_set_no_longer_does(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("first key");
+        let staged = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("staged");
+        repo.retire(&staged, operator(), t0).await.expect("retire");
+
+        let inventory = repo.inventory().await.expect("inventory");
+
+        assert_eq!(inventory.len(), 2, "the inventory dropped a row");
+        assert_eq!(
+            published(&repo, "demo").await.len(),
+            1,
+            "a retired key is still published"
+        );
+        // Never any private material: the record type carries a public JWK and
+        // no other key bytes, so this is a property of the port rather than of
+        // a query listing columns carefully.
+        for key in inventory {
+            assert!(
+                key.public_jwk.get("d").is_none(),
+                "a private member reached a public key record: {}",
+                key.public_jwk
+            );
+        }
+    }
+}
+
 /// Inserts a `signing_keys` row by hand, the way a seed script or somebody in
 /// a `psql` session during an incident would. The point of every test that uses
 /// it is that the schema refuses on its own, without the repository's help.

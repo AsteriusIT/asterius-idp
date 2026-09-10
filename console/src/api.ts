@@ -15,6 +15,29 @@ const API_BASE = 'api/v1/';
 /** The header the synchroniser token travels in (`crates/admin-api/src/csrf.rs`). */
 const CSRF_HEADER = 'X-CSRF-Token';
 
+/**
+ * The header a `POST` is made at-most-once by
+ * (`crates/admin-api/src/idempotency.rs`).
+ *
+ * Required on every `POST` this API serves, not optional: the server refuses a
+ * creation without one. `PUT` and `DELETE` are idempotent by their own
+ * definition (RFC 9110 §9.2.2) and carry none.
+ */
+const IDEMPOTENCY_HEADER = 'Idempotency-Key';
+
+/**
+ * A fresh key for one attempt.
+ *
+ * `crypto.randomUUID` and not a counter or a timestamp: the key is what makes a
+ * retried request run once, so two tabs of the same console must never produce
+ * the same one. It is available on every browser this console supports, and
+ * only over a secure context — which the console always is, being served by
+ * this server.
+ */
+function idempotencyKey(): string {
+  return crypto.randomUUID();
+}
+
 /** Who the session belongs to, as `GET /session` describes it. */
 export interface Session {
   readonly tenant: string;
@@ -39,6 +62,28 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * What the server said, when it says anything.
+ *
+ * The admin API answers a refusal with `{"error": {"code", "message"}}`
+ * (`crates/admin-api/src/error.rs`), and the message is written for a person —
+ * "rotate to replace it rather than retiring the key the tenant signs with" is
+ * an instruction, and throwing it away in favour of "POST failed" would leave
+ * an operator with a red box and no next step. Anything that is not that
+ * envelope falls back to naming the request, because a body this console did
+ * not recognise is not text to render.
+ */
+async function refusalMessage(response: Response, method: string, path: string): Promise<string> {
+  const fallback = `${method} ${path} failed (${response.status})`;
+  try {
+    const body = (await response.json()) as { error?: { message?: unknown } };
+    const message = body.error?.message;
+    return typeof message === 'string' && message.length > 0 ? message : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 async function request(path: string, init: RequestInit): Promise<unknown> {
   const response = await fetch(API_BASE + path, {
     ...init,
@@ -50,7 +95,7 @@ async function request(path: string, init: RequestInit): Promise<unknown> {
   });
 
   if (!response.ok) {
-    throw new ApiError(response.status, `${init.method ?? 'GET'} ${path} failed`);
+    throw new ApiError(response.status, await refusalMessage(response, init.method ?? 'GET', path));
   }
   return (await response.json()) as unknown;
 }
@@ -77,6 +122,9 @@ export async function mutate(
   const headers: Record<string, string> = { [CSRF_HEADER]: session.csrf_token };
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
+  }
+  if (method === 'POST') {
+    headers[IDEMPOTENCY_HEADER] = idempotencyKey();
   }
   return request(path, {
     method,

@@ -95,62 +95,13 @@ impl TenantScoped for PgKeyRepository {
 /// — which is the reuse FAPI 2.0 SP §6.8 item 2 warns about.
 const PURPOSE: KeyPurpose = KeyPurpose::Signing;
 
-/// What one pass of the lifecycle did.
+/// What one pass of the lifecycle did, and the policy it ran under.
 ///
-/// Every field is a `kid` that changed state, so a caller — an admin endpoint,
-/// a log line, the audit record — can say precisely what happened rather than
-/// "rotated".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Rotation {
-    /// A newly generated key, published but not yet signing. `None` when the
-    /// pass only promoted and retired.
-    pub created: Option<Kid>,
-    /// A key promoted from `pending` to `active` in this pass.
-    pub activated: Option<Kid>,
-    /// The key that promotion displaced, now `retiring`.
-    pub superseded: Option<Kid>,
-    /// Keys whose grace period elapsed; they have left the JWKS.
-    pub retired: Vec<Kid>,
-}
-
-impl Rotation {
-    /// Whether this pass changed nothing.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.created.is_none()
-            && self.activated.is_none()
-            && self.superseded.is_none()
-            && self.retired.is_empty()
-    }
-}
-
-/// A tenant's rotation policy.
-///
-/// Durations rather than the raw seconds the schema stores, because every use
-/// of them is arithmetic against a timestamp.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RotationSchedule {
-    /// How often a new key is staged.
-    pub rotation_period: Duration,
-    /// How long a new key is published before it is allowed to sign.
-    pub propagation_period: Duration,
-    /// How long a key stays published after it stops signing.
-    pub grace_period: Duration,
-    /// When a key was last staged for this tenant, if ever.
-    pub last_rotated_at: Option<OffsetDateTime>,
-}
-
-impl RotationSchedule {
-    /// Whether a rotation is due at `now`.
-    ///
-    /// A tenant that has never rotated is always due: the first call is what
-    /// creates its first key.
-    #[must_use]
-    pub fn is_due(&self, now: OffsetDateTime) -> bool {
-        self.last_rotated_at
-            .is_none_or(|last| last + self.rotation_period <= now)
-    }
-}
+/// Both names now belong to `asterius-domain`: `ast-f7m.7` put the admin API in
+/// front of this repository, and `asterius-admin-api` may not depend on an
+/// adapter. Re-exported under the spelling this module has always used, so the
+/// move is invisible to the server's sweep and to the tests below.
+pub use asterius_domain::keys::{KeyRotation as Rotation, RotationSchedule};
 
 /// One row of `signing_keys`, before it becomes a record.
 struct KeyRow {
@@ -328,6 +279,236 @@ impl PgKeyRepository {
         now: OffsetDateTime,
     ) -> Result<Rotation, DomainError> {
         self.run(algorithm, Actor::System, now, false).await
+    }
+
+    /// Every key this tenant holds, in any state, retired ones included.
+    ///
+    /// The read behind the console's key screen (`ast-f7m.7`), and deliberately
+    /// wider than [`Self::published_keys`]: a retired key must not be in the
+    /// JWKS, but an operator asking "what happened to that `kid`?" is asking
+    /// about exactly the keys the JWKS no longer names.
+    ///
+    /// Ordered by algorithm and then by position in the state machine, because
+    /// that is how the screen groups them and an order settled in SQL is one
+    /// the console cannot get wrong.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error, or [`DomainError::Invalid`] if a row's
+    /// algorithm, purpose or state is not one this build knows — see
+    /// [`KeyRow::into_record`].
+    pub async fn inventory(&self) -> Result<Vec<PublicKeyRecord>, DomainError> {
+        sqlx::query_as!(
+            KeyRow,
+            "select kid, alg, purpose, state, public_jwk, created_at
+             from signing_keys
+             where tenant_id = $1
+             order by alg,
+                      case state when 'active' then 0 when 'pending' then 1
+                                 when 'retiring' then 2 else 3 end,
+                      created_at desc, kid",
+            self.tenant.as_str()
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .into_iter()
+        .map(|row| row.into_record(&self.tenant))
+        .collect()
+    }
+
+    /// Promotes a staged key now, without waiting out the propagation period.
+    ///
+    /// The other half of [`Activation::Immediate`]: [`Self::rotate`] stages the
+    /// key and publishes it, and this makes it sign. Split in two because the
+    /// intermediate state — a `pending` key in the JWKS — is a state the
+    /// machine already has, so a caller that fails between them has published a
+    /// key early and nothing worse. Merging them into one transaction would
+    /// trade that for a rollback that unpublishes a key some verifier may
+    /// already have cached.
+    ///
+    /// A `kid` that is already active is not an error: the tenant's first key
+    /// is created active (see [`Self::stage`]), so an immediate rotation on a
+    /// tenant with no keys arrives here with the work already done.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the tenant holds no such key,
+    /// [`DomainError::Conflict`] if it has already left `pending` for
+    /// `retiring` or `retired` — a key that has stopped signing must not be
+    /// brought back, because the reason it stopped may have been a compromise.
+    pub async fn activate(
+        &self,
+        kid: &Kid,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<Rotation, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let connection = transaction.acquire().await.map_err(to_domain_error)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtext($1), hashtext('key-rotation'))")
+            .bind(self.tenant.as_str())
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
+
+        let row = sqlx::query!(
+            "select alg, state from signing_keys
+             where tenant_id = $1 and kid = $2 and purpose = $3",
+            self.tenant.as_str(),
+            kid.as_str(),
+            PURPOSE.as_str()
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?
+        .ok_or(DomainError::NotFound)?;
+
+        let state = KeyState::parse(&row.state)
+            .ok_or_else(|| DomainError::invalid("state", format!("unknown: {}", row.state)))?;
+        let algorithm = SigningAlgorithm::parse(&row.alg)
+            .ok_or_else(|| DomainError::invalid("alg", format!("unknown: {}", row.alg)))?;
+
+        match state {
+            KeyState::Active => return Ok(Rotation::default()),
+            KeyState::Pending => {}
+            KeyState::Retiring | KeyState::Retired => {
+                return Err(DomainError::Conflict(format!(
+                    "key {kid} is {}, and a key that has stopped signing is not \
+                     brought back",
+                    state.as_str()
+                )));
+            }
+        }
+
+        // Demote before promoting. The partial unique index permits one active
+        // key per algorithm and is checked per statement, so the other order
+        // fails rather than briefly allowing two.
+        let superseded = sqlx::query_scalar!(
+            "update signing_keys
+             set state = 'retiring', retiring_at = $4
+             where tenant_id = $1 and purpose = $2 and alg = $3 and state = 'active'
+             returning kid",
+            self.tenant.as_str(),
+            PURPOSE.as_str(),
+            algorithm.as_str(),
+            now
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?
+        .map(Kid::new);
+
+        sqlx::query!(
+            "update signing_keys set state = 'active', activated_at = $3
+             where tenant_id = $1 and kid = $2",
+            self.tenant.as_str(),
+            kid.as_str(),
+            now
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        transaction.commit().await.map_err(to_domain_error)?;
+
+        let rotation = Rotation {
+            activated: Some(kid.clone()),
+            superseded,
+            ..Rotation::default()
+        };
+        self.record(algorithm, actor, now, &rotation).await?;
+        Ok(rotation)
+    }
+
+    /// Takes one key out of the published set, now.
+    ///
+    /// **The active key is refused.** Retiring the one key an algorithm signs
+    /// with leaves the tenant unable to issue a token of that algorithm, and
+    /// the operation that replaces an active key is [`Self::rotate`], which
+    /// puts a successor in place first. A console button that could take an
+    /// issuer offline in one click is a button somebody eventually presses.
+    ///
+    /// Everything else is retirable. A `pending` key never signed anything, so
+    /// dropping it costs nothing — the schema anticipates this and requires
+    /// only `retired_at` for a key retired straight out of `pending`. A
+    /// `retiring` key's grace period is cut short, which is destructive and
+    /// meant to be: it is how an operator stops honouring signatures from a key
+    /// they no longer trust, and OIDC Core §10.1.1's "reasonable period of
+    /// time" is a courtesy to verifiers rather than an obligation to a
+    /// compromised key.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the tenant holds no such key,
+    /// [`DomainError::Conflict`] if it is the active one, or a storage failure.
+    pub async fn retire(
+        &self,
+        kid: &Kid,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<Rotation, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let connection = transaction.acquire().await.map_err(to_domain_error)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtext($1), hashtext('key-rotation'))")
+            .bind(self.tenant.as_str())
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
+
+        let row = sqlx::query!(
+            "select alg, state from signing_keys
+             where tenant_id = $1 and kid = $2 and purpose = $3",
+            self.tenant.as_str(),
+            kid.as_str(),
+            PURPOSE.as_str()
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?
+        .ok_or(DomainError::NotFound)?;
+
+        let state = KeyState::parse(&row.state)
+            .ok_or_else(|| DomainError::invalid("state", format!("unknown: {}", row.state)))?;
+        let algorithm = SigningAlgorithm::parse(&row.alg)
+            .ok_or_else(|| DomainError::invalid("alg", format!("unknown: {}", row.alg)))?;
+
+        match state {
+            // Already out of the JWKS. Reported as a pass that changed nothing
+            // rather than as a failure: retiring a retired key is what a retried
+            // request looks like, and a 409 there would be a lie about the
+            // state the caller asked for.
+            KeyState::Retired => {
+                transaction.commit().await.map_err(to_domain_error)?;
+                return Ok(Rotation::default());
+            }
+            KeyState::Active => {
+                return Err(DomainError::Conflict(format!(
+                    "key {kid} is the active {algorithm} key; rotate to replace it \
+                     rather than retiring the key the tenant signs with"
+                )));
+            }
+            KeyState::Pending | KeyState::Retiring => {}
+        }
+
+        sqlx::query!(
+            "update signing_keys set state = 'retired', retired_at = $3
+             where tenant_id = $1 and kid = $2",
+            self.tenant.as_str(),
+            kid.as_str(),
+            now
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        transaction.commit().await.map_err(to_domain_error)?;
+
+        let rotation = Rotation {
+            retired: vec![kid.clone()],
+            ..Rotation::default()
+        };
+        self.record(algorithm, actor, now, &rotation).await?;
+        Ok(rotation)
     }
 
     /// The active signing key for an algorithm, decrypted.
@@ -783,43 +964,5 @@ mod tests {
         assert_eq!(seconds(Duration::seconds(900), "p").expect("whole"), 900);
         assert!(seconds(Duration::milliseconds(1500), "p").is_err());
         assert!(seconds(Duration::seconds(-1), "p").is_err());
-    }
-
-    /// A tenant that has never rotated must rotate on the first pass, or a
-    /// freshly created tenant would sit without a signing key until somebody
-    /// noticed.
-    #[test]
-    fn a_tenant_that_has_never_rotated_is_always_due() {
-        let now = OffsetDateTime::UNIX_EPOCH;
-        let mut schedule = RotationSchedule {
-            rotation_period: Duration::days(90),
-            propagation_period: Duration::minutes(15),
-            grace_period: Duration::days(7),
-            last_rotated_at: None,
-        };
-        assert!(schedule.is_due(now));
-
-        schedule.last_rotated_at = Some(now);
-        assert!(!schedule.is_due(now + Duration::days(89)));
-        assert!(schedule.is_due(now + Duration::days(90)));
-    }
-
-    #[test]
-    fn an_empty_pass_is_reported_as_one() {
-        assert!(Rotation::default().is_empty());
-        assert!(
-            !Rotation {
-                created: Some(Kid::new("k")),
-                ..Rotation::default()
-            }
-            .is_empty()
-        );
-        assert!(
-            !Rotation {
-                retired: vec![Kid::new("k")],
-                ..Rotation::default()
-            }
-            .is_empty()
-        );
     }
 }

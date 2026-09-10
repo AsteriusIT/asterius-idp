@@ -7,9 +7,10 @@
 //! [ADR-0004](../../../docs/adr/0004-jose-on-aws-lc-rs.md).
 
 use crate::TenantId;
+use crate::audit::Actor;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 /// A signing algorithm this server will use.
 ///
@@ -324,6 +325,183 @@ pub trait Signer: fmt::Debug + Send + Sync {
     ) -> Result<CompactJws, crate::DomainError>;
 }
 
+/// What one pass of the key lifecycle did.
+///
+/// Every field is a `kid` that changed state, so a caller — an admin endpoint,
+/// a log line, the audit record — can say precisely what happened rather than
+/// "rotated".
+///
+/// The vocabulary lives here rather than in the PostgreSQL adapter because
+/// three crates name it: the adapter produces it, `asterius-admin-api` renders
+/// it to the console, and the server's sweep logs it. An API crate must not
+/// depend on an adapter, so the words belong in the middle.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyRotation {
+    /// A newly generated key, published but not yet signing. `None` when the
+    /// pass only promoted and retired.
+    pub created: Option<Kid>,
+    /// A key promoted from `pending` to `active` in this pass.
+    pub activated: Option<Kid>,
+    /// The key that promotion displaced, now `retiring`.
+    pub superseded: Option<Kid>,
+    /// Keys that have left the JWKS in this pass.
+    pub retired: Vec<Kid>,
+}
+
+impl KeyRotation {
+    /// Whether this pass changed nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.created.is_none()
+            && self.activated.is_none()
+            && self.superseded.is_none()
+            && self.retired.is_empty()
+    }
+}
+
+/// A tenant's rotation policy.
+///
+/// Durations rather than the raw seconds a schema stores, because every use of
+/// them is arithmetic against a timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RotationSchedule {
+    /// How often a new key is staged.
+    pub rotation_period: Duration,
+    /// How long a new key is published before it is allowed to sign.
+    pub propagation_period: Duration,
+    /// How long a key stays published after it stops signing.
+    pub grace_period: Duration,
+    /// When a key was last staged for this tenant, if ever.
+    pub last_rotated_at: Option<OffsetDateTime>,
+}
+
+impl RotationSchedule {
+    /// Whether a rotation is due at `now`.
+    ///
+    /// A tenant that has never rotated is always due: the first call is what
+    /// creates its first key.
+    #[must_use]
+    pub fn is_due(&self, now: OffsetDateTime) -> bool {
+        self.last_rotated_at
+            .is_none_or(|last| last + self.rotation_period <= now)
+    }
+}
+
+/// When a key an operator has just staged is allowed to start signing.
+///
+/// The default is not a preference, it is the safe half of OIDC Core §10.1.1: a
+/// new key goes into the JWK Set first, and the signer "can begin using a new
+/// key" only afterwards, so a verifier holding a JWK Set cached minutes ago
+/// never meets a `kid` it has not seen. Publishing and signing in the same
+/// instant means every verifier whose cache has not turned over rejects the
+/// next token until it refetches.
+///
+/// [`Self::Immediate`] exists because the one case where that trade is worth
+/// making is the case a console must serve: a key believed to be compromised
+/// has to stop signing *now*, and a propagation period of correct signatures
+/// from a leaked key is worse than a propagation period of verifiers refetching
+/// a JWK Set they are required to refetch on an unknown `kid` anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Activation {
+    /// The staged key waits out the tenant's propagation period. The default,
+    /// and what the background sweep always does.
+    #[default]
+    OnSchedule,
+    /// The staged key is promoted in the same call. The key it displaces stays
+    /// published in `retiring`, so tokens it already signed keep verifying.
+    Immediate,
+}
+
+/// Administering a tenant's keys: the operations behind a console's key screen.
+///
+/// Separate from [`KeyStore`], which is the read side every protocol endpoint
+/// holds. **Nothing in this trait returns private key material and nothing
+/// can**: [`PublicKeyRecord`] carries a public JWK and no other key bytes, and
+/// there is no method here that yields a signing key. That is what the admin
+/// API's "a private key never leaves the server" property rests on — a
+/// consequence of the port's return types rather than of a handler remembering
+/// to redact (OIDC Core §10.1.1, FAPI 2.0 SP §6.8).
+#[async_trait::async_trait]
+pub trait KeyAdministration: fmt::Debug + Send + Sync {
+    /// Every key this tenant holds, in any state, including retired ones.
+    ///
+    /// Wider than [`KeyStore::published_keys`] on purpose: the JWKS must not
+    /// contain a retired key, and an inventory that hid them would answer
+    /// "where did that `kid` go?" with silence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::DomainError`] if the keys cannot be read.
+    async fn inventory(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Vec<PublicKeyRecord>, crate::DomainError>;
+
+    /// This tenant's rotation policy for each algorithm it publishes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::DomainError`] if a policy cannot be read.
+    async fn schedules(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Vec<(SigningAlgorithm, RotationSchedule)>, crate::DomainError>;
+
+    /// Replaces the policy for one algorithm.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::DomainError::Invalid`] if a period is not a positive
+    /// whole number of seconds, or a storage failure.
+    async fn set_schedule(
+        &self,
+        tenant: &TenantId,
+        algorithm: SigningAlgorithm,
+        schedule: RotationSchedule,
+    ) -> Result<(), crate::DomainError>;
+
+    /// Rotates now, whatever the schedule says.
+    ///
+    /// Stages a new key, promotes whatever is due and retires whatever has
+    /// outlived its grace period. `activation` decides whether the key staged
+    /// by *this* call also starts signing in it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::DomainError`] if the keys cannot be read or written.
+    async fn rotate(
+        &self,
+        tenant: &TenantId,
+        algorithm: SigningAlgorithm,
+        activation: Activation,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<KeyRotation, crate::DomainError>;
+
+    /// Takes one key out of the published set, naming it by `kid`.
+    ///
+    /// The active key is **not** retirable this way, and an implementation must
+    /// refuse it with [`crate::DomainError::Conflict`]: retiring the only key
+    /// an algorithm can sign with leaves a tenant unable to issue a token, and
+    /// the operation that replaces an active key is [`Self::rotate`]. Every
+    /// other state is retirable — a `pending` key staged by mistake never
+    /// signed anything, and cutting a `retiring` key's grace short is an
+    /// operator's deliberate choice about a key they no longer trust.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::DomainError::NotFound`] if the tenant holds no such key,
+    /// [`crate::DomainError::Conflict`] if it is the active one, or a storage
+    /// failure.
+    async fn retire(
+        &self,
+        tenant: &TenantId,
+        kid: &Kid,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<KeyRotation, crate::DomainError>;
+}
+
 /// Holds a tenant's keys.
 #[async_trait::async_trait]
 pub trait KeyStore: fmt::Debug + Send + Sync {
@@ -446,5 +624,55 @@ mod tests {
         for rejected in ["", "both", "sig enc", "signature", "encryption", "SIG"] {
             assert_eq!(KeyPurpose::parse(rejected), None, "accepted {rejected:?}");
         }
+    }
+
+    /// A tenant that has never rotated must rotate on the first pass, or a
+    /// freshly created tenant would sit without a signing key until somebody
+    /// noticed.
+    #[test]
+    fn a_tenant_that_has_never_rotated_is_always_due() {
+        // Arrange
+        let now = OffsetDateTime::UNIX_EPOCH;
+        let mut schedule = RotationSchedule {
+            rotation_period: Duration::days(90),
+            propagation_period: Duration::minutes(15),
+            grace_period: Duration::days(7),
+            last_rotated_at: None,
+        };
+
+        // Act / Assert
+        assert!(schedule.is_due(now));
+
+        schedule.last_rotated_at = Some(now);
+        assert!(!schedule.is_due(now + Duration::days(89)));
+        assert!(schedule.is_due(now + Duration::days(90)));
+    }
+
+    #[test]
+    fn an_empty_pass_is_reported_as_one() {
+        assert!(KeyRotation::default().is_empty());
+        assert!(
+            !KeyRotation {
+                created: Some(Kid::new("k")),
+                ..KeyRotation::default()
+            }
+            .is_empty()
+        );
+        assert!(
+            !KeyRotation {
+                retired: vec![Kid::new("k")],
+                ..KeyRotation::default()
+            }
+            .is_empty()
+        );
+    }
+
+    /// OIDC Core §10.1.1 publishes a key before it signs. A caller that does
+    /// not say which it wants must get the wait, because the alternative — a
+    /// `kid` that appears and signs in the same instant — is refused by every
+    /// verifier whose JWK Set cache has not turned over.
+    #[test]
+    fn a_rotation_that_does_not_ask_gets_the_propagation_period() {
+        assert_eq!(Activation::default(), Activation::OnSchedule);
     }
 }

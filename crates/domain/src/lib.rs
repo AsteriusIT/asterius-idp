@@ -49,7 +49,10 @@ pub use issuer::{Issuer, IssuerError};
 pub use json_sentinel::{
     SERDE_JSON_SENTINELS, is_serde_json_sentinel, names_a_serde_json_sentinel, serde_json_sentinel,
 };
-pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, SigningAlgorithm};
+pub use keys::{
+    Activation, CompactJws, KeyAdministration, KeyRotation, KeyState, KeyStore, Kid,
+    PublicKeyRecord, RotationSchedule, Signer, SigningAlgorithm,
+};
 pub use ports::{
     AuthRequestRepository, ClientConfiguration, ClientRegistry, ClientRepository, CodeIssuer,
     CredentialVerifier, GrantRepository, InteractionRepository, ManagedClient, PasskeyRepository,

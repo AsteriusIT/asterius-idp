@@ -71,6 +71,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_key_request"
+path = "fuzz_targets/admin_key_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "attestation_object"
 path = "fuzz_targets/attestation_object.rs"
 test = false

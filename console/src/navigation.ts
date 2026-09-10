@@ -44,7 +44,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'users', label: 'Users', reach: 'tenant', bead: 'ast-f7m.4' },
   { route: 'clients', label: 'Clients', reach: 'tenant', bead: 'ast-f7m.5' },
   { route: 'tenants', label: 'Tenants', reach: 'deployment', bead: 'ast-f7m.6' },
-  { route: 'keys', label: 'Keys', reach: 'tenant', bead: 'ast-f7m.7' },
+  { route: 'keys', label: 'Signing keys', reach: 'tenant', bead: 'ast-f7m.7' },
   { route: 'ssf', label: 'Shared signals', reach: 'tenant', bead: 'ast-f7m.8' },
   { route: 'policy', label: 'Policy', reach: 'tenant', bead: 'ast-f7m.9' },
 ];

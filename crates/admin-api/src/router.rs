@@ -20,8 +20,8 @@
 //! authorization to forget.
 
 use asterius_domain::{
-    Actor, AuditEvent, Detail, EventType, Outcome, RefreshPolicy, Tenant, TenantId, TenantSettings,
-    TenantStatus,
+    Activation, Actor, AuditEvent, Detail, DomainError, EventType, Kid, Outcome, RefreshPolicy,
+    Tenant, TenantId, TenantSettings, TenantStatus,
 };
 use axum::Router;
 use axum::extract::Request;
@@ -37,7 +37,7 @@ use crate::error::AdminError;
 use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Effect, Method, Operation};
 use crate::pagination::{Page, PageRequest};
-use crate::{csrf, openapi, throttle};
+use crate::{csrf, keys, openapi, throttle};
 
 /// The client address, as this crate sees it.
 ///
@@ -250,6 +250,11 @@ async fn handle(
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
         crate::TENANT_SETTINGS_READ_ID => context.read_settings().await,
         crate::TENANT_SETTINGS_UPDATE_ID => context.update_settings(body).await,
+        crate::KEYS_LIST_ID => context.list_keys().await,
+        crate::KEYS_JWKS_ID => context.preview_jwks().await,
+        crate::KEYS_ROTATE_ID => context.rotate_key(body).await,
+        crate::KEYS_RETIRE_ID => context.retire_key().await,
+        crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
         // Unreachable while `every_registered_operation_has_a_handler` passes,
         // which is why that test exists rather than a comment here.
         other => {
@@ -568,6 +573,213 @@ impl Handling<'_> {
         Ok(named)
     }
 
+    /// `GET /keys` — this tenant's keys and its rotation policies.
+    ///
+    /// The tenant is the one the request was routed to and is not a parameter:
+    /// the gate has already checked the caller against it, so there is no
+    /// second authority check here and no path segment a caller could aim
+    /// somewhere else. That is the difference between this and
+    /// [`Self::read_tenant`], which names a tenant in its path and has to
+    /// re-check for exactly that reason.
+    async fn list_keys(&self) -> Result<Response, AdminError> {
+        let backend = self.state.backend.keys();
+        let records = backend
+            .inventory(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::KEYS_LIST_ID, &error))?;
+        let schedules = backend
+            .schedules(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::KEYS_LIST_ID, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &keys::inventory_document(&records, &schedules),
+        ))
+    }
+
+    /// `GET /keys/jwks` — the JWK Set as it stands.
+    ///
+    /// Reads the inventory and filters, rather than asking for the published
+    /// set: one port method feeds both screens, and `keys::jwks_document`
+    /// applies the same `is_published` rule the JWKS endpoint applies. Two
+    /// reads that could answer differently would make the preview a claim
+    /// rather than a copy.
+    async fn preview_jwks(&self) -> Result<Response, AdminError> {
+        let records = self
+            .state
+            .backend
+            .keys()
+            .inventory(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::KEYS_JWKS_ID, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &keys::jwks_document(&records),
+        ))
+    }
+
+    /// `POST /keys/rotate` — stages a key, and promotes it if asked to.
+    async fn rotate_key(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let request: keys::RotationRequest = self.parse_body(body).await?;
+        let algorithm = request.algorithm()?;
+        let activation = request.activation();
+
+        let rotation = self
+            .state
+            .backend
+            .keys()
+            .rotate(
+                &self.tenant.id,
+                algorithm,
+                activation,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::KEYS_ROTATE_ID, &error))?;
+
+        // The rotation itself is already in the audit trail: the repository
+        // records `key.rotated` with the `kid` values, under the actor passed
+        // above, because a rotation that reached storage must be recorded
+        // whether it came from this endpoint or from the sweep. What is added
+        // here is the administrative fact — that a person pressed the button
+        // and which activation they chose — which the key rows do not carry.
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::KEYS_ROTATE_ID)
+                .text("alg", algorithm.as_str())
+                .text(
+                    "activation",
+                    if activation == Activation::Immediate {
+                        "immediate"
+                    } else {
+                        "on_schedule"
+                    },
+                ),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &keys::rotation_document(&rotation),
+        ))
+    }
+
+    /// `POST /keys/{kid}/retire` — takes one key out of the published set.
+    ///
+    /// The `kid` comes out of the path and is used only to look a row up in
+    /// this tenant's keys: [`KeyAdministration::retire`] is given the tenant
+    /// the request was routed to, so a `kid` belonging to another tenant is a
+    /// 404 here rather than a key somebody else loses.
+    async fn retire_key(&self) -> Result<Response, AdminError> {
+        let kid = self
+            .path
+            .trim_end_matches("/retire")
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .ok_or(AdminError::NotFound)?;
+        // Taken as it arrived, with no decoding step. A `kid` this server
+        // issues is an RFC 7638 thumbprint — base64url, so `[A-Za-z0-9_-]`,
+        // none of which a URL encodes — and a segment carrying anything else
+        // names no key here and gets a 404 from the lookup. Adding a decoder
+        // would add a parser to the attack surface to accept identifiers this
+        // server never mints.
+        let kid = Kid::new(kid);
+
+        let rotation = self
+            .state
+            .backend
+            .keys()
+            .retire(
+                &self.tenant.id,
+                &kid,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|error| match error {
+                // A key the tenant does not hold, and the active key, are both
+                // answers the console has to show a person — not storage
+                // failures. `from_storage` would flatten them into a 500.
+                DomainError::NotFound => AdminError::NotFound,
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                other => AdminError::from_storage(crate::KEYS_RETIRE_ID, &other),
+            })?;
+
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::KEYS_RETIRE_ID)
+                .credential("kid", kid.as_str()),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &keys::rotation_document(&rotation),
+        ))
+    }
+
+    /// `PUT /keys/schedule` — replaces one algorithm's rotation policy.
+    async fn set_key_schedule(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let request: keys::ScheduleRequest = self.parse_body(body).await?;
+        let algorithm = request.algorithm()?;
+        let schedule = request.schedule()?;
+
+        self.state
+            .backend
+            .keys()
+            .set_schedule(&self.tenant.id, algorithm, schedule)
+            .await
+            .map_err(|error| match error {
+                DomainError::Invalid { field, reason } => {
+                    AdminError::Invalid(format!("{field}: {reason}"))
+                }
+                other => AdminError::from_storage(crate::KEYS_SCHEDULE_ID, &other),
+            })?;
+
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::KEYS_SCHEDULE_ID)
+                .text("alg", algorithm.as_str())
+                .number(
+                    "rotation_period_seconds",
+                    schedule.rotation_period.whole_seconds(),
+                )
+                .number(
+                    "propagation_period_seconds",
+                    schedule.propagation_period.whole_seconds(),
+                )
+                .number(
+                    "grace_period_seconds",
+                    schedule.grace_period.whole_seconds(),
+                ),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &keys::schedule_document(schedule),
+        ))
+    }
+
+    /// Reads a JSON body, under the shared size limit.
+    async fn parse_body<T: serde::de::DeserializeOwned>(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<T, AdminError> {
+        let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| AdminError::Invalid(format!("the request body is not valid: {error}")))
+    }
+
     /// Writes one record, naming the administrator behind it.
     ///
     /// ADR-0009: the string [`Actor::Admin`] carries is a *user* identifier.
@@ -805,9 +1017,12 @@ pub const CLIENT_ADDRESS_EXTENSION: &str = "asterius_admin_api::ClientAddress";
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operations::Method as OperationMethod;
     use crate::rbac::Reach;
     use asterius_domain::entities::session::SessionId;
+    use asterius_domain::keys::{
+        KeyAdministration, KeyPurpose, KeyRotation, KeyState, PublicKeyRecord, RotationSchedule,
+        SigningAlgorithm,
+    };
     use asterius_domain::ports::TenantRepository;
     use asterius_domain::{
         AuditSink, AuthenticationMethod, DomainError, Feature, Issuer, Lifetimes, RateLimit,
@@ -834,6 +1049,9 @@ mod tests {
         claimed: Mutex<std::collections::BTreeSet<String>>,
         invalidations: Mutex<usize>,
         settings: Mutex<BTreeMap<String, TenantSettings>>,
+        keys: Mutex<Vec<PublicKeyRecord>>,
+        key_schedules: Mutex<BTreeMap<String, RotationSchedule>>,
+        minted: Mutex<u32>,
     }
 
     #[derive(Debug, Clone)]
@@ -969,6 +1187,171 @@ mod tests {
         }
     }
 
+    /// The key lifecycle, as the *port* promises it.
+    ///
+    /// A fake and not the PostgreSQL repository, so what the tests below prove
+    /// is the API's half of the contract: which call the handler makes, what it
+    /// renders, and what it refuses. That the adapter honours the same contract
+    /// against a real schema — the advisory lock, the partial unique index, the
+    /// grace period — is proved in `crates/store-pg/tests/database.rs`, which
+    /// needs a database and runs in CI.
+    ///
+    /// The state transitions here are the ones
+    /// [`KeyAdministration`] documents, and no others: staging publishes a
+    /// `pending` key, immediate activation promotes it and pushes the incumbent
+    /// to `retiring` — where it stays published — and the first key of an
+    /// algorithm is born active because there is no cached JWK Set to protect.
+    #[async_trait::async_trait]
+    impl KeyAdministration for Handle {
+        async fn inventory(&self, tenant: &TenantId) -> Result<Vec<PublicKeyRecord>, DomainError> {
+            Ok(self
+                .0
+                .keys
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|record| &record.tenant == tenant)
+                .cloned()
+                .collect())
+        }
+
+        async fn schedules(
+            &self,
+            _tenant: &TenantId,
+        ) -> Result<Vec<(SigningAlgorithm, RotationSchedule)>, DomainError> {
+            let held = self.0.key_schedules.lock().expect("an uncontended lock");
+            Ok(SigningAlgorithm::ALL
+                .into_iter()
+                .map(|algorithm| {
+                    let schedule = held
+                        .get(algorithm.as_str())
+                        .copied()
+                        .unwrap_or(default_schedule());
+                    (algorithm, schedule)
+                })
+                .collect())
+        }
+
+        async fn set_schedule(
+            &self,
+            _tenant: &TenantId,
+            algorithm: SigningAlgorithm,
+            schedule: RotationSchedule,
+        ) -> Result<(), DomainError> {
+            self.0
+                .key_schedules
+                .lock()
+                .expect("an uncontended lock")
+                .insert(algorithm.as_str().to_owned(), schedule);
+            Ok(())
+        }
+
+        async fn rotate(
+            &self,
+            tenant: &TenantId,
+            algorithm: SigningAlgorithm,
+            activation: Activation,
+            _actor: Actor,
+            _now: OffsetDateTime,
+        ) -> Result<KeyRotation, DomainError> {
+            let mut records = self.0.keys.lock().expect("an uncontended lock");
+            let mut minted = self.0.minted.lock().expect("an uncontended lock");
+            *minted += 1;
+            let kid = Kid::new(format!("kid-{minted}"));
+
+            let holds_active = records
+                .iter()
+                .any(|record| record.algorithm == algorithm && record.state == KeyState::Active);
+
+            // A tenant with no active key has published no JWK Set anyone could
+            // have cached, so there is nothing for the propagation period to
+            // protect.
+            let promote = activation == Activation::Immediate || !holds_active;
+
+            let mut superseded = None;
+            if promote {
+                for record in records.iter_mut() {
+                    if record.algorithm == algorithm && record.state == KeyState::Active {
+                        record.state = KeyState::Retiring;
+                        superseded = Some(record.kid.clone());
+                    }
+                }
+            }
+
+            records.push(PublicKeyRecord {
+                tenant: tenant.clone(),
+                kid: kid.clone(),
+                algorithm,
+                purpose: KeyPurpose::Signing,
+                state: if promote {
+                    KeyState::Active
+                } else {
+                    KeyState::Pending
+                },
+                public_jwk: serde_json::json!({
+                    "kty": "OKP",
+                    "crv": "Ed25519",
+                    "use": "sig",
+                    "kid": kid.as_str(),
+                    "x": format!("public-{kid}"),
+                    // A row carrying private material, because a `jsonb` column
+                    // is something an incident can put anything into. Nothing
+                    // this API renders may contain it.
+                    "d": "PRIVATE-KEY-MATERIAL",
+                }),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+            });
+
+            Ok(KeyRotation {
+                created: Some(kid.clone()),
+                activated: promote.then_some(kid),
+                superseded,
+                retired: Vec::new(),
+            })
+        }
+
+        async fn retire(
+            &self,
+            tenant: &TenantId,
+            kid: &Kid,
+            _actor: Actor,
+            _now: OffsetDateTime,
+        ) -> Result<KeyRotation, DomainError> {
+            let mut records = self.0.keys.lock().expect("an uncontended lock");
+            // Scoped to the tenant the request was routed to, so a `kid` copied
+            // from a sibling tenant's console is a 404 and not a key somebody
+            // else loses.
+            let record = records
+                .iter_mut()
+                .find(|record| &record.kid == kid && &record.tenant == tenant)
+                .ok_or(DomainError::NotFound)?;
+
+            match record.state {
+                KeyState::Retired => Ok(KeyRotation::default()),
+                KeyState::Active => Err(DomainError::Conflict(format!(
+                    "key {kid} is the active {} key",
+                    record.algorithm
+                ))),
+                KeyState::Pending | KeyState::Retiring => {
+                    record.state = KeyState::Retired;
+                    Ok(KeyRotation {
+                        retired: vec![kid.clone()],
+                        ..KeyRotation::default()
+                    })
+                }
+            }
+        }
+    }
+
+    fn default_schedule() -> RotationSchedule {
+        RotationSchedule {
+            rotation_period: time::Duration::days(90),
+            propagation_period: time::Duration::minutes(15),
+            grace_period: time::Duration::days(7),
+            last_rotated_at: None,
+        }
+    }
+
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
         async fn session(
@@ -1005,6 +1388,10 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn keys(&self) -> Arc<dyn KeyAdministration> {
+            Arc::new(self.clone())
+        }
+
         fn audit(&self) -> Arc<dyn AuditSink> {
             Arc::new(self.clone())
         }
@@ -1023,6 +1410,30 @@ mod tests {
     }
 
     // ---- fixtures ----------------------------------------------------------
+
+    /// The `kid` every tenant in the fixture holds a staged key under, and the
+    /// value `{kid}` is replaced with when a test walks the registry.
+    const SEEDED_KID: &str = "seeded-pending-key";
+
+    /// One key, carrying a private member no response may ever contain.
+    fn seeded_key(tenant: &str, kid: &str, state: KeyState) -> PublicKeyRecord {
+        PublicKeyRecord {
+            tenant: TenantId::parse(tenant).expect("a valid tenant id"),
+            kid: Kid::new(kid),
+            algorithm: SigningAlgorithm::EdDsa,
+            purpose: KeyPurpose::Signing,
+            state,
+            public_jwk: serde_json::json!({
+                "kty": "OKP",
+                "crv": "Ed25519",
+                "use": "sig",
+                "kid": kid,
+                "x": format!("public-{kid}"),
+                "d": "PRIVATE-KEY-MATERIAL",
+            }),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
 
     fn tenant_named(id: &str) -> Tenant {
         Tenant {
@@ -1055,6 +1466,16 @@ mod tests {
                     .lock()
                     .expect("an uncontended lock")
                     .push(tenant_named(id));
+                // One staged key per tenant, so that the `{kid}` in
+                // `keys.retire` names something for every test that walks the
+                // registry. `pending`, because that is the state the route
+                // accepts — the active key is refused on purpose.
+                handle
+                    .0
+                    .keys
+                    .lock()
+                    .expect("an uncontended lock")
+                    .push(seeded_key(id, SEEDED_KID, KeyState::Pending));
             }
             Self {
                 api_tenant: Arc::new(tenant_named("acme")),
@@ -1128,32 +1549,45 @@ mod tests {
     fn request_for(operation: &Operation) -> axum::http::request::Builder {
         // A concrete value for every `{placeholder}`, so that the table-driven
         // test exercises the route rather than the 404 of an unmatched path.
-        let path = operation.full_path().replace("{tenant_id}", "acme");
+        let path = operation
+            .full_path()
+            .replace("{tenant_id}", "acme")
+            .replace("{kid}", SEEDED_KID);
         HttpRequest::builder()
             .method(operation.method().as_str())
             .uri(path)
             .header("origin", ORIGIN)
     }
 
+    /// A body each mutating route will accept.
+    ///
+    /// Keyed on the `operationId` rather than on the verb, because the table
+    /// tests assert that every registered route *succeeds* for a caller holding
+    /// the authority it declares — so a route reached with a body it rejects
+    /// would fail those tests for the wrong reason and hide a real refusal.
     fn body_for(operation: &Operation) -> Body {
-        if operation.id() == crate::TENANT_SETTINGS_UPDATE_ID {
+        let document = match operation.id() {
+            crate::TENANT_CREATE_ID => serde_json::json!({
+                "tenant_id": "brand-new",
+                "issuer": format!("{ORIGIN}/t/brand-new"),
+            }),
             // A whole-document PUT: the table-driven tests send it to every
             // route, so this one has to be a body the handler accepts rather
             // than the empty one, or "every route answers a deployment admin"
             // would be asserting a 400.
-            return Body::from(settings_body(60, 300).to_string());
-        }
-        if operation.method() == OperationMethod::Post {
-            Body::from(
-                serde_json::json!({
-                    "tenant_id": "brand-new",
-                    "issuer": format!("{ORIGIN}/t/brand-new"),
-                })
-                .to_string(),
-            )
-        } else {
-            Body::empty()
-        }
+            crate::TENANT_SETTINGS_UPDATE_ID => settings_body(60, 300),
+            crate::KEYS_ROTATE_ID => serde_json::json!({"alg": "EdDSA"}),
+            crate::KEYS_SCHEDULE_ID => serde_json::json!({
+                "alg": "EdDSA",
+                "rotation_period_seconds": 7_776_000,
+                "propagation_period_seconds": 900,
+                "grace_period_seconds": 604_800,
+            }),
+            // `keys.retire` names its subject in the path and takes no body.
+            _ if operation.effect() == Effect::Mutates => serde_json::json!({}),
+            _ => return Body::empty(),
+        };
+        Body::from(document.to_string())
     }
 
     async fn body_of(response: Response) -> serde_json::Value {
@@ -1963,6 +2397,397 @@ mod tests {
             world.handle.0.events.lock().expect("a lock").is_empty(),
             "a GET produced an administrative audit record"
         );
+    }
+
+    // ---- signing keys (`ast-f7m.7`) ---------------------------------------
+
+    /// A signed-in tenant administrator, and the console's way of calling a
+    /// route: session cookie, synchroniser token, idempotency key.
+    fn as_console(operation: &Operation, cookie: &str) -> axum::http::request::Builder {
+        request_for(operation)
+            .header(
+                "cookie",
+                format!(
+                    "{}={cookie}",
+                    asterius_domain::entities::session::COOKIE_NAME
+                ),
+            )
+            .header(csrf::HEADER, csrf::token(cookie))
+            .header(idempotency::HEADER, format!("key-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// **The first acceptance criterion of `ast-f7m.7`.**
+    ///
+    /// OIDC Core §10.1.1 describes rotation as adding a key to the JWK Set and
+    /// retaining "recently decommissioned signing keys for a reasonable period
+    /// of time to facilitate a smooth transition". So a rotation an operator
+    /// asks for from the console must do *both*: the new `kid` signs, and the
+    /// one it replaced is still in the published set — or every token issued a
+    /// minute ago stops verifying.
+    #[tokio::test]
+    async fn rotating_from_the_console_activates_a_new_kid_and_keeps_the_previous_one_published() {
+        // Arrange: a tenant already signing with a key, as every live tenant
+        // is.
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let first = world
+            .send(
+                as_console(&crate::KEYS_ROTATE, &cookie)
+                    .body(Body::from(serde_json::json!({"alg": "EdDSA"}).to_string()))
+                    .expect("a request"),
+            )
+            .await;
+        let first = body_of(first).await;
+        let incumbent = first["activated_kid"]
+            .as_str()
+            .expect("the tenant's first key is born signing")
+            .to_owned();
+
+        // Act: rotate again, asking for the new key to sign at once.
+        let response = world
+            .send(
+                as_console(&crate::KEYS_ROTATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"alg": "EdDSA", "activate_immediately": true})
+                            .to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let rotation = body_of(response).await;
+        let successor = rotation["activated_kid"]
+            .as_str()
+            .expect("an immediate rotation activates the key it staged")
+            .to_owned();
+        assert_ne!(successor, incumbent, "the rotation reused the same kid");
+        assert_eq!(
+            rotation["superseded_kid"].as_str(),
+            Some(incumbent.as_str()),
+            "the rotation did not report which key it displaced: {rotation}"
+        );
+
+        let jwks = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_JWKS, &cookie)
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        let published: Vec<&str> = jwks["keys"]
+            .as_array()
+            .expect("a JWK Set")
+            .iter()
+            .filter_map(|key| key["kid"].as_str())
+            .collect();
+        assert!(
+            published.contains(&successor.as_str()),
+            "the new key is not published: {jwks}"
+        );
+        assert!(
+            published.contains(&incumbent.as_str()),
+            "the superseded key left the JWK Set, so tokens it signed stop \
+             verifying: {jwks}"
+        );
+
+        // And the inventory says which of the two signs now.
+        let inventory = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_LIST, &cookie)
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        let eddsa = inventory["algorithms"]
+            .as_array()
+            .expect("groups")
+            .iter()
+            .find(|group| group["alg"] == serde_json::json!("EdDSA"))
+            .expect("an EdDSA group")
+            .clone();
+        let active: Vec<&str> = eddsa["keys"]
+            .as_array()
+            .expect("keys")
+            .iter()
+            .filter(|key| key["state"] == serde_json::json!("active"))
+            .filter_map(|key| key["kid"].as_str())
+            .collect();
+        assert_eq!(
+            active,
+            [successor.as_str()],
+            "exactly one key signs, and it is the new one: {eddsa}"
+        );
+    }
+
+    /// **The second acceptance criterion of `ast-f7m.7`.**
+    ///
+    /// Every response the key screen can produce, checked for the private JWK
+    /// members RFC 7518 §6 defines. The fixture's rows *carry* a `d` member —
+    /// a `jsonb` column is something an incident can put anything into — so
+    /// this fails if the rendering ever stops being an allow-list.
+    #[tokio::test]
+    async fn no_key_route_ever_renders_private_material() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        world
+            .send(
+                as_console(&crate::KEYS_ROTATE, &cookie)
+                    .body(Body::from(serde_json::json!({"alg": "EdDSA"}).to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        for operation in [&crate::KEYS_LIST, &crate::KEYS_JWKS] {
+            // Act
+            let response = world
+                .send(
+                    as_console(operation, &cookie)
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await;
+            let document = body_of(response).await;
+            let rendered = document.to_string();
+
+            // Assert
+            assert!(
+                !rendered.contains("PRIVATE-KEY-MATERIAL"),
+                "{} rendered private key material: {rendered}",
+                operation.id()
+            );
+            for member in [
+                "\"d\"", "\"p\"", "\"q\"", "\"dp\"", "\"dq\"", "\"qi\"", "\"k\"",
+            ] {
+                assert!(
+                    !rendered.contains(member),
+                    "{} rendered the {member} member: {rendered}",
+                    operation.id()
+                );
+            }
+            assert!(
+                rendered.contains("public-"),
+                "{} rendered no public key at all: {rendered}",
+                operation.id()
+            );
+        }
+    }
+
+    /// The one key an algorithm signs with is not retirable, because a console
+    /// button that takes an issuer offline in one click is a button somebody
+    /// eventually presses. Rotation is how an active key is replaced, and it
+    /// puts a successor in place first.
+    #[tokio::test]
+    async fn the_active_key_cannot_be_retired_from_the_console() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let rotation = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_ROTATE, &cookie)
+                        .body(Body::from(serde_json::json!({"alg": "EdDSA"}).to_string()))
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        let active = rotation["activated_kid"].as_str().expect("an active kid");
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::KEYS_RETIRE, &cookie)
+                    .uri(format!("{}/keys/{active}/retire", crate::BASE_PATH))
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let jwks = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_JWKS, &cookie)
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        assert!(
+            jwks["keys"]
+                .as_array()
+                .expect("a JWK Set")
+                .iter()
+                .any(|key| key["kid"] == serde_json::json!(active)),
+            "the refused retirement removed the key anyway: {jwks}"
+        );
+    }
+
+    /// A retired key has left the JWK Set, which is the whole point of
+    /// retiring one.
+    #[tokio::test]
+    async fn a_retired_key_leaves_the_published_set() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::KEYS_RETIRE, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let jwks = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_JWKS, &cookie)
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        assert!(
+            !jwks["keys"]
+                .as_array()
+                .expect("a JWK Set")
+                .iter()
+                .any(|key| key["kid"] == serde_json::json!(SEEDED_KID)),
+            "a retired key is still published: {jwks}"
+        );
+    }
+
+    /// A `kid` belonging to another tenant is not a key this console may
+    /// retire. It is a 404 and not a 403, because telling a caller that a `kid`
+    /// exists somewhere else is telling them something about a tenant they may
+    /// not read.
+    #[tokio::test]
+    async fn a_kid_this_tenant_does_not_hold_is_not_found() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::KEYS_RETIRE, &cookie)
+                    .uri(format!(
+                        "{}/keys/a-kid-nobody-holds/retire",
+                        crate::BASE_PATH
+                    ))
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// RFC 8725 §3.1 fixes the permitted algorithms in advance. The console is
+    /// not an exception, and a request naming `none` must not reach the key
+    /// store at all.
+    #[tokio::test]
+    async fn the_console_cannot_rotate_an_algorithm_this_server_refuses() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let before = world.handle.0.keys.lock().expect("a lock").len();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::KEYS_ROTATE, &cookie)
+                    .body(Body::from(serde_json::json!({"alg": "none"}).to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            world.handle.0.keys.lock().expect("a lock").len(),
+            before,
+            "a refused algorithm still minted a key"
+        );
+    }
+
+    /// A rotation is an administrative change and is recorded as one, naming
+    /// the person who asked for it (ADR-0009).
+    #[tokio::test]
+    async fn a_rotation_from_the_console_is_audited_with_the_administrator_behind_it() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        world
+            .send(
+                as_console(&crate::KEYS_ROTATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"alg": "ES256", "activate_immediately": true})
+                            .to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        let events = world.handle.0.events.lock().expect("a lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::ADMIN_CHANGED)
+            .expect("a rotation was not recorded");
+        assert!(
+            matches!(recorded.actor, Actor::Admin(_)),
+            "the rotation was not attributed to an administrator: {:?}",
+            recorded.actor
+        );
+    }
+
+    /// Setting a schedule is a `PUT`, so it carries no idempotency key and must
+    /// still be refused without the synchroniser token: it changes what the
+    /// tenant does for the next ninety days.
+    #[tokio::test]
+    async fn a_schedule_a_console_did_not_send_is_refused() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                request_for(&crate::KEYS_SCHEDULE)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(body_for(&crate::KEYS_SCHEDULE))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

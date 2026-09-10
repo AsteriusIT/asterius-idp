@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kid, alg, purpose, state, public_jwk, created_at\n             from signing_keys\n             where tenant_id = $1\n             order by alg,\n                      case state when 'active' then 0 when 'pending' then 1\n                                 when 'retiring' then 2 else 3 end,\n                      created_at desc, kid",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kid",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "alg",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "purpose",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "state",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "public_jwk",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "57d469ad1f4f3e780d2f07461d4745dbc0697d91d447a896854315eb95210358"
+}
