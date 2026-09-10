@@ -36,6 +36,7 @@
 //! client would be told to use a token that does not exist. Neither is a state
 //! worth recovering from, so both happen or neither does.
 
+use crate::cutoffs;
 use crate::error::to_domain_error;
 use asterius_domain::{ClientId, DomainError, GrantId, TenantId};
 use sqlx::postgres::PgPool;
@@ -315,6 +316,24 @@ impl PgRefreshTokenRepository {
     /// audit event and by nothing else — and `None` when no row of this tenant
     /// answers to that digest and that client.
     ///
+    /// ## The access tokens the same grant paid for
+    ///
+    /// RFC 7009 §2.1: "If the particular token is a refresh token and the
+    /// authorization server supports the revocation of access tokens, then the
+    /// authorization server SHOULD also invalidate all access tokens based on
+    /// the same authorization grant." Those tokens cannot be listed — they are
+    /// stateless JWTs (RFC 9068) and nothing here wrote their `jti` down — and
+    /// the grant itself is deliberately left standing (Grant Management ID1
+    /// §6.5 Note), so its `revoked_at` will not refuse them either.
+    ///
+    /// So a cutoff is written for the grant in the same transaction
+    /// ([`crate::cutoffs::withdraw`]): every access token minted from it
+    /// before `now` stops verifying, and the ones minted afterwards — there
+    /// are none, the refresh token that would mint them has just been
+    /// revoked — would not be affected. Tokens of the *same client* under
+    /// another grant are untouched, which is what makes this §2.1's rule and
+    /// not a client-wide logout.
+    ///
     /// # Errors
     ///
     /// [`DomainError::Invalid`] if the digest is not hexadecimal, or
@@ -328,6 +347,8 @@ impl PgRefreshTokenRepository {
         now: OffsetDateTime,
     ) -> Result<Option<GrantId>, DomainError> {
         let digest = Self::digest_bytes(digest)?;
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+
         let row = sqlx::query!(
             "update refresh_tokens
                 set revoked_at = coalesce(revoked_at, $4)
@@ -338,11 +359,23 @@ impl PgRefreshTokenRepository {
             client.as_str(),
             now,
         )
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(to_domain_error)?;
 
-        Ok(row.map(|row| GrantId::new(row.grant_id.to_string())))
+        let grant = row.map(|row| GrantId::new(row.grant_id.to_string()));
+        if let Some(grant) = grant.as_ref() {
+            cutoffs::withdraw(
+                &mut *transaction,
+                &self.tenant,
+                cutoffs::Principal::Grant(grant.as_str()),
+                now,
+            )
+            .await?;
+        }
+
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(grant)
     }
 
     /// Issues a replacement and stamps the token it replaces, together.

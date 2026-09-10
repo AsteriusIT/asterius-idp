@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select max(revoked_before) from access_token_cutoffs\n          where tenant_id = $1\n            and ((principal_kind = 'client' and principal_id = $2)\n              or (principal_kind = 'grant'  and principal_id = $3))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "max",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "459dc942ad29c12d0eb4e3bca041b29164fd74b59ee5f75c267a4118e7e5d30f"
+}

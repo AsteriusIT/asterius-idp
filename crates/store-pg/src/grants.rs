@@ -254,6 +254,41 @@ impl PgGrantRepository {
         .map_err(to_domain_error)
     }
 
+    /// The instant before which this token's client and grant withdrew
+    /// everything they had issued.
+    ///
+    /// The other half of revocation, and the half [`Self::is_denylisted`]
+    /// cannot cover. The denylist answers "was *this* token withdrawn", which
+    /// needs somebody to have named it; this answers "was everything of this
+    /// principal withdrawn", which is what RFC 7592 §2.3 asks of a
+    /// deprovisioning and RFC 7009 §2.1 of a refresh token's revocation.
+    /// Neither could name the tokens: they are stateless JWTs (RFC 9068) and
+    /// this schema has never inventoried the ones it signed.
+    ///
+    /// The caller compares the answer with the token's own `iat` and refuses a
+    /// token older than it. One read for both marks, because a token has to
+    /// survive both.
+    ///
+    /// `grant` is optional because a `client_credentials` token names none.
+    ///
+    /// # Errors
+    ///
+    /// A storage error. Never `None` because the store was unreachable: the
+    /// caller must refuse a token it could not check.
+    pub async fn revoked_before(
+        &self,
+        client: &ClientId,
+        grant: Option<&GrantId>,
+    ) -> Result<Option<OffsetDateTime>, DomainError> {
+        crate::cutoffs::revoked_before(
+            &self.pool,
+            &self.tenant,
+            client.as_str(),
+            grant.map(GrantId::as_str),
+        )
+        .await
+    }
+
     /// Puts one access token's `jti` on the denylist until its own `exp`.
     ///
     /// The single-token write side of the denylist [`Self::revoke`] fills in

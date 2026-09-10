@@ -3,8 +3,8 @@
 //! The authorization server as a resource server for its own claims. What a
 //! request must look like and what a refusal says live in
 //! [`asterius_oidc::userinfo`]; what lives here is everything that needs the
-//! outside world: the tenant's keys, the DPoP proof, the denylist, the grant
-//! and the user row.
+//! outside world: the tenant's keys, the DPoP proof, the two revocation reads,
+//! the grant and the user row.
 //!
 //! # The order of the checks is the security property
 //!
@@ -17,10 +17,27 @@
 //!    which scheme is acceptable, and what has to be presented beside the
 //!    token — a proof for the key it is bound to, whose `ath` hashes the token
 //!    that arrived, or the certificate whose thumbprint it names.
-//! 4. **Revocation** — the `jti` denylist, which is the only thing that can
-//!    withdraw a stateless token (FAPI 2.0 SP §5.3.4 item 3).
+//! 4. **Revocation** — the `jti` denylist (FAPI 2.0 SP §5.3.4 item 3), and the
+//!    cutoffs a deprovisioned client (RFC 7592 §2.3) or a revoked refresh
+//!    token (RFC 7009 §2.1) leave behind. Together they are the only things
+//!    that can withdraw a stateless token: one names the token, the other
+//!    names everything a principal was issued before an instant.
 //! 5. **Scope**, which is `insufficient_scope` and a 403 rather than a 401.
 //! 6. **The grant**, and only then the claims.
+//!
+//! The cutoffs are in step 4 and not step 6 on purpose. The case they exist
+//! for is a token whose grant is *live*: RFC 7009 revokes a refresh token and
+//! deliberately leaves the grant standing (Grant Management ID1 §6.5 Note), so
+//! a check that ran after the grant was loaded would find nothing wrong.
+//!
+//! They are in step 4 and not step 3 for a different reason. A withdrawn token
+//! does not *need* a thumbprint or a proof to be refused — the answer is the
+//! same `invalid_token` either way, so nothing about the outcome decides the
+//! order. What decides it is that steps 1 to 3 read only what arrived, and
+//! step 4 reads rows: putting the store behind the sender constraint means a
+//! caller who cannot show possession of the token never causes a lookup, and
+//! the endpoint cannot be used to make this deployment do database work on a
+//! token the caller does not hold.
 //!
 //! Reordering any of the first four would mean answering a question about a
 //! token before establishing that it is one.
@@ -54,7 +71,7 @@ pub const JWT_CONTENT_TYPE: &str = "application/jwt";
 
 /// The rows this endpoint reads.
 ///
-/// One port for the three reads, because they are one question — "what was
+/// One port for the four reads, because they are one question — "what was
 /// this token minted from, and is it still good" — and because a handler
 /// holding a grant repository would hold `revoke` and `claim` with it.
 /// UserInfo writes nothing.
@@ -106,6 +123,24 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
         &self,
         client: &ClientId,
     ) -> Result<Option<SigningAlgorithm>, DomainError>;
+
+    /// The instant before which this client and this grant withdrew every
+    /// access token they had issued, if either of them did.
+    ///
+    /// The bulk half of revocation: a deprovisioned client (RFC 7592 §2.3) and
+    /// a revoked refresh token (RFC 7009 §2.1) withdraw tokens nobody can
+    /// enumerate, so what they leave is a mark rather than a list of `jti`
+    /// values. `grant` is optional because a token may name none.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] when the mark cannot be read — and never `None` for an
+    /// unavailable store, for the reason [`Self::is_denylisted`] gives.
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &ClientId,
+        grant: Option<&GrantId>,
+    ) -> Result<Option<OffsetDateTime>, DomainError>;
 }
 
 /// What one UserInfo request needs.
@@ -229,6 +264,15 @@ async fn answer(
         return Err(UserInfoError::InvalidToken.into());
     }
 
+    // The other half of revocation, and the half no `jti` can carry: a
+    // deprovisioned client (RFC 7592 §2.3) and a revoked refresh token (RFC
+    // 7009 §2.1) withdraw a set of tokens nobody wrote down. Here rather than
+    // after the grant is loaded, because the case it exists for is a token
+    // whose grant is *live* — RFC 7009 leaves the grant standing on purpose —
+    // and because a token that was withdrawn should not cause a row to be read
+    // on its behalf.
+    withdrawn(context, &verified).await?;
+
     userinfo::check_scope(verified.claim_str("scope"))?;
 
     let grant = live_grant(context, &verified).await?;
@@ -284,6 +328,35 @@ async fn verify_access_token(
                 UserInfoError::InvalidToken.into()
             }
         })
+}
+
+/// Refuses a token its client or its grant withdrew in bulk.
+///
+/// The read is one round trip for both marks, and the rule is
+/// [`access_token::withdrawn`] — shared rather than written here, so that the
+/// next endpoint to verify one of this server's access tokens cannot come to a
+/// different opinion about what a cutoff means.
+///
+/// A token with no `client_id` is refused without a read: RFC 9068 §2.2 makes
+/// the claim required, and a token whose principal cannot be named is one
+/// whose withdrawal cannot be checked.
+async fn withdrawn(context: &UserInfoContext<'_>, verified: &Verified) -> Result<(), Refused> {
+    let Some(client) = verified.claim_str("client_id") else {
+        return Err(UserInfoError::InvalidToken.into());
+    };
+    // Optional here and not below: `live_grant` is what insists on the claim,
+    // because it is what needs a row. A cutoff can be answered without one.
+    let grant = verified
+        .claim_str("grant_id")
+        .map(|id| GrantId::new(id.to_owned()));
+    let cutoff = context
+        .source
+        .access_tokens_revoked_before(&ClientId::new(client.to_owned()), grant.as_ref())
+        .await?;
+    if access_token::withdrawn(verified, cutoff) {
+        return Err(UserInfoError::InvalidToken.into());
+    }
+    Ok(())
 }
 
 /// Records why a token was rejected, for an operator and for nobody else.

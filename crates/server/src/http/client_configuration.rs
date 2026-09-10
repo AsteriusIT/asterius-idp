@@ -874,11 +874,14 @@ async fn rotate(
 /// the client on delete cascade, and `authorization_codes` and `refresh_tokens`
 /// cascade from `grants`.
 ///
-/// One part of that SHOULD is not covered and is worth naming: an access token
-/// already issued is a signed JWT this server does not hold, and revoking it
-/// before its own expiry means a row in `access_token_denylist`. No grant
-/// handler issues one yet (`ast-a05.*`), so there is nothing to deny today;
-/// `ast-m9c.13` adds it with the issuance.
+/// The one part no cascade can reach is an access token already issued: a
+/// signed JWT this server does not hold, with no row to delete and no `jti`
+/// this deployment ever wrote down (RFC 9068 tokens are stateless by design).
+/// `deprovision` answers it with a cutoff instead — nothing issued to this
+/// `client_id` before `now` verifies any more, whatever its `exp` says
+/// (`ast-m9c.13`). That happens in the store, in the same transaction as the
+/// delete, so the admin API's deprovisioning gets it too rather than this
+/// handler being the only door that closes properly.
 ///
 /// # Errors
 ///
@@ -894,7 +897,7 @@ pub async fn remove(
         return refuse(context, now, EventType::CLIENT_DELETED, &client_id, denied).await;
     }
 
-    match context.configuration.deprovision(&client_id).await {
+    match context.configuration.deprovision(&client_id, now).await {
         Ok(()) => {}
         // Two DELETEs raced. The client got what it asked for either way, but
         // the answer is the one a second call gets from then on.

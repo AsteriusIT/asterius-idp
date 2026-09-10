@@ -922,6 +922,14 @@ impl userinfo::UserInfoSource for StoredClaims {
             .await?
             .and_then(|client| client.registration.userinfo_signed_response_alg))
     }
+
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &asterius_domain::ClientId,
+        grant: Option<&asterius_domain::GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, asterius_domain::DomainError> {
+        self.grants.revoked_before(client, grant).await
+    }
 }
 
 /// `POST /token` — RFC 6749 §3.2.

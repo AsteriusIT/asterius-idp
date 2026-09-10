@@ -1943,6 +1943,113 @@ async fn a_revoked_access_token_is_refused_at_userinfo() {
     flow.tear_down().await;
 }
 
+/// RFC 7009 §2.1: "If the particular token is a refresh token and the
+/// authorization server supports the revocation of access tokens, then the
+/// authorization server SHOULD also invalidate all access tokens based on the
+/// same authorization grant."
+///
+/// Nothing on the denylist can do that. The access token was never presented
+/// at `/revoke`, so no `jti` was written down, and the grant is deliberately
+/// left standing (Grant Management ID1 §6.5 Note) so its `revoked_at` will not
+/// refuse it either. What does is the cutoff the revocation writes on the
+/// grant (`ast-m9c.13`): UserInfo reads it and refuses anything minted before.
+#[tokio::test]
+async fn revoking_a_refresh_token_withdraws_the_access_tokens_of_its_grant() {
+    // Arrange: a real authorization, and an access token that works — so the
+    // assertion below is about the revocation and not about the request.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let issued = issue_tokens(&mut flow).await;
+    let before = flow.userinfo(&issued.key, &issued.access_token).await;
+    assert_eq!(
+        before.status,
+        StatusCode::OK,
+        "the access token did not work before the refresh token was revoked: {}",
+        before.text()
+    );
+
+    // Act: only the *refresh* token is handed in. The access token is never
+    // named, which is the whole point.
+    let revoked = flow
+        .revoke(
+            "assertion-revoke-rt-cascade",
+            &[
+                ("token", &issued.refresh_token),
+                ("token_type_hint", "refresh_token"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        revoked.status,
+        StatusCode::OK,
+        "the revocation was refused: {}",
+        revoked.text()
+    );
+
+    // Assert
+    let after = flow.userinfo(&issued.key, &issued.access_token).await;
+    assert_eq!(
+        after.status,
+        StatusCode::UNAUTHORIZED,
+        "an access token of a revoked refresh token's grant still bought claims: {}",
+        after.text()
+    );
+
+    flow.tear_down().await;
+}
+
+/// RFC 7592 §2.3: a deprovisioning "SHOULD immediately invalidate all existing
+/// authorization grants and currently active access tokens, all refresh
+/// tokens, and all other tokens associated with this client."
+///
+/// The rows go by cascade. The access token has no row — it is a signed JWT
+/// this server does not hold — and the thing that refuses it here is the
+/// cutoff `deprovision` writes in the same transaction as the delete, read at
+/// step 4 of UserInfo's checks, before the grant is looked up at all.
+///
+/// Deprovisioned through the store rather than through `DELETE /register/{id}`
+/// because this flow's client is seeded rather than registered, so it holds no
+/// registration access token. It is the same function either way: the RFC 7592
+/// handler and the admin API both go through `deprovision`, which is where the
+/// cutoff is written so that neither can be the door that closes properly.
+#[tokio::test]
+async fn a_deprovisioned_clients_access_token_is_refused_at_userinfo() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let issued = issue_tokens(&mut flow).await;
+    let before = flow.userinfo(&issued.key, &issued.access_token).await;
+    assert_eq!(
+        before.status,
+        StatusCode::OK,
+        "the access token did not work before the client was deprovisioned: {}",
+        before.text()
+    );
+
+    // Act
+    flow.store
+        .scope(flow.tenant.id.clone())
+        .clients(Capabilities::default())
+        .delete(&ClientId::new(CLIENT), OffsetDateTime::now_utc())
+        .await
+        .expect("deprovision the client");
+
+    // Assert
+    let after = flow.userinfo(&issued.key, &issued.access_token).await;
+    assert_eq!(
+        after.status,
+        StatusCode::UNAUTHORIZED,
+        "a deprovisioned client's access token still bought claims: {}",
+        after.text()
+    );
+
+    flow.tear_down().await;
+}
+
 /// §2.1: `token_type_hint` is a hint. A value this server has never heard of
 /// does not fail the request — the server "MUST extend its search across all
 /// of its supported token types" — and an unknown token is §2.2's 200.
