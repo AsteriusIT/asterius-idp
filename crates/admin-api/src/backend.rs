@@ -18,7 +18,9 @@
 
 use asterius_domain::entities::session::SessionRevocation;
 use asterius_domain::keys::KeyAdministration;
-use asterius_domain::ports::{ClientAdministration, TenantRepository, TenantSettingsRepository};
+use asterius_domain::ports::{
+    ClientAdministration, InitialAccessTokenStore, TenantRepository, TenantSettingsRepository,
+};
 use asterius_domain::{
     AuditSink, Capabilities, DomainError, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role,
     Session, TenantId, UserId,
@@ -129,6 +131,14 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// one outbound adapter (ADR-0006) rather than through a second HTTP client
     /// built for the console.
     fn clients(&self) -> Arc<dyn ClientAdministration>;
+
+    /// This tenant's initial access tokens (`ast-cu3`).
+    ///
+    /// A handle for the same reason [`Self::tenants`] is one: the object
+    /// behind it is the composition root's, over the same pool `POST
+    /// /register` spends from. A second one built here would issue credentials
+    /// into a store the endpoint does not read.
+    fn initial_access_tokens(&self) -> Arc<dyn InitialAccessTokenStore>;
 
     /// What this deployment offers, for validating a registration document.
     ///

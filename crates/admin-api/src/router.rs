@@ -22,7 +22,8 @@
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
     Activation, Actor, AuditEvent, Client, ClientRegistration, ClientStatus, Detail, DomainError,
-    EventType, Kid, Outcome, RefreshPolicy, Tenant, TenantId, TenantSettings, TenantStatus,
+    EventType, Kid, NewInitialAccessToken, OpaqueToken, Outcome, RefreshPolicy, Tenant, TenantId,
+    TenantSettings, TenantStatus,
 };
 use axum::Router;
 use axum::extract::Request;
@@ -38,7 +39,7 @@ use crate::error::AdminError;
 use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Effect, Method, Operation};
 use crate::pagination::{Page, PageRequest};
-use crate::{clients, csrf, keys, openapi, throttle};
+use crate::{clients, csrf, initial_access_tokens, keys, openapi, throttle};
 
 /// The client address, as this crate sees it.
 ///
@@ -270,6 +271,8 @@ async fn route(
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
         crate::CLIENT_UPDATE_ID => context.update_client(body).await,
         crate::REGISTRATION_READ_ID => Ok(context.read_registration_gate()),
+        crate::INITIAL_ACCESS_TOKENS_LIST_ID => context.list_initial_access_tokens().await,
+        crate::INITIAL_ACCESS_TOKEN_CREATE_ID => context.issue_initial_access_token(body).await,
         crate::KEYS_LIST_ID => context.list_keys().await,
         crate::KEYS_JWKS_ID => context.preview_jwks().await,
         crate::KEYS_ROTATE_ID => context.rotate_key(body).await,
@@ -847,6 +850,121 @@ impl Handling<'_> {
             StatusCode::OK,
             &clients::registration_document(self.state.backend.registration_gate()),
         )
+    }
+
+    /// `GET /initial-access-tokens` — this tenant's own registration
+    /// credentials (`ast-cu3`).
+    ///
+    /// A quota, an expiry and a label per row. No digest and no plaintext: see
+    /// [`crate::initial_access_tokens`].
+    async fn list_initial_access_tokens(&self) -> Result<Response, AdminError> {
+        let tokens = self
+            .state
+            .backend
+            .initial_access_tokens()
+            .list(&self.tenant.id)
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::INITIAL_ACCESS_TOKENS_LIST_ID, &error)
+            })?;
+
+        let rendered: Vec<_> = tokens
+            .iter()
+            .map(|token| initial_access_tokens::summarise(token, self.now))
+            .collect();
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "items": rendered }),
+        ))
+    }
+
+    /// `POST /initial-access-tokens` — mints one, shown once (`ast-cu3`).
+    ///
+    /// The quota comes from the tenant's stored registration policy and never
+    /// from the body. That is the whole point of the ticket this is part of:
+    /// `max_clients_per_initial_access_token` was a setting that stored,
+    /// reloaded and evaluated and bound nothing, and the way it binds is by
+    /// being stamped onto the credential at the moment it is created.
+    ///
+    /// A tenant whose settings cannot be read is refused rather than issued an
+    /// unlimited token, for the reason `PgTenantSettings::settings` gives about
+    /// a policy that quietly reverted to a default.
+    async fn issue_initial_access_token(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let bytes = self.body_bytes(body).await?;
+        let requested = initial_access_tokens::requested(&bytes)?;
+
+        let settings = self
+            .state
+            .backend
+            .tenant_settings()
+            .settings(&self.tenant.id)
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::INITIAL_ACCESS_TOKEN_CREATE_ID, &error)
+            })?;
+        let quota = settings
+            .registration()
+            .max_clients_per_initial_access_token();
+
+        // 256 bits, like every other opaque credential this server issues, and
+        // held for exactly as long as it takes to hash it and render it once.
+        let token = OpaqueToken::generate();
+        let expires_at = requested.lifetime_seconds.and_then(|seconds| {
+            i64::try_from(seconds)
+                .ok()
+                .map(|seconds| self.now + time::Duration::seconds(seconds))
+        });
+
+        let minted = NewInitialAccessToken::new(
+            self.tenant.id.clone(),
+            requested.label,
+            asterius_domain::sha256(token.expose().as_bytes()),
+            quota,
+            expires_at,
+            self.principal.audit_actor(),
+            self.now,
+        )
+        .map_err(|error| match error {
+            DomainError::Invalid { field, reason } => AdminError::Invalid(format!("{field}: {reason}")),
+            other => AdminError::from_storage(crate::INITIAL_ACCESS_TOKEN_CREATE_ID, &other),
+        })?;
+
+        let stored = self
+            .state
+            .backend
+            .initial_access_tokens()
+            .issue(&minted)
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                other => AdminError::from_storage(crate::INITIAL_ACCESS_TOKEN_CREATE_ID, &other),
+            })?;
+
+        // The label, the quota and the expiry — never the credential. An audit
+        // trail that carried the token would be a place to read one back out of,
+        // and this trail is append-only and cannot be deleted from.
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::INITIAL_ACCESS_TOKEN_CREATE_ID)
+                .text("initial_access_token_id", &stored.id.to_string())
+                .text("label", &stored.label)
+                .text(
+                    "max_clients",
+                    &stored
+                        .max_uses
+                        .map_or_else(|| "unlimited".to_owned(), |max| max.to_string()),
+                ),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &initial_access_tokens::issued(&stored, token.expose(), self.now),
+        ))
     }
 
     /// The two things about a client that a registration document cannot say.
@@ -1497,6 +1615,9 @@ mod tests {
         /// is refused, which is how a test reaches OIDC Registration §5's
         /// refusal without a socket.
         confirmed_sectors: Mutex<Vec<String>>,
+        /// The initial access tokens this fake has been asked to issue
+        /// (`ast-cu3`), with the digest each was stored under.
+        initial_access_tokens: Mutex<Vec<([u8; 32], asterius_domain::InitialAccessToken)>>,
     }
 
     #[derive(Debug, Clone)]
@@ -1921,6 +2042,66 @@ mod tests {
         }
     }
 
+    /// The fake's initial access token store (`ast-cu3`).
+    ///
+    /// Only what the admin API exercises is implemented. `reserve` and
+    /// `release` belong to `POST /register`, which is a different crate's
+    /// endpoint and has its own fake in `crates/server/tests/register.rs`;
+    /// stubbing them here with something permissive would be a second,
+    /// gentler definition of the quota rule.
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::InitialAccessTokenStore for Handle {
+        async fn issue(
+            &self,
+            token: &asterius_domain::NewInitialAccessToken,
+        ) -> Result<asterius_domain::InitialAccessToken, DomainError> {
+            let stored = asterius_domain::InitialAccessToken {
+                id: uuid::Uuid::new_v4(),
+                tenant: token.tenant.clone(),
+                label: token.label.clone(),
+                uses: 0,
+                max_uses: token.max_uses,
+                expires_at: token.expires_at,
+                created_at: OffsetDateTime::from_unix_timestamp(1_700_000_000)
+                    .expect("a fixed instant"),
+            };
+            self.0
+                .initial_access_tokens
+                .lock()
+                .expect("an uncontended lock")
+                .push((token.digest, stored.clone()));
+            Ok(stored)
+        }
+
+        async fn reserve(
+            &self,
+            _tenant: &TenantId,
+            _digest: &[u8; 32],
+            _now: OffsetDateTime,
+        ) -> Result<asterius_domain::InitialAccessTokenReservation, DomainError> {
+            unimplemented!("the admin API never spends a token")
+        }
+
+        async fn release(&self, _tenant: &TenantId, _id: uuid::Uuid) -> Result<(), DomainError> {
+            unimplemented!("the admin API never spends a token")
+        }
+
+        async fn list(
+            &self,
+            tenant: &TenantId,
+        ) -> Result<Vec<asterius_domain::InitialAccessToken>, DomainError> {
+            Ok(self
+                .0
+                .initial_access_tokens
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|(_, token)| &token.tenant == tenant)
+                .map(|(_, token)| token.clone())
+                .collect())
+        }
+    }
+
     fn default_schedule() -> RotationSchedule {
         RotationSchedule {
             rotation_period: time::Duration::days(90),
@@ -2010,6 +2191,12 @@ mod tests {
         }
 
         fn keys(&self) -> Arc<dyn KeyAdministration> {
+            Arc::new(self.clone())
+        }
+
+        fn initial_access_tokens(
+            &self,
+        ) -> Arc<dyn asterius_domain::ports::InitialAccessTokenStore> {
             Arc::new(self.clone())
         }
 
@@ -2332,6 +2519,9 @@ mod tests {
             // the same document `POST /register` takes, validated by the same
             // call.
             crate::CLIENT_CREATE_ID | crate::CLIENT_UPDATE_ID => valid_registration(),
+            // A label is the one thing an issuance requires: the quota is the
+            // tenant's and the expiry is optional (`ast-cu3`).
+            crate::INITIAL_ACCESS_TOKEN_CREATE_ID => serde_json::json!({"label": "onboarding"}),
             crate::KEYS_ROTATE_ID => serde_json::json!({"alg": "EdDSA"}),
             crate::KEYS_SCHEDULE_ID => serde_json::json!({
                 "alg": "EdDSA",
@@ -3779,7 +3969,7 @@ mod tests {
         let body = body_of(response).await;
         assert_eq!(body["mode"], serde_json::json!("initial_access_token"));
         assert_eq!(body["configured_tokens"], serde_json::json!(2));
-        assert_eq!(body["console_issuance"], serde_json::json!(false));
+        assert_eq!(body["console_issuance"], serde_json::json!(true));
     }
 
     /// **The first acceptance criterion of `ast-f7m.7`.**
@@ -4414,6 +4604,191 @@ mod tests {
                     .expect("a request"),
             )
             .await
+    }
+
+    /// One audit detail value as a string, for the assertions that only care
+    /// whether a value is present.
+    fn rendered(value: &asterius_domain::audit::DetailValue) -> Option<String> {
+        match value {
+            asterius_domain::audit::DetailValue::Text(text) => Some(text.clone()),
+            asterius_domain::audit::DetailValue::Number(_)
+            | asterius_domain::audit::DetailValue::Flag(_)
+            | asterius_domain::audit::DetailValue::Fingerprint(_) => None,
+        }
+    }
+
+    /// A settings document that also stores a registration policy
+    /// (`ast-m9c.6`), which is where the token quota comes from.
+    fn settings_body_with_policy(policy: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "disabled_features": [],
+            "authorization_code_lifetime_seconds": 60,
+            "access_token_lifetime_seconds": 300,
+            "registration_policy": policy,
+        })
+    }
+
+    /// Stores a per-tenant registration policy through the API that owns it,
+    /// so the fixture cannot store one the API would refuse.
+    async fn store_policy(world: &World, cookie: &str, policy: serde_json::Value) {
+        let response = world
+            .send(
+                as_console(&crate::TENANT_SETTINGS_UPDATE, cookie)
+                    .body(Body::from(
+                        settings_body_with_policy(policy).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "the policy was not stored");
+    }
+
+    /// **`ast-cu3`'s first acceptance criterion, admin side.** The token is
+    /// shown once, and the quota on it is the tenant's — not the caller's.
+    #[tokio::test]
+    async fn issuing_an_initial_access_token_shows_it_once_with_the_tenants_quota() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        store_policy(
+            &world,
+            &cookie,
+            serde_json::json!({
+                "mode": "initial_access_token",
+                "max_clients_per_initial_access_token": 3,
+            }),
+        )
+        .await;
+
+        // Act: the body names a quota of its own, which must be ignored.
+        let response = world
+            .send(
+                as_console(&crate::INITIAL_ACCESS_TOKEN_CREATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({ "label": "onboarding", "max_uses": 9999 }).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = body_of(response).await;
+        assert_eq!(body["max_uses"], serde_json::json!(3));
+        assert_eq!(body["remaining"], serde_json::json!(3));
+        assert_eq!(body["shown_once"], serde_json::json!(true));
+        assert!(
+            body["initial_access_token"]
+                .as_str()
+                .is_some_and(|token| token.len() >= 22),
+            "the response did not carry a credential worth issuing"
+        );
+    }
+
+    /// The credential exists in one response and nowhere else: a later `GET`
+    /// renders the quota and the expiry and cannot render the token.
+    #[tokio::test]
+    async fn listing_initial_access_tokens_renders_no_credential() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        store_policy(
+            &world,
+            &cookie,
+            serde_json::json!({ "mode": "initial_access_token" }),
+        )
+        .await;
+        let created = world
+            .send(
+                as_console(&crate::INITIAL_ACCESS_TOKEN_CREATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({ "label": "onboarding" }).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::INITIAL_ACCESS_TOKENS_LIST, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let items = body["items"].as_array().expect("a list of tokens");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["label"], serde_json::json!("onboarding"));
+        assert_eq!(items[0]["usable"], serde_json::json!(true));
+        assert!(
+            items[0].get("initial_access_token").is_none(),
+            "the list rendered a credential"
+        );
+    }
+
+    /// The issuance is on the trail with its actor and without its token: an
+    /// administrator who mints a credential and uses it elsewhere is still
+    /// named at the moment they minted it.
+    #[tokio::test]
+    async fn issuing_an_initial_access_token_is_audited_without_the_token() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        store_policy(
+            &world,
+            &cookie,
+            serde_json::json!({ "mode": "initial_access_token" }),
+        )
+        .await;
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::INITIAL_ACCESS_TOKEN_CREATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({ "label": "onboarding" }).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let issued = body_of(response).await;
+        let token = issued["initial_access_token"]
+            .as_str()
+            .expect("a credential")
+            .to_owned();
+
+        // Assert
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        let recorded = events
+            .iter()
+            .find(|event| {
+                event
+                    .detail
+                    .iter()
+                    .any(|(key, value)| key == "operation" && rendered(value).as_deref()
+                        == Some(crate::INITIAL_ACCESS_TOKEN_CREATE_ID))
+            })
+            .expect("the issuance was not recorded");
+
+        let values: Vec<String> = recorded
+            .detail
+            .iter()
+            .filter_map(|(_, value)| rendered(value))
+            .collect();
+        assert!(
+            values.iter().any(|value| value == "onboarding"),
+            "the trail does not say which token was issued"
+        );
+        assert!(
+            !values.iter().any(|value| value == &token),
+            "the audit trail carries the credential"
+        );
     }
 
     fn settings_body(code_seconds: i64, access_token_seconds: i64) -> serde_json::Value {

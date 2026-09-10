@@ -282,6 +282,17 @@ impl AdminBackend for Deployment {
         Arc::new(PgTenantSettings::new(self.store.pool().clone()))
     }
 
+    /// This tenant's initial access tokens (`ast-cu3`).
+    ///
+    /// Over `self.store`'s pool, which is the pool `POST /register` reserves
+    /// from: the console must not be able to issue a credential the endpoint
+    /// cannot see.
+    fn initial_access_tokens(&self) -> Arc<dyn asterius_domain::ports::InitialAccessTokenStore> {
+        Arc::new(asterius_store_pg::PgInitialAccessTokens::new(
+            self.store.pool().clone(),
+        ))
+    }
+
     fn keys(&self) -> Arc<dyn KeyAdministration> {
         Arc::clone(&self.keys)
     }

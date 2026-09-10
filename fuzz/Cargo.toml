@@ -85,6 +85,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_initial_access_token_request"
+path = "fuzz_targets/admin_initial_access_token_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_key_request"
 path = "fuzz_targets/admin_key_request.rs"
 test = false

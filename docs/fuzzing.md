@@ -83,6 +83,7 @@ The 56 targets below cover 74 declared entry points. Generated from the
 | `admin_cursor` | `Cursor::decode` | `crates/admin-api/src/pagination.rs` |
 | `admin_fetch_metadata` | `site` | `crates/admin-api/src/csrf.rs` |
 | `admin_idempotency_key` | `IdempotencyKey::parse` | `crates/admin-api/src/idempotency.rs` |
+| `admin_initial_access_token_request` | `requested` | `crates/admin-api/src/initial_access_tokens.rs` |
 | `admin_key_request` | `PurgeReason::parse` | `crates/domain/src/keys.rs` |
 | `admin_key_request` | `PurgeRequest::reason` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `RotationRequest::algorithm` | `crates/admin-api/src/keys.rs` |
