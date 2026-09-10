@@ -31,7 +31,7 @@ use asterius_domain::SigningAlgorithm;
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadata, ClientRegistration, ClientStatus, DomainError,
-    JwksSource, ManagedClient, TenantId,
+    JwksSource, ManagedClient, PreviousRegistrationAccessToken, TenantId,
 };
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
@@ -83,6 +83,22 @@ impl asterius_domain::ClientConfiguration for PgClientRepository {
 
     async fn revoke_registration_access_token(&self, digest: &[u8; 32]) -> Result<(), DomainError> {
         Self::revoke_registration_access_token(self, digest).await
+    }
+
+    async fn rotate_registration_access_token(
+        &self,
+        client_id: &ClientId,
+        digest: &[u8; 32],
+        grace_expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Self::rotate_registration_access_token(self, client_id, digest, grace_expires_at).await
+    }
+
+    async fn retire_previous_registration_access_token(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<(), DomainError> {
+        Self::retire_previous_registration_access_token(self, client_id).await
     }
 }
 
@@ -424,7 +440,9 @@ impl PgClientRepository {
         client_id: &ClientId,
     ) -> Result<Option<ManagedClient>, DomainError> {
         let row = sqlx::query!(
-            "select status, registration_access_token_hash
+            "select status, registration_access_token_hash,
+                    previous_registration_access_token_hash,
+                    previous_registration_access_token_expires_at
              from clients
              where tenant_id = $1 and client_id = $2",
             self.tenant.as_str(),
@@ -445,8 +463,24 @@ impl PgClientRepository {
             let registration_access_token = row
                 .registration_access_token_hash
                 .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok());
+            // Both columns or neither, which the schema's own check constraint
+            // already guarantees; read as a pair anyway, because a predecessor
+            // with no expiry read as "no expiry" would be the one shape of this
+            // row that must never authenticate anybody — a second permanent
+            // credential. A half-row becomes no predecessor at all.
+            let previous_registration_access_token = row
+                .previous_registration_access_token_hash
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+                .zip(row.previous_registration_access_token_expires_at)
+                .map(
+                    |(digest, grace_expires_at)| PreviousRegistrationAccessToken {
+                        digest,
+                        grace_expires_at,
+                    },
+                );
             Ok(ManagedClient {
                 registration_access_token,
+                previous_registration_access_token,
                 status,
             })
         })
@@ -661,6 +695,102 @@ impl PgClientRepository {
                  (RFC 7592 2.1); that client now has no credential and must be re-registered"
             );
         }
+        Ok(())
+    }
+
+    /// Issues a new registration access token and demotes the current one
+    /// (RFC 7592 §5, `ast-m9c.12`).
+    ///
+    /// One statement, and that is the whole correctness argument. The digest
+    /// the client will authenticate with next and the digest it may still
+    /// authenticate with meanwhile are two columns of the same row, so a
+    /// two-statement version would have an instant in which a crash leaves a
+    /// client with no credential and no way to ask for one. Written as a single
+    /// `update`, there is no such instant: either the row rotated or it did not.
+    ///
+    /// The demotion reads `registration_access_token_hash` in the same
+    /// statement that overwrites it, which Postgres evaluates against the row
+    /// as it was — so `previous` becomes the token the caller just
+    /// authenticated with, never the one being issued.
+    ///
+    /// Any predecessor already sitting in the row is overwritten rather than
+    /// kept. A client that updates itself twice inside one grace window ends
+    /// with two live tokens, not three: the generation before last dies early,
+    /// which is the direction to fail in.
+    ///
+    /// A client with no registration access token — one the admin API created —
+    /// cannot reach this: the endpoint refuses it before any write. If it ever
+    /// did, the `where` clause would leave the row alone rather than mint a
+    /// credential for a client that was deliberately given none.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if no row was rotated, so that a caller never
+    /// tells a client its token changed when nothing was written.
+    /// [`DomainError::Storage`] otherwise.
+    pub async fn rotate_registration_access_token(
+        &self,
+        client_id: &ClientId,
+        digest: &[u8; 32],
+        grace_expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let result = sqlx::query!(
+            "update clients
+                set previous_registration_access_token_hash = registration_access_token_hash,
+                    previous_registration_access_token_expires_at = $4,
+                    registration_access_token_hash = $3
+             where tenant_id = $1
+               and client_id = $2
+               and registration_access_token_hash is not null",
+            self.tenant.as_str(),
+            client_id.as_str(),
+            digest.as_slice(),
+            grace_expires_at,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        if result.rows_affected() == 0 {
+            return Err(DomainError::NotFound);
+        }
+        Ok(())
+    }
+
+    /// Clears a client's rotated-out registration access token.
+    ///
+    /// Runs on every authenticated management request that presented the
+    /// *current* token, which is why it is written to be cheap and silent: the
+    /// `where` clause carries `is not null`, so the ordinary case — a client
+    /// that has never rotated — matches no row and writes nothing at all. No
+    /// row version, no `updated_at`, no WAL beyond an empty transaction.
+    ///
+    /// It is what keeps the grace window a cover for a lost response rather
+    /// than a period of coexistence: the moment the client proves it received
+    /// the new token, the old one stops working, whatever the window still had
+    /// left.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. Never
+    /// `NotFound`: nothing to retire is the common case, not a failure.
+    pub async fn retire_previous_registration_access_token(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<(), DomainError> {
+        sqlx::query!(
+            "update clients
+                set previous_registration_access_token_hash = null,
+                    previous_registration_access_token_expires_at = null
+             where tenant_id = $1
+               and client_id = $2
+               and previous_registration_access_token_hash is not null",
+            self.tenant.as_str(),
+            client_id.as_str(),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
         Ok(())
     }
 }

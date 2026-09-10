@@ -16,8 +16,9 @@ use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
 use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
-    ClientStatus, DomainError, Issuer, KeyStore, Kid, ManagedClient, OpaqueToken, PublicKeyRecord,
-    SubjectType, Tenant, TenantId, TenantStatus, sha256,
+    ClientStatus, DomainError, Issuer, KeyStore, Kid, ManagedClient, OpaqueToken,
+    PreviousRegistrationAccessToken, PublicKeyRecord, SubjectType, Tenant, TenantId, TenantStatus,
+    sha256,
 };
 use asterius_server::http::client_configuration::{ConfigurationContext, read, remove, update};
 use axum::body::Bytes;
@@ -40,6 +41,10 @@ struct Row {
     /// The digest, exactly as the column holds it. `None` is a client that was
     /// never given a configuration endpoint — an admin-created one.
     registration_access_token: Option<[u8; 32]>,
+    /// The pair of columns `ast-m9c.12` added: the token a rotation replaced
+    /// and the instant it stops being accepted. Both or neither, as the check
+    /// constraint requires.
+    previous_registration_access_token: Option<PreviousRegistrationAccessToken>,
     /// The per-client resource allow-list. Not part of the registration
     /// document (`ast-m9c.6` owns it), so an update must not touch it.
     resources: Vec<String>,
@@ -53,6 +58,15 @@ struct FakeClients {
     revocations: AtomicUsize,
     /// How many rows those revocations actually cleared.
     revoked: AtomicUsize,
+    /// How many times the endpoint asked for a rotation (`ast-m9c.12`). A
+    /// counter rather than a flag, because "did not rotate" and "rotated onto
+    /// the same value" are different failures and only a count tells them
+    /// apart.
+    rotations: AtomicUsize,
+    /// A store whose rotation statement fails while everything else works —
+    /// the one arrangement that can show what a client is told when the new
+    /// credential was not written.
+    rotation_broken: bool,
 }
 
 impl FakeClients {
@@ -76,6 +90,11 @@ impl FakeClients {
 
     fn ids(&self) -> Vec<String> {
         self.rows.lock().expect("lock").keys().cloned().collect()
+    }
+
+    /// How many rotations the endpoint asked for.
+    fn rotations(&self) -> usize {
+        self.rotations.load(Ordering::Relaxed)
     }
 
     /// How many times a revocation was attempted, and how many rows it hit.
@@ -109,6 +128,7 @@ impl ClientConfiguration for FakeClients {
         }
         Ok(self.row(client_id.as_str()).map(|row| ManagedClient {
             registration_access_token: row.registration_access_token,
+            previous_registration_access_token: row.previous_registration_access_token,
             status: row.client.status,
         }))
     }
@@ -160,6 +180,49 @@ impl ClientConfiguration for FakeClients {
                 row.registration_access_token = None;
                 self.revoked.fetch_add(1, Ordering::Relaxed);
             }
+        }
+        Ok(())
+    }
+
+    /// The rotation statement, with the column dependency the real one relies
+    /// on made explicit: the predecessor takes the value the current digest had
+    /// *before* the assignment, never the one being issued.
+    async fn rotate_registration_access_token(
+        &self,
+        client_id: &ClientId,
+        digest: &[u8; 32],
+        grace_expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.rotations.fetch_add(1, Ordering::Relaxed);
+        if self.broken || self.rotation_broken {
+            return Err(Self::storage_failure());
+        }
+        let mut rows = self.rows.lock().expect("lock");
+        let Some(row) = rows.get_mut(client_id.as_str()) else {
+            return Err(DomainError::NotFound);
+        };
+        // `where registration_access_token_hash is not null`: a client that was
+        // never given a configuration endpoint is not given one here.
+        let Some(current) = row.registration_access_token else {
+            return Err(DomainError::NotFound);
+        };
+        row.previous_registration_access_token = Some(PreviousRegistrationAccessToken {
+            digest: current,
+            grace_expires_at,
+        });
+        row.registration_access_token = Some(*digest);
+        Ok(())
+    }
+
+    async fn retire_previous_registration_access_token(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<(), DomainError> {
+        if self.broken {
+            return Err(Self::storage_failure());
+        }
+        if let Some(row) = self.rows.lock().expect("lock").get_mut(client_id.as_str()) {
+            row.previous_registration_access_token = None;
         }
         Ok(())
     }
@@ -316,11 +379,13 @@ impl Fixture {
         clients.insert(Row {
             client: client("c.alpha", &document()),
             registration_access_token: Some(sha256(alpha.expose().as_bytes())),
+            previous_registration_access_token: None,
             resources: vec!["https://api.example/accounts".to_owned()],
         });
         clients.insert(Row {
             client: client("c.beta", &document()),
             registration_access_token: Some(sha256(beta.expose().as_bytes())),
+            previous_registration_access_token: None,
             resources: Vec::new(),
         });
         Self {
@@ -342,6 +407,32 @@ impl Fixture {
     fn holding_keys(mut self, algorithms: &[SigningAlgorithm]) -> Self {
         self.keys = FakeKeys(algorithms.to_vec());
         self
+    }
+
+    /// The same fixture on a tenant that rotates the registration access token
+    /// on update, with `grace` seconds of cover for a lost response
+    /// (`ast-m9c.12`).
+    fn rotating(self, grace_seconds: i64) -> Self {
+        self.under_policy(&json!({
+            "rotate_registration_access_token": true,
+            "registration_access_token_grace_seconds": grace_seconds,
+        }))
+    }
+
+    /// The same fixture whose rotation statement fails and whose reads and
+    /// writes do not.
+    fn with_failing_rotation(mut self) -> Self {
+        self.clients.rotation_broken = true;
+        self
+    }
+
+    /// The digest column of a client's row, and the predecessor beside it.
+    fn stored(&self, id: &str) -> (Option<[u8; 32]>, Option<PreviousRegistrationAccessToken>) {
+        let row = self.clients.row(id).expect("the fixture holds this client");
+        (
+            row.registration_access_token,
+            row.previous_registration_access_token,
+        )
     }
 
     /// The same fixture on a tenant whose stored registration policy is
@@ -766,6 +857,7 @@ async fn a_client_that_was_never_issued_a_token_cannot_be_managed() {
     fixture.clients.insert(Row {
         client: client("c.admin", &document()),
         registration_access_token: None,
+        previous_registration_access_token: None,
         resources: Vec::new(),
     });
 
@@ -1753,4 +1845,493 @@ async fn an_update_the_tenants_policy_refuses_does_not_update() {
         before.registration,
         "an update the policy refused changed the row"
     );
+}
+
+// ---- registration access token rotation (`ast-m9c.12`) -------------------
+
+/// A well-formed replacement document for `c.alpha`.
+fn update_body() -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "client_id": "c.alpha",
+            "client_name": "Billing",
+            "redirect_uris": ["https://rp.example/cb"],
+            "grant_types": ["authorization_code"],
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        }))
+        .expect("serialise"),
+    )
+}
+
+/// The token a rotation handed back, as something the next request can present.
+fn issued(document: &Value) -> OpaqueToken {
+    OpaqueToken::from_presented(
+        document["registration_access_token"]
+            .as_str()
+            .expect("the response must carry the new token")
+            .to_owned(),
+    )
+}
+
+/// The default, and the reason the feature needed a flag at all: a tenant that
+/// never asked for rotation gets none, and the token it holds keeps working.
+///
+/// RFC 7592 §5's "MAY", declined.
+#[tokio::test]
+async fn an_update_does_not_rotate_unless_the_tenant_asked() {
+    // Arrange
+    let fixture = Fixture::new();
+    let before = fixture.stored("c.alpha");
+
+    // Act
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        body_of(response)
+            .await
+            .get("registration_access_token")
+            .is_none(),
+        "an update announced a rotation this tenant did not ask for"
+    );
+    assert_eq!(fixture.clients.rotations(), 0);
+    assert_eq!(fixture.stored("c.alpha"), before);
+
+    // The credential the client already had is the credential it still has.
+    let again = read(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        now(),
+    )
+    .await;
+    assert_eq!(again.status(), StatusCode::OK);
+}
+
+/// The tenant asked, so the update issues a new token and the response says so.
+///
+/// RFC 7592 §5 and §3: the rotated value comes back in the client information
+/// response, which is the only place the client will ever see it — the server
+/// keeps a digest.
+#[tokio::test]
+async fn an_update_rotates_when_the_tenant_asks_and_the_response_carries_the_new_token() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+    let (before, _) = fixture.stored("c.alpha");
+
+    // Act
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    let fresh = issued(&body_of(response).await);
+    assert_ne!(
+        fresh.expose(),
+        fixture.alpha.expose(),
+        "the rotation handed back the token it was supposed to replace"
+    );
+
+    let (current, previous) = fixture.stored("c.alpha");
+    assert_eq!(current, Some(sha256(fresh.expose().as_bytes())));
+    let previous = previous.expect("the rotated-out token must be kept for its grace window");
+    assert_eq!(
+        previous.digest,
+        before.expect("alpha had a token"),
+        "the predecessor is the token the client authenticated with"
+    );
+    // Bounded, and by the tenant's own number.
+    assert_eq!(
+        previous.grace_expires_at,
+        now() + time::Duration::seconds(300)
+    );
+}
+
+/// The whole reason rotation could be turned on at all: a `200` that never
+/// arrived must not end the client's ability to manage its own registration.
+///
+/// This server issues no client secret and has no re-issue path, so a client
+/// that missed the response has nothing else to present. Inside the window the
+/// token it still holds works — and the retry hands it a new one.
+#[tokio::test]
+async fn a_client_that_never_saw_the_response_can_still_use_its_old_token() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+    let lost = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+    assert_eq!(lost.status(), StatusCode::OK);
+    drop(lost); // the response the client never read
+
+    // Act — the retry, a minute later, with the only token the client has.
+    let retry = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now() + time::Duration::seconds(60),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(retry.status(), StatusCode::OK);
+    let fresh = issued(&body_of(retry).await);
+    let (current, _) = fixture.stored("c.alpha");
+    assert_eq!(
+        current,
+        Some(sha256(fresh.expose().as_bytes())),
+        "the retry was served but the client was not given a usable credential"
+    );
+}
+
+/// The window is bounded. Past it the predecessor is refused, with the same 401
+/// an unknown client gets (OIDC Registration §4.4).
+#[tokio::test]
+async fn the_previous_token_is_refused_once_the_window_closes() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Act — one second after the last instant of the window.
+    let late = read(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        now() + time::Duration::seconds(301),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(late.status(), StatusCode::UNAUTHORIZED);
+
+    // The boundary itself is closed: the window ends *at* its expiry, so no
+    // instant is both inside and outside it.
+    let fixture = Fixture::new().rotating(300);
+    let _ = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+    let exactly = read(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        now() + time::Duration::seconds(300),
+    )
+    .await;
+    assert_eq!(exactly.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// The grace covers a lost response, not a client with two credentials: the
+/// first use of the new token retires the old one there and then, whatever the
+/// window still had left.
+#[tokio::test]
+async fn the_previous_token_dies_at_the_first_use_of_the_new_one() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+    let fresh = issued(&body_of(response).await);
+    assert!(fixture.stored("c.alpha").1.is_some());
+
+    // Act — the client uses what it was given, well inside the window.
+    let with_new = read(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fresh),
+        now() + time::Duration::seconds(10),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(with_new.status(), StatusCode::OK);
+    assert_eq!(
+        fixture.stored("c.alpha").1,
+        None,
+        "the predecessor outlived the proof that the client received its successor"
+    );
+
+    // The old token is refused from now on, even though its window is open.
+    let with_old = read(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        now() + time::Duration::seconds(20),
+    )
+    .await;
+    assert_eq!(with_old.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// OIDC Registration §4.3: "since Read operations are intended to be
+/// idempotent, the Client Read Request itself SHOULD NOT cause changes". No
+/// tenant setting can turn a read into a rotation.
+#[tokio::test]
+async fn a_read_never_rotates_however_the_tenant_is_configured() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+    let before = fixture.stored("c.alpha");
+
+    // Act
+    for _ in 0..3 {
+        let response = read(
+            &fixture.context(),
+            "c.alpha",
+            &bearer(&fixture.alpha),
+            now(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            body_of(response)
+                .await
+                .get("registration_access_token")
+                .is_none(),
+            "a read handed out a credential"
+        );
+    }
+
+    // Assert
+    assert_eq!(fixture.clients.rotations(), 0);
+    assert_eq!(fixture.stored("c.alpha"), before);
+}
+
+/// A delete does not rotate either. There would be nothing to rotate onto: RFC
+/// 7592 §5 requires the token to be invalidated with the client.
+#[tokio::test]
+async fn a_delete_never_rotates() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+
+    // Act
+    let response = remove(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        now(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(fixture.clients.rotations(), 0);
+}
+
+/// The one outcome that must never happen: a `200` naming a token the store
+/// does not hold. A client that believed it would discard a working credential
+/// for one that authenticates nothing, permanently.
+#[tokio::test]
+async fn a_rotation_that_was_not_written_is_not_announced() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300).with_failing_rotation();
+    let before = fixture.stored("c.alpha");
+
+    // Act
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+
+    // Assert — the update itself happened and is reported as such.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        body_of(response)
+            .await
+            .get("registration_access_token")
+            .is_none(),
+        "the client was told about a credential that was never stored"
+    );
+    assert_eq!(fixture.clients.rotations(), 1);
+    assert_eq!(fixture.stored("c.alpha"), before);
+
+    // And the client is exactly where it was: its token still works.
+    let after = read(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        now(),
+    )
+    .await;
+    assert_eq!(after.status(), StatusCode::OK);
+}
+
+/// A rotation is a credential change, so it is in the trail — and the trail is
+/// the one table nobody can delete from, so the token is not.
+#[tokio::test]
+async fn a_rotation_is_audited_and_the_token_is_not() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+
+    // Act
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+    let fresh = issued(&body_of(response).await);
+
+    // Assert
+    let events = fixture.audit.events();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>(),
+        vec!["client.updated", "client.credential_rotated"],
+        "the rotation is recorded, after the update it belongs to"
+    );
+    let rotation = events
+        .iter()
+        .find(|event| event.event_type == EventType::CLIENT_CREDENTIAL_ROTATED)
+        .expect("the rotation must be recorded");
+    assert_eq!(rotation.outcome, Outcome::Success);
+    assert_eq!(
+        rotation.client.as_ref().map(ClientId::as_str),
+        Some("c.alpha")
+    );
+
+    // Neither token, in any form, anywhere in any record.
+    for event in &events {
+        let rendered = format!("{event:?}");
+        assert!(
+            !rendered.contains(fresh.expose()),
+            "the new registration access token reached the audit trail"
+        );
+        assert!(
+            !rendered.contains(fixture.alpha.expose()),
+            "the rotated-out registration access token reached the audit trail"
+        );
+    }
+}
+
+/// Rotating twice inside one window must not leave three live credentials.
+///
+/// The second update authenticates with the successor, which retires the first
+/// predecessor before the new rotation demotes anything — so a client that
+/// updates itself in a loop never accumulates tokens.
+#[tokio::test]
+async fn rotating_twice_does_not_accumulate_credentials() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+    let first = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+    let second_token = issued(&body_of(first).await);
+
+    // Act
+    let second = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&second_token),
+        &update_body(),
+        now() + time::Duration::seconds(10),
+    )
+    .await;
+    let third_token = issued(&body_of(second).await);
+
+    // Assert — the original is two generations back and was retired the moment
+    // its successor was used, even though its window has not closed.
+    let at = now() + time::Duration::seconds(20);
+    let original = read(&fixture.context(), "c.alpha", &bearer(&fixture.alpha), at).await;
+    assert_eq!(original.status(), StatusCode::UNAUTHORIZED);
+
+    // The generation before last is the predecessor, so it still covers a
+    // response the client may not have received. Presenting it proves nothing
+    // about delivery, so it does not close the window.
+    let predecessor = read(&fixture.context(), "c.alpha", &bearer(&second_token), at).await;
+    assert_eq!(predecessor.status(), StatusCode::OK);
+    assert!(fixture.stored("c.alpha").1.is_some());
+
+    // The newest works, and using it closes the window on the one before it.
+    let newest = read(&fixture.context(), "c.alpha", &bearer(&third_token), at).await;
+    assert_eq!(newest.status(), StatusCode::OK);
+    assert_eq!(fixture.stored("c.alpha").1, None);
+    let retired = read(&fixture.context(), "c.alpha", &bearer(&second_token), at).await;
+    assert_eq!(
+        retired.status(),
+        StatusCode::UNAUTHORIZED,
+        "three generations of one client's credential were live at once"
+    );
+}
+
+/// A rotated-out token is still one client's credential and no other's: it
+/// opens its own registration during the window, and nothing else, ever.
+///
+/// OIDC Registration §4.1: the client a configuration URL names "MUST be
+/// matched against the Client to which the Registration Access Token was
+/// issued". A predecessor is no exception.
+#[tokio::test]
+async fn a_previous_token_is_not_a_credential_for_another_client() {
+    // Arrange
+    let fixture = Fixture::new().rotating(300);
+    let _ = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &update_body(),
+        now(),
+    )
+    .await;
+
+    // Act — alpha's predecessor, presented at beta's URL, inside the window.
+    let response = read(
+        &fixture.context(),
+        "c.beta",
+        &bearer(&fixture.alpha),
+        now() + time::Duration::seconds(10),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // Beta's own credential is untouched by somebody else's mistake.
+    let beta = read(&fixture.context(), "c.beta", &bearer(&fixture.beta), now()).await;
+    assert_eq!(beta.status(), StatusCode::OK);
 }

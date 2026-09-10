@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update clients\n                set previous_registration_access_token_hash = registration_access_token_hash,\n                    previous_registration_access_token_expires_at = $4,\n                    registration_access_token_hash = $3\n             where tenant_id = $1\n               and client_id = $2\n               and registration_access_token_hash is not null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5e1d6c10f02016c7f68b0f72fbbf94e071bf14b433476fa28b0eee6d4890afae"
+}

@@ -461,8 +461,51 @@ pub struct ManagedClient {
     ///
     /// The digest, never the token: see [`crate::credentials`].
     pub registration_access_token: Option<[u8; 32]>,
+    /// The token this client's current one replaced, while its grace window
+    /// lasts (`ast-m9c.12`).
+    ///
+    /// `None` almost always: it exists only between a rotation and the earlier
+    /// of the window's end and the first use of the successor.
+    pub previous_registration_access_token: Option<PreviousRegistrationAccessToken>,
     /// Whether the client is serving or suspended.
     pub status: ClientStatus,
+}
+
+/// A registration access token that has been rotated out but is still accepted.
+///
+/// The answer to the one problem RFC 7592 §5's rotation "MAY" creates for a
+/// server that issues no client secret: the response carrying the new token can
+/// be lost, and a client that never saw it would be locked out of its own
+/// registration for good with no way back. For a bounded window after a
+/// rotation, the predecessor still authenticates, so the client's retry
+/// succeeds and is handed the new token again.
+///
+/// The window is **cover for a lost response, not a period of coexistence**,
+/// and the difference is enforced rather than documented: the first request
+/// authenticated by the successor retires this immediately, because at that
+/// moment the client has demonstrably received the new token and the old one is
+/// a spare key with no purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviousRegistrationAccessToken {
+    /// SHA-256 of the rotated-out token. The digest, never the token.
+    pub digest: [u8; 32],
+    /// When it stops being accepted, whatever else happens.
+    ///
+    /// Always set: a predecessor with no end is a second permanent credential,
+    /// which is worse than the lockout the grace exists to prevent.
+    pub grace_expires_at: OffsetDateTime,
+}
+
+impl PreviousRegistrationAccessToken {
+    /// Whether the grace window is still open at `now`.
+    ///
+    /// Exclusive at the far end — a token whose window ends exactly now is
+    /// refused — so that "expired" and "not yet expired" cannot both be true of
+    /// the same instant.
+    #[must_use]
+    pub fn is_within_grace(&self, now: OffsetDateTime) -> bool {
+        now < self.grace_expires_at
+    }
 }
 
 /// Reads and writes one client's own registration (RFC 7592).
@@ -569,6 +612,55 @@ pub trait ClientConfiguration: Debug + Send + Sync {
     /// already decided to refuse by the time it gets here, so the failure is
     /// worth logging and must not change the answer.
     async fn revoke_registration_access_token(&self, digest: &[u8; 32]) -> Result<(), DomainError>;
+
+    /// Issues a new registration access token and demotes the current one
+    /// (`ast-m9c.12`, RFC 7592 §5).
+    ///
+    /// One statement, and it has to be: the digest the client will authenticate
+    /// with next and the digest it may still authenticate with in the meantime
+    /// are two columns of one row, and a caller that could observe them
+    /// half-written could observe a client with no credential at all.
+    ///
+    /// The demotion is unconditional. Whatever the row held before — including
+    /// a predecessor from an earlier rotation whose window had not closed —
+    /// becomes exactly one predecessor, expiring at `grace_expires_at`. A
+    /// client cannot accumulate live credentials by updating itself in a loop,
+    /// which is what a scheme that kept every generation would allow.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the client vanished between the
+    /// authentication and the write, so that a caller never tells a client its
+    /// token was replaced on a row that is not there. [`DomainError::Storage`]
+    /// otherwise.
+    async fn rotate_registration_access_token(
+        &self,
+        client_id: &ClientId,
+        digest: &[u8; 32],
+        grace_expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Drops a client's rotated-out registration access token now.
+    ///
+    /// Called the moment a request authenticates with the *successor*: at that
+    /// point the client has provably received the new token, so the window's
+    /// remaining seconds protect nothing and keeping the predecessor alive
+    /// would only widen the time in which a copy of it is worth stealing. This
+    /// is what makes the grace cover for a lost response rather than a period
+    /// in which a client has two credentials.
+    ///
+    /// Idempotent, and not an error when there is nothing to retire: it runs on
+    /// every authenticated request, and a client that has never rotated is the
+    /// ordinary case.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. Never
+    /// `NotFound`.
+    async fn retire_previous_registration_access_token(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<(), DomainError>;
 }
 
 /// The clients of a deployment, as an administrator manages them.

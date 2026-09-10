@@ -6525,6 +6525,9 @@ mod client_configuration {
                 managed,
                 ManagedClient {
                     registration_access_token: Some(alpha),
+                    // A freshly registered client has never rotated
+                    // (`ast-m9c.12`), so there is no second credential.
+                    previous_registration_access_token: None,
                     status: ClientStatus::Active,
                 }
             );
@@ -7046,6 +7049,202 @@ mod client_configuration {
             assert_eq!(
                 repo.managed(&ClientId::new("c.abc")).await.expect("read").expect("present").status,
                 ClientStatus::Disabled
+            );
+        }
+    }
+
+    db_test! {
+        /// A rotation demotes the current digest and issues a new one, in one
+        /// statement (`ast-m9c.12`, RFC 7592 §5).
+        ///
+        /// The property that needs a real database is the column dependency:
+        /// `previous_registration_access_token_hash` takes the value
+        /// `registration_access_token_hash` had *before* the assignment, which
+        /// is Postgres' rule about `update` and not something a fake can prove.
+        /// Get it wrong and the predecessor is the token being issued, so the
+        /// old one dies immediately and the lost-response case is back.
+        async fn a_rotation_demotes_the_current_token_and_dates_its_grace(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            let original = register(&db.pool, "demo", "c.abc", "the-token").await;
+            let fresh = sha256(b"the-next-token");
+            let expires_at = OffsetDateTime::now_utc() + time::Duration::minutes(5);
+
+            repo.rotate_registration_access_token(&ClientId::new("c.abc"), &fresh, expires_at)
+                .await
+                .expect("rotate");
+
+            let managed = repo
+                .managed(&ClientId::new("c.abc"))
+                .await
+                .expect("read")
+                .expect("present");
+            assert_eq!(managed.registration_access_token, Some(fresh));
+            let previous = managed
+                .previous_registration_access_token
+                .expect("the rotated-out token must survive its grace window");
+            assert_eq!(previous.digest, original);
+            // Round-tripped through `timestamptz`, so equality is to the
+            // microsecond Postgres keeps.
+            assert_eq!(
+                previous.grace_expires_at.unix_timestamp(),
+                expires_at.unix_timestamp()
+            );
+            assert!(previous.is_within_grace(OffsetDateTime::now_utc()));
+            assert!(!previous.is_within_grace(expires_at));
+
+            // A second rotation overwrites the predecessor rather than keeping
+            // a third generation alive.
+            let newest = sha256(b"the-third-token");
+            repo.rotate_registration_access_token(&ClientId::new("c.abc"), &newest, expires_at)
+                .await
+                .expect("rotate again");
+            let managed = repo
+                .managed(&ClientId::new("c.abc"))
+                .await
+                .expect("read")
+                .expect("present");
+            assert_eq!(managed.registration_access_token, Some(newest));
+            assert_eq!(
+                managed.previous_registration_access_token.expect("present").digest,
+                fresh,
+                "a rotation kept a generation older than the one it replaced"
+            );
+        }
+    }
+
+    db_test! {
+        /// Retiring clears both columns, is idempotent, and never mints one.
+        ///
+        /// The `is not null` in the statement is what keeps the ordinary case —
+        /// an authenticated request from a client that has never rotated —
+        /// writing nothing at all, and the row's `updated_at` is how that shows
+        /// from outside.
+        async fn retiring_a_predecessor_clears_both_columns_and_is_idempotent(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+            register(&db.pool, "demo", "c.abc", "the-token").await;
+
+            // Nothing to retire is not a failure, and it is not a write.
+            let before: OffsetDateTime = sqlx::query_scalar(
+                "select updated_at from clients where tenant_id = 'demo' and client_id = 'c.abc'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("updated_at");
+            repo.retire_previous_registration_access_token(&ClientId::new("c.abc"))
+                .await
+                .expect("retire nothing");
+            let after: OffsetDateTime = sqlx::query_scalar(
+                "select updated_at from clients where tenant_id = 'demo' and client_id = 'c.abc'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("updated_at");
+            assert_eq!(before, after, "retiring nothing touched the row");
+
+            repo.rotate_registration_access_token(
+                &ClientId::new("c.abc"),
+                &sha256(b"the-next-token"),
+                OffsetDateTime::now_utc() + time::Duration::minutes(5),
+            )
+            .await
+            .expect("rotate");
+
+            repo.retire_previous_registration_access_token(&ClientId::new("c.abc"))
+                .await
+                .expect("retire");
+
+            let managed = repo
+                .managed(&ClientId::new("c.abc"))
+                .await
+                .expect("read")
+                .expect("present");
+            assert!(managed.previous_registration_access_token.is_none());
+            // Both columns, so the check constraint is satisfied and no half-row
+            // is left for the reader to interpret.
+            let expiry: Option<OffsetDateTime> = sqlx::query_scalar(
+                "select previous_registration_access_token_expires_at from clients
+                 where tenant_id = 'demo' and client_id = 'c.abc'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("expiry");
+            assert!(expiry.is_none(), "a predecessor's expiry outlived its digest");
+            assert!(
+                managed.registration_access_token.is_some(),
+                "retiring the predecessor took the current credential with it"
+            );
+
+            // Idempotent.
+            repo.retire_previous_registration_access_token(&ClientId::new("c.abc"))
+                .await
+                .expect("retire twice");
+        }
+    }
+
+    db_test! {
+        /// A client that was never issued a registration access token is not
+        /// given one by a rotation, and a rotation aimed at another tenant's
+        /// client writes nothing.
+        ///
+        /// OIDC Registration §3.2 — "both or neither" — has to survive every
+        /// statement that touches the column, not just the one that registers.
+        async fn a_rotation_cannot_mint_a_credential_for_a_client_that_has_none(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_tenant(&db.pool, "other").await;
+            let other = repo(&db.pool, "other");
+            let repo = repo(&db.pool, "demo");
+            let expires_at = OffsetDateTime::now_utc() + time::Duration::minutes(5);
+
+            // Created by the admin path: no configuration endpoint at all.
+            repo.upsert(&client("demo", "c.admin", &registration_document()))
+                .await
+                .expect("upsert");
+            assert!(matches!(
+                repo.rotate_registration_access_token(
+                    &ClientId::new("c.admin"),
+                    &sha256(b"unearned"),
+                    expires_at,
+                )
+                .await,
+                Err(DomainError::NotFound)
+            ));
+            assert_eq!(
+                repo.managed(&ClientId::new("c.admin")).await.expect("read")
+                    .expect("present").registration_access_token,
+                None,
+                "a rotation handed a credential to a client that was given none"
+            );
+
+            // No such client at all.
+            assert!(matches!(
+                repo.rotate_registration_access_token(
+                    &ClientId::new("c.nobody"),
+                    &sha256(b"unearned"),
+                    expires_at,
+                )
+                .await,
+                Err(DomainError::NotFound)
+            ));
+
+            // Another tenant's client, under an identifier this scope does not
+            // hold: scoped like every other statement on this port.
+            let theirs = register(&db.pool, "other", "c.theirs", "their-token").await;
+            assert!(matches!(
+                repo.rotate_registration_access_token(
+                    &ClientId::new("c.theirs"),
+                    &sha256(b"unearned"),
+                    expires_at,
+                )
+                .await,
+                Err(DomainError::NotFound)
+            ));
+            assert_eq!(
+                other.managed(&ClientId::new("c.theirs")).await.expect("read")
+                    .expect("present").registration_access_token,
+                Some(theirs),
+                "a rotation crossed a tenant boundary"
             );
         }
     }
