@@ -618,15 +618,11 @@ async fn unacceptable(
 
     // The same check `POST /register` makes, for the same reason and at the
     // same point: an update that moved a live client onto an algorithm this
-    // tenant holds no key for would break every ID token it is issued, and the
-    // client would learn that from a token request rather than from here.
-    if let Some(refusal) = unsignable(
-        context.keys,
-        context.tenant,
-        registration.id_token_signed_response_alg,
-    )
-    .await
-    {
+    // tenant holds no key for would break every token it is issued under that
+    // member, and the client would learn that from a token or UserInfo request
+    // rather than from here. Every member `register::server_signed_algorithms`
+    // names is covered, so a member added there is checked on this path too.
+    if let Some(refusal) = unsignable(context.keys, context.tenant, registration).await {
         record(
             context,
             now,

@@ -986,7 +986,7 @@ impl Handling<'_> {
             .inventory(&self.tenant.id)
             .await
             .map_err(|error| AdminError::from_storage(operation, &error))?;
-        clients::check_signable(&records, registration.id_token_signed_response_alg)?;
+        clients::check_signable(&records, registration)?;
 
         // The tenant's registration policy, applied to the console exactly as
         // it is to `POST /register` (`ast-m9c.6`). An administrator is not an
