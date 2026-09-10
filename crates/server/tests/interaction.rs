@@ -1600,9 +1600,17 @@ impl CredentialVerifier for SmallDirectory {
         username: &str,
         password: Secret<String>,
     ) -> Result<Option<uuid::Uuid>, DomainError> {
+        // The identifier is not a secret and is matched first, on its own
+        // line: an unknown user never reaches the password comparison.
+        if username != "ada" {
+            return Ok(None);
+        }
         // The password leaves the wrapper only to be compared, which is what a
-        // verifier is for.
-        if username == "ada" && password.expose() == "hunter2" {
+        // verifier is for, and the comparison is constant-time — the same
+        // `ct_eq` a real verifier owes a secret, kept on a line of its own so
+        // `secret_audit` reads this fixture the way it reads production code.
+        let correct = asterius_domain::secret::ct_eq(password.expose().as_bytes(), b"hunter2");
+        if correct {
             Ok(Some(uuid::Uuid::from_u128(1)))
         } else {
             Ok(None)

@@ -14,7 +14,7 @@ create table recovery_tokens (
     tenant_id       text        not null,
     -- The lookup key. `spend` matches on this alone within the tenant, which
     -- is what lets the whole check be one statement.
-    token_digest    text        not null,
+    token_hash      text        not null,
     user_id         uuid        not null,
     issued_at       timestamptz not null,
     expires_at      timestamptz not null,
@@ -25,14 +25,14 @@ create table recovery_tokens (
     consumed_at     timestamptz,
     consumed_reason text        check (consumed_reason in ('spent', 'superseded', 'credential_change')),
 
-    primary key (tenant_id, token_digest),
+    primary key (tenant_id, token_hash),
     foreign key (tenant_id, user_id) references users (tenant_id, user_id) on delete cascade,
     constraint recovery_tokens_expiry_after_issue check (expires_at > issued_at),
     constraint recovery_tokens_reason_with_consumption
         check ((consumed_at is null) = (consumed_reason is null))
 );
 
--- The two writes that are not by digest — superseding a user's earlier tokens
+-- The two writes that are not by hash — superseding a user's earlier tokens
 -- at issue, and invalidating them all on a credential change — both scan by
 -- user. The retention sweep deletes by `expires_at`, which is the third
 -- column.

@@ -57,10 +57,14 @@ export default defineConfig({
     {
       name: 'no-js',
       use: { ...devices['Desktop Chrome'], javaScriptEnabled: false },
-      // The passkey sign-in spec is about what the script does when it runs.
-      // What it does when it does *not* run is asserted in `no-js-flow`, on
-      // the same page, which is where that belongs: a browser without script
-      // must see no passkey button at all.
+      // The passkey specs are about what the script does when it runs: the
+      // sign-in ceremony, the conditional-mediation one, and the cloned
+      // authenticator `ast-qwu` proves against a virtual device. All three
+      // press buttons a script draws, so a browser that will not run script
+      // finds nothing to press.
+      // What the passkey page does when script does *not* run is asserted in
+      // `no-js-flow`, on the same page, which is where that belongs: a browser
+      // without script must see no passkey button at all.
       // The console spec is ignored here for the same reason: an admin console
       // *is* script, and what a browser without it sees is the `<noscript>`
       // block, which `crates/admin-api/src/console.rs` asserts from the
@@ -72,6 +76,7 @@ export default defineConfig({
       testIgnore: [
         '**/passkey-signin.spec.ts',
         '**/passkey-ceremony.spec.ts',
+        '**/passkey-clone.spec.ts',
         '**/console.spec.ts',
         '**/key-rotation.spec.ts',
         '**/accessibility.spec.ts',

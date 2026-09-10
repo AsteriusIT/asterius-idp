@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into recovery_tokens\n                 (tenant_id, token_hash, user_id, issued_at, expires_at)\n             values ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "491a61497e817ca64587161542c9de1ccf4dd8cbec733d00f26db5a3e3f2764d"
+}

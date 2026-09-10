@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select user_id from recovery_tokens\n              where tenant_id = $1\n                and token_digest = $2\n                and consumed_at is null\n                and expires_at > $3",
+  "query": "select user_id from recovery_tokens\n              where tenant_id = $1\n                and token_hash = $2\n                and consumed_at is null\n                and expires_at > $3",
   "describe": {
     "columns": [
       {
@@ -20,5 +20,5 @@
       false
     ]
   },
-  "hash": "83a40b0ebf61114b2a2889d3907401a46cee26d46232aba9788fff65b3d15b66"
+  "hash": "437f003ccd01b1ed26d86e6e1ea1f08ee57516cc609c4d28b0cf78d18240c44a"
 }

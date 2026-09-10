@@ -3550,10 +3550,15 @@ impl Flow {
         // the grants themselves. That is not a case a Grant Management test
         // needs to avoid — the amendment happens at the same place either way —
         // so the redirect is taken as it comes.
-        if consent.status == StatusCode::SEE_OTHER {
+        assert!(
+            [StatusCode::OK, StatusCode::SEE_OTHER].contains(&consent.status),
+            "consent answered neither a screen nor a redirect: {} {}",
+            consent.status,
+            consent.text()
+        );
+        if consent.status != StatusCode::OK {
             return consent.location();
         }
-        assert_eq!(consent.status, StatusCode::OK, "{}", consent.text());
         let csrf = csrf_from(&consent.text());
         let mut pairs: Vec<(&str, &str)> = vec![("csrf", &csrf), ("decision", "allow")];
         pairs.extend(scopes.iter().map(|scope| ("scope", *scope)));

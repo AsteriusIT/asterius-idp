@@ -47,7 +47,7 @@
 //! # CAEP
 //!
 //! A completed recovery emits `credential.changed` to the audit trail and
-//! calls [`notify_credential_change`], which is where the CAEP
+//! calls `notify_credential_change`, which is where the CAEP
 //! `credential-change` signal goes when `ast-0ju` builds the transmitter. The
 //! hook exists and is named now, on the precedent of `notify_participants`:
 //! an extension point with a name is one a reviewer can find, and one that
