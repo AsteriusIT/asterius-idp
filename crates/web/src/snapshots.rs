@@ -22,30 +22,34 @@
 //! the alternative — making the fixture public — would trade a whole security
 //! invariant for a directory.
 //!
-//! # `fr` is a locale, not yet a translation
+//! # `fr` is a translation now, and only on some pages
 //!
-//! `locale` is the `lang` attribute and nothing more until `ast-ndk.5` brings
-//! message bundles; this bead is what that one is built on. So the `fr`
-//! snapshots are today the `en` snapshots with a different `lang`, and
-//! [`tests::french_is_still_only_a_language_attribute`] says so out loud rather
-//! than leaving a reader to notice. When the bundles land, that test fails,
-//! and failing is its job: it is the marker that these files now have to be
-//! regenerated with real French in them, and it should be deleted in the same
-//! change.
+//! `ast-ndk.5` brought the message catalogue, so the `fr` goldens of the
+//! authorization journey — login and step-up, consent, the error page, the two
+//! logout pages — are French rather than English under a French `lang`
+//! attribute. The rest of the tree (the device pages, registration, email
+//! verification, the password-reset pair, the passkey enrolment page and the
+//! form-post page) still holds its strings as English literals in the
+//! templates.
+//!
+//! That gap is asserted rather than described: [`TRANSLATED`] lists the pages
+//! whose two goldens must differ by more than a `lang` attribute, and
+//! [`tests::the_untranslated_pages_are_the_ones_still_listed_as_untranslated`]
+//! fails the day a page moves in either direction. Moving a page is therefore
+//! adding its strings to `crate::i18n` and deleting a line from that list.
 
 #![cfg(test)]
 
 use crate::csp::Nonce;
+use crate::i18n::Catalog;
 use crate::pages::{
     ConsentPage, DetailLine, DeviceConfirmationPage, DeviceOutcomePage, DevicePage,
     EmailVerificationPage, ErrorPage, FormPostPage, LoggedOutPage, LoginPage,
     LogoutConfirmationPage, NewPasswordPage, PasskeyPage, PasswordResetRequestPage,
     PasswordResetSentPage, RegistrationPage, ResponseField, ScopeLine, nonce_attribute, render,
 };
+use asterius_domain::Locale;
 use std::path::{Path, PathBuf};
-
-/// The locales every page is pinned in.
-const LOCALES: [&str; 2] = ["en", "fr"];
 
 /// A nonce with a value that does not change between runs.
 ///
@@ -68,17 +72,17 @@ fn theme() -> String {
 }
 
 /// Where a page's pinned rendering lives.
-fn golden_path(name: &str, locale: &str) -> PathBuf {
+fn golden_path(name: &str, locale: Locale) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden")
-        .join(format!("{name}.{locale}.html"))
+        .join(format!("{name}.{}.html", locale.as_tag()))
 }
 
 /// Compares a rendering against its golden file, or writes it.
 ///
 /// Regenerate with `UPDATE_GOLDEN=1 cargo nextest run -p asterius-web
 /// snapshots` and read the diff before committing it.
-fn assert_snapshot(name: &str, locale: &str, rendered: &str) {
+fn assert_snapshot(name: &str, locale: Locale, rendered: &str) {
     let path = golden_path(name, locale);
 
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
@@ -119,9 +123,9 @@ const USER: &str = "ada";
 /// The synchroniser token, fixed like the nonce.
 const CSRF: &str = "snapshot-csrf";
 
-fn login(locale: &str) -> String {
+fn login(text: &Catalog) -> String {
     render(&LoginPage {
-        locale,
+        text,
         tenant_name: TENANT,
         action: "/interaction/abc/login",
         passkey_options_action: "/interaction/abc/passkeys/options",
@@ -134,9 +138,9 @@ fn login(locale: &str) -> String {
     })
 }
 
-fn consent(locale: &str) -> String {
+fn consent(text: &Catalog) -> String {
     render(&ConsentPage {
-        locale,
+        text,
         tenant_name: TENANT,
         client_name: CLIENT,
         username: USER,
@@ -186,9 +190,9 @@ fn consent(locale: &str) -> String {
     })
 }
 
-fn error(locale: &str) -> String {
+fn error(text: &Catalog) -> String {
     render(&ErrorPage {
-        locale,
+        text,
         tenant_name: TENANT,
         message: "We could not complete that request.",
         correlation_id: "01JQ0000000000000000000000",
@@ -197,9 +201,9 @@ fn error(locale: &str) -> String {
     })
 }
 
-fn logout_confirmation(locale: &str) -> String {
+fn logout_confirmation(text: &Catalog) -> String {
     render(&LogoutConfirmationPage {
-        locale,
+        text,
         tenant_name: TENANT,
         action: "/logout",
         csrf: CSRF,
@@ -208,9 +212,9 @@ fn logout_confirmation(locale: &str) -> String {
     })
 }
 
-fn logged_out(locale: &str, signed_out: bool) -> String {
+fn logged_out(text: &Catalog, signed_out: bool) -> String {
     render(&LoggedOutPage {
-        locale,
+        text,
         tenant_name: TENANT,
         signed_out,
         nonce_attribute: nonce(),
@@ -218,9 +222,9 @@ fn logged_out(locale: &str, signed_out: bool) -> String {
     })
 }
 
-fn passkey(locale: &str) -> String {
+fn passkey(text: &Catalog) -> String {
     render(&PasskeyPage {
-        locale,
+        text,
         tenant_name: TENANT,
         username: USER,
         options_action: "/interaction/abc/passkeys/options",
@@ -234,9 +238,9 @@ fn passkey(locale: &str) -> String {
     })
 }
 
-fn form_post(locale: &str) -> String {
+fn form_post(text: &Catalog) -> String {
     render(&FormPostPage {
-        locale,
+        text,
         tenant_name: TENANT,
         redirect_host: "app.example.test",
         action: "https://app.example.test/callback",
@@ -255,9 +259,9 @@ fn form_post(locale: &str) -> String {
     })
 }
 
-fn device(locale: &str, user_code: Option<&str>) -> String {
+fn device(text: &Catalog, user_code: Option<&str>) -> String {
     render(&DevicePage {
-        locale,
+        text,
         tenant_name: TENANT,
         action: "/device",
         csrf: CSRF,
@@ -268,9 +272,9 @@ fn device(locale: &str, user_code: Option<&str>) -> String {
     })
 }
 
-fn device_confirmation(locale: &str) -> String {
+fn device_confirmation(text: &Catalog) -> String {
     render(&DeviceConfirmationPage {
-        locale,
+        text,
         tenant_name: TENANT,
         client_name: CLIENT,
         user_code: "BDWD-HQPK",
@@ -282,9 +286,9 @@ fn device_confirmation(locale: &str) -> String {
     })
 }
 
-fn device_outcome(locale: &str, connected: bool) -> String {
+fn device_outcome(text: &Catalog, connected: bool) -> String {
     render(&DeviceOutcomePage {
-        locale,
+        text,
         tenant_name: TENANT,
         connected,
         client_name: CLIENT,
@@ -293,9 +297,9 @@ fn device_outcome(locale: &str, connected: bool) -> String {
     })
 }
 
-fn registration(locale: &str) -> String {
+fn registration(text: &Catalog) -> String {
     render(&RegistrationPage {
-        locale,
+        text,
         tenant_name: TENANT,
         action: "/register",
         csrf: CSRF,
@@ -309,9 +313,9 @@ fn registration(locale: &str) -> String {
     })
 }
 
-fn email_verification(locale: &str, verified: bool) -> String {
+fn email_verification(text: &Catalog, verified: bool) -> String {
     render(&EmailVerificationPage {
-        locale,
+        text,
         tenant_name: TENANT,
         email: "ada@example.test",
         verified,
@@ -324,9 +328,9 @@ fn email_verification(locale: &str, verified: bool) -> String {
     })
 }
 
-fn password_reset_request(locale: &str) -> String {
+fn password_reset_request(text: &Catalog) -> String {
     render(&PasswordResetRequestPage {
-        locale,
+        text,
         tenant_name: TENANT,
         action: "/password/reset",
         csrf: CSRF,
@@ -337,9 +341,9 @@ fn password_reset_request(locale: &str) -> String {
     })
 }
 
-fn password_reset_sent(locale: &str) -> String {
+fn password_reset_sent(text: &Catalog) -> String {
     render(&PasswordResetSentPage {
-        locale,
+        text,
         tenant_name: TENANT,
         sign_in_href: "/login",
         nonce_attribute: nonce(),
@@ -347,9 +351,9 @@ fn password_reset_sent(locale: &str) -> String {
     })
 }
 
-fn new_password(locale: &str) -> String {
+fn new_password(text: &Catalog) -> String {
     render(&NewPasswordPage {
-        locale,
+        text,
         tenant_name: TENANT,
         username: USER,
         action: "/password/new",
@@ -362,32 +366,47 @@ fn new_password(locale: &str) -> String {
     })
 }
 
+/// The pages whose words come from `crate::i18n` rather than from the template.
+///
+/// `ast-ndk.5` moved the authorization journey. Everything else in
+/// [`every_page`] is still English under whatever `lang` it is handed; see this
+/// module's documentation.
+const TRANSLATED: [&str; 6] = [
+    "login",
+    "consent",
+    "error",
+    "logout_confirm",
+    "logged_out",
+    "logged_out.still_signed_in",
+];
+
 /// Every snapshot this crate keeps, as `(name, locale, rendering)`.
 ///
 /// The list exists so that the whole-tree properties below — the locale
 /// attribute, the untranslated-French marker — are asserted over *every* page
 /// rather than over whichever ones somebody remembered.
-fn every_page(locale: &str) -> Vec<(&'static str, String)> {
+fn every_page(locale: Locale) -> Vec<(&'static str, String)> {
+    let text = &Catalog::new(locale);
     vec![
-        ("login", login(locale)),
-        ("consent", consent(locale)),
-        ("error", error(locale)),
-        ("logout_confirm", logout_confirmation(locale)),
-        ("logged_out", logged_out(locale, true)),
-        ("logged_out.still_signed_in", logged_out(locale, false)),
-        ("passkey", passkey(locale)),
-        ("form_post", form_post(locale)),
-        ("device", device(locale, None)),
-        ("device.prefilled", device(locale, Some("BDWD-HQPK"))),
-        ("device_confirm", device_confirmation(locale)),
-        ("device_done", device_outcome(locale, true)),
-        ("device_done.refused", device_outcome(locale, false)),
-        ("register", registration(locale)),
-        ("verify_email", email_verification(locale, false)),
-        ("verify_email.confirmed", email_verification(locale, true)),
-        ("password_reset", password_reset_request(locale)),
-        ("password_reset_sent", password_reset_sent(locale)),
-        ("password_new", new_password(locale)),
+        ("login", login(text)),
+        ("consent", consent(text)),
+        ("error", error(text)),
+        ("logout_confirm", logout_confirmation(text)),
+        ("logged_out", logged_out(text, true)),
+        ("logged_out.still_signed_in", logged_out(text, false)),
+        ("passkey", passkey(text)),
+        ("form_post", form_post(text)),
+        ("device", device(text, None)),
+        ("device.prefilled", device(text, Some("BDWD-HQPK"))),
+        ("device_confirm", device_confirmation(text)),
+        ("device_done", device_outcome(text, true)),
+        ("device_done.refused", device_outcome(text, false)),
+        ("register", registration(text)),
+        ("verify_email", email_verification(text, false)),
+        ("verify_email.confirmed", email_verification(text, true)),
+        ("password_reset", password_reset_request(text)),
+        ("password_reset_sent", password_reset_sent(text)),
+        ("password_new", new_password(text)),
     ]
 }
 
@@ -402,7 +421,7 @@ mod tests {
     /// refactor. Each mismatch is collected and reported together.
     #[test]
     fn every_page_matches_its_snapshots() {
-        for locale in LOCALES {
+        for locale in Locale::SUPPORTED {
             for (name, rendered) in every_page(locale) {
                 assert_snapshot(name, locale, &rendered);
             }
@@ -413,14 +432,15 @@ mod tests {
     ///
     /// The `lang` attribute is what a screen reader picks a voice from and
     /// what a browser offers to translate on (WCAG 2.2 SC 3.1.1), and it is
-    /// the one thing `locale` does today. A page that hard-coded `lang="en"`
-    /// would pass every snapshot above the moment its golden was regenerated.
+    /// the first thing a catalogue has to get right. A page that hard-coded
+    /// `lang="en"` would pass every snapshot above the moment its golden was
+    /// regenerated.
     #[test]
     fn every_page_declares_the_locale_it_was_given() {
-        for locale in LOCALES {
+        for locale in Locale::SUPPORTED {
             for (name, rendered) in every_page(locale) {
                 assert!(
-                    rendered.contains(&format!("<html lang=\"{locale}\">")),
+                    rendered.contains(&format!("<html lang=\"{}\">", locale.as_tag())),
                     "{name} does not declare lang=\"{locale}\""
                 );
             }
@@ -438,7 +458,7 @@ mod tests {
     /// rather than a diff. This catches it here instead.
     #[test]
     fn no_page_rendered_with_a_theme_carries_an_inline_style_attribute() {
-        for locale in LOCALES {
+        for locale in Locale::SUPPORTED {
             for (name, rendered) in every_page(locale) {
                 assert!(
                     !rendered.contains("style="),
@@ -457,7 +477,7 @@ mod tests {
     fn every_page_carries_its_theme_inside_one_nonce_carrying_style_element() {
         let expected = theme();
         let attribute = Nonce::fixed_for_test("snapshot-nonce").attribute();
-        for locale in LOCALES {
+        for locale in Locale::SUPPORTED {
             for (name, rendered) in every_page(locale) {
                 assert_eq!(
                     rendered.matches("<style ").count(),
@@ -481,30 +501,30 @@ mod tests {
         }
     }
 
-    /// The marker for what `ast-ndk.5` still has to do.
+    /// Which pages have been through the catalogue, and which have not.
     ///
-    /// Templates come before message bundles — this bead blocks that one — so
-    /// `fr` is a language attribute and the words underneath it are still
-    /// English. That is a real gap in SC 3.1.1 and it should be visible in the
-    /// test output rather than only in a ticket.
-    ///
-    /// **When the bundles land this test fails, and that is the signal.**
-    /// Regenerate the `fr` goldens, read them, and delete this test in the
-    /// same change.
+    /// The pages of the authorization journey are the ones `ast-ndk.5` moved.
+    /// A page not named here renders English under `lang="fr"`, which is a real
+    /// SC 3.1.1 defect and is why the list is an assertion rather than a
+    /// comment.
     #[test]
-    fn french_is_still_only_a_language_attribute() {
-        for (name, english) in every_page("en") {
-            let french = every_page("fr")
-                .into_iter()
-                .find(|(candidate, _)| *candidate == name)
-                .map(|(_, rendered)| rendered)
-                .expect("the same pages render in both locales");
+    fn the_untranslated_pages_are_the_ones_still_listed_as_untranslated() {
+        // Arrange
+        let english = every_page(Locale::English);
+        let french = every_page(Locale::French);
+
+        // Act & assert
+        for ((name, english), (_, french)) in english.into_iter().zip(french) {
+            let only_the_lang_attribute =
+                english.replace("<html lang=\"en\">", "<html lang=\"fr\">") == french;
+            let translated = TRANSLATED.contains(&name);
             assert_eq!(
-                english.replace("<html lang=\"en\">", "<html lang=\"fr\">"),
-                french,
-                "{name} differs between en and fr by more than its lang \
-                 attribute, so message bundles have arrived: regenerate the fr \
-                 goldens and delete this test"
+                translated,
+                !only_the_lang_attribute,
+                "{name} is {} in the TRANSLATED list, and its two goldens say otherwise: either \
+                 its strings moved into `crate::i18n` and the list needs updating, or a message \
+                 key was dropped from its template",
+                if translated { "" } else { "not" }
             );
         }
     }

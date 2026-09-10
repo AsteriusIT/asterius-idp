@@ -448,12 +448,14 @@ mod tests {
             // The button here cannot work without script, so the page must
             // lead somewhere that can: the password path.
             without_script: "<a href=",
+            explanation: Explanation::InTheTemplate,
         },
         ScriptedTemplate {
             name: "login.html",
             reason: "ast-2vk.4: `navigator.credentials.get()` is a JavaScript API, so a                      passkey sign-in cannot be run from markup, and conditional mediation                      — the browser offering a passkey inside its own username dropdown —                      exists only as a call. The script is inline under the per-response                      nonce and interpolates nothing. What still works without it is the                      mechanism this page always had: the username and password form, whose                      submit button is real, visible and never disabled. The passkey button                      starts hidden and the script reveals it, because unlike the form-post                      page's button it could do nothing on its own.",
             // The password form is the page; the passkey button is the extra.
             without_script: "<button type=\"submit\">",
+            explanation: Explanation::InTheCatalogue(crate::i18n::MessageKey::LoginNoScript),
         },
         ScriptedTemplate {
             name: "form_post.html",
@@ -467,6 +469,7 @@ mod tests {
             // The inverse of the passkey page: the control the script drives is
             // the same control a user without script presses.
             without_script: "<button type=\"submit\">",
+            explanation: Explanation::InTheTemplate,
         },
     ];
 
@@ -485,6 +488,24 @@ mod tests {
         reason: &'static str,
         /// The markup that still works when the script does not run.
         without_script: &'static str,
+        /// Where the sentence explaining the missing scripted path lives.
+        ///
+        /// It used to be "in the template", always. `ast-ndk.5` moved the
+        /// login page's words into the message catalogue, and an audit that
+        /// went on grepping the template for "JavaScript" would have failed
+        /// that move — or, worse, passed a page that had quietly lost the
+        /// explanation because the grep matched a comment.
+        explanation: Explanation,
+    }
+
+    /// Where a scripted page's `<noscript>` sentence comes from.
+    enum Explanation {
+        /// Written in the template. The audit reads it there.
+        InTheTemplate,
+        /// Written in `crate::i18n`, under this key. The audit reads it there,
+        /// in every language — a fallback that explains itself in English only
+        /// is not a fallback for the person reading the French page.
+        InTheCatalogue(crate::i18n::MessageKey),
     }
 
     /// No page runs script it was not deliberately given, so `strict-dynamic`
@@ -579,6 +600,7 @@ mod tests {
         for ScriptedTemplate {
             name,
             without_script,
+            explanation,
             ..
         } in SCRIPTED_TEMPLATES
         {
@@ -590,10 +612,22 @@ mod tests {
                 source.contains("<noscript>"),
                 "{name} runs script and never tells a browser without it what happened"
             );
-            assert!(
-                source.contains("JavaScript"),
-                "{name}'s fallback must say why the scripted path is missing"
-            );
+            match explanation {
+                Explanation::InTheTemplate => assert!(
+                    source.contains("JavaScript"),
+                    "{name}'s fallback must say why the scripted path is missing"
+                ),
+                Explanation::InTheCatalogue(key) => {
+                    for locale in asterius_domain::Locale::SUPPORTED {
+                        assert!(
+                            key.built_in(locale).contains("JavaScript"),
+                            "{name}'s fallback is {} in the catalogue, and in {locale} it does \
+                             not say why the scripted path is missing",
+                            key.as_str()
+                        );
+                    }
+                }
+            }
             assert!(
                 source.contains(without_script),
                 "{name} declares {without_script} as what still works without \

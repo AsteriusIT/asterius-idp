@@ -1459,6 +1459,7 @@ async fn run_authorize(
     let subjects = scope.users(std::sync::Arc::clone(&endpoints.kek));
 
     // Every `cookie` field, not just the first (ast-bze).
+    let language = page_language(endpoints, tenant, headers).await;
     let cookies = crate::http::cookies(headers);
     let session = match asterius_web::interaction::cookie_value(
         &cookies,
@@ -1485,6 +1486,7 @@ async fn run_authorize(
     authorize::authorize(
         AuthorizeContext {
             tenant,
+            language: &language,
             requests: &requests,
             interactions: &requests,
             session: session.as_ref(),
@@ -1674,6 +1676,42 @@ async fn registration_policy_for(
     }
 }
 
+/// The three layers a page's language is chosen from, for this tenant and this
+/// request.
+///
+/// Never an error, unlike [`capabilities_for`]: a settings row that cannot be
+/// read costs a tenant its configured default and its own wording, and costs
+/// nobody a sign-in. `crate::http::i18n` states why the two reads differ.
+async fn page_language(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    headers: &axum::http::HeaderMap,
+) -> crate::http::i18n::PageLanguage {
+    let settings = match &endpoints.tenant_settings {
+        None => None,
+        Some(directory) => match directory.for_tenant(&tenant.id).await {
+            Ok(settings) => Some(settings),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    tenant = %tenant.id,
+                    "cannot read the tenant settings that name the page language; the built-in                      wording is served instead"
+                );
+                None
+            }
+        },
+    };
+    crate::http::i18n::PageLanguage::new(settings.as_ref(), headers)
+}
+
+/// The wording a logout context starts with, before the caller replaces it.
+///
+/// Never rendered: both handlers assign the negotiated catalogue immediately.
+/// It exists so that the shared builder has a value for a field only the caller
+/// can compute.
+static ENGLISH: asterius_web::Catalog =
+    asterius_web::Catalog::new(asterius_domain::locale::Locale::English);
+
 /// Builds the context both end-session handlers share.
 fn logout_context<'a>(
     endpoints: &'a ClientEndpoints,
@@ -1685,6 +1723,11 @@ fn logout_context<'a>(
     mount: Option<Extension<MountPrefix>>,
 ) -> logout::LogoutContext<'a> {
     logout::LogoutContext {
+        // Replaced by the caller, which is the only thing that has the
+        // request's `ui_locales` in front of it. A default here rather than an
+        // eighth parameter: this builder is shared by both verbs and it already
+        // carries as many as a reader can hold.
+        text: &ENGLISH,
         tenant,
         sessions,
         clients,
@@ -1710,24 +1753,25 @@ async fn end_session(
         url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
             .map(|(k, v)| (k.into_owned(), v.into_owned()))
             .collect();
+    // Before anything is validated: RP-Initiated Logout §4's refusal page is a
+    // page too, and it is in the language the request asked for.
+    let text = page_language(&endpoints, &tenant, &headers)
+        .await
+        .for_request(&crate::http::i18n::form_ui_locales(&pairs));
     let scope = endpoints.store.scope(tenant.id.clone());
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
-    logout::show(
-        logout_context(
-            &endpoints,
-            &tenant,
-            &sessions,
-            &clients,
-            &nonce,
-            &request_id,
-            mount,
-        ),
-        &headers,
-        &pairs,
-        time::OffsetDateTime::now_utc(),
-    )
-    .await
+    let mut context = logout_context(
+        &endpoints,
+        &tenant,
+        &sessions,
+        &clients,
+        &nonce,
+        &request_id,
+        mount,
+    );
+    context.text = &text;
+    logout::show(context, &headers, &pairs, time::OffsetDateTime::now_utc()).await
 }
 
 /// `POST /logout` — the same request, form-encoded, and the confirmation
@@ -1744,24 +1788,25 @@ async fn end_session_form(
     let pairs: Vec<(String, String)> = url::form_urlencoded::parse(&body)
         .map(|(k, v)| (k.into_owned(), v.into_owned()))
         .collect();
+    // Before anything is validated: RP-Initiated Logout §4's refusal page is a
+    // page too, and it is in the language the request asked for.
+    let text = page_language(&endpoints, &tenant, &headers)
+        .await
+        .for_request(&crate::http::i18n::form_ui_locales(&pairs));
     let scope = endpoints.store.scope(tenant.id.clone());
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
-    logout::submit(
-        logout_context(
-            &endpoints,
-            &tenant,
-            &sessions,
-            &clients,
-            &nonce,
-            &request_id,
-            mount,
-        ),
-        &headers,
-        &pairs,
-        time::OffsetDateTime::now_utc(),
-    )
-    .await
+    let mut context = logout_context(
+        &endpoints,
+        &tenant,
+        &sessions,
+        &clients,
+        &nonce,
+        &request_id,
+        mount,
+    );
+    context.text = &text;
+    logout::submit(context, &headers, &pairs, time::OffsetDateTime::now_utc()).await
 }
 
 /// `GET /interaction/{id}`.
@@ -1805,9 +1850,11 @@ async fn interaction_show(
     let grant_amendments: Option<&dyn asterius_domain::GrantAmendments> = capabilities
         .is_enabled(asterius_domain::Feature::GrantManagement)
         .then_some(&grants);
+    let language = page_language(&endpoints, &tenant, &headers).await;
     interaction::show(
         InteractionContext {
             tenant: &tenant,
+            language: &language,
             requests: &requests,
             credentials: passwords
                 .as_ref()
@@ -1888,9 +1935,11 @@ async fn interaction_submit(
     let grant_amendments: Option<&dyn asterius_domain::GrantAmendments> = capabilities
         .is_enabled(asterius_domain::Feature::GrantManagement)
         .then_some(&grants);
+    let language = page_language(&endpoints, &tenant, &headers).await;
     interaction::submit(
         InteractionContext {
             tenant: &tenant,
+            language: &language,
             requests: &requests,
             credentials: passwords
                 .as_ref()

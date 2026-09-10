@@ -149,10 +149,12 @@ The 65 targets below cover 83 declared entry points. Generated from the
 | `response_mode` | `ResponseMode::parse` | `crates/oidc/src/authorize.rs` |
 | `revocation_request` | `classify` | `crates/oidc/src/revocation.rs` |
 | `ssf_event_uri` | `EventUri::parse` | `crates/ssf/src/event.rs` |
+| `tenant_message_overrides` | `MessageOverrides::from_json` | `crates/domain/src/messages.rs` |
 | `tenant_route` | `route` | `crates/oidc/src/tenancy.rs` |
 | `tenant_settings` | `TenantSettings::from_json` | `crates/domain/src/entities/tenant_settings.rs` |
 | `theme_document` | `Theme::parse` | `crates/domain/src/entities/theme.rs` |
 | `theme_image` | `accept` | `crates/admin-api/src/theme_image.rs` |
 | `token_form` | `dispatch` | `crates/oidc/src/token.rs` |
+| `ui_locales_parse` | `UiLocales::parse` | `crates/domain/src/locale.rs` |
 | `userinfo_presentation` | `present` | `crates/oidc/src/userinfo.rs` |
 | `webauthn_client_data` | `verify` | `crates/webauthn/src/client_data.rs` |

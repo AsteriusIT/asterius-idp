@@ -25,6 +25,7 @@
 //! and modify, which is exactly what JAR exists to prevent.
 
 use asterius_domain::entities::client::{ClientRegistration, RedirectUri};
+use asterius_domain::locale::UiLocales;
 use asterius_domain::{
     AuthorizationDetails, InvalidAuthorizationDetails, InvalidTarget, ResourceIdentifier,
 };
@@ -607,6 +608,19 @@ pub struct AuthorizationRequest {
     /// and no business inventing one, and a refresh must keep answering in the
     /// language the authorization asked for.
     pub claims_locales: ClaimsLocales,
+    /// The OIDC Core §3.1.2.1 `ui_locales` preference, in the order the client
+    /// gave it. Empty when the client expressed none.
+    ///
+    /// Distinct from [`Self::claims_locales`], which is about the *content* of
+    /// released claims (§5.2). This one is about the pages a person is shown,
+    /// so it is carried onto the stored request and read again when the
+    /// interaction draws its first screen — the push and the sign-in are two
+    /// different requests, and the browser that arrives at the second one is
+    /// the only place the first one's preference can still be honoured.
+    ///
+    /// Never a reason to refuse: §3.1.2.1 says an OP that supports none of the
+    /// requested languages "MUST NOT return an error".
+    pub ui_locales: UiLocales,
     /// Whether `openid` was requested, which is what makes this OIDC rather
     /// than plain OAuth.
     pub openid: bool,
@@ -743,6 +757,13 @@ pub fn validate(
     // client that misspells a tag gets the fallback rather than a refusal.
     let claims_locales = ClaimsLocales::parse(params.get("claims_locales")?);
 
+    // OIDC Core §3.1.2.1, and never an error for the same reason — with one
+    // difference worth naming: `params.get` still applies this module's length
+    // bound, so a megabyte of `ui_locales` is refused as an oversized parameter
+    // before it is read as a preference. What is dropped silently is a *tag*
+    // that is not a tag, not a request that is too big to be one.
+    let ui_locales = UiLocales::parse(params.get("ui_locales")?);
+
     // RFC 9449 §10. Validated as a JWK thumbprint's shape only; binding it to
     // an actual proof is `ast-a05.4`.
     let dpop_jkt = params
@@ -785,6 +806,7 @@ pub fn validate(
         dpop_jkt,
         claims,
         claims_locales,
+        ui_locales,
         openid,
         grant_management,
     })
@@ -1897,6 +1919,36 @@ mod tests {
     /// authorization it was expressed in, and never refused: a language
     /// preference is a hint about presentation, so a client that misspells a
     /// tag gets the fallback rather than an error page.
+    /// OIDC Core §3.1.2.1: "End-User's preferred languages … ordered by
+    /// preference", and an OP that supports none of them "MUST NOT return an
+    /// error".
+    #[test]
+    fn ui_locales_is_parsed_in_preference_order_and_never_refuses() {
+        // Arrange & act
+        let request = with(&[("ui_locales", "fr-CA fr en")]).expect("a well-shaped ui_locales");
+        let salvaged = with(&[("ui_locales", "fr_CA ja-Kana-JP")])
+            .expect("an unsupported or misspelled tag is not an error");
+        let absent = with(&[]).expect("no ui_locales");
+
+        // Assert
+        assert_eq!(request.ui_locales.preferences(), ["fr-CA", "fr", "en"]);
+        assert_eq!(salvaged.ui_locales.preferences(), ["ja-Kana-JP"]);
+        assert!(absent.ui_locales.is_empty());
+    }
+
+    /// §3.1.2.1 is about the *interface*; §5.2 is about the claims. A request
+    /// that names both must not have one read as the other.
+    #[test]
+    fn ui_locales_and_claims_locales_are_separate_preferences() {
+        // Arrange & act
+        let request =
+            with(&[("ui_locales", "fr"), ("claims_locales", "en")]).expect("two independent hints");
+
+        // Assert
+        assert_eq!(request.ui_locales.preferences(), ["fr"]);
+        assert_eq!(request.claims_locales.preferences(), ["en"]);
+    }
+
     #[test]
     fn claims_locales_is_parsed_in_preference_order_and_never_refuses() {
         let request = with(&[("claims_locales", "ja-Kana-JP fr-CA fr")])

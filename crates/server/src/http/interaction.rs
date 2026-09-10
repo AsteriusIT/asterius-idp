@@ -35,6 +35,7 @@ use crate::http::throttle;
 use crate::tenancy::MountPrefix;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::session::SessionId;
+use asterius_domain::locale::{Locale, UiLocales};
 use asterius_domain::{
     AuthenticationMethod, AuthorizationDetailsTypeRepository, ClientRequest, CodeBinding,
     CodeIssuer, CredentialVerifier, FirstPartyDestination, Grant, GrantRepository,
@@ -60,6 +61,13 @@ use time::{Duration, OffsetDateTime};
 pub struct InteractionContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// The three layers a page's language is chosen from (OIDC Core §3.1.2.1).
+    ///
+    /// Not a `Catalog`, because the top layer of the negotiation is on the
+    /// stored request and the caller has not read it: `ui_locales` travelled
+    /// with the push, and this handler is the first thing that has both it and
+    /// the browser in front of it.
+    pub language: &'a crate::http::i18n::PageLanguage,
     /// This tenant's interactions.
     pub requests: &'a dyn InteractionRepository,
     /// How to check a credential, when this deployment has a method.
@@ -252,6 +260,18 @@ pub async fn show(
         return response;
     }
 
+    // The language, decided here and only here: this is the first screen of the
+    // journey and the only place that has the pushed request, this browser and
+    // the tenant's settings at once. Written into the state so that the pages
+    // that follow — including the ones drawn by a POST, which is a different
+    // request with its own headers — are in the same language as this one.
+    let locale = state
+        .locale
+        .as_deref()
+        .and_then(Locale::matching)
+        .unwrap_or_else(|| opening_locale(&context, &record));
+    state.locale = Some(locale.as_tag().to_owned());
+
     // A fresh token per rendering. Reloading the page twice before deciding is
     // something a user does, and each rendering carries its own token — the
     // previous one stops working, which is the same rule as one submission per
@@ -264,12 +284,15 @@ pub async fn show(
     let offer = describe(&context, &record).await;
     render(
         &context,
-        state.stage,
-        &token,
-        id,
-        None,
-        offer.as_ref(),
-        state.username.as_deref(),
+        &Screen {
+            locale,
+            stage: state.stage,
+            csrf: &token,
+            id,
+            message: None,
+            offer: offer.as_ref(),
+            signed_in: state.username.as_deref(),
+        },
     )
 }
 
@@ -656,12 +679,15 @@ async fn authenticated(
     let offer = describe(context, &record).await;
     let mut response = render(
         context,
-        state.stage,
-        &token,
-        id,
-        None,
-        offer.as_ref(),
-        state.username.as_deref(),
+        &Screen {
+            locale: locale_of(context, &state),
+            stage: state.stage,
+            csrf: &token,
+            id,
+            message: None,
+            offer: offer.as_ref(),
+            signed_in: state.username.as_deref(),
+        },
     );
     set_session_cookie(&mut response, &id_value);
     response
@@ -1530,12 +1556,15 @@ async fn retry(
     }
     render(
         context,
-        state.stage,
-        &token,
-        id,
-        Some(message),
-        None,
-        state.username.as_deref(),
+        &Screen {
+            locale: locale_of(context, &state),
+            stage: state.stage,
+            csrf: &token,
+            id,
+            message: Some(message),
+            offer: None,
+            signed_in: state.username.as_deref(),
+        },
     )
 }
 
@@ -1599,12 +1628,15 @@ async fn no_method(
     }
     render(
         context,
-        Stage::Login,
-        &token,
-        id,
-        Some("Signing in is not available on this server."),
-        None,
-        state.username.as_deref(),
+        &Screen {
+            locale: locale_of(context, &state),
+            stage: Stage::Login,
+            csrf: &token,
+            id,
+            message: Some("Signing in is not available on this server."),
+            offer: None,
+            signed_in: state.username.as_deref(),
+        },
     )
 }
 
@@ -1731,16 +1763,68 @@ async fn save(
     }
 }
 
-/// Renders the page for a stage.
-fn render(
-    context: &InteractionContext<'_>,
+/// The language an interaction in progress is being conducted in.
+///
+/// The stored tag when there is one — see `StoredState::locale` — and a fresh
+/// negotiation from this browser and this tenant when there is not. Never an
+/// error: OIDC Core §3.1.2.1 forbids one.
+fn locale_of(context: &InteractionContext<'_>, state: &StoredState) -> Locale {
+    state
+        .locale
+        .as_deref()
+        .and_then(Locale::matching)
+        .unwrap_or_else(|| context.language.negotiate(&UiLocales::default()))
+}
+
+/// The language this interaction begins in, from the request that started it.
+///
+/// The full three layers: the `ui_locales` the client pushed, then the
+/// browser's `Accept-Language`, then the tenant's default. Called once, on the
+/// first screen, and written into the state so that the rest of the journey
+/// does not re-decide it.
+fn opening_locale(context: &InteractionContext<'_>, record: &InteractionRecord) -> Locale {
+    let asked = record
+        .client_request()
+        .map_or_else(asterius_domain::locale::UiLocales::default, |request| {
+            crate::http::i18n::stored_ui_locales(&request.parameters)
+        });
+    context.language.negotiate(&asked)
+}
+
+/// One rendering: which screen, in which language, with which token.
+///
+/// A struct rather than seven parameters. The list grew a language when
+/// `ast-ndk.5` landed, and a call whose arguments are seven values of four
+/// types is one where two of them get swapped in a rebase without the compiler
+/// noticing.
+struct Screen<'a> {
+    /// The language the whole journey is being conducted in.
+    locale: Locale,
+    /// Which page.
     stage: Stage,
-    csrf: &CsrfToken,
-    id: &str,
-    message: Option<&str>,
-    offer: Option<&ConsentOffer>,
-    signed_in: Option<&str>,
-) -> Response {
+    /// The synchroniser token issued with this rendering.
+    csrf: &'a CsrfToken,
+    /// The interaction id, for the form's action.
+    id: &'a str,
+    /// A previous failure, in this server's own words.
+    message: Option<&'a str>,
+    /// What is being asked for, when the screen is the consent one.
+    offer: Option<&'a ConsentOffer>,
+    /// Who is signed in, once somebody is.
+    signed_in: Option<&'a str>,
+}
+
+/// Renders the page for a stage.
+fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
+    let &Screen {
+        locale,
+        stage,
+        csrf,
+        id,
+        message,
+        offer,
+        signed_in,
+    } = screen;
     // Under the prefix the tenancy layer removed: this page is served at
     // `/t/{tenant}/interaction/{id}` and posts back to itself (`ast-295`).
     let action = context.mount.absolute(&format!("/interaction/{id}"));
@@ -1748,10 +1832,13 @@ fn render(
     // `http::passkeys`, so the page and the router cannot disagree about where
     // they are.
     let (passkey_options, passkey_finish) = crate::http::passkeys::login_paths(&context.mount, id);
+    // One catalogue per rendering, and the `lang` attribute comes out of it
+    // too: a page cannot say `fr` over English words.
+    let text = &context.language.catalog(locale);
     match stage {
         Stage::Login | Stage::StepUp => Document::render(context.nonce, |nonce| {
             pages::render(&LoginPage {
-                locale: "en",
+                text,
                 tenant_name: &context.tenant.display_name,
                 action: &action,
                 passkey_options_action: &passkey_options,
@@ -1782,7 +1869,7 @@ fn render(
             let request = &offer.request;
             let document = Document::render(context.nonce, |nonce| {
                 pages::render(&ConsentPage {
-                    locale: "en",
+                    text,
                     tenant_name: &context.tenant.display_name,
                     client_name: &request.client_name,
                     username: signed_in.unwrap_or_default(),
@@ -1855,9 +1942,14 @@ fn error_page(
         "interaction error page shown"
     );
 
+    // No stored request has been loaded on every path that reaches here — a
+    // browser mismatch is refused before anything is read — so the negotiation
+    // is the two layers that are always available: this browser's field and the
+    // tenant's default.
+    let text = &context.language.for_request(&UiLocales::default());
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
-            locale: "en",
+            text,
             tenant_name: &context.tenant.display_name,
             message: "Something went wrong, and this request cannot continue.",
             correlation_id: &correlation,

@@ -16,6 +16,8 @@ pub mod issuer;
 pub mod json_sentinel;
 pub mod keys;
 pub mod limits;
+pub mod locale;
+pub mod messages;
 pub mod notification;
 pub mod ports;
 pub mod rate_limit;
@@ -68,6 +70,8 @@ pub use keys::{
     PublicKeyRecord, RotationSchedule, Signer, SigningAlgorithm,
 };
 pub use limits::MAX_JWT_BYTES;
+pub use locale::{Locale, UiLocales, negotiate};
+pub use messages::{MessageOverrideError, MessageOverrides};
 pub use notification::{MailSender, Notification, NotificationKind};
 pub use ports::{
     AuthRequestRepository, AuthorizationDetailsTypeRepository, ClientAdministration,

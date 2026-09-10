@@ -66,6 +66,13 @@ use time::OffsetDateTime;
 pub struct LogoutContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// The words these pages are rendered with.
+    ///
+    /// Negotiated by the caller from the request's `ui_locales` (OIDC Core
+    /// §3.1.2.1), the browser's `Accept-Language` and the tenant's default —
+    /// before the request is validated, so that §4's "did not parse" page is in
+    /// the same language as the question it replaces.
+    pub text: &'a asterius_web::Catalog,
     /// This tenant's sessions: the thing being ended, and the participant list
     /// back-channel logout will need.
     pub sessions: &'a dyn SessionRepository,
@@ -514,7 +521,7 @@ fn redirect(context: &LogoutContext<'_>, target: &RedirectTarget, notified: Noti
 fn confirmation_page(context: &LogoutContext<'_>, session_id: &str) -> Response {
     Document::render(context.nonce, |nonce| {
         pages::render(&LogoutConfirmationPage {
-            locale: "en",
+            text: context.text,
             tenant_name: &context.tenant.display_name,
             // The prefix routing removed, put back: this form is posted by a
             // browser, and `/logout` is mounted under `/t/{tenant}` and
@@ -535,7 +542,7 @@ fn confirmation_page(context: &LogoutContext<'_>, session_id: &str) -> Response 
 fn logged_out_page(context: &LogoutContext<'_>, signed_out: bool) -> Response {
     Document::render(context.nonce, |nonce| {
         pages::render(&LoggedOutPage {
-            locale: "en",
+            text: context.text,
             tenant_name: &context.tenant.display_name,
             signed_out,
             nonce_attribute: nonce_attribute(nonce),
@@ -570,7 +577,7 @@ fn error_page(
     );
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
-            locale: "en",
+            text: context.text,
             tenant_name: &context.tenant.display_name,
             message: "Something went wrong, and this request cannot continue.",
             correlation_id: &correlation,

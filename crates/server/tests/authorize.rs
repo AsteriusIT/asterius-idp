@@ -126,6 +126,13 @@ impl InteractionRepository for Store {
     }
 }
 
+/// The language layers every test here renders under: no tenant settings, no
+/// `Accept-Language`, so the built-in default.
+static ENGLISH: std::sync::LazyLock<asterius_server::http::i18n::PageLanguage> =
+    std::sync::LazyLock::new(|| {
+        asterius_server::http::i18n::PageLanguage::new(None, &axum::http::HeaderMap::new())
+    });
+
 fn tenant() -> Tenant {
     Tenant {
         id: TenantId::new("demo"),
@@ -247,6 +254,7 @@ async fn run_mounted(
     authorize(
         AuthorizeContext {
             tenant: &tenant,
+            language: &ENGLISH,
             requests: store,
             interactions: store,
             session,

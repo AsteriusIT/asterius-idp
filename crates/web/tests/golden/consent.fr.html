@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <meta name="referrer" content="no-referrer">
-<title>Authorise Example App — Example Tenant</title>
+<title>Autoriser Example App — Example Tenant</title>
 <style nonce="snapshot-nonce">/* The defaults. A tenant's design tokens are appended to this same <style>
    element as one more :root rule, so they win on document order. */
 :root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc;
@@ -58,11 +58,11 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 <main>
 <h1>Example Tenant</h1>
 
-<h2>Example App would like access</h2>
+<h2>Example App demande un accès</h2>
 
 
-<p class="muted">You will be returned to <strong>app.example.test</strong>.</p>
-<p class="muted">Signed in as ada.</p>
+<p class="muted">Vous serez redirigé vers <strong>app.example.test</strong>.</p>
+<p class="muted">Connecté en tant que ada.</p>
 
 <form method="post" action="/interaction/abc/consent">
 <input type="hidden" name="csrf" value="snapshot-csrf">
@@ -74,7 +74,7 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
       
       <input type="hidden" name="scope" value="openid">
       Confirm who you are
-      <span class="muted">(required)</span>
+      <span class="muted">(obligatoire)</span>
     
     <span class="muted">(openid)</span>
   </li>
@@ -102,31 +102,30 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 </ul>
 
 
-<p class="muted">This will let Example App act on your behalf later,
-without you present.</p>
+<p class="muted">Example App pourra alors agir en votre nom plus tard, sans que vous soyez présent.</p>
 
 
 
 
-<p class="muted">Example App is also asking to:</p>
+<p class="muted">Example App demande également à :</p>
 <ul class="scopes">
 
   <li>
     Initiate a payment of 30.00 EUR
     <span class="muted">(payment_initiation)</span>
     
-    <br><span class="muted">Operations: initiate, status</span>
+    <br><span class="muted">Opérations : initiate, status</span>
     
     
-    <br><span class="muted">Data: payments</span>
+    <br><span class="muted">Données : payments</span>
     
     
-    <br><span class="muted">At: https://api.example.test/</span>
+    <br><span class="muted">Auprès de : https://api.example.test/</span>
     
   </li>
 
   <li>
-    Perform an action this server has no description for
+    Effectuer une action que ce serveur ne sait pas décrire
     <span class="muted">(account_information)</span>
     
     
@@ -137,7 +136,7 @@ without you present.</p>
 
 
 
-<p class="muted">Access applies to:</p>
+<p class="muted">Cet accès s&#39;applique à :</p>
 <ul class="scopes">
 
   <li>https://api.example.test/</li>
@@ -147,8 +146,8 @@ without you present.</p>
 
 
 <div class="actions">
-  <button type="submit" name="decision" value="allow">Allow</button>
-  <button type="submit" name="decision" value="deny" class="secondary">Deny</button>
+  <button type="submit" name="decision" value="allow">Autoriser</button>
+  <button type="submit" name="decision" value="deny" class="secondary">Refuser</button>
 </div>
 </form>
 

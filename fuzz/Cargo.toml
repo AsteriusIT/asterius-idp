@@ -456,6 +456,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "tenant_message_overrides"
+path = "fuzz_targets/tenant_message_overrides.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tenant_route"
 path = "fuzz_targets/tenant_route.rs"
 test = false
@@ -486,6 +493,13 @@ bench = false
 [[bin]]
 name = "token_form"
 path = "fuzz_targets/token_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ui_locales_parse"
+path = "fuzz_targets/ui_locales_parse.rs"
 test = false
 doc = false
 bench = false

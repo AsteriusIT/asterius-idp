@@ -98,7 +98,8 @@
     "PS256"
   ],
   "ui_locales_supported": [
-    "en"
+    "en",
+    "fr"
   ],
   "userinfo_endpoint": "https://as.example/t/demo/userinfo",
   "userinfo_signing_alg_values_supported": [

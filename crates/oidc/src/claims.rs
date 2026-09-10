@@ -391,24 +391,17 @@ impl ClaimsLocales {
     }
 }
 
-/// BCP 47's basic shape: `[A-Za-z]{1,8}` followed by alphanumeric subtags
-/// joined with `-` (RFC 5646 §2.1).
+/// BCP 47's basic shape (RFC 5646 §2.1), from the crate that also holds the
+/// `ui_locales` half of the same question.
 ///
 /// A shape check and not a registry lookup, for the same reason
 /// `ClaimName::parse` gives: what has to be true is that the value cannot be
 /// arbitrary text used as a map key, not that somebody speaks it.
-fn is_language_tag(tag: &str) -> bool {
-    let mut subtags = tag.split('-');
-    let Some(primary) = subtags.next() else {
-        return false;
-    };
-    if !(1..=8).contains(&primary.len()) || !primary.bytes().all(|b| b.is_ascii_alphabetic()) {
-        return false;
-    }
-    subtags.all(|subtag| {
-        (1..=8).contains(&subtag.len()) && subtag.bytes().all(|b| b.is_ascii_alphanumeric())
-    })
-}
+///
+/// Shared rather than copied: `claims_locales` (§5.2) and `ui_locales`
+/// (§3.1.2.1) are two parameters with one syntax, and two implementations of
+/// "is this a language tag" is two places for it to drift (`ast-ndk.5`).
+use asterius_domain::locale::is_language_tag;
 
 /// The primary language subtag: everything before the first `-`.
 fn primary_subtag(tag: &str) -> &str {

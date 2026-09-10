@@ -590,7 +590,7 @@ fn request_page(
 ) -> Response {
     Document::render(context.nonce, |nonce| {
         pages::render(&PasswordResetRequestPage {
-            locale: "en",
+            text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             action: &context.mount.absolute(REQUEST_PATH),
             csrf: csrf_token.expose(),
@@ -617,7 +617,7 @@ fn reissued_request_page(context: &RecoveryContext<'_>, message: Option<&str>) -
 fn sent_page(context: &RecoveryContext<'_>) -> Response {
     let mut response = Document::render(context.nonce, |nonce| {
         pages::render(&PasswordResetSentPage {
-            locale: "en",
+            text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             sign_in_href: context.tenant.issuer.as_str(),
             nonce_attribute: nonce_attribute(nonce),
@@ -641,7 +641,7 @@ fn new_password_page(
 ) -> Response {
     Document::render(context.nonce, |nonce| {
         pages::render(&NewPasswordPage {
-            locale: "en",
+            text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             username,
             action: &context.mount.absolute(NEW_PASSWORD_PATH),
@@ -703,7 +703,7 @@ async fn refused(context: &RecoveryContext<'_>, reason: &str, now: OffsetDateTim
     .await;
     let mut response = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
-            locale: "en",
+            text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             message: "That link is no longer usable. Ask for a new one.",
             correlation_id: &asterius_web::interaction::correlation_id(),
@@ -737,7 +737,7 @@ fn done(context: &RecoveryContext<'_>) -> Response {
 fn error_page(context: &RecoveryContext<'_>, status: StatusCode) -> Response {
     let mut response = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
-            locale: "en",
+            text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             message: "Something went wrong. Please try again.",
             correlation_id: &asterius_web::interaction::correlation_id(),

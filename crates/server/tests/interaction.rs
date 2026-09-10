@@ -568,6 +568,13 @@ fn context<'a>(
     )
 }
 
+/// The language layers every context here is built with: no tenant settings and
+/// no `Accept-Language`, which is the built-in default.
+static ENGLISH: std::sync::LazyLock<asterius_server::http::i18n::PageLanguage> =
+    std::sync::LazyLock::new(|| {
+        asterius_server::http::i18n::PageLanguage::new(None, &axum::http::HeaderMap::new())
+    });
+
 /// The same context, with the login limits a test chooses.
 fn context_with<'a>(
     tenant: &'a Tenant,
@@ -580,6 +587,7 @@ fn context_with<'a>(
 ) -> InteractionContext<'a> {
     InteractionContext {
         tenant,
+        language: &ENGLISH,
         requests: store,
         credentials: auth,
         sessions,

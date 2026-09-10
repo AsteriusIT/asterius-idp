@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Log out — {{ tenant_name }}{% endblock %}
+{% block title %}{{ text.logout_title() }} — {{ tenant_name }}{% endblock %}
 {% block content %}
 {# Nothing on this page comes from the relying party.
 
@@ -9,9 +9,8 @@
    or URL it also carried is text an attacker chose, and rendering it would
    make this server the one displaying "Log out of Example Bank?" on behalf of
    whoever built the link. The only name here is the provider's own. #}
-<h2>Log out of {{ tenant_name }}?</h2>
-<p class="muted">Somebody asked to end your session. We could not confirm who,
-so nothing has changed yet.</p>
+<h2>{{ text.logout_heading(tenant_name) }}</h2>
+<p class="muted">{{ text.logout_unverified() }}</p>
 
 <form method="post" action="{{ action }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -19,8 +18,8 @@ so nothing has changed yet.</p>
    service, and a forged "stay signed in" would leave alive a session the user
    asked to end. #}
 <div class="actions">
-  <button type="submit" name="decision" value="logout">Log out</button>
-  <button type="submit" name="decision" value="stay" class="secondary">Stay signed in</button>
+  <button type="submit" name="decision" value="logout">{{ text.logout_confirm() }}</button>
+  <button type="submit" name="decision" value="stay" class="secondary">{{ text.logout_stay() }}</button>
 </div>
 </form>
 {% endblock %}

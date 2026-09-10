@@ -27,6 +27,12 @@ use asterius_oidc::logout::confirmation_token;
 use asterius_server::http::logout::{LogoutContext, show, submit};
 use asterius_server::tenancy::MountPrefix;
 use asterius_web::csp::Nonce;
+
+/// The words these tests expect on a page: English, with no tenant overrides.
+/// The negotiation itself is covered by `asterius_server::http::i18n` and, over
+/// the whole application, by `end_to_end.rs`.
+static ENGLISH: asterius_web::Catalog =
+    asterius_web::Catalog::new(asterius_domain::locale::Locale::English);
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
 use serde_json::{Value, json};
@@ -391,6 +397,7 @@ impl Harness {
     fn context(&self) -> LogoutContext<'_> {
         LogoutContext {
             tenant: &self.tenant,
+            text: &ENGLISH,
             sessions: &self.sessions,
             clients: &self.clients,
             keys: &self.keys,

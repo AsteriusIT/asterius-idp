@@ -1,14 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Authorise {{ client_name }} — {{ tenant_name }}{% endblock %}
+{% block title %}{{ text.consent_title(client_name) }} — {{ tenant_name }}{% endblock %}
 {% block content %}
-<h2>{{ client_name }} would like access</h2>
+<h2>{{ text.consent_heading(client_name) }}</h2>
 
 {# FAPI 2.0 SP §7 names client misidentification as a privacy risk: the name is
    chosen by whoever registered the client, and "Example Bank" is a name anyone
    can pick. The host is the part a user can check against where they expected
    to be, so it is shown next to the name rather than buried. #}
-<p class="muted">You will be returned to <strong>{{ redirect_host }}</strong>.</p>
-<p class="muted">Signed in as {{ username }}.</p>
+<p class="muted">{{ text.consent_returned_to() }} <strong>{{ redirect_host }}</strong>.</p>
+<p class="muted">{{ text.consent_signed_in_as(username) }}</p>
 
 <form method="post" action="{{ action }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -22,7 +22,7 @@
          same thing to a person and cannot be unticked. #}
       <input type="hidden" name="scope" value="{{ scope.name }}">
       {% if let Some(description) = scope.description %}{{ description }}{% else %}{{ scope.name }}{% endif %}
-      <span class="muted">(required)</span>
+      <span class="muted">{{ text.consent_required() }}</span>
     {% else %}
       <label class="inline">
         <input type="checkbox" name="scope" value="{{ scope.name }}" checked>
@@ -35,8 +35,7 @@
 </ul>
 
 {% if offline_access %}
-<p class="muted">This will let {{ client_name }} act on your behalf later,
-without you present.</p>
+<p class="muted">{{ text.consent_offline_access(client_name) }}</p>
 {% endif %}
 
 {# RFC 9396 §2. Never the element's JSON: it is a document the client composed,
@@ -45,20 +44,20 @@ without you present.</p>
    for the type plus the §2.2 fields that have an agreed meaning — all of it
    through Askama's autoescape, like every other value on this page. #}
 {% if !authorization_details.is_empty() %}
-<p class="muted">{{ client_name }} is also asking to:</p>
+<p class="muted">{{ text.consent_also_asking(client_name) }}</p>
 <ul class="scopes">
 {% for detail in authorization_details %}
   <li>
-    {% if let Some(description) = detail.description %}{{ description }}{% else %}Perform an action this server has no description for{% endif %}
+    {% if let Some(description) = detail.description %}{{ description }}{% else %}{{ text.consent_undescribed_detail() }}{% endif %}
     <span class="muted">({{ detail.name }})</span>
     {% if !detail.actions.is_empty() %}
-    <br><span class="muted">Operations: {% for action in detail.actions %}{{ action }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    <br><span class="muted">{{ text.consent_detail_actions() }} {% for action in detail.actions %}{{ action }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
     {% endif %}
     {% if !detail.datatypes.is_empty() %}
-    <br><span class="muted">Data: {% for datatype in detail.datatypes %}{{ datatype }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    <br><span class="muted">{{ text.consent_detail_datatypes() }} {% for datatype in detail.datatypes %}{{ datatype }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
     {% endif %}
     {% if !detail.locations.is_empty() %}
-    <br><span class="muted">At: {% for location in detail.locations %}{{ location }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    <br><span class="muted">{{ text.consent_detail_locations() }} {% for location in detail.locations %}{{ location }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
     {% endif %}
   </li>
 {% endfor %}
@@ -66,7 +65,7 @@ without you present.</p>
 {% endif %}
 
 {% if !resources.is_empty() %}
-<p class="muted">Access applies to:</p>
+<p class="muted">{{ text.consent_resources() }}</p>
 <ul class="scopes">
 {% for resource in resources %}
   <li>{{ resource }}</li>
@@ -78,8 +77,8 @@ without you present.</p>
    an approval: a forged "deny" is a denial of service and a forged "allow" is
    a granted authorization, so both need the same protection. #}
 <div class="actions">
-  <button type="submit" name="decision" value="allow">Allow</button>
-  <button type="submit" name="decision" value="deny" class="secondary">Deny</button>
+  <button type="submit" name="decision" value="allow">{{ text.consent_allow() }}</button>
+  <button type="submit" name="decision" value="deny" class="secondary">{{ text.consent_deny() }}</button>
 </div>
 </form>
 {% endblock %}
