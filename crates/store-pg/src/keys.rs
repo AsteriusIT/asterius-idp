@@ -287,7 +287,28 @@ impl PgKeyRepository {
         algorithm: SigningAlgorithm,
         now: OffsetDateTime,
     ) -> Result<Rotation, DomainError> {
-        self.run(algorithm, Actor::System, now, false).await
+        self.apply_schedule_as(Actor::System, algorithm, now).await
+    }
+
+    /// The same pass, attributed to whoever asked for it.
+    ///
+    /// [`Self::apply_schedule`] is the sweep and is [`Actor::System`] because
+    /// nobody pressed anything. When an operator runs the pass by hand from the
+    /// console (`POST /keys/schedule/apply`), the rotation it performs is theirs
+    /// and the trail has to say so — an incident review reading `key.rotated`
+    /// needs to distinguish "the sweep did what it was configured to do" from
+    /// "a person forced it at 03:00".
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::rotate`].
+    pub async fn apply_schedule_as(
+        &self,
+        actor: Actor,
+        algorithm: SigningAlgorithm,
+        now: OffsetDateTime,
+    ) -> Result<Rotation, DomainError> {
+        self.run(algorithm, actor, now, false).await
     }
 
     /// Every key this tenant holds, in any state, retired ones included.

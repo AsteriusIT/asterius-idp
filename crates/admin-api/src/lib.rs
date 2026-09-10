@@ -118,6 +118,8 @@ pub const KEYS_RETIRE_ID: &str = "keys.retire";
 pub const KEYS_PURGE_ID: &str = "keys.purge";
 /// The `operationId` of `PUT /keys/schedule`.
 pub const KEYS_SCHEDULE_ID: &str = "keys.schedule";
+/// The `operationId` of `POST /keys/schedule/apply`.
+pub const KEYS_SCHEDULE_APPLY_ID: &str = "keys.schedule.apply";
 
 /// Who the caller is, and the CSRF token the console must send back.
 ///
@@ -408,12 +410,37 @@ pub const KEYS_SCHEDULE: Operation = Operation::mutation(
     "Sets the rotation schedule for one algorithm",
 );
 
+/// Runs the rotation sweep now, instead of waiting for the next pass.
+///
+/// The other half of [`KEYS_SCHEDULE`]: setting a policy states what should
+/// happen, and this makes it happen at a moment somebody is watching. Without
+/// it, an operator who has just shortened a rotation period learns whether the
+/// policy does what they meant whenever the background sweep next runs, which
+/// is the wrong time to find out.
+///
+/// Deliberately not [`KEYS_ROTATE`]. Rotate forces a new key whatever the
+/// schedule says; this runs the schedule, so it stages nothing that was not
+/// due, promotes nothing whose propagation period has not elapsed and retires
+/// nothing still inside its grace. Pressing it twice is safe, and the second
+/// press reports that it did nothing — the property that makes it a button at
+/// all rather than a runbook step with a warning attached.
+///
+/// A mutation on `POST`, and under `/keys/schedule/` so that the two operations
+/// on a schedule read as one pair in the path as well as in this file.
+pub const KEYS_SCHEDULE_APPLY: Operation = Operation::mutation(
+    KEYS_SCHEDULE_APPLY_ID,
+    "/keys/schedule/apply",
+    M::Post,
+    A::new(R::Tenant, "admin.keys:write"),
+    "Runs this tenant's rotation schedule now",
+);
+
 /// Every route this API serves.
 ///
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 21] = [
+static REGISTRY: [Operation; 22] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -435,6 +462,7 @@ static REGISTRY: [Operation; 21] = [
     KEYS_RETIRE,
     KEYS_PURGE,
     KEYS_SCHEDULE,
+    KEYS_SCHEDULE_APPLY,
 ];
 
 /// The registry.
