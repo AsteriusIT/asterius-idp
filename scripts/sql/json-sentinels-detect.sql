@@ -67,6 +67,14 @@ docs (table_name, column_name, repairable, row_key, doc) as (
            jsonb_build_object('tenant_id', tenant_id, 'user_id', user_id), claims
     from users
     union all
+    -- Operator-written JSON Schema (`0004`). Nothing in the domain builds it
+    -- from a `serde_json::Value` it did not validate, but it is the one JSONB
+    -- column whose content an admin pastes in whole, so it is scanned like the
+    -- rest.
+    select 'authorization_details_types', 'schema', true,
+           jsonb_build_object('tenant_id', tenant_id, 'type_name', type_name), schema
+    from authorization_details_types
+    union all
     select 'auth_requests', 'parameters', true,
            jsonb_build_object('tenant_id', tenant_id,
                               'request_uri_hash', encode(request_uri_hash, 'hex')),
@@ -132,6 +140,7 @@ inventory (table_name, column_name) as (
            ('clients', 'software_statement'),
            ('client_keys', 'jwk'),
            ('users', 'claims'),
+           ('authorization_details_types', 'schema'),
            ('auth_requests', 'parameters'),
            ('auth_requests', 'interaction_state'),
            ('first_party_interactions', 'interaction_state'),
