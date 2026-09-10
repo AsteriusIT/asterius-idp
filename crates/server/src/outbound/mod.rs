@@ -11,9 +11,18 @@
 //! `jwks_uri` in `ast-mxc.5`; [`sector`] is a second *caller* of that same
 //! adapter — ADR-0006's "one outbound path" — for the
 //! `sector_identifier_uri` of `ast-m9c.9`.
+//!
+//! [`post`] is the same path in the other direction — a body sent to a URL a
+//! client registered, for the outbox worker's HTTP deliverer (`ast-0ju.9`) and
+//! therefore for back-channel logout and SSF push. It borrows [`jwks`]'s TLS
+//! configuration, resolution and connect rather than repeating them, because
+//! ADR-0006's "one outbound path" has to mean one *connect* or the second
+//! caller is one refactor away from resolving a name twice.
 
 pub mod jwks;
+pub mod post;
 pub mod sector;
 pub mod ssrf;
 
 pub use jwks::HttpsClientUrlFetcher;
+pub use post::{HttpsPoster, PostError};

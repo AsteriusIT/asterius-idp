@@ -22,6 +22,7 @@ mod initial_access_tokens;
 mod key_store;
 mod keys;
 mod notifications;
+mod outbox;
 mod passkeys;
 mod passwords;
 mod provisioning;
@@ -57,6 +58,10 @@ pub use initial_access_tokens::PgInitialAccessTokens;
 pub use key_store::TenantKeyStore;
 pub use keys::{PgKeyRepository, Rotation, RotationSchedule};
 pub use notifications::{PgOutboxMailSender, QueuedNotification};
+pub use outbox::{
+    Backoff, DEFAULT_LEASE, DEFAULT_MAX_ATTEMPTS, NewOutboxEntry, Outcome, PgOutbox, PgTransaction,
+    Verdict, enqueue,
+};
 pub use passkeys::PgPasskeyRepository;
 pub use passwords::PgPasswordVerifier;
 pub use provisioning::ProvisionedTenants;

@@ -13,6 +13,7 @@ pub mod http;
 pub mod mtls;
 pub mod observability;
 pub mod outbound;
+pub mod outbox;
 pub mod retention;
 pub mod rotation;
 pub mod signing;

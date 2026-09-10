@@ -54,6 +54,7 @@ pub struct Deployment {
     capabilities: Capabilities,
     registration: RegistrationPolicy,
     outbound: Arc<dyn ClientUrlFetcher>,
+    outbox: Arc<dyn asterius_domain::outbox::DeadLetterQuery>,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -96,6 +97,7 @@ impl Deployment {
             capabilities: parts.capabilities,
             registration: parts.registration,
             outbound: parts.outbound,
+            outbox: parts.outbox,
         }
     }
 }
@@ -120,6 +122,8 @@ pub struct DeploymentParts {
     pub registration: RegistrationPolicy,
     /// ADR-0006's single outbound path.
     pub outbound: Arc<dyn ClientUrlFetcher>,
+    /// The process's `PgOutbox`, read-only, for the dead-letter screen.
+    pub outbox: Arc<dyn asterius_domain::outbox::DeadLetterQuery>,
 }
 
 impl std::fmt::Debug for DeploymentParts {
@@ -295,6 +299,15 @@ impl AdminBackend for Deployment {
 
     fn keys(&self) -> Arc<dyn KeyAdministration> {
         Arc::clone(&self.keys)
+    }
+
+    /// The deployment's outbox, for the dead-letter screen (`ast-0ju.9`).
+    ///
+    /// The handle `main` built, so the screen reads the rows the running
+    /// worker is claiming from and reports the budget it is actually
+    /// enforcing.
+    fn outbox(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterQuery> {
+        Arc::clone(&self.outbox)
     }
 
     fn clients(&self) -> Arc<dyn ClientAdministration> {

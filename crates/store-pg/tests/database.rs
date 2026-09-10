@@ -11778,3 +11778,538 @@ mod themes {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The transactional outbox and its worker (`ast-0ju.9`)
+// ---------------------------------------------------------------------------
+
+/// What the outbox promises, asserted against a real PostgreSQL.
+///
+/// Every one of these is a property that cannot be tested without the database:
+/// `for update skip locked`, a claim that survives the process that took it,
+/// and an ordering guarantee that is enforced by a `not exists` in the claim
+/// statement rather than by anything in Rust.
+mod outbox {
+    use super::*;
+    use asterius_domain::outbox::DeadLetterQuery as _;
+    use asterius_store_pg::{Backoff, NewOutboxEntry, Outcome, PgOutbox, Verdict};
+    use time::Duration;
+
+    /// A schedule with a short lease and a short backoff, so that a test can
+    /// step past both without sleeping.
+    fn outbox(pool: &PgPool) -> PgOutbox {
+        PgOutbox::with_schedule(
+            pool.clone(),
+            Backoff {
+                base: Duration::seconds(10),
+                cap: Duration::minutes(5),
+            },
+            Duration::seconds(30),
+        )
+    }
+
+    /// Writes one row in its own transaction and commits, the way a caller
+    /// that has nothing else to do in the transaction would.
+    async fn queue(
+        pool: &PgPool,
+        tenant: &str,
+        kind: &str,
+        key: Option<&str>,
+        now: OffsetDateTime,
+    ) -> i64 {
+        let mut transaction = pool.begin().await.expect("begin");
+        let mut entry =
+            NewOutboxEntry::new(kind, "https://rp.example/hook", serde_json::json!({"n": 1}));
+        entry.ordering_key = key;
+        let id = asterius_store_pg::enqueue(&mut transaction, &TenantId::new(tenant), &entry, now)
+            .await
+            .expect("enqueue");
+        transaction.commit().await.expect("commit");
+        id
+    }
+
+    async fn row_status(pool: &PgPool, id: i64) -> String {
+        sqlx::query_scalar("select status from outbox where outbox_id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("read the row's status")
+    }
+
+    db_test! {
+        /// The property the table exists for: the row and the change it
+        /// describes commit together or not at all. A caller that rolls back
+        /// must not leave a notification announcing something that never
+        /// happened.
+        async fn a_rolled_back_change_takes_its_outbox_row_with_it(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-rollback").await;
+            let now = OffsetDateTime::now_utc();
+            let mut transaction = db.pool.begin().await.expect("begin");
+
+            // Act
+            let entry = NewOutboxEntry::new(
+                "logout.backchannel",
+                "https://rp.example/x",
+                serde_json::json!({}),
+            );
+            asterius_store_pg::enqueue(
+                &mut transaction,
+                &TenantId::new("ob-rollback"),
+                &entry,
+                now,
+            )
+            .await
+            .expect("enqueue");
+            transaction.rollback().await.expect("rollback");
+
+            // Assert
+            let queued: i64 = sqlx::query_scalar("select count(*) from outbox where tenant_id = $1")
+                .bind("ob-rollback")
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
+            assert_eq!(queued, 0, "a rolled-back transaction left an outbox row behind");
+        }
+    }
+
+    db_test! {
+        /// The other half of the same property: a committed change leaves its
+        /// row claimable. Without this the test above would pass on an
+        /// `enqueue` that wrote nothing at all.
+        async fn a_committed_change_leaves_a_claimable_row(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-commit").await;
+            let now = OffsetDateTime::now_utc();
+            let id = queue(&db.pool, "ob-commit", "logout.backchannel", None, now).await;
+
+            // Act
+            let claimed = outbox(&db.pool).claim("worker-a", 10, now).await.expect("claim");
+
+            // Assert
+            assert_eq!(claimed.iter().map(|event| event.id).collect::<Vec<_>>(), vec![id]);
+            assert_eq!(claimed[0].attempt, 1);
+        }
+    }
+
+    db_test! {
+        /// A worker that dies after claiming and before acking must not lose
+        /// the event. The lease lapses, the next worker takes the row again,
+        /// and it comes back under the *same* id — which is what lets a
+        /// receiver deduplicate an at-least-once delivery.
+        async fn a_worker_that_dies_mid_delivery_loses_nothing(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-crash").await;
+            let now = OffsetDateTime::now_utc();
+            let id = queue(&db.pool, "ob-crash", "logout.backchannel", None, now).await;
+            let outbox = outbox(&db.pool);
+            let taken = outbox.claim("worker-that-dies", 10, now).await.expect("claim");
+            assert_eq!(taken.len(), 1, "the first claim should have taken the row");
+            // No ack: this is the process being killed between the claim and
+            // the delivery, which is the window the whole design is about.
+
+            // Act
+            let within_lease = outbox
+                .claim("worker-b", 10, now + Duration::seconds(29))
+                .await
+                .expect("claim inside the lease");
+            let after_lease = outbox
+                .claim("worker-b", 10, now + Duration::seconds(31))
+                .await
+                .expect("claim after the lease");
+
+            // Assert
+            assert!(
+                within_lease.is_empty(),
+                "a live worker's claim was handed to a second worker"
+            );
+            assert_eq!(after_lease.iter().map(|event| event.id).collect::<Vec<_>>(), vec![id]);
+            assert_eq!(after_lease[0].attempt, 2, "the reclaim must count as an attempt");
+        }
+    }
+
+    db_test! {
+        /// `for update skip locked` plus the claimed state: two workers polling
+        /// the same backlog take disjoint sets and neither waits for the other.
+        async fn two_workers_take_disjoint_sets(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-disjoint").await;
+            let now = OffsetDateTime::now_utc();
+            let mut queued = Vec::new();
+            for _ in 0..6 {
+                queued.push(queue(&db.pool, "ob-disjoint", "logout.backchannel", None, now).await);
+            }
+            let outbox = outbox(&db.pool);
+
+            // Act
+            let first = outbox.claim("worker-a", 3, now).await.expect("claim a");
+            let second = outbox.claim("worker-b", 10, now).await.expect("claim b");
+
+            // Assert
+            let a: Vec<_> = first.iter().map(|event| event.id).collect();
+            let b: Vec<_> = second.iter().map(|event| event.id).collect();
+            assert_eq!(a.len(), 3);
+            assert_eq!(b.len(), 3);
+            assert!(a.iter().all(|id| !b.contains(id)), "{a:?} and {b:?} overlap");
+            let mut all: Vec<_> = a.into_iter().chain(b).collect();
+            all.sort_unstable();
+            assert_eq!(all, queued);
+        }
+    }
+
+    db_test! {
+        /// Per-key ordering. Two events about one `(client, session)` must
+        /// reach the receiver oldest-first, so the second is not claimable
+        /// while the first is still owed — whatever state "still owed" is in.
+        async fn an_earlier_row_with_the_same_key_blocks_a_later_one(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-order").await;
+            let now = OffsetDateTime::now_utc();
+            let first = queue(&db.pool, "ob-order", "logout.backchannel", Some("c1|s1"), now).await;
+            let second = queue(&db.pool, "ob-order", "logout.backchannel", Some("c1|s1"), now).await;
+            let outbox = outbox(&db.pool);
+
+            // Act
+            let head = outbox.claim("worker-a", 10, now).await.expect("claim the head");
+            let blocked = outbox.claim("worker-b", 10, now).await.expect("claim behind it");
+
+            // Assert
+            assert_eq!(head.iter().map(|event| event.id).collect::<Vec<_>>(), vec![first]);
+            assert!(
+                blocked.is_empty(),
+                "row {second} was claimed while {first} was still in flight"
+            );
+        }
+    }
+
+    db_test! {
+        /// The tail becomes claimable once the head is done, and not before.
+        /// A key that stayed blocked after its head was delivered would be a
+        /// queue that stops forever on its first success.
+        async fn the_next_row_in_a_key_follows_its_predecessor(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-order-next").await;
+            let now = OffsetDateTime::now_utc();
+            let first = queue(&db.pool, "ob-order-next", "logout.backchannel", Some("k"), now).await;
+            let second = queue(&db.pool, "ob-order-next", "logout.backchannel", Some("k"), now).await;
+            let outbox = outbox(&db.pool);
+            let head = outbox.claim("worker-a", 10, now).await.expect("claim");
+
+            // Act
+            outbox
+                .ack(&head[0], &Outcome::delivered(now))
+                .await
+                .expect("ack the head");
+            let tail = outbox.claim("worker-a", 10, now).await.expect("claim the tail");
+
+            // Assert
+            assert_eq!(head[0].id, first);
+            assert_eq!(tail.iter().map(|event| event.id).collect::<Vec<_>>(), vec![second]);
+        }
+    }
+
+    db_test! {
+        /// A row with no ordering key is unordered by construction: two of them
+        /// go out at once. Making every row ordered would serialise the whole
+        /// outbox behind one slow receiver.
+        async fn rows_without_a_key_are_not_serialised(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-unordered").await;
+            let now = OffsetDateTime::now_utc();
+            queue(&db.pool, "ob-unordered", "notification.credential_changed", None, now).await;
+            queue(&db.pool, "ob-unordered", "notification.credential_changed", None, now).await;
+
+            // Act
+            let claimed = outbox(&db.pool).claim("worker-a", 10, now).await.expect("claim");
+
+            // Assert
+            assert_eq!(claimed.len(), 2);
+        }
+    }
+
+    db_test! {
+        /// Order under real concurrency, which is the only way this can be
+        /// asserted: eight workers polling one backlog of four keys, and every
+        /// key's rows must be *delivered* in the order they were queued.
+        ///
+        /// Randomised over the interleaving rather than over an input — what
+        /// varies here is which worker wins each race, and PostgreSQL and the
+        /// runtime choose that, not the test.
+        async fn concurrent_workers_keep_each_key_in_order(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-concurrent").await;
+            let now = OffsetDateTime::now_utc();
+            let keys = ["a", "b", "c", "d"];
+            let mut expected: std::collections::BTreeMap<&str, Vec<i64>> =
+                std::collections::BTreeMap::new();
+            for round in 0..12 {
+                for key in keys {
+                    let id = queue(
+                        &db.pool,
+                        "ob-concurrent",
+                        "logout.backchannel",
+                        Some(key),
+                        now + Duration::milliseconds(round),
+                    )
+                    .await;
+                    expected.entry(key).or_default().push(id);
+                }
+            }
+
+            // Act
+            let delivered = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<i64>::new()));
+            let mut workers = Vec::new();
+            for index in 0..8 {
+                let outbox = outbox(&db.pool);
+                let delivered = std::sync::Arc::clone(&delivered);
+                workers.push(tokio::spawn(async move {
+                    let name = format!("worker-{index}");
+                    for _ in 0..200 {
+                        let batch = outbox
+                            .claim(&name, 2, OffsetDateTime::now_utc())
+                            .await
+                            .expect("claim");
+                        if batch.is_empty() {
+                            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                            continue;
+                        }
+                        for event in batch {
+                            delivered.lock().await.push(event.id);
+                            outbox
+                                .ack(&event, &Outcome::delivered(OffsetDateTime::now_utc()))
+                                .await
+                                .expect("ack");
+                        }
+                    }
+                }));
+            }
+            for worker in workers {
+                worker.await.expect("a worker panicked");
+            }
+
+            // Assert
+            let order = delivered.lock().await.clone();
+            assert_eq!(order.len(), 48, "not everything was delivered exactly once");
+            for (key, ids) in expected {
+                let seen: Vec<_> = order.iter().copied().filter(|id| ids.contains(id)).collect();
+                assert_eq!(seen, ids, "key {key} was delivered out of order");
+            }
+        }
+    }
+
+    db_test! {
+        /// A failure records what happened and pushes the row into the future
+        /// by the configured backoff. A retry that came back immediately would
+        /// turn one unreachable receiver into a hot loop.
+        async fn a_failure_is_recorded_and_backed_off(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-backoff").await;
+            let now = OffsetDateTime::now_utc();
+            queue(&db.pool, "ob-backoff", "logout.backchannel", None, now).await;
+            let outbox = outbox(&db.pool);
+            let claimed = outbox.claim("worker-a", 10, now).await.expect("claim");
+
+            // Act
+            outbox
+                .ack(
+                    &claimed[0],
+                    &Outcome::failed(&claimed[0], now, "rp.example answered 503".to_owned()),
+                )
+                .await
+                .expect("ack");
+            let immediately = outbox.claim("worker-a", 10, now).await.expect("claim now");
+            let later = outbox
+                .claim("worker-a", 10, now + Duration::seconds(60))
+                .await
+                .expect("claim later");
+
+            // Assert
+            assert!(immediately.is_empty(), "a failed row was retried with no backoff");
+            assert_eq!(later.len(), 1);
+            assert_eq!(later[0].attempt, 2);
+            let (outcome, detail): (String, Option<String>) = sqlx::query_as(
+                "select outcome, detail from outbox_attempts where outbox_id = $1 and attempt = 1",
+            )
+            .bind(claimed[0].id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the attempt");
+            assert_eq!(outcome, Verdict::Retry.as_str());
+            assert_eq!(detail.as_deref(), Some("rp.example answered 503"));
+        }
+    }
+
+    db_test! {
+        /// A row that has spent its budget stops being retried and becomes
+        /// visible to an operator instead — and what it shows carries no
+        /// payload, no destination and no ordering key, because an abandoned
+        /// recovery message's payload is a live reset link.
+        async fn an_exhausted_row_is_dead_lettered_and_visible(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-dead").await;
+            let now = OffsetDateTime::now_utc();
+            let mut transaction = db.pool.begin().await.expect("begin");
+            let mut entry = NewOutboxEntry::new(
+                "notification.account_recovery",
+                "someone@example.test",
+                serde_json::json!({"link": "https://as.example/recovery?token=secret"}),
+            );
+            entry.max_attempts = Some(2);
+            let id = asterius_store_pg::enqueue(
+                &mut transaction,
+                &TenantId::new("ob-dead"),
+                &entry,
+                now,
+            )
+            .await
+            .expect("enqueue");
+            transaction.commit().await.expect("commit");
+            let outbox = outbox(&db.pool);
+
+            // Act
+            let mut at = now;
+            for _ in 0..2 {
+                let claimed = outbox.claim("worker-a", 10, at).await.expect("claim");
+                assert_eq!(claimed.len(), 1, "the row stopped being claimable too early");
+                outbox
+                    .ack(
+                        &claimed[0],
+                        &Outcome::failed(&claimed[0], at, "no mail sender is wired".to_owned()),
+                    )
+                    .await
+                    .expect("ack");
+                at += Duration::hours(1);
+            }
+            let after = outbox.claim("worker-a", 10, at).await.expect("claim again");
+            let letters = outbox
+                .dead_letters(&TenantId::new("ob-dead"), 10)
+                .await
+                .expect("dead letters");
+
+            // Assert
+            assert!(after.is_empty(), "an abandoned row was claimed again");
+            assert_eq!(row_status(&db.pool, id).await, "abandoned");
+            assert_eq!(letters.len(), 1);
+            assert_eq!(letters[0].id, id);
+            assert_eq!(letters[0].kind, "notification.account_recovery");
+            assert_eq!(letters[0].attempts, 2);
+            assert_eq!(letters[0].last_error.as_deref(), Some("no mail sender is wired"));
+            let rendered = format!("{:?}", letters[0]);
+            assert!(!rendered.contains("secret"), "a dead letter carried its payload");
+            assert!(
+                !rendered.contains("someone@example.test"),
+                "a dead letter carried its destination"
+            );
+        }
+    }
+
+    db_test! {
+        /// A journalled delivery is terminal but leaves `delivered_at` null,
+        /// because nothing left the process. That is what keeps
+        /// `PgOutboxMailSender::queued` — the operator's view of what *would*
+        /// have been sent while no mail sender is wired — honest.
+        async fn a_journalled_delivery_never_claims_to_have_been_sent(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-journal").await;
+            let now = OffsetDateTime::now_utc();
+            let id = queue(
+                &db.pool,
+                "ob-journal",
+                "notification.credential_changed",
+                None,
+                now,
+            )
+            .await;
+            let outbox = outbox(&db.pool);
+            let claimed = outbox.claim("worker-a", 10, now).await.expect("claim");
+
+            // Act
+            outbox
+                .ack(&claimed[0], &Outcome::journalled(now))
+                .await
+                .expect("ack");
+
+            // Assert
+            assert_eq!(row_status(&db.pool, id).await, "delivered");
+            let sent: Option<OffsetDateTime> =
+                sqlx::query_scalar("select delivered_at from outbox where outbox_id = $1")
+                    .bind(id)
+                    .fetch_one(&db.pool)
+                    .await
+                    .expect("read delivered_at");
+            assert_eq!(sent, None, "a journalled row claimed it had been sent");
+        }
+    }
+
+    db_test! {
+        /// Delivery throughput against a deliverer that does nothing, so what
+        /// is measured is the claim, the ack and the round trips they cost —
+        /// the part this ticket owns. Ignored by default: it is a measurement
+        /// rather than an assertion, and it takes seconds.
+        ///
+        /// Run it with:
+        /// `cargo nextest run -p asterius-store-pg outbox::throughput --run-ignored all --no-capture`
+        #[ignore = "a measurement, not an assertion; needs a database and takes seconds"]
+        async fn throughput_of_a_do_nothing_deliverer(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-throughput").await;
+            let now = OffsetDateTime::now_utc();
+            let total = 2_000_u32;
+            let mut transaction = db.pool.begin().await.expect("begin");
+            for _ in 0..total {
+                let entry = NewOutboxEntry::new(
+                    "logout.backchannel",
+                    "https://rp.example/x",
+                    serde_json::json!({}),
+                );
+                asterius_store_pg::enqueue(
+                    &mut transaction,
+                    &TenantId::new("ob-throughput"),
+                    &entry,
+                    now,
+                )
+                .await
+                .expect("enqueue");
+            }
+            transaction.commit().await.expect("commit");
+
+            // Act
+            let started = std::time::Instant::now();
+            let mut workers = Vec::new();
+            for index in 0..4 {
+                let outbox = outbox(&db.pool);
+                workers.push(tokio::spawn(async move {
+                    let name = format!("worker-{index}");
+                    let mut delivered = 0_u32;
+                    loop {
+                        let batch = outbox
+                            .claim(&name, 64, OffsetDateTime::now_utc())
+                            .await
+                            .expect("claim");
+                        if batch.is_empty() {
+                            break;
+                        }
+                        for event in batch {
+                            outbox
+                                .ack(&event, &Outcome::delivered(OffsetDateTime::now_utc()))
+                                .await
+                                .expect("ack");
+                            delivered += 1;
+                        }
+                    }
+                    delivered
+                }));
+            }
+            let mut delivered = 0_u32;
+            for worker in workers {
+                delivered += worker.await.expect("a worker panicked");
+            }
+            let elapsed = started.elapsed();
+
+            // Assert
+            assert_eq!(delivered, total);
+            let rate = f64::from(delivered) / elapsed.as_secs_f64();
+            println!("outbox throughput: {rate:.0} deliveries/s over {elapsed:?}");
+        }
+    }
+}

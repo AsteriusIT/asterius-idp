@@ -53,6 +53,7 @@ pub mod initial_access_tokens;
 pub mod keys;
 pub mod openapi;
 pub mod operations;
+pub mod outbox;
 pub mod pagination;
 pub mod rbac;
 pub mod router;
@@ -122,6 +123,8 @@ pub const KEYS_PURGE_ID: &str = "keys.purge";
 pub const KEYS_SCHEDULE_ID: &str = "keys.schedule";
 /// The `operationId` of `POST /keys/schedule/apply`.
 pub const KEYS_SCHEDULE_APPLY_ID: &str = "keys.schedule.apply";
+/// The `operationId` of `GET /outbox/dead-letters`.
+pub const OUTBOX_DEAD_LETTERS_ID: &str = "outbox.dead_letters";
 
 /// Who the caller is, and the CSRF token the console must send back.
 ///
@@ -437,12 +440,33 @@ pub const KEYS_SCHEDULE_APPLY: Operation = Operation::mutation(
     "Runs this tenant's rotation schedule now",
 );
 
+/// Deliveries this deployment has given up on (`ast-0ju.9`).
+///
+/// [`Reach::Tenant`]: an outbox row belongs to the tenant whose change
+/// produced it, and the request is already routed to that tenant.
+///
+/// A scope of its own rather than `admin.clients:read`, because the two
+/// answer different questions and a deployment should be able to grant the
+/// second without the first: "which of my relying parties are we failing to
+/// reach" is an operations concern, and whoever holds it does not thereby need
+/// to read client registrations.
+///
+/// What it renders is deliberately less than the row holds: no payload, no
+/// destination, no ordering key. See [`outbox`].
+pub const OUTBOX_DEAD_LETTERS: Operation = Operation::read(
+    OUTBOX_DEAD_LETTERS_ID,
+    "/outbox/dead-letters",
+    S::Get,
+    A::new(R::Tenant, "admin.outbox:read"),
+    "Lists deliveries this tenant's outbox has abandoned",
+);
+
 /// Every route this API serves.
 ///
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 22] = [
+static REGISTRY: [Operation; 23] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -465,6 +489,7 @@ static REGISTRY: [Operation; 22] = [
     KEYS_PURGE,
     KEYS_SCHEDULE,
     KEYS_SCHEDULE_APPLY,
+    OUTBOX_DEAD_LETTERS,
 ];
 
 /// The registry.

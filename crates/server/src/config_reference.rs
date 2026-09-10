@@ -39,9 +39,11 @@ use crate::config::{
     DEFAULT_LIMIT_TOKEN_PER_ADDRESS, DEFAULT_LIMIT_TOKEN_PER_CLIENT,
     DEFAULT_LIMIT_USERINFO_PER_ADDRESS, DEFAULT_LIMIT_WINDOW_SECONDS,
     DEFAULT_LOGIN_MAX_PER_ACCOUNT, DEFAULT_LOGIN_MAX_PER_ADDRESS, DEFAULT_LOGIN_WINDOW_SECONDS,
-    DEFAULT_MAX_CONNECTIONS, DEFAULT_MODE, DEFAULT_REQUEST_TIMEOUT_SECONDS,
-    DEFAULT_TRUSTED_PROXIES, MIN_LIMIT_WINDOW_SECONDS, MIN_LOGIN_WINDOW_SECONDS, ROOT_TABLE,
-    TransportMode,
+    DEFAULT_MAX_CONNECTIONS, DEFAULT_MODE, DEFAULT_OUTBOX_BATCH, DEFAULT_OUTBOX_LEASE_SECONDS,
+    DEFAULT_OUTBOX_MAX_ATTEMPTS, DEFAULT_OUTBOX_MAX_RETRY_SECONDS, DEFAULT_OUTBOX_POLL_SECONDS,
+    DEFAULT_OUTBOX_RETRY_SECONDS, DEFAULT_REQUEST_TIMEOUT_SECONDS, DEFAULT_TRUSTED_PROXIES,
+    MAX_OUTBOX_BATCH, MIN_LIMIT_WINDOW_SECONDS, MIN_LOGIN_WINDOW_SECONDS, MIN_OUTBOX_LEASE_SECONDS,
+    ROOT_TABLE, TransportMode,
 };
 use crate::http::register::MIN_INITIAL_ACCESS_TOKEN_LEN;
 use crate::observability::LogFormat;
@@ -152,12 +154,84 @@ pub fn sections() -> Vec<Section> {
         registration(),
         login(),
         limits(),
+        outbox(),
         tenant(),
         tenant_refresh(),
         admin(),
         dpop(),
         mtls(),
     ]
+}
+
+/// `[outbox]`: how queued deliveries are paced and when they are given up on.
+fn outbox() -> Section {
+    Section {
+        table: "outbox",
+        heading: "`[outbox]` \u{2014} delivering what was queued",
+        blurb: "A back-channel logout, an SSF push, a CIBA ping and an \
+                 account-recovery message are all written to one `outbox` table in \
+                 the same transaction as the change they describe, and a worker in \
+                 every replica delivers them. That is what replaces a message broker \
+                 (ADR-0001). These keys pace that worker. **There is no key that \
+                 turns it off**: a deployment that queues logout notifications and \
+                 never sends them leaves relying parties holding sessions it believes \
+                 it ended.",
+        after: OUTBOX_NOTES,
+        keys: vec![
+            key(
+                "poll_seconds",
+                "integer, at least 1",
+                format!("`{DEFAULT_OUTBOX_POLL_SECONDS}`"),
+                "How long an idle worker waits before looking again. A worker that \
+                 finds a full batch does not wait at all, so this is the latency of \
+                 an *idle* deployment and not its throughput. Raising it saves one \
+                 statement per replica per second against a mostly empty table and \
+                 delays every logout by the same amount.",
+            ),
+            key(
+                "batch",
+                "integer, at least 1",
+                format!("`{DEFAULT_OUTBOX_BATCH}`"),
+                &format!(
+                    "At most {MAX_OUTBOX_BATCH}. How many rows one claim takes. The whole batch is claimed under one lease and delivered concurrently inside it, so a batch that cannot be finished within `lease_seconds` has its tail claimed by a second worker and delivered twice."
+                ),
+            ),
+            key(
+                "max_attempts",
+                "integer, at least 1",
+                format!("`{DEFAULT_OUTBOX_MAX_ATTEMPTS}`"),
+                "How many times a row is attempted before it becomes a dead letter, \
+                 visible at `GET /admin/outbox/dead-letters`. Stamped on each row \
+                 when it is written, so changing this affects rows queued afterwards \
+                 and never gives a row that has already failed nine times nine more.",
+            ),
+            key(
+                "retry_seconds",
+                "integer, at least 1",
+                format!("`{DEFAULT_OUTBOX_RETRY_SECONDS}`"),
+                "The wait after a first failure. Each further attempt doubles it, \
+                 plus up to an eighth derived from the row id, so that a thousand \
+                 deliveries to one receiver that failed together do not come back \
+                 together.",
+            ),
+            key(
+                "max_retry_seconds",
+                "integer, at least `retry_seconds`",
+                format!("`{DEFAULT_OUTBOX_MAX_RETRY_SECONDS}`"),
+                "The ceiling on that doubling. Without one, a receiver that was down \
+                 for a day would next be tried in a week; with it, a receiver that \
+                 comes back is found within this long.",
+            ),
+            key(
+                "lease_seconds",
+                "integer",
+                format!("`{DEFAULT_OUTBOX_LEASE_SECONDS}`"),
+                &format!(
+                    "At least {MIN_OUTBOX_LEASE_SECONDS} seconds. How long one worker's claim on a row is respected. It is what makes a killed worker's rows deliverable again, and therefore also the longest a delivery can be delayed by a process dying at the wrong moment. Too short and a live worker's row is delivered a second time beside it, which is why the floor sits above the five-second ceiling on outbound requests."
+                ),
+            ),
+        ],
+    }
 }
 
 /// `[dpop]`: the nonce secret shared between replicas (`ast-a05.11`).
@@ -957,6 +1031,36 @@ pub fn render() -> String {
     let _ = out.write_str(SECRETS);
     out
 }
+
+/// What a row of the `[outbox]` table cannot hold.
+const OUTBOX_NOTES: &str = "\
+Delivery is **at-least-once**. A worker claims a row, commits the claim, then \
+delivers; a process killed between the two leaves a claim that lapses, and the \
+next worker delivers the row again under the same identifier. Every receiver \
+must therefore deduplicate \u{2014} on the logout token's `jti` for back-channel \
+logout, on the SET's `jti` for a Shared Signals push. The alternative, marking \
+a row delivered before it has been, loses a logout every time a pod is \
+evicted, and a logout that never arrives is a session a relying party keeps \
+after this server ended it.\n\
+\n\
+Events that must not overtake one another carry an **ordering key** \u{2014} \
+`(stream, subject)` for a Shared Signals stream, `(client, session)` for \
+back-channel logout \u{2014} and a row is not claimed while an earlier row with \
+the same key is still owed. One wedged key therefore holds its own queue and \
+no other, which is the trade: order within a key, concurrency between them.\n\
+\n\
+A row that exhausts `max_attempts` becomes a **dead letter**. It is listed at \
+`GET /admin/outbox/dead-letters` with its kind, its attempt count and the last \
+error, and deliberately without its payload or its destination: an abandoned \
+`notification.account_recovery` payload is a live password-reset link and its \
+destination is the address of the person it was for. Whoever is entitled to \
+those reads the database.\n\
+\n\
+Two metrics come out of this: `asterius_outbox_deliveries_total`, labelled by \
+event family and outcome, and `asterius_outbox_backlog`, the number of rows \
+not yet delivered or abandoned. The backlog is the one worth alerting on \u{2014} \
+it grows without bound when a receiver stops accepting or a worker stops \
+running, and neither announces itself.\n";
 
 /// The part of the document that describes the file as a whole.
 const PREAMBLE: &str = "\

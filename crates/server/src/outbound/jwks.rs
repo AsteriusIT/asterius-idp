@@ -262,7 +262,12 @@ impl HttpsClientUrlFetcher {
     }
 
     /// Opens a TLS connection to one of the vetted addresses.
-    async fn connect(
+    ///
+    /// `pub(super)` so that [`super::post`] opens its connections through this
+    /// one function rather than through a second copy of the same care. ADR-0006
+    /// says there is one outbound path; that has to mean one *connect*, or the
+    /// second caller is one refactor away from resolving the name again.
+    pub(super) async fn connect(
         &self,
         target: &Target,
         addresses: &[SocketAddr],
@@ -306,7 +311,7 @@ impl HttpsClientUrlFetcher {
 ///
 /// An IP literal never reaches the resolver — [`ssrf::check_url`] has already
 /// passed judgement on it — so this is a lookup only when the host is a name.
-async fn vetted_addresses(target: &Target) -> Result<Vec<SocketAddr>, FetchError> {
+pub(super) async fn vetted_addresses(target: &Target) -> Result<Vec<SocketAddr>, FetchError> {
     if let Ok(literal) = target.host.parse::<IpAddr>() {
         return Ok(vec![SocketAddr::new(literal, target.port)]);
     }

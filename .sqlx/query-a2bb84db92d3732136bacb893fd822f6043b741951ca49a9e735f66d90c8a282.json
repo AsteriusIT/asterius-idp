@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update outbox\n                        set status = 'delivered', delivered_at = $3, last_error = null,\n                            claimed_by = null, claim_expires_at = null\n                      where tenant_id = $1 and outbox_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a2bb84db92d3732136bacb893fd822f6043b741951ca49a9e735f66d90c8a282"
+}

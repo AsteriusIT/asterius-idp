@@ -236,6 +236,28 @@ Recovery mail is not the only thing the journal carries: a completed recovery
 also queues a `credential_changed` notice to the account. That one has nothing
 to click, on purpose.
 
+## `[outbox]` — delivering what was queued
+
+A back-channel logout, an SSF push, a CIBA ping and an account-recovery message are all written to one `outbox` table in the same transaction as the change they describe, and a worker in every replica delivers them. That is what replaces a message broker (ADR-0001). These keys pace that worker. **There is no key that turns it off**: a deployment that queues logout notifications and never sends them leaves relying parties holding sessions it believes it ended.
+
+| Key | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `outbox.poll_seconds` | integer, at least 1 | `1` | How long an idle worker waits before looking again. A worker that finds a full batch does not wait at all, so this is the latency of an *idle* deployment and not its throughput. Raising it saves one statement per replica per second against a mostly empty table and delays every logout by the same amount. |
+| `outbox.batch` | integer, at least 1 | `32` | At most 512. How many rows one claim takes. The whole batch is claimed under one lease and delivered concurrently inside it, so a batch that cannot be finished within `lease_seconds` has its tail claimed by a second worker and delivered twice. |
+| `outbox.max_attempts` | integer, at least 1 | `10` | How many times a row is attempted before it becomes a dead letter, visible at `GET /admin/outbox/dead-letters`. Stamped on each row when it is written, so changing this affects rows queued afterwards and never gives a row that has already failed nine times nine more. |
+| `outbox.retry_seconds` | integer, at least 1 | `5` | The wait after a first failure. Each further attempt doubles it, plus up to an eighth derived from the row id, so that a thousand deliveries to one receiver that failed together do not come back together. |
+| `outbox.max_retry_seconds` | integer, at least `retry_seconds` | `3600` | The ceiling on that doubling. Without one, a receiver that was down for a day would next be tried in a week; with it, a receiver that comes back is found within this long. |
+| `outbox.lease_seconds` | integer | `60` | At least 10 seconds. How long one worker's claim on a row is respected. It is what makes a killed worker's rows deliverable again, and therefore also the longest a delivery can be delayed by a process dying at the wrong moment. Too short and a live worker's row is delivered a second time beside it, which is why the floor sits above the five-second ceiling on outbound requests. |
+
+Delivery is **at-least-once**. A worker claims a row, commits the claim, then delivers; a process killed between the two leaves a claim that lapses, and the next worker delivers the row again under the same identifier. Every receiver must therefore deduplicate — on the logout token's `jti` for back-channel logout, on the SET's `jti` for a Shared Signals push. The alternative, marking a row delivered before it has been, loses a logout every time a pod is evicted, and a logout that never arrives is a session a relying party keeps after this server ended it.
+
+Events that must not overtake one another carry an **ordering key** — `(stream, subject)` for a Shared Signals stream, `(client, session)` for back-channel logout — and a row is not claimed while an earlier row with the same key is still owed. One wedged key therefore holds its own queue and no other, which is the trade: order within a key, concurrency between them.
+
+A row that exhausts `max_attempts` becomes a **dead letter**. It is listed at `GET /admin/outbox/dead-letters` with its kind, its attempt count and the last error, and deliberately without its payload or its destination: an abandoned `notification.account_recovery` payload is a live password-reset link and its destination is the address of the person it was for. Whoever is entitled to those reads the database.
+
+Two metrics come out of this: `asterius_outbox_deliveries_total`, labelled by event family and outcome, and `asterius_outbox_backlog`, the number of rows not yet delivered or abandoned. The backlog is the one worth alerting on — it grows without bound when a receiver stops accepting or a worker stops running, and neither announces itself.
+
+
 ## `[[tenant]]` — one table per tenant
 
 A tenant is an issuer. This array is the source of truth for which tenants exist at boot; the admin API adds more at runtime. The upsert is idempotent, so a restart re-asserts the declared shape.

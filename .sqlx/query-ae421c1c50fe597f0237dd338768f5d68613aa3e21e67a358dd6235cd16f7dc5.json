@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with due as (\n                 select c.tenant_id, c.outbox_id\n                   from outbox c\n                  where c.available_at <= $1\n                    and (c.status in ('pending', 'failed')\n                         or (c.status = 'claimed' and c.claim_expires_at <= $1))\n                    and c.attempts < c.max_attempts\n                    and (c.ordering_key is null\n                         or not exists (\n                             select 1\n                               from outbox e\n                              where e.tenant_id = c.tenant_id\n                                and e.ordering_key = c.ordering_key\n                                and e.outbox_id < c.outbox_id\n                                and e.status in ('pending', 'failed', 'claimed')))\n                  order by c.available_at, c.outbox_id\n                  limit $2\n                    for update skip locked\n             )\n             update outbox o\n                set status = 'claimed',\n                    claimed_by = $3,\n                    claim_expires_at = $4,\n                    attempts = o.attempts + 1\n               from due\n              where o.tenant_id = due.tenant_id\n                and o.outbox_id = due.outbox_id\n             returning o.tenant_id, o.outbox_id, o.kind, o.destination, o.payload,\n                       o.attempts, o.max_attempts, o.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tenant_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "outbox_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "destination",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 5,
+        "name": "attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "max_attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ae421c1c50fe597f0237dd338768f5d68613aa3e21e67a358dd6235cd16f7dc5"
+}

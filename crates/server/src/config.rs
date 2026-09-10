@@ -77,6 +77,8 @@ pub struct Config {
     pub login: LoginLimits,
     /// What each protocol endpoint permits per window (`ast-p2l.3`).
     pub limits: EndpointLimits,
+    /// How the outbox worker paces itself and when it gives up (`ast-0ju.9`).
+    pub outbox: OutboxConfig,
     /// DPoP settings that are not capability flags (`ast-a05.11`).
     pub dpop: DpopConfig,
     /// Where client certificates come from, and whose CAs vouch for them
@@ -87,6 +89,47 @@ pub struct Config {
     /// `[features] mtls` gets a deployment that does not look at certificates,
     /// which is the same posture every other flag has.
     pub mtls: crate::mtls::MtlsConfig,
+}
+
+/// How the outbox worker paces itself and when it gives up (`ast-0ju.9`).
+///
+/// Every field is a `time::Duration` or a count rather than the seconds the
+/// file spells, because the validator is the last place the unit is in doubt:
+/// a caller that reads `poll_seconds` and treats it as milliseconds is a bug
+/// that compiles, and a `Duration` is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutboxConfig {
+    /// How long an idle worker waits before looking again.
+    pub poll: time::Duration,
+    /// How many rows one claim takes.
+    pub batch: u32,
+    /// How many times a row is attempted before it is dead-lettered.
+    pub max_attempts: u32,
+    /// The wait after a first failure, and the base the schedule doubles from.
+    pub retry: time::Duration,
+    /// The ceiling on the wait between attempts.
+    pub max_retry: time::Duration,
+    /// How long a worker's claim on a row is respected before another worker
+    /// may take it.
+    pub lease: time::Duration,
+}
+
+impl Default for OutboxConfig {
+    fn default() -> Self {
+        Self {
+            poll: seconds(DEFAULT_OUTBOX_POLL_SECONDS),
+            batch: DEFAULT_OUTBOX_BATCH,
+            max_attempts: DEFAULT_OUTBOX_MAX_ATTEMPTS,
+            retry: seconds(DEFAULT_OUTBOX_RETRY_SECONDS),
+            max_retry: seconds(DEFAULT_OUTBOX_MAX_RETRY_SECONDS),
+            lease: seconds(DEFAULT_OUTBOX_LEASE_SECONDS),
+        }
+    }
+}
+
+/// A count of seconds as a duration, saturating rather than wrapping.
+fn seconds(count: u64) -> time::Duration {
+    time::Duration::seconds(i64::try_from(count).unwrap_or(i64::MAX))
 }
 
 /// Listener and transport settings.
@@ -348,6 +391,8 @@ struct RawConfig {
     #[serde(default)]
     limits: RawLimits,
     #[serde(default)]
+    outbox: RawOutbox,
+    #[serde(default)]
     dpop: RawDpop,
     #[serde(default)]
     mtls: RawMtls,
@@ -414,6 +459,26 @@ struct RawLimits {
     token_per_address: Option<u32>,
     token_per_client: Option<u32>,
     userinfo_per_address: Option<u32>,
+}
+
+/// The `[outbox]` table: how delivery is paced and when it gives up.
+///
+/// A `#[serde(default)]` struct for the reason `[login]` and `[limits]` are
+/// ones: a deployment that says nothing about the outbox still has one, and it
+/// still has to decide how often to poll and how many times to try. There is
+/// deliberately no key that turns delivery off. An authorization server that
+/// queues back-channel logouts and never sends them is one whose relying
+/// parties keep sessions the operator ended, and that is not a posture worth
+/// making spellable.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawOutbox {
+    poll_seconds: Option<u64>,
+    batch: Option<u32>,
+    max_attempts: Option<u32>,
+    retry_seconds: Option<u64>,
+    max_retry_seconds: Option<u64>,
+    lease_seconds: Option<u64>,
 }
 
 /// The `[registration]` table.
@@ -587,6 +652,44 @@ pub(crate) const DEFAULT_LOGIN_MAX_PER_ADDRESS: u32 = 100;
 
 /// The shortest counting window an operator may configure.
 pub(crate) const MIN_LOGIN_WINDOW_SECONDS: u64 = 30;
+
+/// How often an idle outbox worker looks for work (`ast-0ju.9`).
+///
+/// One second. What it costs is one indexed statement per replica per second
+/// against a table that is empty most of the time; what it buys is that a
+/// back-channel logout leaves within a second of the session being ended.
+pub(crate) const DEFAULT_OUTBOX_POLL_SECONDS: u64 = 1;
+
+/// How many outbox rows one claim takes.
+pub(crate) const DEFAULT_OUTBOX_BATCH: u32 = 32;
+
+/// The most rows one claim may take.
+///
+/// The whole batch is claimed under one lease and delivered inside it, so a
+/// batch large enough to outlast the lease would have its tail delivered twice
+/// by a second worker while the first was still working through it.
+pub(crate) const MAX_OUTBOX_BATCH: u32 = 512;
+
+/// How many times a delivery is attempted before the row is dead-lettered.
+pub(crate) const DEFAULT_OUTBOX_MAX_ATTEMPTS: u32 = 10;
+
+/// The wait after a delivery's first failure, doubling from there.
+pub(crate) const DEFAULT_OUTBOX_RETRY_SECONDS: u64 = 5;
+
+/// The ceiling on the wait between attempts.
+pub(crate) const DEFAULT_OUTBOX_MAX_RETRY_SECONDS: u64 = 3_600;
+
+/// How long a worker's claim on a row is respected.
+pub(crate) const DEFAULT_OUTBOX_LEASE_SECONDS: u64 = 60;
+
+/// The shortest claim an operator may configure.
+///
+/// A lease shorter than the outbound total timeout
+/// (`crate::outbound::jwks::TOTAL_TIMEOUT`, five seconds) would let a second
+/// worker start the same delivery while the first was still waiting for the
+/// receiver: duplicate deliveries by configuration rather than by crash. Ten
+/// seconds leaves room for the timeout plus the ack.
+pub(crate) const MIN_OUTBOX_LEASE_SECONDS: u64 = 10;
 
 /// How long protocol-endpoint requests are counted for.
 ///
@@ -789,6 +892,7 @@ impl RawConfig {
         let admin = validate_admin(self.admin, &tenants, &mut errors);
         let login = validate_login(&self.login, &mut errors);
         let limits = validate_limits(&self.limits, &mut errors);
+        let outbox = validate_outbox(&self.outbox, &mut errors);
         let dpop = validate_dpop(self.dpop, env, &mut errors);
         let mtls = validate_mtls(self.mtls, &tenants, &mut errors);
 
@@ -804,6 +908,7 @@ impl RawConfig {
             admin,
             login,
             limits,
+            outbox,
             dpop,
             mtls,
         })
@@ -915,6 +1020,91 @@ fn validate_login(raw: &RawLogin, errors: &mut Collector) -> LoginLimits {
             ),
             window,
         },
+    }
+}
+
+/// Turns the `[outbox]` table into the schedule the worker runs on.
+///
+/// Every bound here exists because the value it guards has a way of being
+/// wrong that produces a *working* server doing the wrong thing quietly:
+///
+/// * a batch past [`MAX_OUTBOX_BATCH`] is delivered under one lease, so its
+///   tail is claimed by a second worker while the first is still on it;
+/// * a lease under [`MIN_OUTBOX_LEASE_SECONDS`] lapses while the outbound
+///   request it covers is still in flight, which is the same duplicate by
+///   another route;
+/// * zero attempts means every row is dead-lettered without ever being tried,
+///   which looks exactly like a broken receiver;
+/// * a maximum retry below the base makes the schedule stop doubling before it
+///   starts, turning an exponential backoff into a fixed one.
+fn validate_outbox(raw: &RawOutbox, errors: &mut Collector) -> OutboxConfig {
+    let defaults = OutboxConfig::default();
+
+    let poll = raw.poll_seconds.map_or(defaults.poll, |value| {
+        if value == 0 {
+            errors.problem(
+                "outbox.poll_seconds",
+                "must be at least 1: a zero interval is a worker that never sleeps",
+            );
+        }
+        seconds(value.max(1))
+    });
+
+    let batch = raw.batch.map_or(defaults.batch, |value| {
+        if value == 0 || value > MAX_OUTBOX_BATCH {
+            errors.problem(
+                "outbox.batch",
+                format!("must be between 1 and {MAX_OUTBOX_BATCH}: a batch is claimed under one lease and delivered inside it"),
+            );
+        }
+        value.clamp(1, MAX_OUTBOX_BATCH)
+    });
+
+    let max_attempts = raw.max_attempts.map_or(defaults.max_attempts, |value| {
+        if value == 0 {
+            errors.problem(
+                "outbox.max_attempts",
+                "must be at least 1: zero dead-letters every delivery without trying it",
+            );
+        }
+        value.max(1)
+    });
+
+    let retry = raw.retry_seconds.map_or(defaults.retry, |value| {
+        if value == 0 {
+            errors.problem(
+                "outbox.retry_seconds",
+                "must be at least 1: a zero backoff retries an unreachable receiver in a loop",
+            );
+        }
+        seconds(value.max(1))
+    });
+
+    let max_retry = raw.max_retry_seconds.map_or(defaults.max_retry, seconds);
+    if max_retry < retry {
+        errors.problem(
+            "outbox.max_retry_seconds",
+            "must be at least `retry_seconds`: a ceiling below the base stops the schedule doubling at all",
+        );
+    }
+
+    let lease = raw.lease_seconds.map_or(defaults.lease, |value| {
+        if value < MIN_OUTBOX_LEASE_SECONDS {
+            errors.problem(
+                "outbox.lease_seconds",
+                format!("must be at least {MIN_OUTBOX_LEASE_SECONDS}: a shorter claim lapses while the request it covers is still in flight, and the delivery happens twice"),
+            );
+        }
+        seconds(value.max(MIN_OUTBOX_LEASE_SECONDS))
+    });
+
+    OutboxConfig {
+        poll,
+        batch,
+        max_attempts,
+        retry,
+        max_retry: max_retry.max(retry),
+        lease,
     }
 }
 
@@ -1628,6 +1818,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("admin", accepted_keys::<RawAdmin>()),
         ("login", accepted_keys::<RawLogin>()),
         ("limits", accepted_keys::<RawLimits>()),
+        ("outbox", accepted_keys::<RawOutbox>()),
         ("dpop", accepted_keys::<RawDpop>()),
         ("mtls", accepted_keys::<RawMtls>()),
     ]

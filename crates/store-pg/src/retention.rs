@@ -489,9 +489,11 @@ pub const POLICY: &[Retention] = &[
     Retention {
         table: "outbox",
         rule: Rule::Sweep {
-            // Only rows that have reached a terminal state. A `pending` or
-            // `failed` row is work still owed to a relying party, however old
-            // it looks, and deleting it would drop a logout notification.
+            // Only rows that have reached a terminal state. A `pending`,
+            // `failed` or `claimed` row is work still owed to a relying party,
+            // however old it looks, and deleting it would drop a logout
+            // notification — a `claimed` one most of all, since its worker may
+            // be delivering it right now (`ast-0ju.9`).
             statement: "delete from outbox where ctid = any (array(
                             select ctid from outbox
                              where tenant_id = $1
@@ -503,6 +505,17 @@ pub const POLICY: &[Retention] = &[
             // short enough that the payloads do not accumulate.
             grace: Duration::days(7),
         },
+    },
+    Retention {
+        table: "outbox_attempts",
+        rule: Rule::Kept(
+            "swept with its parent and not on a schedule of its own: the rows \
+             are `on delete cascade` from `outbox`, so the trail of a delivery \
+             disappears exactly when the row it describes does. A second cutoff \
+             here would either outlive the row — leaving attempt records for \
+             deliveries nobody can look up — or predecease it, emptying the \
+             dead-letter screen of the one thing it is read for (`ast-0ju.9`)",
+        ),
     },
     Retention {
         table: "initial_access_tokens",

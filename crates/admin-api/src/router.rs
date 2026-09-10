@@ -39,7 +39,7 @@ use crate::error::AdminError;
 use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Effect, Method, Operation};
 use crate::pagination::{Page, PageRequest};
-use crate::{clients, csrf, initial_access_tokens, keys, openapi, throttle};
+use crate::{clients, csrf, initial_access_tokens, keys, openapi, outbox, throttle};
 
 /// The client address, as this crate sees it.
 ///
@@ -280,6 +280,7 @@ async fn route(
         crate::KEYS_PURGE_ID => context.purge_key(body).await,
         crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
         crate::KEYS_SCHEDULE_APPLY_ID => context.apply_key_schedule().await,
+        crate::OUTBOX_DEAD_LETTERS_ID => context.list_dead_letters().await,
         // Unreachable while `every_registered_operation_has_a_handler` passes,
         // which is why that test exists rather than a comment here.
         other => {
@@ -906,6 +907,27 @@ impl Handling<'_> {
             .iter()
             .map(|token| initial_access_tokens::summarise(token, self.now))
             .collect();
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "items": rendered }),
+        ))
+    }
+
+    /// `GET /outbox/dead-letters` — deliveries given up on (`ast-0ju.9`).
+    ///
+    /// Newest first, capped at [`outbox::LIMIT`]. No payload and no
+    /// destination is rendered: see [`crate::outbox`] for why that is the
+    /// design of the document rather than an omission.
+    async fn list_dead_letters(&self) -> Result<Response, AdminError> {
+        let letters = self
+            .state
+            .backend
+            .outbox()
+            .dead_letters(&self.tenant.id, outbox::LIMIT)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::OUTBOX_DEAD_LETTERS_ID, &error))?;
+
+        let rendered: Vec<_> = letters.iter().map(outbox::summarise).collect();
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({ "items": rendered }),
@@ -1722,10 +1744,25 @@ mod tests {
         /// The initial access tokens this fake has been asked to issue
         /// (`ast-cu3`), with the digest each was stored under.
         initial_access_tokens: Mutex<Vec<([u8; 32], asterius_domain::InitialAccessToken)>>,
+        /// Deliveries this fake outbox has abandoned (`ast-0ju.9`), newest
+        /// last. Empty by default, which is a healthy deployment.
+        dead_letters: Mutex<Vec<asterius_domain::outbox::DeadLetter>>,
     }
 
     #[derive(Debug, Clone)]
     struct Handle(Arc<Fake>);
+
+    #[async_trait::async_trait]
+    impl asterius_domain::outbox::DeadLetterQuery for Handle {
+        async fn dead_letters(
+            &self,
+            _tenant: &TenantId,
+            limit: u32,
+        ) -> Result<Vec<asterius_domain::outbox::DeadLetter>, DomainError> {
+            let letters = self.0.dead_letters.lock().expect("an uncontended lock");
+            Ok(letters.iter().rev().take(limit as usize).cloned().collect())
+        }
+    }
 
     #[async_trait::async_trait]
     impl TenantRepository for Handle {
@@ -2362,6 +2399,10 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn outbox(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterQuery> {
+            Arc::new(self.clone())
+        }
+
         fn initial_access_tokens(
             &self,
         ) -> Arc<dyn asterius_domain::ports::InitialAccessTokenStore> {
@@ -2712,6 +2753,63 @@ mod tests {
             .await
             .expect("a readable body");
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    // ---- the dead-letter screen (`ast-0ju.9`) -----------------------------
+
+    /// The screen exists so that "our logout notifications stopped arriving"
+    /// is answerable without a database client: which delivery, how many times
+    /// it was tried, and what the receiver said.
+    #[tokio::test]
+    async fn a_tenant_admin_reads_the_deliveries_the_outbox_gave_up_on() {
+        // Arrange
+        let world = World::new();
+        world
+            .handle
+            .0
+            .dead_letters
+            .lock()
+            .expect("an uncontended lock")
+            .push(asterius_domain::outbox::DeadLetter {
+                id: 91,
+                kind: "logout.backchannel".to_owned(),
+                attempts: 10,
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                last_attempt_at: Some(OffsetDateTime::UNIX_EPOCH),
+                last_error: Some("rp.example answered 503".to_owned()),
+            });
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world.get(&crate::OUTBOX_DEAD_LETTERS, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let items = body["items"].as_array().expect("an items array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], 91);
+        assert_eq!(items[0]["family"], "logout");
+        assert_eq!(items[0]["attempts"], 10);
+        assert_eq!(items[0]["last_error"], "rp.example answered 503");
+    }
+
+    /// A healthy deployment has none, and the screen must say so rather than
+    /// 404 — an operator checking whether delivery is failing needs "no" to be
+    /// an answer.
+    #[tokio::test]
+    async fn an_outbox_with_nothing_abandoned_renders_an_empty_list() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world.get(&crate::OUTBOX_DEAD_LETTERS, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert_eq!(body["items"].as_array().map(Vec::len), Some(0));
     }
 
     // ---- the table-driven authorization test ------------------------------

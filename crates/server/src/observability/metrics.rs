@@ -36,6 +36,22 @@ pub const LOGIN_THROTTLED: &str = "asterius_login_throttled_total";
 /// the reason [`LOGIN_THROTTLED`] gives: a label a caller can choose is a way
 /// for one caller to mint a time series per request.
 pub const ENDPOINT_THROTTLED: &str = "asterius_endpoint_throttled_total";
+/// Outbox deliveries, by event family and outcome (`ast-0ju.9`).
+///
+/// Both labels are from closed sets the server owns: the family is the
+/// `&'static str` a registered `crate::outbox::Deliverer` declares, and the
+/// outcome is one of four words. Neither can be influenced by a client, which
+/// matters more here than elsewhere — an outbox row's `kind` is written by
+/// this server, but its *destination* is a client-registered URL, and labelling
+/// by destination would let one client mint a time series per URL it
+/// registers.
+pub const OUTBOX_DELIVERIES: &str = "asterius_outbox_deliveries_total";
+/// Rows the worker has not finished with: pending, backed off, or claimed.
+///
+/// A gauge rather than a counter, and the one number worth alerting on: a
+/// backlog that grows without bound is a receiver that has stopped accepting
+/// or a worker that has stopped running, and neither announces itself.
+pub const OUTBOX_BACKLOG: &str = "asterius_outbox_backlog";
 /// Always 1, labelled with the build. Gives a scrape something to find even on
 /// an idle server, and lets a dashboard tell which version a replica is running.
 pub const BUILD_INFO: &str = "asterius_build_info";
@@ -84,6 +100,11 @@ impl Metrics {
             ENDPOINT_THROTTLED,
             "Requests refused by the per-endpoint limiter, by endpoint and limit"
         );
+        metrics::describe_counter!(
+            OUTBOX_DELIVERIES,
+            "Outbox deliveries by event family and outcome"
+        );
+        metrics::describe_gauge!(OUTBOX_BACKLOG, "Outbox rows not yet delivered or abandoned");
         metrics::describe_gauge!(BUILD_INFO, "Always 1, labelled with the running build");
         metrics::gauge!(BUILD_INFO, "version" => crate::VERSION).set(1.0);
 
@@ -123,6 +144,27 @@ pub fn endpoint_throttled(endpoint: &'static str, scope: &'static str) {
 /// Records one appended audit record.
 pub fn audit_event(event_type: &'static str) {
     metrics::counter!(AUDIT_EVENTS, "event_type" => event_type).increment(1);
+}
+
+/// Records one finished outbox delivery attempt (`ast-0ju.9`).
+///
+/// `family` is a registered deliverer's own name and `outcome` is one of
+/// `delivered`, `journalled`, `retry`, `abandoned`. Both are `&'static str`
+/// because both must come from a closed set; see [`OUTBOX_DELIVERIES`].
+pub fn outbox_delivery(family: &'static str, outcome: &'static str) {
+    metrics::counter!(OUTBOX_DELIVERIES, "family" => family, "outcome" => outcome).increment(1);
+}
+
+/// Publishes how many outbox rows are still owed.
+pub fn outbox_backlog(rows: i64) {
+    // `as` would be a silent wrap; a backlog large enough to lose precision in
+    // an f64 is a number nobody is reading exactly anyway.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a gauge is an f64 by definition, and a backlog past 2^53 rows is not a \
+                  number an operator reads digit by digit"
+    )]
+    metrics::gauge!(OUTBOX_BACKLOG).set(rows as f64);
 }
 
 /// Times a request and records its outcome.
@@ -191,7 +233,13 @@ mod tests {
     /// the suffix, so dashboards do not have to guess.
     #[test]
     fn metric_names_follow_the_conventions() {
-        for name in [HTTP_REQUESTS, TOKENS_ISSUED, PROTOCOL_ERRORS, AUDIT_EVENTS] {
+        for name in [
+            HTTP_REQUESTS,
+            TOKENS_ISSUED,
+            PROTOCOL_ERRORS,
+            AUDIT_EVENTS,
+            OUTBOX_DELIVERIES,
+        ] {
             assert!(name.starts_with("asterius_"), "{name}");
             assert!(
                 name.ends_with("_total"),

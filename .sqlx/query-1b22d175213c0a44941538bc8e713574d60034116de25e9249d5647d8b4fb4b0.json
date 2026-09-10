@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update outbox\n                        set status = case when $3 then 'abandoned' else 'failed' end,\n                            available_at = case when $3 then available_at else $4 end,\n                            last_error = $5,\n                            claimed_by = null, claim_expires_at = null\n                      where tenant_id = $1 and outbox_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Bool",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1b22d175213c0a44941538bc8e713574d60034116de25e9249d5647d8b4fb4b0"
+}
