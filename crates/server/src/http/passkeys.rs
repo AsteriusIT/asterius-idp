@@ -84,9 +84,10 @@ use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::entities::session::{COOKIE_NAME, Lifetimes, SessionId};
 use asterius_domain::{
     ASSERTION_TTL, AuditSink, AuthenticationMethod, ENROLMENT_TTL, InteractionRecord,
-    InteractionRepository, NewPasskey, OpaqueToken, PasskeyRepository, RegisteredPasskey, Session,
+    InteractionRepository, NewPasskey, OpaqueToken, PasskeyRepository, RegisteredPasskey,
     SessionRepository, Tenant, UserDirectory, UserId, UserStatus, sha256, sha256_hex,
 };
+use asterius_oidc::decision::Requirements;
 use asterius_web::interaction::{self, CsrfToken, InteractionId, Stage, StoredState};
 use asterius_web::pages::{self, ErrorPage, PasskeyPage, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
@@ -475,6 +476,12 @@ pub struct PasskeyLoginContext<'a> {
     pub users: &'a dyn UserDirectory,
     /// How long this tenant's sessions live.
     pub lifetimes: Lifetimes,
+    /// The authentication contexts this tenant can produce (`ast-2vk.7`).
+    ///
+    /// Consulted when an authentication succeeds, to decide which `acr` the
+    /// session it produces carries — and, for an essential request, to make
+    /// that value one of the ones the client asked for (OIDC Core §5.5.1.1).
+    pub acr: &'a asterius_domain::AcrPolicy,
     /// Where a sign-in — and a cloned-authenticator signal — is recorded.
     pub audit: &'a dyn AuditSink,
     /// What bounds guessing here (`ast-2vk.9`).
@@ -809,22 +816,45 @@ async fn session_from_assertion(
         tracing::error!(%error, tenant = %context.tenant.id, "cannot record an assertion");
     }
 
+    // What the request asked for about `acr`, read off the stored parameters
+    // rather than guessed: an essential value (OIDC Core §5.5.1.1) has to be
+    // the value written onto the session, or the ID token would report a class
+    // the client did not ask for and the requirement would fail on the token it
+    // claims to satisfy. A first-party interaction has no client request and
+    // asks for nothing (`ast-2vk.7`).
+    let requested = record
+        .client_request()
+        .map(|request| Requirements::from_parameters(&request.parameters))
+        .unwrap_or_default();
+
     // A session id the browser has never held before, for the reason
     // `interaction::sign_in` gives: an id it held before authenticating is one
-    // an attacker may have planted.
-    let id_value = SessionId::generate();
-    let session = Session::begin(
-        context.tenant.id.clone(),
-        &id_value,
+    // an attacker may have planted. At `Stage::StepUp` the session behind the
+    // interaction is rotated onto instead of replaced, so the factors already
+    // proved still count — `http::step_up` owns that decision and its guards.
+    let established = match crate::http::step_up::establish(
+        crate::http::step_up::Authentication {
+            sessions: context.sessions,
+            tenant: &context.tenant.id,
+            acr: context.acr,
+            lifetimes: context.lifetimes,
+        },
+        state.stage,
+        record.session.as_deref(),
         *credential.user.as_uuid(),
         amr(verified.user_verified),
+        &requested,
         now,
-        context.lifetimes,
-    );
-    if let Err(error) = context.sessions.begin(&session).await {
-        tracing::error!(%error, tenant = %context.tenant.id, "cannot start a session");
-        return login_refused("the session could not be started");
-    }
+    )
+    .await
+    {
+        Ok(established) => established,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot start a session");
+            return login_refused("the session could not be started");
+        }
+    };
+    let id_value = established.id;
 
     // `ast-2vk.7` decides whether a step-up is needed; until then an
     // authenticated user goes straight to whatever the interaction was for,
@@ -837,7 +867,7 @@ async fn session_from_assertion(
     let value = serde_json::to_value(&state).unwrap_or_default();
     if let Err(error) = context
         .requests
-        .save_interaction_state(&presented.digest(), &value, Some(&session.id_digest), now)
+        .save_interaction_state(&presented.digest(), &value, Some(&established.digest), now)
         .await
     {
         tracing::error!(%error, tenant = %context.tenant.id, "cannot record interaction progress");

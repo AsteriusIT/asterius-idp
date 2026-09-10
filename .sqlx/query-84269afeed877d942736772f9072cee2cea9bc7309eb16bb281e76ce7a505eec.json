@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update sessions\n                set session_id = $3,\n                    authenticated_at = $4,\n                    last_seen_at = $4,\n                    amr = $5,\n                    acr = $6\n              where tenant_id = $1\n                and session_id = $2\n                and revoked_at is null\n                and expires_at > $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "84269afeed877d942736772f9072cee2cea9bc7309eb16bb281e76ce7a505eec"
+}

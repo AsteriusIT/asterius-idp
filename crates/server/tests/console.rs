@@ -125,6 +125,7 @@ impl SessionRepository for FakeSessions {
         _o: &str,
         _n: &str,
         _m: &[AuthenticationMethod],
+        _acr: Option<&str>,
         _at: OffsetDateTime,
     ) -> Result<(), DomainError> {
         Ok(())

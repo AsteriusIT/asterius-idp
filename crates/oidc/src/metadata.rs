@@ -257,11 +257,21 @@ pub(crate) const ID_TOKEN_CLAIMS: &[&str] = &[
 
 /// Builds the provider metadata document for one tenant.
 ///
+/// `acr` is the tenant's authentication-context ladder, and it is a parameter
+/// rather than a constant for the same reason `capabilities` is: RFC 8414 §2
+/// requires the document to reflect actual behaviour, and the only thing that
+/// knows which `acr` values this deployment can actually produce is the policy
+/// the authorization endpoint consults.
+///
 /// The same document serves OIDC Discovery §3 and RFC 8414 §2 — §5 of RFC 8414
 /// says the two are compatible, and serving one set of bytes at both locations
 /// is the only way they cannot drift.
 #[must_use]
-pub fn provider_metadata(issuer: &Issuer, capabilities: &Capabilities) -> Value {
+pub fn provider_metadata(
+    issuer: &Issuer,
+    capabilities: &Capabilities,
+    acr: &asterius_domain::AcrPolicy,
+) -> Value {
     let mut document = json!({
         // OIDC Discovery §4.3: a client checks that this is identical to the
         // URL it used. It is the canonical form and nothing may reformat it.
@@ -311,7 +321,13 @@ pub fn provider_metadata(issuer: &Issuer, capabilities: &Capabilities) -> Value 
         // clients to send a value it rejects (`ast-gxh.8`).
         "prompt_values_supported":
             crate::authorize::AuthorizationPolicy::default().prompt_values_supported(),
-        "acr_values_supported": ["urn:mace:incommon:iap:silver"],
+        // RFC 8414 §2 and OIDC Discovery §3: rendered from the tenant's own
+        // ladder, never written out here. This member used to name
+        // `urn:mace:incommon:iap:silver` — a value from the specification's
+        // example that this server could not produce, has never produced, and
+        // would have refused as `unmet_authentication_requirements` the moment
+        // a client believed the document and asked for it (`ast-2vk.7`).
+        "acr_values_supported": acr.supported_values(),
         "ui_locales_supported": ["en"],
 
         // Back-channel logout only. There is no front-channel logout and no
@@ -378,8 +394,46 @@ pub fn provider_metadata(issuer: &Issuer, capabilities: &Capabilities) -> Value 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asterius_domain::{ClaimSet, TenantId, User, UserId, UserStatus};
+    use asterius_domain::{AcrPolicy, ClaimSet, TenantId, User, UserId, UserStatus};
     use time::OffsetDateTime;
+
+    /// RFC 8414 §2: metadata reflects actual behaviour. `acr_values_supported`
+    /// is the tenant's ladder and nothing else — a value in this member that
+    /// the authorization endpoint would refuse as
+    /// `unmet_authentication_requirements` is a document that lies.
+    #[test]
+    fn acr_values_supported_is_the_tenants_ladder_and_only_that() {
+        let policy = AcrPolicy::new(vec![
+            asterius_domain::AcrLevel::new(
+                "urn:example:weak",
+                [asterius_domain::AuthenticationMethod::Password],
+            )
+            .expect("a level"),
+            asterius_domain::AcrLevel::new(
+                "urn:example:strong",
+                [asterius_domain::AuthenticationMethod::Passkey],
+            )
+            .expect("a level"),
+        ])
+        .expect("a policy");
+
+        let document = provider_metadata(&issuer(), &Capabilities::default(), &policy);
+
+        assert_eq!(
+            document["acr_values_supported"],
+            json!(["urn:example:strong", "urn:example:weak"]),
+            "the document must publish the ladder, strongest first"
+        );
+    }
+
+    /// A tenant that has configured no contexts advertises none. An empty list
+    /// is the honest answer; the specification's example value is not.
+    #[test]
+    fn a_tenant_with_no_ladder_advertises_no_acr_values() {
+        let document = provider_metadata(&issuer(), &Capabilities::default(), &AcrPolicy::empty());
+
+        assert_eq!(document["acr_values_supported"], json!([]));
+    }
 
     fn issuer() -> Issuer {
         Issuer::parse("https://as.example/t/demo").expect("test issuer")
@@ -432,7 +486,7 @@ mod tests {
     #[test]
     fn the_document_advertises_exactly_the_enabled_endpoints() {
         for capabilities in [Capabilities::default(), all_features()] {
-            let document = provider_metadata(&issuer(), &capabilities);
+            let document = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default());
             let object = document.as_object().expect("object");
 
             for endpoint in Endpoint::ALL {
@@ -451,7 +505,7 @@ mod tests {
     #[test]
     fn an_endpoint_url_is_the_issuer_plus_the_path_it_is_mounted_at() {
         let issuer = issuer();
-        let document = provider_metadata(&issuer, &Capabilities::default());
+        let document = provider_metadata(&issuer, &Capabilities::default(), &AcrPolicy::default());
         assert_eq!(
             document["jwks_uri"],
             json!("https://as.example/t/demo/jwks")
@@ -474,7 +528,8 @@ mod tests {
     /// a smaller document, it is an invalid one.
     #[test]
     fn every_required_openid_member_is_present() {
-        let document = provider_metadata(&issuer(), &Capabilities::default());
+        let document =
+            provider_metadata(&issuer(), &Capabilities::default(), &AcrPolicy::default());
         for member in [
             "issuer",
             "authorization_endpoint",
@@ -501,7 +556,8 @@ mod tests {
             "https://as.example:8443/t/x",
         ] {
             let issuer = Issuer::parse(raw).expect("issuer");
-            let document = provider_metadata(&issuer, &Capabilities::default());
+            let document =
+                provider_metadata(&issuer, &Capabilities::default(), &AcrPolicy::default());
             assert_eq!(document["issuer"], json!(issuer.as_str()));
         }
     }
@@ -509,7 +565,8 @@ mod tests {
     /// The profile's fixed answers. Each of these being wrong is a downgrade.
     #[test]
     fn the_profile_constants_are_what_the_profile_requires() {
-        let document = provider_metadata(&issuer(), &Capabilities::default());
+        let document =
+            provider_metadata(&issuer(), &Capabilities::default(), &AcrPolicy::default());
         assert_eq!(document["response_types_supported"], json!(["code"]));
         assert_eq!(
             document["code_challenge_methods_supported"],
@@ -534,7 +591,7 @@ mod tests {
     /// and RS256 and none in none of them.
     #[test]
     fn every_algorithm_list_is_the_allow_list() {
-        let document = provider_metadata(&issuer(), &all_features());
+        let document = provider_metadata(&issuer(), &all_features(), &AcrPolicy::default());
         let object = document.as_object().expect("object");
         let lists: Vec<&String> = object
             .keys()
@@ -570,7 +627,7 @@ mod tests {
     #[test]
     fn dpop_support_is_advertised_the_one_way_rfc_9449_defines() {
         for capabilities in [Capabilities::default(), all_features()] {
-            let document = provider_metadata(&issuer(), &capabilities);
+            let document = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default());
             assert_eq!(
                 document["dpop_signing_alg_values_supported"],
                 json!(["EdDSA", "ES256", "PS256"]),
@@ -620,7 +677,7 @@ mod tests {
             ),
         ];
 
-        let off = provider_metadata(&issuer(), &Capabilities::default());
+        let off = provider_metadata(&issuer(), &Capabilities::default(), &AcrPolicy::default());
         let off_keys: std::collections::BTreeSet<&String> =
             off.as_object().expect("object").keys().collect();
 
@@ -635,7 +692,7 @@ mod tests {
                 _ => unreachable!("the table above covers the endpoint-bearing flags"),
             }
 
-            let on = provider_metadata(&issuer(), &capabilities);
+            let on = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default());
             let on_object = on.as_object().expect("object");
             let added: std::collections::BTreeSet<&String> = on_object
                 .keys()
@@ -652,7 +709,8 @@ mod tests {
 
     #[test]
     fn a_disabled_feature_contributes_no_member_at_all() {
-        let document = provider_metadata(&issuer(), &Capabilities::default());
+        let document =
+            provider_metadata(&issuer(), &Capabilities::default(), &AcrPolicy::default());
         let object = document.as_object().expect("object");
         for absent in [
             "device_authorization_endpoint",

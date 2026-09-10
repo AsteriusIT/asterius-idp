@@ -524,6 +524,15 @@ impl Flow {
     /// a push is what the conformance suite does, and it went to a different
     /// column from the one the code issuer reads.
     async fn push(&mut self, key: &ProofKey) -> String {
+        self.push_with(key, &[]).await
+    }
+
+    /// The same push, plus whatever else this scenario needs on it.
+    ///
+    /// `extra` is appended to the form, so a test that needs `claims` or
+    /// `acr_values` sends them the way a client does — through the pushed
+    /// request, where the validator sees them and the store keeps them.
+    async fn push_with(&mut self, key: &ProofKey, extra: &[(&str, &str)]) -> String {
         let url = Endpoint::PushedAuthorizationRequest.url(&self.tenant.issuer);
         let path = format!(
             "{}{}",
@@ -546,7 +555,10 @@ impl Flow {
                     ("code_challenge_method", "S256"),
                     ("state", STATE),
                     ("nonce", NONCE),
-                ],
+                ]
+                .into_iter()
+                .chain(extra.iter().copied())
+                .collect::<Vec<_>>(),
                 Some(&proof),
             )
             .await;
@@ -1189,6 +1201,84 @@ async fn an_access_token_expires_when_the_tenants_setting_says_so() {
     let exp = claims["exp"].as_i64().expect("RFC 9068 §2.2 requires exp");
     let iat = claims["iat"].as_i64().expect("RFC 9068 §2.2 requires iat");
     assert_eq!(exp - iat, 120, "the signed token disagrees with expires_in");
+
+    flow.tear_down().await;
+}
+
+
+/// **An essential `acr`, over the wire, from the push to the ID token**
+/// (`ast-2vk.7`, absorbing `ast-0zg`).
+///
+/// OIDC Core §5.5.1.1: when `acr` is requested as an Essential Claim through
+/// `claims`, the response "MUST return an `acr` Claim Value that matches one of
+/// the requested values". Nothing in this repository crossed that path: the
+/// claims request is serialised at `/par` and parsed back at `/authorize`, and
+/// `ast-33b` only ever fixed the *fixture* it was read from. Here the document
+/// travels as a client sends it, through the store, into the decision, through
+/// a real ES256 passkey ceremony with the UV bit set, and out the other end as
+/// a claim.
+///
+/// The ceremony reaches `urn:asterius:acr:passkey-uv` — the strongest rung of
+/// the default ladder — so the requirement is met by the sign-in the flow
+/// performs, and the assertion is on the claim rather than on an error.
+#[tokio::test]
+async fn an_essential_acr_travels_from_the_push_into_the_id_token() {
+    // Arrange: a tenant, a client, a person with a UV-capable passkey.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+    let claims = json!({
+        "id_token": {
+            "acr": {
+                "essential": true,
+                "values": [asterius_domain::acr::PASSKEY_USER_VERIFIED],
+            }
+        }
+    })
+    .to_string();
+
+    // Act: the browser half, with the essential request on the push.
+    let request_uri = flow.push_with(&key, &[("claims", &claims)]).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+    let redeemed = flow
+        .token(
+            &key,
+            "assertion-code",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        redeemed.text()
+    );
+
+    // Assert: §5.5.1.1's claim, and §2's `amr` beside it.
+    let id_token = redeemed.json()["id_token"]
+        .as_str()
+        .expect("an openid grant earns an ID token")
+        .to_owned();
+    let claims = claims_of(&id_token);
+    assert_eq!(
+        claims["acr"],
+        json!(asterius_domain::acr::PASSKEY_USER_VERIFIED),
+        "OIDC Core §5.5.1.1: the acr must match a requested value: {claims}"
+    );
+    assert_eq!(
+        claims["amr"],
+        json!(["swk", "user"]),
+        "OIDC Core §2: the methods the authentication used: {claims}"
+    );
 
     flow.tear_down().await;
 }

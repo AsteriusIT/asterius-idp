@@ -50,6 +50,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "acr_policy"
+path = "fuzz_targets/acr_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_cursor"
 path = "fuzz_targets/admin_cursor.rs"
 test = false

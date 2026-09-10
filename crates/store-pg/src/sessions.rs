@@ -175,6 +175,7 @@ impl SessionRepository for PgSessionRepository {
         old_digest: &str,
         new_digest: &str,
         methods: &[AuthenticationMethod],
+        acr: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
         let amr: Vec<String> = methods.iter().map(|m| m.as_str().to_owned()).collect();
@@ -188,7 +189,8 @@ impl SessionRepository for PgSessionRepository {
                 set session_id = $3,
                     authenticated_at = $4,
                     last_seen_at = $4,
-                    amr = $5
+                    amr = $5,
+                    acr = $6
               where tenant_id = $1
                 and session_id = $2
                 and revoked_at is null
@@ -198,6 +200,7 @@ impl SessionRepository for PgSessionRepository {
             new_digest,
             now,
             &amr,
+            acr,
         )
         .execute(&self.pool)
         .await

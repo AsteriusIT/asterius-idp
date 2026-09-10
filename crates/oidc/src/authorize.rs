@@ -71,6 +71,14 @@ pub const MAX_ID_TOKEN_HINT_LEN: usize = crate::logout::MAX_ID_TOKEN_HINT_BYTES;
 /// The most `resource` indicators one request may name (RFC 8707).
 pub const MAX_RESOURCES: usize = 8;
 
+/// The most `acr_values` a request may name.
+///
+/// `acr_values` is a preference list, and a preference list a person could not
+/// hold in their head is not a preference — it is a way of making this server
+/// walk a policy ladder once per entry. Sixteen is more rungs than any tenant
+/// this server has met, so the bound refuses nothing a real client sends.
+pub const MAX_ACR_VALUES: usize = 16;
+
 /// The most scope tokens one request may name.
 pub const MAX_SCOPES: usize = 64;
 
@@ -598,10 +606,7 @@ pub fn validate(
 
     let max_age = parse_max_age(params.get("max_age")?)?;
 
-    let acr_values = params
-        .get("acr_values")?
-        .map(|raw| raw.split_whitespace().map(ToOwned::to_owned).collect())
-        .unwrap_or_default();
+    let acr_values = parse_acr_values(params.get("acr_values")?);
 
     let login_hint = parse_login_hint(params.get("login_hint")?)?;
     let id_token_hint = parse_id_token_hint(params.get("id_token_hint")?)?;
@@ -789,6 +794,43 @@ pub fn parse_login_hint(raw: Option<&str>) -> Result<Option<String>, Authorizati
 ///
 /// The C0 and C1 control ranges, and the Unicode bidirectional formatting
 /// characters of UAX #9 §2.
+/// The `acr_values` parameter, as a preference list (OIDC Core §3.1.2.1).
+///
+/// "Space-separated string that specifies the `acr` values that the
+/// Authorization Server is being requested to use ... with the values appearing
+/// in order of preference." Three things follow, and all three are here rather
+/// than at the four call sites that would otherwise each decide them.
+///
+/// * **Order is preserved.** It is the request's own statement of preference,
+///   and a set would throw it away.
+/// * **Repeats collapse.** A value named twice is named once; the second
+///   mention cannot make it more preferred than the first.
+/// * **It is bounded** ([`MAX_ACR_VALUES`]), and the excess is *dropped* rather
+///   than refused. This is a voluntary parameter: OIDC Core §3.1.2.1 makes
+///   honouring it a "MAY", so a request carrying a thousand class names is
+///   answered at whatever context the authentication reaches — which is what a
+///   request naming none gets, and what a request naming a thousand unmeetable
+///   ones would have got anyway. An `invalid_request` here would refuse a
+///   request the specification says may simply not be fulfilled.
+///
+/// An *essential* `acr` does not come through here at all: it arrives inside
+/// `claims` (§5.5.1.1), where a bound of this kind would change an error into a
+/// silence. See [`crate::claims`].
+#[must_use]
+// fuzz-target: authorization_hints
+pub fn parse_acr_values(raw: Option<&str>) -> Vec<String> {
+    let mut values: Vec<String> = Vec::new();
+    for value in raw.unwrap_or_default().split_whitespace() {
+        if values.len() == MAX_ACR_VALUES {
+            break;
+        }
+        if !values.iter().any(|seen| seen == value) {
+            values.push(value.to_owned());
+        }
+    }
+    values
+}
+
 const fn is_display_unsafe(character: char) -> bool {
     character.is_control()
         || matches!(
@@ -886,6 +928,38 @@ const fn is_base64url(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// OIDC Core §3.1.2.1: `acr_values` is "space-separated ... in order of
+    /// preference". Order survives, a repeat does not become a second
+    /// preference, and nothing is invented.
+    #[test]
+    fn acr_values_keep_their_order_and_lose_their_repeats() {
+        let parsed = super::parse_acr_values(Some("  gold\tsilver\n gold bronze "));
+
+        assert_eq!(parsed, vec!["gold", "silver", "bronze"]);
+    }
+
+    /// The parameter is voluntary (§3.1.2.1: the OP "MAY" honour it), so an
+    /// over-long list is truncated rather than refused: the request is still
+    /// answerable, at whatever context the authentication reaches.
+    #[test]
+    fn an_unbounded_acr_values_list_is_truncated_rather_than_refused() {
+        let many = (0..super::MAX_ACR_VALUES + 20)
+            .map(|index| format!("urn:example:{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let parsed = super::parse_acr_values(Some(&many));
+
+        assert_eq!(parsed.len(), super::MAX_ACR_VALUES);
+        assert_eq!(parsed[0], "urn:example:0");
+    }
+
+    #[test]
+    fn an_absent_acr_values_asks_for_nothing() {
+        assert!(super::parse_acr_values(None).is_empty());
+        assert!(super::parse_acr_values(Some("   ")).is_empty());
+    }
+
     use super::*;
     use asterius_domain::Capabilities;
     use serde_json::json;

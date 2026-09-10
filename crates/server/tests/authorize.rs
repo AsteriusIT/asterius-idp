@@ -216,6 +216,7 @@ async fn run_mounted(
             session,
             grants,
             policy: DecisionPolicy::default(),
+            acr: &asterius_domain::AcrPolicy::default(),
             memory: MemoryPolicy::default(),
             nonce: &nonce,
             mount,

@@ -5260,6 +5260,7 @@ mod sessions {
                 &planted.digest(),
                 &fresh.digest(),
                 &[AuthenticationMethod::Password],
+                None,
                 OffsetDateTime::now_utc(),
             )
             .await
@@ -5275,9 +5276,12 @@ mod sessions {
     }
 
     db_test! {
-        /// Rotation moves `auth_time`, because the reason to rotate is always
-        /// that the user has just proved something. `max_age` is measured from
-        /// it (OIDC Core §3.1.2.1).
+        /// Rotation moves `auth_time`, `amr` and `acr` together, because the
+        /// reason to rotate is always that the user has just proved something.
+        /// `max_age` is measured from `auth_time` (OIDC Core §3.1.2.1) and the
+        /// step-up this server performs (`ast-2vk.7`) is exactly this write:
+        /// a fresh id, a later authentication, the methods that have now been
+        /// used, and the class they reached.
         async fn rotation_moves_the_authentication_time(db) {
             let user = uuid::Uuid::new_v4();
             seed_user(&db.pool, "demo", user).await;
@@ -5295,6 +5299,7 @@ mod sessions {
                 &first.digest(),
                 &stepped_up.digest(),
                 &[AuthenticationMethod::Password, AuthenticationMethod::Passkey],
+                Some(asterius_domain::acr::PASSKEY),
                 at,
             )
             .await
@@ -5312,6 +5317,11 @@ mod sessions {
             assert_eq!(
                 found.amr,
                 vec![AuthenticationMethod::Password, AuthenticationMethod::Passkey]
+            );
+            assert_eq!(
+                found.acr.as_deref(),
+                Some(asterius_domain::acr::PASSKEY),
+                "the class the step-up reached was not recorded"
             );
         }
     }
@@ -5335,6 +5345,7 @@ mod sessions {
                     &id.digest(),
                     &fresh.digest(),
                     &[AuthenticationMethod::Password],
+                    None,
                     OffsetDateTime::now_utc(),
                 )
                 .await

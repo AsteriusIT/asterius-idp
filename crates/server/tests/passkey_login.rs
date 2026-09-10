@@ -76,13 +76,27 @@ impl SessionRepository for FakeSessions {
     ) -> Result<(), DomainError> {
         Ok(())
     }
+    /// The real statement, in memory: one session row, re-keyed, with the
+    /// authentication it now carries. A fake that answered `Ok(())` and wrote
+    /// nothing would let a step-up that recorded the wrong `acr` pass.
     async fn rotate(
         &self,
-        _o: &str,
-        _n: &str,
-        _m: &[AuthenticationMethod],
-        _at: OffsetDateTime,
+        old: &str,
+        new: &str,
+        methods: &[AuthenticationMethod],
+        acr: Option<&str>,
+        at: OffsetDateTime,
     ) -> Result<(), DomainError> {
+        let mut held = self.0.lock().expect("lock");
+        let session = held
+            .iter_mut()
+            .find(|session| session.id_digest == old)
+            .ok_or(DomainError::NotFound)?;
+        new.clone_into(&mut session.id_digest);
+        session.authenticated_at = at;
+        session.last_seen_at = at;
+        session.amr = methods.to_vec();
+        session.acr = acr.map(ToOwned::to_owned);
         Ok(())
     }
     async fn revoke(
@@ -539,6 +553,56 @@ impl Fixture {
         }
     }
 
+    /// The same interaction, at [`Stage::StepUp`]: a session the person already
+    /// has, and a request that asks for a class it has not reached.
+    ///
+    /// This is what `/authorize` leaves behind when
+    /// [`asterius_oidc::decision::decide`] answers `StepUp` — the stage, and
+    /// the session the step-up is a step up *from*.
+    fn at_step_up(now: OffsetDateTime, essential: &str) -> Self {
+        let fixture = Self::at_login(now, 4);
+        let existing = asterius_domain::entities::session::SessionId::generate();
+        let mut session = Session::begin(
+            TenantId::new("demo"),
+            &existing,
+            *fixture.user.as_uuid(),
+            vec![AuthenticationMethod::Password],
+            now,
+            Lifetimes::default(),
+        );
+        // Still live — a step-up is a stronger authentication on a session that
+        // works, not a way to revive one — but the password behind it happened
+        // two hours ago, so a moved `auth_time` is visible.
+        session.authenticated_at = now - time::Duration::hours(2);
+        session.acr = Some(asterius_domain::acr::PASSWORD.to_owned());
+        fixture
+            .sessions
+            .0
+            .lock()
+            .expect("lock")
+            .push(session.clone());
+
+        let claims = asterius_oidc::claims::ClaimsRequest::parse(
+            &json!({"id_token": {"acr": {"essential": true, "values": [essential]}}}).to_string(),
+        )
+        .expect("a well-formed claims request");
+        let mut held = fixture.requests.record.lock().expect("lock");
+        let record = held.as_mut().expect("the fixture has a record");
+        record.continuation = asterius_domain::Continuation::for_client(
+            ClientId::new("billing"),
+            json!({ "claims": claims.to_json() }),
+        );
+        record.session = Some(session.id_digest.clone());
+        record.state = serde_json::to_value(StoredState {
+            stage: Stage::StepUp,
+            csrf_digest: Some(sha256_hex(CSRF.as_bytes())),
+            decision: None,
+        })
+        .expect("a state serialises");
+        drop(held);
+        fixture
+    }
+
     fn context(&self) -> PasskeyLoginContext<'_> {
         PasskeyLoginContext {
             tenant: &self.tenant,
@@ -547,6 +611,7 @@ impl Fixture {
             sessions: &self.sessions,
             users: &self.users,
             lifetimes: Lifetimes::default(),
+            acr: acr_policy(),
             audit: &self.audit,
             throttle: LoginThrottle::new(
                 &self.limiter,
@@ -813,6 +878,112 @@ async fn a_verified_assertion_starts_a_session_and_advances_the_interaction() {
     assert_eq!(session.user, *fixture.user.as_uuid());
     assert_eq!(fixture.requests.stage(), Some(Stage::Consent));
     assert_eq!(fixture.requests.session(), Some(session.id_digest.clone()));
+}
+
+/// **A step-up re-authenticates the session it already has** (`ast-2vk.7`).
+///
+/// OIDC Core §5.5.1.1 asks for an `acr` matching one of the requested values,
+/// and §2 makes `auth_time` the moment the person last proved who they are. So
+/// a step-up has to write four things at once: a session id the browser has
+/// never held (the fixation defence every privilege change here uses), a later
+/// `auth_time`, the `amr` of everything now proved — the password from before
+/// *and* the passkey from now, or a rung phrased as a combination could never
+/// be reached — and the class those methods reached.
+#[tokio::test]
+async fn a_step_up_rotates_the_session_and_records_the_class_it_reached() {
+    // Arrange: a password session, and a request that wants a passkey with UV.
+    let now = OffsetDateTime::now_utc();
+    let fixture = Fixture::at_step_up(now, asterius_domain::acr::PASSKEY_USER_VERIFIED);
+    let before = fixture.sessions.0.lock().expect("lock")[0].clone();
+    let (_, options) = fixture.options(now).await;
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(options["challenge"].as_str().expect("a challenge"))
+        .expect("base64url");
+
+    // Act
+    let response = fixture
+        .finish(&fixture.assertion(&challenge, UP | UV, 5), now)
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let sessions = fixture.sessions.0.lock().expect("lock");
+    assert_eq!(
+        sessions.len(),
+        1,
+        "a step-up must not start a second session"
+    );
+    let after = &sessions[0];
+    assert_ne!(
+        after.id_digest, before.id_digest,
+        "the session id did not rotate"
+    );
+    assert_eq!(
+        after.public_sid, before.public_sid,
+        "the sid a relying party holds must survive the rotation"
+    );
+    assert!(
+        after.authenticated_at > before.authenticated_at,
+        "auth_time did not move"
+    );
+    assert_eq!(
+        after.amr,
+        vec![
+            AuthenticationMethod::Password,
+            AuthenticationMethod::Passkey,
+            AuthenticationMethod::UserVerified
+        ],
+        "the methods the person has now used"
+    );
+    assert_eq!(
+        after.acr.as_deref(),
+        Some(asterius_domain::acr::PASSKEY_USER_VERIFIED),
+        "OIDC Core §5.5.1.1: the class the client asked for is the one recorded"
+    );
+    assert_eq!(fixture.requests.stage(), Some(Stage::Consent));
+    assert_eq!(fixture.requests.session(), Some(after.id_digest.clone()));
+}
+
+/// A step-up is not a way to write one person's authentication onto another
+/// person's session. When the interaction names a session about somebody else,
+/// the ceremony starts a fresh one instead of rotating.
+#[tokio::test]
+async fn a_step_up_onto_another_users_session_starts_a_new_one_instead() {
+    // Arrange: the interaction names a session belonging to a different user.
+    let now = OffsetDateTime::now_utc();
+    let fixture = Fixture::at_step_up(now, asterius_domain::acr::PASSKEY_USER_VERIFIED);
+    let stranger = {
+        let mut held = fixture.sessions.0.lock().expect("lock");
+        held[0].user = uuid::Uuid::new_v4();
+        held[0].clone()
+    };
+    let (_, options) = fixture.options(now).await;
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(options["challenge"].as_str().expect("a challenge"))
+        .expect("base64url");
+
+    // Act
+    fixture
+        .finish(&fixture.assertion(&challenge, UP | UV, 5), now)
+        .await;
+
+    // Assert
+    let sessions = fixture.sessions.0.lock().expect("lock");
+    assert_eq!(sessions.len(), 2, "the stranger's session was rotated");
+    let fresh = sessions.last().expect("a second session");
+    assert_eq!(fresh.user, *fixture.user.as_uuid());
+    assert_eq!(
+        sessions[0].id_digest, stranger.id_digest,
+        "the other user's session was written to"
+    );
+    assert_eq!(
+        fresh.amr,
+        vec![
+            AuthenticationMethod::Passkey,
+            AuthenticationMethod::UserVerified
+        ],
+        "a fresh session carries only what was proved now"
+    );
 }
 
 /// RFC 8176: `swk` because this server cannot prove hardware, and `user`
@@ -1092,4 +1263,12 @@ async fn signing_in_needs_no_session_cookie() {
     let (status, _) = fixture.options(now).await;
     assert_eq!(status, StatusCode::OK);
     let _ = SessionId::generate();
+}
+
+/// The ladder these tests run against: the one the binary wires in
+/// (`asterius_server::http::protocol`), built once so a context can borrow it.
+fn acr_policy() -> &'static asterius_domain::AcrPolicy {
+    static POLICY: std::sync::LazyLock<asterius_domain::AcrPolicy> =
+        std::sync::LazyLock::new(asterius_domain::AcrPolicy::default);
+    &POLICY
 }

@@ -34,14 +34,14 @@ use asterius_domain::{
     AuthRequestRepository, ClientId, GrantRepository, InteractionRepository, PushedRequest,
     Session, SubjectId, Tenant,
 };
-use asterius_oidc::authorize::{Prompt, ResponseMode};
+use asterius_oidc::authorize::ResponseMode;
 use asterius_oidc::code::AuthorizationResponse;
 use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
 use asterius_oidc::decision::{
-    Consent, DecisionPolicy, Interaction, NoAcrPolicy, Requirements, SessionState, Unmet, decide,
+    Consent, DecisionPolicy, Interaction, Requirements, SessionState, Unmet, decide,
 };
 use asterius_oidc::par;
-use asterius_web::interaction::{self, InteractionId};
+use asterius_web::interaction::{self, InteractionId, Stage, StoredState};
 use asterius_web::pages::{ErrorPage, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
 use axum::http::{HeaderValue, StatusCode, header};
@@ -67,8 +67,17 @@ pub struct AuthorizeContext<'a> {
     /// The grants this user already holds, for the consent memory
     /// (`ast-uwv.3`).
     pub grants: &'a dyn GrantRepository,
-    /// What this tenant will do without being asked (`ast-2vk.7`'s seam).
+    /// What this tenant will do without being asked.
     pub policy: DecisionPolicy,
+    /// The authentication contexts this tenant can produce (`ast-2vk.7`).
+    ///
+    /// Consulted twice here, for the two questions OIDC Core asks separately:
+    /// whether an essential `acr` is producible at all (Unmet Authentication
+    /// Requirements 1.0 §2) and whether the session in front of us has produced
+    /// one (§5.5.1.1). A voluntary `acr_values` is not consulted at all — it is
+    /// honoured by the login that follows, which writes the highest value it
+    /// reached onto the session (§3.1.2.1).
+    pub acr: &'a asterius_domain::AcrPolicy,
     /// Whether this tenant remembers consent, and for how long it remembers an
     /// `offline_access` one.
     pub memory: MemoryPolicy,
@@ -151,7 +160,7 @@ pub async fn authorize(
     // rendered: OIDC Core §3.1.2.1 forbids displaying any authentication or
     // consent user interface for one, and an interaction row is the first step
     // towards displaying one.
-    let requirements = requirements(&stored);
+    let requirements = requirements(&context, &stored);
     // The `sub` this client sees for the session's user, resolved whenever
     // there is a usable session. It used to be resolved only for an
     // `id_token_hint`, on the grounds that a lookup per browser hit is not
@@ -183,11 +192,14 @@ pub async fn authorize(
         _ => SessionState::None,
     };
 
-    match decide(&requirements, &state, context.policy, &NoAcrPolicy, now) {
+    let decision = decide(&requirements, &state, context.policy, context.acr, now);
+    match decision {
         // Every one of these puts something in front of the user, so they all
         // continue into the interaction. *Which* screen comes first is the
-        // interaction's own stage machine (`ast-2vk.7` owns the step-up one),
-        // and it is not decided twice.
+        // interaction's own stage machine, and it is not decided twice — except
+        // for the step-up, which is decided here because it is decided *here*:
+        // it is the one stage that depends on a session this handler resolved
+        // and on a policy the interaction does not hold.
         Interaction::Silent
         | Interaction::Login
         | Interaction::SelectAccount
@@ -211,6 +223,10 @@ pub async fn authorize(
         // `request_uri` is a replay. Both render the same page.
         tracing::warn!(%error, tenant = %context.tenant.id, "cannot begin an interaction");
         return error_page(&context, StatusCode::BAD_REQUEST);
+    }
+
+    if decision == Interaction::StepUp {
+        begin_at_step_up(&context, &digest, now).await;
     }
 
     // Through `SeeOther`, never open-coded. `http::source_audit` enforces
@@ -238,6 +254,38 @@ pub async fn authorize(
     // The redirect carries a credential in both the URL and the cookie.
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
+}
+
+/// Records that an interaction begins at the step-up stage (`ast-2vk.7`).
+///
+/// Written after `begin_interaction` because the row has to exist to be
+/// updated, and it carries the session the step-up is a step up *from* — the
+/// credential handler needs to know which session to rotate, and the browser's
+/// cookie is not something that handler re-resolves.
+///
+/// A failure here is logged and not fatal. An interaction whose state was not
+/// written starts at [`Stage::Login`], which asks the user for more than was
+/// needed rather than for less, and the session that would have been rotated is
+/// replaced by a fresh one instead. Both are worse than the intended path and
+/// neither grants anything.
+async fn begin_at_step_up(context: &AuthorizeContext<'_>, digest: &str, now: OffsetDateTime) {
+    let state = serde_json::to_value(StoredState {
+        stage: Stage::StepUp,
+        ..StoredState::default()
+    })
+    .unwrap_or_default();
+    let session = context.session.map(|session| session.id_digest.as_str());
+    if let Err(error) = context
+        .interactions
+        .save_interaction_state(digest, &state, session, now)
+        .await
+    {
+        tracing::error!(
+            %error,
+            tenant = %context.tenant.id,
+            "cannot record that an interaction begins at the step-up stage"
+        );
+    }
 }
 
 /// Whether this request is already covered by a consent this person gave
@@ -281,72 +329,26 @@ async fn remembered_consent(
 
 /// Reads the decision's inputs back off the stored request.
 ///
-/// Everything here was validated at the push and written by `http::par`, so
-/// this is a read of this server's own JSON rather than a second parse of a
-/// client's parameters. A member that is missing or the wrong shape is treated
-/// as absent, which for every one of them is the "asked for nothing" reading:
-/// the alternative is an error page for a row this server wrote itself, and a
-/// stricter reading here would not make the row any more correct.
-///
-/// `id_token_hint_sub` is the subject the *verified* hint named — `http::par`
-/// checks the signature, the issuer and the audience before storing it, so what
-/// is read back is a fact rather than a claim.
-fn requirements(stored: &PushedRequest) -> Requirements {
-    let strings = |name: &str| -> Vec<String> {
-        stored
-            .parameters
-            .get(name)
-            .and_then(serde_json::Value::as_array)
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    Requirements {
-        prompts: strings("prompts")
-            .iter()
-            .filter_map(|value| Prompt::parse(value))
-            .collect(),
-        max_age: stored
-            .parameters
-            .get("max_age")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|seconds| u32::try_from(seconds).ok()),
-        hinted_subject: stored
-            .parameters
-            .get("id_token_hint_sub")
-            .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned),
-        acr_values: strings("acr_values"),
-        essential_acr: essential_acr(stored),
+/// The reading itself is [`Requirements::from_parameters`], shared with the
+/// login that follows so that the value `/authorize` decided a step-up against
+/// and the value the session ends up carrying cannot disagree (`ast-0zg`). What
+/// is left here is the one thing that crate cannot do: say out loud that a row
+/// this server wrote will not parse back. `asterius-oidc` has no logger by
+/// design, and a damaged `claims` document turning a requirement into a
+/// suggestion is something an operator has to be able to see.
+fn requirements(context: &AuthorizeContext<'_>, stored: &PushedRequest) -> Requirements {
+    if stored
+        .parameters
+        .get("claims")
+        .is_some_and(|claims| asterius_oidc::claims::ClaimsRequest::from_json(claims).is_err())
+    {
+        tracing::error!(
+            tenant = %context.tenant.id,
+            client = %stored.client,
+            "a stored claims request will not parse back"
+        );
     }
-}
-
-/// The `acr` values the client marked essential (OIDC Core §5.5.1.1).
-///
-/// Read out of the stored `claims` request, which is the parsed and canonical
-/// form `ClaimsRequest::to_json` wrote — not the document the client sent.
-fn essential_acr(stored: &PushedRequest) -> Vec<String> {
-    let Some(claims) = stored.parameters.get("claims") else {
-        return Vec::new();
-    };
-    let Ok(claims) = asterius_oidc::claims::ClaimsRequest::from_json(claims) else {
-        tracing::error!("a stored claims request will not parse back");
-        return Vec::new();
-    };
-    claims
-        .acr()
-        .filter(|acr| acr.is_essential())
-        .map(|acr| {
-            acr.accepted_values()
-                .iter()
-                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
+    Requirements::from_parameters(&stored.parameters)
 }
 
 /// Answers the client with the reason its request cannot be served.
