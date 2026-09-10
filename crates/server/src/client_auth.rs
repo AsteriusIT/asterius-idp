@@ -43,8 +43,8 @@
 //! know exists. See `docs/threat-model.md`.
 
 use asterius_domain::{
-    Client, ClientId, ClientRepository, DomainError, ReplayCheck, ReplayGuard, ReplayPurpose,
-    SigningAlgorithm, Tenant, TokenEndpointAuthMethod,
+    Client, ClientId, ClientRepository, ClientUsageRecorder, DomainError, ReplayCheck, ReplayGuard,
+    ReplayPurpose, SigningAlgorithm, Tenant, TenantId, TokenEndpointAuthMethod,
 };
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::verify::{Policy, TypRule};
@@ -73,6 +73,18 @@ const ASSERTION_TYP: TypRule =
 pub struct ClientAuthenticator {
     keys: Arc<ClientKeyCache>,
     replay: Arc<dyn ReplayGuard>,
+    /// Where "this client was used" is written (`ast-cu3`).
+    ///
+    /// Here rather than at the three call sites, because this is the one
+    /// function both the token endpoint and PAR reach: a client is used
+    /// exactly when it authenticates, and putting the write anywhere else
+    /// would be two definitions of the same fact.
+    ///
+    /// `None` is a deployment that does not record it — every test that
+    /// exercises authentication without a database — and it costs only the
+    /// retention rule that reads the column, which is opt-in per tenant
+    /// anyway.
+    usage: Option<Arc<dyn ClientUsageRecorder>>,
     /// A key nothing signs with, used to spend the same cryptographic effort
     /// on a client that does not exist as on one that does. Generated once:
     /// generating per request would itself be a timing signal, and a slower
@@ -104,8 +116,20 @@ impl ClientAuthenticator {
         Ok(Self {
             keys,
             replay,
+            usage: None,
             decoy,
         })
+    }
+
+    /// Records every successful authentication through `usage`.
+    ///
+    /// A builder rather than a fourth constructor argument, following
+    /// `ClientKeyCache::sharing_backoff`: a deployment that does not wire one
+    /// still authenticates clients, and the three call sites do not change.
+    #[must_use]
+    pub fn recording_use(mut self, usage: Arc<dyn ClientUsageRecorder>) -> Self {
+        self.usage = Some(usage);
+        self
     }
 
     /// Authenticates the client behind `attempt`.
@@ -224,10 +248,35 @@ impl ClientAuthenticator {
             )
             .await
         {
-            Ok(ReplayCheck::FirstUse) => Ok(client),
+            Ok(ReplayCheck::FirstUse) => {
+                self.note_use(&tenant.id, &client_id, now).await;
+                Ok(client)
+            }
             Ok(ReplayCheck::Replay) => Err(ClientAuthError::ReplayedAssertion),
             // An unavailable replay store is not permission to accept a replay.
             Err(_) => Err(ClientAuthError::KeysUnavailable),
+        }
+    }
+
+    /// Notes that a client authenticated, for `ast-cu3`'s idle-client sweep.
+    ///
+    /// A failure is logged and swallowed. The client has authenticated: the
+    /// assertion verified, the `jti` was claimed, and refusing it now because
+    /// a bookkeeping write failed would turn a slow `UPDATE` into an outage at
+    /// the token endpoint. The cost of a lost write is that one sweep may
+    /// consider a live client idle, which is why the window that reads this is
+    /// a number of days an operator chose.
+    async fn note_use(&self, tenant: &TenantId, client_id: &ClientId, now: OffsetDateTime) {
+        let Some(usage) = self.usage.as_ref() else {
+            return;
+        };
+        if let Err(failure) = usage.record_use(tenant, client_id, now).await {
+            tracing::warn!(
+                %failure,
+                %tenant,
+                client = %client_id,
+                "could not record that a client authenticated"
+            );
         }
     }
 

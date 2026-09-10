@@ -47,11 +47,11 @@
 //!   `resources` is rendered read-only because it is not settable at all.
 //! * **The agent profile.** `ast-lh3.1` has not landed; there is no column, no
 //!   type and nothing to edit.
-//! * **Initial access token issuance.** See [`RegistrationGate`]: today the
-//!   tokens are digests read from the configuration file at boot, so there is
-//!   nothing for a console to mint and nothing to count a quota against. What
-//!   this module exposes is the gate as it stands, which is what an operator
-//!   needs in order to know whether `POST /register` will answer at all.
+//! * **Initial access token issuance.** Moved out, to
+//!   [`crate::initial_access_tokens`] (`ast-cu3`). What stays here is the
+//!   deployment's *gate* — whether `POST /register` answers anybody at all and
+//!   on how many configured credentials — which is a fact about the process and
+//!   not about a tenant's rows.
 
 use asterius_domain::keys::{PublicKeyRecord, SigningAlgorithm, signs_with};
 use asterius_domain::{Client, ClientMetadataError, ClientStatus, JwksSource, RedirectUri};
@@ -397,18 +397,17 @@ pub fn refusal(error: &ClientMetadataError) -> AdminError {
 ///
 /// # Why there is no "issue an initial access token" button
 ///
-/// `ast-f7m.5` asks for issuance with a policy and a quota, and the honest
-/// answer today is that there is nothing to issue *from*. An initial access
-/// token in this server is a string an operator puts in `asterius.toml`, which
-/// is hashed at load into `asterius_server::http::register::InitialAccessTokens`
-/// and compared as a digest (`ast-m9c.4`). There is no row, so there is no
-/// expiry, no quota, no revocation and nothing to display once. Adding a button
-/// that minted one would mean a table, a repository, a change to the endpoint's
-/// admission check and a threat-model note about the console becoming a
-/// credential issuer — which is `ast-m9c.6`'s work and not a screen's.
+/// This is the **deployment's** posture, read from the configuration file: the
+/// mode an operator chose and how many initial access tokens the process was
+/// started with. A tenant's own credentials are rows, are listed at
+/// `GET /initial-access-tokens`, and are not counted here — a tenant
+/// administrator learning how many tokens the deployment holds learns something
+/// about a neighbour's arrangements, which is why that route is
+/// [`crate::rbac::Reach::Deployment`] and this document says nothing about
+/// tenants.
 ///
 /// What an operator *can* be told, and is, is whether the endpoint admits
-/// anybody at all and on how many credentials. Both are facts about
+/// anybody at all and on how many configured credentials. Both are facts about
 /// configuration; neither is a secret. The count is a count and never the
 /// digests: a digest is a stable per-token identifier, and publishing it in a
 /// console would let anyone who later sees a token confirm which deployment it
@@ -434,11 +433,12 @@ pub fn registration_document(gate: RegistrationGate) -> Value {
         // deciding whether a leaked configuration file is a credential
         // compromise, and the answer is "the file is, the database is not".
         "tokens_stored_hashed": true,
-        // False, and false for a reason worth carrying in the document rather
-        // than only in the console's copy: a client of this API asking whether
-        // it can mint one gets an answer instead of a 404 from a route that was
-        // never built.
-        "console_issuance": false,
+        // True since `ast-cu3`: `POST /initial-access-tokens` mints a token for
+        // the tenant the request was routed to, with the quota that tenant's
+        // registration policy sets. Carried in the document rather than only in
+        // the console's copy so that a client of this API asking whether it can
+        // mint one gets an answer instead of guessing from a route list.
+        "console_issuance": true,
     })
 }
 
@@ -698,7 +698,7 @@ mod tests {
         // Assert
         assert_eq!(rendered["mode"], json!("initial_access_token"));
         assert_eq!(rendered["configured_tokens"], json!(2));
-        assert_eq!(rendered["console_issuance"], json!(false));
+        assert_eq!(rendered["console_issuance"], json!(true));
         assert_eq!(rendered["tokens_stored_hashed"], json!(true));
     }
 

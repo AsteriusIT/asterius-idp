@@ -49,6 +49,7 @@ pub mod console;
 pub mod csrf;
 pub mod error;
 pub mod idempotency;
+pub mod initial_access_tokens;
 pub mod keys;
 pub mod openapi;
 pub mod operations;
@@ -101,6 +102,10 @@ pub const CLIENT_CREATE_ID: &str = "clients.create";
 pub const CLIENT_UPDATE_ID: &str = "clients.update";
 /// The `operationId` of `GET /registration`.
 pub const REGISTRATION_READ_ID: &str = "registration.read";
+/// The `operationId` of `GET /initial-access-tokens`.
+pub const INITIAL_ACCESS_TOKENS_LIST_ID: &str = "initial_access_tokens.list";
+/// The `operationId` of `POST /initial-access-tokens`.
+pub const INITIAL_ACCESS_TOKEN_CREATE_ID: &str = "initial_access_tokens.create";
 /// The `operationId` of `GET /keys`.
 pub const KEYS_LIST_ID: &str = "keys.list";
 /// The `operationId` of `GET /keys/jwks`.
@@ -289,6 +294,40 @@ pub const REGISTRATION_READ: Operation = Operation::read(
     "Reports the dynamic client registration gate this deployment is running",
 );
 
+/// The initial access tokens this tenant has issued (`ast-cu3`).
+///
+/// [`Reach::Tenant`], unlike [`REGISTRATION_READ`] beside it: these are the
+/// tenant's own credentials rather than the deployment's configuration, and the
+/// request is already routed to the tenant that owns them. No digest and no
+/// plaintext is rendered — see [`initial_access_tokens::summarise`] — so what
+/// this returns is a quota, an expiry and a label.
+pub const INITIAL_ACCESS_TOKENS_LIST: Operation = Operation::read(
+    INITIAL_ACCESS_TOKENS_LIST_ID,
+    "/initial-access-tokens",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Lists the initial access tokens this tenant has issued",
+);
+
+/// Mints one initial access token for this tenant, shown once.
+///
+/// `admin.clients:write` and not a scope of its own: the credential's entire
+/// authority is to create clients at this tenant, which is what that scope
+/// already grants directly. A separate scope would suggest a separate
+/// privilege and would let a deployment grant one without the other, which is
+/// a distinction with no security content.
+///
+/// The quota is **not** a parameter. It is stamped from the tenant's
+/// `max_clients_per_initial_access_token`, so that the policy an operator
+/// stored is the policy that binds; see [`initial_access_tokens`].
+pub const INITIAL_ACCESS_TOKEN_CREATE: Operation = Operation::mutation(
+    INITIAL_ACCESS_TOKEN_CREATE_ID,
+    "/initial-access-tokens",
+    M::Post,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Issues an initial access token for this tenant, shown once",
+);
+
 /// Every signing key this tenant holds, with each algorithm's rotation policy.
 ///
 /// [`Reach::Tenant`]: a tenant administrator manages their own tenant's keys,
@@ -374,7 +413,7 @@ pub const KEYS_SCHEDULE: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 19] = [
+static REGISTRY: [Operation; 21] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -388,6 +427,8 @@ static REGISTRY: [Operation; 19] = [
     CLIENT_CREATE,
     CLIENT_UPDATE,
     REGISTRATION_READ,
+    INITIAL_ACCESS_TOKENS_LIST,
+    INITIAL_ACCESS_TOKEN_CREATE,
     KEYS_LIST,
     KEYS_JWKS,
     KEYS_ROTATE,

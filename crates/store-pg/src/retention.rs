@@ -114,10 +114,46 @@ pub const POLICY: &[Retention] = &[
     },
     Retention {
         table: "clients",
-        rule: Rule::Kept(
-            "a registration lives until it is deleted through RFC 7592; nothing \
-             about a client expires on a clock",
-        ),
+        rule: Rule::Sweep {
+            // Only for a tenant that asked, and only for a client nobody has
+            // used (`ast-cu3`).
+            //
+            // A registration otherwise lives until it is deleted through RFC
+            // 7592, and that is still the default: the predicate reads
+            // `unused_client_expiry_seconds` out of the tenant's own
+            // registration policy, and a tenant that has not set one — which
+            // is every tenant unless an operator typed it — matches no rows at
+            // all. `ast-m9c.6` has stored and validated that number since it
+            // landed and nothing has ever read it, which is the failure this
+            // rule exists to end: a setting that is stored and inert is worse
+            // than one that is absent, because an operator believes it is in
+            // force.
+            //
+            // `coalesce(last_used_at, created_at)` is the honest reading of
+            // "unused": a client we have never seen authenticate is as idle as
+            // its registration is old. 0010 deliberately did not backfill the
+            // column, so this is also what every client registered before that
+            // migration gets.
+            //
+            // The interval is built with `make_interval` from a value the
+            // *operator* stored through a validating API, never from a request:
+            // `RegistrationPolicy::from_json` refuses anything that is not a
+            // positive integer, and the cast is to `bigint` so a document that
+            // somehow held a larger number errors rather than wrapping.
+            statement: "delete from clients where ctid = any (array(
+                            select c.ctid
+                              from clients c
+                              join tenants t on t.tenant_id = c.tenant_id
+                             where c.tenant_id = $1
+                               and (t.settings -> 'options' -> 'registration_policy'
+                                      ->> 'unused_client_expiry_seconds') is not null
+                               and coalesce(c.last_used_at, c.created_at) <=
+                                   $2 - make_interval(secs => (t.settings -> 'options'
+                                          -> 'registration_policy'
+                                          ->> 'unused_client_expiry_seconds')::bigint)
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
     },
     Retention {
         table: "client_keys",
@@ -433,6 +469,28 @@ pub const POLICY: &[Retention] = &[
             // answer "did the relying party get told" during an incident,
             // short enough that the payloads do not accumulate.
             grace: Duration::days(7),
+        },
+    },
+    Retention {
+        table: "initial_access_tokens",
+        rule: Rule::Sweep {
+            statement: "delete from initial_access_tokens where ctid = any (array(
+                            select ctid from initial_access_tokens
+                             where tenant_id = $1
+                               and expires_at is not null
+                               and expires_at <= $2
+                             limit $3))",
+            // An expired initial access token admits nobody (`ast-cu3`), so
+            // the row is only a digest and a spent counter. It is swept and
+            // not kept because it is a *credential* record: keeping the
+            // digests of every token a tenant ever issued turns a database
+            // dump into a list of guesses worth checking against every other
+            // deployment the operator runs.
+            //
+            // A token with no expiry is not swept at any age. `null` there
+            // means "until it is deleted", and deleting one on a timer would
+            // stop registrations an operator believes are still arranged.
+            grace: Duration::ZERO,
         },
     },
     Retention {

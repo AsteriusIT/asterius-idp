@@ -7043,7 +7043,9 @@ mod client_configuration {
 
 mod retention {
     use super::*;
-    use asterius_store_pg::{POLICY, PgRetention, Rule, SweepOutcome};
+    use asterius_domain::ClientId;
+    use asterius_domain::ports::ClientUsageRecorder as _;
+    use asterius_store_pg::{POLICY, PgClientUsage, PgRetention, Rule, SweepOutcome};
     use time::Duration;
 
     fn sweeper(pool: &PgPool) -> PgRetention {
@@ -7103,24 +7105,40 @@ mod retention {
             ("fresh", now() + Duration::hours(1)),
         ] {
             seed_expiring_rows(pool, tenant, user, grant, label, expires).await;
+            // Called here rather than from `seed_expiring_rows`, which is at
+            // clippy's line ceiling: this row belongs to the same stale/fresh
+            // pair and to no other fixture.
+            seed_initial_access_token(pool, tenant, label, expires).await;
         }
         seed_outbox(pool, tenant).await;
     }
 
     /// The rows everything else hangs off: the tenant, one client, one user and
-    /// one grant. None of them is swept.
+    /// one grant. Only the idle client below is swept.
     async fn seed_owners(pool: &PgPool, tenant: &str, user: uuid::Uuid, grant: uuid::Uuid) {
         seed_tenant(pool, tenant).await;
+        // The tenant asked for idle clients to be swept (`ast-cu3`). Without
+        // this the `clients` rule matches nothing at all, which is the default
+        // and which would leave the table-by-table criterion below asserting
+        // over a rule no tenant has switched on.
+        seed_unused_client_expiry(pool, tenant, Duration::days(30)).await;
 
         sqlx::query(
             "insert into clients (tenant_id, client_id, client_name,
-                                  token_endpoint_auth_method, jwks)
-             values ($1, 'billing', 'Billing', 'private_key_jwt', '{\"keys\":[]}'::jsonb)",
+                                  token_endpoint_auth_method, jwks, last_used_at)
+             values ($1, 'billing', 'Billing', 'private_key_jwt', '{\"keys\":[]}'::jsonb, $2)",
         )
         .bind(tenant)
+        .bind(now())
         .execute(pool)
         .await
         .expect("seed client");
+
+        // The one row the `clients` rule is allowed to take: a client nobody
+        // has authenticated as since well before the tenant's window. It owns
+        // nothing else, so its deletion cascades over no other seeded row and
+        // the per-table counts stay readable.
+        seed_idle_client(pool, tenant, "abandoned", now() - Duration::days(90)).await;
 
         sqlx::query("insert into users (tenant_id, user_id, username) values ($1, $2, 'alice')")
             .bind(tenant)
@@ -7460,6 +7478,76 @@ mod retention {
         count > 0
     }
 
+    /// One initial access token of `tenant`, expiring at `expires` (`ast-cu3`).
+    ///
+    /// The expiry is the whole rule: past it the row is only a digest and a
+    /// spent counter, and keeping the digest of every token a tenant ever
+    /// issued turns a database dump into a list of guesses worth trying
+    /// against every other deployment the operator runs.
+    ///
+    /// The digest is derived from the tenant *and* the label, because
+    /// `token_hash` is unique across the deployment and not merely within a
+    /// tenant: the tests that sweep two tenants in one schema would otherwise
+    /// collide on it. It is computed in SQL rather than in Rust because what
+    /// this fixture needs is thirty-two bytes that satisfy the column's check,
+    /// not a credential anybody presents.
+    async fn seed_initial_access_token(
+        pool: &PgPool,
+        tenant: &str,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into initial_access_tokens (id, tenant_id, label, token_hash,
+                                                max_uses, expires_at, created_by)
+             values ($1, $2, $3, sha256(convert_to($2 || ':' || $3, 'UTF8')), 5, $4, 'seed')",
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(tenant)
+        .bind(label)
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed initial access token");
+    }
+
+    /// Stores `unused_client_expiry_seconds` on the tenant's settings.
+    ///
+    /// Written where the settings repository writes it —
+    /// `settings -> 'options' -> 'registration_policy'` — because the sweep
+    /// reads that path in SQL, and a fixture that put the number anywhere else
+    /// would make the rule look broken.
+    async fn seed_unused_client_expiry(pool: &PgPool, tenant: &str, expiry: Duration) {
+        sqlx::query(
+            "update tenants
+                set settings = coalesce(settings, '{}'::jsonb)
+                               || jsonb_build_object('options', jsonb_build_object(
+                                      'registration_policy', jsonb_build_object(
+                                          'unused_client_expiry_seconds', $2::bigint)))
+              where tenant_id = $1",
+        )
+        .bind(tenant)
+        .bind(expiry.whole_seconds())
+        .execute(pool)
+        .await
+        .expect("seed the tenant's registration policy");
+    }
+
+    /// A client last used at `last_used_at`, owning nothing else.
+    async fn seed_idle_client(pool: &PgPool, tenant: &str, id: &str, last_used_at: OffsetDateTime) {
+        sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks, last_used_at)
+             values ($1, $2, 'Abandoned', 'private_key_jwt', '{\"keys\":[]}'::jsonb, $3)",
+        )
+        .bind(tenant)
+        .bind(id)
+        .bind(last_used_at)
+        .execute(pool)
+        .await
+        .expect("seed idle client");
+    }
+
     /// The outbox is aged rather than expiring, and only a terminal row is ever
     /// swept: `pending` is work still owed, however old it looks.
     async fn seed_outbox(pool: &PgPool, tenant: &str) {
@@ -7589,6 +7677,182 @@ mod retention {
                     "{table} is kept by the policy but the sweep emptied it"
                 );
             }
+        }
+    }
+
+    db_test! {
+        /// **`ast-cu3`'s second acceptance criterion.** A client nobody has
+        /// authenticated as since the tenant's `unused_client_expiry_seconds`
+        /// is swept.
+        ///
+        /// The setting has been stored and validated since `ast-m9c.6` and
+        /// read by nothing, which is the worst state for a security control:
+        /// an operator who typed it believed idle registrations were being
+        /// retired and they were not.
+        async fn an_unused_client_is_swept_once_the_tenants_window_has_passed(db) {
+            seed(&db.pool, "demo").await;
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            let remaining: i64 = sqlx::query_scalar(
+                "select count(*) from clients where tenant_id = $1 and client_id = 'abandoned'",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count the abandoned client");
+            assert_eq!(remaining, 0, "a client idle for ninety days was kept");
+        }
+    }
+
+    db_test! {
+        /// The other half, and the one that matters: a client used this
+        /// morning is not swept. Deleting a live client takes its keys, its
+        /// redirect URIs and every grant made through it, and there is no
+        /// undo.
+        async fn a_recently_used_client_is_not_swept(db) {
+            seed(&db.pool, "demo").await;
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            let remaining: i64 = sqlx::query_scalar(
+                "select count(*) from clients where tenant_id = $1 and client_id = 'billing'",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count the live client");
+            assert_eq!(remaining, 1, "a client used today was swept");
+        }
+    }
+
+    db_test! {
+        /// A tenant that never asked keeps every client, however old.
+        ///
+        /// This is the default and it is the one that must not regress: the
+        /// rule is opt-in per tenant, and a bug that made it unconditional
+        /// would delete registrations across a whole deployment on the next
+        /// sweep.
+        async fn a_tenant_with_no_expiry_policy_keeps_an_idle_client(db) {
+            seed_tenant(&db.pool, "quiet").await;
+            seed_idle_client(&db.pool, "quiet", "ancient", now() - Duration::days(3650)).await;
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("quiet"), now())
+                .await
+                .expect("sweep");
+
+            let remaining: i64 = sqlx::query_scalar(
+                "select count(*) from clients where tenant_id = $1 and client_id = 'ancient'",
+            )
+            .bind("quiet")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count the ancient client");
+            assert_eq!(
+                remaining, 1,
+                "a tenant that set no expiry had a client deleted by the timer"
+            );
+        }
+    }
+
+    db_test! {
+        /// A client that has never authenticated is as idle as its
+        /// registration is old: 0010 did not backfill `last_used_at`, so
+        /// `null` has to be read as `created_at` rather than as "used now".
+        async fn a_client_that_has_never_authenticated_is_dated_by_its_registration(db) {
+            seed_tenant(&db.pool, "fresh").await;
+            seed_unused_client_expiry(&db.pool, "fresh", Duration::days(30)).await;
+            sqlx::query(
+                "insert into clients (tenant_id, client_id, client_name,
+                                      token_endpoint_auth_method, jwks, created_at, last_used_at)
+                 values ($1, 'never-used', 'Never used', 'private_key_jwt',
+                         '{\"keys\":[]}'::jsonb, $2, null)",
+            )
+            .bind("fresh")
+            .bind(now() - Duration::days(90))
+            .execute(&db.pool)
+            .await
+            .expect("seed a client that has never authenticated");
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("fresh"), now())
+                .await
+                .expect("sweep");
+
+            let remaining: i64 = sqlx::query_scalar(
+                "select count(*) from clients where tenant_id = $1 and client_id = 'never-used'",
+            )
+            .bind("fresh")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count the never-used client");
+            assert_eq!(remaining, 0, "a client registered ninety days ago and never used was kept");
+        }
+    }
+
+    db_test! {
+        /// Recording a use is what makes the rule safe, and it has to move the
+        /// instant forward on a client whose column is still null (`ast-cu3`).
+        async fn recording_a_use_dates_a_client_that_had_never_been_used(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_idle_client(&db.pool, "demo", "quiet", now() - Duration::days(90)).await;
+
+            PgClientUsage::new(db.pool.clone())
+                .record_use(&TenantId::new("demo"), &ClientId::new("quiet"), now())
+                .await
+                .expect("record a use");
+
+            let recorded: Option<OffsetDateTime> = sqlx::query_scalar(
+                "select last_used_at from clients where tenant_id = $1 and client_id = 'quiet'",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read last_used_at");
+            assert_eq!(recorded, Some(now()), "a use was not recorded");
+        }
+    }
+
+    db_test! {
+        /// The second use inside the granularity window writes nothing, which
+        /// is what keeps this off the token endpoint's hot path.
+        async fn a_second_use_inside_the_window_does_not_write(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_idle_client(&db.pool, "demo", "busy", now() - Duration::days(90)).await;
+            let usage = PgClientUsage::new(db.pool.clone());
+            usage
+                .record_use(&TenantId::new("demo"), &ClientId::new("busy"), now())
+                .await
+                .expect("record a use");
+
+            usage
+                .record_use(
+                    &TenantId::new("demo"),
+                    &ClientId::new("busy"),
+                    now() + Duration::minutes(1),
+                )
+                .await
+                .expect("record a second use");
+
+            let recorded: Option<OffsetDateTime> = sqlx::query_scalar(
+                "select last_used_at from clients where tenant_id = $1 and client_id = 'busy'",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read last_used_at");
+            assert_eq!(
+                recorded,
+                Some(now()),
+                "a use inside the granularity window rewrote the row"
+            );
         }
     }
 

@@ -56,12 +56,12 @@ use crate::http::software_statement;
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::keys::SigningAlgorithm;
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::{InitialAccessTokenStore, JwksFetcher};
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration, ClientRegistry,
-    ClientStatus, JwksSource, KeyStore, OpaqueToken, PolicyViolation,
-    RegistrationMode as DomainRegistrationMode, RegistrationPolicy as TenantRegistrationPolicy,
-    Tenant, ct_eq, sha256,
+    ClientStatus, InitialAccessTokenReservation, JwksSource, KeyStore, OpaqueToken,
+    PolicyViolation, RegistrationMode as DomainRegistrationMode,
+    RegistrationPolicy as TenantRegistrationPolicy, Tenant, ct_eq, sha256,
 };
 use asterius_oidc::metadata::Endpoint;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -418,6 +418,16 @@ pub struct RegisterContext<'a> {
     /// its key server is up. The port is ADR-0006's single outbound path, held
     /// as a port so the rule can be tested without a socket.
     pub outbound: &'a dyn JwksFetcher,
+    /// This tenant's own initial access tokens (`ast-cu3`), when a store is
+    /// wired.
+    ///
+    /// Consulted for one question — may this bearer credential create a client
+    /// *here* — and only when the tenant has named `initial_access_token` as
+    /// its own mode. A deployment with no store wired refuses such a tenant
+    /// rather than falling back to the strings in `asterius.toml`: falling back
+    /// would mean a tenant that asked for its own credentials silently accepted
+    /// another tenant's.
+    pub initial_access_tokens: Option<&'a dyn InitialAccessTokenStore>,
     /// Where the registration decision is recorded.
     pub audit: &'a dyn AuditSink,
     /// The request id, for correlating the audit record with the access log.
@@ -439,7 +449,37 @@ pub async fn register(
     body: &Bytes,
     now: OffsetDateTime,
 ) -> Response {
-    if let Some(refusal) = inadmissible(&context, headers, body) {
+    // Authorization first, and — when the tenant issues its own credentials —
+    // *charged* first. Everything below can still refuse the request, so the
+    // charge is given back at the one place a refusal leaves this function.
+    let reserved = match admit(&context, headers, now).await {
+        Ok(reserved) => reserved,
+        Err(refusal) => return *refusal,
+    };
+
+    let response = registered(&context, headers, body, now).await;
+
+    if !response.status().is_success()
+        && let Some(id) = reserved
+    {
+        release(&context, id).await;
+    }
+    response
+}
+
+/// The registration itself, once the caller has been admitted.
+///
+/// Split from [`register`] so that the quota charged by [`admit`] has exactly
+/// one place to be given back: a refusal returned from anywhere below is still
+/// a `Response` that passes through the caller above, and no future early
+/// return can forget to release a reservation.
+async fn registered(
+    context: &RegisterContext<'_>,
+    headers: &HeaderMap,
+    body: &Bytes,
+    now: OffsetDateTime,
+) -> Response {
+    if let Some(refusal) = inadmissible(headers, body) {
         return refusal;
     }
 
@@ -447,7 +487,7 @@ pub async fn register(
     // so it is resolved *before* the document is validated — what the validator
     // sees is what the issuer asserted, and a statement therefore cannot
     // register anything a plain document could not.
-    let merged = match asserted_document(&context, body, now).await {
+    let merged = match asserted_document(context, body, now).await {
         Ok(merged) => merged,
         Err(response) => return *response,
     };
@@ -466,7 +506,7 @@ pub async fn register(
             // amplification primitive pointed at the one table that cannot be
             // deleted from.
             record(
-                &context,
+                context,
                 now,
                 Outcome::Failure,
                 None,
@@ -479,7 +519,7 @@ pub async fn register(
     };
 
     // The three checks the validated document does not answer on its own.
-    if let Some(refusal) = unacceptable(&context, now, &registration).await {
+    if let Some(refusal) = unacceptable(context, now, &registration).await {
         return refusal;
     }
 
@@ -513,7 +553,7 @@ pub async fn register(
                 "cannot store a client registration"
             );
             record(
-                &context,
+                context,
                 now,
                 Outcome::Failure,
                 None,
@@ -536,7 +576,7 @@ pub async fn register(
     };
 
     record(
-        &context,
+        context,
         now,
         Outcome::Success,
         Some(stored.id.clone()),
@@ -564,24 +604,127 @@ pub async fn register(
         .into_response()
 }
 
-/// Everything decided before a byte of the body is parsed.
+/// Whether the caller may register here at all, and at whose expense.
 ///
-/// Authorization first, so that nothing after it is work an unauthorized caller
-/// can make this process do — not a JSON parse, not an allocation the size of
-/// the body, not an audit row. Then the two framing rules RFC 7591 §3 gives: a
-/// bounded body and `application/json`.
+/// Authorization first, so that nothing after it is work an unauthorized
+/// caller can make this process do — not a JSON parse, not an allocation the
+/// size of the body, not an audit row.
 ///
-/// `Some` is the response to return.
-fn inadmissible(
+/// Two doors, and which one is used is decided by the *tenant's own* mode
+/// rather than by the effective one:
+///
+/// * A tenant that names `initial_access_token` itself is admitted from its
+///   own table (`ast-cu3`). The credentials an operator configured belong to
+///   the deployment and are refused here, because a tenant that asked to
+///   control who registers has not agreed to accept a string provisioned for
+///   somebody else.
+/// * Every other tenant — including one that has no policy of its own — keeps
+///   exactly the behaviour the deployment configured, credentials included.
+///
+/// The two are never combined. Trying the table and then falling back to the
+/// deployment's tokens would be an "or" between two credential sets, which is
+/// the widest possible reading of a setting whose whole purpose is to narrow.
+///
+/// `Ok(Some(id))` is a token row that has been charged one use and must be
+/// released if the registration does not complete; `Ok(None)` is an admission
+/// that cost nothing. `Err` is the response to return.
+async fn admit(
     context: &RegisterContext<'_>,
     headers: &HeaderMap,
-    body: &Bytes,
-) -> Option<Response> {
-    let mode = context.tenant_policy.effective_mode(context.policy.mode());
-    if let Err(denial) = context.policy.admit_as(mode, headers) {
-        return Some(refusal(denial));
+    now: OffsetDateTime,
+) -> Result<Option<uuid::Uuid>, Box<Response>> {
+    let effective = context.tenant_policy.effective_mode(context.policy.mode());
+    let tenant_gated =
+        context.tenant_policy.mode() == Some(DomainRegistrationMode::InitialAccessToken);
+
+    if tenant_gated && effective == DomainRegistrationMode::InitialAccessToken {
+        return admit_from_store(context, headers, now).await;
     }
 
+    context
+        .policy
+        .admit_as(effective, headers)
+        .map(|()| None)
+        .map_err(|denial| Box::new(refusal(denial)))
+}
+
+/// Admits a caller against this tenant's own initial access tokens.
+///
+/// The three ways a token can fail — unknown, expired, spent — are collapsed
+/// into one `invalid_token`, for the reason
+/// [`asterius_domain::InitialAccessTokenReservation`] gives: this endpoint is
+/// reachable without a credential, and an answer that distinguished them would
+/// be an oracle over the credential space. They are not audited either, for
+/// the reason [`registered`] states about denials reached before a caller has
+/// proved anything.
+async fn admit_from_store(
+    context: &RegisterContext<'_>,
+    headers: &HeaderMap,
+    now: OffsetDateTime,
+) -> Result<Option<uuid::Uuid>, Box<Response>> {
+    let Some(store) = context.initial_access_tokens else {
+        // A tenant asking for per-tenant credentials in a process that cannot
+        // read them registers nobody. Refusing is the safe direction and it is
+        // also the honest one: there is no token anybody could present.
+        tracing::error!(
+            tenant = %context.tenant.id,
+            "this tenant registers on its own initial access tokens, but no store is wired"
+        );
+        return Err(Box::new(refusal(Denial::Invalid)));
+    };
+    let Some(presented) = bearer(headers) else {
+        return Err(Box::new(refusal(Denial::Missing)));
+    };
+
+    // Hashed before it leaves this function, so the only form of the credential
+    // that reaches the store — or a query log — is a digest.
+    let digest = sha256(presented.as_bytes());
+    match store.reserve(&context.tenant.id, &digest, now).await {
+        Ok(InitialAccessTokenReservation::Reserved { id, .. }) => Ok(Some(id)),
+        Ok(_) => Err(Box::new(refusal(Denial::Invalid))),
+        Err(failure) => {
+            tracing::error!(
+                %failure,
+                tenant = %context.tenant.id,
+                "cannot read this tenant's initial access tokens"
+            );
+            // Not `invalid_token`: the credential was never looked at. Telling
+            // a caller its token was rejected during an outage would have it
+            // throw away a token that still works.
+            Err(Box::new(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                "the registration could not be authorized",
+            )))
+        }
+    }
+}
+
+/// Gives back the use [`admit`] charged, after a registration that did not
+/// happen.
+///
+/// A failure is logged and not returned: the caller is already being refused
+/// for its own reason, and turning "we could not give your quota back" into a
+/// different error would tell it nothing it can act on. The cost of the gap is
+/// one unit of quota on one token, which an operator can see in the list.
+async fn release(context: &RegisterContext<'_>, id: uuid::Uuid) {
+    let Some(store) = context.initial_access_tokens else {
+        return;
+    };
+    if let Err(failure) = store.release(&context.tenant.id, id).await {
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            "an initial access token was charged for a registration that did not happen"
+        );
+    }
+}
+
+/// The two framing rules RFC 7591 §3 gives: a bounded body and
+/// `application/json`.
+///
+/// `Some` is the response to return.
+fn inadmissible(headers: &HeaderMap, body: &Bytes) -> Option<Response> {
     if body.len() > MAX_BODY_BYTES {
         return Some(error(
             StatusCode::PAYLOAD_TOO_LARGE,

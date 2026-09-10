@@ -12,9 +12,10 @@
 use asterius_domain::RegistrationPolicy as TenantRegistrationPolicy;
 use asterius_domain::audit::{AuditEvent, AuditSink, DetailValue, EventType, Outcome};
 use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::{InitialAccessTokenStore, JwksFetcher};
 use asterius_domain::{
-    Capabilities, Client, ClientRegistry, DomainError, Issuer, KeyStore, Kid, PublicKeyRecord,
+    Capabilities, Client, ClientRegistry, DomainError, InitialAccessToken,
+    InitialAccessTokenReservation, Issuer, KeyStore, Kid, NewInitialAccessToken, PublicKeyRecord,
     Tenant, TenantId, TenantStatus, sha256,
 };
 use asterius_jose::jws;
@@ -281,6 +282,7 @@ async fn post_under(
             keys: &FakeKeys::provisioned(),
             capabilities: Capabilities::default(),
             policy,
+            initial_access_tokens: None,
             audit,
             outbound,
             request_id: Some("req-1"),
@@ -295,6 +297,148 @@ async fn post_under(
 /// A tenant policy from a stored document.
 fn tenant_policy(document: &Value) -> TenantRegistrationPolicy {
     TenantRegistrationPolicy::from_json(Some(document)).expect("the test policy is valid")
+}
+
+/// One tenant's initial access tokens, in memory (`ast-cu3`).
+///
+/// Reserving is the whole point of the fake, so it enforces the quota and the
+/// expiry rather than answering `Reserved` to anything: a fake that always
+/// admitted would make every test below pass against an endpoint that never
+/// looked at the row.
+#[derive(Debug, Default)]
+struct FakeInitialAccessTokens {
+    rows: Mutex<Vec<(TenantId, [u8; 32], InitialAccessToken)>>,
+}
+
+impl FakeInitialAccessTokens {
+    /// Stores a token of `tenant` with the given quota and expiry.
+    fn holding(
+        tenant: &TenantId,
+        token: &str,
+        max_uses: Option<u32>,
+        expires_at: Option<OffsetDateTime>,
+    ) -> Self {
+        let store = Self::default();
+        store.rows.lock().expect("lock").push((
+            tenant.clone(),
+            sha256(token.as_bytes()),
+            InitialAccessToken {
+                id: uuid::Uuid::from_u128(0xa5),
+                tenant: tenant.clone(),
+                label: "onboarding".to_owned(),
+                uses: 0,
+                max_uses,
+                expires_at,
+                created_at: now(),
+            },
+        ));
+        store
+    }
+
+    /// How many uses have been charged against the only token in the store.
+    fn uses(&self) -> u32 {
+        self.rows.lock().expect("lock")[0].2.uses
+    }
+}
+
+#[async_trait::async_trait]
+impl InitialAccessTokenStore for FakeInitialAccessTokens {
+    async fn issue(
+        &self,
+        _token: &NewInitialAccessToken,
+    ) -> Result<InitialAccessToken, DomainError> {
+        unimplemented!("the registration endpoint never issues")
+    }
+
+    async fn reserve(
+        &self,
+        tenant: &TenantId,
+        digest: &[u8; 32],
+        now: OffsetDateTime,
+    ) -> Result<InitialAccessTokenReservation, DomainError> {
+        let mut rows = self.rows.lock().expect("lock");
+        let Some((_, _, row)) = rows
+            .iter_mut()
+            .find(|(owner, stored, _)| owner == tenant && stored == digest)
+        else {
+            return Ok(InitialAccessTokenReservation::Unknown);
+        };
+        if row.expires_at.is_some_and(|at| at <= now) {
+            return Ok(InitialAccessTokenReservation::Expired);
+        }
+        if row.remaining() == Some(0) {
+            return Ok(InitialAccessTokenReservation::Exhausted);
+        }
+        row.uses += 1;
+        Ok(InitialAccessTokenReservation::Reserved {
+            id: row.id,
+            remaining: row.remaining(),
+        })
+    }
+
+    async fn release(&self, tenant: &TenantId, id: uuid::Uuid) -> Result<(), DomainError> {
+        let mut rows = self.rows.lock().expect("lock");
+        if let Some((_, _, row)) = rows
+            .iter_mut()
+            .find(|(owner, _, row)| owner == tenant && row.id == id)
+        {
+            row.uses = row.uses.saturating_sub(1);
+        }
+        Ok(())
+    }
+
+    async fn list(&self, _tenant: &TenantId) -> Result<Vec<InitialAccessToken>, DomainError> {
+        unimplemented!("the registration endpoint never lists")
+    }
+}
+
+/// [`post_under`], with this tenant's own initial access tokens wired.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per collaborator, \
+    and the endpoint context genuinely has this many; wrapping them in a \
+    struct here would only move the list"
+)]
+async fn post_gated_by(
+    tokens: &dyn InitialAccessTokenStore,
+    tenant_policy: &TenantRegistrationPolicy,
+    policy: &RegistrationPolicy,
+    registry: &FakeRegistry,
+    audit: &FakeAudit,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    register(
+        RegisterContext {
+            tenant_policy,
+            tenant: &tenant(),
+            clients: registry,
+            keys: &FakeKeys::provisioned(),
+            capabilities: Capabilities::default(),
+            policy,
+            initial_access_tokens: Some(tokens),
+            audit,
+            outbound: &FakeOutbound::default(),
+            request_id: Some("req-1"),
+        },
+        headers,
+        &Bytes::copy_from_slice(body),
+        now(),
+    )
+    .await
+}
+
+/// The document a per-tenant gate test registers: [`document`], serialised.
+fn gated_document() -> Vec<u8> {
+    serde_json::to_vec(&document()).expect("serialise the document")
+}
+
+/// A tenant that gates itself on its own tokens, with a per-token quota.
+fn tenant_gate(quota: u32) -> TenantRegistrationPolicy {
+    tenant_policy(&json!({
+        "mode": "initial_access_token",
+        "max_clients_per_initial_access_token": quota,
+    }))
 }
 
 /// The same request against a tenant holding a chosen set of signing keys.
@@ -315,6 +459,7 @@ async fn post_to(
             keys,
             capabilities: Capabilities::default(),
             policy,
+            initial_access_tokens: None,
             audit,
             outbound,
             request_id: Some("req-1"),
@@ -1501,5 +1646,253 @@ async fn a_tenant_cannot_open_a_gated_deployment() {
 
     // Assert
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(registry.written().is_empty());
+}
+
+// ---- the per-tenant gate (`ast-cu3`) --------------------------------------
+
+/// The acceptance criterion this ticket exists for: a tenant that has narrowed
+/// itself to `initial_access_token` admits the token *it* was issued, and the
+/// quota it configured is charged.
+///
+/// Before `ast-cu3` this combination refused everybody, because the only
+/// credentials the endpoint could compare against were the deployment's, and a
+/// tenant has none of those.
+#[tokio::test]
+async fn a_tenant_issued_token_registers_a_client_and_charges_the_quota() {
+    // Arrange
+    let tokens = FakeInitialAccessTokens::holding(&tenant().id, TOKEN, Some(2), None);
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+
+    // Act
+    let response = post_gated_by(
+        &tokens,
+        &tenant_gate(2),
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &gated_document(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(registry.written().len(), 1);
+    assert_eq!(
+        tokens.uses(),
+        1,
+        "the registration did not charge the token"
+    );
+}
+
+/// The quota is the point of the setting: past it, RFC 7591 §3.2.2 defers to
+/// RFC 6750 §3.1 and the answer is a 401 `invalid_token`.
+#[tokio::test]
+async fn a_token_at_its_quota_is_refused() {
+    // Arrange
+    let tokens = FakeInitialAccessTokens::holding(&tenant().id, TOKEN, Some(1), None);
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let spend = async || {
+        post_gated_by(
+            &tokens,
+            &tenant_gate(1),
+            &RegistrationPolicy::Open,
+            &registry,
+            &audit,
+            &json_headers(Some(&format!("Bearer {TOKEN}"))),
+            &gated_document(),
+        )
+        .await
+    };
+    assert_eq!(spend().await.status(), StatusCode::CREATED);
+
+    // Act
+    let refused = spend().await;
+
+    // Assert
+    assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        refused
+            .headers()
+            .get(header::WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok()),
+        Some(r#"Bearer error="invalid_token""#)
+    );
+    assert_eq!(body_of(refused).await["error"], json!("invalid_token"));
+    assert_eq!(
+        registry.written().len(),
+        1,
+        "a client was registered past the quota"
+    );
+}
+
+/// An expiry a clock enforces, which is the other thing a configuration file
+/// could not express.
+#[tokio::test]
+async fn an_expired_token_is_refused() {
+    // Arrange
+    let tokens = FakeInitialAccessTokens::holding(
+        &tenant().id,
+        TOKEN,
+        Some(5),
+        Some(now() - time::Duration::seconds(1)),
+    );
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+
+    // Act
+    let response = post_gated_by(
+        &tokens,
+        &tenant_gate(5),
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &gated_document(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(registry.written().is_empty());
+}
+
+/// The deployment's own credentials do not open a tenant that gates itself.
+///
+/// This is the direction that would otherwise be easy to get wrong: falling
+/// back to the configured tokens when the table has no match would let an
+/// operator's string register clients at a tenant that asked to control its own
+/// registrations.
+#[tokio::test]
+async fn a_deployment_token_is_refused_at_a_tenant_that_gates_itself() {
+    // Arrange: the store holds a *different* token; TOKEN is the deployment's.
+    let tokens =
+        FakeInitialAccessTokens::holding(&tenant().id, "a-token-of-this-tenant", None, None);
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let deployment = RegistrationPolicy::Gated(InitialAccessTokens::from_tokens([TOKEN]));
+
+    // Act
+    let response = post_gated_by(
+        &tokens,
+        &tenant_gate(5),
+        &deployment,
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &gated_document(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(registry.written().is_empty());
+}
+
+/// The other half of the criterion: a tenant with no policy of its own is still
+/// admitted by the deployment's tokens, exactly as before.
+#[tokio::test]
+async fn a_tenant_with_no_policy_still_uses_the_deployment_tokens() {
+    // Arrange
+    let tokens = FakeInitialAccessTokens::default();
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let deployment = RegistrationPolicy::Gated(InitialAccessTokens::from_tokens([TOKEN]));
+
+    // Act
+    let response = post_gated_by(
+        &tokens,
+        &TenantRegistrationPolicy::default(),
+        &deployment,
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &gated_document(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(registry.written().len(), 1);
+}
+
+/// A refused document gives the quota back. The token bought a *client*, and a
+/// registration that produced none must not have cost one.
+#[tokio::test]
+async fn a_refused_document_does_not_spend_the_quota() {
+    // Arrange
+    let tokens = FakeInitialAccessTokens::holding(&tenant().id, TOKEN, Some(1), None);
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+
+    // Act
+    let refused = post_gated_by(
+        &tokens,
+        &tenant_gate(1),
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        br#"{"redirect_uris": ["http://insecure.example/cb"]}"#,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(tokens.uses(), 0, "a refused document spent a use");
+}
+
+/// A tenant that gates itself in a process with no store registers nobody,
+/// rather than falling through to whatever the deployment configured.
+#[tokio::test]
+async fn a_tenant_gate_with_no_store_wired_refuses_everybody() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let deployment = RegistrationPolicy::Gated(InitialAccessTokens::from_tokens([TOKEN]));
+
+    // Act
+    let response = post_under(
+        &tenant_gate(5),
+        &FakeOutbound::default(),
+        &deployment,
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &gated_document(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(registry.written().is_empty());
+}
+
+/// A tenant that gates itself inside a *closed* deployment is still closed: the
+/// tenant may only narrow what the deployment allows.
+#[tokio::test]
+async fn a_tenant_gate_cannot_open_a_closed_deployment() {
+    // Arrange
+    let tokens = FakeInitialAccessTokens::holding(&tenant().id, TOKEN, None, None);
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+
+    // Act
+    let response = post_gated_by(
+        &tokens,
+        &tenant_gate(5),
+        &RegistrationPolicy::Closed,
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &gated_document(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert!(registry.written().is_empty());
 }
