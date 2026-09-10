@@ -72,13 +72,11 @@ fi
 # than none, because it answers "is this covered?" with a confident yes that
 # stopped being true. So the file is rendered by a script and this compares the
 # two, the way `config_reference.rs` does for `docs/configuration.md`.
-if [[ "$status" -eq 0 ]]; then
-  if ! diff -u docs/fuzzing.md <(./scripts/gen-fuzzing-doc.sh) >/dev/null; then
-    echo "docs/fuzzing.md IS STALE:" >&2
-    diff -u docs/fuzzing.md <(./scripts/gen-fuzzing-doc.sh) >&2 || true
-    echo "  run: ./scripts/gen-fuzzing-doc.sh > docs/fuzzing.md" >&2
-    status=1
-  fi
+if ! diff -u docs/fuzzing.md <(./scripts/gen-fuzzing-doc.sh) >/dev/null; then
+  echo "docs/fuzzing.md IS STALE:" >&2
+  diff -u docs/fuzzing.md <(./scripts/gen-fuzzing-doc.sh) >&2 || true
+  echo "  run: ./scripts/gen-fuzzing-doc.sh > docs/fuzzing.md" >&2
+  status=1
 fi
 
 # The same formatting rules as the workspace.
@@ -88,15 +86,13 @@ fi
 # the root nor `fuzz/` has a `rustfmt.toml`, so both sides are plain rustfmt
 # defaults and stay in step on their own — do not add one to `fuzz/` without
 # adding the same file at the root.
-if [[ "$status" -eq 0 ]]; then
-  echo "checking that every fuzz target is formatted..."
-  if cargo fmt --manifest-path fuzz/Cargo.toml --check; then
-    echo "fuzz targets formatted"
-  else
-    echo "FUZZ TARGET NOT FORMATTED: see the diff above" >&2
-    echo "  run: cargo fmt --manifest-path fuzz/Cargo.toml" >&2
-    status=1
-  fi
+echo "checking that every fuzz target is formatted..."
+if cargo fmt --manifest-path fuzz/Cargo.toml --check; then
+  echo "fuzz targets formatted"
+else
+  echo "FUZZ TARGET NOT FORMATTED: see the diff above" >&2
+  echo "  run: cargo fmt --manifest-path fuzz/Cargo.toml" >&2
+  status=1
 fi
 
 # A target that does not compile covers nothing, however present its file is.
@@ -113,30 +109,36 @@ fi
 # version asked for nightly and merely warned when it was absent, so on the
 # `lint` job — which installs stable — this gate reported a skip and passed,
 # which is how it managed to exist while `jws_parse.rs` was broken.
-if [[ "$status" -eq 0 ]]; then
-  echo "checking that every fuzz target compiles and is lint-clean..."
-  # `CARGO_BUILD_TARGET` is unset for this build. If the environment points at
-  # a target whose standard library is not installed — a musl triple on a gnu
-  # host, say — this fails with "can't find crate for `core`", which says
-  # nothing about the code under test. The host default is what we want: the
-  # question here is whether the targets compile, not for what.
-  #
-  # `SQLX_OFFLINE` for the same reason clippy sets it: the targets reach
-  # `asterius-server`, whose queries are checked at compile time, and this gate
-  # must not need a database. `sqlx-check` proves the committed data is current.
-  #
-  # Clippy rather than `cargo check`: it answers the compile question too, for
-  # the same build, and it is the only lint pass the fuzz crate gets — the
-  # workspace-wide `cargo clippy --workspace` cannot see outside its own
-  # workspace either. `-D warnings`, as everywhere else in this repository.
-  if env -u CARGO_BUILD_TARGET SQLX_OFFLINE=true \
-       cargo clippy --manifest-path fuzz/Cargo.toml --bins --quiet -- -D warnings; then
-    echo "fuzz targets build and are lint-clean"
-  else
-    echo "FUZZ TARGET DOES NOT COMPILE OR TRIPS CLIPPY: see the errors above" >&2
-    echo "  a target that does not build covers nothing" >&2
-    status=1
-  fi
+#
+# It runs whatever the checks above concluded, and so does every check in this
+# script. They used to be chained behind `if [[ "$status" -eq 0 ]]`, which put
+# the most valuable one last and behind four others: a `docs/fuzzing.md` one
+# commit out of date was enough to stop this from ever building the targets, so
+# a run could report a stale inventory while a target that compiles for nothing
+# sat behind it, unmentioned. The same reasoning as `--keep-going` on the
+# workspace clippy job — one run should name every cause, not the first.
+#
+# `CARGO_BUILD_TARGET` is unset for this build. If the environment points at
+# a target whose standard library is not installed — a musl triple on a gnu
+# host, say — this fails with "can't find crate for `core`", which says
+# nothing about the code under test. The host default is what we want: the
+# question here is whether the targets compile, not for what.
+#
+# `SQLX_OFFLINE` for the same reason clippy sets it: the targets reach
+# `asterius-server`, whose queries are checked at compile time, and this gate
+# must not need a database. `sqlx-check` proves the committed data is current.
+#
+# Clippy rather than `cargo check`: it answers the compile question too, for
+# the same build, and it is the only lint pass the fuzz crate gets — the
+# workspace-wide `cargo clippy --workspace` cannot see outside its own
+# workspace either. `-D warnings`, as everywhere else in this repository.
+if env -u CARGO_BUILD_TARGET SQLX_OFFLINE=true \
+     cargo clippy --manifest-path fuzz/Cargo.toml --bins --quiet -- -D warnings; then
+  echo "fuzz targets build and are lint-clean"
+else
+  echo "FUZZ TARGET DOES NOT COMPILE OR TRIPS CLIPPY: see the errors above" >&2
+  echo "  a target that does not build covers nothing" >&2
+  status=1
 fi
 
 if [[ "$status" -eq 0 ]]; then
