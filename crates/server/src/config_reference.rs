@@ -452,7 +452,7 @@ fn features_section() -> Section {
                 (ADR-0003). One capability is missing from this table on purpose: \
                 `dynamic_client_registration` follows `[registration] mode` and has no \
                 key here, so that \"who may register\" is written once — see below.",
-        after: "",
+        after: GRANT_MANAGEMENT_PER_TENANT,
         keys: features(),
     }
 }
@@ -609,7 +609,7 @@ fn limits() -> Section {
                 interaction pages are not here: the sign-in behind them is bounded by \
                 `[login]`, and a second counter over the same requests would halve a \
                 number set once.",
-        after: "",
+        after: ACCOUNT_RECOVERY_AND_MAIL,
         keys: vec![
             key(
                 "window_seconds",
@@ -982,6 +982,72 @@ The value is parsed as a TOML scalar, so `true` and `16` mean what they say and
 anything that is not valid TOML on its own is taken as a string — which is what
 makes an unquoted connection URL work.
 ";
+
+/// The one Grant Management setting a tenant carries of its own (`ast-uwv.4`).
+/// Prose rather than a `[features]` row, because it is set per tenant through
+/// the admin API and not in this file at all.
+const GRANT_MANAGEMENT_PER_TENANT: &str = "\
+### Per-tenant Grant Management settings\n\
+\n\
+`features.grant_management` is the ceiling. A tenant may switch the feature off in its own settings like any other, and it carries one setting of its own:\n\
+\n\
+| Setting | Type | Default | Notes |\n\
+| --- | --- | --- | --- |\n\
+| `grant_management_action_required` | boolean | `false` | Grant Management ID1 §7.1. When true, an authorization request that names no `grant_management_action` is refused with `invalid_request`, and the discovery document publishes `grant_management_action_required: true`. Ignored — and never published — for a tenant that does not offer Grant Management, because a tenant cannot require a parameter it also ignores. |\n\
+\n\
+With `features.grant_management` off, `grant_id` and `grant_management_action` are ignored rather than refused, and the discovery document carries neither `grant_management_actions_supported` nor `grant_management_action_required`. A client that sends the parameters to such a deployment gets the ordinary authorization a server built before the draft would have given it.";
+
+/// What an operator must know before switching passwords on (`ast-2vk.10`).
+/// There is no key to document — recovery is mounted with the interaction
+/// pages — and that absence is exactly what an operator has to be told.
+const ACCOUNT_RECOVERY_AND_MAIL: &str = "\
+## Account recovery and mail — read this before enabling passwords\n\
+\n\
+**This repository ships no mail sender, and nothing you configure here will\n\
+make one appear.** Account recovery is built and wired; delivery is not.\n\
+\n\
+The recovery pages (`GET|POST /recovery`, `GET|POST /recovery/new`) are mounted\n\
+whenever the deployment has the database wiring for the interaction pages —\n\
+there is no flag. Requesting a link produces a real single-use token and hands\n\
+a message to the configured `MailSender`. The only adapter in this repository\n\
+is a **journal**: it writes the message to the transactional `outbox` table,\n\
+logs that it queued it, and delivers nothing. `delivered_at` stays null,\n\
+because it was not delivered.\n\
+\n\
+That shape is deliberate rather than a stub. A deployment gets a complete,\n\
+queryable record of which recovery links were produced and for whom, tests can\n\
+read the link a browser would have been mailed, and nobody is misled into\n\
+thinking mail works. Wiring a real sender means implementing\n\
+`asterius_domain::MailSender` — one method, `send(&Notification)` — and\n\
+substituting it where `asterius_store_pg::PgOutboxMailSender` is built. There\n\
+is deliberately no SMTP dependency anywhere in the protocol crates; the\n\
+layering check enforces that.\n\
+\n\
+**Operational consequences, in order of how much they will cost you:**\n\
+\n\
+* **Nobody can recover an account until you wire a sender.** Until then the\n\
+\x20\x20outbox is the only place the link exists — an operator can read it out and\n\
+\x20\x20pass it on, which is a manual process and should be treated as one.\n\
+* **Treat the outbox as a credential store.** An `account_recovery` row\n\
+\x20\x20contains a live reset link until the token behind it expires, fifteen minutes\n\
+\x20\x20later. Keep retention on that table short and its access narrow. The\n\
+\x20\x20retention sweep already ages it; the default is not tuned for this.\n\
+* **The mail path is now inside the trust boundary of every account with an\n\
+\x20\x20address.** A gateway that expands links to preview them will spend them. A\n\
+\x20\x20shared inbox is a shared account. See `docs/threat-model.md`, \"Account\n\
+\x20\x20recovery\".\n\
+* **Recovery sets a password.** An account whose only credential was a passkey\n\
+\x20\x20is recovered onto a weaker method. A deployment that wants passkeys only\n\
+\x20\x20should leave `[admin]`/password material unconfigured, which makes the\n\
+\x20\x20new-password step refuse rather than downgrade.\n\
+* **Requests are counted against `[login]`'s buckets**, not a limiter of their\n\
+\x20\x20own: a burst of reset requests for one identifier consumes the same budget a\n\
+\x20\x20burst of wrong passwords would. Size `login.max_failures_per_account` with\n\
+\x20\x20that in mind.\n\
+\n\
+Recovery mail is not the only thing the journal carries: a completed recovery\n\
+also queues a `credential_changed` notice to the account. That one has nothing\n\
+to click, on purpose.";
 
 /// Outbound traffic that no key switches on. Prose, because there is nothing to
 /// configure — and here anyway, because it is traffic this deployment sends to

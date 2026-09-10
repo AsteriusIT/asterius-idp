@@ -74,8 +74,8 @@ pub use ports::{
     ClientConfiguration, ClientRegistry, ClientRepository, ClientUsageRecorder, CodeIssuer,
     CredentialVerifier, GrantAmendments, GrantRepository, InitialAccessTokenStore,
     InteractionRepository, ManagedClient, PasskeyRepository, PreviousRegistrationAccessToken,
-    RecoveryTokenStore, ReplayCheck, ReplayGuard, ReplayPurpose, ResourceServerRepository, SessionRepository,
-    SubjectResolver, TenantSettingsRepository, UserDirectory,
+    RecoveryTokenStore, ReplayCheck, ReplayGuard, ReplayPurpose, ResourceServerRepository,
+    SessionRepository, SubjectResolver, TenantSettingsRepository, UserDirectory,
 };
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,
