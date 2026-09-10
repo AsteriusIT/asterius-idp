@@ -45,12 +45,13 @@
   },
   "browser": [
     {
+      "comment": "The nominal browser leg: sign in, allow, and let the callback page post itself back to the suite.",
       "match": "https://asterius:9443/t/conformance/authorize*",
       "tasks": [
         {
           "task": "Login",
           "optional": true,
-          "match": "https://asterius:9443/interaction/*",
+          "match": "https://asterius:9443/t/conformance/interaction/*",
           "commands": [
             ["text", "name", "username", "conformance@example.test", "optional"],
             ["text", "name", "password", "correct horse battery staple", "optional"],
@@ -60,7 +61,7 @@
         {
           "task": "Consent",
           "optional": true,
-          "match": "https://asterius:9443/interaction/*",
+          "match": "https://asterius:9443/t/conformance/interaction/*",
           "commands": [
             ["click", "xpath", "//button[@name='decision' and @value='allow']"]
           ]
@@ -74,5 +75,222 @@
         }
       ]
     }
-  ]
+  ],
+  "override": {
+    "fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails": {
+      "browser": [
+        {
+          "comment": "The request never reaches a redirect_uri the server may use, so it ends on the error page; the screenshot is what the module waits for.",
+          "match": "https://asterius:9443/t/conformance/authorize*",
+          "tasks": [
+            {
+              "task": "Error page",
+              "match": "https://asterius:9443/t/conformance/authorize*",
+              "commands": [
+                ["wait", "xpath", "//p[@class='error']", 10, ".+", "update-image-placeholder"]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "fapi2-security-profile-final-par-attempt-reuse-request_uri": {
+      "browser": [
+        {
+          "comment": "One nominal leg, then a second visit with the spent request_uri which ends on the error page.",
+          "match": "https://asterius:9443/t/conformance/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["text", "name", "username", "conformance@example.test", "optional"],
+                ["text", "name", "password", "correct horse battery staple", "optional"],
+                ["click", "xpath", "//form//button[@type='submit']"]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["click", "xpath", "//button[@name='decision' and @value='allow']"]
+              ]
+            },
+            {
+              "task": "Error page",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/authorize*",
+              "commands": [
+                ["wait", "xpath", "//p[@class='error']", 10, ".+", "update-image-placeholder"]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "optional": true,
+              "match": "https://localhost.emobix.co.uk:8443/test/a/asterius/callback*",
+              "commands": [
+                ["wait", "id", "submission_complete", 10]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri": {
+      "browser": [
+        {
+          "comment": "The request_uri has expired before the browser is sent, so the visit ends on the error page.",
+          "match": "https://asterius:9443/t/conformance/authorize*",
+          "tasks": [
+            {
+              "task": "Error page",
+              "match": "https://asterius:9443/t/conformance/authorize*",
+              "commands": [
+                ["wait", "xpath", "//p[@class='error']", 10, ".+", "update-image-placeholder"]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "fapi2-security-profile-final-par-attempt-to-use-request_uri-for-different-client": {
+      "browser": [
+        {
+          "comment": "One nominal leg with the first client, then the second client presents the same request_uri and lands on the error page.",
+          "match": "https://asterius:9443/t/conformance/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["text", "name", "username", "conformance@example.test", "optional"],
+                ["text", "name", "password", "correct horse battery staple", "optional"],
+                ["click", "xpath", "//form//button[@type='submit']"]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["click", "xpath", "//button[@name='decision' and @value='allow']"]
+              ]
+            },
+            {
+              "task": "Error page",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/authorize*",
+              "commands": [
+                ["wait", "xpath", "//p[@class='error']", 10, ".+", "update-image-placeholder"]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "optional": true,
+              "match": "https://localhost.emobix.co.uk:8443/test/a/asterius/callback*",
+              "commands": [
+                ["wait", "id", "submission_complete", 10]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": {
+      "browser": [
+        {
+          "comment": "First visit: the login page is looked at and left alone. The module fails the test if anyone signs in here, so this block is spent after one match and the next one takes the second visit.",
+          "match": "https://asterius:9443/t/conformance/authorize*",
+          "match-limit": 1,
+          "tasks": [
+            {
+              "task": "Initial visit, no login",
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["wait", "name", "username", 10]
+              ]
+            }
+          ]
+        },
+        {
+          "comment": "Second visit with the same request_uri: this is the one that signs in.",
+          "match": "https://asterius:9443/t/conformance/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["text", "name", "username", "conformance@example.test", "optional"],
+                ["text", "name", "password", "correct horse battery staple", "optional"],
+                ["click", "xpath", "//form//button[@type='submit']"]
+              ]
+            },
+            {
+              "task": "Consent",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["click", "xpath", "//button[@name='decision' and @value='allow']"]
+              ]
+            },
+            {
+              "task": "Error page",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/authorize*",
+              "commands": [
+                ["wait", "xpath", "//p[@class='error']", 10, ".+", "update-image-placeholder-optional"]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "optional": true,
+              "match": "https://localhost.emobix.co.uk:8443/test/a/asterius/callback*",
+              "commands": [
+                ["wait", "id", "submission_complete", 10]
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "fapi2-security-profile-final-user-rejects-authentication": {
+      "browser": [
+        {
+          "comment": "The one test where the person refuses: sign in, then press Deny on the consent screen so the client gets access_denied.",
+          "match": "https://asterius:9443/t/conformance/authorize*",
+          "tasks": [
+            {
+              "task": "Login",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["text", "name", "username", "conformance@example.test", "optional"],
+                ["text", "name", "password", "correct horse battery staple", "optional"],
+                ["click", "xpath", "//form//button[@type='submit']"]
+              ]
+            },
+            {
+              "task": "Deny",
+              "optional": true,
+              "match": "https://asterius:9443/t/conformance/interaction/*",
+              "commands": [
+                ["click", "xpath", "//button[@name='decision' and @value='deny']", "optional"]
+              ]
+            },
+            {
+              "task": "Verify Complete",
+              "match": "https://localhost.emobix.co.uk:8443/test/a/asterius/callback*",
+              "commands": [
+                ["wait", "id", "submission_complete", 10]
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
 }
