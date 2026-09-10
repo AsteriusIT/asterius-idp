@@ -19,6 +19,8 @@
 #
 # Environment:
 #   DATABASE_URL  PostgreSQL. Default postgres://asterius:asterius@127.0.0.1:5433/asterius
+#                 Passed on to the suite as E2E_DATABASE_URL, because one spec
+#                 reads the audit trail (`ast-qwu`) and needs the same database.
 #   E2E_PORT      where the server under test listens. Default 9444
 #   ASTERIUS_BIN  a prebuilt server binary. Default: cargo builds one
 #   E2E_RESET_DB  set to 1 to drop and recreate the public schema first
@@ -200,6 +202,12 @@ else
   npx playwright install chromium
 fi
 
+# `ast-qwu`: the clone signal is only visible in the audit trail — the browser
+# is deliberately told nothing — and there is no read API for the trail, so the
+# spec reads the table. The connection string is passed rather than guessed:
+# a spec that assumed the default would read a different database's trail and
+# report that nothing was recorded.
+E2E_DATABASE_URL="$DATABASE_URL" \
 E2E_BASE_URL="$BASE_URL" \
 E2E_WEBAUTHN_BASE_URL="$WEBAUTHN_BASE_URL" \
 E2E_USERNAME="$USERNAME" \

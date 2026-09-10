@@ -29,6 +29,14 @@ Nothing is left behind except rows in the development database.
   relying party would: the new `kid` is signing and the previous one is still
   published (OIDC Core §10.1.1). The API-level proof (`ast-f7m.7`) cannot say
   what the button does.
+- **A cloned authenticator is refused and the credential is blocked.**
+  `tests/passkey-clone.spec.ts` (`ast-qwu`) enrols a passkey, signs in with it,
+  then puts the same private key back into the virtual authenticator at an older
+  signature counter — a clone, as far as WebAuthn L3 §7.2 step 21 is concerned.
+  The sign-in is refused, the credential stays refused when the *genuine* device
+  comes back ahead of the stored counter, and the audit trail carries
+  `auth.failed` with `reason = sign_count_regression`. No Rust test can make a
+  clone: it takes an authenticator that will sign with a key the test chose.
 - **Every page a route really renders passes axe** at WCAG 2.1 AA —
   `tests/accessibility.spec.ts` for the server-rendered ones, `console.spec.ts`
   and `key-rotation.spec.ts` for the console's screens. The templates that are

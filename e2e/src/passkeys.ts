@@ -59,6 +59,16 @@ export interface VirtualCredential {
   readonly isResidentCredential: boolean;
   readonly rpId?: string;
   readonly signCount: number;
+  /**
+   * The private key, PKCS#8 and base64 — which is what makes a *clone*
+   * possible at all (`ast-qwu`). Putting the same key back into an
+   * authenticator under a lower counter is what a copied device is, from the
+   * relying party's side: assertions that verify, over a counter that went
+   * backwards.
+   */
+  readonly privateKey: string;
+  /** The account the credential is discoverable for, base64. */
+  readonly userHandle?: string;
 }
 
 /** A virtual authenticator, for as long as the page that owns it lives. */
@@ -77,6 +87,18 @@ export interface VirtualAuthenticator {
    * button press is unambiguously what signs in.
    */
   simulatePresence(on: boolean): Promise<void>;
+  /**
+   * Puts a credential back, at whatever counter is asked for.
+   *
+   * The counter is the subject: WebAuthn L3 §7.2 step 21 says an assertion
+   * whose counter did not advance means a clone or a malfunction, and this is
+   * the only way to produce one in a real browser. Chromium's authenticator
+   * increments the stored value before signing, so the assertion presents
+   * `signCount + 1`.
+   */
+  putCredential(credential: VirtualCredential, signCount: number): Promise<void>;
+  /** Forgets a credential, so it can be put back differently. */
+  forget(credentialId: string): Promise<void>;
   /** Detaches it, so a later navigation cannot silently keep using it. */
   remove(): Promise<void>;
 }
@@ -115,6 +137,22 @@ export async function attachVirtualAuthenticator(page: Page): Promise<VirtualAut
     async credentials() {
       const { credentials } = await session.send('WebAuthn.getCredentials', { authenticatorId });
       return credentials as unknown as VirtualCredential[];
+    },
+    async putCredential(credential: VirtualCredential, signCount: number) {
+      await session.send('WebAuthn.addCredential', {
+        authenticatorId,
+        credential: {
+          credentialId: credential.credentialId,
+          isResidentCredential: credential.isResidentCredential,
+          rpId: credential.rpId,
+          privateKey: credential.privateKey,
+          userHandle: credential.userHandle,
+          signCount,
+        },
+      });
+    },
+    async forget(credentialId: string) {
+      await session.send('WebAuthn.removeCredential', { authenticatorId, credentialId });
     },
     async simulatePresence(on: boolean) {
       await session.send('WebAuthn.setAutomaticPresenceSimulation', {
