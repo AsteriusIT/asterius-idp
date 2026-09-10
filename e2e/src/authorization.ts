@@ -28,6 +28,10 @@ export interface Discovery {
    * endpoint moved.
    */
   readonly jwks_uri: string;
+  /** RFC 8414 §2, and RFC 8628 §4: where a device asks. */
+  readonly device_authorization_endpoint?: string;
+  /** Where a grant is redeemed. */
+  readonly token_endpoint: string;
 }
 
 /** A client registered for the duration of one test run. */
@@ -65,11 +69,18 @@ export async function discover(api: APIRequestContext, baseUrl: string): Promise
  * The key is generated per run and never leaves memory: a fixture private key
  * committed to a repository is a credential in version control even when the
  * server it authenticates to is a throwaway.
+ *
+ * `grantTypes` defaults to the authorization code, which is what every spec but
+ * the device sweep asks for. A registration that names no authorization code
+ * declares no redirect URI and no response type either (`ast-ndk.4`): RFC 8628
+ * §3.4 has no authorization response to send anywhere, and a client that asked
+ * for one it can never receive is refused.
  */
 export async function registerClient(
   api: APIRequestContext,
   discovery: Discovery,
   redirectUri: string,
+  grantTypes: readonly string[] = ['authorization_code'],
 ): Promise<RegisteredClient> {
   const endpoint = discovery.registration_endpoint;
   if (!endpoint) {
@@ -80,12 +91,15 @@ export async function registerClient(
   const kid = 'e2e-client-key';
   const jwk = { ...(await exportJWK(publicKey)), kid, alg: 'ES256', use: 'sig' };
 
+  const browserFacing = grantTypes.includes('authorization_code');
   const response = await api.post(endpoint, {
     headers: { 'content-type': 'application/json' },
     data: {
       client_name: 'Browser sweep',
-      redirect_uris: [redirectUri],
-      grant_types: ['authorization_code'],
+      ...(browserFacing
+        ? { redirect_uris: [redirectUri], response_types: ['code'] }
+        : { response_types: [] }),
+      grant_types: grantTypes,
       scope: 'openid profile',
       token_endpoint_auth_method: 'private_key_jwt',
       jwks: { keys: [jwk] },
@@ -105,7 +119,10 @@ export async function registerClient(
  * one spelling of "this server", so an assertion audienced at the endpoint URL
  * is refused. The `jti` is single-use, so it is fresh per call.
  */
-async function clientAssertion(client: RegisteredClient, issuer: string): Promise<string> {
+export async function clientAssertion(
+  client: RegisteredClient,
+  issuer: string,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
   return await new SignJWT({})
     .setProtectedHeader({ alg: 'ES256', kid: client.kid, typ: 'JWT' })
