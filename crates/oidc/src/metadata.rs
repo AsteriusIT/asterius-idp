@@ -327,10 +327,29 @@ pub fn provider_metadata(
         "request_uri_parameter_supported": false,
         // JAR is tracked, not implemented (ast-s36.1).
         "request_parameter_supported": false,
+        // OIDC Discovery §3, and true because `authorize::validate` parses the
+        // parameter into `AuthorizationRequest::claims` and `claims::resolve`
+        // acts on what it parsed — the essential `acr` path is the one that
+        // changes the response, and `end_to_end` walks it from the push to the
+        // ID token. The default for this member is `false`, so leaving it out
+        // would have been a client-visible lie about a parameter this server
+        // honours (`ast-1sk.5`).
         "claims_parameter_supported": true,
 
         "scopes_supported": ["openid", "profile", "email", "offline_access"],
         "claims_supported": claims_supported(),
+        // `claims_locales_supported` is deliberately absent. OIDC Discovery §3
+        // makes it OPTIONAL, and the honest value is the set of language tags
+        // a tenant's stored claims actually carry: `ClaimsLocales` resolves a
+        // preference against the `#tag` suffixes in a user's `ClaimSet`, so
+        // the answer is a query over deployment data, not a constant. No
+        // tenant carries a localised claim yet, which leaves two truthful
+        // renderings — an empty array or no member — and one untruthful one, a
+        // written-out list of tags nothing would match. Between the first two,
+        // omission is what §3 provides for; an empty array reads as "asked and
+        // answered none", which is a different claim about the deployment than
+        // "not advertised". Compute it here the day a tenant stores a tagged
+        // claim (`ast-1sk.5`).
         // OpenID Connect Prompt Create 1.0 §4. Rendered from the same policy
         // the pushed-request validator consults, never written out here: a
         // tenant that advertised `create` while refusing it would be telling
@@ -938,5 +957,68 @@ mod tests {
     #[test]
     fn sid_is_advertised_because_the_id_token_carries_one() {
         assert!(claims_supported().contains(&"sid"));
+    }
+
+    /// OIDC Core §5.4's scope-released claims are advertised only where a
+    /// column backs them (`ast-1sk.5`).
+    ///
+    /// `claims_from_scopes()` is the whole of §5.4, and the tempting reading of
+    /// Discovery §3's "MAY be able to supply values for" is that publishing all
+    /// of it costs nothing. It does not read that way to a conformance suite,
+    /// which treats every advertised name as a request it is entitled to make:
+    /// `preferred_username` was removed for exactly that (`ast-8p1`,
+    /// `ast-2vk.8`) and does not come back until something serves it. What the
+    /// document publishes is therefore the intersection of §5.4 with the
+    /// columns every user row has, plus the ID token's own claims.
+    #[test]
+    fn a_scope_claim_is_advertised_only_when_a_user_column_backs_it() {
+        // Arrange.
+        let advertised = claims_supported();
+        let columns = crate::claims::claims_from_user_columns();
+
+        // Act.
+        let from_scopes: Vec<&str> = crate::claims::claims_from_scopes()
+            .into_iter()
+            .filter(|name| advertised.contains(name))
+            .collect();
+
+        // Assert.
+        assert_eq!(from_scopes, columns);
+        assert!(!advertised.contains(&"preferred_username"));
+        assert!(advertised.contains(&"sub"), "`sub` is always supplied");
+    }
+
+    /// The `claims` parameter is advertised because `authorize::validate`
+    /// honours it; `authorize`'s own
+    /// `the_claims_parameter_is_parsed_and_a_reserved_name_in_it_is_ignored`
+    /// and `end_to_end`'s
+    /// `an_essential_acr_travels_from_the_push_into_the_id_token` are the two
+    /// ends of that wire (`ast-1sk.5`).
+    #[test]
+    fn the_claims_parameter_is_advertised() {
+        // Arrange & Act.
+        let document = provider_metadata(
+            &issuer(),
+            &Capabilities::default(),
+            &AcrPolicy::default(),
+            &[],
+        );
+
+        // Assert.
+        assert_eq!(document["claims_parameter_supported"], json!(true));
+    }
+
+    /// OIDC Discovery §3 makes `claims_locales_supported` OPTIONAL, and the
+    /// member is omitted rather than rendered empty while no tenant stores a
+    /// language-tagged claim. The reasoning is at the member in
+    /// `provider_metadata`; this test is what stops a later edit from turning
+    /// omission into an empty array without revisiting it (`ast-1sk.5`).
+    #[test]
+    fn claims_locales_supported_is_omitted_rather_than_advertised_empty() {
+        // Arrange & Act.
+        let document = provider_metadata(&issuer(), &all_features(), &AcrPolicy::default(), &[]);
+
+        // Assert.
+        assert!(document.get("claims_locales_supported").is_none());
     }
 }
