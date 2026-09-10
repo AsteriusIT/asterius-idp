@@ -96,6 +96,20 @@ impl AdminBackend for Deployment {
             .await
     }
 
+    async fn end_session(
+        &self,
+        tenant: &TenantId,
+        id_digest: &str,
+        reason: asterius_domain::entities::session::SessionRevocation,
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .sessions()
+            .revoke(id_digest, reason, now)
+            .await
+    }
+
     async fn roles(&self, tenant: &TenantId, user: UserId) -> Result<Vec<Role>, DomainError> {
         let roles = PgRoleRepository::new(self.store.pool().clone(), tenant.clone())
             .roles_of(user)

@@ -16,6 +16,7 @@
 //! the failure would surface days later at somebody else's endpoint. The port
 //! type is what makes the right thing the only thing available.
 
+use asterius_domain::entities::session::SessionRevocation;
 use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::{TenantRepository, TenantSettingsRepository};
 use asterius_domain::{
@@ -40,6 +41,25 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         tenant: &TenantId,
         id_digest: &str,
     ) -> Result<Option<Session>, DomainError>;
+
+    /// Ends one session, by the digest of the id it was presented with.
+    ///
+    /// Takes a digest and not a [`Session`], so that the only thing a caller
+    /// can end is a session it has already resolved a cookie to. Revoking an
+    /// already-revoked session keeps the first reason
+    /// (`asterius_domain::ports::SessionRepository::revoke`), so a repeated
+    /// call is harmless rather than a rewrite of the trail.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn end_session(
+        &self,
+        tenant: &TenantId,
+        id_digest: &str,
+        reason: SessionRevocation,
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError>;
 
     /// Every role `user` holds in `tenant`.
     ///

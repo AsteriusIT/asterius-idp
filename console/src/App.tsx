@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
-import { ApiError, loadSession, type Session } from './api';
+import { ApiError, endSession, loadSession, type Session } from './api';
 import { Keys } from './keys';
 import { visibleTo } from './navigation';
 import { hrefOf, routeOf } from './routes';
+import { TenantSettings } from './settings';
 
 /**
  * What the shell is doing, as one value.
@@ -47,6 +48,24 @@ export function App(): JSX.Element {
 
   useEffect(probe, [probe]);
 
+  /**
+   * Ends the session, then shows the signed-out screen.
+   *
+   * The server does the ending — the cookie is `HttpOnly` — and this state
+   * change only follows it. A refusal still lands on the signed-out screen:
+   * whatever went wrong, the administrator asked to leave, and leaving a
+   * console showing a tenant's configuration behind a failed logout is the
+   * outcome the button exists to prevent. The screen's "Check again" re-reads
+   * the session, so a logout that did not take is one click from being seen.
+   */
+  const signOut = useCallback((session: Session) => {
+    setShell({ kind: 'loading' });
+    endSession(session).then(
+      () => setShell({ kind: 'signed-out' }),
+      () => setShell({ kind: 'signed-out' }),
+    );
+  }, []);
+
   if (shell.kind === 'loading') {
     return <Notice heading="Loading" body="Reading the session." />;
   }
@@ -70,7 +89,10 @@ export function App(): JSX.Element {
       <header>
         <h1>Asterius console</h1>
         <p className="who">
-          Signed in to <strong>{shell.session.tenant}</strong>
+          Signed in to <strong>{shell.session.tenant}</strong>{' '}
+          <button type="button" onClick={() => signOut(shell.session)}>
+            Sign out
+          </button>
         </p>
       </header>
       <nav aria-label="Console sections">
@@ -110,6 +132,9 @@ function focusMain(): void {
 function Screen({ route, session }: { route: string; session: Session }): JSX.Element {
   if (route === 'keys') {
     return <Keys session={session} />;
+  }
+  if (route === 'settings') {
+    return <TenantSettings session={session} />;
   }
   if (route === 'overview') {
     return (
