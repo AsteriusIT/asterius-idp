@@ -628,16 +628,27 @@ impl Flow {
         clients.upsert(&client).await.expect("store the client");
     }
 
-    /// OIDC Core §3.1.2.1: the browser arrives at the authorization endpoint
-    /// carrying nothing but the reference, and is sent into an interaction.
-    async fn authorize(&mut self, request_uri: &str) -> String {
+    /// The raw reply to an authorization request.
+    ///
+    /// Separate from [`Flow::authorize`] because an interaction is not the
+    /// only lawful answer: a `prompt=none` request that cannot be served is
+    /// refused straight to the client (OIDC Core §3.1.2.6), and a request the
+    /// session already covers is answered without a page (`ast-ovr`). A caller
+    /// that wants the interaction says so by asking for it.
+    async fn authorize_raw(&mut self, request_uri: &str) -> Reply {
         let path = format!(
             "{}{}?client_id={CLIENT}&request_uri={}",
             self.prefix(),
             Endpoint::Authorization.path(),
             url::form_urlencoded::byte_serialize(request_uri.as_bytes()).collect::<String>()
         );
-        let started = self.get(&path).await;
+        self.get(&path).await
+    }
+
+    /// OIDC Core §3.1.2.1: the browser arrives at the authorization endpoint
+    /// carrying nothing but the reference, and is sent into an interaction.
+    async fn authorize(&mut self, request_uri: &str) -> String {
+        let started = self.authorize_raw(request_uri).await;
         assert_eq!(
             started.status,
             StatusCode::SEE_OTHER,
@@ -1905,6 +1916,269 @@ async fn no_resource_falls_back_to_the_registered_default_audience() {
     );
     let claims = claims_of(issued.json()["access_token"].as_str().expect("a token"));
     assert_eq!(claims["aud"], json!(RESOURCE), "{claims}");
+
+    flow.tear_down().await;
+}
+
+// ---- single sign-on (`ast-ovr`) ------------------------------------------
+
+/// The `auth_time` of an ID token this flow has just been issued.
+///
+/// Read off the token rather than off the session row, because it is the
+/// number the client sees and the only one OIDC Core §2 makes a statement
+/// about: "the time when the End-User authentication occurred". A second
+/// authorization that reused the session must report the same instant, and a
+/// second authorization that quietly signed the user in again would not.
+async fn auth_time_of(flow: &mut Flow, key: &ProofKey, jti: &str, code: &str) -> i64 {
+    let redeemed = flow
+        .token(
+            key,
+            jti,
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        redeemed.text()
+    );
+    let id_token = redeemed.json()["id_token"]
+        .as_str()
+        .expect("an openid grant earns an ID token")
+        .to_owned();
+    claims_of(&id_token)["auth_time"]
+        .as_i64()
+        .expect("OIDC Core §2: an ID token from a session carries auth_time")
+}
+
+/// Signs this browser in and records a consent, so the tests below start from
+/// a returning user rather than from a fresh one.
+///
+/// Returns the `auth_time` the first authorization reported.
+async fn sign_in_and_consent(flow: &mut Flow) -> i64 {
+    let key = ProofKey::generate();
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+    auth_time_of(flow, &key, "assertion-sso-first", &code).await
+}
+
+/// **`ast-ovr`**: a user who is signed in and has consented sees nothing at
+/// all.
+///
+/// The whole point of the consent memory (`ast-uwv.3`) and of the decision
+/// table (`ast-gxh.8`): the second identical request is answered from the
+/// session, so no page is rendered and the browser is sent back to the client
+/// with a code. The `auth_time` is what proves the *session* was reused rather
+/// than silently replaced — a server that started a new one would report a
+/// later instant and OIDC Core §3.1.2.3's `max_age` would mean nothing.
+///
+/// Before the fix this failed at the interaction: `/authorize` answered
+/// `Interaction::Silent` and the interaction still began at `Stage::Login`, so
+/// the returning user met a sign-in form.
+#[tokio::test]
+async fn a_returning_user_is_sent_back_to_the_client_without_a_screen() {
+    // Arrange: signed in, and having consented once.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let first = sign_in_and_consent(&mut flow).await;
+
+    // Act: the same request again, from the same browser.
+    let key = ProofKey::generate();
+    let request_uri = flow.push(&key).await;
+    let started = flow.authorize_raw(&request_uri).await;
+    assert_eq!(
+        started.status,
+        StatusCode::SEE_OTHER,
+        "the authorization request did not start: {}",
+        started.text()
+    );
+    let interaction = started.location();
+    let answered = flow.get(&interaction).await;
+
+    // Assert: a redirect to the client, not a page.
+    assert_eq!(
+        answered.status,
+        StatusCode::SEE_OTHER,
+        "a screen was served to a user who had already decided:\n{}",
+        answered.text()
+    );
+    let back = answered.location();
+    assert!(
+        back.starts_with(REDIRECT),
+        "the browser was sent somewhere else: {back}"
+    );
+    assert_eq!(parameter(&back, "state").as_deref(), Some(STATE));
+    let code = parameter(&back, "code").expect("RFC 6749 §4.1.2 requires a code");
+
+    // Assert: the session was reused, not replaced.
+    let second = auth_time_of(&mut flow, &key, "assertion-sso-second", &code).await;
+    assert_eq!(
+        second, first,
+        "OIDC Core §2: a reused session keeps its auth_time"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **OIDC Core §3.1.2.1**: `prompt=login` means ask again, whatever the
+/// session says.
+#[tokio::test]
+async fn prompt_login_returns_a_signed_in_user_to_the_sign_in_form() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    sign_in_and_consent(&mut flow).await;
+
+    // Act
+    let key = ProofKey::generate();
+    let request_uri = flow
+        .push_with(&key, &[("prompt", "login")])
+        .await
+        .request_uri();
+    let interaction = flow.authorize(&request_uri).await;
+    let page = flow.get(&interaction).await;
+
+    // Assert
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let html = page.text();
+    assert!(
+        html.contains(r#"id="passkey-signin-button""#),
+        "prompt=login did not ask the user to authenticate again:\n{html}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **OIDC Core §3.1.2.3**: `max_age=0` makes every authentication too old.
+#[tokio::test]
+async fn max_age_zero_returns_a_signed_in_user_to_the_sign_in_form() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    sign_in_and_consent(&mut flow).await;
+
+    // Act
+    let key = ProofKey::generate();
+    let request_uri = flow
+        .push_with(&key, &[("max_age", "0")])
+        .await
+        .request_uri();
+    let interaction = flow.authorize(&request_uri).await;
+    let page = flow.get(&interaction).await;
+
+    // Assert
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let html = page.text();
+    assert!(
+        html.contains(r#"id="passkey-signin-button""#),
+        "max_age=0 did not ask the user to authenticate again:\n{html}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **OIDC Core §3.1.2.6**: `prompt=none` on a browser with no session is
+/// `login_required`, and never a page.
+#[tokio::test]
+async fn prompt_none_without_a_session_is_login_required() {
+    // Arrange: a browser that has never signed in.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+
+    // Act
+    let key = ProofKey::generate();
+    let request_uri = flow
+        .push_with(&key, &[("prompt", "none")])
+        .await
+        .request_uri();
+    let answered = flow.authorize_raw(&request_uri).await;
+
+    // Assert
+    assert_eq!(
+        answered.status,
+        StatusCode::SEE_OTHER,
+        "a page was served to a prompt=none request:\n{}",
+        answered.text()
+    );
+    let back = answered.location();
+    assert!(
+        back.starts_with(REDIRECT),
+        "the browser was sent somewhere else: {back}"
+    );
+    assert_eq!(parameter(&back, "error").as_deref(), Some("login_required"));
+
+    flow.tear_down().await;
+}
+
+/// **OIDC Core §3.1.2.6**: `prompt=none` from a signed-in user who has not
+/// consented is `consent_required` — the one error that says the session was
+/// found and only the decision is missing.
+#[tokio::test]
+async fn prompt_none_without_a_remembered_consent_is_consent_required() {
+    // Arrange: signed in, and having refused the consent screen, so there is a
+    // session and no grant.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let consent = flow.get(&interaction).await;
+    assert_eq!(consent.status, StatusCode::OK, "{}", consent.text());
+    let csrf = csrf_from(&consent.text());
+    let denied = flow
+        .post_form(&interaction, &[("csrf", &csrf), ("decision", "deny")], None)
+        .await;
+    assert_eq!(
+        denied.status,
+        StatusCode::SEE_OTHER,
+        "a refusal did not answer the client: {}",
+        denied.text()
+    );
+    assert_eq!(
+        parameter(&denied.location(), "error").as_deref(),
+        Some("access_denied")
+    );
+
+    // Act
+    let key = ProofKey::generate();
+    let request_uri = flow
+        .push_with(&key, &[("prompt", "none")])
+        .await
+        .request_uri();
+    let answered = flow.authorize_raw(&request_uri).await;
+
+    // Assert
+    assert_eq!(
+        answered.status,
+        StatusCode::SEE_OTHER,
+        "a page was served to a prompt=none request:\n{}",
+        answered.text()
+    );
+    let back = answered.location();
+    assert_eq!(
+        parameter(&back, "error").as_deref(),
+        Some("consent_required"),
+        "the session was there; only the decision was missing: {back}"
+    );
 
     flow.tear_down().await;
 }
