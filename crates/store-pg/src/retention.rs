@@ -244,18 +244,71 @@ pub const POLICY: &[Retention] = &[
     },
     Retention {
         table: "grants",
-        rule: Rule::Kept(
-            "a grant is the revocable unit of authority: deleting one deletes \
-             the only row that could revoke the tokens minted from it. It is \
-             also the consent record `asterius_oidc::consent_memory` reads, so \
-             a sweep here would forget a consent as well as lose a revocation; \
-             that memory's own lifetime is enforced when it is read — a \
-             standing grant is a standing consent, and an `offline_access` one \
-             stops covering new requests after \
-             `consent_memory::DEFAULT_OFFLINE_ACCESS_MEMORY` without the row \
-             going anywhere. Grant Management ID1 §5.6's unclaimed-grant \
-             cleanup is `ast-uwv.4`",
-        ),
+        rule: Rule::Sweep {
+            // Client-only grants, and nothing else.
+            //
+            // A grant with a person behind it is kept for the reasons it always
+            // was: it is the revocable unit of authority — deleting one deletes
+            // the only row that could revoke the tokens minted from it — and it
+            // is the consent record `asterius_oidc::consent_memory` reads, so a
+            // sweep would forget a consent as well as lose a revocation. That
+            // memory's own lifetime is enforced when it is read: a standing
+            // grant is a standing consent, and an `offline_access` one stops
+            // covering new requests after
+            // `consent_memory::DEFAULT_OFFLINE_ACCESS_MEMORY` without the row
+            // going anywhere. Grant Management ID1 §5.6's unclaimed-grant
+            // cleanup is `PgGrantRepository::purge_unclaimed`, on its own
+            // schedule and its own predicate.
+            //
+            // The `client_credentials` grant (RFC 6749 §4.4) has none of that
+            // behind it. There is no resource owner, so there is no consent to
+            // remember; the row exists so the token it was minted for has
+            // something to be revoked through and something for the trail to
+            // name (`ast-a05.8`). One row per token request, expiring with a
+            // token that lives fifteen minutes: an agent asking for one a
+            // minute adds 1 440 rows a day, for ever, and this is the only
+            // table in the schema that grows with traffic and was never swept.
+            //
+            // `user_id`, `subject` and `session_id` all null is what "no
+            // resource owner" looks like in this table, and `expires_at not
+            // null` keeps the statement away from the standing grants, which
+            // have none. A grant that is somebody's parent is left alone
+            // whatever it looks like: the self-reference cascades, and a token
+            // exchange (RFC 8693) narrowed from a client-only grant would lose
+            // its child with it.
+            statement: "delete from grants where ctid = any (array(
+                            select g.ctid from grants g
+                             where g.tenant_id = $1
+                               and g.user_id is null
+                               and g.subject is null
+                               and g.session_id is null
+                               and g.expires_at is not null
+                               and g.expires_at <= $2
+                               and not exists (select 1 from grants child
+                                                where child.tenant_id = g.tenant_id
+                                                  and child.parent_grant_id = g.grant_id)
+                             limit $3))",
+            // The window, and the reason it is a constant here rather than a
+            // setting: retention has no configured window — every other rule in
+            // this table carries its own `grace` — so this is the grant's own
+            // `exp` plus a stated margin, on the outbox's precedent. A week is
+            // long enough to answer "what was this machine client authorized to
+            // do last Tuesday" from the row itself during an incident, and short
+            // enough that a client asking for a token a minute holds ten
+            // thousand rows rather than an unbounded number. Past it the trail
+            // is the durable record: `audit_events` names the `grant_id`, has no
+            // foreign key to this table, and is append-only.
+            //
+            // What the deleted row is *not* still doing: the token it belongs to
+            // expired with it, a week ago, so revocation has nothing to revoke —
+            // RFC 7009 §2.2's "invalid token", which `/revoke` answers 200 to
+            // without ever reading this table, because an expired access token
+            // fails verification first. Its `access_token_denylist` and
+            // `refresh_tokens` rows, if any existed, expired with the same token
+            // and were swept by their own rules; anything left cascades from
+            // here, which is the correct order — the grant is the parent.
+            grace: Duration::days(7),
+        },
     },
     Retention {
         table: "authorization_codes",
@@ -572,6 +625,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The `grants` rule is the one sweep in the policy that must not apply to
+    /// every expired row in its table: a user's grant is the consent record and
+    /// the revocable unit of authority, and a predicate that lost its
+    /// "no resource owner" half would delete both on a timer.
+    #[test]
+    fn the_grants_sweep_only_reaches_a_grant_with_no_resource_owner() {
+        let grants = POLICY
+            .iter()
+            .find(|entry| entry.table == "grants")
+            .expect("grants has a rule");
+        let Rule::Sweep { statement, grace } = grants.rule else {
+            panic!("client-only grants must be swept");
+        };
+        for predicate in [
+            "user_id is null",
+            "subject is null",
+            "session_id is null",
+            "expires_at is not null",
+        ] {
+            assert!(
+                statement.contains(predicate),
+                "the grants sweep is missing `{predicate}` and would take a user's grant"
+            );
+        }
+        assert!(
+            grace >= Duration::days(1),
+            "a client-only grant deleted the instant its token expires leaves \
+             nothing to read during an incident the same day"
+        );
     }
 
     /// The one place a grace period is not zero is the one place it changes

@@ -29,10 +29,12 @@
 //! * **Expiry traverses it too**, for the same reason: [`Grant::status`] is
 //!   computed against the clock, so a lapsed grant stops being remembered at
 //!   the instant it lapses rather than when a sweep gets to it.
-//! * **Retention is already decided.** The `grants` table is `Rule::Kept` in
-//!   `asterius_store_pg::retention::POLICY` — deleting a grant would delete the
-//!   only row that can revoke the tokens minted from it — and this memory
-//!   inherits that. The one lifetime this module adds is
+//! * **Retention is already decided.** The rule for `grants` in
+//!   `asterius_store_pg::retention::POLICY` reaches only grants with no
+//!   resource owner behind them — a `client_credentials` grant remembers no
+//!   consent, having asked nobody — and never a grant with a `user_id`, because
+//!   deleting one would delete the only row that can revoke the tokens minted
+//!   from it. This memory inherits that. The one lifetime this module adds is
 //!   [`MemoryPolicy::offline_access_memory`], enforced when the memory is
 //!   *read* rather than by deleting anything, so the grant that is still
 //!   revocable does not stop being revocable when its consent goes stale.
