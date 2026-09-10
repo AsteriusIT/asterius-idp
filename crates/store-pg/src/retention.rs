@@ -250,6 +250,31 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "ciba_requests",
+        rule: Rule::Sweep {
+            // A backchannel authentication request is over the moment it
+            // expires: the token endpoint answers `expired_token` off the
+            // clock rather than off a status, so nothing reads an expired row
+            // again. The row holds the digest of an `auth_req_id` and, in ping
+            // mode, of a `client_notification_token` — both credentials a
+            // database copy would otherwise still yield — so it is swept
+            // rather than kept.
+            //
+            // The same five-minute grace `device_codes` has, for the same
+            // reason: the client is still polling when its request expires
+            // (CIBA Core 1.0 §10.1), and it should be told `expired_token`
+            // rather than given the "unknown auth_req_id" a deleted row would
+            // produce. Five minutes is longer than any remaining poll and
+            // shorter than anything worth keeping, and the row's own lifetime
+            // is five minutes at most (`0026_ciba_requests.sql`).
+            statement: "delete from ciba_requests where ctid = any (array(
+                            select ctid from ciba_requests
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::minutes(5),
+        },
+    },
+    Retention {
         table: "recovery_tokens",
         rule: Rule::Sweep {
             // A reset link, one hour wide. Beside `credentials` because that

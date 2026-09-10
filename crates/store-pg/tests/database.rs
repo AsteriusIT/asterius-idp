@@ -7729,6 +7729,7 @@ mod retention {
             seed_initial_access_token(pool, tenant, label, expires).await;
             seed_recovery_token(pool, tenant, user, label, expires).await;
             seed_device_code(pool, tenant, label, expires).await;
+            seed_ciba_request(pool, tenant, user, label, expires).await;
         }
         seed_outbox(pool, tenant).await;
     }
@@ -8293,6 +8294,40 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed device code");
+    }
+
+    /// A pending backchannel authentication request, live or long over
+    /// (`ast-lh3.4`).
+    ///
+    /// A user, unlike the device code above: a CIBA request is created *after*
+    /// the hint has been resolved, so `user_id` is not null and the row hangs
+    /// off the same seeded account everything else here does.
+    ///
+    /// `issued_at` is a minute before `expires_at` rather than at `now()`,
+    /// because the table refuses a row that claims to live longer than the
+    /// five minutes CIBA Core 1.0 §7.3 is capped at here, and the stale fixture
+    /// is dated two days in the past.
+    async fn seed_ciba_request(
+        pool: &PgPool,
+        tenant: &str,
+        user: uuid::Uuid,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into ciba_requests
+                 (tenant_id, auth_req_id_hash, client_id, user_id, delivery_mode,
+                  issued_at, expires_at, poll_interval_seconds)
+             values ($1, $2, 'billing', $3, 'poll', $4, $5, 5)",
+        )
+        .bind(tenant)
+        .bind(format!("digest-of-a-{label}-auth-req-id").into_bytes())
+        .bind(user)
+        .bind(expires - Duration::minutes(1))
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed ciba request");
     }
 
     /// The outbox is aged rather than expiring, and only a terminal row is ever

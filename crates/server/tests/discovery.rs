@@ -272,60 +272,77 @@ async fn a_disabled_feature_is_neither_advertised_nor_routed() {
     );
 }
 
-/// `ast-lh3.7`: CIBA has no handler yet, so the `ciba` flag buys a client
-/// validator and nothing else. In **both** flag states the document says
-/// nothing about CIBA and the URL answers 404 — the parity `ast-o0t.3` asserts,
-/// held on the side where an endpoint would otherwise be advertised ahead of
-/// its implementation.
+/// CIBA Core 1.0 §4 and `ast-lh3.4`: with the flag on, the whole CIBA block
+/// is advertised and the endpoint is routed; with it off, neither.
 ///
-/// CIBA Core 1.0 §4 is why it is the whole block rather than the URL alone:
+/// §4 is why it is the whole block rather than the URL alone:
 /// `backchannel_token_delivery_modes_supported` is REQUIRED beside
 /// `backchannel_authentication_endpoint`, so a document carrying one without
-/// the other is not a smaller CIBA document but an invalid one. `ast-lh3.4`
-/// flips `Endpoint::has_a_handler` and this test becomes the ordinary
-/// on/off pair.
+/// the other is not a smaller CIBA document but an invalid one. The metadata
+/// side of the same statement is `asterius_oidc::metadata`.
 #[tokio::test]
-async fn ciba_is_neither_advertised_nor_routed_in_either_flag_state() {
-    for capabilities in [
-        Capabilities::default(),
-        Capabilities {
-            ciba: true,
-            ..Capabilities::default()
-        },
-    ] {
-        // Arrange
-        let path = format!("/t/demo{}", Endpoint::BackchannelAuthentication.path());
+async fn ciba_is_advertised_and_routed_together_or_not_at_all() {
+    // Arrange
+    let on = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let off = Capabilities::default();
+    let path = format!("/t/demo{}", Endpoint::BackchannelAuthentication.path());
+    let grant = Value::String("urn:openid:params:grant-type:ciba".to_owned());
+    let members = [
+        "backchannel_authentication_endpoint",
+        "backchannel_token_delivery_modes_supported",
+        "backchannel_user_code_parameter_supported",
+        "backchannel_authentication_request_signing_alg_values_supported",
+    ];
 
-        // Act
-        let document = document(capabilities).await;
-        let (status, ..) = get(server(capabilities), &path).await;
+    // Act
+    let advertised = document(on).await;
+    let (reached, ..) = get(server(on), &path).await;
+    let silent = document(off).await;
+    let (unreachable, ..) = get(server(off), &path).await;
 
-        // Assert
-        assert_eq!(
-            status,
-            StatusCode::NOT_FOUND,
-            "a backchannel authentication route exists with no handler behind it"
-        );
-        for member in [
-            "backchannel_authentication_endpoint",
-            "backchannel_token_delivery_modes_supported",
-            "backchannel_user_code_parameter_supported",
-        ] {
-            assert!(
-                document.get(member).is_none(),
-                "{member} is advertised with nothing routed: {document}"
-            );
-        }
+    // Assert
+    assert_ne!(
+        reached,
+        StatusCode::NOT_FOUND,
+        "a backchannel authentication endpoint is advertised and not routed"
+    );
+    assert_eq!(
+        unreachable,
+        StatusCode::NOT_FOUND,
+        "a route exists for a tenant whose document does not name it"
+    );
+    for member in members {
         assert!(
-            !document["grant_types_supported"]
-                .as_array()
-                .expect("array")
-                .contains(&Value::String(
-                    "urn:openid:params:grant-type:ciba".to_owned()
-                )),
-            "the CIBA grant is advertised with no endpoint to take it to"
+            advertised.get(member).is_some(),
+            "{member} is missing from a document that offers CIBA: {advertised}"
+        );
+        assert!(
+            silent.get(member).is_none(),
+            "{member} is advertised with nothing routed: {silent}"
         );
     }
+    assert_eq!(
+        advertised["backchannel_authentication_endpoint"],
+        Value::String("https://as.example/t/demo/bc-authorize".to_owned()),
+        "{advertised}"
+    );
+    assert!(
+        advertised["grant_types_supported"]
+            .as_array()
+            .expect("array")
+            .contains(&grant),
+        "the endpoint is advertised without the grant that reaches it"
+    );
+    assert!(
+        !silent["grant_types_supported"]
+            .as_array()
+            .expect("array")
+            .contains(&grant),
+        "the CIBA grant is advertised with no endpoint to take it to"
+    );
 }
 
 /// RFC 8628 §4: `device_authorization_endpoint` is the member a device client

@@ -169,6 +169,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ciba_form"
+path = "fuzz_targets/ciba_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "claim_name"
 path = "fuzz_targets/claim_name.rs"
 test = false

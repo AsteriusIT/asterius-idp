@@ -13,6 +13,7 @@
 use crate::client_auth::ClientAuthenticator;
 use crate::http::authorization_code::AuthorizationCode;
 use crate::http::authorize::{self, AuthorizeContext};
+use crate::http::backchannel_authentication::{self, BackchannelContext};
 use crate::http::client_configuration::{self, ConfigurationContext};
 use crate::http::client_credentials::ClientCredentials;
 use crate::http::device::{self, DeviceContext};
@@ -419,7 +420,35 @@ fn mount_features(
     capabilities: Capabilities,
     endpoints: Arc<ClientEndpoints>,
 ) -> Router {
-    mount_grant_management(router, capabilities, &endpoints).merge(device_pages(endpoints))
+    let router = mount_grant_management(router, capabilities, &endpoints);
+    let router = mount_backchannel_authentication(router, capabilities, &endpoints);
+    router.merge(device_pages(endpoints))
+}
+
+/// Mounts the backchannel authentication endpoint (CIBA Core 1.0 §7).
+///
+/// One route, `POST` only, form-encoded and client-authenticated
+/// (FAPI-CIBA). No DPoP check: nothing is issued here, so there is no key to
+/// bind anything to — the proof is required at the token endpoint, where the
+/// access token is.
+///
+/// The *deployment's* flag decides whether the route exists at all; the
+/// per-tenant half is [`tenant_feature_guard`], which recognises the path as
+/// [`Endpoint::BackchannelAuthentication`] because [`gated_endpoint`] reads
+/// the registry rather than a list kept beside it. A tenant that has switched
+/// CIBA off gets the 404 its own discovery document implies.
+fn mount_backchannel_authentication(
+    router: Router,
+    capabilities: Capabilities,
+    endpoints: &Arc<ClientEndpoints>,
+) -> Router {
+    if !Endpoint::BackchannelAuthentication.is_enabled(&capabilities) {
+        return router;
+    }
+    router.route(
+        Endpoint::BackchannelAuthentication.path(),
+        post(backchannel_authentication_endpoint).with_state(Arc::clone(endpoints)),
+    )
 }
 
 /// Mounts the Grant Management API (ID1 §6.3), where the deployment has it.
@@ -508,6 +537,7 @@ fn mount_the_unbuilt(
                         | Endpoint::EndSession
                         | Endpoint::UserInfo
                         | Endpoint::DeviceAuthorization
+                        | Endpoint::BackchannelAuthentication
                 ))
         {
             continue;
@@ -2945,6 +2975,68 @@ fn cacheable_json(document: &Value, max_age: u32) -> Response {
         body,
     )
         .into_response()
+}
+
+/// `POST /bc-authorize` — CIBA Core 1.0 §7.1.
+async fn backchannel_authentication_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let ciba_requests = scope.ciba_requests();
+    let certificate = certificate.as_deref().map(|presented| &presented.leaf);
+    let now = time::OffsetDateTime::now_utc();
+
+    // The same read the discovery document is rendered from, so a tenant
+    // cannot advertise one Grant Management policy and validate another.
+    let capabilities = match capabilities_for(&endpoints, &tenant).await {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let grant_management = match grant_management_policy(&endpoints, &tenant, capabilities).await {
+        Ok(policy) => policy,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+
+    let authenticator = Arc::clone(&endpoints.authenticator);
+    let tenant_for_auth = Arc::clone(&tenant);
+    let clients_for_auth = scope.clients(endpoints.capabilities);
+
+    backchannel_authentication::authorize(
+        BackchannelContext {
+            tenant: &tenant,
+            clients: &clients,
+            users: &users,
+            keys: endpoints.keys.as_ref(),
+            client_keys: endpoints.authenticator.client_keys().as_ref(),
+            ciba_requests: &ciba_requests,
+            audit: endpoints.audit.as_ref(),
+            certificate,
+            grant_management,
+            request_id: Some(request_id.as_str()),
+        },
+        &headers,
+        &body,
+        async |attempt: &Attempt<'_>, rules: &AssertionRules| {
+            authenticator
+                .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
+                .await
+        },
+        now,
+    )
+    .await
 }
 
 /// `POST /device_authorization` — RFC 8628 §3.1.

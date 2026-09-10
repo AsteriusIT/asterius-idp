@@ -65,6 +65,13 @@ impl<'a> TenantScope<'a> {
         crate::PgDeviceCodeRepository::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// The backchannel-authentication repository for this tenant (CIBA Core
+    /// 1.0).
+    #[must_use]
+    pub fn ciba_requests(&self) -> crate::PgCibaRequestRepository {
+        crate::PgCibaRequestRepository::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The refresh-token repository for this tenant.
     #[must_use]
     pub fn refresh_tokens(&self) -> PgRefreshTokenRepository {
