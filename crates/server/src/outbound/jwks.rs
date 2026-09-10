@@ -465,7 +465,16 @@ impl ClientUrlFetcher for HttpsClientUrlFetcher {
                 // client-supplied string that may carry a query parameter the
                 // client considers a secret, and a log line is not the place to
                 // find out.
-                tracing::debug!(error = %error, "client JWK Set fetch failed");
+                //
+                // `warn`, not `debug` (`ast-4j1`). A client whose keys cannot
+                // be fetched cannot authenticate — ever, if the reason is the
+                // ADR-0006 guard refusing a loopback or private `jwks_uri`,
+                // which is what a locally-hosted BFF registers by default. At
+                // `debug` that verdict was invisible under the deployed filter
+                // (`asterius=info`), so the operator saw a 401 with no cause
+                // anywhere. This is an operational fact about a registration,
+                // not a trace of a request.
+                tracing::warn!(error = %error, "client JWK Set fetch failed");
                 Err(error.into())
             }
         }

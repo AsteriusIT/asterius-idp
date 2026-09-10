@@ -49,6 +49,42 @@ a deployment-scoped role and authenticated at boot, the reserved tenant refuses
 to be deleted — and the container is running non-root, read-only and without a
 shell.
 
+### Pointing your own client at it
+
+Read **[docs/integrating-a-confidential-client.md](../docs/integrating-a-confidential-client.md)**
+before wiring a BFF or a service to this stack. This server is FAPI 2.0 only,
+which means every authorization request goes through PAR, the only client
+authentication methods are `private_key_jwt` and mTLS, and access tokens are
+DPoP-bound — and a client that gets any of that wrong is told
+`401 invalid_client` and nothing more, because RFC 6749 §5.2 gives it nothing
+more.
+
+Two things catch almost everybody, so they are worth repeating here:
+
+* **`aud` in the client assertion is the tenant's issuer identifier, as a JSON
+  string** — `https://localhost/t/demo` for this stack. Not the token endpoint
+  URL, not a one-element array.
+* **A `jwks_uri` pointing at loopback or private address space is refused**, by
+  the outbound guard of ADR-0006, before any connection is attempted. A BFF
+  running on your laptop that publishes its keys at
+  `https://localhost:8080/jwks.json` therefore can *never* authenticate. Put
+  the public JWK Set inline in the registration's `jwks` instead. This is an
+  SSRF control working as designed, not a bug to route around.
+
+When a client is refused, the server now says why — at `warn`, which the
+default filter passes, so it is in `docker compose logs asterius` without
+setting `RUST_LOG`:
+
+```sh
+docker compose -f deploy/compose/docker-compose.yml logs asterius \
+  | grep 'client authentication failed'
+```
+
+The line carries the internal reason (`aud_is_not_this_issuer`,
+`unknown_or_disabled_client`, `client_keys_unavailable`, …), the `client_id`
+and the tenant, and never the assertion. The same fact is in the audit trail as
+`client.auth_failed`.
+
 It answers on **https://localhost** — 443, and 80 for a 308 to it. The server
 itself publishes no port at all: in `behind_proxy` mode it speaks cleartext and
 believes forwarding headers from the compose network, so reaching it directly

@@ -310,6 +310,19 @@ impl Audiences {
         ])
     }
 
+    /// The values this endpoint would have accepted.
+    ///
+    /// For the refusal record, not for a decision (`ast-4j1`). An audience
+    /// mismatch is the failure an integrator cannot diagnose from
+    /// `invalid_client`, and a log line that says only "wrong audience" is
+    /// barely better — what is needed is both sides of the comparison. These
+    /// are this server's own public identifiers, so there is nothing here to
+    /// withhold from an operator reading their own logs.
+    #[must_use]
+    pub fn accepted(&self) -> &[String] {
+        &self.0
+    }
+
     /// Whether `claims["aud"]` names this server acceptably.
     fn accepts(&self, aud: Option<&Value>) -> bool {
         // A string, and only a string. `Value::as_str` returns `None` for an

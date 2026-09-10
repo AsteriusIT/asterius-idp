@@ -103,6 +103,11 @@ fn client_authenticator(
         ClientAuthenticator::new(client_keys, Arc::clone(replay) as Arc<dyn ReplayGuard>)
             .map_err(|e| format!("cannot build the client authenticator: {e}"))?
             .recording_use(Arc::new(PgClientUsage::new(store.pool().clone())))
+            // `ast-4j1`: a refused client authentication is an audit event.
+            // Wired here rather than at the six endpoints that need it,
+            // because the authenticator is the one place all six agree on what
+            // "this client failed to authenticate" means.
+            .auditing(Arc::new(PgAuditSink::new(store.pool().clone())))
             .with_trust_anchors(trust_anchors);
     Ok(Arc::new(authenticator))
 }
