@@ -788,7 +788,7 @@ async fn session_from_assertion(
     } = signed_in;
     // The account, not just the credential: one that has been disabled since
     // the credential was registered must not sign in with it.
-    match context.users.by_id(credential.user).await {
+    let account = match context.users.by_id(credential.user).await {
         Ok(Some(account)) if account.status == UserStatus::Active => account,
         Ok(_) => return login_refused("the account may not authenticate"),
         Err(error) => {
@@ -796,6 +796,12 @@ async fn session_from_assertion(
             return login_refused("the account could not be read");
         }
     };
+
+    // The credential named the account, so nobody typed a name — and the
+    // consent screen still has to say whose account is about to be granted
+    // (`ast-bo5`). The same call the password path makes, so a screen after a
+    // passkey sign-in says what a screen after a password one says.
+    state.signed_in_as(&account.username);
 
     // §6.1.1: only a counter that advanced is written. An authenticator that
     // does not count leaves the stored zero alone, so a later assertion is

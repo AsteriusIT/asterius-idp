@@ -555,7 +555,6 @@ fn context_with<'a>(
         sessions,
         lifetimes: Lifetimes::default(),
         acr: acr_policy(),
-        username: Some("ada"),
         clients: &FakeClients,
         grants: &issued.grants,
         memory: asterius_oidc::consent_memory::MemoryPolicy::default(),
@@ -841,6 +840,45 @@ async fn a_submission_with_the_issued_token_is_accepted() {
     assert!(
         html.contains("rp.example"),
         "the consent screen did not name the host: {html}"
+    );
+}
+
+/// **The consent screen names who signed in** (`ast-bo5`).
+///
+/// A person on a shared machine has to be able to see whose account is about
+/// to be granted, so the name the sign-in proved is carried on the interaction
+/// state rather than re-derived per screen.
+#[tokio::test]
+async fn the_consent_screen_names_who_signed_in() {
+    // Arrange
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let auth = AlwaysSucceeds;
+
+    // Act
+    let response = submit(
+        context(&tenant, &store, &nonce, Some(&auth), &sessions, &issued),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=hunter2",
+            token.expose()
+        )),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    let html = body_of(response).await;
+    assert!(
+        html.contains("Signed in as ada."),
+        "the consent screen did not name who signed in: {html}"
     );
 }
 
@@ -1280,7 +1318,7 @@ async fn a_first_party_interaction_cannot_be_shown_a_consent_screen() {
     let state = StoredState {
         stage: asterius_web::interaction::Stage::Consent,
         csrf_digest: None,
-        decision: None,
+        ..StoredState::default()
     };
     let store =
         FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json")).first_party();
@@ -1529,7 +1567,7 @@ fn at_consent() -> Consenting {
     let mut state = StoredState {
         stage: asterius_web::interaction::Stage::Consent,
         csrf_digest: None,
-        decision: None,
+        ..StoredState::default()
     };
     let token = state.issue_csrf();
     let session = "0".repeat(64);

@@ -261,6 +261,14 @@ pub struct StoredState {
     /// which may be fewer than the client asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<StoredDecision>,
+    /// Who signed in, once somebody has.
+    ///
+    /// Written by whichever method proved the account — password or passkey —
+    /// so the screens that follow can name them without asking the browser or
+    /// re-reading the account. It is a display fact only: nothing is decided
+    /// from it, and the session is what carries the identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
 }
 
 /// A consent decision, as it survives between requests.
@@ -282,6 +290,7 @@ impl Default for StoredState {
             stage: Stage::Login,
             csrf_digest: None,
             decision: None,
+            username: None,
         }
     }
 }
@@ -336,6 +345,15 @@ impl StoredState {
         } else {
             Err(InteractionError::CsrfFailed)
         }
+    }
+
+    /// Records who has just signed in, for the screens that name them.
+    ///
+    /// One function for both authentication methods on purpose: the password
+    /// path and the passkey path fill this field, and a second copy of the
+    /// filling is how one of them ends up not doing it (`ast-bo5`).
+    pub fn signed_in_as(&mut self, username: &str) {
+        self.username = Some(username.to_owned());
     }
 
     /// Spends the issued token.
@@ -854,8 +872,7 @@ mod tests {
     fn state_survives_the_round_trip_through_json() {
         let mut state = StoredState {
             stage: Stage::Consent,
-            csrf_digest: None,
-            decision: None,
+            ..StoredState::default()
         };
         let token = state.issue_csrf();
         let stored = serde_json::to_value(&state).expect("serialise");
@@ -864,6 +881,23 @@ mod tests {
         assert_eq!(read.stage, Stage::Consent);
         read.check_csrf(Some(token.expose()))
             .expect("the token must still verify after a round trip");
+    }
+
+    /// Who signed in survives the store, so a later page can name them.
+    #[test]
+    fn the_signed_in_name_survives_the_round_trip_through_json() {
+        // Arrange
+        let mut state = StoredState {
+            stage: Stage::Consent,
+            ..StoredState::default()
+        };
+
+        // Act
+        state.signed_in_as("ada");
+        let read = StoredState::from_stored(&serde_json::to_value(&state).expect("serialise"));
+
+        // Assert
+        assert_eq!(read.username.as_deref(), Some("ada"));
     }
 
     /// An unreadable state restarts the login rather than failing.
