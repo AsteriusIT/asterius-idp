@@ -35,6 +35,19 @@ use sha2::{Digest as _, Sha256};
 /// RFC 7636 Appendix B: the specification's own worked pair.
 const APPENDIX_B_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 
+/// The four ways redeeming a challenge can fail (RFC 7636 §4.6).
+///
+/// Listed here so that the no-echo assertion below can compare a rejection
+/// against the whole vocabulary the endpoint is allowed to speak. Each of
+/// these renders a constant: none of them interpolates a request value, and a
+/// fifth variant reaching this path would be caught rather than trusted.
+const REDEMPTION_FAILURES: [PkceError; 4] = [
+    PkceError::VerifierMissing,
+    PkceError::VerifierLength,
+    PkceError::VerifierCharacter,
+    PkceError::Mismatch,
+];
+
 /// `BASE64URL(SHA256(ASCII(code_verifier)))`, restated from RFC 7636 §4.2
 /// rather than taken from the implementation under test.
 fn s256(verifier: &str) -> String {
@@ -244,14 +257,27 @@ fuzz_target!(|data: &[u8]| {
             "invalid_grant",
             "a failed proof was reported as {error}"
         );
-        // The message reaches an error_description and the audit trail.
-        if verifier.len() >= 16 {
-            let rendered = format!("{error} {error:?}");
-            assert!(
-                !rendered.contains(&verifier),
-                "a rejection repeated the code_verifier back: {rendered}"
-            );
-        }
+        // The message reaches an error_description and the audit trail, so
+        // the verifier must not be in it. The property is that the rendering
+        // is drawn from a fixed vocabulary — every redemption failure is one
+        // of four compile-time constants — rather than that it happens not to
+        // contain the verifier as a substring.
+        //
+        // The substring form is what this target asserted until the fuzzer
+        // sent the verifier `, 0-9, '-', '.', '_' an`, a fragment of
+        // `VerifierCharacter`'s own constant message, and the check fired on a
+        // message that had never seen the input. `token_form` removed the same
+        // mistake for the same reason: a fixed message that happens to share
+        // bytes with the request is not a reflection. The vocabulary check is
+        // the stricter statement anyway — it also catches a variant added to
+        // this path with a message that interpolates anything at all.
+        let rendered = format!("{error} {error:?}");
+        assert!(
+            REDEMPTION_FAILURES
+                .iter()
+                .any(|known| format!("{known} {known:?}") == rendered),
+            "redemption rendered a message outside its fixed vocabulary: {rendered}"
+        );
     }
 
     // --- the round trip -----------------------------------------------------

@@ -38,6 +38,9 @@ node_modules/
 !/fuzz/corpus/redaction_scan/
 /fuzz/corpus/redaction_scan/*
 !/fuzz/corpus/redaction_scan/crash-*
+!/fuzz/corpus/pkce/
+/fuzz/corpus/pkce/*
+!/fuzz/corpus/pkce/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.
