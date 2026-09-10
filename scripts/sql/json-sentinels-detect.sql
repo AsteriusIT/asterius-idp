@@ -127,6 +127,16 @@ docs (table_name, column_name, repairable, row_key, doc) as (
            authorization_details
     from device_codes
     union all
+    -- What a backchannel authentication request asked for (`0026`), on the
+    -- same terms as the device flow's copy above: recorded when the request
+    -- arrives and copied onto the grant at approval, so a sentinel here
+    -- becomes a sentinel on the grant the moment somebody approves it.
+    select 'ciba_requests', 'authorization_details', true,
+           jsonb_build_object('tenant_id', tenant_id,
+                              'auth_req_id_hash', encode(auth_req_id_hash, 'hex')),
+           authorization_details
+    from ciba_requests
+    union all
     select 'signing_keys', 'public_jwk', true,
            jsonb_build_object('tenant_id', tenant_id, 'kid', kid), public_jwk
     from signing_keys
@@ -168,6 +178,7 @@ inventory (table_name, column_name) as (
            ('grants', 'authorization_details'),
            ('grants', 'actor_chain'),
            ('device_codes', 'authorization_details'),
+           ('ciba_requests', 'authorization_details'),
            ('signing_keys', 'public_jwk'),
            ('outbox', 'payload'),
            ('audit_events', 'actor'),

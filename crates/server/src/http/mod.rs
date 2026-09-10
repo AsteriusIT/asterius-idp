@@ -20,6 +20,7 @@ pub mod access_token;
 pub mod assets;
 pub mod authorization_code;
 pub mod authorize;
+pub mod backchannel_authentication;
 pub mod client_configuration;
 pub mod client_credentials;
 pub mod console;

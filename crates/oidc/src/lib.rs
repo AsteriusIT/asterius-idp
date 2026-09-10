@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod authorize;
+pub mod ciba;
 pub mod claims;
 pub mod client_auth;
 pub mod code;

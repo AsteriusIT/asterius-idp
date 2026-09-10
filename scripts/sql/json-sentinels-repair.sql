@@ -192,6 +192,15 @@ device_codes_authorization_details as (
                                  'device_code_hash', encode(device_code_hash, 'hex')),
               pg_temp.quarantined_keys(authorization_details)
 ),
+ciba_requests_authorization_details as (
+    update ciba_requests
+       set authorization_details = pg_temp.quarantine_serde_json_sentinels(authorization_details)
+    where pg_temp.has_serde_json_sentinel(authorization_details)
+    returning 'ciba_requests', 'authorization_details',
+              jsonb_build_object('tenant_id', tenant_id,
+                                 'auth_req_id_hash', encode(auth_req_id_hash, 'hex')),
+              pg_temp.quarantined_keys(authorization_details)
+),
 signing_keys_public_jwk as (
     update signing_keys set public_jwk = pg_temp.quarantine_serde_json_sentinels(public_jwk)
     where pg_temp.has_serde_json_sentinel(public_jwk)
@@ -221,6 +230,7 @@ repaired as (
     union all select * from grants_authorization_details
     union all select * from grants_actor_chain
     union all select * from device_codes_authorization_details
+    union all select * from ciba_requests_authorization_details
     union all select * from signing_keys_public_jwk
     union all select * from outbox_payload
 )

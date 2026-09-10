@@ -266,10 +266,29 @@ impl EventType {
     pub const ACCOUNT_ENABLED: Self = Self("account.enabled");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
+    /// A backchannel authentication request was accepted (CIBA Core 1.0 §7.3).
+    ///
+    /// Its own type rather than a `par.accepted` with a detail, because it is
+    /// the one request in this server that names a person who is *not*
+    /// present: an authenticated client asserted an identity through a hint,
+    /// and this server resolved it and put an approval in front of somebody
+    /// who never asked for it. "Which client asked about which user, and
+    /// when" is the question an operator asks after a person reports an
+    /// approval they did not expect, and it must be answerable by a query on
+    /// the event type rather than by reading a detail map.
+    pub const BACKCHANNEL_REQUESTED: Self = Self("backchannel.requested");
+    /// A backchannel authentication request was refused (§13).
+    ///
+    /// Separate from the acceptance for the reason [`Self::ACCOUNT_ENABLED`]
+    /// is separate from [`Self::ACCOUNT_DISABLED`]: a client sweeping hints to
+    /// find out which of them name real users here is a run of *refusals*, and
+    /// counting them must not mean filtering an outcome out of the accepted
+    /// ones.
+    pub const BACKCHANNEL_REFUSED: Self = Self("backchannel.refused");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 43] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -311,6 +330,8 @@ impl EventType {
         Self::ACCOUNT_DISABLED,
         Self::ACCOUNT_ENABLED,
         Self::AUDIT_PURGED,
+        Self::BACKCHANNEL_REQUESTED,
+        Self::BACKCHANNEL_REFUSED,
     ];
 
     /// The wire and storage spelling.

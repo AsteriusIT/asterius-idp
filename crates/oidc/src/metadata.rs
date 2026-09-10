@@ -99,7 +99,7 @@ impl Endpoint {
             Self::Registration => "/register",
             Self::EndSession => "/logout",
             Self::DeviceAuthorization => "/device_authorization",
-            Self::BackchannelAuthentication => "/backchannel_authorize",
+            Self::BackchannelAuthentication => "/bc-authorize",
             Self::GrantManagement => "/grants",
             Self::AccessEvaluation => "/access/v1/evaluation",
         }
@@ -175,33 +175,29 @@ impl Endpoint {
 
     /// Whether this build serves this endpoint at all, flags aside.
     ///
-    /// True everywhere but one place, and the exception is what keeps the
-    /// module's opening argument honest. A 501 is a truthful answer for an
-    /// endpoint OIDC Discovery §3 makes REQUIRED: the document is invalid
-    /// without the member, so the choice is between advertising a URL that
-    /// answers "not yet" and publishing a document a conformance suite
-    /// refuses.
+    /// True everywhere, now that `ast-lh3.4` has mounted the backchannel
+    /// authentication endpoint — and the method stays, with its match written
+    /// out, because it is the hinge the module's opening argument turns on. A
+    /// 501 is a truthful answer for an endpoint OIDC Discovery §3 makes
+    /// REQUIRED: the document is invalid without the member, so the choice is
+    /// between advertising a URL that answers "not yet" and publishing a
+    /// document a conformance suite refuses.
     ///
-    /// `backchannel_authentication_endpoint` is not that case. CIBA is
-    /// optional, so nothing obliges the document to mention it, and CIBA Core
-    /// 1.0 §4 makes `backchannel_token_delivery_modes_supported` REQUIRED
-    /// beside it — a document carrying the URL alone is not a smaller CIBA
-    /// document, it is an invalid one, and a client that found the URL would
-    /// send a `login_hint` and a signed request to a 501. So while there is no
-    /// handler (`ast-lh3.4`), the endpoint is neither advertised nor mounted,
-    /// with the parity between the two coming from this one answer rather than
-    /// from two lists. Flipping this to `true` is what lands CIBA, and the
-    /// `ciba` flag then decides the rest.
+    /// An *optional* endpoint has no such excuse, which is why
+    /// `backchannel_authentication_endpoint` answered `false` here until it
+    /// had a handler: CIBA Core 1.0 §4 makes it and
+    /// `backchannel_token_delivery_modes_supported` REQUIRED together, so a
+    /// document carrying the URL alone is not a smaller CIBA document but an
+    /// invalid one, and a client that found the URL would send a `login_hint`
+    /// and a signed request to a 501. The next optional endpoint registered
+    /// here before it is built answers `false` for the same reason.
     ///
-    /// A deployment may still switch [`Feature::Ciba`] on in the meantime:
-    /// what it buys today is that a CIBA client's metadata — its delivery
-    /// mode, its notification endpoint, its sector (`ast-lh3.7`) — is
-    /// validated and stored, so the clients are ready when the endpoint is.
-    /// Nothing about CIBA reaches the document until then.
+    /// The property this buys is the parity between what is routed and what is
+    /// advertised: both read this one answer, rather than two lists that could
+    /// disagree.
     #[must_use]
     pub const fn has_a_handler(self) -> bool {
         match self {
-            Self::BackchannelAuthentication => false,
             Self::Authorization
             | Self::PushedAuthorizationRequest
             | Self::Token
@@ -212,6 +208,7 @@ impl Endpoint {
             | Self::Registration
             | Self::EndSession
             | Self::DeviceAuthorization
+            | Self::BackchannelAuthentication
             | Self::GrantManagement
             | Self::AccessEvaluation => true,
         }
@@ -558,9 +555,30 @@ pub fn provider_metadata(
                     .map(asterius_domain::TokenDeliveryMode::as_str)
             ),
         );
+        // §4: "`backchannel_user_code_parameter_supported` ... whether the OP
+        // supports the `user_code` parameter". False, and stated rather than
+        // omitted: §7.1.2's code is "a secret ... known only to the user but
+        // verifiable by the OP", and this deployment has no per-user secret to
+        // verify one against. A client reading `false` here knows not to send
+        // one; the endpoint refuses one anyway (`invalid_user_code`), because
+        // a client that sent a code believes the person will be challenged and
+        // a server that dropped it would put an unchallenged approval in front
+        // of them.
         object.insert(
             "backchannel_user_code_parameter_supported".to_owned(),
             json!(false),
+        );
+        // §4: "`backchannel_authentication_request_signing_alg_values_supported`
+        // ... the JWS signing algorithms supported for signed authentication
+        // requests" (§7.1.1). The same closed list ADR-0003 gives everywhere
+        // else, because a signed authentication request is verified by the
+        // same verifier a request object is and there is no algorithm one
+        // would take that the other would not. `none` is absent for the reason
+        // it is absent from every list here: `SigningAlgorithm` cannot parse
+        // it, so it cannot be registered and cannot be accepted.
+        object.insert(
+            "backchannel_authentication_request_signing_alg_values_supported".to_owned(),
+            json!(algorithms()),
         );
     }
     if capabilities.mtls {
@@ -1050,12 +1068,20 @@ mod tests {
     fn each_flag_controls_exactly_the_members_it_owns() {
         let expectations: [(Feature, &[&str]); 5] = [
             (Feature::DeviceFlow, &["device_authorization_endpoint"]),
-            // Nothing, and that is the assertion (`ast-lh3.7`): CIBA has no
-            // handler yet ([`Endpoint::has_a_handler`]), so switching the flag
-            // on adds no member to the document — not the endpoint, not §4's
-            // delivery modes, not the grant type. `ast-lh3.4` is what makes
-            // this row look like the others.
-            (Feature::Ciba, &[]),
+            // CIBA Core 1.0 §4 makes the endpoint and the delivery modes
+            // REQUIRED together, so the flag owns the whole block rather than
+            // a URL (`ast-lh3.4`). `grant_types_supported` is not listed
+            // because the member exists in both documents — the *grant* inside
+            // it is the CIBA test's assertion, not this one's.
+            (
+                Feature::Ciba,
+                &[
+                    "backchannel_authentication_endpoint",
+                    "backchannel_token_delivery_modes_supported",
+                    "backchannel_user_code_parameter_supported",
+                    "backchannel_authentication_request_signing_alg_values_supported",
+                ],
+            ),
             (
                 Feature::GrantManagement,
                 &[
@@ -1261,68 +1287,83 @@ mod tests {
         );
     }
 
-    /// `ast-lh3.7`: CIBA Core 1.0 §4 makes
+    /// CIBA Core 1.0 §4: an OP that supports CIBA advertises
     /// `backchannel_authentication_endpoint` and
-    /// `backchannel_token_delivery_modes_supported` REQUIRED of an OP that
-    /// supports CIBA. This deployment supports none of it yet — there is no
-    /// handler — so it says nothing about it, with the flag on as with the flag
-    /// off. The route side of the same statement is
+    /// `backchannel_token_delivery_modes_supported`, which the specification
+    /// makes REQUIRED *together* — so they appear together or not at all, and
+    /// the grant that reaches the endpoint appears with them.
+    ///
+    /// The route side of the same statement is
     /// `crates/server/tests/discovery.rs`.
     #[test]
-    fn no_ciba_metadata_is_published_while_the_endpoint_has_no_handler() {
+    fn the_ciba_flag_publishes_the_whole_of_ciba_or_none_of_it() {
         // Arrange
-        let states = [
-            Capabilities::default(),
-            Capabilities {
-                ciba: true,
-                ..Capabilities::default()
-            },
-            all_features(),
+        let members = [
+            "backchannel_authentication_endpoint",
+            "backchannel_token_delivery_modes_supported",
+            "backchannel_user_code_parameter_supported",
+            "backchannel_authentication_request_signing_alg_values_supported",
         ];
+        let on = Capabilities {
+            ciba: true,
+            ..Capabilities::default()
+        };
 
-        for capabilities in states {
-            // Act
-            let document = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
-            let object = document.as_object().expect("object");
+        // Act
+        let published = metadata_of(&issuer(), &on, &AcrPolicy::default(), &[]);
+        let withheld = metadata_of(
+            &issuer(),
+            &Capabilities::default(),
+            &AcrPolicy::default(),
+            &[],
+        );
 
-            // Assert
-            for member in [
-                "backchannel_authentication_endpoint",
-                "backchannel_token_delivery_modes_supported",
-                "backchannel_user_code_parameter_supported",
-                "backchannel_authentication_request_signing_alg_values_supported",
-            ] {
-                assert!(
-                    object.get(member).is_none(),
-                    "{member} is advertised with no backchannel endpoint behind it"
-                );
-            }
+        // Assert
+        for member in members {
             assert!(
-                !document["grant_types_supported"]
-                    .as_array()
-                    .expect("array")
-                    .contains(&json!("urn:openid:params:grant-type:ciba")),
-                "the CIBA grant is advertised with no endpoint to take it to"
+                published.get(member).is_some(),
+                "{member} is missing from a document that offers CIBA: {published}"
             );
+            // Absent, not null and not empty: a client that sees the member
+            // present treats the capability as present.
             assert!(
-                !Endpoint::BackchannelAuthentication.is_enabled(&capabilities),
-                "the registry would mount a route for an endpoint with no handler"
+                withheld.get(member).is_none(),
+                "{member} is advertised with the flag off"
             );
         }
+        assert_eq!(
+            published["backchannel_authentication_endpoint"],
+            json!(Endpoint::BackchannelAuthentication.url(&issuer()))
+        );
+        // FAPI-CIBA: push is not one of them, at the endpoint or in the
+        // document.
+        assert_eq!(
+            published["backchannel_token_delivery_modes_supported"],
+            json!(["poll", "ping"])
+        );
+        assert!(
+            published["grant_types_supported"]
+                .as_array()
+                .expect("array")
+                .contains(&json!("urn:openid:params:grant-type:ciba")),
+            "the endpoint is advertised without the grant that reaches it: {published}"
+        );
+        assert!(
+            !withheld["grant_types_supported"]
+                .as_array()
+                .expect("array")
+                .contains(&json!("urn:openid:params:grant-type:ciba")),
+            "the CIBA grant is advertised with no endpoint to take it to"
+        );
     }
 
-    /// The one exception to "advertised means routed" is confined to CIBA. Any
-    /// other endpoint that stopped having a handler would silently disappear
-    /// from every document, so the exception is pinned rather than left to a
-    /// reviewer to notice.
+    /// "Advertised means routed" has no exception left: every endpoint in the
+    /// registry has a handler, and the next one added without one has to say
+    /// so here before it can be advertised.
     #[test]
-    fn only_the_backchannel_endpoint_is_waiting_for_a_handler() {
+    fn every_registered_endpoint_has_a_handler() {
         for endpoint in Endpoint::ALL {
-            assert_eq!(
-                endpoint.has_a_handler(),
-                endpoint != Endpoint::BackchannelAuthentication,
-                "{endpoint:?}"
-            );
+            assert!(endpoint.has_a_handler(), "{endpoint:?}");
         }
     }
 

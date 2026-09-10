@@ -567,6 +567,51 @@ token can still mint an access token after the browser session has ended; that
 is a grant surviving a session, which is what a grant is, and the setting is
 there for the deployments that mean otherwise.
 
+### Backchannel authentication requests (CIBA, `ast-lh3.4`)
+
+**Why this needs a section: a hint resolves a person without that person being
+present.** Every other flow in this server starts with a user at a browser.
+`POST /bc-authorize` starts with an authenticated client asserting an identity
+— an address, a username, an ID token — and this server turning it into an
+account and a pending approval. The person's first involvement is a
+notification they did not ask for.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Asking about somebody else.** A client sends a `login_hint` naming a person it has no relationship with, and an approval lands on their device. | The request is *pending* and produces nothing on its own: no token, no session, no claim. It is answered only by the person, in the approvals inbox (`ast-lh3.6`), where the client and the scopes are named. The row records which client asked about whom (`backchannel.requested`), so an unexpected approval is traceable to a client rather than to a hint somebody typed. |
+| **A1** | **G2** | **Approval fatigue: repeating the request until it is approved by reflex.** | `expires_in` is five minutes at most and a `requested_expiry` may only shorten it, so an unanswered request stops being answerable quickly rather than accumulating on a lock screen. The endpoint is client-authenticated (`private_key_jwt` or mTLS), so every repetition is attributable to a client holding a private key and is one `backchannel.requested` row. It is **not** in `LimitedEndpoint` — the same gap `/device_authorization` and `/revoke` have, and for the same reason: adding one means adding a field to `EndpointLimits`, a configuration key and a default, which is a change to that surface. Until then the bound is attribution and the five-minute expiry, not a counter. |
+| **A1** | **G1** | **Substituting the transaction between the two screens.** The consumption device shows one payment; the authentication device is asked to approve another. | §7.1's `binding_message` is recorded in the clear and rendered on both. It is at most 64 characters of letters, digits, spaces and hyphens — refused otherwise with `invalid_binding_message` — so a message carrying newlines, bidirectional overrides or combining marks cannot be made to display one way on one screen and another way on the other. |
+| **A1** | **G2** | **Reading a `client_notification_token` out of a database copy and forging a §10.2 notification.** | It is stored as a SHA-256 digest and never as itself, the same treatment every bearer value here gets. It is required in ping mode and refused in poll mode, so no row holds a credential nothing will ever present. |
+| **A1** | **G2** | **Guessing an `auth_req_id` and polling for somebody else's tokens.** | 256 bits from the OS CSPRNG — above §7.3's floor — stored as a digest, and the presented value is shape-checked against §7.3's charset before any query. |
+| **A1** | **G1** | **Driving a request with an ID token issued to another client.** | An `id_token_hint` must verify against *this tenant's* keys and name *this* client in `aud`/`azp` before its `sub` is resolved; the check is `id_token_hint::names_client`, shared with the pushed-request endpoint. A `login_hint_token` (§14) is refused outright: §14 requires the OP to know which issuers it accepts one from, this deployment configures none, and reading an unverified assertion about who somebody is would be the alternative. |
+| **A1** | **G2** | **Replaying an assertion minted for another endpoint.** | §7.1 obliges this endpoint to accept three `aud` values where FAPI 2.0 SP §5.3.2.1 item 8 allows one. The widening is `Audiences::ciba_backchannel`, reachable from this handler alone and from no other; the *form* rule is untouched, so `aud` is a string and never an array, and an assertion naming this server and somebody else is still refused. |
+
+**Residual, stated rather than closed — the `unknown_user_id` oracle.** §13
+requires this endpoint to answer `unknown_user_id` when a hint resolves to
+nobody, which makes it an existence oracle: a client can learn whether an
+address has an account here. We keep the specified code rather than
+collapsing it into `access_denied`, and the reasoning is that the oracle is
+*already* bounded to a party we have identified. Reaching it requires a
+registered client holding a private key, with the CIBA grant, on a tenant
+with the flag on — and every probe is one `backchannel.refused` row naming
+that client — though not yet behind an endpoint rate limit; see the row
+above. A client in that position can also enumerate through any of half a
+dozen other surfaces. What we would buy
+by deviating is a client that cannot tell "wrong address" from "this server
+will not ask", which turns every integration mistake into a support ticket;
+what we would pay is a documented departure from a Final specification that
+a conformance suite tests. If a deployment's threat model puts enumeration
+above that, the honest control is a tenant that does not enable CIBA for
+clients it does not trust with its user list — not a code that lies.
+
+**Residual — user codes.** §7.1.2's `user_code` is a secret "known only to the
+user but verifiable by the OP". This deployment has no per-user code to verify
+one against, so `backchannel_user_code_parameter_supported` is `false` in every
+document and a presented code is refused with `invalid_user_code` rather than
+dropped: a client that sent one believes the person will be challenged, and a
+server that silently ignored it would put an unchallenged approval in front of
+them.
+
 ### 4. Agent-specific threats (G4)
 
 FAPI's attacker model has no notion of a principal acting for another principal.
