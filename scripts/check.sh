@@ -19,6 +19,9 @@ run ./scripts/check-no-unsafe.sh
 # The disk garbage collector deletes files; its fixture test proves it spares
 # fresh artifacts and sources, and that a dry run deletes nothing.
 run ./scripts/gc-build-artifacts.sh --self-test
+# verify.sh builds the nextest filter every worker runs before a merge; if it
+# stopped folding in the whole-tree audits, nothing else would notice.
+run ./scripts/verify.sh --self-test
 
 if $want_db; then
   run docker compose up -d --wait db
