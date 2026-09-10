@@ -393,9 +393,12 @@ impl InitialAccessTokenStore for FakeInitialAccessTokens {
 }
 
 /// [`post_under`], with this tenant's own initial access tokens wired.
-#[allow(clippy::too_many_arguments, reason = "one argument per collaborator, \
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one argument per collaborator, \
     and the endpoint context genuinely has this many; wrapping them in a \
-    struct here would only move the list")]
+    struct here would only move the list"
+)]
 async fn post_gated_by(
     tokens: &dyn InitialAccessTokenStore,
     tenant_policy: &TenantRegistrationPolicy,
@@ -1677,7 +1680,11 @@ async fn a_tenant_issued_token_registers_a_client_and_charges_the_quota() {
     // Assert
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(registry.written().len(), 1);
-    assert_eq!(tokens.uses(), 1, "the registration did not charge the token");
+    assert_eq!(
+        tokens.uses(),
+        1,
+        "the registration did not charge the token"
+    );
 }
 
 /// The quota is the point of the setting: past it, RFC 7591 §3.2.2 defers to
@@ -1762,7 +1769,8 @@ async fn an_expired_token_is_refused() {
 #[tokio::test]
 async fn a_deployment_token_is_refused_at_a_tenant_that_gates_itself() {
     // Arrange: the store holds a *different* token; TOKEN is the deployment's.
-    let tokens = FakeInitialAccessTokens::holding(&tenant().id, "a-token-of-this-tenant", None, None);
+    let tokens =
+        FakeInitialAccessTokens::holding(&tenant().id, "a-token-of-this-tenant", None, None);
     let registry = FakeRegistry::default();
     let audit = FakeAudit::default();
     let deployment = RegistrationPolicy::Gated(InitialAccessTokens::from_tokens([TOKEN]));

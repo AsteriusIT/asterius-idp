@@ -135,7 +135,10 @@ Every member is optional and every list is *closed*: an absent list means "this 
 
 A software statement issuer is a **root of trust**: RFC 7591 §2.3 makes a statement's claims override the request's, so whoever holds that signing key can create clients in this tenant with metadata of their choosing. Both URLs must be `https`, the `iss` is compared byte-exactly, and the keys are fetched through the one outbound path. See `docs/threat-model.md`.
 
-Two members parse and are stored but are **not enforced yet**: `max_clients_per_initial_access_token` and `unused_client_expiry_seconds` need the `initial_access_tokens` table and a sweep respectively. They are listed as residual risks in the threat model rather than left to be discovered.
+Both quota members are enforced since `ast-cu3`:
+
+* **`max_clients_per_initial_access_token`** is stamped onto every token the admin API issues for this tenant (`POST /admin/api/v1/initial-access-tokens`), and charged atomically at `POST /register`. It applies to the tenant's own tokens, which are rows; the initial access tokens an operator configures in this file belong to the *deployment* and still have no quota. A tenant that sets `mode: "initial_access_token"` therefore stops accepting the deployment's tokens and starts accepting only its own — which is the point, and which means such a tenant must issue at least one token before anybody can register.
+* **`unused_client_expiry_seconds`** is honoured by the retention sweep: a client that has not authenticated at the token endpoint or PAR for that long is deleted, dated by `clients.last_used_at` and falling back to `created_at` for a client that has never authenticated. A tenant that sets nothing here keeps every client for ever, which stays the default. `last_used_at` is written at most once per client per hour, so the value is accurate to the hour against a window measured in days.
 
 ## `[login]` — abuse protection at sign-in
 

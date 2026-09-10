@@ -928,7 +928,9 @@ impl Handling<'_> {
             self.now,
         )
         .map_err(|error| match error {
-            DomainError::Invalid { field, reason } => AdminError::Invalid(format!("{field}: {reason}")),
+            DomainError::Invalid { field, reason } => {
+                AdminError::Invalid(format!("{field}: {reason}"))
+            }
             other => AdminError::from_storage(crate::INITIAL_ACCESS_TOKEN_CREATE_ID, &other),
         })?;
 
@@ -950,11 +952,11 @@ impl Handling<'_> {
             EventType::ADMIN_CHANGED,
             Detail::new()
                 .label("operation", crate::INITIAL_ACCESS_TOKEN_CREATE_ID)
-                .text("initial_access_token_id", &stored.id.to_string())
+                .text("initial_access_token_id", stored.id.to_string())
                 .text("label", &stored.label)
                 .text(
                     "max_clients",
-                    &stored
+                    stored
                         .max_uses
                         .map_or_else(|| "unlimited".to_owned(), |max| max.to_string()),
                 ),
@@ -4619,7 +4621,7 @@ mod tests {
 
     /// A settings document that also stores a registration policy
     /// (`ast-m9c.6`), which is where the token quota comes from.
-    fn settings_body_with_policy(policy: serde_json::Value) -> serde_json::Value {
+    fn settings_body_with_policy(policy: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({
             "disabled_features": [],
             "authorization_code_lifetime_seconds": 60,
@@ -4630,17 +4632,19 @@ mod tests {
 
     /// Stores a per-tenant registration policy through the API that owns it,
     /// so the fixture cannot store one the API would refuse.
-    async fn store_policy(world: &World, cookie: &str, policy: serde_json::Value) {
+    async fn store_policy(world: &World, cookie: &str, policy: &serde_json::Value) {
         let response = world
             .send(
                 as_console(&crate::TENANT_SETTINGS_UPDATE, cookie)
-                    .body(Body::from(
-                        settings_body_with_policy(policy).to_string(),
-                    ))
+                    .body(Body::from(settings_body_with_policy(policy).to_string()))
                     .expect("a request"),
             )
             .await;
-        assert_eq!(response.status(), StatusCode::OK, "the policy was not stored");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the policy was not stored"
+        );
     }
 
     /// **`ast-cu3`'s first acceptance criterion, admin side.** The token is
@@ -4653,7 +4657,7 @@ mod tests {
         store_policy(
             &world,
             &cookie,
-            serde_json::json!({
+            &serde_json::json!({
                 "mode": "initial_access_token",
                 "max_clients_per_initial_access_token": 3,
             }),
@@ -4695,7 +4699,7 @@ mod tests {
         store_policy(
             &world,
             &cookie,
-            serde_json::json!({ "mode": "initial_access_token" }),
+            &serde_json::json!({ "mode": "initial_access_token" }),
         )
         .await;
         let created = world
@@ -4742,7 +4746,7 @@ mod tests {
         store_policy(
             &world,
             &cookie,
-            serde_json::json!({ "mode": "initial_access_token" }),
+            &serde_json::json!({ "mode": "initial_access_token" }),
         )
         .await;
 
@@ -4768,11 +4772,10 @@ mod tests {
         let recorded = events
             .iter()
             .find(|event| {
-                event
-                    .detail
-                    .iter()
-                    .any(|(key, value)| key == "operation" && rendered(value).as_deref()
-                        == Some(crate::INITIAL_ACCESS_TOKEN_CREATE_ID))
+                event.detail.iter().any(|(key, value)| {
+                    key == "operation"
+                        && rendered(value).as_deref() == Some(crate::INITIAL_ACCESS_TOKEN_CREATE_ID)
+                })
             })
             .expect("the issuance was not recorded");
 

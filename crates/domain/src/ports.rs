@@ -7,9 +7,9 @@ use crate::{
     AuthenticationMethod, AuthorizationDetailsType, Client, ClientId, ClientMetadataError,
     ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError, Enrolment,
     FirstPartyDestination, Grant, InitialAccessToken, InitialAccessTokenReservation,
-    InteractionRecord, Issuer, NewInitialAccessToken, NewPasskey, Participant,
-    PushedRequest, RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session,
-    SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
+    InteractionRecord, Issuer, NewInitialAccessToken, NewPasskey, Participant, PushedRequest,
+    RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session, SessionRevocation,
+    SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -333,6 +333,41 @@ pub trait ClientRegistry: Debug + Send + Sync {
     ) -> Result<Client, DomainError>;
 }
 
+/// Records that a client authenticated (`ast-cu3`).
+///
+/// Its own port and not a method on [`ClientRepository`], for the reason
+/// [`ClientRegistry`] is separate: every protocol endpoint reads clients, and
+/// folding a write into that port would hand a write capability to code that
+/// has no business having one and would make every read-only test double
+/// implement a write it never calls.
+///
+/// There is one caller — the client authenticator, which both the token
+/// endpoint and PAR go through — so "when was this client last used" has one
+/// definition and cannot drift between two endpoints that both authenticate.
+#[async_trait::async_trait]
+pub trait ClientUsageRecorder: Debug + Send + Sync {
+    /// Notes that `client_id` authenticated at `now`.
+    ///
+    /// Implementations may coarsen: this is read by a retention sweep whose
+    /// unit is days, so an adapter that writes at most once an hour per client
+    /// is honouring the contract and is keeping a write off the hot path. What
+    /// an implementation must not do is move the recorded instant *backwards*.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. The caller
+    /// logs it and proceeds: a client that has authenticated must not be
+    /// refused because a bookkeeping write failed, and the consequence of a
+    /// lost write is at worst one sweep considering a live client idle — which
+    /// is why the sweep's window is days rather than minutes.
+    async fn record_use(
+        &self,
+        tenant: &TenantId,
+        client_id: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+}
+
 /// The initial access tokens of one tenant (`ast-cu3`).
 ///
 /// Two readerships that must not be one method: the admin API issues and lists
@@ -354,10 +389,8 @@ pub trait InitialAccessTokenStore: Debug + Send + Sync {
     ///
     /// [`DomainError::Conflict`] if the tenant does not exist or the digest is
     /// already stored, [`DomainError::Storage`] otherwise.
-    async fn issue(
-        &self,
-        token: &NewInitialAccessToken,
-    ) -> Result<InitialAccessToken, DomainError>;
+    async fn issue(&self, token: &NewInitialAccessToken)
+    -> Result<InitialAccessToken, DomainError>;
 
     /// Charges one use against the token with this digest, atomically.
     ///

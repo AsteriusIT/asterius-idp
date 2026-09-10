@@ -173,11 +173,54 @@ fn sign_with(key: &SigningKey, claims: &Value) -> String {
         .to_owned()
 }
 
+/// Every client this run recorded a use for (`ast-cu3`).
+#[derive(Debug, Default)]
+struct FakeUsage {
+    recorded: std::sync::Mutex<Vec<(String, String, time::OffsetDateTime)>>,
+    broken: bool,
+}
+
+impl FakeUsage {
+    fn broken() -> Self {
+        Self {
+            broken: true,
+            ..Self::default()
+        }
+    }
+
+    fn recorded(&self) -> Vec<(String, String, time::OffsetDateTime)> {
+        self.recorded.lock().expect("lock").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::ClientUsageRecorder for FakeUsage {
+    async fn record_use(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        client_id: &asterius_domain::ClientId,
+        now: time::OffsetDateTime,
+    ) -> Result<(), asterius_domain::DomainError> {
+        if self.broken {
+            return Err(asterius_domain::DomainError::Storage(
+                "the database is gone".into(),
+            ));
+        }
+        self.recorded.lock().expect("lock").push((
+            tenant.as_str().to_owned(),
+            client_id.as_str().to_owned(),
+            now,
+        ));
+        Ok(())
+    }
+}
+
 /// The world: one tenant, one active client with inline keys.
 struct World {
     authenticator: ClientAuthenticator,
     clients: FakeClients,
     replay: Arc<FakeReplay>,
+    usage: Arc<FakeUsage>,
     key: SigningKey,
     tenant: Tenant,
 }
@@ -188,6 +231,10 @@ impl World {
     }
 
     fn with_client(status: ClientStatus, auth_method: &str) -> Self {
+        Self::recording(status, auth_method, Arc::new(FakeUsage::default()))
+    }
+
+    fn recording(status: ClientStatus, auth_method: &str, usage: Arc<FakeUsage>) -> Self {
         let (key, jwks) = client_key();
         let mut clients = FakeClients::default();
         clients.0.insert(
@@ -198,9 +245,12 @@ impl World {
         let replay = Arc::new(FakeReplay::default());
         let cache = Arc::new(ClientKeyCache::new(Arc::new(NoFetching)));
         Self {
-            authenticator: ClientAuthenticator::new(cache, replay.clone()).expect("build"),
+            authenticator: ClientAuthenticator::new(cache, replay.clone())
+                .expect("build")
+                .recording_use(Arc::clone(&usage) as Arc<dyn asterius_domain::ClientUsageRecorder>),
             clients,
             replay,
+            usage,
             key,
             tenant: tenant("demo", ISSUER),
         }
@@ -546,4 +596,69 @@ async fn garbage_in_place_of_an_assertion_is_refused_without_panicking() {
         );
     }
     assert_eq!(world.replay.claim_count(), 0);
+}
+
+// ---- recording a use (`ast-cu3`) -----------------------------------------
+
+/// A client is "used" exactly when it authenticates, and this is the one
+/// function both the token endpoint and PAR reach — so the tenant policy's
+/// `unused_client_expiry_seconds` has one definition of idle, not two.
+#[tokio::test]
+async fn a_successful_authentication_records_that_the_client_was_used() {
+    // Arrange
+    let world = World::new();
+
+    // Act
+    let authenticated = world
+        .authenticate_claims(&assertion_claims(CLIENT, ISSUER))
+        .await;
+
+    // Assert
+    assert!(authenticated.is_ok());
+    assert_eq!(
+        world.usage.recorded(),
+        vec![("demo".to_owned(), CLIENT.to_owned(), now())]
+    );
+}
+
+/// A refused assertion is not a use. Recording one would keep a client alive
+/// in the sweep on the strength of somebody failing to authenticate as it,
+/// which is the opposite of what the setting is for.
+#[tokio::test]
+async fn a_refused_assertion_records_nothing() {
+    // Arrange
+    let world = World::new();
+    let mut claims = assertion_claims(CLIENT, ISSUER);
+    claims["aud"] = serde_json::json!("https://somewhere.else/");
+
+    // Act
+    let refused = world.authenticate_claims(&claims).await;
+
+    // Assert
+    assert!(refused.is_err());
+    assert!(world.usage.recorded().is_empty());
+}
+
+/// A bookkeeping write that fails does not refuse a client that has
+/// authenticated: the assertion verified and the `jti` was claimed, and a slow
+/// `UPDATE` must not become an outage at the token endpoint.
+#[tokio::test]
+async fn a_client_still_authenticates_when_the_use_cannot_be_recorded() {
+    // Arrange
+    let world = World::recording(
+        ClientStatus::Active,
+        "private_key_jwt",
+        Arc::new(FakeUsage::broken()),
+    );
+
+    // Act
+    let authenticated = world
+        .authenticate_claims(&assertion_claims(CLIENT, ISSUER))
+        .await;
+
+    // Assert
+    assert!(
+        authenticated.is_ok(),
+        "a failed usage write refused a client that authenticated"
+    );
 }

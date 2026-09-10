@@ -23,10 +23,9 @@ use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::tenant_settings::SettingsDirectory;
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{
-    DeploymentAdmin, PgAdminSeed, PgAuditSink, PgClientKeyFetches, PgKekRewrap, PgReplayGuard,
-    PgInitialAccessTokens, PgRetention, PgTenantRepository, PgTenantSettings,
-    ProvisionedTenants, RewrapOutcome, Store,
-    TenantKeyStore,
+    DeploymentAdmin, PgAdminSeed, PgAuditSink, PgClientKeyFetches, PgClientUsage,
+    PgInitialAccessTokens, PgKekRewrap, PgReplayGuard, PgRetention, PgTenantRepository,
+    PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -57,6 +56,25 @@ fn run() -> Result<(), String> {
         Command::Serve => serve_forever(&invocation.config),
         Command::RewrapKek(new_kek) => rewrap_kek(&invocation.config, new_kek.as_ref()),
     }
+}
+
+/// The client authenticator, with the two collaborators it is never useful
+/// without.
+///
+/// Extracted from `serve_forever` because the wiring has a reason attached to
+/// it and a composition root is not the place to read one: recording a use is
+/// wired *here* rather than at the three endpoints that authenticate, so that
+/// `unused_client_expiry_seconds` (`ast-cu3`) has one definition of "used".
+fn client_authenticator(
+    client_keys: Arc<asterius_jose::client_keys::ClientKeyCache>,
+    replay: &Arc<PgReplayGuard>,
+    store: &Store,
+) -> Result<Arc<ClientAuthenticator>, String> {
+    let authenticator =
+        ClientAuthenticator::new(client_keys, Arc::clone(replay) as Arc<dyn ReplayGuard>)
+            .map_err(|e| format!("cannot build the client authenticator: {e}"))?
+            .recording_use(Arc::new(PgClientUsage::new(store.pool().clone())));
+    Ok(Arc::new(authenticator))
 }
 
 fn serve_forever(path: &std::path::Path) -> Result<(), String> {
@@ -135,10 +153,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let admin_clients = AdminClientContext::of(&config, &outbound);
         let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
-        let authenticator = Arc::new(
-            ClientAuthenticator::new(client_keys, Arc::clone(&replay) as Arc<dyn ReplayGuard>)
-                .map_err(|e| format!("cannot build the client authenticator: {e}"))?,
-        );
+        let authenticator = client_authenticator(client_keys, &replay, &store)?;
 
         let dpop = Arc::new(dpop_endpoint(
             Arc::clone(&replay) as Arc<dyn ReplayGuard>,

@@ -59,9 +59,9 @@ use asterius_domain::keys::SigningAlgorithm;
 use asterius_domain::ports::{InitialAccessTokenStore, JwksFetcher};
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration, ClientRegistry,
-    ClientStatus, InitialAccessTokenReservation, JwksSource, KeyStore, OpaqueToken, PolicyViolation,
-    RegistrationMode as DomainRegistrationMode, RegistrationPolicy as TenantRegistrationPolicy,
-    Tenant, ct_eq, sha256,
+    ClientStatus, InitialAccessTokenReservation, JwksSource, KeyStore, OpaqueToken,
+    PolicyViolation, RegistrationMode as DomainRegistrationMode,
+    RegistrationPolicy as TenantRegistrationPolicy, Tenant, ct_eq, sha256,
 };
 use asterius_oidc::metadata::Endpoint;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -454,7 +454,7 @@ pub async fn register(
     // charge is given back at the one place a refusal leaves this function.
     let reserved = match admit(&context, headers, now).await {
         Ok(reserved) => reserved,
-        Err(refusal) => return refusal,
+        Err(refusal) => return *refusal,
     };
 
     let response = registered(&context, headers, body, now).await;
@@ -487,7 +487,7 @@ async fn registered(
     // so it is resolved *before* the document is validated — what the validator
     // sees is what the issuer asserted, and a statement therefore cannot
     // register anything a plain document could not.
-    let merged = match asserted_document(&context, body, now).await {
+    let merged = match asserted_document(context, body, now).await {
         Ok(merged) => merged,
         Err(response) => return *response,
     };
@@ -506,7 +506,7 @@ async fn registered(
             // amplification primitive pointed at the one table that cannot be
             // deleted from.
             record(
-                &context,
+                context,
                 now,
                 Outcome::Failure,
                 None,
@@ -519,7 +519,7 @@ async fn registered(
     };
 
     // The three checks the validated document does not answer on its own.
-    if let Some(refusal) = unacceptable(&context, now, &registration).await {
+    if let Some(refusal) = unacceptable(context, now, &registration).await {
         return refusal;
     }
 
@@ -553,7 +553,7 @@ async fn registered(
                 "cannot store a client registration"
             );
             record(
-                &context,
+                context,
                 now,
                 Outcome::Failure,
                 None,
@@ -576,7 +576,7 @@ async fn registered(
     };
 
     record(
-        &context,
+        context,
         now,
         Outcome::Success,
         Some(stored.id.clone()),
@@ -632,7 +632,7 @@ async fn admit(
     context: &RegisterContext<'_>,
     headers: &HeaderMap,
     now: OffsetDateTime,
-) -> Result<Option<uuid::Uuid>, Response> {
+) -> Result<Option<uuid::Uuid>, Box<Response>> {
     let effective = context.tenant_policy.effective_mode(context.policy.mode());
     let tenant_gated =
         context.tenant_policy.mode() == Some(DomainRegistrationMode::InitialAccessToken);
@@ -645,7 +645,7 @@ async fn admit(
         .policy
         .admit_as(effective, headers)
         .map(|()| None)
-        .map_err(refusal)
+        .map_err(|denial| Box::new(refusal(denial)))
 }
 
 /// Admits a caller against this tenant's own initial access tokens.
@@ -661,7 +661,7 @@ async fn admit_from_store(
     context: &RegisterContext<'_>,
     headers: &HeaderMap,
     now: OffsetDateTime,
-) -> Result<Option<uuid::Uuid>, Response> {
+) -> Result<Option<uuid::Uuid>, Box<Response>> {
     let Some(store) = context.initial_access_tokens else {
         // A tenant asking for per-tenant credentials in a process that cannot
         // read them registers nobody. Refusing is the safe direction and it is
@@ -670,10 +670,10 @@ async fn admit_from_store(
             tenant = %context.tenant.id,
             "this tenant registers on its own initial access tokens, but no store is wired"
         );
-        return Err(refusal(Denial::Invalid));
+        return Err(Box::new(refusal(Denial::Invalid)));
     };
     let Some(presented) = bearer(headers) else {
-        return Err(refusal(Denial::Missing));
+        return Err(Box::new(refusal(Denial::Missing)));
     };
 
     // Hashed before it leaves this function, so the only form of the credential
@@ -681,7 +681,7 @@ async fn admit_from_store(
     let digest = sha256(presented.as_bytes());
     match store.reserve(&context.tenant.id, &digest, now).await {
         Ok(InitialAccessTokenReservation::Reserved { id, .. }) => Ok(Some(id)),
-        Ok(_) => Err(refusal(Denial::Invalid)),
+        Ok(_) => Err(Box::new(refusal(Denial::Invalid))),
         Err(failure) => {
             tracing::error!(
                 %failure,
@@ -691,11 +691,11 @@ async fn admit_from_store(
             // Not `invalid_token`: the credential was never looked at. Telling
             // a caller its token was rejected during an outage would have it
             // throw away a token that still works.
-            Err(error(
+            Err(Box::new(error(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "temporarily_unavailable",
                 "the registration could not be authorized",
-            ))
+            )))
         }
     }
 }

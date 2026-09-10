@@ -95,11 +95,14 @@ pub fn requested(body: &[u8]) -> Result<Requested, AdminError> {
     let lifetime_seconds = match object.get("expires_in_seconds") {
         None | Some(Value::Null) => None,
         Some(value) => {
-            let seconds = value.as_u64().filter(|seconds| *seconds > 0).ok_or_else(|| {
-                AdminError::Invalid(
-                    "expires_in_seconds: must be a positive whole number of seconds".to_owned(),
-                )
-            })?;
+            let seconds = value
+                .as_u64()
+                .filter(|seconds| *seconds > 0)
+                .ok_or_else(|| {
+                    AdminError::Invalid(
+                        "expires_in_seconds: must be a positive whole number of seconds".to_owned(),
+                    )
+                })?;
             if seconds > MAX_LIFETIME_SECONDS {
                 return Err(AdminError::Invalid(format!(
                     "expires_in_seconds: at most {MAX_LIFETIME_SECONDS}"
@@ -210,7 +213,9 @@ mod tests {
         let refused = requested(br#"{"label": "   "}"#);
 
         // Assert
-        assert!(matches!(refused, Err(AdminError::Invalid(message)) if message.starts_with("label")));
+        assert!(
+            matches!(refused, Err(AdminError::Invalid(message)) if message.starts_with("label"))
+        );
     }
 
     #[test]

@@ -34,8 +34,8 @@ pub use grant::{
     LiveAccessToken, RevocationReason,
 };
 pub use initial_access_token::{
-    InitialAccessToken, MAX_LABEL_LEN as MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN,
-    NewInitialAccessToken, Reservation as InitialAccessTokenReservation,
+    InitialAccessToken, MAX_LABEL_LEN as MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, NewInitialAccessToken,
+    Reservation as InitialAccessTokenReservation,
 };
 pub use registration_policy::{
     JwksRequirement, PolicyViolation, RegistrationMode, RegistrationPolicy,

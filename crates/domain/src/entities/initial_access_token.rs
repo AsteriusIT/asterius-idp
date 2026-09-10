@@ -309,16 +309,15 @@ mod tests {
         let label = "x".repeat(MAX_LABEL_LEN + 1);
 
         // Act
-        let built =
-            NewInitialAccessToken::new(
-                TenantId::new("demo"),
-                label,
-                digest(),
-                None,
-                None,
-                "admin@example",
-                now(),
-            );
+        let built = NewInitialAccessToken::new(
+            TenantId::new("demo"),
+            label,
+            digest(),
+            None,
+            None,
+            "admin@example",
+            now(),
+        );
 
         // Assert
         assert!(matches!(built, Err(DomainError::Invalid { field, .. }) if field == "label"));

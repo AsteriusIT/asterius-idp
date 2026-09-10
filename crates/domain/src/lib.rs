@@ -44,15 +44,14 @@ pub use entities::{
     ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client, ClientMetadata,
     ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantAuthentication, GrantError,
     GrantRecord, GrantStatus, GrantType, InitialAccessToken, InitialAccessTokenReservation,
-    InvalidAuthorizationDetails, InvalidTarget, JsonSchema,
-    JsonSchemaError, JwksRequirement, JwksSource, LiveAccessToken,
-    MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, NewInitialAccessToken, PairwiseSalt, PasskeyEnrolment,
-    PolicyViolation, RedirectUri, RedirectUriError, RefreshPolicy, RefreshPolicyError,
-    RegistrationMode, RegistrationPolicy, RegistrationPolicyError, ResourceIdentifier,
-    ResourceRegistry, ResourceServer, RevocationReason, Role, RoleScope, Rotation, RuleId,
-    SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule, SubjectError, SubjectType,
-    Tenant, TenantSettings, TenantSettingsError, TenantStatus, TokenBinding,
-    TokenEndpointAuthMethod, TokenLifetimes, User, UserId, UserRole, UserStatus,
+    InvalidAuthorizationDetails, InvalidTarget, JsonSchema, JsonSchemaError, JwksRequirement,
+    JwksSource, LiveAccessToken, MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, NewInitialAccessToken,
+    PairwiseSalt, PasskeyEnrolment, PolicyViolation, RedirectUri, RedirectUriError, RefreshPolicy,
+    RefreshPolicyError, RegistrationMode, RegistrationPolicy, RegistrationPolicyError,
+    ResourceIdentifier, ResourceRegistry, ResourceServer, RevocationReason, Role, RoleScope,
+    Rotation, RuleId, SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule,
+    SubjectError, SubjectType, Tenant, TenantSettings, TenantSettingsError, TenantStatus,
+    TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User, UserId, UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
@@ -66,11 +65,11 @@ pub use keys::{
 };
 pub use ports::{
     AuthRequestRepository, AuthorizationDetailsTypeRepository, ClientAdministration,
-    ClientConfiguration, ClientRegistry, ClientRepository, CodeIssuer, CredentialVerifier,
-    GrantRepository, InitialAccessTokenStore, InteractionRepository, ManagedClient,
-    PasskeyRepository, ReplayCheck,
-    ReplayGuard, ReplayPurpose, ResourceServerRepository, SessionRepository, SubjectResolver,
-    TenantSettingsRepository, UserDirectory,
+    ClientConfiguration, ClientRegistry, ClientRepository, ClientUsageRecorder, CodeIssuer,
+    CredentialVerifier, GrantRepository, InitialAccessTokenStore, InteractionRepository,
+    ManagedClient, PasskeyRepository, ReplayCheck, ReplayGuard, ReplayPurpose,
+    ResourceServerRepository, SessionRepository, SubjectResolver, TenantSettingsRepository,
+    UserDirectory,
 };
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,
