@@ -6,6 +6,7 @@ import { Keys } from './keys';
 import { visibleTo } from './navigation';
 import { hrefOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
+import { Users } from './users';
 
 /**
  * What the shell is doing, as one value.
@@ -125,12 +126,16 @@ function focusMain(): void {
 /**
  * The screen for one route.
  *
- * Every one but the overview is a placeholder naming the bead that fills it
- * in. The scaffold ships the shell — the document, the policy, the session,
- * the navigation — and nothing that would have to be rewritten by the six
- * tickets that follow it.
+ * The ones that are still placeholders name the bead that will fill them in,
+ * and that bead must be an *open* one: `ast-f7m.3`'s scaffold tagged this
+ * screen with `ast-f7m.4`, which had shipped as tenant settings, so an
+ * administrator opening Users read that it was arriving with a ticket that was
+ * already closed. See `navigation.ts`.
  */
 function Screen({ route, session }: { route: string; session: Session }): JSX.Element {
+  if (route === 'users') {
+    return <Users session={session} />;
+  }
   if (route === 'clients') {
     return <Clients session={session} />;
   }

@@ -221,7 +221,7 @@ impl FakeClients {
 
     /// A registered client that is not a participant: no
     /// `backchannel_logout_uri`, so §2.2 says nothing is sent to it.
-    fn silent(&self) -> Client {
+    fn silent() -> Client {
         let document = json!({
             "client_name": "Reports",
             "redirect_uris": ["https://reports.example/cb"],
@@ -258,7 +258,7 @@ impl FakeClients {
 impl ClientRepository for FakeClients {
     async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError> {
         if client_id.as_str() == SILENT_CLIENT {
-            return Ok(Some(self.silent()));
+            return Ok(Some(Self::silent()));
         }
         if client_id.as_str() != CLIENT {
             return Ok(None);
@@ -1420,7 +1420,10 @@ async fn an_administrative_revocation_queues_one_logout_token_per_participant() 
     let rows = harness.queued();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].destination, BACKCHANNEL_LOGOUT_URI);
-    assert_eq!(rows[0].kind, asterius_server::backchannel::BACKCHANNEL_LOGOUT_KIND);
+    assert_eq!(
+        rows[0].kind,
+        asterius_server::backchannel::BACKCHANNEL_LOGOUT_KIND
+    );
     assert!(
         rows[0].payload["body"]
             .as_str()

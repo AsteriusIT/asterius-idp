@@ -441,7 +441,6 @@ async fn revoke_refresh_tokens(
     }
 }
 
-
 /// The registered `post_logout_redirect_uris` of an identified relying party
 /// (§3.1).
 ///

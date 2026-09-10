@@ -1187,22 +1187,22 @@ impl Handling<'_> {
     /// [`asterius_domain::ClaimName`], the sizes against the module's bounds.
     async fn create_user(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         let requested: users::RequestedAccount = self.parse_body(body).await?;
-        let account = users::accept_account(requested, &self.tenant.id, self.now)?;
+        let account = users::accept_account(&requested, &self.tenant.id, self.now)?;
 
         // Read off the account before it is moved into the port: the response
         // is rendered from what came back, and this is only for the record.
         let created_with_a_password = account.password.is_some();
 
-        let stored = self
-            .state
-            .backend
-            .users()
-            .create(account)
-            .await
-            .map_err(|error| match error {
-                DomainError::Conflict(message) => AdminError::Conflict(message),
-                other => AdminError::from_storage(crate::USER_CREATE_ID, &other),
-            })?;
+        let stored =
+            self.state
+                .backend
+                .users()
+                .create(account)
+                .await
+                .map_err(|error| match error {
+                    DomainError::Conflict(message) => AdminError::Conflict(message),
+                    other => AdminError::from_storage(crate::USER_CREATE_ID, &other),
+                })?;
 
         // The username is a person's login identifier, so it goes in through
         // `subject_of` rather than `text`: a trail kept for years and read by
@@ -1217,7 +1217,10 @@ impl Handling<'_> {
         )
         .await;
 
-        Ok(json_no_store(StatusCode::CREATED, &users::document(&stored)))
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &users::document(&stored),
+        ))
     }
 
     /// `PUT /users/{user_id}/claims` — replaces the claims and the flags.
@@ -1229,7 +1232,7 @@ impl Handling<'_> {
         let held = self.load_user(id, crate::USER_CLAIMS_UPDATE_ID).await?;
         let requested: users::RequestedClaims = self.parse_body(body).await?;
 
-        let edited = users::apply_claims(&held, requested, self.now)?;
+        let edited = users::apply_claims(&held, &requested, self.now)?;
         let saved = self
             .state
             .backend
@@ -1245,8 +1248,14 @@ impl Handling<'_> {
             &saved.id,
             Detail::new()
                 .label("operation", crate::USER_CLAIMS_UPDATE_ID)
-                .number("claims_before", i64::try_from(held.claims.len()).unwrap_or(-1))
-                .number("claims_after", i64::try_from(saved.claims.len()).unwrap_or(-1))
+                .number(
+                    "claims_before",
+                    i64::try_from(held.claims.len()).unwrap_or(-1),
+                )
+                .number(
+                    "claims_after",
+                    i64::try_from(saved.claims.len()).unwrap_or(-1),
+                )
                 .flag("email_verified", saved.email_verified)
                 .flag("email_changed", held.email != saved.email),
         )
@@ -1310,7 +1319,9 @@ impl Handling<'_> {
         )
         .await;
 
-        let reread = self.load_user(held.id, crate::USER_STATUS_UPDATE_ID).await?;
+        let reread = self
+            .load_user(held.id, crate::USER_STATUS_UPDATE_ID)
+            .await?;
         let mut document = users::document(&reread);
         if let Some(object) = document.as_object_mut() {
             object.insert(
@@ -2950,10 +2961,9 @@ mod tests {
             account: asterius_domain::NewAccount,
         ) -> Result<asterius_domain::User, DomainError> {
             let mut accounts = self.0.accounts.lock().expect("an uncontended lock");
-            if accounts
-                .iter()
-                .any(|held| held.tenant == account.user.tenant && held.username == account.user.username)
-            {
+            if accounts.iter().any(|held| {
+                held.tenant == account.user.tenant && held.username == account.user.username
+            }) {
                 return Err(DomainError::Conflict("username is taken".to_owned()));
             }
             if account.password.is_some() {
@@ -3110,10 +3120,9 @@ mod tests {
             now: OffsetDateTime,
         ) -> Result<bool, DomainError> {
             let mut passkeys = self.0.account_passkeys.lock().expect("an uncontended lock");
-            let Some(row) = passkeys
-                .iter_mut()
-                .find(|row| &row.tenant == tenant && row.user == user && row.passkey.id == credential)
-            else {
+            let Some(row) = passkeys.iter_mut().find(|row| {
+                &row.tenant == tenant && row.user == user && row.passkey.id == credential
+            }) else {
                 return Ok(false);
             };
             if row.passkey.disabled_at.is_some() {
@@ -6731,7 +6740,9 @@ mod tests {
         let response = world
             .send(
                 as_console(&crate::USER_STATUS_UPDATE, &cookie)
-                    .body(Body::from(serde_json::json!({"enabled": false}).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({"enabled": false}).to_string(),
+                    ))
                     .expect("a request"),
             )
             .await;
@@ -6740,13 +6751,21 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let document = body_of(response).await;
         assert_eq!(document["status"], serde_json::json!("disabled"));
-        assert_eq!(document["terminated"]["sessions_revoked"], serde_json::json!(1));
+        assert_eq!(
+            document["terminated"]["sessions_revoked"],
+            serde_json::json!(1)
+        );
         assert_eq!(
             document["terminated"]["logout_tokens_queued"],
             serde_json::json!(SEEDED_PARTICIPANTS)
         );
         assert_eq!(
-            *world.handle.0.logout_tokens.lock().expect("an uncontended lock"),
+            *world
+                .handle
+                .0
+                .logout_tokens
+                .lock()
+                .expect("an uncontended lock"),
             SEEDED_PARTICIPANTS,
             "the participating relying parties were not queued a logout token"
         );
@@ -6764,7 +6783,9 @@ mod tests {
         let response = world
             .send(
                 as_console(&crate::USER_STATUS_UPDATE, &cookie)
-                    .body(Body::from(serde_json::json!({"enabled": false}).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({"enabled": false}).to_string(),
+                    ))
                     .expect("a request"),
             )
             .await;
@@ -6803,7 +6824,12 @@ mod tests {
         // Assert
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            *world.handle.0.logout_tokens.lock().expect("an uncontended lock"),
+            *world
+                .handle
+                .0
+                .logout_tokens
+                .lock()
+                .expect("an uncontended lock"),
             0
         );
     }
@@ -6951,7 +6977,10 @@ mod tests {
         // Assert
         assert_eq!(response.status(), StatusCode::CREATED);
         let document = body_of(response).await;
-        assert_eq!(document["username"], serde_json::json!("grace@example.test"));
+        assert_eq!(
+            document["username"],
+            serde_json::json!("grace@example.test")
+        );
         assert_eq!(document["status"], serde_json::json!("active"));
         // OIDC Core §5.1: the flag is asserted, never defaulted on.
         assert_eq!(document["email_verified"], serde_json::json!(false));
@@ -7021,7 +7050,10 @@ mod tests {
         assert_eq!(first.status(), StatusCode::OK);
         let page = body_of(first).await;
         assert_eq!(page["items"].as_array().map(Vec::len), Some(1));
-        assert_eq!(page["items"][0]["username"], serde_json::json!("ada@example.test"));
+        assert_eq!(
+            page["items"][0]["username"],
+            serde_json::json!("ada@example.test")
+        );
         let cursor = page["next_cursor"].as_str().expect("a cursor").to_owned();
         // Opaque: the console must not be able to start parsing it.
         assert!(!cursor.contains("ada@example.test"), "{cursor}");
@@ -7338,5 +7370,4 @@ mod tests {
             1
         );
     }
-
 }

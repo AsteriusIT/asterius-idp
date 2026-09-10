@@ -40,6 +40,27 @@ kek_env = "ASTERIUS_KEK"
 [registration]
 mode = "open"
 
+# The deployment administrator (ADR-0010), which the sweep needs for one
+# reason: the console's navigation and its routes are role-driven, and every
+# fixture until `ast-f7m.6` held `tenant_admin` only. So the *deployment*
+# reach — the one that decides whether a screen is shown at all, and the one
+# `ast-895` makes conditional on a phishing-resistant authenticator — was
+# never exercised in a real browser.
+#
+# A reserved tenant is a real tenant: it gets an issuer, it is served by the
+# same code, and its console is at `/t/e2e-admin/admin/`. It is *not* declared
+# as a `[[tenant]]` below — the seed creates and marks it, and declaring it
+# twice is refused at load.
+#
+# `password_env` rather than `password_file`, which the shipped documentation
+# prefers: this is a throwaway credential for a throwaway database, and a file
+# would be one more thing for the run directory to clean up.
+[admin]
+tenant = "e2e-admin"
+issuer = "https://127.0.0.1:@PORT@/t/e2e-admin"
+username = "deployment-admin@example.test"
+password_env = "ASTERIUS_ADMIN_PASSWORD"
+
 # The device grant, because the sweep walks its browser half (`ast-ndk.4`).
 #
 # RFC 8628 §3.3 is a person on a *second* device typing a code into whatever

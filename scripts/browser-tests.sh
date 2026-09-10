@@ -51,6 +51,20 @@ BASE_URL="${ORIGIN}/t/${TENANT}"
 WEBAUTHN_BASE_URL="${WEBAUTHN_ORIGIN}/t/${WEBAUTHN_TENANT}"
 USERNAME="sweep@example.test"
 PASSWORD="correct horse battery staple"
+# The deployment administrator the `[admin]` table in the fixture seeds
+# (`ast-f7m.6`). A second account and not a second role on the one above: a
+# deployment-scoped role can only be held inside the reserved tenant, which is
+# a foreign key rather than a convention, so there is no way to give the sweep
+# user this authority in the tenant it lives in.
+#
+# The password goes through the same policy a user's does — the deny list
+# included, since this is the one credential that administers every tenant — so
+# it is a passphrase and not `admin`.
+ADMIN_TENANT="e2e-admin"
+ADMIN_USERNAME="deployment-admin@example.test"
+ADMIN_PASSWORD="a deployment administrator passphrase"
+ADMIN_BASE_URL="${ORIGIN}/t/${ADMIN_TENANT}"
+export ASTERIUS_ADMIN_PASSWORD="$ADMIN_PASSWORD"
 # Argon2id, m=19456 t=2 p=1, of the password above. See e2e/fixtures/seed.sql.
 PASSWORD_HASH='$argon2id$v=19$m=19456,t=2,p=1$YnJvd3Nlci1zd2VlcC1zYWx0$E8awnsfATh5sLXjht+SvAdX9BEFVTWfDYThAb/+KOfs'
 # Development KEK: 32 bytes of ASCII that spell out what they are, as in
@@ -212,4 +226,7 @@ E2E_BASE_URL="$BASE_URL" \
 E2E_WEBAUTHN_BASE_URL="$WEBAUTHN_BASE_URL" \
 E2E_USERNAME="$USERNAME" \
 E2E_PASSWORD="$PASSWORD" \
+E2E_ADMIN_BASE_URL="$ADMIN_BASE_URL" \
+E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
+E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
   npx playwright test "$@"

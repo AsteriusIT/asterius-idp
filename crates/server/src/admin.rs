@@ -19,10 +19,10 @@
 
 use asterius_admin_api::clients::RegistrationGate;
 use asterius_admin_api::{AdminBackend, ClientAddress};
+use asterius_domain::MailSender as _;
 use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::PasskeyRepository as _;
 use asterius_domain::ports::RecoveryTokenStore as _;
-use asterius_domain::MailSender as _;
 use asterius_domain::ports::{
     ClientAdministration, ClientUrlFetcher, TenantRepository, TenantSettingsRepository,
 };
@@ -315,9 +315,7 @@ impl DeploymentUsers {
     ) -> Result<asterius_domain::Terminated, DomainError> {
         let scope = self.store.scope(tenant.clone());
         let sessions = scope.sessions();
-        let digests = sessions
-            .live_digests_for_user(*user.as_uuid(), now)
-            .await?;
+        let digests = sessions.live_digests_for_user(*user.as_uuid(), now).await?;
 
         let mut terminated = asterius_domain::Terminated::default();
         for digest in digests {
@@ -326,8 +324,7 @@ impl DeploymentUsers {
                 continue;
             }
             terminated.sessions_revoked += 1;
-            terminated.logout_tokens_queued +=
-                self.notify_participants(tenant, &digest, now).await;
+            terminated.logout_tokens_queued += self.notify_participants(tenant, &digest, now).await;
         }
         Ok(terminated)
     }
@@ -445,7 +442,10 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
 
         // Read back rather than returned: the row after defaults and triggers
         // is what an administrator is shown.
-        users.find(account.user.id).await?.ok_or(DomainError::NotFound)
+        users
+            .find(account.user.id)
+            .await?
+            .ok_or(DomainError::NotFound)
     }
 
     async fn set_status(
@@ -630,7 +630,10 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         // Every outstanding recovery link goes with the credential, for the
         // reason `crate::http::recovery` gives: a link quietly requested
         // before the change must not survive it.
-        scope.recovery_tokens().invalidate_for_user(user, now).await?;
+        scope
+            .recovery_tokens()
+            .invalidate_for_user(user, now)
+            .await?;
 
         let recovery_sent = self.send_recovery(tenant, &held, now).await;
 

@@ -438,9 +438,8 @@ pub fn accept_claims(
         // Measured on the serialised form, because that is what is stored and
         // what is later handed to a relying party. A `Value` in memory has no
         // size a bound could be stated against.
-        let encoded = serde_json::to_string(&requested.value).map_err(|error| {
-            AdminError::Invalid(format!("{}: {error}", name.as_str()))
-        })?;
+        let encoded = serde_json::to_string(&requested.value)
+            .map_err(|error| AdminError::Invalid(format!("{}: {error}", name.as_str())))?;
         if encoded.len() > MAX_CLAIM_VALUE_BYTES {
             return Err(AdminError::Invalid(format!(
                 "{}: a claim value must be at most {MAX_CLAIM_VALUE_BYTES} bytes",
@@ -467,7 +466,7 @@ pub fn accept_claims(
 /// [`AdminError::Invalid`] for a username, address, password or claim the
 /// policy above refuses.
 pub fn accept_account(
-    requested: RequestedAccount,
+    requested: &RequestedAccount,
     tenant: &asterius_domain::TenantId,
     now: OffsetDateTime,
 ) -> Result<asterius_domain::NewAccount, AdminError> {
@@ -520,7 +519,7 @@ pub fn accept_account(
 /// [`AdminError::Invalid`] for an address or a claim the policy above refuses.
 pub fn apply_claims(
     held: &User,
-    requested: RequestedClaims,
+    requested: &RequestedClaims,
     now: OffsetDateTime,
 ) -> Result<User, AdminError> {
     let email = requested.email.as_deref().map(accept_email).transpose()?;
@@ -647,7 +646,8 @@ mod tests {
         .expect("a body this API accepts");
 
         // Act
-        let account = accept_account(requested, &tenant(), epoch()).expect("an acceptable account");
+        let account =
+            accept_account(&requested, &tenant(), epoch()).expect("an acceptable account");
 
         // Assert
         assert!(!account.user.email_verified);
@@ -663,10 +663,13 @@ mod tests {
         .expect("a body this API parses");
 
         // Act
-        let refused = accept_account(requested, &tenant(), epoch());
+        let refused = accept_account(&requested, &tenant(), epoch());
 
         // Assert
-        assert!(matches!(refused, Err(AdminError::Invalid(_))), "{refused:?}");
+        assert!(
+            matches!(refused, Err(AdminError::Invalid(_))),
+            "{refused:?}"
+        );
     }
 
     /// `ast-895`: the deny list is not optional, and the console is not a way
@@ -681,10 +684,13 @@ mod tests {
         .expect("a body this API parses");
 
         // Act
-        let refused = accept_account(requested, &tenant(), epoch());
+        let refused = accept_account(&requested, &tenant(), epoch());
 
         // Assert
-        assert!(matches!(refused, Err(AdminError::Invalid(_))), "{refused:?}");
+        assert!(
+            matches!(refused, Err(AdminError::Invalid(_))),
+            "{refused:?}"
+        );
     }
 
     #[test]
@@ -696,7 +702,8 @@ mod tests {
         .expect("a body this API parses");
 
         // Act
-        let account = accept_account(requested, &tenant(), epoch()).expect("an acceptable account");
+        let account =
+            accept_account(&requested, &tenant(), epoch()).expect("an acceptable account");
 
         // Assert
         assert!(account.password.is_none());
@@ -708,13 +715,17 @@ mod tests {
     #[test]
     fn a_claim_the_authorization_server_mints_cannot_be_written_by_hand() {
         // Arrange
-        let members = serde_json::Map::from_iter([("sub".to_owned(), json!({"value": "somebody"}))]);
+        let members =
+            serde_json::Map::from_iter([("sub".to_owned(), json!({"value": "somebody"}))]);
 
         // Act
         let refused = accept_claims(&members, epoch());
 
         // Assert
-        assert!(matches!(refused, Err(AdminError::Invalid(_))), "{refused:?}");
+        assert!(
+            matches!(refused, Err(AdminError::Invalid(_))),
+            "{refused:?}"
+        );
     }
 
     /// `email` lives in a column, and a claim of the same name in the bag
@@ -844,7 +855,7 @@ mod tests {
         .expect("a body this API accepts");
 
         // Act
-        let saved = apply_claims(&held, requested, epoch()).expect("an acceptable edit");
+        let saved = apply_claims(&held, &requested, epoch()).expect("an acceptable edit");
 
         // Assert
         let nickname = ClaimName::parse("nickname").expect("a claim name");
@@ -866,7 +877,7 @@ mod tests {
         .expect("a body this API accepts");
 
         // Act
-        let saved = apply_claims(&held, requested, epoch()).expect("an acceptable edit");
+        let saved = apply_claims(&held, &requested, epoch()).expect("an acceptable edit");
 
         // Assert
         assert_eq!(saved.email.as_deref(), Some("ada@newmail.test"));

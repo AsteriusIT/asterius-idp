@@ -44,6 +44,27 @@ export const USERNAME = fromEnv('E2E_USERNAME', 'sweep@example.test');
 export const PASSWORD = fromEnv('E2E_PASSWORD', 'correct horse battery staple');
 
 /**
+ * Where the *reserved* tenant answers — the one the deployment administrator
+ * lives in (ADR-0010, `ast-f7m.6`).
+ *
+ * A second base URL and not a second user on the one above: a
+ * deployment-scoped role can only be held inside the reserved tenant, and that
+ * is a foreign key in the schema rather than a convention. So the only way to
+ * put a deployment-scoped console in front of a browser is to sign in at the
+ * reserved tenant's own issuer, which is what this is.
+ */
+export const ADMIN_BASE_URL = fromEnv('E2E_ADMIN_BASE_URL', 'https://127.0.0.1:9444/t/e2e-admin');
+
+/** The account `[admin]` in `e2e/fixtures/asterius.toml.in` seeds. */
+export const ADMIN_USERNAME = fromEnv('E2E_ADMIN_USERNAME', 'deployment-admin@example.test');
+
+/** Its password. A fixture credential, and only ever that. */
+export const ADMIN_PASSWORD = fromEnv(
+  'E2E_ADMIN_PASSWORD',
+  'a deployment administrator passphrase',
+);
+
+/**
  * The host the client's callback answers on.
  *
  * A `.test` name, which RFC 6761 §6.2 reserves and no resolver will ever
