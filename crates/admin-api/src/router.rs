@@ -38,8 +38,8 @@ use crate::backend::{AdminBackend, AdminTokens};
 use crate::error::AdminError;
 use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Effect, Method, Operation};
-use crate::pagination::{Page, PageRequest};
-use crate::{clients, csrf, initial_access_tokens, keys, openapi, outbox, throttle};
+use crate::pagination::{Cursor, Page, PageRequest};
+use crate::{clients, csrf, initial_access_tokens, keys, openapi, outbox, throttle, users};
 
 /// The client address, as this crate sees it.
 ///
@@ -292,6 +292,18 @@ async fn route(
         crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
         crate::KEYS_SCHEDULE_APPLY_ID => context.apply_key_schedule().await,
         crate::OUTBOX_DEAD_LETTERS_ID => context.list_dead_letters().await,
+        crate::USERS_LIST_ID => context.list_users().await,
+        crate::USER_READ_ID => context.read_user().await,
+        crate::USER_CREATE_ID => context.create_user(body).await,
+        crate::USER_CLAIMS_UPDATE_ID => context.update_claims(body).await,
+        crate::USER_STATUS_UPDATE_ID => context.update_status(body).await,
+        crate::USER_CREDENTIALS_READ_ID => context.read_credentials().await,
+        crate::USER_PASSKEY_REMOVE_ID => context.remove_passkey().await,
+        crate::USER_PASSWORD_RESET_ID => context.reset_password().await,
+        crate::USER_SESSIONS_LIST_ID => context.list_sessions().await,
+        crate::USER_SESSION_REVOKE_ID => context.revoke_session().await,
+        crate::USER_GRANTS_LIST_ID => context.list_grants().await,
+        crate::USER_GRANT_REVOKE_ID => context.revoke_grant().await,
         // Unreachable while `every_registered_operation_has_a_handler` passes,
         // which is why that test exists rather than a comment here.
         other => {
@@ -1114,6 +1126,490 @@ impl Handling<'_> {
             .ok_or(AdminError::NotFound)
     }
 
+    // ---- accounts (`ast-f7m.6`) -------------------------------------------
+
+    /// `GET /users` — this tenant's accounts, one cursor page at a time.
+    ///
+    /// The filtering and the cut are done **below the port**, unlike
+    /// [`Self::list_clients`] beside it: a tenant holds clients in the tens
+    /// and accounts in the millions, so a listing that read them all and
+    /// filtered in memory would be a way to make this server allocate a
+    /// directory on request. The cursor is the username, which is unique
+    /// within a tenant and is the order the port lists in.
+    async fn list_users(&self) -> Result<Response, AdminError> {
+        let request = PageRequest::parse(
+            query_value(&self.query, "cursor").as_deref(),
+            query_value(&self.query, "limit").as_deref(),
+        )?;
+        // Decoded, unlike the cursor and the limit beside it: a search box
+        // holds prose, and a browser sends prose percent-encoded.
+        let term = clients::search_term(&query_value(&self.query, "q").unwrap_or_default());
+
+        let rows = self
+            .state
+            .backend
+            .users()
+            .search(
+                &self.tenant.id,
+                &term,
+                request.after.as_ref().map(Cursor::key),
+                // One more than asked for, which is how the page knows whether
+                // to mint a cursor without a second `COUNT`.
+                request.limit + 1,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USERS_LIST_ID, &error))?;
+
+        let items: Vec<serde_json::Value> = rows.iter().map(users::summarise).collect();
+        let page = Page::from_overfetched(items, request.limit, |row| {
+            row["username"].as_str().unwrap_or_default().to_owned()
+        });
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::to_value(&page).unwrap_or_else(|_| serde_json::json!({})),
+        ))
+    }
+
+    /// `GET /users/{user_id}` — one account and its claims.
+    async fn read_user(&self) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_READ_ID).await?;
+
+        Ok(json_no_store(StatusCode::OK, &users::document(&user)))
+    }
+
+    /// `POST /users` — creates an account.
+    ///
+    /// Everything the body says is checked before anything is written, by
+    /// [`users::accept_account`]: the password against the deployment's own
+    /// policy (`ast-895`), the claim names against
+    /// [`asterius_domain::ClaimName`], the sizes against the module's bounds.
+    async fn create_user(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let requested: users::RequestedAccount = self.parse_body(body).await?;
+        let account = users::accept_account(requested, &self.tenant.id, self.now)?;
+
+        // Read off the account before it is moved into the port: the response
+        // is rendered from what came back, and this is only for the record.
+        let created_with_a_password = account.password.is_some();
+
+        let stored = self
+            .state
+            .backend
+            .users()
+            .create(account)
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                other => AdminError::from_storage(crate::USER_CREATE_ID, &other),
+            })?;
+
+        // The username is a person's login identifier, so it goes in through
+        // `subject_of` rather than `text`: a trail kept for years and read by
+        // whoever is on call has no business being a directory of addresses.
+        self.record_about(
+            EventType::USER_CREATED,
+            &stored.id,
+            Detail::new()
+                .label("operation", crate::USER_CREATE_ID)
+                .flag("password", created_with_a_password)
+                .flag("email_verified", stored.email_verified),
+        )
+        .await;
+
+        Ok(json_no_store(StatusCode::CREATED, &users::document(&stored)))
+    }
+
+    /// `PUT /users/{user_id}/claims` — replaces the claims and the flags.
+    ///
+    /// OIDC Core §5.1. A replacement rather than a merge, and the address and
+    /// its `email_verified` are one document: see [`users::RequestedClaims`].
+    async fn update_claims(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let held = self.load_user(id, crate::USER_CLAIMS_UPDATE_ID).await?;
+        let requested: users::RequestedClaims = self.parse_body(body).await?;
+
+        let edited = users::apply_claims(&held, requested, self.now)?;
+        let saved = self
+            .state
+            .backend
+            .users()
+            .save(&edited)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_CLAIMS_UPDATE_ID, &error))?;
+
+        // How many claims and whether the address is asserted verified, never
+        // the values: a claim is personal data by definition.
+        self.record_about(
+            EventType::USER_CLAIMS_CHANGED,
+            &saved.id,
+            Detail::new()
+                .label("operation", crate::USER_CLAIMS_UPDATE_ID)
+                .number("claims_before", i64::try_from(held.claims.len()).unwrap_or(-1))
+                .number("claims_after", i64::try_from(saved.claims.len()).unwrap_or(-1))
+                .flag("email_verified", saved.email_verified)
+                .flag("email_changed", held.email != saved.email),
+        )
+        .await;
+
+        Ok(json_no_store(StatusCode::OK, &users::document(&saved)))
+    }
+
+    /// `PUT /users/{user_id}/status` — switches an account on or off.
+    ///
+    /// Disabling is three effects in one call, and the order is the point:
+    /// the account is marked first, then its sessions are revoked, then the
+    /// relying parties that took part are told (OIDC Back-Channel Logout 1.0
+    /// §2.5). A relying party told that a session ended while the account
+    /// could still sign in would be told something this server cannot stand
+    /// behind — which is why the ordering lives below the port, in one
+    /// implementation, rather than in three statements here.
+    async fn update_status(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let held = self.load_user(id, crate::USER_STATUS_UPDATE_ID).await?;
+        let requested: users::RequestedStatus = self.parse_body(body).await?;
+
+        let status = if requested.enabled {
+            asterius_domain::UserStatus::Active
+        } else {
+            asterius_domain::UserStatus::Disabled
+        };
+
+        let terminated = self
+            .state
+            .backend
+            .users()
+            .set_status(&self.tenant.id, held.id, status, self.now)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                other => AdminError::from_storage(crate::USER_STATUS_UPDATE_ID, &other),
+            })?;
+
+        // The trail half of the RISC `account-disabled` signal; see
+        // [`EventType::ACCOUNT_DISABLED`] for where the transmitter will go.
+        let event = if requested.enabled {
+            EventType::ACCOUNT_ENABLED
+        } else {
+            EventType::ACCOUNT_DISABLED
+        };
+        self.record_about(
+            event,
+            &held.id,
+            Detail::new()
+                .label("operation", crate::USER_STATUS_UPDATE_ID)
+                .label("status", status.as_str())
+                .number(
+                    "sessions_revoked",
+                    i64::try_from(terminated.sessions_revoked).unwrap_or(-1),
+                )
+                .number(
+                    "logout_tokens_queued",
+                    i64::try_from(terminated.logout_tokens_queued).unwrap_or(-1),
+                ),
+        )
+        .await;
+
+        let reread = self.load_user(held.id, crate::USER_STATUS_UPDATE_ID).await?;
+        let mut document = users::document(&reread);
+        if let Some(object) = document.as_object_mut() {
+            object.insert(
+                "terminated".to_owned(),
+                users::termination_document(terminated),
+            );
+        }
+        Ok(json_no_store(StatusCode::OK, &document))
+    }
+
+    /// `GET /users/{user_id}/credentials` — what this account can sign in
+    /// with.
+    async fn read_credentials(&self) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_CREDENTIALS_READ_ID).await?;
+
+        let credentials = self
+            .state
+            .backend
+            .users()
+            .credentials(&self.tenant.id, user.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_CREDENTIALS_READ_ID, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &users::credentials_document(&credentials),
+        ))
+    }
+
+    /// `DELETE /users/{user_id}/credentials/passkeys/{credential_id}` — blocks
+    /// one passkey.
+    async fn remove_passkey(&self) -> Result<Response, AdminError> {
+        let credential = self
+            .path
+            .rsplit('/')
+            .next()
+            .and_then(|segment| uuid::Uuid::parse_str(segment).ok())
+            .ok_or(AdminError::NotFound)?;
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_PASSKEY_REMOVE_ID).await?;
+
+        let removed = self
+            .state
+            .backend
+            .users()
+            .remove_passkey(&self.tenant.id, user.id, credential, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_PASSKEY_REMOVE_ID, &error))?;
+
+        if !removed {
+            // A credential this tenant does not hold, or one already blocked.
+            // 404 either way: telling a caller which of the two it was would
+            // answer "does this uuid name a credential" for anybody with the
+            // authority to ask about one account.
+            return Err(AdminError::NotFound);
+        }
+
+        self.record_about(
+            EventType::CREDENTIAL_CHANGED,
+            &user.id,
+            Detail::new()
+                .label("operation", crate::USER_PASSKEY_REMOVE_ID)
+                .label("credential_kind", "passkey")
+                .text("credential_id", credential.to_string()),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"removed": true}),
+        ))
+    }
+
+    /// `POST /users/{user_id}/credentials/password/reset` — forces a reset.
+    ///
+    /// Invalidates the password, ends the sessions and mails a recovery link
+    /// (`ast-2vk.10`). It does not set a password an administrator chose; see
+    /// [`asterius_domain::UserAdministration::force_password_reset`].
+    async fn reset_password(&self) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_PASSWORD_RESET_ID).await?;
+
+        let reset = self
+            .state
+            .backend
+            .users()
+            .force_password_reset(&self.tenant.id, user.id, self.now)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                other => AdminError::from_storage(crate::USER_PASSWORD_RESET_ID, &other),
+            })?;
+
+        self.record_about(
+            EventType::CREDENTIAL_CHANGED,
+            &user.id,
+            Detail::new()
+                .label("operation", crate::USER_PASSWORD_RESET_ID)
+                .label("credential_kind", "password")
+                .flag("password_invalidated", reset.password_invalidated)
+                .flag("recovery_sent", reset.recovery_sent)
+                .number(
+                    "sessions_revoked",
+                    i64::try_from(reset.terminated.sessions_revoked).unwrap_or(-1),
+                ),
+        )
+        .await;
+
+        Ok(json_no_store(StatusCode::OK, &users::reset_document(reset)))
+    }
+
+    /// `GET /users/{user_id}/sessions` — this account's browser sessions.
+    async fn list_sessions(&self) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_SESSIONS_LIST_ID).await?;
+
+        let sessions = self
+            .state
+            .backend
+            .users()
+            .sessions(&self.tenant.id, user.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_SESSIONS_LIST_ID, &error))?;
+
+        let items: Vec<serde_json::Value> = sessions
+            .iter()
+            .map(|session| users::session_document(session, self.now))
+            .collect();
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"items": items}),
+        ))
+    }
+
+    /// `DELETE /users/{user_id}/sessions/{sid}` — ends one session.
+    ///
+    /// The `sid` names the session and the account in the path is checked
+    /// against it below the port, so a `sid` belonging to somebody else is a
+    /// 404 rather than a revocation attributed to the wrong person.
+    async fn revoke_session(&self) -> Result<Response, AdminError> {
+        let sid = self
+            .path
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .ok_or(AdminError::NotFound)?
+            .to_owned();
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_SESSION_REVOKE_ID).await?;
+
+        let terminated = self
+            .state
+            .backend
+            .users()
+            .revoke_session(&self.tenant.id, &sid, self.now)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                other => AdminError::from_storage(crate::USER_SESSION_REVOKE_ID, &other),
+            })?;
+
+        // The `sid` is published to every relying party that took part in the
+        // session, so it is not a credential — but it is an identifier for a
+        // person's browser, and `credential` is how the trail names *which*
+        // one without recording it.
+        self.record_about(
+            EventType::SESSION_REVOKED,
+            &user.id,
+            Detail::new()
+                .label("operation", crate::USER_SESSION_REVOKE_ID)
+                .credential("sid", &sid)
+                .number(
+                    "logout_tokens_queued",
+                    i64::try_from(terminated.logout_tokens_queued).unwrap_or(-1),
+                ),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &users::termination_document(terminated),
+        ))
+    }
+
+    /// `GET /users/{user_id}/grants` — the authorizations this account gave.
+    async fn list_grants(&self) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_GRANTS_LIST_ID).await?;
+
+        let grants = self
+            .state
+            .backend
+            .users()
+            .grants(&self.tenant.id, user.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_GRANTS_LIST_ID, &error))?;
+
+        let items: Vec<serde_json::Value> = grants.iter().map(users::grant_document).collect();
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"items": items}),
+        ))
+    }
+
+    /// `DELETE /users/{user_id}/grants/{grant_id}` — withdraws one
+    /// authorization.
+    ///
+    /// Grant Management ID1 §6.5's semantics, through the same transaction the
+    /// client-facing endpoint uses.
+    async fn revoke_grant(&self) -> Result<Response, AdminError> {
+        let named = self
+            .path
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .ok_or(AdminError::NotFound)?
+            .to_owned();
+        // A grant id is a v4 UUID this server minted (`Grant::new`), so a
+        // segment that is not one names nothing and is a 404 rather than a
+        // query with a caller's string in it.
+        if uuid::Uuid::parse_str(&named).is_err() {
+            return Err(AdminError::NotFound);
+        }
+        let grant = asterius_domain::GrantId::new(named.clone());
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_GRANT_REVOKE_ID).await?;
+
+        let revoked = self
+            .state
+            .backend
+            .users()
+            .revoke_grant(&self.tenant.id, &grant, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_GRANT_REVOKE_ID, &error))?;
+
+        if !revoked {
+            // §6.6's 404, which is also what a second `DELETE` gets: a grant
+            // that was live a moment ago and is not now.
+            return Err(AdminError::NotFound);
+        }
+
+        self.record_about(
+            EventType::GRANT_REVOKED,
+            &user.id,
+            Detail::new()
+                .label("operation", crate::USER_GRANT_REVOKE_ID)
+                .text("grant_id", grant.as_str()),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"revoked": true}),
+        ))
+    }
+
+    /// The `{user_id}` in this request's path, whatever follows it.
+    ///
+    /// Read as *the segment after `users`* rather than by trimming a known
+    /// tail, because the routes under `/users/{user_id}` have five different
+    /// tails and two of them end in another identifier. One rule that holds
+    /// for all of them beats five `trim_end_matches` calls, one of which would
+    /// eventually be given the wrong literal and would silently read a
+    /// credential id as an account id.
+    fn user_in_path(&self) -> Result<asterius_domain::UserId, AdminError> {
+        let mut segments = self.path.split('/');
+        segments
+            .find(|segment| *segment == "users")
+            .and_then(|_| segments.next())
+            .and_then(|segment| uuid::Uuid::parse_str(segment).ok())
+            .map(asterius_domain::UserId::new)
+            // A `user_id` that is not a UUID names nothing this server holds,
+            // so it is the same answer as one that names an account of another
+            // tenant: 404, and no hint about which it was.
+            .ok_or(AdminError::NotFound)
+    }
+
+    /// One account of the tenant this request was routed to, or a 404.
+    ///
+    /// The tenant is a predicate on the query below the port, which is what
+    /// makes "an administrator of A cannot reach an account of B by naming its
+    /// uuid" a fact about the lookup rather than a check somebody remembered.
+    async fn load_user(
+        &self,
+        id: asterius_domain::UserId,
+        operation: &'static str,
+    ) -> Result<asterius_domain::User, AdminError> {
+        self.state
+            .backend
+            .users()
+            .find(&self.tenant.id, id)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?
+            .ok_or(AdminError::NotFound)
+    }
+
     /// The request body, under the shared size limit.
     async fn body_bytes(&self, body: axum::body::Body) -> Result<Vec<u8>, AdminError> {
         axum::body::to_bytes(body, MAX_BODY_BYTES)
@@ -1471,6 +1967,47 @@ impl Handling<'_> {
             tracing::error!(%error, "an administrative change was not recorded in the audit trail");
         }
     }
+    /// Writes one record about an *account*, naming the administrator behind
+    /// it and the account it was done to.
+    ///
+    /// A second helper rather than an argument on [`Self::record`], because
+    /// the two carry different things: an administrative change to a tenant
+    /// has no subject, and an account event that lost its subject would be a
+    /// record of something having happened to somebody.
+    ///
+    /// The subject is the account's uuid, which is the identifier ADR-0009
+    /// says a trail records — never the username or the address, which are a
+    /// person's and are fingerprinted when they appear at all.
+    async fn record_about(
+        &self,
+        event_type: EventType,
+        subject: &asterius_domain::UserId,
+        detail: Detail,
+    ) {
+        let event = AuditEvent::new(
+            self.tenant.id.clone(),
+            event_type,
+            Outcome::Success,
+            Actor::Admin(self.principal.audit_actor()),
+            self.now,
+        )
+        .subject(subject.as_uuid().to_string())
+        .detail(detail);
+
+        let request_id = self
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(ToOwned::to_owned);
+        let event = match request_id {
+            Some(id) => event.request_id(id),
+            None => event,
+        };
+
+        if let Err(error) = self.state.backend.audit().record(event).await {
+            tracing::error!(%error, "an administrative change was not recorded in the audit trail");
+        }
+    }
 }
 
 /// The largest creation body accepted, before the shared body limit.
@@ -1758,6 +2295,46 @@ mod tests {
         /// Deliveries this fake outbox has abandoned (`ast-0ju.9`), newest
         /// last. Empty by default, which is a healthy deployment.
         dead_letters: Mutex<Vec<asterius_domain::outbox::DeadLetter>>,
+        /// This deployment's accounts (`ast-f7m.6`).
+        accounts: Mutex<Vec<asterius_domain::User>>,
+        /// The accounts holding a usable password, by local id.
+        account_passwords: Mutex<std::collections::BTreeSet<uuid::Uuid>>,
+        /// Every account's browser sessions, with how many relying parties
+        /// took part in each.
+        account_sessions: Mutex<Vec<SeededSession>>,
+        /// Every account's passkeys.
+        account_passkeys: Mutex<Vec<SeededPasskey>>,
+        /// Every account's authorizations.
+        account_grants: Mutex<Vec<asterius_domain::Grant>>,
+        /// The accounts a recovery message was handed to the sender for.
+        recovery_sent: Mutex<Vec<UserId>>,
+        /// How many back-channel logout tokens this deployment has queued.
+        ///
+        /// The number the acceptance criterion is about: disabling an account
+        /// must queue one per participating relying party, and a test can read
+        /// it here without opening a socket — `outbound::post` refuses the
+        /// loopback on purpose (`ast-o4u.2`).
+        logout_tokens: Mutex<usize>,
+    }
+
+    /// One seeded session, and how many relying parties took part in it.
+    #[derive(Debug, Clone)]
+    struct SeededSession {
+        tenant: TenantId,
+        user: UserId,
+        summary: asterius_domain::SessionSummary,
+        /// How many participants registered a `backchannel_logout_uri`, which
+        /// is how many logout tokens ending this session queues (§2.2: a
+        /// client that registered none is not a participant).
+        participants: usize,
+    }
+
+    /// One seeded passkey.
+    #[derive(Debug, Clone)]
+    struct SeededPasskey {
+        tenant: TenantId,
+        user: UserId,
+        passkey: asterius_domain::PasskeySummary,
     }
 
     #[derive(Debug, Clone)]
@@ -2318,6 +2895,299 @@ mod tests {
         }
     }
 
+    /// The fake's account directory (`ast-f7m.6`).
+    ///
+    /// It implements the *effects* the port promises and not only the writes,
+    /// because those effects are what the routes are asserted on: disabling an
+    /// account revokes its sessions here too, and revoking a session counts one
+    /// queued logout token per participating relying party. A fake that only
+    /// stored a status would let every ordering test pass while the real
+    /// adapter forgot to notify anybody.
+    ///
+    /// What it is *not* is a second implementation of back-channel logout: the
+    /// token itself, its claims and its signature are
+    /// `asterius_server::backchannel`'s, tested there against a fake outbox.
+    /// What is counted here is the promise the port makes to this crate.
+    #[async_trait::async_trait]
+    impl asterius_domain::UserAdministration for Handle {
+        async fn search(
+            &self,
+            tenant: &TenantId,
+            term: &str,
+            after: Option<&str>,
+            limit: usize,
+        ) -> Result<Vec<asterius_domain::User>, DomainError> {
+            let accounts = self.0.accounts.lock().expect("an uncontended lock");
+            let mut matched: Vec<asterius_domain::User> = accounts
+                .iter()
+                .filter(|user| &user.tenant == tenant)
+                .filter(|user| crate::users::matches(user, term))
+                .filter(|user| after.is_none_or(|cursor| user.username.as_str() > cursor))
+                .cloned()
+                .collect();
+            matched.sort_by(|a, b| a.username.cmp(&b.username));
+            matched.truncate(limit);
+            Ok(matched)
+        }
+
+        async fn find(
+            &self,
+            tenant: &TenantId,
+            id: UserId,
+        ) -> Result<Option<asterius_domain::User>, DomainError> {
+            Ok(self
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .find(|user| &user.tenant == tenant && user.id == id)
+                .cloned())
+        }
+
+        async fn create(
+            &self,
+            account: asterius_domain::NewAccount,
+        ) -> Result<asterius_domain::User, DomainError> {
+            let mut accounts = self.0.accounts.lock().expect("an uncontended lock");
+            if accounts
+                .iter()
+                .any(|held| held.tenant == account.user.tenant && held.username == account.user.username)
+            {
+                return Err(DomainError::Conflict("username is taken".to_owned()));
+            }
+            if account.password.is_some() {
+                self.0
+                    .account_passwords
+                    .lock()
+                    .expect("an uncontended lock")
+                    .insert(*account.user.id.as_uuid());
+            }
+            accounts.push(account.user.clone());
+            Ok(account.user)
+        }
+
+        async fn set_status(
+            &self,
+            tenant: &TenantId,
+            id: UserId,
+            status: asterius_domain::UserStatus,
+            now: OffsetDateTime,
+        ) -> Result<asterius_domain::Terminated, DomainError> {
+            {
+                let mut accounts = self.0.accounts.lock().expect("an uncontended lock");
+                let held = accounts
+                    .iter_mut()
+                    .find(|user| &user.tenant == tenant && user.id == id)
+                    .ok_or(DomainError::NotFound)?;
+                held.status = status;
+                held.updated_at = now;
+            }
+            if status == asterius_domain::UserStatus::Disabled {
+                return Ok(self.terminate(tenant, id, "account_closed", now));
+            }
+            Ok(asterius_domain::Terminated::default())
+        }
+
+        async fn save(
+            &self,
+            user: &asterius_domain::User,
+        ) -> Result<asterius_domain::User, DomainError> {
+            let mut accounts = self.0.accounts.lock().expect("an uncontended lock");
+            let held = accounts
+                .iter_mut()
+                .find(|held| held.tenant == user.tenant && held.id == user.id)
+                .ok_or(DomainError::NotFound)?;
+            *held = user.clone();
+            Ok(held.clone())
+        }
+
+        async fn sessions(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+        ) -> Result<Vec<asterius_domain::SessionSummary>, DomainError> {
+            Ok(self
+                .0
+                .account_sessions
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|row| &row.tenant == tenant && row.user == user)
+                .map(|row| row.summary.clone())
+                .collect())
+        }
+
+        async fn revoke_session(
+            &self,
+            tenant: &TenantId,
+            public_sid: &str,
+            now: OffsetDateTime,
+        ) -> Result<asterius_domain::Terminated, DomainError> {
+            let mut sessions = self.0.account_sessions.lock().expect("an uncontended lock");
+            let row = sessions
+                .iter_mut()
+                .find(|row| &row.tenant == tenant && row.summary.public_sid == public_sid)
+                .ok_or(DomainError::NotFound)?;
+            if row.summary.revoked.is_some() {
+                return Ok(asterius_domain::Terminated::default());
+            }
+            row.summary.revoked = Some((now, "administrative"));
+            let queued = row.participants;
+            *self.0.logout_tokens.lock().expect("an uncontended lock") += queued;
+            Ok(asterius_domain::Terminated {
+                sessions_revoked: 1,
+                logout_tokens_queued: queued,
+            })
+        }
+
+        async fn grants(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+        ) -> Result<Vec<asterius_domain::Grant>, DomainError> {
+            Ok(self
+                .0
+                .account_grants
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|grant| &grant.tenant == tenant && grant.user == Some(user))
+                .cloned()
+                .collect())
+        }
+
+        async fn revoke_grant(
+            &self,
+            tenant: &TenantId,
+            grant: &asterius_domain::GrantId,
+            now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            let mut grants = self.0.account_grants.lock().expect("an uncontended lock");
+            let Some(held) = grants
+                .iter_mut()
+                .find(|held| &held.tenant == tenant && &held.id == grant)
+            else {
+                return Ok(false);
+            };
+            if held.revoked_at.is_some() {
+                return Ok(false);
+            }
+            held.revoked_at = Some(now);
+            Ok(true)
+        }
+
+        async fn credentials(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+        ) -> Result<asterius_domain::CredentialSummary, DomainError> {
+            let passkeys = self
+                .0
+                .account_passkeys
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|row| &row.tenant == tenant && row.user == user)
+                .map(|row| row.passkey.clone())
+                .collect();
+            Ok(asterius_domain::CredentialSummary {
+                password: self
+                    .0
+                    .account_passwords
+                    .lock()
+                    .expect("an uncontended lock")
+                    .contains(user.as_uuid()),
+                passkeys,
+            })
+        }
+
+        async fn remove_passkey(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            credential: uuid::Uuid,
+            now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            let mut passkeys = self.0.account_passkeys.lock().expect("an uncontended lock");
+            let Some(row) = passkeys
+                .iter_mut()
+                .find(|row| &row.tenant == tenant && row.user == user && row.passkey.id == credential)
+            else {
+                return Ok(false);
+            };
+            if row.passkey.disabled_at.is_some() {
+                return Ok(false);
+            }
+            row.passkey.disabled_at = Some(now);
+            Ok(true)
+        }
+
+        async fn force_password_reset(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            now: OffsetDateTime,
+        ) -> Result<asterius_domain::PasswordReset, DomainError> {
+            let held = self
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .find(|held| &held.tenant == tenant && held.id == user)
+                .cloned()
+                .ok_or(DomainError::NotFound)?;
+
+            let invalidated = self
+                .0
+                .account_passwords
+                .lock()
+                .expect("an uncontended lock")
+                .remove(user.as_uuid());
+            let recovery_sent = held.email.is_some();
+            if recovery_sent {
+                self.0
+                    .recovery_sent
+                    .lock()
+                    .expect("an uncontended lock")
+                    .push(user);
+            }
+            Ok(asterius_domain::PasswordReset {
+                password_invalidated: invalidated,
+                recovery_sent,
+                terminated: self.terminate(tenant, user, "credential_change", now),
+            })
+        }
+    }
+
+    impl Handle {
+        /// Revokes every live session of `user`, counting the logout tokens
+        /// each participating relying party would be queued.
+        fn terminate(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            reason: &'static str,
+            now: OffsetDateTime,
+        ) -> asterius_domain::Terminated {
+            let mut sessions = self.0.account_sessions.lock().expect("an uncontended lock");
+            let mut terminated = asterius_domain::Terminated::default();
+            for row in sessions
+                .iter_mut()
+                .filter(|row| &row.tenant == tenant && row.user == user)
+                .filter(|row| row.summary.revoked.is_none())
+            {
+                row.summary.revoked = Some((now, reason));
+                terminated.sessions_revoked += 1;
+                terminated.logout_tokens_queued += row.participants;
+            }
+            *self.0.logout_tokens.lock().expect("an uncontended lock") +=
+                terminated.logout_tokens_queued;
+            terminated
+        }
+    }
+
     fn default_schedule() -> RotationSchedule {
         RotationSchedule {
             rotation_period: time::Duration::days(90),
@@ -2410,6 +3280,10 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn users(&self) -> Arc<dyn asterius_domain::UserAdministration> {
+            Arc::new(self.clone())
+        }
+
         fn outbox(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterQuery> {
             Arc::new(self.clone())
         }
@@ -2464,6 +3338,100 @@ mod tests {
     /// Shaped like one this server mints (`c.` and 22 `base64url` symbols) so
     /// that the routes are exercised with the identifiers they will really see.
     const SEEDED_CLIENT_ID: &str = "c.SeededClientSeededClien";
+
+    /// The account every tenant in the fixture holds, and the value
+    /// `{user_id}` is replaced with when a test walks the registry.
+    const SEEDED_USER_ID: &str = "3f1d5c2a-0000-4000-8000-000000000001";
+
+    /// The `sid` of that account's seeded session, and the value `{sid}` is
+    /// replaced with. Shaped like the opaque identifier `Session::begin`
+    /// publishes rather than like a digest, because the digest is the thing
+    /// this API is not allowed to know (`ast-o4u.5`).
+    const SEEDED_SID: &str = "sid-of-the-seeded-session";
+
+    /// The passkey row that account holds, and the value `{credential_id}` is
+    /// replaced with.
+    const SEEDED_CREDENTIAL_ID: &str = "3f1d5c2a-0000-4000-8000-000000000002";
+
+    /// The authorization that account granted, and the value `{grant_id}` is
+    /// replaced with.
+    const SEEDED_GRANT_ID: &str = "3f1d5c2a-0000-4000-8000-000000000003";
+
+    /// How many relying parties took part in the seeded session.
+    ///
+    /// Two, and not one: "one logout token per participant" and "one logout
+    /// token per session" agree at one and disagree at two, so a fixture of
+    /// one would let the wrong rule pass.
+    const SEEDED_PARTICIPANTS: usize = 2;
+
+    fn seeded_user_id() -> UserId {
+        UserId::new(uuid::Uuid::parse_str(SEEDED_USER_ID).expect("a fixed uuid"))
+    }
+
+    /// One account of `tenant`, with an address and no claims.
+    fn seeded_user(tenant: &str) -> asterius_domain::User {
+        asterius_domain::User {
+            tenant: TenantId::parse(tenant).expect("a valid tenant id"),
+            id: seeded_user_id(),
+            username: "ada@example.test".to_owned(),
+            email: Some("ada@example.test".to_owned()),
+            email_verified: true,
+            status: asterius_domain::UserStatus::Active,
+            claims: asterius_domain::ClaimSet::new(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    /// That account's live session, with two participating relying parties.
+    fn seeded_session(tenant: &str) -> SeededSession {
+        SeededSession {
+            tenant: TenantId::parse(tenant).expect("a valid tenant id"),
+            user: seeded_user_id(),
+            summary: asterius_domain::SessionSummary {
+                public_sid: SEEDED_SID.to_owned(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                authenticated_at: OffsetDateTime::UNIX_EPOCH,
+                last_seen_at: OffsetDateTime::UNIX_EPOCH,
+                // Far enough ahead that `is_live` does not depend on when the
+                // suite runs.
+                expires_at: OffsetDateTime::UNIX_EPOCH + time::Duration::days(365 * 100),
+                amr: vec![AuthenticationMethod::Password],
+                acr: None,
+                revoked: None,
+            },
+            participants: SEEDED_PARTICIPANTS,
+        }
+    }
+
+    /// That account's passkey.
+    fn seeded_passkey(tenant: &str) -> SeededPasskey {
+        SeededPasskey {
+            tenant: TenantId::parse(tenant).expect("a valid tenant id"),
+            user: seeded_user_id(),
+            passkey: asterius_domain::PasskeySummary {
+                id: uuid::Uuid::parse_str(SEEDED_CREDENTIAL_ID).expect("a fixed uuid"),
+                label: Some("a laptop".to_owned()),
+                rp_id: "as.example".to_owned(),
+                created_at: OffsetDateTime::UNIX_EPOCH,
+                last_used_at: None,
+                disabled_at: None,
+            },
+        }
+    }
+
+    /// That account's authorization to the seeded client.
+    fn seeded_grant(tenant: &str) -> asterius_domain::Grant {
+        let mut grant = asterius_domain::Grant::new(
+            TenantId::parse(tenant).expect("a valid tenant id"),
+            asterius_domain::ClientId::new(SEEDED_CLIENT_ID),
+            OffsetDateTime::UNIX_EPOCH,
+        );
+        grant.id = asterius_domain::GrantId::new(SEEDED_GRANT_ID);
+        grant.user = Some(seeded_user_id());
+        grant.scopes = ["openid".to_owned()].into_iter().collect();
+        grant
+    }
 
     /// A registration document this profile accepts, as a fixture.
     ///
@@ -2566,6 +3534,40 @@ mod tests {
                     .lock()
                     .expect("an uncontended lock")
                     .push(seeded_client(id, SEEDED_CLIENT_ID));
+                // One account per tenant, with one live session, one passkey
+                // and one authorization, so that every `{user_id}`, `{sid}`,
+                // `{credential_id}` and `{grant_id}` in the registry names
+                // something for the tests that walk it.
+                handle
+                    .0
+                    .accounts
+                    .lock()
+                    .expect("an uncontended lock")
+                    .push(seeded_user(id));
+                handle
+                    .0
+                    .account_passwords
+                    .lock()
+                    .expect("an uncontended lock")
+                    .insert(*seeded_user_id().as_uuid());
+                handle
+                    .0
+                    .account_sessions
+                    .lock()
+                    .expect("an uncontended lock")
+                    .push(seeded_session(id));
+                handle
+                    .0
+                    .account_passkeys
+                    .lock()
+                    .expect("an uncontended lock")
+                    .push(seeded_passkey(id));
+                handle
+                    .0
+                    .account_grants
+                    .lock()
+                    .expect("an uncontended lock")
+                    .push(seeded_grant(id));
             }
             // An *active* key, in the tenant the registry walk runs against
             // only. Registering a client is refused when the tenant cannot sign
@@ -2714,7 +3716,11 @@ mod tests {
             .full_path()
             .replace("{tenant_id}", "acme")
             .replace("{kid}", SEEDED_KID)
-            .replace("{client_id}", SEEDED_CLIENT_ID);
+            .replace("{client_id}", SEEDED_CLIENT_ID)
+            .replace("{user_id}", SEEDED_USER_ID)
+            .replace("{sid}", SEEDED_SID)
+            .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
+            .replace("{grant_id}", SEEDED_GRANT_ID);
         HttpRequest::builder()
             .method(operation.method().as_str())
             .uri(path)
@@ -2745,6 +3751,10 @@ mod tests {
             // A label is the one thing an issuance requires: the quota is the
             // tenant's and the expiry is optional (`ast-cu3`).
             crate::INITIAL_ACCESS_TOKEN_CREATE_ID => serde_json::json!({"label": "onboarding"}),
+            // A username is the one thing an account requires: the password
+            // is optional (a tenant may enrol a passkey instead) and every
+            // claim is.
+            crate::USER_CREATE_ID => serde_json::json!({"username": "new@example.test"}),
             crate::KEYS_ROTATE_ID => serde_json::json!({"alg": "EdDSA"}),
             crate::KEYS_SCHEDULE_ID => serde_json::json!({
                 "alg": "EdDSA",
@@ -5689,4 +6699,644 @@ mod tests {
         // Assert
         assert_eq!(second.status(), StatusCode::UNAUTHORIZED);
     }
+
+    // ---- accounts, credentials, sessions and grants (`ast-f7m.6`) ----------
+
+    /// A console signed in to `acme`, which the fixture seeds with one
+    /// account, one live session, one passkey and one grant.
+    fn console_over_the_seeded_account() -> (World, String) {
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        (world, cookie)
+    }
+
+    /// **The acceptance criterion of `ast-f7m.6`, and OIDC Back-Channel Logout
+    /// 1.0 §2.5.**
+    ///
+    /// Switching an account off is not an edit to a column: the sessions it
+    /// had are revoked, and every relying party that took part in one is
+    /// queued a logout token. Two participants and not one in the fixture, so
+    /// that "one token per participant" and "one token per session" are told
+    /// apart.
+    ///
+    /// Asserted in process, on the queue. `outbound::post` refuses the
+    /// loopback (`ast-o4u.2`), so a test that tried to receive the POST would
+    /// be testing the anti-SSRF rule rather than the notification.
+    #[tokio::test]
+    async fn disabling_an_account_revokes_its_sessions_and_queues_a_token_for_each_participant() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_STATUS_UPDATE, &cookie)
+                    .body(Body::from(serde_json::json!({"enabled": false}).to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["status"], serde_json::json!("disabled"));
+        assert_eq!(document["terminated"]["sessions_revoked"], serde_json::json!(1));
+        assert_eq!(
+            document["terminated"]["logout_tokens_queued"],
+            serde_json::json!(SEEDED_PARTICIPANTS)
+        );
+        assert_eq!(
+            *world.handle.0.logout_tokens.lock().expect("an uncontended lock"),
+            SEEDED_PARTICIPANTS,
+            "the participating relying parties were not queued a logout token"
+        );
+    }
+
+    /// The trail half of the RISC `account-disabled` signal. The transmitter
+    /// is `ast-0ju`; what exists today is this record and the named seam, on
+    /// the precedent of `credential.changed`.
+    #[tokio::test]
+    async fn disabling_an_account_is_recorded_against_the_account_and_the_administrator() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_STATUS_UPDATE, &cookie)
+                    .body(Body::from(serde_json::json!({"enabled": false}).to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::ACCOUNT_DISABLED)
+            .expect("a disablement is recorded");
+        assert_eq!(recorded.subject.as_deref(), Some(SEEDED_USER_ID));
+        assert!(
+            matches!(recorded.actor, Actor::Admin(_)),
+            "the record does not name the administrator behind it"
+        );
+    }
+
+    /// Enabling revokes nothing, so nobody is told anything: a relying party
+    /// notified of a logout because an account came back would be told
+    /// something that did not happen.
+    #[tokio::test]
+    async fn enabling_an_account_queues_no_logout_token() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_STATUS_UPDATE, &cookie)
+                    .body(Body::from(serde_json::json!({"enabled": true}).to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            *world.handle.0.logout_tokens.lock().expect("an uncontended lock"),
+            0
+        );
+    }
+
+    /// The check the multi-tenant model rests on, at the account routes: an
+    /// administrator of one tenant naming another tenant's `user_id` finds
+    /// nothing, because the tenant is a predicate on the lookup.
+    #[tokio::test]
+    async fn an_account_of_another_tenant_is_not_found() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        // The `other` tenant holds an account under the same uuid, so the 404
+        // is about the tenant and not about the row being absent everywhere.
+        assert!(
+            world
+                .handle
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|user| user.tenant.as_str() == "other")
+        );
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_READ, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert: `acme` holds one too, so this one is found — the negative is
+        // the routed tenant below.
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Act again, routed at a tenant that holds no such account.
+        let elsewhere = World::new().routed_at("empty-tenant");
+        let cookie = elsewhere.sign_in("empty-tenant", &[Role::TenantAdmin]);
+        let response = elsewhere
+            .send(
+                as_console(&crate::USER_READ, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A `user_id` that is not a UUID names nothing this server holds, and is
+    /// answered the same way as one that names somebody else's account.
+    #[tokio::test]
+    async fn a_user_id_that_is_not_an_identifier_is_not_found() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                request_for(&crate::USER_READ)
+                    .uri("/admin/api/v1/users/not-a-uuid")
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `ast-895`: the deny list is not optional, and the console is not a way
+    /// around it. Asserted at the route and not only at
+    /// [`crate::users::accept_password`], because the question is whether the
+    /// handler calls it.
+    #[tokio::test]
+    async fn an_account_cannot_be_created_on_a_password_the_login_form_would_refuse() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_CREATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "username": "grace@example.test",
+                            "password": "password123",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            world
+                .handle
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|user| user.username == "grace@example.test")
+                .count(),
+            0,
+            "a refused creation wrote an account anyway"
+        );
+    }
+
+    /// An account created with a password this deployment accepts.
+    #[tokio::test]
+    async fn an_account_created_from_the_console_reads_back() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_CREATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "username": "grace@example.test",
+                            "email": "grace@example.test",
+                            "password": "a passphrase nobody has used before",
+                        })
+                        .to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let document = body_of(response).await;
+        assert_eq!(document["username"], serde_json::json!("grace@example.test"));
+        assert_eq!(document["status"], serde_json::json!("active"));
+        // OIDC Core §5.1: the flag is asserted, never defaulted on.
+        assert_eq!(document["email_verified"], serde_json::json!(false));
+    }
+
+    /// A creation is never a replacement: the second one is a 409 rather than
+    /// an overwrite of somebody's account.
+    #[tokio::test]
+    async fn a_username_this_tenant_already_holds_is_refused() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_CREATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"username": "ada@example.test"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    /// The directory answers a search and pages with an opaque cursor, which
+    /// is what `ast-cts` fixed for the other listings.
+    #[tokio::test]
+    async fn the_directory_searches_and_pages() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+        for name in ["bob@example.test", "carol@example.test"] {
+            world
+                .handle
+                .0
+                .accounts
+                .lock()
+                .expect("an uncontended lock")
+                .push(asterius_domain::User {
+                    id: UserId::generate(),
+                    username: name.to_owned(),
+                    email: Some(name.to_owned()),
+                    ..seeded_user("acme")
+                });
+        }
+
+        // Act: one row at a time, so a cursor has to be minted.
+        let first = world
+            .send(
+                request_for(&crate::USERS_LIST)
+                    .uri("/admin/api/v1/users?limit=1")
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(first.status(), StatusCode::OK);
+        let page = body_of(first).await;
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(page["items"][0]["username"], serde_json::json!("ada@example.test"));
+        let cursor = page["next_cursor"].as_str().expect("a cursor").to_owned();
+        // Opaque: the console must not be able to start parsing it.
+        assert!(!cursor.contains("ada@example.test"), "{cursor}");
+
+        // Act: the next page, and a search that narrows it.
+        let searched = world
+            .send(
+                request_for(&crate::USERS_LIST)
+                    .uri("/admin/api/v1/users?q=carol")
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        let page = body_of(searched).await;
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            page["items"][0]["username"],
+            serde_json::json!("carol@example.test")
+        );
+    }
+
+    /// OIDC Core §5.1, at the route: the claims and the verification flags are
+    /// one document and one write.
+    #[tokio::test]
+    async fn claims_and_their_verification_flags_are_saved_together() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_CLAIMS_UPDATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "email": "ada@newmail.test",
+                            "email_verified": false,
+                            "claims": {
+                                "name": {"value": "Ada Lovelace", "verified": true},
+                                "zoneinfo": {"value": "Europe/London"},
+                            },
+                        })
+                        .to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["email"], serde_json::json!("ada@newmail.test"));
+        assert_eq!(document["email_verified"], serde_json::json!(false));
+        assert_eq!(
+            document["claims"]["name"]["value"],
+            serde_json::json!("Ada Lovelace")
+        );
+        assert!(
+            document["claims"]["name"]["verified_at"].is_number(),
+            "a claim marked verified was not stamped"
+        );
+        assert_eq!(
+            document["claims"]["zoneinfo"]["verified_at"],
+            serde_json::Value::Null
+        );
+    }
+
+    /// A bag able to hold a `sub` is a bag able to impersonate somebody, and
+    /// the route refuses one rather than storing it under another name.
+    #[tokio::test]
+    async fn a_claim_the_authorization_server_mints_is_refused_by_the_route() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_CLAIMS_UPDATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"claims": {"sub": {"value": "somebody-else"}}})
+                            .to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The sessions tab names a session by the `sid` the deployment already
+    /// publishes to relying parties, and by nothing else: the lookup digest is
+    /// not on this side of the port at all.
+    #[tokio::test]
+    async fn a_session_is_listed_by_the_identifier_relying_parties_already_hold() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_SESSIONS_LIST, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["items"][0]["sid"], serde_json::json!(SEEDED_SID));
+        assert_eq!(document["items"][0]["live"], serde_json::json!(true));
+    }
+
+    /// §2.5 again, for one session rather than a whole account: ending it from
+    /// the console tells the same relying parties, through the same seam, as
+    /// ending it from the browser.
+    #[tokio::test]
+    async fn revoking_one_session_queues_a_logout_token_for_each_participant() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_SESSION_REVOKE, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["sessions_revoked"], serde_json::json!(1));
+        assert_eq!(
+            document["logout_tokens_queued"],
+            serde_json::json!(SEEDED_PARTICIPANTS)
+        );
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::SESSION_REVOKED),
+            "ending a session from the console was not recorded"
+        );
+    }
+
+    /// Grant Management ID1 §6.5 and §6.6: the first `DELETE` withdraws the
+    /// authorization and the second finds nothing to withdraw.
+    #[tokio::test]
+    async fn withdrawing_an_authorization_twice_is_a_404_the_second_time() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let first = world
+            .send(
+                as_console(&crate::USER_GRANT_REVOKE, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        let second = world
+            .send(
+                as_console(&crate::USER_GRANT_REVOKE, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The grants tab renders what an operator needs to decide and nothing
+    /// that identifies the person to a relying party.
+    #[tokio::test]
+    async fn the_grants_tab_names_the_client_and_the_scopes_and_no_subject() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_GRANTS_LIST, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(
+            document["items"][0]["client_id"],
+            serde_json::json!(SEEDED_CLIENT_ID)
+        );
+        assert_eq!(
+            document["items"][0]["scopes"],
+            serde_json::json!(["openid"])
+        );
+        assert!(
+            !document.to_string().contains("the-sub-this-client-knows"),
+            "the grants tab rendered a subject identifier"
+        );
+    }
+
+    /// The credentials tab answers "what can this person sign in with", and
+    /// answers it without material: the port carries none.
+    #[tokio::test]
+    async fn the_credentials_tab_lists_a_passkey_without_its_key() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_CREDENTIALS_READ, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["password"], serde_json::json!(true));
+        assert_eq!(
+            document["passkeys"][0]["credential_id"],
+            serde_json::json!(SEEDED_CREDENTIAL_ID)
+        );
+        let rendered = document.to_string();
+        assert!(!rendered.contains("public_key"));
+        assert!(!rendered.contains("sign_count"));
+    }
+
+    /// Blocking a passkey stamps the row rather than deleting it, so the
+    /// second attempt finds nothing to block and the credential is still
+    /// visible to an incident review.
+    #[tokio::test]
+    async fn blocking_a_passkey_twice_is_a_404_the_second_time() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let first = world
+            .send(
+                as_console(&crate::USER_PASSKEY_REMOVE, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        let second = world
+            .send(
+                as_console(&crate::USER_PASSKEY_REMOVE, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::NOT_FOUND);
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::CREDENTIAL_CHANGED),
+            "blocking a credential was not recorded"
+        );
+    }
+
+    /// `ast-2vk.10`: forcing a reset invalidates the password, ends the
+    /// sessions and mails a link. It does not set a password an administrator
+    /// chose — there is no field in the request that could carry one.
+    #[tokio::test]
+    async fn forcing_a_reset_invalidates_the_password_and_hands_off_a_link() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::USER_PASSWORD_RESET, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["password_invalidated"], serde_json::json!(true));
+        assert_eq!(document["recovery_sent"], serde_json::json!(true));
+        assert_eq!(document["sessions_revoked"], serde_json::json!(1));
+        assert_eq!(
+            world
+                .handle
+                .0
+                .recovery_sent
+                .lock()
+                .expect("an uncontended lock")
+                .len(),
+            1
+        );
+    }
+
 }

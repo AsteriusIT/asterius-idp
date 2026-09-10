@@ -1,0 +1,143 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,\n                    authorization_details, resources, actor_chain, parent_grant_id,\n                    session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,\n                    claimed_at, revoked_at, revocation_reason\n               from grants\n               where tenant_id = $1 and user_id = $2\n               order by created_at desc, grant_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "subject",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "claims",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 6,
+        "name": "claims_locales",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "authorization_details",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
+        "name": "resources",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 9,
+        "name": "actor_chain",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 10,
+        "name": "parent_grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "session_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "authenticated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 13,
+        "name": "acr",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "amr",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 15,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 17,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 18,
+        "name": "claimed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 19,
+        "name": "revoked_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 20,
+        "name": "revocation_reason",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "51c198bfd6eb35a334c1f3b21d615cb196aced366d9bcc6825fdf717c828c9e1"
+}

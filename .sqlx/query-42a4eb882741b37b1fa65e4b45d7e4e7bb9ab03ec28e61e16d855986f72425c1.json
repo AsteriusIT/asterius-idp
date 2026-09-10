@@ -1,0 +1,71 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select public_sid, created_at, authenticated_at, last_seen_at, expires_at,\n                    acr, amr, revoked_at, revocation_reason\n             from sessions\n             where tenant_id = $1 and user_id = $2\n             order by created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "public_sid",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "authenticated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "acr",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "amr",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "revoked_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "revocation_reason",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "42a4eb882741b37b1fa65e4b45d7e4e7bb9ab03ec28e61e16d855986f72425c1"
+}

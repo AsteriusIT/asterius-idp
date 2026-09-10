@@ -47,6 +47,15 @@ const SESSION_COOKIE_VALUE: &str = "a-session-id-that-only-the-browser-holds";
 const REGISTERED_POST_LOGOUT: &str = "https://rp.example/after-logout";
 /// The `backchannel_logout_uri` a participating client registers (§2.2).
 const BACKCHANNEL_LOGOUT_URI: &str = "https://rp.example/backchannel-logout";
+/// A second relying party that took part in the session and registered *no*
+/// `backchannel_logout_uri`.
+///
+/// §2.2: such a client is not a participant of back-channel logout. It exists
+/// in these tests so that "one token per participant" and "one token per
+/// relying party that was in the session" are told apart — the two agree
+/// whenever every client is a participant, which is the fixture that hides the
+/// bug.
+const SILENT_CLIENT: &str = "reports";
 /// The `sub` [`FakeSubjects`] answers with: the identifier the relying party
 /// was issued in its ID token, not the local user id (OIDC Core §8.1).
 const SECTOR_SUBJECT: &str = "the-sub-this-client-knows";
@@ -95,6 +104,16 @@ impl FakeSessions {
 
     fn empty() -> Self {
         Self::default()
+    }
+
+    /// The session this fake holds, for a test that calls the notifier
+    /// directly rather than through the endpoint.
+    fn held(&self) -> Session {
+        self.session
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("a seeded session")
     }
 
     fn was_revoked(&self) -> bool {
@@ -200,6 +219,31 @@ impl FakeClients {
         }
     }
 
+    /// A registered client that is not a participant: no
+    /// `backchannel_logout_uri`, so §2.2 says nothing is sent to it.
+    fn silent(&self) -> Client {
+        let document = json!({
+            "client_name": "Reports",
+            "redirect_uris": ["https://reports.example/cb"],
+            "grant_types": ["authorization_code"],
+            "scope": "openid",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        });
+        let registration = ClientRegistration::from_json(
+            &serde_json::to_vec(&document).expect("serialise"),
+            Capabilities::default(),
+        )
+        .expect("a valid registration");
+        Client {
+            tenant: TenantId::new("demo"),
+            id: ClientId::new(SILENT_CLIENT),
+            registration,
+            status: ClientStatus::Active,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
     /// A pairwise client that asked to be told which session ended.
     fn pairwise_session_only() -> Self {
         Self {
@@ -213,6 +257,9 @@ impl FakeClients {
 #[async_trait::async_trait]
 impl ClientRepository for FakeClients {
     async fn find(&self, client_id: &ClientId) -> Result<Option<Client>, DomainError> {
+        if client_id.as_str() == SILENT_CLIENT {
+            return Ok(Some(self.silent()));
+        }
         if client_id.as_str() != CLIENT {
             return Ok(None);
         }
@@ -587,6 +634,25 @@ impl Harness {
             .as_ref()
             .map(FakeQueue::rows)
             .unwrap_or_default()
+    }
+
+    /// The notifier an *administrative* revocation holds (`ast-f7m.6`).
+    ///
+    /// The same object the end-session endpoint uses, built from the same
+    /// fakes: what these tests are for is that the console's revocation and
+    /// the person's own logout reach the relying parties identically, so they
+    /// must not be given two different notifiers to prove it with.
+    fn notifier(&self) -> asterius_server::backchannel::Notifier<'_> {
+        asterius_server::backchannel::Notifier {
+            tenant: &self.tenant,
+            clients: &self.clients,
+            subjects: &self.subjects,
+            signer: &self.signer,
+            outbox: self
+                .outbox
+                .as_ref()
+                .map(|queue| queue as &dyn asterius_domain::outbox::OutboxQueue),
+        }
     }
 
     fn context(&self) -> LogoutContext<'_> {
@@ -1308,4 +1374,83 @@ async fn the_session_is_revoked_before_a_logout_token_is_queued() {
     let read = calls.iter().position(|call| *call == "participants");
     assert!(revoked < read, "{calls:?}");
     assert_eq!(harness.queued().len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Administrative revocation (`ast-f7m.6`)
+// ---------------------------------------------------------------------------
+
+/// **The acceptance criterion of `ast-f7m.6`, and §2.5.**
+///
+/// An administrator disabling an account or ending one of its sessions
+/// notifies the relying parties that took part, through the same notifier the
+/// end-session endpoint uses. Asserted on the outbox in process: this server's
+/// one outbound adapter refuses the loopback (`ast-o4u.2`), so a test that
+/// tried to receive the POST would be asserting the anti-SSRF rule instead.
+#[tokio::test]
+async fn an_administrative_revocation_queues_one_logout_token_per_participant() {
+    // Arrange: two relying parties took part, one of which registered a
+    // `backchannel_logout_uri`.
+    let fixture = Fixture::new();
+    let sessions = FakeSessions::holding(&digest(), now());
+    let session = sessions.held();
+    let harness = Harness::notifying(FakeClients::notified(), sessions, fixture.published());
+    let participants = [
+        Participant {
+            client: ClientId::new(CLIENT),
+            first_seen_at: now(),
+            last_seen_at: now(),
+        },
+        Participant {
+            client: ClientId::new(SILENT_CLIENT),
+            first_seen_at: now(),
+            last_seen_at: now(),
+        },
+    ];
+
+    // Act
+    let queued = harness
+        .notifier()
+        .notify(&session, &participants, now())
+        .await;
+
+    // Assert: §2.2 — the client that registered no endpoint is not a
+    // participant, so one token and not two.
+    assert_eq!(queued, 1);
+    let rows = harness.queued();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].destination, BACKCHANNEL_LOGOUT_URI);
+    assert_eq!(rows[0].kind, asterius_server::backchannel::BACKCHANNEL_LOGOUT_KIND);
+    assert!(
+        rows[0].payload["body"]
+            .as_str()
+            .is_some_and(|body| body.starts_with("logout_token=")),
+        "§2.5 asks for a form-encoded logout_token"
+    );
+}
+
+/// A deployment with no outbox wired notifies nobody and says so, rather than
+/// reporting a notification that did not happen.
+#[tokio::test]
+async fn an_administrative_revocation_without_an_outbox_notifies_nobody() {
+    // Arrange
+    let fixture = Fixture::new();
+    let sessions = FakeSessions::holding(&digest(), now());
+    let session = sessions.held();
+    let mut harness = Harness::notifying(FakeClients::notified(), sessions, fixture.published());
+    harness.outbox = None;
+    let participants = [Participant {
+        client: ClientId::new(CLIENT),
+        first_seen_at: now(),
+        last_seen_at: now(),
+    }];
+
+    // Act
+    let queued = harness
+        .notifier()
+        .notify(&session, &participants, now())
+        .await;
+
+    // Assert
+    assert_eq!(queued, 0);
 }

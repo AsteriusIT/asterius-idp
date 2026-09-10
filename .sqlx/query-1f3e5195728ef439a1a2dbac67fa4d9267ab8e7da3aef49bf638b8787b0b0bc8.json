@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select session_id from sessions where tenant_id = $1 and public_sid = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1f3e5195728ef439a1a2dbac67fa4d9267ab8e7da3aef49bf638b8787b0b0bc8"
+}
