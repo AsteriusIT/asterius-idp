@@ -25,7 +25,7 @@ use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
-use asterius_domain::{Capabilities, KeyStore, Tenant};
+use asterius_domain::{Capabilities, DomainError, KeyStore, Tenant, TokenLifetimes};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
 use axum::extract::{Extension, Path, State};
@@ -90,9 +90,20 @@ pub struct ClientEndpoints {
     pub capabilities: Capabilities,
     /// How long a `request_uri` lives, already clamped.
     pub par_lifetime: time::Duration,
-    /// How long an authorization code lives, already clamped to the profile's
-    /// 60-second cap (FAPI 2.0 SP §5.3.2.1 item 11).
-    pub code_lifetime: time::Duration,
+    /// How long this deployment's artefacts live when a tenant has expressed
+    /// no opinion of its own.
+    ///
+    /// A [`TokenLifetimes`], not two durations: the type cannot be built
+    /// outside the profile's caps, so the fallback is under them by
+    /// construction and nothing downstream has to check it again (`ast-5c6`).
+    pub lifetimes: TokenLifetimes,
+    /// Each tenant's settings, cached — where the lifetimes above are
+    /// overridden.
+    ///
+    /// `None` is a deployment with no settings repository wired, which reads
+    /// as "no tenant has an opinion" and never as a fallback for a *failed*
+    /// read: see [`crate::tenant_settings`] and [`lifetimes_for`].
+    pub tenant_settings: Option<SettingsDirectory>,
     /// Opens the tenant's pairwise salt, which every `sub` derives from.
     pub kek: Arc<dyn asterius_jose::Kek>,
     /// This deployment's keys, for verifying a token *this server* issued.
@@ -430,7 +441,12 @@ async fn tenant_feature_guard(
     }
 }
 
-/// The 503 both the settings-read failures answer with.
+/// The 503 every settings-read failure answers with.
+///
+/// RFC 6749 §5.2 has no code for "come back later" and OAuth 2.0's
+/// `temporarily_unavailable` (§4.1.2.1) is the closest the family has: the
+/// request was well-formed and this server is at fault, so a client is told to
+/// retry rather than to stop.
 fn unavailable() -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -773,6 +789,16 @@ async fn token_endpoint_inner(
     // (OIDC Core §5.4, §5.5). The KEK is the same one every other user read
     // takes, because the claim bag is encrypted at rest.
     let users = scope.users(Arc::clone(&endpoints.kek));
+    // One read for both grants, so that whichever this request turns out to be
+    // it mints under the same numbers — the same argument `now` and the proof
+    // key are resolved once, just above.
+    let lifetimes = match lifetimes_for(endpoints, tenant).await {
+        Ok(lifetimes) => lifetimes,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let authorization_code = AuthorizationCode {
         codes: &codes,
         grants: &grants,
@@ -780,6 +806,7 @@ async fn token_endpoint_inner(
         sessions: &sessions,
         users: &users,
         signer: endpoints.signer.as_ref(),
+        lifetimes,
         proof_key: binding.as_ref().map(|binding| &binding.jkt),
         now,
     };
@@ -793,6 +820,7 @@ async fn token_endpoint_inner(
         users: &users,
         signer: endpoints.signer.as_ref(),
         audit: endpoints.audit.as_ref(),
+        lifetimes,
         proof_key: binding.as_ref().map(|binding| &binding.jkt),
         now,
     };
@@ -1187,6 +1215,33 @@ const fn authorization_policy() -> asterius_oidc::authorize::AuthorizationPolicy
     asterius_oidc::authorize::AuthorizationPolicy::new(false)
 }
 
+/// The lifetimes this request issues under (`ast-5c6`).
+///
+/// The tenant's, when a settings repository is wired; the deployment's
+/// otherwise. There is no third source and no clamp on the way out: a
+/// [`TokenLifetimes`] cannot be built above the profile's ceilings, so a value
+/// that arrives here is already compliant and issuance can use it as it stands.
+///
+/// A read that *fails* is not the fallback, for the reason
+/// [`crate::tenant_settings`] gives about feature flags and which applies at
+/// least as strongly here: quietly issuing under this build's numbers would
+/// hand out a credential that lives longer than the operator configured, and
+/// nothing would say so. The caller answers 503 and the client retries.
+///
+/// # Errors
+///
+/// Whatever the settings repository returns, including a stored document this
+/// build refuses to read.
+async fn lifetimes_for(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+) -> Result<TokenLifetimes, DomainError> {
+    match &endpoints.tenant_settings {
+        None => Ok(endpoints.lifetimes),
+        Some(directory) => Ok(directory.for_tenant(&tenant.id).await?.lifetimes()),
+    }
+}
+
 /// Builds the context both end-session handlers share.
 fn logout_context<'a>(
     endpoints: &'a ClientEndpoints,
@@ -1290,6 +1345,13 @@ async fn interaction_show(
     let users = scope.users(Arc::clone(&endpoints.kek));
     let passwords = endpoints.passwords(&tenant.id);
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let lifetimes = match lifetimes_for(&endpoints, &tenant).await {
+        Ok(lifetimes) => lifetimes,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     interaction::show(
         InteractionContext {
             tenant: &tenant,
@@ -1308,7 +1370,7 @@ async fn interaction_show(
             memory: memory_policy(),
             codes: &codes,
             subjects: &users,
-            code_lifetime: endpoints.code_lifetime,
+            code_lifetime: lifetimes.authorization_code(),
             nonce: &nonce,
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),
@@ -1352,6 +1414,13 @@ async fn interaction_submit(
     let users = scope.users(Arc::clone(&endpoints.kek));
     let passwords = endpoints.passwords(&tenant.id);
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let lifetimes = match lifetimes_for(&endpoints, &tenant).await {
+        Ok(lifetimes) => lifetimes,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     interaction::submit(
         InteractionContext {
             tenant: &tenant,
@@ -1370,7 +1439,7 @@ async fn interaction_submit(
             memory: memory_policy(),
             codes: &codes,
             subjects: &users,
-            code_lifetime: endpoints.code_lifetime,
+            code_lifetime: lifetimes.authorization_code(),
             nonce: &nonce,
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),

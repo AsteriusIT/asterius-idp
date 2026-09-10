@@ -42,7 +42,7 @@ use asterius_domain::{
     SubjectResolver, Tenant, TenantId, UserId,
 };
 use asterius_oidc::authorize::ResponseMode;
-use asterius_oidc::code::{self, AuthorizationResponse, MintedCode};
+use asterius_oidc::code::{AuthorizationResponse, MintedCode};
 use asterius_oidc::consent::{ConsentRequest, Decision};
 use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
 use asterius_web::interaction::{
@@ -90,7 +90,13 @@ pub struct InteractionContext<'a> {
     pub codes: &'a dyn CodeIssuer,
     /// How the `sub` this client will see is resolved (OIDC Core §8.1).
     pub subjects: &'a dyn SubjectResolver,
-    /// How long an issued code lives, clamped to the profile's 60-second cap.
+    /// How long an issued code lives.
+    ///
+    /// This tenant's setting when it has one, the deployment's otherwise —
+    /// resolved by [`crate::http::protocol`] out of an
+    /// `asterius_domain::TokenLifetimes`, which is why it is under FAPI 2.0 SP
+    /// §5.3.2.1 item 11's sixty seconds without being checked again here
+    /// (`ast-5c6`).
     pub code_lifetime: Duration,
     /// The CSP nonce the document middleware drew for this response.
     pub nonce: &'a Nonce,
@@ -1100,7 +1106,12 @@ async fn mint(
         nonce: string("nonce"),
         // RFC 9449 §10: when the request pinned a key, the code is pinned too.
         dpop_jkt: string("dpop_jkt"),
-        expires_at: now + code::clamp_lifetime(context.code_lifetime),
+        // The tenant's setting, used as it stands. It reached this context
+        // through `asterius_domain::TokenLifetimes`, which cannot hold a value
+        // above FAPI 2.0 SP §5.3.2.1 item 11's sixty seconds, so there is
+        // nothing to clamp here — and a clamp would be the second, silent
+        // authority `ast-5c6` removed.
+        expires_at: now + context.code_lifetime,
     };
     if let Err(error) = context.codes.issue(minted.digest(), &binding, now).await {
         tracing::error!(%error, tenant = %context.tenant.id, "cannot store a code");
