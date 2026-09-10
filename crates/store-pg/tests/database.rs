@@ -6694,6 +6694,16 @@ mod retention {
         let grant = uuid::Uuid::from_u128(0x9_2a_47);
 
         seed_owners(pool, tenant, user, grant).await;
+        // One grant with no resource owner, expired long enough ago to be past
+        // the policy's window: `grants` is a swept table since `ast-wgx`, and
+        // the table-by-table criterion above needs a row it is allowed to take.
+        seed_client_only_grant(
+            pool,
+            tenant,
+            client_only_grant("stale"),
+            now() - Duration::days(30),
+        )
+        .await;
         for (label, expires) in [
             ("stale", now() - Duration::days(2)),
             ("fresh", now() + Duration::hours(1)),
@@ -6937,6 +6947,70 @@ mod retention {
         .expect("seed first-party interaction");
     }
 
+    /// A stable grant id per label, so a test can seed one and then look for it.
+    fn client_only_grant(label: &str) -> uuid::Uuid {
+        uuid::Uuid::from_slice(&asterius_domain::sha256(label.as_bytes())[..16])
+            .expect("sixteen bytes are a uuid")
+    }
+
+    /// The row every `client_credentials` request leaves behind (`ast-a05.8`):
+    /// no user, no subject, no session, claimed at once, expiring with the
+    /// access token it was minted for.
+    async fn seed_client_only_grant(
+        pool: &PgPool,
+        tenant: &str,
+        grant: uuid::Uuid,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into grants (tenant_id, grant_id, client_id, scopes,
+                                 created_at, claimed_at, expires_at)
+             values ($1, $2, 'billing', '{invoices.read}', $3, $3, $3)",
+        )
+        .bind(tenant)
+        .bind(grant)
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed client-only grant");
+    }
+
+    /// A grant with a person behind it, expired as long ago as the client-only
+    /// one, so that "expired" cannot be the only thing the rule looks at.
+    async fn seed_user_grant(
+        pool: &PgPool,
+        tenant: &str,
+        user: uuid::Uuid,
+        grant: uuid::Uuid,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into grants (tenant_id, grant_id, client_id, user_id, subject,
+                                 scopes, created_at, claimed_at, expires_at)
+             values ($1, $2, 'billing', $3, 'alice', '{openid,offline_access}', $4, $4, $4)",
+        )
+        .bind(tenant)
+        .bind(grant)
+        .bind(user)
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed user grant");
+    }
+
+    /// Whether that grant is still stored.
+    async fn grant_exists(pool: &PgPool, tenant: &str, grant: uuid::Uuid) -> bool {
+        let count: i64 = sqlx::query_scalar(
+            "select count(*) from grants where tenant_id = $1 and grant_id = $2",
+        )
+        .bind(tenant)
+        .bind(grant)
+        .fetch_one(pool)
+        .await
+        .expect("count grants");
+        count > 0
+    }
+
     /// The outbox is aged rather than expiring, and only a terminal row is ever
     /// swept: `pending` is work still owed, however old it looks.
     async fn seed_outbox(pool: &PgPool, tenant: &str) {
@@ -7050,6 +7124,113 @@ mod retention {
                     "{kept} is kept by the policy but the sweep emptied it"
                 );
             }
+        }
+    }
+
+    db_test! {
+        /// `ast-wgx`: one `client_credentials` request per minute is 1 440
+        /// grant rows a day, each expiring with a token that lived fifteen
+        /// minutes. Past the policy's window the row answers no question the
+        /// audit trail cannot.
+        async fn an_expired_client_only_grant_is_swept_once_the_window_has_passed(db) {
+            seed(&db.pool, "demo").await;
+            let grant = client_only_grant("machine");
+            seed_client_only_grant(&db.pool, "demo", grant, now() - Duration::days(30)).await;
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            assert!(
+                !grant_exists(&db.pool, "demo", grant).await,
+                "a client-only grant expired thirty days ago is still stored"
+            );
+        }
+    }
+
+    db_test! {
+        /// The window is what makes the rule safe to run: inside it the row is
+        /// still there to be read by an operator asking what a machine client
+        /// was authorized to do this morning.
+        async fn a_client_only_grant_inside_the_window_is_kept(db) {
+            seed(&db.pool, "demo").await;
+            let grant = client_only_grant("this-morning");
+            seed_client_only_grant(&db.pool, "demo", grant, now() - Duration::hours(1)).await;
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            assert!(
+                grant_exists(&db.pool, "demo", grant).await,
+                "a grant that expired an hour ago was swept inside the window"
+            );
+        }
+    }
+
+    db_test! {
+        /// A grant with a person behind it is the consent record and the
+        /// revocable unit of authority, and no clock deletes one — however
+        /// long ago its `expires_at` passed.
+        async fn a_user_grant_is_not_swept_however_long_it_has_been_expired(db) {
+            seed(&db.pool, "demo").await;
+            let grant = client_only_grant("alice-offline");
+            seed_user_grant(
+                &db.pool,
+                "demo",
+                uuid::Uuid::from_u128(0x5e_ed),
+                grant,
+                now() - Duration::days(400),
+            )
+            .await;
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            assert!(
+                grant_exists(&db.pool, "demo", grant).await,
+                "a user's grant was deleted by the retention sweep"
+            );
+        }
+    }
+
+    db_test! {
+        /// The durable trace is the trail, not the row: the event naming the
+        /// swept grant is still readable and the chain still verifies.
+        async fn the_trail_of_a_swept_client_only_grant_survives_intact(db) {
+            seed(&db.pool, "demo").await;
+            let grant = client_only_grant("machine");
+            seed_client_only_grant(&db.pool, "demo", grant, now() - Duration::days(30)).await;
+            let sink = PgAuditSink::new(db.pool.clone());
+            sink.record(
+                audit_event("demo", EventType::TOKEN_ISSUED)
+                    .grant(asterius_domain::GrantId::new(grant.to_string())),
+            )
+            .await
+            .expect("record the issuance");
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            let recorded: i64 = sqlx::query_scalar(
+                "select count(*) from audit_events where tenant_id = 'demo' and grant_id = $1",
+            )
+            .bind(grant)
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the trail");
+            assert_eq!(recorded, 1, "the trail lost the swept grant's event");
+            let verified = sink
+                .verify_chain(&TenantId::new("demo"))
+                .await
+                .expect("the chain still verifies");
+            assert_eq!(verified.records, 1);
         }
     }
 

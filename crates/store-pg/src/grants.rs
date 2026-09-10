@@ -51,6 +51,17 @@
 //! `active` about a grant that is not, from the instant `expires_at` passes
 //! until a sweep got round to it. [`Grant::status`] compares against `now`
 //! instead, so it cannot be stale.
+//!
+//! # Two deletions, two predicates
+//!
+//! [`PgGrantRepository::purge_unclaimed`] is Grant Management ID1 §5.6's
+//! never-claimed cleanup and is about *abandonment*. The other one lives in
+//! [`crate::retention::POLICY`] and is about *volume*: a `client_credentials`
+//! grant has no resource owner, no consent to remember and a lifetime measured
+//! in minutes, and one machine client asking for a token a minute writes 1 440
+//! rows a day here. That rule deletes only grants whose `user_id`, `subject`
+//! and `session_id` are all null, a week past their own `expires_at`; a grant
+//! with a person behind it is never swept on a clock.
 
 use crate::error::to_domain_error;
 use asterius_domain::ports::TenantScoped;
