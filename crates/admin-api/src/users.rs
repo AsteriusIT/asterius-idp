@@ -410,7 +410,7 @@ pub fn accept_password(raw: &str) -> Result<AcceptedPassword, AdminError> {
 /// than shadowed in the bag. Every value is bounded and goes through
 /// [`Claim::new`], which refuses `null` and the `serde_json` sentinels.
 ///
-/// `now` stamps the claims the caller marked verified; see [`RequestedClaim`]
+/// `now` stamps the claims the caller marked verified; see `RequestedClaim`
 /// for why the caller does not get to choose the instant.
 ///
 /// # Errors

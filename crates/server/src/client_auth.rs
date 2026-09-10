@@ -44,7 +44,7 @@
 //! not authenticate produced a 401 and not one line at any log level, so a BFF
 //! posting a PAR with no `client_assertion` at all was indistinguishable, from
 //! the server's side, from one that never called. Every refusal now passes
-//! through [`ClientAuthenticator::report`], which is why [`Refusal`] exists as
+//! through `ClientAuthenticator::report`, which is why `Refusal` exists as
 //! a type rather than the checks returning `ClientAuthError` directly.
 //!
 //! # Timing
