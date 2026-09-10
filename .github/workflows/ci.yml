@@ -413,6 +413,16 @@ jobs:
           targets=$(awk '/^\[\[bin\]\]/ { in_bin = 1; next }
                          in_bin && /^name = / { gsub(/^name = "|"$/, ""); print; in_bin = 0 }' \
                     fuzz/Cargo.toml | jq -R . | jq -sc .)
+          # On a pull request the matrix collapses to one leg, `all`, which
+          # builds every target in a single job (see "fuzz for 60 s" below).
+          # Seven branches in flight were 500 queued runner minutes of
+          # sixty-second fuzz runs, and what they catch on a branch is API
+          # drift — a target that no longer compiles — which one build finds.
+          # The sixty-second run of every target still happens on `main` and
+          # in the merge queue, and the real fuzzing is fuzz-nightly.yml.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            targets='["all"]'
+          fi
           echo "matrix=$targets" >> "$GITHUB_OUTPUT"
 
   fuzz:
@@ -457,8 +467,13 @@ jobs:
       # the job independent of what the runner happens to be configured for.
       - name: fuzz for 60 s
         run: |
-          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
-            -- -max_total_time=60 -print_final_stats=1
+          if [ "${{ matrix.target }}" = "all" ]; then
+            # The pull-request leg: every target has to build, none is run.
+            cargo fuzz build --target x86_64-unknown-linux-gnu
+          else
+            cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
+              -- -max_total_time=60 -print_final_stats=1
+          fi
 
       - name: upload any crash that was found
         if: failure()
