@@ -194,8 +194,21 @@ impl std::fmt::Debug for ProtocolState {
 /// the resolved [`Tenant`] in the request extensions, so handlers here mount at
 /// bare paths and take the tenant as an extractor. A handler therefore has no
 /// tenant parameter it could get wrong.
+///
+/// The deployment's flags decide what is *mounted*; a tenant's flags decide
+/// what its requests reach, because the router is built once per process and a
+/// tenant is only known per request. [`tenant_feature_guard`] is that second
+/// half, and it reads the same [`Endpoint`] registry and the same
+/// `effective_capabilities` the document is rendered from — so an endpoint a
+/// tenant switched off is absent from its metadata *and* answers 404, which is
+/// what `ast-edc` closes and what the parity test in `tests/discovery.rs`
+/// asserts for every gated endpoint.
 pub fn routes(state: ProtocolState) -> Router {
     let capabilities = state.capabilities;
+    let guard = FeatureGuard {
+        capabilities,
+        tenant_settings: state.tenant_settings.clone(),
+    };
     let built = state.clients.clone();
     let built_clients = built.is_some();
     let mut router = Router::new()
@@ -329,7 +342,102 @@ pub fn routes(state: ProtocolState) -> Router {
         router = router.route(endpoint.path(), any(not_implemented));
     }
 
-    router
+    // Outermost of this router's own layers, so it runs before any handler and
+    // after the tenancy middleware has resolved the tenant.
+    router.layer(axum::middleware::from_fn_with_state(
+        guard,
+        tenant_feature_guard,
+    ))
+}
+
+/// The per-tenant half of the capability gate.
+///
+/// Holds the same two things the discovery handler reads, and nothing else:
+/// what the deployment offers, and where a tenant's subtractions come from.
+#[derive(Clone, Debug)]
+struct FeatureGuard {
+    /// What this deployment offers.
+    capabilities: Capabilities,
+    /// Each tenant's settings, or `None` where no tenant has any of its own —
+    /// and then the deployment's flags are the whole answer and this guard has
+    /// nothing to decide.
+    tenant_settings: Option<SettingsDirectory>,
+}
+
+/// The endpoint a request path belongs to, when that endpoint is gated on a
+/// feature.
+///
+/// Read off [`Endpoint::ALL`] rather than from a list kept here: a new gated
+/// endpoint is guarded the moment it is registered, which is the property
+/// `ast-o0t.3` bought and this must not spend. Endpoints with no
+/// [`Endpoint::required_feature`] are `None` — there is nothing a tenant could
+/// switch off — and so are this server's own pages, which are not in the
+/// registry at all.
+fn gated_endpoint(path: &str) -> Option<Endpoint> {
+    Endpoint::ALL.into_iter().find(|endpoint| {
+        endpoint.required_feature().is_some()
+            && path
+                .strip_prefix(endpoint.path())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
+/// Refuses a request for a feature this tenant switched off.
+///
+/// The refusal is a **404**, the same status a request gets when the
+/// *deployment* does not run the feature: the tenant's document does not name
+/// the URL, so as far as this tenant is concerned the endpoint does not exist,
+/// and answering 501 or 403 would confirm to a client that knows the URL that
+/// there is something behind it. A tenant that never switched anything off
+/// sees no change.
+///
+/// A settings read that fails answers 503, exactly as [`discovery`] does and
+/// for the same reason: falling back to the deployment's capabilities would
+/// reopen the endpoint an operator has just closed.
+async fn tenant_feature_guard(
+    State(guard): State<FeatureGuard>,
+    tenant: Option<Extension<Arc<Tenant>>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let Some(directory) = guard.tenant_settings.as_ref() else {
+        return next.run(request).await;
+    };
+    let Some(endpoint) = gated_endpoint(request.uri().path()) else {
+        return next.run(request).await;
+    };
+
+    // The tenancy middleware runs outside this router, so a gated path with no
+    // resolved tenant is a wiring fault rather than a request. Refusing beats
+    // guessing which tenant's flags to apply.
+    let Some(Extension(tenant)) = tenant else {
+        tracing::error!(path = %request.uri().path(), "no tenant on a tenant-gated route");
+        return unavailable();
+    };
+
+    let capabilities = match directory.for_tenant(&tenant.id).await {
+        Ok(settings) => settings.effective_capabilities(guard.capabilities),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+
+    if endpoint.is_enabled(&capabilities) {
+        next.run(request).await
+    } else {
+        crate::http::server::not_found().await.into_response()
+    }
+}
+
+/// The 503 both the settings-read failures answer with.
+fn unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::CONTENT_TYPE, "application/json")],
+        r#"{"error":"temporarily_unavailable"}"#,
+    )
+        .into_response()
 }
 
 /// `GET /.well-known/openid-configuration` and
@@ -355,12 +463,7 @@ async fn discovery(
             // would republish exactly the features a tenant switched off.
             Err(error) => {
                 tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    [(header::CONTENT_TYPE, "application/json")],
-                    r#"{"error":"temporarily_unavailable"}"#,
-                )
-                    .into_response();
+                return unavailable();
             }
         },
     };
@@ -1553,7 +1656,41 @@ fn cacheable_json(document: &Value, max_age: u32) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use super::{Endpoint, gated_endpoint};
     use asterius_domain::LimitedEndpoint;
+
+    /// The guard must recognise every endpoint a tenant can switch off, and
+    /// only those: an endpoint it fails to recognise is one whose route stays
+    /// open after the metadata stopped naming it, which is `ast-edc`.
+    #[test]
+    fn the_guard_recognises_exactly_the_gated_endpoints() {
+        for endpoint in Endpoint::ALL {
+            // Arrange
+            let expected = endpoint.required_feature().map(|_| endpoint);
+
+            // Act
+            let found = gated_endpoint(endpoint.path());
+
+            // Assert
+            assert_eq!(found, expected, "{endpoint:?} at {}", endpoint.path());
+        }
+    }
+
+    /// A path *under* a gated endpoint is that endpoint too — a resource id
+    /// appended to `/grants` must not be the way round the guard — while a
+    /// path that merely starts with the same letters is not.
+    #[test]
+    fn a_subpath_is_guarded_and_a_lookalike_is_not() {
+        // Arrange
+        let base = Endpoint::GrantManagement.path();
+
+        // Act & Assert
+        assert_eq!(
+            gated_endpoint(&format!("{base}/abc")),
+            Some(Endpoint::GrantManagement)
+        );
+        assert_eq!(gated_endpoint(&format!("{base}xyz")), None);
+    }
 
     /// Every endpoint the domain says has limits must be handed to the
     /// limiter here, and every call must be at a route this file mounts.

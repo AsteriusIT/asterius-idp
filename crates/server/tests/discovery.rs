@@ -591,3 +591,214 @@ async fn a_tenant_cannot_advertise_a_feature_the_deployment_lacks() {
     let document: Value = serde_json::from_str(&body).expect("a JSON document");
     assert!(document.get("device_authorization_endpoint").is_none());
 }
+
+// ---- per-tenant parity (`ast-edc`) ----------------------------------------
+
+/// A tenant repository serving two tenants under the same host, so a test can
+/// assert that one tenant's settings do not reach the other.
+#[derive(Debug)]
+struct TwoTenants(Vec<Tenant>);
+
+#[async_trait::async_trait]
+impl TenantRepository for TwoTenants {
+    async fn find_by_id(&self, _: &TenantId) -> Result<Option<Tenant>, DomainError> {
+        unimplemented!("the directory only uses list()")
+    }
+    async fn find_by_issuer(&self, _: &Issuer) -> Result<Option<Tenant>, DomainError> {
+        unimplemented!("the directory only uses list()")
+    }
+    async fn find_by_host(&self, _: &str) -> Result<Option<Tenant>, DomainError> {
+        unimplemented!("the directory only uses list()")
+    }
+    async fn list(&self) -> Result<Vec<Tenant>, DomainError> {
+        Ok(self.0.clone())
+    }
+    async fn upsert(&self, _: &Tenant) -> Result<(), DomainError> {
+        unimplemented!("read-only")
+    }
+    async fn delete(&self, _: &TenantId) -> Result<(), DomainError> {
+        unimplemented!("read-only")
+    }
+}
+
+/// Settings that differ per tenant, which is what makes "the other tenant is
+/// unaffected" a statement about the code rather than about the fixture.
+#[derive(Debug, Default)]
+struct PerTenantSettings(BTreeMap<String, asterius_domain::TenantSettings>);
+
+#[async_trait::async_trait]
+impl asterius_domain::ports::TenantSettingsRepository for PerTenantSettings {
+    async fn settings(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<asterius_domain::TenantSettings, DomainError> {
+        Ok(self.0.get(tenant.as_str()).cloned().unwrap_or_default())
+    }
+
+    async fn save(
+        &self,
+        _tenant: &TenantId,
+        _settings: &asterius_domain::TenantSettings,
+    ) -> Result<(), DomainError> {
+        unimplemented!("read-only")
+    }
+}
+
+fn tenant_named(id: &str) -> Tenant {
+    Tenant {
+        id: TenantId::parse(id).expect("tenant id"),
+        issuer: Issuer::parse(&format!("https://as.example/t/{id}")).expect("issuer"),
+        default_resource: "https://api.example/".to_owned(),
+        custom_host: None,
+        display_name: id.to_owned(),
+        status: TenantStatus::Active,
+        refresh: asterius_domain::RefreshPolicy::default(),
+        created_at: OffsetDateTime::UNIX_EPOCH,
+        updated_at: OffsetDateTime::UNIX_EPOCH,
+    }
+}
+
+/// Every capability, on at the deployment level, so a tenant's settings are the
+/// only thing that can take one away.
+const ALL_ON: Capabilities = Capabilities {
+    mtls: true,
+    grant_management: true,
+    ciba: true,
+    device_flow: true,
+    token_exchange: true,
+    ssf: true,
+    authzen: true,
+    dpop_nonce: true,
+};
+
+fn disabling(feature: asterius_domain::Feature) -> asterius_domain::TenantSettings {
+    asterius_domain::TenantSettings::validated(
+        std::collections::BTreeSet::from([feature]),
+        asterius_domain::entities::tenant_settings::DEFAULT_AUTHORIZATION_CODE_LIFETIME,
+        asterius_domain::entities::tenant_settings::DEFAULT_ACCESS_TOKEN_LIFETIME,
+    )
+    .expect("within the caps")
+}
+
+/// A server for two tenants, `demo` and `other`, with `demo`'s settings taken
+/// from the argument and `other`'s left at the defaults.
+fn two_tenant_server(demo: asterius_domain::TenantSettings) -> Router {
+    let tenants = vec![tenant_named("demo"), tenant_named("other")];
+    let keys = Arc::new(LocalKeyStore::new());
+    for tenant in &tenants {
+        keys.generate(&tenant.id, SigningAlgorithm::DEFAULT)
+            .expect("generate a key");
+    }
+
+    let repository = Arc::new(PerTenantSettings(BTreeMap::from([(
+        "demo".to_owned(),
+        demo,
+    )])));
+    let config = server_config();
+    let directory = TenantDirectory::new(Arc::new(TwoTenants(tenants)));
+    let routes = protocol::routes(ProtocolState {
+        keys: Arc::clone(&keys) as Arc<dyn KeyStore>,
+        capabilities: ALL_ON,
+        tenant_settings: Some(SettingsDirectory::new(repository as _)),
+        clients: None,
+    })
+    .fallback(not_found);
+
+    app(routes, TenantState::new(directory, &config), None, &config)
+}
+
+/// The parity invariant of `ast-o0t.3`, per tenant: for every endpoint a tenant
+/// can switch off, the document and the router agree — the key is gone and the
+/// URL answers 404, exactly as it does when the deployment lacks the feature.
+#[tokio::test]
+async fn a_feature_a_tenant_switched_off_is_neither_advertised_nor_reachable() {
+    for endpoint in Endpoint::ALL {
+        let Some(feature) = endpoint.required_feature() else {
+            continue;
+        };
+
+        // Arrange
+        let router = two_tenant_server(disabling(feature));
+
+        // Act
+        let (status, _, body) =
+            get(router.clone(), "/t/demo/.well-known/openid-configuration").await;
+        let document: Value = serde_json::from_str(&body).expect("a JSON document");
+        let (reached, ..) = get(router, &format!("/t/demo{}", endpoint.path())).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            document.get(endpoint.metadata_key()).is_none(),
+            "{endpoint:?} is still advertised to a tenant that switched {feature} off"
+        );
+        assert_eq!(
+            reached,
+            StatusCode::NOT_FOUND,
+            "{endpoint:?} is still reachable by a tenant that switched {feature} off"
+        );
+    }
+}
+
+/// The blast radius: one tenant's setting is one tenant's setting.
+#[tokio::test]
+async fn another_tenant_keeps_the_feature_the_first_switched_off() {
+    // Arrange
+    let router = two_tenant_server(disabling(asterius_domain::Feature::DeviceFlow));
+    let path = format!("/t/other{}", Endpoint::DeviceAuthorization.path());
+
+    // Act
+    let (_, _, body) = get(router.clone(), "/t/other/.well-known/openid-configuration").await;
+    let (reached, ..) = get(router, &path).await;
+
+    // Assert
+    let document: Value = serde_json::from_str(&body).expect("a JSON document");
+    assert!(
+        document.get("device_authorization_endpoint").is_some(),
+        "another tenant's setting removed this tenant's endpoint: {document}"
+    );
+    assert_ne!(
+        reached,
+        StatusCode::NOT_FOUND,
+        "another tenant's setting unmounted this tenant's route"
+    );
+}
+
+/// A settings read that fails must not open a route the tenant may have closed.
+/// The discovery handler already answers 503 rather than guessing; the guard
+/// holds the same line.
+#[tokio::test]
+async fn a_settings_read_that_fails_closes_the_route() {
+    // Arrange
+    #[derive(Debug)]
+    struct Broken;
+
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::TenantSettingsRepository for Broken {
+        async fn settings(
+            &self,
+            _tenant: &TenantId,
+        ) -> Result<asterius_domain::TenantSettings, DomainError> {
+            Err(DomainError::Storage("no database".into()))
+        }
+        async fn save(
+            &self,
+            _tenant: &TenantId,
+            _settings: &asterius_domain::TenantSettings,
+        ) -> Result<(), DomainError> {
+            unimplemented!("read-only")
+        }
+    }
+
+    let router = server_with(ALL_ON, Some(SettingsDirectory::new(Arc::new(Broken) as _)));
+
+    // Act
+    let (status, ..) = get(
+        router,
+        &format!("/t/demo{}", Endpoint::DeviceAuthorization.path()),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
