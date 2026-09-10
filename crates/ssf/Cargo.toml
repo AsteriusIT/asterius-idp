@@ -1,0 +1,39 @@
+[package]
+name = "asterius-ssf"
+description = "Shared Signals Framework: Security Event Token issuance (SSF 1.0 §3–§4, RFC 8417, RFC 9493)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+asterius-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+url.workspace = true
+# `SetId::generate` and `Txn::generate` each draw 128 bits. The same argument
+# the `jti` of an access token gets in `asterius_oidc::tokens`: the entropy
+# floor is the requirement, and drawing it through a port would put the one
+# line that has to be right somewhere else.
+getrandom.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+# The signing path under test is the production one: `LocalKeyStore`
+# implements both `KeyStore` and `Signer`, so a test signs with the tenant's
+# active key and verifies against the tenant's published JWKS.
+asterius-jose.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+proptest.workspace = true
+# An independent JOSE implementation, so "the SET verifies" is not this
+# workspace agreeing with itself. `rust_crypto` selects ed25519-dalek and
+# p256: another library, another backend, and no aws-lc-rs anywhere in it.
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }

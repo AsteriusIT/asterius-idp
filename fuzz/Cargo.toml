@@ -22,6 +22,7 @@ asterius-domain = { path = "../crates/domain" }
 asterius-jose = { path = "../crates/jose" }
 asterius-oidc = { path = "../crates/oidc" }
 asterius-server = { path = "../crates/server" }
+asterius-ssf = { path = "../crates/ssf" }
 asterius-web = { path = "../crates/web" }
 asterius-webauthn = { path = "../crates/webauthn" }
 # Needed by the targets themselves: `audit_canonical` builds events with
@@ -440,6 +441,13 @@ bench = false
 [[bin]]
 name = "revocation_request"
 path = "fuzz_targets/revocation_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssf_event_uri"
+path = "fuzz_targets/ssf_event_uri.rs"
 test = false
 doc = false
 bench = false

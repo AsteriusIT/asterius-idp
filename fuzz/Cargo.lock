@@ -140,6 +140,7 @@ dependencies = [
  "asterius-jose",
  "asterius-oidc",
  "asterius-server",
+ "asterius-ssf",
  "asterius-web",
  "asterius-webauthn",
  "axum",
@@ -229,6 +230,20 @@ dependencies = [
  "url",
  "uuid",
  "webpki-roots 1.0.9",
+]
+
+[[package]]
+name = "asterius-ssf"
+version = "0.0.0"
+dependencies = [
+ "asterius-domain",
+ "base64",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
+ "url",
 ]
 
 [[package]]
