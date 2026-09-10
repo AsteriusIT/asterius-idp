@@ -155,7 +155,7 @@ pub trait ThemeRepository: Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// A storage failure. A digest nothing stored is [`Ok(None)`], because a
+    /// A storage failure. A digest nothing stored is `Ok(None)`, because a
     /// theme naming an asset that is gone is a page without a logo, not an
     /// error.
     async fn asset(

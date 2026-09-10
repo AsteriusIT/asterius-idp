@@ -10,7 +10,7 @@
 //! | §4.1.7 `exp` MUST NOT be used | same |
 //! | §3.1 `sub_id` MUST be present | typestate: [`Set::about`] is the only entry point |
 //! | §4.2.1 one event | [`SetSubject::reporting`] takes one [`SecurityEvent`] and yields a type with no way to add another |
-//! | §4.1.6 `iss` matches the stream | [`Set::issue`] takes the tenant [`Issuer`] and writes it |
+//! | §4.1.6 `iss` matches the stream | [`ReadySet::issue`] takes the tenant [`Issuer`] and writes it |
 //! | §4.1.8 `aud` | [`StreamAudience`], validated at construction |
 //! | §4.1.9 `txn` | always emitted; [`Txn`] is shared by construction |
 //!

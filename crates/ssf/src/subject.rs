@@ -14,7 +14,7 @@
 //! nobody can act on.
 //!
 //! **Members are validated where they are built.** Every free-text member goes
-//! through [`member`], which refuses an empty or oversized value, so a subject
+//! through `member`, which refuses an empty or oversized value, so a subject
 //! identifier that exists is one whose members are all present and bounded.
 //! An empty `id` in an `opaque` identifier is a subject that identifies
 //! everybody.

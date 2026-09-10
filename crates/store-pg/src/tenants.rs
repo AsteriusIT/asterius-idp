@@ -183,7 +183,7 @@ impl TenantRepository for PgTenantRepository {
     /// The lock makes the second writer wait for the first to commit, so it
     /// sees the row and updates it. Per tenant, so tenants do not queue behind
     /// each other, and in the same two-key space as the key pass
-    /// ([`crate::key_store`]) and [`crate::retention`], with its own second
+    /// (`crate::key_store`) and `crate::retention`, with its own second
     /// key. It is held for the transaction and therefore released at commit,
     /// before the provisioning that [`crate::ProvisionedTenants`] runs next
     /// takes the key-rotation lock — the two are never held at once.

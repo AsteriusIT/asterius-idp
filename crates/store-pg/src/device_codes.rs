@@ -213,7 +213,7 @@ impl PgDeviceCodeRepository {
     /// # Errors
     ///
     /// [`DomainError::Storage`] if the store could not be reached. Never read
-    /// that as [`Poll::NotFound`]: an unavailable database is not permission to
+    /// that as `Ok(None)`: an unavailable database is not permission to
     /// refuse a legitimate device or to forget that one is polling too fast.
     pub async fn poll(
         &self,
