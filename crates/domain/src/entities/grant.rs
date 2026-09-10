@@ -48,6 +48,7 @@
 //! it means *nobody has taken a credential out of this yet*, which is exactly
 //! the condition under which the draft says to delete it.
 
+use crate::entities::session::AuthenticationMethod;
 use crate::{ClientId, GrantId, SessionId, SubjectId, TenantId, UserId};
 use std::collections::BTreeSet;
 use thiserror::Error;
@@ -294,6 +295,57 @@ pub enum GrantError {
     /// A `jti` that cannot be stored, matched or read back.
     #[error("a jti must be 1 to {} bytes of printable ASCII", Grant::MAX_JTI_LEN)]
     Jti,
+    /// A stored authentication is half-written: an `acr` or an `amr` with no
+    /// instant. OIDC Core §2 makes `auth_time` the fact the other two describe,
+    /// so a row without it cannot say when the authentication it names
+    /// happened — and a token minted from it would assert a context with no
+    /// time attached.
+    #[error("acr and amr may only be stored with the authenticated_at they describe")]
+    IncoherentAuthentication,
+}
+
+// ---------------------------------------------------------------------------
+// The authentication behind a grant
+// ---------------------------------------------------------------------------
+
+/// When and how the person authenticated, as the authorization recorded it.
+///
+/// The `auth_time`, `acr` and `amr` of OIDC Core §2, copied onto the grant at
+/// the moment the authorization completed — the one moment where the session
+/// they come from is certainly there.
+///
+/// **Why the grant holds a copy at all.** §11 defines `offline_access` as
+/// access "when the End-User is not present", so such a grant is meant to
+/// outlive the browser session it was made in; a sweep, a sign-out or a
+/// retention policy takes that row away. Read the three from the session and
+/// from nowhere else, and the server has no honest `auth_time` left to assert
+/// and must refuse to refresh — which makes `offline_access` mean the opposite
+/// of what §11 says (`ast-dlk`, the residue `ast-uwv.3` named).
+///
+/// **Why it is one value and not three fields.** They are one fact. An `acr`
+/// without the instant it was reached at is an authentication context nobody
+/// can place in time, and a reader would have to decide for itself whether to
+/// assert it. `Option<GrantAuthentication>` has no such state: either the
+/// authorization recorded an authentication or it did not.
+///
+/// **Why a snapshot rather than the live session.** OIDC Core §2 defines
+/// `auth_time` as the time "when the End-User authentication occurred" — the
+/// authentication that produced *this* grant. A later step-up (`ast-2vk.7`)
+/// rotates the session onto a stronger `acr` and a newer instant, and while
+/// that session exists it is the live answer, because the person really did
+/// authenticate again. This copy is not rewritten by it: it is what the
+/// fallback has left to say once the session is gone, and moving it would make
+/// the fallback report an authentication that happened after the authorization
+/// it describes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantAuthentication {
+    /// OIDC Core §2's `auth_time`: when the person authenticated.
+    pub authenticated_at: OffsetDateTime,
+    /// The authentication context class the sign-in reached, if the tenant's
+    /// ladder has a rung for it.
+    pub acr: Option<String>,
+    /// How they authenticated, in the order it happened (RFC 8176).
+    pub amr: Vec<AuthenticationMethod>,
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +412,16 @@ pub struct Grant {
     pub parent: Option<GrantId>,
     /// The browser session the authorization happened in, when there was one.
     pub session: Option<SessionId>,
+    /// When and how the person authenticated, as [`session`](Self::session)
+    /// reported it at the moment the authorization completed.
+    ///
+    /// `None` for a grant with no resource owner — a `client_credentials`
+    /// grant authenticates a client, not a person, and RFC 9068 §2.2's answer
+    /// to "who is this about" is the `client_id`.
+    ///
+    /// See [`GrantAuthentication`] for why the grant keeps a copy of something
+    /// the session already holds.
+    pub authentication: Option<GrantAuthentication>,
     /// When the authorization completed.
     pub created_at: OffsetDateTime,
     /// When the row last changed. Grant Management ID1 §6.4's
@@ -457,6 +519,7 @@ impl Grant {
             actor_chain: Vec::new(),
             parent: None,
             session: None,
+            authentication: None,
             created_at,
             updated_at: created_at,
             expires_at: None,
@@ -660,6 +723,12 @@ pub struct GrantRecord {
     pub parent: Option<GrantId>,
     /// `session_id`.
     pub session: Option<String>,
+    /// `authenticated_at`.
+    pub authenticated_at: Option<OffsetDateTime>,
+    /// `acr`.
+    pub acr: Option<String>,
+    /// `amr`, as the RFC 8176 spellings the column holds.
+    pub amr: Vec<String>,
     /// `created_at`.
     pub created_at: OffsetDateTime,
     /// `updated_at`.
@@ -700,6 +769,29 @@ impl GrantRecord {
             return Err(GrantError::ExpiryPrecedesCreation);
         }
 
+        // The authentication next, for the same reason: `acr` and `amr`
+        // describe an instant, and a row that names the one without the other
+        // cannot be read as either "no authentication" or "this one".
+        let authentication = match self.authenticated_at {
+            Some(authenticated_at) => Some(GrantAuthentication {
+                authenticated_at,
+                acr: self.acr,
+                // An unrecognised `amr` is dropped rather than failing the
+                // load, exactly as `PgSessionRepository` does for the session
+                // it was copied from: the label was written by some version of
+                // this server, and refusing the row would break a refresh
+                // during a rolling deployment. The two must agree, or the same
+                // grant would be readable through one path and not the other.
+                amr: self
+                    .amr
+                    .iter()
+                    .filter_map(|value| AuthenticationMethod::parse(value))
+                    .collect(),
+            }),
+            None if self.acr.is_none() && self.amr.is_empty() => None,
+            None => return Err(GrantError::IncoherentAuthentication),
+        };
+
         let scopes = validate_scopes(&self.scopes)?;
         let resources = validate_resources(&self.resources)?;
 
@@ -728,6 +820,7 @@ impl GrantRecord {
             actor_chain,
             parent: self.parent,
             session: self.session.map(SessionId::new),
+            authentication,
             created_at: self.created_at,
             updated_at: self.updated_at,
             expires_at: self.expires_at,
@@ -866,6 +959,9 @@ mod tests {
             actor_chain: json!([]),
             parent: None,
             session: None,
+            authenticated_at: None,
+            acr: None,
+            amr: Vec::new(),
             created_at: epoch(),
             updated_at: epoch(),
             expires_at: None,
@@ -1292,5 +1388,80 @@ mod tests {
         let token = LiveAccessToken::new("aBc-123_x.y~z", epoch()).expect("a base64url jti");
         assert_eq!(token.jti(), "aBc-123_x.y~z");
         assert_eq!(token.expires_at(), epoch());
+    }
+
+    // --- the authentication the grant carries (`ast-dlk`) -------------------
+
+    /// The three columns are one fact, and they come back as one value: an
+    /// `offline_access` grant is meant to outlive its session (OIDC Core §11),
+    /// so this copy is the only `auth_time` left once the row is purged.
+    #[test]
+    fn a_stored_authentication_becomes_one_value() {
+        let mut record = a_record();
+        record.authenticated_at = Some(epoch());
+        record.acr = Some("urn:asterius:acr:passkey-uv".to_owned());
+        record.amr = vec!["swk".to_owned()];
+
+        let grant = record
+            .validate(&TenantId::new("demo"))
+            .expect("a whole authentication");
+
+        assert_eq!(
+            grant.authentication,
+            Some(GrantAuthentication {
+                authenticated_at: epoch(),
+                acr: Some("urn:asterius:acr:passkey-uv".to_owned()),
+                amr: vec![AuthenticationMethod::Passkey],
+            })
+        );
+    }
+
+    /// A `client_credentials` grant (RFC 6749 §4.4) authenticates a client and
+    /// not a person, so there is no authentication to record — and `None` is
+    /// what the fallback reads as "this grant never had one".
+    #[test]
+    fn a_grant_with_no_authentication_carries_none() {
+        let record = a_record();
+
+        let grant = record
+            .validate(&TenantId::new("demo"))
+            .expect("a grant with no authentication");
+
+        assert_eq!(grant.authentication, None);
+    }
+
+    /// An `acr` with no instant is a half-written authentication. OIDC Core §2
+    /// makes `auth_time` the fact the context describes, so a token minted
+    /// from such a row would assert a context with no time attached.
+    #[test]
+    fn an_acr_without_an_instant_is_refused() {
+        let mut record = a_record();
+        record.acr = Some("urn:asterius:acr:passkey-uv".to_owned());
+
+        let error = record
+            .validate(&TenantId::new("demo"))
+            .expect_err("a half-written authentication");
+
+        assert!(matches!(error, GrantError::IncoherentAuthentication));
+    }
+
+    /// An unrecognised `amr` label is dropped rather than failing the load,
+    /// because `PgSessionRepository` does the same for the session this was
+    /// copied from — and a refresh that failed on a label a newer version of
+    /// this server wrote would break during a rolling deployment.
+    #[test]
+    fn an_unknown_amr_label_is_dropped_rather_than_refused() {
+        let mut record = a_record();
+        record.authenticated_at = Some(epoch());
+        record.amr = vec!["pwd".to_owned(), "a-method-from-the-future".to_owned()];
+
+        let grant = record
+            .validate(&TenantId::new("demo"))
+            .expect("an unfamiliar label does not fail the row");
+
+        assert_eq!(
+            grant.authentication.expect("an authentication").amr,
+            vec![AuthenticationMethod::Password]
+        );
     }
 }

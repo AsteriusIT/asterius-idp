@@ -56,8 +56,8 @@ use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::tenant_settings::SettingsDirectory;
 use asterius_store_pg::{
-    PgAuditSink, PgPasskeyRepository, PgReplayGuard, PgTenantRepository, PgTenantSettings,
-    PgUserRepository, Redemption, Store, TenantKeyStore,
+    PgAuditSink, PgPasskeyRepository, PgReplayGuard, PgSessionRepository, PgTenantRepository,
+    PgTenantSettings, PgUserRepository, Redemption, Store, TenantKeyStore,
 };
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
@@ -2987,6 +2987,117 @@ async fn a_push_naming_dpop_jkt_without_a_proof_pins_the_code_too() {
         issued.text()
     );
     assert_eq!(issued.json()["token_type"], "DPoP", "{}", issued.text());
+
+    flow.tear_down().await;
+}
+
+/// **OIDC Core §11**: an `offline_access` grant outlives the session it was
+/// made in — including the retention sweep that deletes the row (`ast-dlk`).
+///
+/// §11 defines `offline_access` as access "when the End-User is not present",
+/// and the browser session is exactly the thing that records presence. So a
+/// sweep, a sign-out or a retention policy removing that row must not turn a
+/// refresh token into a credential the server refuses: the authorization is
+/// still there, and the client is not asking about the browser.
+///
+/// What made that impossible before this test is that `auth_time`, `acr` and
+/// `amr` were read from the session and from nowhere else, so a vanished
+/// session left the server with no honest `auth_time` to assert and it refused
+/// — the failure `ast-uwv.3` deliberately left behind. The fix copies the three
+/// onto the grant at its creation, and this asserts the values, not merely the
+/// status: an ID token minted after the purge that reported *this request's*
+/// instant, or another session's, would satisfy a status assertion and lie
+/// about when the person authenticated.
+///
+/// The purge is `PgSessionRepository::purge_expired`, which is the retention
+/// sweep itself rather than a hand-written `delete` — a test that removed the
+/// row its own way could pass against a sweep that does something else.
+#[tokio::test]
+async fn an_offline_access_grant_outlives_the_purge_of_its_session() {
+    // Arrange: one full flow, so the refresh token and the ID token that names
+    // the authentication both come from the real chain.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let redemption_key = ProofKey::generate();
+    let request_uri = flow.push(&redemption_key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+    let redeemed = flow
+        .token(
+            &redemption_key,
+            "assertion-code",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        redeemed.text()
+    );
+    let tokens = redeemed.json();
+    let refresh_token = tokens["refresh_token"]
+        .as_str()
+        .expect("an offline_access grant earns a refresh token")
+        .to_owned();
+    let first = claims_of(tokens["id_token"].as_str().expect("an ID token"));
+
+    // Act: the retention sweep takes every session of this tenant. A deadline
+    // far in the future means "everything", which is what a purge after a long
+    // enough silence does to a grant that is still perfectly live.
+    let purged = PgSessionRepository::new(flow.store.pool().clone(), flow.tenant.id.clone())
+        .purge_expired(OffsetDateTime::now_utc() + time::Duration::days(3650))
+        .await
+        .expect("purge the sessions");
+    assert!(purged >= 1, "the flow left no session to purge");
+
+    // Act: the client refreshes, as it may — it never held the session.
+    let refresh_key = ProofKey::generate();
+    let refreshed = flow
+        .token(
+            &refresh_key,
+            "assertion-refresh",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &refresh_token),
+            ],
+        )
+        .await;
+
+    // Assert: RFC 6749 §5.1 — a new access token, not a refusal.
+    assert_eq!(
+        refreshed.status,
+        StatusCode::OK,
+        "the refresh was refused after the session was purged: {}",
+        refreshed.text()
+    );
+    let body = refreshed.json();
+    assert!(body["access_token"].is_string(), "no access token: {body}");
+
+    // Assert: and the ID token OIDC Core §12.2 allows still says when and how
+    // the person authenticated — the original values, from the grant.
+    let again = claims_of(body["id_token"].as_str().expect("an ID token"));
+    assert_eq!(again["sub"], first["sub"], "the subject changed: {again}");
+    assert_eq!(
+        again["auth_time"], first["auth_time"],
+        "auth_time is not the one the authentication happened at: {again}"
+    );
+    assert_eq!(
+        again["acr"], first["acr"],
+        "acr is not the one the authentication reached: {again}"
+    );
+    assert_eq!(
+        again["amr"], first["amr"],
+        "amr is not the one the authentication used: {again}"
+    );
 
     flow.tear_down().await;
 }

@@ -42,7 +42,7 @@ pub use entities::{
     AcrLevel, AcrPolicy, AcrPolicyError, AdminAdmission, ApplicationType, AuthorizationDetail,
     AuthorizationDetails, AuthorizationDetailsRegistry, AuthorizationDetailsType, Claim,
     ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client, ClientMetadata,
-    ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantError, GrantRecord,
+    ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantAuthentication, GrantError, GrantRecord,
     GrantStatus, GrantType, InvalidAuthorizationDetails, InvalidTarget, JsonSchema,
     JsonSchemaError, JwksSource, LiveAccessToken, PairwiseSalt, PasskeyEnrolment, RedirectUri,
     RedirectUriError, RefreshPolicy, RefreshPolicyError, ResourceIdentifier, ResourceRegistry,

@@ -267,6 +267,13 @@ impl Fixture {
             actor_chain: Vec::new(),
             parent: None,
             session: Some(asterius_domain::SessionId::new(session.id_digest.clone())),
+            // What the authorization copied off the session (`ast-dlk`), which
+            // is what a refresh reads once the session row is gone.
+            authentication: Some(asterius_domain::GrantAuthentication {
+                authenticated_at: session.authenticated_at,
+                acr: session.acr.clone(),
+                amr: session.amr.clone(),
+            }),
             created_at: self.now,
             updated_at: self.now,
             expires_at: None,

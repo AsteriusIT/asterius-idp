@@ -4587,8 +4587,8 @@ mod interactions {
 mod grants {
     use super::*;
     use asterius_domain::{
-        DomainError, Grant, GrantId, GrantStatus, LiveAccessToken, RevocationReason, SessionId,
-        SubjectId,
+        AuthenticationMethod, ClientId, DomainError, Grant, GrantAuthentication, GrantId,
+        GrantStatus, LiveAccessToken, RevocationReason, SessionId, SubjectId,
     };
     use asterius_store_pg::PgGrantRepository;
 
@@ -4626,6 +4626,18 @@ mod grants {
         grant.claims_locales = vec!["ja-Kana-JP".to_owned(), "en".to_owned()];
         grant.authorization_details = vec![json!({"type": "payment_initiation"})];
         grant.session = Some(SessionId::new("sess-1"));
+        // OIDC Core §2's three, copied off the session at the authorization
+        // (`ast-dlk`). They are what a refresh reads once that session row is
+        // gone, so a round trip that lost or reordered them would be a grant
+        // that could no longer say when its person authenticated.
+        grant.authentication = Some(GrantAuthentication {
+            authenticated_at: epoch(),
+            acr: Some("urn:asterius:acr:passkey-uv".to_owned()),
+            amr: vec![
+                AuthenticationMethod::Password,
+                AuthenticationMethod::Passkey,
+            ],
+        });
         grant
     }
 
@@ -4763,6 +4775,41 @@ mod grants {
                 matches!(repo.create(&stored).await, Err(DomainError::Conflict(_))),
                 "a grant id was reused as an upsert key"
             );
+        }
+    }
+
+    db_test! {
+        /// A grant with no person behind it stores no authentication, and the
+        /// fallback has nothing to read (`ast-dlk`, `ast-a05.8`).
+        ///
+        /// RFC 6749 §4.4 is a client acting for itself: no session, no
+        /// `auth_time`, no `acr` and no `amr`. The three columns are null, and
+        /// they come back as `None` rather than as an empty authentication —
+        /// which is what stops `issuance::session_facts` from asserting a
+        /// sign-in nobody performed.
+        async fn a_client_only_grant_stores_no_authentication(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let mut grant = Grant::new(TenantId::new("demo"), ClientId::new("billing"), epoch());
+            grant.scopes = ["payments"].into_iter().map(str::to_owned).collect();
+            grant.claimed_at = Some(epoch());
+            repo.create(&grant).await.expect("create");
+
+            let found = repo.find(&grant.id).await.expect("find").expect("present");
+            assert_eq!(found.authentication, None);
+
+            let columns: (Option<OffsetDateTime>, Option<String>, Vec<String>) = sqlx::query_as(
+                "select authenticated_at, acr, amr from grants
+                 where tenant_id = $1 and grant_id = $2::uuid"
+            )
+            .bind("demo")
+            .bind(grant.id.as_str())
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row");
+            assert_eq!(columns.0, None, "authenticated_at was written");
+            assert_eq!(columns.1, None, "acr was written");
+            assert!(columns.2.is_empty(), "amr was written: {:?}", columns.2);
         }
     }
 

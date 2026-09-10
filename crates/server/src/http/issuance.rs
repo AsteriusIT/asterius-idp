@@ -12,16 +12,19 @@
 //! statement:
 //!
 //! * `auth_time`, `acr` and `amr` are read from the session the *grant* was
-//!   made in, never invented. A refresh happening six weeks later still says
-//!   when the person actually authenticated, because a relying party uses that
-//!   for step-up decisions.
+//!   made in — or, once that row is gone, from the copy the grant took of it
+//!   (`ast-dlk`) — and never invented. A refresh happening six weeks later
+//!   still says when the person actually authenticated, because a relying
+//!   party uses that for step-up decisions.
 //! * `sid` is the session's `public_sid` and never its lookup digest, which is
-//!   rewritten on every rotation (`ast-o4u.5`).
+//!   rewritten on every rotation (`ast-o4u.5`), and it is omitted rather than
+//!   guessed at when there is no session left to name.
 //! * The claims in an ID token come from the grant and the user row, never
 //!   from the request that asked for them.
-//! * A missing session or a missing user is a server-side inconsistency and is
-//!   reported as one, rather than papered over with a token that asserts less
-//!   than it should about somebody this server can no longer describe.
+//! * A missing user — or a missing session with no recorded authentication to
+//!   fall back on — is a server-side inconsistency and is reported as one,
+//!   rather than papered over with a token that asserts less than it should
+//!   about somebody this server can no longer describe.
 
 use asterius_domain::keys::Signer;
 use asterius_domain::ports::SessionRepository;
@@ -39,51 +42,90 @@ use asterius_store_pg::PgUserRepository;
 pub struct SessionFacts {
     /// `auth_time`, `acr` and `amr`.
     pub authentication: Authentication,
-    /// The session's public identifier, never its lookup digest.
-    pub sid: String,
+    /// The session's public identifier, never its lookup digest — and `None`
+    /// when there is no session left to name and the facts came from the
+    /// grant's own copy of them.
+    pub sid: Option<String>,
 }
 
-/// `auth_time`, `acr` and `amr`, from the session the grant was made in.
+/// `auth_time`, `acr` and `amr` — from the session while it exists, and from
+/// the grant's own copy once it does not.
 ///
-/// Not optional, and not defaulted. OIDC Core §2 makes `auth_time` a statement
-/// about when the user actually authenticated; inventing one from the grant's
-/// own timestamps would produce a claim a relying party uses for step-up
-/// decisions and that this server cannot stand behind. A grant whose session
-/// has gone is a server-side inconsistency, so it is reported as one rather
-/// than papered over.
+/// Never defaulted and never invented. OIDC Core §2 makes `auth_time` a
+/// statement about when the user actually authenticated, and a claim a relying
+/// party makes step-up decisions on is not something to guess at from the
+/// grant's timestamps.
+///
+/// **Two sources, in this order, and the order is the decision.** The session
+/// wins while it is there: a step-up (`ast-2vk.7`) rotates it onto a stronger
+/// `acr`, a fuller `amr` and a newer instant, and the person really did
+/// authenticate again, so reporting the older snapshot would understate what
+/// this token is worth. The grant's copy is the fallback, because §11 defines
+/// `offline_access` as access "when the End-User is not present" and the
+/// session row is exactly what a sign-out, a sweep or a retention policy takes
+/// away (`ast-dlk`). That copy is *not* moved by a step-up — see
+/// [`GrantAuthentication`](asterius_domain::GrantAuthentication): it records
+/// the authentication that produced this grant, and a fallback reporting one
+/// that happened afterwards would put an `auth_time` on a token that the
+/// authorization it names never had.
+///
+/// [`SessionFacts::sid`] is `None` in the second case, and that is the signal a
+/// caller reads to tell the two apart: a grant that is not entitled to outlive
+/// its session must be refused rather than refreshed.
 ///
 /// # Errors
 ///
-/// [`DomainError::Invalid`] when the grant names no session or the session is
-/// gone, and a storage error when the session store could not be read.
+/// [`DomainError::Invalid`] when the session is gone and the grant records no
+/// authentication of its own — a user-facing grant written before `ast-dlk`,
+/// or a client-only one that never had a person behind it — and a storage
+/// error when the session store could not be read.
 pub async fn session_facts(
     sessions: &dyn SessionRepository,
     grant: &Grant,
 ) -> Result<SessionFacts, DomainError> {
-    let digest = grant
-        .session
-        .as_ref()
-        .ok_or_else(|| DomainError::invalid("grant", "a user-facing grant names no session"))?;
-    let session = sessions.find(digest.as_str()).await?.ok_or_else(|| {
+    let session = match grant.session.as_ref() {
+        Some(digest) => sessions.find(digest.as_str()).await?,
+        None => None,
+    };
+
+    if let Some(session) = session {
+        return Ok(SessionFacts {
+            authentication: Authentication {
+                authenticated_at: session.authenticated_at,
+                acr: session.acr.clone(),
+                amr: session
+                    .amr
+                    .iter()
+                    .map(|method| method.as_str().to_owned())
+                    .collect(),
+            },
+            // Not `id_digest`: that is the lookup key and it is rewritten on
+            // every rotation. See `Session::public_sid` (`ast-o4u.5`).
+            sid: Some(session.public_sid.clone()),
+        });
+    }
+
+    let recorded = grant.authentication.as_ref().ok_or_else(|| {
         DomainError::invalid(
             "session",
-            "the session this grant was made in no longer exists",
+            "the session this grant was made in is gone and the grant records no authentication",
         )
     })?;
-
     Ok(SessionFacts {
         authentication: Authentication {
-            authenticated_at: session.authenticated_at,
-            acr: session.acr.clone(),
-            amr: session
+            authenticated_at: recorded.authenticated_at,
+            acr: recorded.acr.clone(),
+            amr: recorded
                 .amr
                 .iter()
                 .map(|method| method.as_str().to_owned())
                 .collect(),
         },
-        // Not `id_digest`: that is the lookup key and it is rewritten on every
-        // rotation. See `Session::public_sid` (`ast-o4u.5`).
-        sid: session.public_sid.clone(),
+        // OIDC Back-Channel Logout 1.0 §2.4 has `sid` name a session a relying
+        // party can be told about later. There is none left to name, and the
+        // digest of a deleted row would name nothing — so the claim is omitted
+        // rather than filled with a value no logout could ever match.
+        sid: None,
     })
 }
 
@@ -95,8 +137,9 @@ pub async fn session_facts(
 /// carry.
 ///
 /// A grant with no user, or whose user is gone, is a server-side inconsistency
-/// and is reported as one, the same treatment [`session_facts`] gives a
-/// vanished session. Releasing nothing instead would mint an authentication
+/// and is reported as one, the same treatment [`session_facts`] gives a grant
+/// it can say nothing about. Releasing nothing instead would mint an
+/// authentication
 /// assertion about somebody this server can no longer describe.
 ///
 /// # Errors
@@ -297,12 +340,17 @@ pub async fn sign_id_token(
     if let Some(nonce) = nonce {
         builder = builder.with_nonce(nonce);
     }
-    builder = builder.for_session(
-        asterius_oidc::tokens::id_token::Session::new(&asterius_domain::SessionId::new(
-            session.sid.clone(),
-        ))
-        .map_err(|e| DomainError::invalid("sid", e.to_string()))?,
-    );
+    // OIDC Back-Channel Logout 1.0 §2.4: `sid` names a session a relying party
+    // can be told about when it ends. A grant whose session is already gone has
+    // none to name — §2.4 makes the claim OPTIONAL in an ID token, and omitting
+    // it is the only honest answer; a value here would name a row that no
+    // logout notification could ever match.
+    if let Some(sid) = session.sid.as_deref() {
+        builder = builder.for_session(
+            asterius_oidc::tokens::id_token::Session::new(&asterius_domain::SessionId::new(sid))
+                .map_err(|e| DomainError::invalid("sid", e.to_string()))?,
+        );
+    }
     // `releasing` takes a plain map, so `IdToken::build` re-checks it against
     // `ClaimName::SERVER_ISSUED` rather than trusting that it came from
     // `claims::resolve`.
@@ -320,4 +368,216 @@ pub async fn sign_id_token(
         )
         .await?;
     Ok(token.as_str().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use asterius_domain::entities::session::AuthenticationMethod;
+    use asterius_domain::{
+        ClientId, GrantAuthentication, Participant, Session, SessionId, SessionRevocation, TenantId,
+    };
+    use time::{Duration, OffsetDateTime};
+
+    const DIGEST: &str = "the-lookup-digest-of-a-session";
+
+    fn epoch() -> OffsetDateTime {
+        OffsetDateTime::UNIX_EPOCH
+    }
+
+    /// One session, or none — which is the whole question [`session_facts`]
+    /// asks the store.
+    #[derive(Debug, Default)]
+    struct FakeSessions {
+        session: Option<Session>,
+    }
+
+    impl FakeSessions {
+        /// A session as a step-up left it: a later instant, a stronger `acr`
+        /// and one more method than the authorization recorded.
+        fn stepped_up() -> Self {
+            Self {
+                session: Some(Session {
+                    tenant: TenantId::new("demo"),
+                    id_digest: DIGEST.to_owned(),
+                    public_sid: "the-public-sid".to_owned(),
+                    user: uuid::Uuid::from_u128(1),
+                    created_at: epoch(),
+                    authenticated_at: epoch() + Duration::hours(2),
+                    last_seen_at: epoch() + Duration::hours(2),
+                    expires_at: epoch() + Duration::hours(8),
+                    idle_expires_at: epoch() + Duration::hours(3),
+                    acr: Some("urn:asterius:acr:passkey-uv".to_owned()),
+                    amr: vec![
+                        AuthenticationMethod::Password,
+                        AuthenticationMethod::Passkey,
+                    ],
+                    revoked: None,
+                }),
+            }
+        }
+
+        /// What a sweep, a sign-out or a retention policy leaves behind.
+        fn purged() -> Self {
+            Self::default()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionRepository for FakeSessions {
+        async fn find(&self, id_digest: &str) -> Result<Option<Session>, DomainError> {
+            Ok(self
+                .session
+                .clone()
+                .filter(|session| session.id_digest == id_digest))
+        }
+
+        async fn begin(&self, _session: &Session) -> Result<(), DomainError> {
+            unimplemented!("not reached by session_facts")
+        }
+        async fn touch(
+            &self,
+            _id_digest: &str,
+            _now: OffsetDateTime,
+            _idle: Duration,
+        ) -> Result<(), DomainError> {
+            unimplemented!("not reached by session_facts")
+        }
+        async fn rotate(
+            &self,
+            _old_digest: &str,
+            _new_digest: &str,
+            _methods: &[AuthenticationMethod],
+            _acr: Option<&str>,
+            _now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            unimplemented!("not reached by session_facts")
+        }
+        async fn revoke(
+            &self,
+            _id_digest: &str,
+            _reason: SessionRevocation,
+            _now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            unimplemented!("not reached by session_facts")
+        }
+        async fn revoke_all_for_user(
+            &self,
+            _user: uuid::Uuid,
+            _reason: SessionRevocation,
+            _now: OffsetDateTime,
+        ) -> Result<u64, DomainError> {
+            unimplemented!("not reached by session_facts")
+        }
+        async fn record_participant(
+            &self,
+            _id_digest: &str,
+            _client: &ClientId,
+            _now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            unimplemented!("not reached by session_facts")
+        }
+        async fn participants(&self, _id_digest: &str) -> Result<Vec<Participant>, DomainError> {
+            unimplemented!("not reached by session_facts")
+        }
+    }
+
+    /// A grant made in that session, carrying the copy the authorization took.
+    fn a_user_grant() -> Grant {
+        let mut grant = Grant::new(TenantId::new("demo"), ClientId::new("billing"), epoch());
+        grant.scopes = ["openid".to_owned(), "offline_access".to_owned()]
+            .into_iter()
+            .collect();
+        grant.session = Some(SessionId::new(DIGEST));
+        grant.authentication = Some(GrantAuthentication {
+            authenticated_at: epoch(),
+            acr: Some("urn:asterius:acr:password".to_owned()),
+            amr: vec![AuthenticationMethod::Password],
+        });
+        grant
+    }
+
+    /// **The session wins while it is there** — including after a step-up
+    /// (`ast-2vk.7`) that moved it past the copy the grant holds.
+    ///
+    /// OIDC Core §2's `auth_time` is when the End-User authentication
+    /// occurred, and after a step-up the person really did authenticate again:
+    /// a token reporting the older snapshot would understate the context a
+    /// relying party is being asked to trust.
+    #[tokio::test]
+    async fn a_live_session_is_the_answer_even_when_a_step_up_moved_it() {
+        let sessions = FakeSessions::stepped_up();
+        let grant = a_user_grant();
+
+        let facts = session_facts(&sessions, &grant)
+            .await
+            .expect("a live session answers");
+
+        assert_eq!(
+            facts.authentication.authenticated_at,
+            epoch() + Duration::hours(2),
+            "the grant's older snapshot was reported over the live session"
+        );
+        assert_eq!(
+            facts.authentication.acr.as_deref(),
+            Some("urn:asterius:acr:passkey-uv")
+        );
+        assert_eq!(facts.authentication.amr, vec!["pwd", "swk"]);
+        assert_eq!(facts.sid.as_deref(), Some("the-public-sid"));
+    }
+
+    /// **A purged session falls back to the grant's own copy** (`ast-dlk`).
+    ///
+    /// OIDC Core §11 makes `offline_access` access "when the End-User is not
+    /// present", so the row that records presence is exactly the one that may
+    /// be gone. What comes back is the authentication that produced *this*
+    /// grant — not the step-up above, which this grant never had — and no
+    /// `sid`, because there is no session left for a logout to name.
+    #[tokio::test]
+    async fn a_purged_session_falls_back_to_the_grants_own_copy() {
+        let sessions = FakeSessions::purged();
+        let grant = a_user_grant();
+
+        let facts = session_facts(&sessions, &grant)
+            .await
+            .expect("the grant's copy answers");
+
+        assert_eq!(facts.authentication.authenticated_at, epoch());
+        assert_eq!(
+            facts.authentication.acr.as_deref(),
+            Some("urn:asterius:acr:password")
+        );
+        assert_eq!(facts.authentication.amr, vec!["pwd"]);
+        assert_eq!(
+            facts.sid, None,
+            "a session that no longer exists was still named in a sid"
+        );
+    }
+
+    /// **A client-only grant has nothing to fall back on** (`ast-a05.8`).
+    ///
+    /// RFC 6749 §4.4 is a client acting for itself: no session, no person, and
+    /// so no `auth_time` — the three columns are null. The fallback must not
+    /// invent one, and the refusal is what stops a token that asserts an
+    /// authentication nobody performed.
+    #[tokio::test]
+    async fn a_client_only_grant_has_no_authentication_to_fall_back_on() {
+        let sessions = FakeSessions::purged();
+        let grant = Grant::new(TenantId::new("demo"), ClientId::new("billing"), epoch());
+
+        let error = session_facts(&sessions, &grant)
+            .await
+            .expect_err("nothing to report");
+
+        assert!(
+            matches!(
+                error,
+                DomainError::Invalid {
+                    field: "session",
+                    ..
+                }
+            ),
+            "unexpected error: {error}"
+        );
+    }
 }

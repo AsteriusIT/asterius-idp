@@ -24,6 +24,11 @@
 //!   is `revoked -> active`, the transition that must not exist.
 //! * **A claim is possible exactly when the status says so.** No third answer,
 //!   at any timestamp.
+//! * **An authentication is whole or absent.** `acr` and `amr` describe an
+//!   `authenticated_at` (OIDC Core §2), and a row holding one without the
+//!   other is refused rather than read as either — an accepted row therefore
+//!   carries an `auth_time` for every context it names, which is what a refresh
+//!   asserts once the session is gone (`ast-dlk`).
 //! * **An accepted `jti` can be stored.** It becomes half of a primary key in a
 //!   `text` column; a byte PostgreSQL refuses would abort the transaction
 //!   carrying a revocation, which is a revocation that silently did not happen.
@@ -66,6 +71,12 @@ const TOKENS: [&str; 12] = [
     "https://api.example/v1?x=1",
 ];
 
+/// `amr` candidates (RFC 8176), the registry values this server writes mixed
+/// with labels it does not know. An unfamiliar one is dropped rather than
+/// refused — a session row does the same — so what must hold is that dropping
+/// it never turns a refused row into an accepted one.
+const METHODS: [&str; 6] = ["pwd", "swk", "otp", "sess", "", "mfa"];
+
 /// Language tag candidates for `claims_locales` (OIDC Core §5.2), the refused
 /// spellings mixed in with the accepted ones. A tag is not free text: it is
 /// read back on every issuance and used to choose between the stored spellings
@@ -93,6 +104,9 @@ struct Input {
     authorization_details: u8,
     actor_chain: u8,
     reason: Option<String>,
+    authenticated_after: Option<i32>,
+    acr: Option<String>,
+    amr_picks: Vec<u8>,
     revoked: bool,
     expires_after: Option<i32>,
     claimed_after: Option<i32>,
@@ -142,6 +156,9 @@ fuzz_target!(|input: Input| {
             .parented
             .then(|| GrantId::new("2c1d4b1e-0000-4000-8000-000000000002")),
         session: None,
+        authenticated_at: input.authenticated_after.map(instant),
+        acr: input.acr.clone(),
+        amr: picked(&input.amr_picks, "", &METHODS),
         created_at,
         updated_at: created_at,
         expires_at: input.expires_after.map(instant),
@@ -149,6 +166,17 @@ fuzz_target!(|input: Input| {
         revoked_at: input.revoked.then_some(created_at),
         revocation_reason: input.reason.clone(),
     };
+
+    // OIDC Core §2: an accepted row never names a context without the instant
+    // it was reached at, so nothing downstream has to decide what to do with
+    // an `acr` it cannot place in time.
+    if let Ok(grant) = record.clone().validate(&tenant) {
+        assert_eq!(
+            grant.authentication.is_some(),
+            record.authenticated_at.is_some(),
+            "an authentication appeared or vanished on the way out of the row"
+        );
+    }
 
     // Validation is a pure function of the row: the read path is taken by
     // several callers and they cannot be allowed to disagree.

@@ -28,7 +28,8 @@ pub use client::{
     TokenEndpointAuthMethod,
 };
 pub use grant::{
-    ClaimedGrant, Grant, GrantError, GrantRecord, GrantStatus, LiveAccessToken, RevocationReason,
+    ClaimedGrant, Grant, GrantAuthentication, GrantError, GrantRecord, GrantStatus,
+    LiveAccessToken, RevocationReason,
 };
 pub use resource_server::{InvalidTarget, ResourceIdentifier, ResourceRegistry, ResourceServer};
 pub use role::{Role, RoleScope, UserRole};
