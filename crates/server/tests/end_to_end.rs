@@ -2895,7 +2895,7 @@ async fn second_code(flow: &mut Flow, request_uri: &str) -> String {
     parameter(&answered.location(), "code").expect("RFC 6749 §4.1.2 requires a code")
 }
 
-/// **RFC 9449 §10.2**: a `DPoP` header on the push pins the code to that key,
+/// **RFC 9449 §10.1**: a `DPoP` header on the push pins the code to that key,
 /// and no other key redeems it.
 ///
 /// This is `ast-36g`'s shape end to end, through the assembled application:
