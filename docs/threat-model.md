@@ -132,7 +132,7 @@ what stops it; this bead builds the control and its test.*
 | A2, A5 | G1 | Captures a DPoP proof in flight and replays it at the endpoint it was made for, inside its own validity window | Single use, enforced in one statement over shared storage: the `jti` is claimed through `ReplayGuard` with an `insert … on conflict do nothing`, namespaced by the key's RFC 7638 thumbprint, so two concurrent replays cannot both win and *n* replicas do not each accept one (RFC 9449 §11.1). The row is kept exactly as long as the proof's `iat` window, so the table is sized by traffic rather than by policy. An unavailable store is a refusal, never an acceptance | `ast-a05.6` |
 | A2, A5 | G1 | Replays a captured proof at a *different* endpoint — a token-endpoint proof presented at UserInfo, or one tenant's presented at another's | `htm` and `htu` are compared against values this server derives, not values the request carries: the method from the router and the URL from the tenant's issuer plus the endpoint's own path. Both sides go through one normaliser implementing exactly RFC 9110 §4.2.3 (scheme and host case, default port, empty path, unreserved percent-escapes) and nothing more; userinfo is refused outright per RFC 9110 §4.2.4. Widening that function is the only way this control fails, which is why the fuzz target asserts the authority is never rewritten | `ast-a05.6` |
 | A1 | G1, G4 | Pre-generates a year of DPoP proofs while holding the key — the "bank employee" case of RFC 9449 §11.2 — exfiltrates them, and uses them from a machine that has never held the private key | Server-issued nonces, when the `dpop_nonce` flag is on: the nonce is an HMAC over a server secret and a five-minute window, so a proof cannot be minted before the window it is used in exists. It is derived rather than stored, so requiring one costs no write on the authentication path; it is accepted for the current window and the one before it, so a client that fetches a nonce near a boundary retries once rather than looping. Without the flag, the `iat` window alone bounds pre-generation to five minutes | `ast-a05.6` |
-| A2, A5 | G1, G2 | Presents a stolen DPoP-bound access token at UserInfo under the `Bearer` scheme, or with a proof captured from an earlier call to the same endpoint, and reads a person's claims | The `cnf` decides which scheme is acceptable, not the request: a token carrying `cnf.jkt` is answered only under the `DPoP` scheme, only with a proof whose thumbprint equals that `jkt`, and only when the proof's `ath` hashes the token that actually arrived (RFC 9449 §4.3 item 12, §7.1). `Bearer` is refused outright because this deployment terminates TLS without requesting a client certificate, so there is no `x5t#S256` to compare — accepting it would turn a sender-constrained token into a bearer one | `ast-1sk.3`, `ast-a05.6` |
+| A2, A5 | G1, G2 | Presents a stolen DPoP-bound access token at UserInfo under the `Bearer` scheme, or with a proof captured from an earlier call to the same endpoint, and reads a person's claims | The `cnf` decides which scheme is acceptable, not the request: a token carrying `cnf.jkt` is answered only under the `DPoP` scheme, only with a proof whose thumbprint equals that `jkt`, and only when the proof's `ath` hashes the token that actually arrived (RFC 9449 §4.3 item 12, §7.1). A token carrying `cnf.x5t#S256` is the other case and is answered under `Bearer` only against the certificate the request arrived with (RFC 8705 §3, `ast-a05.7`); a token whose `cnf` names a key is never answered under `Bearer`, whatever certificate is on the connection, because that would turn a sender-constrained token into a bearer one | `ast-1sk.3`, `ast-a05.6`, `ast-a05.7` |
 | A2 | G1, G2 | Puts the access token in the UserInfo URL — `?access_token=…` — so that it lands in the browser history, the `Referer` of the next request and every access log on the way | Refused before the credential is parsed, let alone verified (FAPI 2.0 SP §5.3.4, RFC 6750 §3.1's "uses more than one method"). The query string is examined first and a request naming `access_token` is a 400 whatever its headers say, so the refusal cannot be arranged away by also sending a good header. The fuzz target asserts over arbitrary input that no query carrying the parameter ever yields a presentation, and the endpoint's test asserts that no row was read | `ast-1sk.3` |
 | A5 | G2 | Uses a still-valid access token after the grant behind it was withdrawn, or after consent was narrowed, and receives claims the person no longer agreed to release | UserInfo resolves claims through `claims::resolve_for_grant` and nothing else: the scopes, the `claims` request and the locales all come from the grant row, so "output ⊆ consented" is a property of the call rather than of the handler's discipline. The grant is re-read on every request and must be `Active`, the `jti` denylist is consulted (FAPI 2.0 SP §5.3.4 item 3), and `sub` is the grant's — pairwise as registered — rather than anything the token or the user row supplies. A token whose `sub` disagrees with its grant is refused rather than reconciled | `ast-1sk.3`, `ast-1sk.6` |
 | A3a | G1 | Redeems a stolen authorization code with a DPoP key of their own, so the token is sender-constrained to the attacker | `dpop_jkt` pins the key at the pushed authorization request and the thumbprint of the proof at the token endpoint must equal it (RFC 9449 §10, FAPI 2.0 SP §5.3.2.1 item 12). A code pinned to a key is not redeemable without a proof for that key — including with no proof at all. Both spellings RFC 9449 §10.1 requires are accepted, and a request that uses both and disagrees is refused rather than resolved | `ast-a05.6`, `ast-a05.2` |
@@ -309,6 +309,48 @@ published. Who that somebody is, is the whole of the risk.
 CRL and no OCSP — so a certificate a tenant's CA has revoked keeps
 authenticating until it expires. A deployment that needs revocation configures
 it at the proxy, which is where a fetch on the authentication path belongs.
+
+### Certificate-bound access tokens (RFC 8705 §3)
+
+`ast-a05.7` adds the **second sender-constraining mode**. Until it, every access
+token this server issued carried a `cnf.jkt` and was held by a DPoP key; a
+client registered with `tls_client_certificate_bound_access_tokens: true` and
+presenting a certificate now gets a token carrying `cnf.x5t#S256` instead, held
+by that certificate. Both are off unless `[features] mtls` is on: without the
+flag the member cannot be registered and the discovery document does not name
+it.
+
+Two properties bound the change.
+
+**A client registers exactly one method.** `TokenBinding` has two variants and
+no `Both`, so `dpop_bound_access_tokens: true` beside
+`tls_client_certificate_bound_access_tokens: true` is refused at registration,
+and a token request that presents a certificate *and* a DPoP proof is
+`invalid_request` rather than a token this server chose a binding for. The
+reason is that RFC 8705 §3.1 and RFC 9449 §6.1 each define their own `cnf`
+member and neither says what a resource server must do when both are present:
+a doubly-bound token would be as strong as the weaker reading of it, chosen by
+the verifier rather than stated by the issuer.
+
+**Binding is a property of the client, never of the request.** The one place
+the decision is made is `issuance::SenderConstraint::confirmation`, which reads
+the registration; all three grants mint through it, so a grant added later
+cannot arrive at a different reading, and neither the presence of a proof nor
+the presence of a certificate can change what a client's tokens are bound to.
+
+| Attacker | Goal | Attack it enables | Control | Bead |
+|---|---|---|---|---|
+| A2, A5 | G1, G2 | Steals a certificate-bound access token — from an RS log, a crash dump, a TLS-intercepting proxy — and presents it at UserInfo over their own connection | The `cnf` decides: a token carrying `x5t#S256` is answered only when the certificate this request arrived with hashes to that value, over the same trusted-proxy path the token endpoint's certificate takes. No certificate is the same answer as the wrong certificate — `invalid_token` — because "could not check the binding" and "the binding does not hold" have the same consequence. Two certificates and one token are asserted not to be interchangeable | `ast-a05.7`, `ast-1sk.3` |
+| A1, A5 | G1 | Presents a certificate-bound token under the `DPoP` scheme, or a DPoP-bound token as a bearer token over an mTLS connection, hoping the endpoint checks whichever half the caller can satisfy | The token's `cnf` holds exactly one member and selects exactly one check. `x5t#S256` is refused under `DPoP`; `jkt` is refused under `Bearer` however good the certificate on the connection is; a token carrying both members — which no registration can produce — is refused outright rather than resolved in the caller's favour | `ast-a05.7` |
+| A1, A2 | G1 | Steals a certificate-bound refresh token and redeems it under another certificate, or under none, since the client authenticates by other means | The refresh row records the binding it was issued under (`refresh_tokens.cert_thumbprint`, the schema's `(dpop_jkt is null) <> (cert_thumbprint is null)`), and a certificate-bound row is redeemable only by the certificate it names — always, unlike the DPoP binding, which the tenant's `bind_to_dpop_key` may leave unenforced so that a confidential client can roll its key (RFC 9449 §5). One `invalid_grant` for a wrong certificate, an unknown token and a revoked grant alike | `ast-a05.7`, `ast-a05.5` |
+| A1 | G1 | Registers for certificate binding to escape sender-constraining altogether, or authenticates with mTLS and sends no DPoP proof in the belief that the certificate stands in for one | Neither is reachable. `TokenBinding` has no unbound variant, so the pair `false, false` is refused at registration; and a client registered for DPoP that presents a certificate still owes a proof (FAPI 2.0 SP §5.3.2.1 item 5) — presenting a certificate is client *authentication*, and authentication is not a binding | `ast-a05.7`, `ast-m9c.1` |
+
+**Accepted, and recorded here:** a certificate-bound client that rotates its
+certificate cannot redeem the refresh tokens issued under the old one and has
+to be re-authorized. This is the mirror of the freedom `bind_to_dpop_key` gives
+a DPoP client, and it is deliberate — a `cnf` this server declines to check is
+a bearer token carrying a claim about itself. A deployment that rotates
+certificates often should bind its clients by DPoP.
 
 ### 4. Agent-specific threats (G4)
 

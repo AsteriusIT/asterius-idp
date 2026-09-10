@@ -33,15 +33,17 @@ use asterius_domain::{
 use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
+use asterius_oidc::mtls::ClientCertificate;
 use asterius_oidc::refresh::MintedRefreshToken;
 use asterius_server::http::authorization_code::AuthorizationCode;
+use asterius_server::http::issuance::SenderConstraint;
 use asterius_server::http::refresh::RefreshToken;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
 use asterius_server::signing::CachedSigner;
 use asterius_store_pg::{
     NewRefreshToken, PgAuditSink, PgCodeRepository, PgGrantRepository, PgRefreshTokenRepository,
-    PgResourceServers, PgSessionRepository, PgTenantRepository, PgUserRepository, Store,
-    TenantKeyStore,
+    PgResourceServers, PgSessionRepository, PgTenantRepository, PgUserRepository, RefreshBinding,
+    Store, TenantKeyStore,
 };
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -207,6 +209,102 @@ impl Fixture {
         client
     }
 
+    /// The same client, registered for certificate-bound tokens
+    /// (RFC 8705 §3.4) instead of DPoP. Stored under mTLS capabilities,
+    /// because the member is refused without the flag on the way in and on the
+    /// way back out.
+    async fn certificate_bound_client(&self, id: &str) -> Client {
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(id),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&json!({
+                    "client_name": "Billing",
+                    "redirect_uris": [REDIRECT],
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "scope": "openid profile payments offline_access",
+                    "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+                    "dpop_bound_access_tokens": false,
+                    "tls_client_certificate_bound_access_tokens": true,
+                }))
+                .expect("serialise"),
+                mtls_on(),
+            )
+            .expect("a valid registration"),
+            status: ClientStatus::Active,
+            created_at: self.now,
+            updated_at: self.now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(mtls_on())
+            .upsert(&client)
+            .await
+            .expect("store the client");
+        client
+    }
+
+    /// A refresh token bound to a certificate rather than to a DPoP key
+    /// (RFC 8705 §3).
+    async fn issue_certificate_bound(
+        &self,
+        grant: &Grant,
+        certificate: &ClientCertificate,
+        scopes: &[&str],
+    ) -> String {
+        let minted = MintedRefreshToken::generate();
+        self.refresh_tokens()
+            .issue(
+                minted.digest(),
+                &NewRefreshToken {
+                    grant: grant.id.clone(),
+                    client: grant.client.clone(),
+                    scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
+                    binding: RefreshBinding::Certificate(certificate.thumbprint()),
+                    absolute_expires_at: self.now + self.policy().absolute_lifetime,
+                    idle_expires_at: self.policy().idle_lifetime.map(|idle| self.now + idle),
+                },
+                self.now,
+            )
+            .await
+            .expect("issue the refresh token");
+        minted.expose().to_owned()
+    }
+
+    /// A refresh presented over a connection carrying `certificate`.
+    async fn refresh_presenting(
+        &self,
+        client: &Client,
+        pairs: &[(&str, &str)],
+        certificate: Option<&ClientCertificate>,
+    ) -> (StatusCode, Value) {
+        let tokens = self.refresh_tokens();
+        let grants = self.grants();
+        let sessions = self.sessions();
+        let resource_servers = self.resource_servers();
+        let users = PgUserRepository::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+            Arc::clone(&self.kek),
+        );
+        let handler = RefreshToken {
+            tokens: &tokens,
+            grants: &grants,
+            sessions: &sessions,
+            users: &users,
+            resource_servers: &resource_servers,
+            signer: self.signer.as_ref(),
+            audit: self.audit.as_ref(),
+            lifetimes: asterius_domain::TokenLifetimes::default(),
+            constraint: SenderConstraint {
+                proof_key: None,
+                certificate,
+            },
+            now: self.now,
+        };
+        self.post(client, &handler, pairs).await
+    }
+
     /// A user, the session they authenticated in, and a grant naming both.
     async fn grant(&self, scopes: &[&str]) -> (Grant, Session) {
         self.grant_claimed(scopes, true).await
@@ -317,7 +415,7 @@ impl Fixture {
                     grant: grant.id.clone(),
                     client: grant.client.clone(),
                     scopes: scopes.iter().map(|s| (*s).to_owned()).collect(),
-                    dpop_jkt: jkt.as_str().to_owned(),
+                    binding: RefreshBinding::Dpop(jkt.as_str().to_owned()),
                     absolute_expires_at,
                     idle_expires_at,
                 },
@@ -382,7 +480,10 @@ impl Fixture {
             // The deployment fallback: these tests write the tenant no
             // settings of its own (`ast-5c6`).
             lifetimes: asterius_domain::TokenLifetimes::default(),
-            proof_key: Some(jkt),
+            constraint: SenderConstraint {
+                proof_key: Some(jkt),
+                certificate: None,
+            },
             now: self.now,
         };
         self.post(
@@ -426,7 +527,10 @@ impl Fixture {
             signer: self.signer.as_ref(),
             audit: self.audit.as_ref(),
             lifetimes: asterius_domain::TokenLifetimes::default(),
-            proof_key,
+            constraint: SenderConstraint {
+                proof_key,
+                certificate: None,
+            },
             now: self.now,
         };
         self.post(client, &handler, pairs).await
@@ -785,7 +889,7 @@ db_test! {
                     grant: grant.id.clone(),
                     client: grant.client.clone(),
                     scopes: ["openid".to_owned(), "offline_access".to_owned()].into(),
-                    dpop_jkt: jkt.as_str().to_owned(),
+                    binding: RefreshBinding::Dpop(jkt.as_str().to_owned()),
                     absolute_expires_at: fixture.now + Duration::days(1),
                     idle_expires_at: None,
                 },
@@ -1189,6 +1293,122 @@ db_test! {
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(body["error"], "invalid_request", "{body}");
+        fixture.tear_down().await;
+    }
+}
+
+// ---- Certificate-bound refresh tokens (RFC 8705 §3) -----------------------
+
+/// A deployment with RFC 8705 turned on.
+fn mtls_on() -> Capabilities {
+    Capabilities {
+        mtls: true,
+        ..Capabilities::default()
+    }
+}
+
+/// A DER `Certificate` with the shape `ClientCertificate::from_der` reads and
+/// nothing else in it: what binds a token is the SHA-256 of these bytes, and
+/// `serial` is what makes two of these different certificates.
+fn certificate(serial: u8) -> ClientCertificate {
+    fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+        let length = u8::try_from(value.len()).expect("a short fixture");
+        let mut encoded = vec![tag, length];
+        encoded.extend_from_slice(value);
+        encoded
+    }
+    const SEQUENCE: u8 = 0x30;
+
+    let mut tbs = tlv(0x02, &[serial]);
+    for _ in 0..5 {
+        tbs.extend(tlv(SEQUENCE, &[]));
+    }
+    let mut body = tlv(SEQUENCE, &tbs);
+    body.extend(tlv(SEQUENCE, &[]));
+    body.extend(tlv(0x03, &[0x00]));
+    ClientCertificate::from_der(tlv(SEQUENCE, &body)).expect("a DER certificate")
+}
+
+db_test! {
+    /// The holder of the certificate the token was issued under refreshes, and
+    /// the new access token is bound to that same certificate (RFC 8705 §3.1).
+    async fn a_certificate_bound_refresh_token_is_redeemed_by_its_certificate(fixture) {
+        let client = fixture.certificate_bound_client(CLIENT).await;
+        let held = certificate(1);
+        let (grant, _) = fixture.grant(&["openid", "offline_access"]).await;
+        let refresh_token = fixture
+            .issue_certificate_bound(&grant, &held, &["openid", "offline_access"])
+            .await;
+
+        let (status, body) = fixture
+            .refresh_presenting(
+                &client,
+                &[("grant_type", "refresh_token"), ("refresh_token", &refresh_token)],
+                Some(&held),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["token_type"], "Bearer");
+        let access = fixture.verify(body["access_token"].as_str().expect("access_token")).await;
+        assert_eq!(access["cnf"]["x5t#S256"], held.thumbprint_b64url());
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// The same refusal a DPoP-bound token gets under another key, for the
+    /// same reason: whoever is presenting this holds the token and not the
+    /// thing it is bound to. One `invalid_grant`, which does not say which of
+    /// the two it was (RFC 6749 §5.2).
+    async fn a_certificate_bound_refresh_token_is_not_redeemable_under_another_certificate(fixture) {
+        let client = fixture.certificate_bound_client(CLIENT).await;
+        let held = certificate(1);
+        let another = certificate(2);
+        let (grant, _) = fixture.grant(&["openid", "offline_access"]).await;
+        let refresh_token = fixture
+            .issue_certificate_bound(&grant, &held, &["openid", "offline_access"])
+            .await;
+
+        let (status, body) = fixture
+            .refresh_presenting(
+                &client,
+                &[("grant_type", "refresh_token"), ("refresh_token", &refresh_token)],
+                Some(&another),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_grant");
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// And with no certificate at all, which is the same answer: a
+    /// certificate-bound credential is not redeemable by a caller who presents
+    /// nothing.
+    async fn a_certificate_bound_refresh_token_is_not_redeemable_without_a_certificate(fixture) {
+        let client = fixture.certificate_bound_client(CLIENT).await;
+        let held = certificate(1);
+        let (grant, _) = fixture.grant(&["openid", "offline_access"]).await;
+        let refresh_token = fixture
+            .issue_certificate_bound(&grant, &held, &["openid", "offline_access"])
+            .await;
+
+        let (status, body) = fixture
+            .refresh_presenting(
+                &client,
+                &[("grant_type", "refresh_token"), ("refresh_token", &refresh_token)],
+                None,
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_request");
+
         fixture.tear_down().await;
     }
 }

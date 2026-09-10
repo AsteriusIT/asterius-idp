@@ -1632,7 +1632,9 @@ mod tests {
         object.insert("request_object_signing_alg".to_owned(), json!("ES256"));
         object.insert("id_token_signed_response_alg".to_owned(), json!("PS256"));
         object.insert("userinfo_signed_response_alg".to_owned(), json!("ES256"));
-        object.insert("dpop_bound_access_tokens".to_owned(), json!(true));
+        // One binding method, which is all a registration may hold
+        // (RFC 8705 §3.4 beside RFC 9449 §5.2).
+        object.insert("dpop_bound_access_tokens".to_owned(), json!(false));
         object.insert(
             "tls_client_certificate_bound_access_tokens".to_owned(),
             json!(true),

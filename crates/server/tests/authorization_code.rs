@@ -28,12 +28,15 @@ use asterius_domain::{
 use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
+use asterius_oidc::mtls::ClientCertificate;
 use asterius_server::http::authorization_code::AuthorizationCode;
+use asterius_server::http::issuance::SenderConstraint;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
 use asterius_server::signing::CachedSigner;
 use asterius_store_pg::{
     PgAuditSink, PgCodeRepository, PgGrantRepository, PgRefreshTokenRepository, PgResourceServers,
-    PgSessionRepository, PgTenantRepository, PgUserRepository, Store, TenantKeyStore,
+    PgSessionRepository, PgTenantRepository, PgUserRepository, RefreshBinding, Store,
+    TenantKeyStore,
 };
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -188,6 +191,44 @@ impl Fixture {
         client
     }
 
+    /// The same client, registered for certificate-bound access tokens
+    /// (RFC 8705 §3.4) instead of DPoP.
+    ///
+    /// Stored under mTLS capabilities, because
+    /// `tls_client_certificate_bound_access_tokens` is refused without the
+    /// flag — on the way in and on the way back out, since the row is
+    /// re-validated when it is read.
+    async fn certificate_bound_client(&self) -> Client {
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(CLIENT),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&json!({
+                    "client_name": "Billing",
+                    "redirect_uris": [REDIRECT],
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "scope": "openid offline_access",
+                    "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+                    "dpop_bound_access_tokens": false,
+                    "tls_client_certificate_bound_access_tokens": true,
+                }))
+                .expect("serialise"),
+                mtls_on(),
+            )
+            .expect("a valid registration"),
+            status: ClientStatus::Active,
+            created_at: self.now,
+            updated_at: self.now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(mtls_on())
+            .upsert(&client)
+            .await
+            .expect("store the client");
+        client
+    }
+
     /// A user, a session they authenticated in, and a grant naming both.
     ///
     /// The session is what carries `auth_time`, `acr` and `amr` into both
@@ -327,6 +368,20 @@ impl Fixture {
         pairs: &[(&str, &str)],
         proof_key: Option<&Kid>,
     ) -> (StatusCode, Value) {
+        self.redeem_presenting(client, pairs, proof_key, None, Capabilities::default())
+            .await
+    }
+
+    /// The same, with the certificate a trusted proxy forwarded (RFC 8705 §2)
+    /// and the capabilities the deployment runs with.
+    async fn redeem_presenting(
+        &self,
+        client: &Client,
+        pairs: &[(&str, &str)],
+        proof_key: Option<&Kid>,
+        certificate: Option<&ClientCertificate>,
+        capabilities: Capabilities,
+    ) -> (StatusCode, Value) {
         let codes = self.codes();
         let grants = self.grants();
         let refresh_tokens = self.refresh_tokens();
@@ -348,7 +403,10 @@ impl Fixture {
             // The deployment fallback: these tests write the tenant no
             // settings of its own (`ast-5c6`).
             lifetimes: asterius_domain::TokenLifetimes::default(),
-            proof_key,
+            constraint: SenderConstraint {
+                proof_key,
+                certificate,
+            },
             now: self.now,
         };
         let handlers: [&dyn GrantHandler; 1] = [&handler];
@@ -356,7 +414,7 @@ impl Fixture {
         let clients = self
             .store
             .scope(self.tenant.id.clone())
-            .clients(Capabilities::default());
+            .clients(capabilities);
 
         let mut encoder = url::form_urlencoded::Serializer::new(String::new());
         for (k, v) in pairs {
@@ -372,10 +430,10 @@ impl Fixture {
         let authenticated = client.clone();
         let response = token(
             TokenContext {
-                certificate: None,
+                certificate,
                 tenant: &self.tenant,
                 clients: &clients,
-                capabilities: Capabilities::default(),
+                capabilities,
                 grants: &handlers,
             },
             &headers,
@@ -437,6 +495,36 @@ macro_rules! db_test {
             $body
         }
     };
+}
+
+/// A deployment with RFC 8705 turned on.
+fn mtls_on() -> Capabilities {
+    Capabilities {
+        mtls: true,
+        ..Capabilities::default()
+    }
+}
+
+/// A DER `Certificate` with the shape `ClientCertificate::from_der` reads and
+/// nothing else in it. What binds a token is the SHA-256 of these bytes, and
+/// `serial` is what makes two of these different certificates.
+fn certificate(serial: u8) -> ClientCertificate {
+    fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+        let length = u8::try_from(value.len()).expect("a short fixture");
+        let mut encoded = vec![tag, length];
+        encoded.extend_from_slice(value);
+        encoded
+    }
+    const SEQUENCE: u8 = 0x30;
+
+    let mut tbs = tlv(0x02, &[serial]);
+    for _ in 0..5 {
+        tbs.extend(tlv(SEQUENCE, &[]));
+    }
+    let mut body = tlv(SEQUENCE, &tbs);
+    body.extend(tlv(SEQUENCE, &[]));
+    body.extend(tlv(0x03, &[0x00]));
+    ClientCertificate::from_der(tlv(SEQUENCE, &body)).expect("a DER certificate")
 }
 
 /// A DPoP thumbprint that is the right shape without being a real key's.
@@ -702,7 +790,7 @@ db_test! {
         );
         // FAPI 2.0 SP §5.3.2.1: no bearer refresh token. The binding recorded
         // is the key that proved *this* redemption.
-        assert_eq!(record.dpop_jkt.as_deref(), Some(jkt.as_str()));
+        assert_eq!(record.binding, RefreshBinding::Dpop(jkt.as_str().to_owned()));
 
         fixture.tear_down().await;
     }
@@ -969,4 +1057,130 @@ fn set(form: &mut Vec<(String, String)>, name: &str, value: &str) {
 
 fn borrowed(form: &[(String, String)]) -> Vec<(&str, &str)> {
     form.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect()
+}
+
+// ---- Certificate-bound access tokens (RFC 8705 §3) ------------------------
+
+db_test! {
+    /// RFC 8705 §3.1: the access token of a client registered with
+    /// `tls_client_certificate_bound_access_tokens` carries "a base64url-encoded
+    /// SHA-256 hash ... of the DER encoding of the X.509 certificate" it
+    /// presented, under `cnf`'s `x5t#S256` — and no `jkt`, because the client
+    /// registered one binding method.
+    ///
+    /// `token_type` is `Bearer`: §3 binds the token without defining a scheme
+    /// for presenting it, unlike RFC 9449 §5.
+    async fn a_certificate_bound_client_gets_a_token_confirmed_by_its_certificate(fixture) {
+        let client = fixture.certificate_bound_client().await;
+        let presented = certificate(1);
+        let pkce = Pkce::generate();
+        let grant = fixture.grant(&["openid"]).await;
+        // No `dpop_jkt` at the push: this client proves no key.
+        let code = fixture.issue(&grant, &pkce, None).await;
+
+        let (status, body) = fixture
+            .redeem_presenting(
+                &client,
+                &borrowed(&base_form(&code, &pkce)),
+                None,
+                Some(&presented),
+                mtls_on(),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["token_type"], "Bearer");
+
+        let access = fixture.verify(body["access_token"].as_str().expect("access_token")).await;
+        assert_eq!(access["cnf"]["x5t#S256"], presented.thumbprint_b64url());
+        assert!(access["cnf"]["jkt"].is_null(), "a second binding: {}", access["cnf"]);
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// A client registers exactly one binding method, so a request that offers
+    /// both is `invalid_request` rather than a token bound to whichever this
+    /// server picked. It is the request that is wrong — the code and the
+    /// certificate are both good — which is why it is not `invalid_grant`.
+    async fn a_certificate_bound_client_that_also_proves_a_dpop_key_is_refused(fixture) {
+        let client = fixture.certificate_bound_client().await;
+        let presented = certificate(1);
+        let pkce = Pkce::generate();
+        let grant = fixture.grant(&["openid"]).await;
+        let code = fixture.issue(&grant, &pkce, None).await;
+        let jkt = thumbprint(1);
+
+        let (status, body) = fixture
+            .redeem_presenting(
+                &client,
+                &borrowed(&base_form(&code, &pkce)),
+                Some(&jkt),
+                Some(&presented),
+                mtls_on(),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_request");
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// The client is registered for certificate binding and no certificate
+    /// reached this server. There is nothing to put in `x5t#S256`, and a token
+    /// bound to nothing is not one this profile has (FAPI 2.0 SP §5.3.2.1
+    /// item 4).
+    async fn a_certificate_bound_client_without_a_certificate_gets_no_token(fixture) {
+        let client = fixture.certificate_bound_client().await;
+        let pkce = Pkce::generate();
+        let grant = fixture.grant(&["openid"]).await;
+        let code = fixture.issue(&grant, &pkce, None).await;
+
+        let (status, body) = fixture
+            .redeem_presenting(
+                &client,
+                &borrowed(&base_form(&code, &pkce)),
+                None,
+                None,
+                mtls_on(),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_request");
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// FAPI 2.0 SP §5.3.2.1 item 5: sender-constraining is not optional, and a
+    /// certificate is not a substitute for the method the client registered. A
+    /// DPoP-bound client that authenticates with mTLS still sends a proof.
+    async fn a_dpop_bound_client_presenting_a_certificate_still_owes_a_proof(fixture) {
+        let client = fixture.client().await;
+        let presented = certificate(1);
+        let pkce = Pkce::generate();
+        let grant = fixture.grant(&["openid"]).await;
+        let code = fixture.issue(&grant, &pkce, None).await;
+
+        let (status, body) = fixture
+            .redeem_presenting(
+                &client,
+                &borrowed(&base_form(&code, &pkce)),
+                None,
+                Some(&presented),
+                mtls_on(),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_grant");
+
+        fixture.tear_down().await;
+    }
 }

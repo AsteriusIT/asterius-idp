@@ -67,7 +67,7 @@ use asterius_oidc::tokens::JwtId;
 use asterius_oidc::tokens::access::{AccessToken, Confirmation};
 use asterius_store_pg::{
     NewRefreshToken, PgGrantRepository, PgRefreshTokenRepository, PgUserRepository, Presentation,
-    RefreshTokenRecord,
+    RefreshBinding, RefreshTokenRecord,
 };
 use axum::Json;
 use axum::response::{IntoResponse, Response};
@@ -117,12 +117,14 @@ pub struct RefreshToken<'a> {
     /// token for longer than the authorization that started it would be a way
     /// to escape the setting by asking twice.
     pub lifetimes: asterius_domain::TokenLifetimes,
-    /// The thumbprint of the DPoP proof presented with this request.
+    /// What this request proved possession of: a DPoP key, a client
+    /// certificate, or neither.
     ///
-    /// `None` is a refusal rather than a mode: FAPI 2.0 SP §5.3.2.1 item 4
+    /// "Neither" is a refusal rather than a mode: FAPI 2.0 SP §5.3.2.1 item 4
     /// admits no unbound access token, so there is no token this handler could
-    /// issue without one.
-    pub proof_key: Option<&'a Kid>,
+    /// issue without one. Which of the two binds the token is the client's
+    /// registered `TokenBinding` — see [`issuance::SenderConstraint`].
+    pub constraint: issuance::SenderConstraint<'a>,
     /// When the request arrived. One instant for every deadline and both
     /// tokens, so `iat`, `exp` and the two refresh-token expiries are judged
     /// against one clock reading rather than several.
@@ -216,14 +218,12 @@ impl RefreshToken<'_> {
         let digest = refresh::digest_of(presented).map_err(|_| invalid_grant())?;
 
         // Before the lookup, because it costs nothing and because a request
-        // with no proof has no token this handler could issue whatever the
-        // digest turns out to name.
-        let jkt = self.proof_key.ok_or_else(|| {
-            Failure::Client(
-                "invalid_grant",
-                "a DPoP proof is required to redeem a refresh token",
-            )
-        })?;
+        // that proved nothing has no token this handler could issue whatever
+        // the digest turns out to name.
+        let confirmation = self
+            .constraint
+            .confirmation(client)
+            .map_err(Self::unbound)?;
 
         let record = match self
             .tokens
@@ -249,7 +249,7 @@ impl RefreshToken<'_> {
             return Err(invalid_grant());
         }
 
-        Self::check_key_binding(&policy, &record, jkt)?;
+        self.check_binding(&policy, &record)?;
 
         let grant = self
             .grants
@@ -287,7 +287,7 @@ impl RefreshToken<'_> {
             .map_err(|_| Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
 
         let (access_token, id_token) = self
-            .mint(tenant, client, &grant, jkt, &effective, &targets)
+            .mint(tenant, client, &grant, confirmation, &effective, &targets)
             .await?;
 
         let returned = self
@@ -305,6 +305,7 @@ impl RefreshToken<'_> {
 
         Ok(Self::response(
             &effective,
+            issuance::token_type(client),
             &access_token,
             &returned,
             id_token.as_deref(),
@@ -329,7 +330,7 @@ impl RefreshToken<'_> {
         tenant: &Tenant,
         client: &Client,
         grant: &Grant,
-        jkt: &Kid,
+        confirmation: Confirmation,
         effective: &BTreeSet<String>,
         targets: &BTreeSet<String>,
     ) -> Result<(String, Option<String>), Failure> {
@@ -339,13 +340,6 @@ impl RefreshToken<'_> {
             scopes: effective.clone(),
             ..grant.clone()
         };
-
-        let confirmation = Confirmation::dpop(jkt).map_err(|_| {
-            Failure::Server(DomainError::invalid(
-                "cnf",
-                "the DPoP thumbprint is not a usable confirmation",
-            ))
-        })?;
 
         // RFC 8707 §2.2 and RFC 9068 §3, from the narrowed grant: the audience
         // is what this request named, or what the authorization authorized, and
@@ -432,22 +426,61 @@ impl RefreshToken<'_> {
     /// A tenant that turns the option on gets the stricter reading — the token
     /// is pinned to the key it was issued to — and pays for it with a client
     /// that may never roll that key.
-    fn check_key_binding(
+    /// A certificate binding is not the tenant's to switch off, and that is
+    /// the one place the two methods differ. RFC 8705 §3 gives no reading of a
+    /// `cnf` whose `x5t#S256` a server declines to check: a token bound to a
+    /// certificate that need not be presented is a bearer token carrying a
+    /// claim about itself. The price is the mirror image of the freedom above
+    /// — a certificate-bound client that rotates its certificate cannot redeem
+    /// the refresh tokens issued under the old one, and has to be
+    /// re-authorized. A deployment that rotates certificates often should bind
+    /// its clients by DPoP instead.
+    fn check_binding(
+        &self,
         policy: &RefreshPolicy,
         record: &RefreshTokenRecord,
-        presented: &Kid,
     ) -> Result<(), Failure> {
-        if !policy.bind_to_dpop_key {
-            return Ok(());
+        match &record.binding {
+            RefreshBinding::Dpop(jkt) => {
+                if !policy.bind_to_dpop_key {
+                    return Ok(());
+                }
+                if self.constraint.proof_key.map(Kid::as_str) != Some(jkt.as_str()) {
+                    return Err(invalid_grant());
+                }
+                Ok(())
+            }
+            RefreshBinding::Certificate(thumbprint) => {
+                if !self.constraint.presents(thumbprint) {
+                    return Err(invalid_grant());
+                }
+                Ok(())
+            }
         }
-        // A row with no thumbprint cannot exist — the schema's
-        // `refresh_tokens_are_sender_constrained` refuses one — so `None` here
-        // is a hand-edited row, and the safe reading of a binding that is
-        // missing is that it does not match.
-        if record.dpop_jkt.as_deref() != Some(presented.as_str()) {
-            return Err(invalid_grant());
+    }
+
+    /// What a refresh that could not be bound to anything answers.
+    ///
+    /// `invalid_grant` for the missing proof, because that is what this
+    /// endpoint has always said and RFC 6749 §5.2 gathers failed bindings
+    /// there; `invalid_request` for the two certificate cases, which are facts
+    /// about the request's transport rather than about the credential.
+    fn unbound(error: issuance::ConstraintError) -> Failure {
+        match error {
+            issuance::ConstraintError::ProofRequired => Failure::Client(
+                "invalid_grant",
+                "a DPoP proof is required to redeem a refresh token",
+            ),
+            issuance::ConstraintError::CertificateRequired => Failure::Client(
+                "invalid_request",
+                "this client's tokens are bound to a client certificate, and none was presented",
+            ),
+            issuance::ConstraintError::TwoBindingsOffered => Failure::Client(
+                "invalid_request",
+                "this client binds its tokens to a certificate; a DPoP proof must not be sent",
+            ),
+            issuance::ConstraintError::Unusable(error) => Failure::Server(error),
         }
-        Ok(())
     }
 
     /// `auth_time`, `acr` and `amr` — and the session-lifetime policy.
@@ -539,17 +572,9 @@ impl RefreshToken<'_> {
             grant: record.grant.clone(),
             client: record.client.clone(),
             scopes: scopes.clone(),
-            dpop_jkt: record
-                .dpop_jkt
-                .clone()
-                // Unreachable while the schema's `CHECK` stands; see
-                // `check_key_binding`.
-                .ok_or_else(|| {
-                    Failure::Server(DomainError::invalid(
-                        "refresh_token",
-                        "a stored refresh token is not sender-constrained",
-                    ))
-                })?,
+            // The replacement inherits the binding as well: a rotation must
+            // not be a way to move a credential from one holder to another.
+            binding: record.binding.clone(),
             absolute_expires_at: record.absolute_expires_at,
             idle_expires_at: policy
                 .idle_lifetime
@@ -620,6 +645,7 @@ impl RefreshToken<'_> {
     /// response, so that it cannot be the one thing a grant forgets.
     fn response(
         scopes: &BTreeSet<String>,
+        token_type: &str,
         access_token: &str,
         refresh_token: &str,
         id_token: Option<&str>,
@@ -627,8 +653,8 @@ impl RefreshToken<'_> {
     ) -> Response {
         let mut body = json!({
             "access_token": access_token,
-            // RFC 9449 §5: a DPoP-bound access token is `DPoP`, not `Bearer`.
-            "token_type": "DPoP",
+            // See [`issuance::token_type`].
+            "token_type": token_type,
             // The lifetime this token was actually signed with, not a
             // constant: `ast-5c6` found the two able to disagree, and a client
             // that renews on `expires_in` would then renew after its token had

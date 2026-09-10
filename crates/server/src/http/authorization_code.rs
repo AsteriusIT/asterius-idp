@@ -34,10 +34,10 @@ use asterius_domain::entities::client::GrantType;
 use asterius_domain::entities::grant::GrantStatus;
 use asterius_domain::keys::Signer;
 use asterius_domain::ports::SessionRepository;
-use asterius_domain::{Client, DomainError, Grant, Kid, Tenant};
+use asterius_domain::{Client, DomainError, Grant, Tenant};
 use asterius_oidc::form::Parameters;
 use asterius_oidc::tokens::JwtId;
-use asterius_oidc::tokens::access::{AccessToken, Confirmation};
+use asterius_oidc::tokens::access::AccessToken;
 use asterius_oidc::{code, pkce};
 use asterius_store_pg::{
     NewRefreshToken, PgCodeRepository, PgGrantRepository, PgRefreshTokenRepository,
@@ -93,12 +93,16 @@ pub struct AuthorizationCode<'a> {
     /// rather than read here: the two grants this endpoint dispatches to must
     /// mint under the same numbers, and one read is what makes that so.
     pub lifetimes: asterius_domain::TokenLifetimes,
-    /// The thumbprint of the DPoP proof presented with this request.
+    /// What this request proved possession of: a DPoP key, a client
+    /// certificate, or neither.
     ///
-    /// `None` when the request carried no proof, which for this grant is a
-    /// refusal rather than a mode: FAPI 2.0 SP §5.3.2.1 item 4 admits no
-    /// unbound access token, so there is no token this handler could issue.
-    pub proof_key: Option<&'a Kid>,
+    /// Which of them the tokens are bound to is the client's registered
+    /// `TokenBinding` and not this handler's choice — see
+    /// [`issuance::SenderConstraint`]. "Neither" is a refusal rather than a
+    /// mode, whichever way the client is registered: FAPI 2.0 SP §5.3.2.1 item
+    /// 4 admits no unbound access token, so there is no token this handler
+    /// could issue.
+    pub constraint: issuance::SenderConstraint<'a>,
     /// When the request arrived. One instant for every check and both tokens,
     /// so `iat`, `exp` and the code's expiry are judged against one clock
     /// reading rather than several.
@@ -243,7 +247,12 @@ impl AuthorizationCode<'_> {
         })?;
         pkce::redeem(&challenge, verifier).map_err(|_| invalid_grant())?;
 
-        let jkt = self.check_dpop(binding.dpop_jkt.as_deref())?;
+        // RFC 9449 §10.1: a code pushed with a `dpop_jkt` is redeemable only
+        // with a proof for that key. Checked for every client, including a
+        // certificate-bound one — a pin this handler ignored would be a
+        // binding the client asked for and did not get.
+        dpop::check_pinned_key(binding.dpop_jkt.as_deref(), self.constraint.proof_key)
+            .map_err(Failure::Dpop)?;
 
         // The grant carries the scopes, resources and subject; the claim
         // carries the authority to mint from it. Both are needed, and `claim`
@@ -269,12 +278,10 @@ impl AuthorizationCode<'_> {
 
         let targeting = self.targeting(tenant, client, &grant, params).await?;
 
-        let confirmation = Confirmation::dpop(jkt).map_err(|_| {
-            Failure::Server(DomainError::invalid(
-                "cnf",
-                "the DPoP thumbprint is not a usable confirmation",
-            ))
-        })?;
+        let confirmation = self
+            .constraint
+            .confirmation(client)
+            .map_err(Self::unbound)?;
 
         let access = AccessToken::new(
             &tenant.issuer,
@@ -341,13 +348,14 @@ impl AuthorizationCode<'_> {
         // token and nothing else, which is the ordinary case and the one that
         // leaves no long-lived credential behind to steal.
         let refresh_token = if grant.scopes.contains("offline_access") {
-            Some(self.issue_refresh_token(tenant, &grant, jkt).await?)
+            Some(self.issue_refresh_token(tenant, client, &grant).await?)
         } else {
             None
         };
 
         Ok(Self::response(
             &grant,
+            issuance::token_type(client),
             access_token.as_str(),
             id_token.as_deref(),
             refresh_token.as_deref(),
@@ -362,15 +370,20 @@ impl AuthorizationCode<'_> {
     /// deadlines come from the tenant's policy and are computed against
     /// `self.now`, the same instant every other check in this redemption used.
     ///
-    /// It is bound to the DPoP key this redemption proved. FAPI 2.0 forbids a
-    /// bearer refresh token and the schema says so with a `CHECK`, so there is
-    /// no path here that could write one.
+    /// It is bound the way this client's access tokens are — the DPoP key
+    /// this redemption proved, or the certificate it presented. FAPI 2.0
+    /// forbids a bearer refresh token and the schema says so with a `CHECK`,
+    /// so there is no path here that could write one.
     async fn issue_refresh_token(
         &self,
         tenant: &Tenant,
+        client: &Client,
         grant: &Grant,
-        jkt: &Kid,
     ) -> Result<String, Failure> {
+        let binding = self
+            .constraint
+            .refresh_binding(client)
+            .map_err(Self::unbound)?;
         let policy = tenant.refresh;
         let absolute_expires_at = self.now + policy.absolute_lifetime;
         let minted = asterius_oidc::refresh::MintedRefreshToken::generate();
@@ -386,7 +399,7 @@ impl AuthorizationCode<'_> {
                     // what the user approved. Narrowing happens at the refresh
                     // itself (RFC 6749 §6), where it is the client's choice.
                     scopes: grant.scopes.clone(),
-                    dpop_jkt: jkt.as_str().to_owned(),
+                    binding,
                     absolute_expires_at,
                     idle_expires_at: policy
                         .idle_lifetime
@@ -452,21 +465,30 @@ impl AuthorizationCode<'_> {
 
     /// RFC 9449 §10 and FAPI 2.0 SP §5.3.2.1 items 4 and 12.
     ///
-    /// Two rules that meet here. A code pinned to a `dpop_jkt` at PAR is
-    /// redeemable only with a proof for that key — including, explicitly, not
-    /// with no proof at all. And every access token this server issues is
-    /// sender-constrained, so a proof is required even for a code that was
-    /// pinned to nothing: there is no unbound token to fall back to.
-    fn check_dpop<'k>(&'k self, pinned: Option<&str>) -> Result<&'k Kid, Failure> {
-        dpop::check_pinned_key(pinned, self.proof_key).map_err(Failure::Dpop)?;
-        // `check_pinned_key` is satisfied by a code that pinned nothing and a
-        // request that proved nothing. This is the other half.
-        self.proof_key.ok_or_else(|| {
-            Failure::Client(
+    /// What a redemption that could not be bound to anything answers.
+    ///
+    /// Every access token this server issues is sender-constrained, so this is
+    /// where a request that proved nothing stops — a code pinned to nothing
+    /// and a request with no proof satisfies `check_pinned_key`, and this is
+    /// the other half of that rule.
+    fn unbound(error: issuance::ConstraintError) -> Failure {
+        match error {
+            issuance::ConstraintError::ProofRequired => Failure::Client(
                 "invalid_grant",
                 "a DPoP proof is required to redeem an authorization code",
-            )
-        })
+            ),
+            // RFC 8705 §3: this client's tokens are bound to a certificate and
+            // no certificate reached this server from a source it trusts.
+            issuance::ConstraintError::CertificateRequired => Failure::Client(
+                "invalid_request",
+                "this client's tokens are bound to a client certificate, and none was presented",
+            ),
+            issuance::ConstraintError::TwoBindingsOffered => Failure::Client(
+                "invalid_request",
+                "this client binds its tokens to a certificate; a DPoP proof must not be sent",
+            ),
+            issuance::ConstraintError::Unusable(error) => Failure::Server(error),
+        }
     }
 
     /// RFC 6749 §5.1 and OIDC Core §3.1.3.3.
@@ -475,6 +497,7 @@ impl AuthorizationCode<'_> {
     /// response, so that it cannot be the one thing a grant forgets.
     fn response(
         grant: &Grant,
+        token_type: &str,
         access_token: &str,
         id_token: Option<&str>,
         refresh_token: Option<&str>,
@@ -482,12 +505,10 @@ impl AuthorizationCode<'_> {
     ) -> Response {
         let mut body = json!({
             "access_token": access_token,
-            // RFC 9449 §5: a DPoP-bound access token is `DPoP`, not `Bearer`,
-            // and a client that sends it as a bearer token must be refused by
-            // the resource server. Certificate-bound tokens are `Bearer`
-            // (RFC 8705 §3.1) and are `ast-a05.7`; this handler binds to DPoP
-            // and nothing else, so the value is constant.
-            "token_type": "DPoP",
+            // What the token is bound to, in one word: `DPoP` or `Bearer`.
+            // See [`issuance::token_type`], which is where the choice is made
+            // for all three grants.
+            "token_type": token_type,
             // The lifetime this token was actually signed with, not a
             // constant: `ast-5c6` found the two able to disagree, and a client
             // that renews on `expires_in` would then renew after its token had

@@ -56,7 +56,9 @@ pub use passkeys::PgPasskeyRepository;
 pub use passwords::PgPasswordVerifier;
 pub use provisioning::ProvisionedTenants;
 pub use rate_limits::PgRateLimitStore;
-pub use refresh::{NewRefreshToken, PgRefreshTokenRepository, Presentation, RefreshTokenRecord};
+pub use refresh::{
+    NewRefreshToken, PgRefreshTokenRepository, Presentation, RefreshBinding, RefreshTokenRecord,
+};
 pub use replay::PgReplayGuard;
 pub use resource_servers::PgResourceServers;
 pub use retention::{POLICY, PgRetention, Retention, Rule, Sweep, SweepOutcome};

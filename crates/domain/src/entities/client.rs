@@ -489,12 +489,23 @@ impl SubjectType {
 
 /// How a client's access tokens are bound to a key it holds.
 ///
-/// There is no `Neither` variant, and that is the point: FAPI 2.0 SP §5.3.2.1
-/// requires sender-constrained access tokens, so "this client gets bearer
-/// tokens" is not a state this type can hold. RFC 9449 §5.2
-/// (`dpop_bound_access_tokens`) and RFC 8705 §3.4
-/// (`tls_client_certificate_bound_access_tokens`) are the two ways in; the
-/// pair `false, false` is the one combination the parser refuses.
+/// Exactly one of the two, and that is the point twice over.
+///
+/// There is no `Neither` variant: FAPI 2.0 SP §5.3.2.1 requires
+/// sender-constrained access tokens, so "this client gets bearer tokens" is not
+/// a state this type can hold. RFC 9449 §5.2 (`dpop_bound_access_tokens`) and
+/// RFC 8705 §3.4 (`tls_client_certificate_bound_access_tokens`) are the two
+/// ways in, and the pair `false, false` is refused.
+///
+/// There is no `Both` variant either. A `cnf` carrying a `jkt` *and* an
+/// `x5t#S256` is a token whose resource servers have to agree on whether one
+/// or both must check out, and RFC 8705 §3.1 and RFC 9449 §6.1 each define
+/// only their own member and say nothing about the other being present: the
+/// token would be as strong as the weaker reading of it, which makes the
+/// binding the verifier's decision rather than this server's. So a client
+/// registers one method, and `true, true` is refused at registration — where
+/// the client can still change its mind — rather than at the token endpoint,
+/// where it already holds a code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TokenBinding {
     /// DPoP proof of possession (RFC 9449). The default.
@@ -503,22 +514,19 @@ pub enum TokenBinding {
     /// mTLS certificate binding (RFC 8705 §3), for a client that presents a
     /// certificate anyway and has no DPoP implementation.
     Certificate,
-    /// Both. A token is usable only by a caller holding the DPoP key *and*
-    /// presenting the certificate.
-    DpopAndCertificate,
 }
 
 impl TokenBinding {
     /// Whether tokens for this client carry a `cnf.jkt` (RFC 9449 §6).
     #[must_use]
     pub const fn is_dpop_bound(self) -> bool {
-        matches!(self, Self::Dpop | Self::DpopAndCertificate)
+        matches!(self, Self::Dpop)
     }
 
     /// Whether tokens for this client carry a `cnf.x5t#S256` (RFC 8705 §3.1).
     #[must_use]
     pub const fn is_certificate_bound(self) -> bool {
-        matches!(self, Self::Certificate | Self::DpopAndCertificate)
+        matches!(self, Self::Certificate)
     }
 
     /// Builds the binding from the two RFC booleans, or explains the refusal.
@@ -526,15 +534,21 @@ impl TokenBinding {
         match (dpop, certificate) {
             (true, false) => Ok(Self::Dpop),
             (false, true) => Ok(Self::Certificate),
-            (true, true) => Ok(Self::DpopAndCertificate),
-            // The only refusal: a client asking for tokens bound to nothing.
-            // Such a token is a bearer token, and a bearer token stolen from a
-            // log or a proxy is usable by whoever finds it (Attacker Model
-            // §7.7, A5).
+            // A client asking for tokens bound to nothing. Such a token is a
+            // bearer token, and a bearer token stolen from a log or a proxy is
+            // usable by whoever finds it (Attacker Model §7.7, A5).
             (false, false) => Err(ClientMetadataError::rejected(
                 "dpop_bound_access_tokens",
                 "may only be false when tls_client_certificate_bound_access_tokens is true; \
                  this server does not issue bearer access tokens",
+            )),
+            // A client asking for both. See the type's own note: the token
+            // would carry two confirmations and no rule about which of them a
+            // resource server must honour.
+            (true, true) => Err(ClientMetadataError::rejected(
+                "tls_client_certificate_bound_access_tokens",
+                "may only be true when dpop_bound_access_tokens is false; a client binds its \
+                 access tokens by a DPoP key or by a certificate, not by both",
             )),
         }
     }
@@ -3065,17 +3079,20 @@ mod tests {
         assert!(client.token_binding.is_certificate_bound());
     }
 
+    /// RFC 8705 §3.4 and RFC 9449 §5.2 each define their own member and
+    /// neither says what a token bound by both means. A client registers one
+    /// method, so that no resource server has to decide which half of a `cnf`
+    /// it is obliged to check.
     #[test]
-    fn a_client_may_be_bound_by_both_dpop_and_a_certificate() {
+    fn a_client_binds_its_tokens_one_way_and_not_two() {
         let mut document = with("dpop_bound_access_tokens", json!(true));
         document.as_object_mut().expect("object").insert(
             "tls_client_certificate_bound_access_tokens".to_owned(),
             json!(true),
         );
-        let client = validate_with(&document, caps(true)).expect("both bindings");
-        assert_eq!(client.token_binding, TokenBinding::DpopAndCertificate);
-        assert!(client.token_binding.is_dpop_bound());
-        assert!(client.token_binding.is_certificate_bound());
+        let error = validate_with(&document, caps(true)).expect_err("two bindings");
+        assert_eq!(error.field(), "tls_client_certificate_bound_access_tokens");
+        assert_eq!(error.code(), "invalid_client_metadata");
     }
 
     // -----------------------------------------------------------------------
