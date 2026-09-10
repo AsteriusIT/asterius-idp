@@ -977,3 +977,82 @@ async fn every_advertised_algorithm_registers_against_a_provisioned_tenant() {
         assert_eq!(registry.written().len(), 1);
     }
 }
+
+/// A native client whose only callbacks are on the loopback interface, asking
+/// for pairwise subjects without naming a sector — `ast-m9c.10`.
+fn loopback_pairwise_document() -> Value {
+    json!({
+        "client_name": "Desktop",
+        "application_type": "native",
+        "redirect_uris": ["http://127.0.0.1:51004/cb"],
+        "grant_types": ["authorization_code"],
+        "subject_type": "pairwise",
+        "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+    })
+}
+
+/// OIDC Core §8.1 derives the sector from "the host component of the registered
+/// `redirect_uri`", and RFC 8252 §7.3 gives *every* native client the same
+/// loopback host. A pairwise client with nothing but loopback callbacks and no
+/// `sector_identifier_uri` would therefore put every native client of the
+/// deployment into one sector, and hand them all the same correlatable `sub`
+/// under a registration that says `pairwise`.
+///
+/// The document is refused at registration, as RFC 7591 §3.2.2
+/// `invalid_client_metadata` — not at the authorization request that would
+/// otherwise fail later for a reason the client never sees.
+#[tokio::test]
+async fn a_pairwise_client_with_only_loopback_callbacks_is_refused_at_registration() {
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+
+    let response = post(
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(None),
+        loopback_pairwise_document().to_string().as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_of(response).await;
+    assert_eq!(body["error"], json!("invalid_client_metadata"));
+    assert!(
+        body["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("sector_identifier_uri"),
+        "the client is not told what to register instead: {body}"
+    );
+    assert!(
+        registry.written().is_empty(),
+        "a refused document registered a client"
+    );
+}
+
+/// The rule is that the sector is underivable, not that loopback is suspicious:
+/// a pairwise client with a callback on a host of its own registers as before.
+#[tokio::test]
+async fn a_pairwise_client_with_a_host_of_its_own_still_registers() {
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let mut document = loopback_pairwise_document();
+    let object = document.as_object_mut().expect("object");
+    object.insert("application_type".to_owned(), json!("web"));
+    object.insert(
+        "redirect_uris".to_owned(),
+        json!(["https://desktop.rp.example/cb"]),
+    );
+
+    let response = post(
+        &RegistrationPolicy::Open,
+        &registry,
+        &audit,
+        &json_headers(None),
+        document.to_string().as_bytes(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+}

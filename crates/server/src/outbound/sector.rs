@@ -26,12 +26,21 @@
 //! A sector document is served as `application/json`, which that adapter
 //! already accepts.
 //!
+//! # It also refuses a client that has no sector to name
+//!
+//! One case needs no bytes at all: a pairwise client whose redirect URIs are
+//! all loopback and which named no sector. RFC 8252 §7.3 gives that host to
+//! every native client, so §8.1's redirect-host rule would put them all in one
+//! sector. [`asterius_domain::SectorIdentifier::check_registration`] is that
+//! rule, and it is called here so that both registration endpoints — RFC 7591's
+//! `POST /register` and RFC 7592's `PUT` — get it from one place.
+//!
 //! What is left here is the decision about *what the bytes have to say*, and
 //! even that is delegated: [`ClientRegistration::check_sector_identifier_document`]
 //! is pure and lives in the domain. This module is the two lines between them.
 
 use asterius_domain::ports::JwksFetcher;
-use asterius_domain::{ClientMetadataError, ClientRegistration};
+use asterius_domain::{ClientMetadataError, ClientRegistration, SectorIdentifier};
 
 /// The metadata field every failure here is reported against.
 const FIELD: &str = "sector_identifier_uri";
@@ -56,6 +65,14 @@ pub async fn verify(
     fetcher: &dyn JwksFetcher,
     registration: &ClientRegistration,
 ) -> Result<(), ClientMetadataError> {
+    // Before the fetch, and without one: a pairwise client whose redirect URIs
+    // are all loopback has no sector to verify, and `ast-m9c.10` is that this
+    // must be a refused registration document rather than an authorization
+    // request that fails later for a reason the client cannot see. The rule
+    // itself lives with [`SectorIdentifier::of_client`], which applies the same
+    // call to rows written before it existed.
+    SectorIdentifier::check_registration(registration)?;
+
     let Some(uri) = registration.sector_identifier_uri_to_verify() else {
         return Ok(());
     };
