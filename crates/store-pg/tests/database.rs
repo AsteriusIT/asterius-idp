@@ -9749,6 +9749,109 @@ db_test! {
 }
 
 db_test! {
+    /// `ast-1gj`. The two writers above are not enough to hold the window
+    /// open, and CI found what they miss: `Conflict("tenants_issuer_key")`.
+    ///
+    /// `on conflict (tenant_id) do update` names one arbiter, and Postgres
+    /// only routes a conflict on *that* index to the update. `tenants.issuer`
+    /// and `tenants.custom_host` are unique too, and a duplicate found there
+    /// is a plain `23505`. Between one writer's arbiter check and its index
+    /// insertion another can insert the same row, and the loser then meets the
+    /// concurrent tuple on the issuer index rather than on the primary key —
+    /// so a second replica asserting the configuration at boot fails outright
+    /// instead of updating.
+    ///
+    /// Real threads and repeated rounds, because the window is a few
+    /// microseconds inside one statement's execution: `tokio::join!` on one
+    /// thread sends the statements in an order that keeps missing it — which
+    /// is exactly why the two-writer test above passed here for months and
+    /// then failed on a CI runner.
+    async fn asserting_one_tenant_from_many_writers_at_once_never_conflicts(db) {
+        // Arrange
+        let repository = PgTenantRepository::new(db.pool.clone(), kek());
+        let subject = tenant("stampede", "https://as.example/t/stampede");
+
+        for round in 0..10 {
+            if round > 0 {
+                // Every round starts from no row, because it is the *insert*
+                // that races; an update of an existing row does not.
+                repository
+                    .delete(&TenantId::new("stampede"))
+                    .await
+                    .expect("clear the tenant between rounds");
+            }
+
+            // Act: every writer waits at the barrier and then asserts the same
+            // configuration, which is what a deployment's replicas do at boot.
+            let barrier = Arc::new(std::sync::Barrier::new(8));
+            let racing: Vec<_> = (0..8)
+                .map(|_| {
+                    let schema = db.schema.clone();
+                    let subject = subject.clone();
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("a runtime per writer");
+                        runtime.block_on(async move {
+                            // Its own pool, not the test's: a sqlx connection
+                            // belongs to the runtime that opened it, and this
+                            // thread's runtime is not the one driving that
+                            // one. Sharing it deadlocks on the acquire.
+                            let repository =
+                                PgTenantRepository::new(connect_to_schema(&schema).await, kek());
+                            barrier.wait();
+                            repository.upsert(&subject).await
+                        })
+                    })
+                })
+                .collect();
+
+            // Assert
+            for (index, writer) in racing.into_iter().enumerate() {
+                writer
+                    .join()
+                    .expect("a writer thread")
+                    .unwrap_or_else(|error| panic!("round {round}, writer {index}: {error}"));
+            }
+        }
+
+        assert_eq!(
+            tenant_count(&db.pool, "stampede").await,
+            1,
+            "the stampede left more than one row for one tenant"
+        );
+    }
+}
+
+/// A pool of one connection pinned to an already-migrated schema.
+///
+/// `setup`'s connection options without its schema creation and migrations:
+/// the writers above each need a pool their own runtime opened, and they are
+/// all racing inside a schema that already exists.
+async fn connect_to_schema(schema: &str) -> PgPool {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL is set: setup read it");
+    let options = PgConnectOptions::from_str(&url)
+        .expect("DATABASE_URL is not a valid PostgreSQL URL")
+        .options([("search_path", schema)]);
+    PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("connect")
+}
+
+/// How many rows one tenant id holds. One, or the upsert is not an upsert.
+async fn tenant_count(pool: &PgPool, tenant: &str) -> i64 {
+    sqlx::query_scalar("select count(*) from tenants where tenant_id = $1")
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .expect("count tenants")
+}
+
+db_test! {
     /// The reserved tenant of `ast-1cj`. It used to get its keys only because
     /// `main` named it in the startup loop one step after seeding it — a
     /// guarantee that held by the order of two calls in the composition root.
