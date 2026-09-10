@@ -163,19 +163,23 @@ At the pinned release, on the plan above, **56 modules run**. What did not pass:
 * `fapi2-security-profile-final-user-rejects-authentication` — **FAILED**, and
   this one is the harness rather than the server: the browser script always
   presses *Allow*, because the module that needs *Deny* and the module that needs
-  *Allow* arrive at the same URL and nothing in the configuration can tell them
-  apart. Certification runs this test by hand.
+  *Allow* arrive at the same URL. The configuration *can* tell them apart —
+  see "Six modules the first run could not drive" below — but the *Deny* button
+  only exists on the consent screen, and the consent screen is skipped when the
+  tenant already remembers this consent, which after the first module of the
+  plan it does. Still red for that reason.
 * `fapi2-security-profile-final-ensure-unsigned-authorization-request-without-using-par-fails`,
   `…-par-attempt-reuse-request_uri`, `…-par-attempt-to-use-expired-request_uri`,
   `…-par-attempt-to-use-request_uri-for-different-client` — **INTERRUPTED**. All
   four end on the server's own error page, and the suite's verdict for that is
-  REVIEW: "upload a screenshot of the error page". A scripted browser has no
-  screenshot to upload, so the run stops there. These are manual by design; the
-  server's behaviour up to that point was what the module asked for.
+  REVIEW: "upload a screenshot of the error page". The scripted browser had no
+  task matching that page, so its non-optional *Verify Complete* task was
+  reached on the wrong URL and the run stopped there. The server's behaviour up
+  to that point was what the module asked for. Driven since — see below.
 * `fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds`
   — **INTERRUPTED**, also the harness: the module requires the browser *not* to
-  authenticate on its first visit to the login page, and the script cannot know
-  which visit it is on.
+  authenticate on its first visit to the login page, and the script did not know
+  which visit it was on. Driven since — see below.
 * `fapi2-security-profile-final-ensure-signed-client-assertion-with-RS256-fails`
   — **SKIPPED** by the suite itself, because the server advertises no RS256
   (ADR-0003). That is the expected outcome, not a gap.
@@ -183,6 +187,68 @@ At the pinned release, on the plan above, **56 modules run**. What did not pass:
 Everything else passed, including the whole DPoP negative set, PKCE, the
 client-assertion negative set, authorization-code binding and reuse, and both
 discovery forms.
+
+## Six modules the first run could not drive, and one URL that moved
+
+The interaction pages moved first. `ast-295` gave every URL rendered to a
+browser the tenant's mount prefix, so the login and consent screens are at
+`/t/conformance/interaction/…` and no longer at `/interaction/…`, and a browser
+script that matches the old path matches nothing: on the run of 2026-09-10 that
+was **55 of 56 modules INTERRUPTED**, including the happy flow. The `match`
+patterns here follow the server. A harness that drives a browser is coupled to
+the URLs that browser is sent to, and this is the coupling — if the mount prefix
+moves again, this file moves with it.
+
+
+Five of the six are now driven, and none of the five needed a line of server
+code. Nor is any of the six a regression of the merges that followed the first
+run: the section above records the same six modules, failing for the same
+reasons, on the run that produced it — the run that preceded those merges — and
+`crates/server/src/http/authorize.rs`, which decides between a redirect and the
+error page, is byte for byte the same at both commits (`ast-7fj`).
+
+The whole of it is the suite's `override` map in
+`plans/fapi2-sp-final.json`. It is keyed by module name, and what it holds is
+moved over the top-level configuration for that module alone
+(`DBTestPlanService.getModuleConfig`). One plan can therefore drive one browser
+script per module, which is what these six need and what the first run did not
+know about.
+
+* Four modules end on the server's error page rather than at a `redirect_uri`,
+  because a request whose `request_uri` is invalid, spent, expired or another
+  client's is a request whose redirect target cannot be trusted (PAR §7.3). Their
+  override is one task matching the authorization endpoint URL that waits for
+  `p.error` and passes the page to `update-image-placeholder` — the screenshot
+  the module's REVIEW asks a human for, taken by the script. Two of the four
+  (`…-attempt-reuse-request_uri`, `…-request_uri-for-different-client`) run a
+  nominal leg first, so their override keeps the login, consent and callback
+  tasks and marks every task optional: on the first leg the error task is
+  skipped, on the second the callback task is.
+* `…-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds` needs the
+  first visit to the login page to end *without* signing in, and the second, with
+  the same `request_uri`, to sign in. Its override is two blocks: the first
+  carries `"match-limit": 1`, so it is spent on the first visit — it waits for the
+  username field and stops — and the second takes every visit after it.
+* `…-user-rejects-authentication` is the one still red. Its override signs in and
+  then presses *Deny*, which is the only refusal this server offers a person; but
+  the consent screen it lives on is skipped whenever the tenant remembers a
+  consent that covers the request, and by the time this module runs it does.
+  Until a tenant can be configured to always ask (`ast-f7m.4`), or the login page
+  itself grows a way to refuse, this test needs a hand — press *Deny*, or run it
+  first against a freshly seeded database.
+
+The run that came out of all this, 2026-09-10, on 56 modules: **48 PASSED, 5
+REVIEW, 1 WARNING, 1 SKIPPED, 1 FAILED**. The FAILED is
+`user-rejects-authentication`, above. The five REVIEW are the five error-page
+modules, whose verdict is REVIEW by construction — the suite wants a human to
+look at the screenshot the script now uploads. One of the five says something
+about the server rather than the harness:
+`par-ensure-reused-request-uri-prior-to-auth-completion-succeeds` ends on the
+error page, so this server spends a `request_uri` when the browser first arrives
+at the authorization endpoint rather than when the authorization completes,
+which FAPI 2.0 SP §5.3.2.2 Note 3 recommends against. A recommendation, and a
+ticket of its own. The two FAILED of the first run — the mismatched DPoP proof
+`jkt` and the refresh token — now pass: `ast-36g` and `ast-1h1` fixed them.
 
 ## What is not covered
 
