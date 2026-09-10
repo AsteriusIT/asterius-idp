@@ -7,6 +7,9 @@ decision rather than an accident, and it is what makes the rest of this document
 short.
 
 - [`compose/`](compose/) — a runnable example stack.
+- [`helm/asterius/`](helm/asterius/) — the Helm chart, and
+  [`../docs/deployment/kubernetes.md`](../docs/deployment/kubernetes.md), the
+  guide that goes with it.
 - [`../docs/configuration.md`](../docs/configuration.md) — every key, with its
   type and default. Generated from the schema; do not edit it by hand.
 - [`../docs/deployment/tls-and-proxy.md`](../docs/deployment/tls-and-proxy.md) —
@@ -111,10 +114,17 @@ A test fails if you forget.
 
 Migrations run at startup, under a PostgreSQL advisory lock. Three replicas
 starting at once do not race: one migrates, the others wait and then find there
-is nothing to do. So a rolling upgrade is an image bump and nothing else — no
-migration job, no maintenance window, no ordering to get right.
+is nothing to do. So an upgrade is an image bump and nothing else — no migration
+job, no maintenance window, no ordering to get right.
 
-Two consequences worth knowing before the first upgrade:
+Whether it can be a *rolling* one is a separate question, and the answer is per
+migration: the first new replica migrates the database under the replicas that
+have not restarted yet, and the schema is not generally N/N+1 compatible.
+[`../docs/runbooks/upgrade.md`](../docs/runbooks/upgrade.md) §4 goes through the
+migrations one at a time — most are additive, two break a specific request path
+on an un-restarted replica. It is why the Helm chart defaults to `Recreate`.
+
+Two more consequences worth knowing before the first upgrade:
 
 - **A new binary may run against an old schema for a few seconds**, while the
   first replica migrates. `/readyz` returns 503 until every migration compiled
@@ -125,13 +135,45 @@ Two consequences worth knowing before the first upgrade:
   supports; take a database snapshot before an upgrade that you might want to
   undo.
 
+## Kubernetes
+
+[`helm/asterius/`](helm/asterius/) is a chart for the shape this page describes:
+the binary, a ConfigMap holding `asterius.toml`, secrets mounted as files, and
+an optional Ingress. It brings up no database — a database an application chart
+created is a database nobody backs up.
+
+The four things that are Kubernetes-specific rather than restatements of this
+page, all of them argued in
+[`../docs/deployment/kubernetes.md`](../docs/deployment/kubernetes.md):
+
+- **Probes are `httpGet`, never `exec`.** There is nothing in a distroless image
+  to exec. `/healthz` is liveness and never touches the database; `/readyz` is
+  200 only when the database answered *and* every migration compiled into that
+  binary is recorded applied. A startup probe covers the migration at boot, so
+  that a slow migration is not killed by liveness.
+- **`PodSecurityContext` repeats the image's guarantees** — non-root 65532,
+  read-only root filesystem, no privilege escalation, all capabilities dropped,
+  `seccompProfile: RuntimeDefault` — which is enough for the `restricted` Pod
+  Security Standard.
+- **Secrets are files in one projected volume**, matching `keys.kek_file`,
+  `keys.kek_previous_file`, `admin.password_file` and `dpop.nonce_secret_file`.
+  Only the database URL is an environment variable, because it has no file
+  spelling.
+- **The rollout defaults to `Recreate`**, for the reason in "Upgrades" above.
+
+`image.repository` is `ghcr.io/asteriusit/asterius-idp`, which is what
+[`release.yml`](../.github/workflows/release.yml) publishes on a `v*` tag. No
+tag has been cut yet, so `Chart.appVersion` is still `0.0.0` and there is
+nothing to pull: build the image yourself until a release exists. When one does,
+set `image.digest` rather than `image.tag` — a tag can be re-pointed and the
+cosign signature is over the digest and nothing else. See
+[`../docs/deployment/verifying-a-release.md`](../docs/deployment/verifying-a-release.md).
+
 ## Still to come
 
 Tracked as follow-ups to `ast-p2l.7`, and deliberately not sketched here in a
 form nobody has run:
 
-- A Helm chart, and the Kubernetes-specific parts of this guide (probes,
-  `PodSecurityContext`, secret mounts).
 - Runbooks for upgrade and for key-encryption-key rotation. Until the rotation
   runbook exists, treat the KEK as unrotatable.
 - A conformance-suite service in the example stack.

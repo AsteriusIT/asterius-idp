@@ -623,6 +623,9 @@ the same `openssl s_client` invocations. It skips when `openssl` is missing.
   `[server.proxy]` and `[mtls]`, generated from the schema.
 - [`../../deploy/README.md`](../../deploy/README.md) — the image, the example
   stack, upgrades.
+- [`kubernetes.md`](kubernetes.md) — the Helm chart: which of the rules on this
+  page become Ingress annotations, and what the probes and the
+  `PodSecurityContext` have to say.
 - [`../threat-model.md`](../threat-model.md) — attacker A2 (the network), and
   the trust roots a proxy adds.
 - [`../adr/0009-the-admin-console-is-a-first-party-same-origin-app.md`](../adr/0009-the-admin-console-is-a-first-party-same-origin-app.md)

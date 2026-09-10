@@ -1,0 +1,92 @@
+# Every optional object turned on at once, so that `helm template` exercises the
+# branches the minimal file does not: Ingress, PodDisruptionBudget, the previous
+# KEK, the DPoP nonce secret, a RollingUpdate rollout and a chart-created Secret.
+#
+# Development values throughout. In particular the secrets below are literals in
+# a file in version control, which is exactly what values.yaml says not to do —
+# they exist so the template is rendered, not so anyone installs them.
+image:
+  tag: "0.0.0-dev"
+
+replicaCount: 3
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+config:
+  contents: |
+    log_format = "json"
+
+    [server]
+    bind = "0.0.0.0:9443"
+    mode = "behind_proxy"
+
+    [server.proxy]
+    trusted_cidrs = ["10.42.0.0/16"]
+
+    [keys]
+    kek_file = "/etc/asterius-secrets/kek"
+    kek_previous_file = "/etc/asterius-secrets/kek-previous"
+
+    [features]
+    dpop_nonce = true
+
+    [dpop]
+    nonce_secret_file = "/etc/asterius-secrets/dpop-nonce-secret"
+
+    [[tenant]]
+    id = "demo"
+    issuer = "https://as.example/t/demo"
+
+    [admin]
+    tenant = "admin"
+    issuer = "https://as.example/t/admin"
+    username = "admin"
+    password_file = "/etc/asterius-secrets/admin-password"
+
+secrets:
+  kek:
+    value: "YXN0ZXJpdXMtZGV2LWtlay1ub3QtYS1zZWNyZXQhISE="
+  kekPrevious:
+    value: "YXN0ZXJpdXMtZGV2LW9sZC1rZWstbm90LXNlY3JldCE="
+  adminPassword:
+    value: "not-a-password"
+  dpopNonceSecret:
+    value: "YXN0ZXJpdXMtZGV2LWRwb3Atbm9uY2Utc2VjcmV0Ich="
+
+database:
+  urlSecret:
+    value: "postgres://asterius:asterius@postgres:5432/asterius"
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/upstream-vhost: "as.example"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Forwarded "";
+      proxy_set_header X-Forwarded-Host $http_host;
+      proxy_set_header X-Client-Cert "$ssl_client_escaped_cert";
+  hosts:
+    - host: as.example
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: asterius-tls
+      hosts:
+        - as.example
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+resources:
+  limits:
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi

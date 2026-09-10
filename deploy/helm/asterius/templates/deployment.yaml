@@ -1,0 +1,212 @@
+{{- $fullName := include "asterius.fullname" . -}}
+{{- $chartSecret := include "asterius.secretName" . -}}
+{{/*
+Secret files, in the order the configuration reference lists them. A file per
+entry, mounted read-only: `keys.kek_file`, `keys.kek_previous_file`,
+`admin.password_file` and `dpop.nonce_secret_file` all take a path, and a path
+is not readable through /proc/self/environ.
+*/}}
+{{- $secretFiles := list -}}
+{{- range $key, $file := dict "kek" "kek" "kekPrevious" "kek-previous" "adminPassword" "admin-password" "dpopNonceSecret" "dpop-nonce-secret" -}}
+{{- $entry := index $.Values.secrets $key -}}
+{{- if $entry.existingSecret -}}
+{{- $secretFiles = append $secretFiles (dict "secret" $entry.existingSecret "key" (default $file $entry.existingSecretKey) "path" $file) -}}
+{{- else if $entry.value -}}
+{{- $secretFiles = append $secretFiles (dict "secret" $chartSecret "key" $file "path" $file) -}}
+{{- end -}}
+{{- end -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "asterius.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  {{/*
+  Recreate by default. Migrations run at process start under an advisory lock,
+  so replicas starting together do not race — but the schema is not generally
+  N/N+1 compatible (docs/runbooks/upgrade.md §4), so a surge replica can migrate
+  the database under an old one and break PAR (0005) or mTLS client
+  registration (0011) until the rollout finishes. Recreate trades that window
+  for a short outage with no mixed-version pair in it.
+  */}}
+  strategy:
+    type: {{ .Values.updateStrategy.type }}
+    {{- if eq .Values.updateStrategy.type "RollingUpdate" }}
+    rollingUpdate:
+      {{- toYaml .Values.updateStrategy.rollingUpdate | nindent 6 }}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "asterius.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- if .Values.restartOnConfigChange }}
+        {{- if not .Values.config.existingConfigMap }}
+        checksum/config: {{ .Values.config.contents | sha256sum }}
+        {{- end }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "asterius.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "asterius.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: asterius
+          image: {{ include "asterius.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{/*
+          The image's own CMD already names /etc/asterius/asterius.toml, but
+          the chart repeats it: a reader should be able to see which file this
+          pod runs from without pulling the image.
+          */}}
+          args:
+            - --config
+            - /etc/asterius/asterius.toml
+          ports:
+            - name: {{ .Values.service.portName }}
+              containerPort: 9443
+              protocol: TCP
+          env:
+            {{- if or .Values.database.urlSecret.existingSecret .Values.database.urlSecret.value }}
+            - name: ASTERIUS__DATABASE__URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default $chartSecret .Values.database.urlSecret.existingSecret }}
+                  key: {{ if .Values.database.urlSecret.existingSecret }}{{ .Values.database.urlSecret.existingSecretKey }}{{ else }}database-url{{ end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{/*
+          httpGet, not exec: the image is distroless — no shell, no curl,
+          nothing to exec. See deploy/README.md, "The image".
+          */}}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.service.portName }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.service.portName }}
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+            successThreshold: {{ .Values.probes.liveness.successThreshold }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.service.portName }}
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            successThreshold: {{ .Values.probes.readiness.successThreshold }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/asterius
+              readOnly: true
+            {{- if $secretFiles }}
+            - name: secrets
+              mountPath: {{ .Values.secretMountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.tmpDir.enabled }}
+            - name: tmp
+              mountPath: /tmp
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "asterius.configMapName" . }}
+            items:
+              - key: asterius.toml
+                path: asterius.toml
+        {{- if $secretFiles }}
+        {{/*
+        One projected volume rather than a mount per secret, so that every
+        secret file lands in a single directory the configuration can name and
+        no subPath is involved — a subPath mount never sees an updated Secret,
+        which would make rotating the admin password silently ineffective.
+        */}}
+        - name: secrets
+          projected:
+            defaultMode: 0440
+            sources:
+              {{- range $secretFiles }}
+              - secret:
+                  name: {{ .secret }}
+                  items:
+                    - key: {{ .key }}
+                      path: {{ .path }}
+              {{- end }}
+        {{- end }}
+        {{- if .Values.tmpDir.enabled }}
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.tmpDir.sizeLimit }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

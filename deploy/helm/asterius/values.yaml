@@ -1,0 +1,395 @@
+# Values for the Asterius chart.
+#
+# Nothing here is a production value that works unedited: `config.contents` is
+# empty on purpose and `helm install` fails until you write one. The narrative
+# version of this file is docs/deployment/kubernetes.md; the reference for every
+# configuration key is docs/configuration.md, which is generated from the schema
+# and is the only place that is authoritative about the TOML.
+
+# -- Image ------------------------------------------------------------------
+
+image:
+  # What .github/workflows/release.yml publishes on a `v*` tag. The repository
+  # is real; what is missing is a tag in it — no release has been cut, so pull
+  # nothing from here yet and build the image yourself.
+  repository: ghcr.io/asteriusit/asterius-idp
+  # Empty means Chart.appVersion, which is still 0.0.0 and therefore does not
+  # exist in the registry. Set this, or better `digest` below.
+  tag: ""
+  # `sha256:…`, used instead of the tag when set, and the better of the two: a
+  # tag is a name and a name can be re-pointed, while the cosign signature a
+  # release carries is over the digest and nothing else. This is the value
+  # `cosign verify` names — docs/deployment/verifying-a-release.md.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Replicas and rollout ---------------------------------------------------
+
+# Every process is interchangeable with every other: all state is in
+# PostgreSQL, there is no cache tier and no leader. Scaling is horizontal and
+# needs no coordination — but read `updateStrategy` before scaling past one.
+replicaCount: 1
+
+# `Recreate` is the default, and that is a deliberate choice rather than
+# conservatism.
+#
+# Migrations run at process start, under a PostgreSQL advisory lock, so several
+# replicas starting at once do not race. What they do do is share a schema: the
+# first new replica migrates the database *under* the old replicas that have
+# not restarted yet, and the schema is not generally N/N+1 compatible.
+# docs/runbooks/upgrade.md §4 reads every migration against the code that
+# preceded it; eight of ten are additive, and two are not:
+#
+#   * 0005 drops `auth_requests.dpop_jkt`. An old replica then fails PAR and
+#     the authorization request that consumes the `request_uri`.
+#   * 0011 adds a check constraint on client mTLS subjects. An old replica then
+#     fails `POST /register` and console client creation for `tls_client_auth`
+#     clients.
+#
+# Neither corrupts data — both are refusals — so the exposure is a window of
+# errors, bounded by how long the rollout takes. `Recreate` trades that window
+# for a short full outage in which no mixed-version pair exists. That is the
+# right trade for an OpenID Provider, whose failures are other systems' login
+# failures.
+#
+# Set `type: RollingUpdate` only if you have read §4 for the migrations you are
+# crossing, decided they are all additive, and want zero downtime. Then keep
+# `maxSurge` low and the rollout short.
+updateStrategy:
+  type: Recreate
+  # rollingUpdate is ignored unless type is RollingUpdate.
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+# Bounds how long a rollout may sit half-finished before Kubernetes calls it
+# failed. Migrations plus KEK load plus tenant setup is seconds, not minutes.
+progressDeadlineSeconds: 300
+revisionHistoryLimit: 3
+terminationGracePeriodSeconds: 30
+
+# -- Configuration ----------------------------------------------------------
+
+config:
+  # The whole of asterius.toml, rendered into a ConfigMap and mounted at
+  # /etc/asterius/asterius.toml. A literal string rather than a structured tree
+  # on purpose: an unknown key is a startup error, not a warning, and a chart
+  # that templated the schema would be a second, always-stale copy of it. Write
+  # the file docs/configuration.md describes and paste it here.
+  #
+  # Two things the chart cares about, because the mounts below have to agree
+  # with them:
+  #
+  #   [keys]
+  #   kek_file = "/etc/asterius-secrets/kek"
+  #
+  #   [admin]
+  #   password_file = "/etc/asterius-secrets/admin-password"
+  #
+  # And, only under `[features] dpop_nonce = true`:
+  #
+  #   [dpop]
+  #   nonce_secret_file = "/etc/asterius-secrets/dpop-nonce-secret"
+  #
+  # A sketch that is not a default — it names no real host and no real database:
+  #
+  #   log_format = "json"
+  #
+  #   [server]
+  #   bind = "0.0.0.0:9443"
+  #   mode = "behind_proxy"
+  #
+  #   [server.proxy]
+  #   # Only the ingress controller's pod CIDR. See "What a proxy must never do"
+  #   # in docs/deployment/tls-and-proxy.md: everything on that page reduces to
+  #   # this list.
+  #   trusted_cidrs = ["10.42.0.0/16"]
+  #
+  #   [keys]
+  #   kek_file = "/etc/asterius-secrets/kek"
+  #
+  #   [database]
+  #   # The password does not belong in a ConfigMap. Leave the URL out entirely
+  #   # and set database.urlSecret below, which injects
+  #   # ASTERIUS__DATABASE__URL.
+  #   max_connections = 16
+  #
+  #   [[tenant]]
+  #   id = "demo"
+  #   issuer = "https://as.example/t/demo"
+  #
+  #   [admin]
+  #   tenant = "admin"
+  #   issuer = "https://as.example/t/admin"
+  #   username = "admin"
+  #   password_file = "/etc/asterius-secrets/admin-password"
+  contents: ""
+
+  # Use a ConfigMap you manage yourself instead of the one above. It must hold
+  # a key named `asterius.toml`.
+  existingConfigMap: ""
+
+# Extra `ASTERIUS__<TABLE>__<KEY>` overrides. Convenient for one value that
+# differs per environment; not a place for secrets, which are readable through
+# /proc/self/environ.
+extraEnv: []
+#  - name: ASTERIUS__LOG_FORMAT
+#    value: json
+
+# Extra environment from ConfigMaps or Secrets you already have.
+extraEnvFrom: []
+
+# -- Secrets ----------------------------------------------------------------
+
+# Secrets are mounted as files, never as environment variables, wherever the
+# binary offers the choice. A file is not readable through /proc/self/environ
+# and does not appear in a process listing. docs/configuration.md, "Secret
+# sources", is the reference.
+#
+# Every entry has the same shape:
+#   existingSecret / existingSecretKey — a Secret you manage (the production
+#     shape, whether that is an ExternalSecret, a sealed secret or kubectl).
+#   value — the chart creates the Secret. For a test cluster; it puts the
+#     material in your values file and therefore in your release history.
+secrets:
+  # The key-encryption key: 32 bytes, base64. Every signing key in the database
+  # is encrypted under it. Losing it loses every key — back it up somewhere the
+  # database backup is not.
+  kek:
+    existingSecret: ""
+    existingSecretKey: kek
+    value: ""
+  # The key a rotation is moving away from, during the rotation only. Set it,
+  # run `asterius rewrap-kek`, then remove it: while it is set, a retired key
+  # stays readable by this process. See docs/runbooks/kek-rotation.md.
+  kekPrevious:
+    existingSecret: ""
+    existingSecretKey: kek-previous
+    value: ""
+  # The deployment admin's initial password, hashed with Argon2id at startup.
+  # Read on every boot, which is what makes rotating it an edit and a restart.
+  adminPassword:
+    existingSecret: ""
+    existingSecretKey: admin-password
+    value: ""
+  # Only meaningful under `[features] dpop_nonce = true`. Absent means
+  # per-process nonces, which is a round trip rather than a failure — so leave
+  # it empty unless you run more than one replica with the flag on.
+  dpopNonceSecret:
+    existingSecret: ""
+    existingSecretKey: dpop-nonce-secret
+    value: ""
+
+# Where the secret files land. The config file must name the same paths.
+#
+# Beside /etc/asterius rather than inside it: the configuration is a read-only
+# ConfigMap volume, and a second volume mounted underneath it would need a
+# directory created inside a read-only mount.
+secretMountPath: /etc/asterius-secrets
+
+database:
+  # The connection URL carries a password, so it does not belong in the
+  # ConfigMap. Named here, it is injected as ASTERIUS__DATABASE__URL — which is
+  # an environment variable and therefore second-best, but the URL is a
+  # database credential rather than a key that decrypts the database, and no
+  # `database.url_file` key exists.
+  urlSecret:
+    existingSecret: ""
+    existingSecretKey: url
+    value: ""
+
+# Arbitrary extra volumes and mounts — a CA bundle for the database, an mTLS
+# trust anchor, a TLS certificate under `mode = "terminate_tls"`.
+extraVolumes: []
+extraVolumeMounts: []
+
+# -- Service ----------------------------------------------------------------
+
+service:
+  type: ClusterIP
+  port: 9443
+  # `http` under `mode = "behind_proxy"`, which is the shape this chart assumes:
+  # the wire between the ingress controller and the pod is cleartext, and the
+  # name should say so rather than flatter it. Under `mode = "terminate_tls"`
+  # set this to `https` — some controllers pick their upstream scheme from it.
+  portName: http
+  annotations: {}
+  labels: {}
+
+# -- Ingress ----------------------------------------------------------------
+
+# Off by default: an Ingress that gets the headers wrong is worse than none.
+# Read docs/deployment/tls-and-proxy.md first — §3 (host and tenancy), §4 (the
+# client-certificate header), §7 (the mount prefix) and §11 (what a proxy must
+# never do) are the ones that bite.
+ingress:
+  enabled: false
+  className: ""
+  # The annotations below are for ingress-nginx and encode the guide's rules.
+  # Another controller needs the equivalent, not a copy.
+  annotations: {}
+  #  # The host the pod sees must be the public authority, port included: it is
+  #  # what chooses the tenant, and it must equal the authority of the tenant's
+  #  # issuer (§3).
+  #  nginx.ingress.kubernetes.io/upstream-vhost: "as.example"
+  #  # Never rewrite the path: /t/<tenant> is part of the issuer (§7). Setting
+  #  # no rewrite-target annotation at all is how you say that.
+  #  #
+  #  # A client-supplied Forwarded, X-Forwarded-Host or X-Client-Cert must never
+  #  # survive: the trust check inside Asterius is on the peer, not on who wrote
+  #  # the header (§4, §11). The controller does not strip unknown request
+  #  # headers, so overwrite all three unconditionally — the empty
+  #  # certificate decodes to "no certificate", which is the right answer when
+  #  # none was presented.
+  #  nginx.ingress.kubernetes.io/configuration-snippet: |
+  #    proxy_set_header Forwarded "";
+  #    proxy_set_header X-Forwarded-Host $http_host;
+  #    proxy_set_header X-Client-Cert "$ssl_client_escaped_cert";
+  #  # Asterius sets HSTS, CSP, X-Frame-Options and Referrer-Policy on every
+  #  # response. A second copy from the controller is a duplicate header, and a
+  #  # browser treats duplicated CSP as the intersection (§11) — so make sure
+  #  # the controller's own ConfigMap does not add them globally
+  #  # (`hsts: "false"` there, and no `add-headers` ConfigMap that repeats
+  #  # them). There is no annotation that removes a header the controller was
+  #  # told to add.
+  #  #
+  #  # Only with [features] mtls = true: request a certificate, never require
+  #  # one — a browser reaching /authorize must still connect. Verification
+  #  # happens inside Asterius, against the tenant's anchors.
+  #  nginx.ingress.kubernetes.io/auth-tls-verify-client: "optional_no_ca"
+  #  nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream: "true"
+  #
+  # `configuration-snippet` is refused by ingress-nginx unless the controller
+  # runs with `allow-snippet-annotations: true`, which is off by default since
+  # 1.9. If you cannot turn it on, the header rules have to live in the
+  # controller's own ConfigMap or in a proxy in front of it. They are not
+  # optional: without them a client can choose the tenant and the certificate.
+  hosts:
+    - host: as.example
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: asterius-tls
+  #    hosts:
+  #      - as.example
+
+# -- Probes -----------------------------------------------------------------
+
+# httpGet, never exec: the image is distroless and has no shell, no curl and
+# nothing else to exec. That is a property of the image, so an exec probe here
+# would not be a style preference, it would not run.
+probes:
+  # /healthz is liveness only. It never touches the database, deliberately: a
+  # database outage that failed liveness would get every replica killed and
+  # turn an outage into a longer one.
+  liveness:
+    enabled: true
+    initialDelaySeconds: 0
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+  # /readyz is 200 only when the database answered *and* every migration
+  # compiled into this binary is recorded applied. It is a real assertion about
+  # this pod's ability to serve, which is why it gates the Service.
+  readiness:
+    enabled: true
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 3
+    successThreshold: 1
+  # The startup probe is what makes the liveness settings above safe. The first
+  # replica of a new build applies migrations before it binds, and a large
+  # migration takes longer than three failed liveness checks; without this
+  # probe the kubelet would kill it mid-migration, repeatedly. 60 × 2s = two
+  # minutes before the pod is declared dead on arrival.
+  startup:
+    enabled: true
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 60
+
+# -- Security ---------------------------------------------------------------
+
+# The image is non-root, has no shell and writes nothing of its own, and these
+# settings assert that again at the cluster level so that the guarantee
+# survives someone rebuilding the image from a different base. If one of them
+# has to be removed to make the pod work, that is a bug in the image.
+podSecurityContext:
+  runAsNonRoot: true
+  # uid/gid 65532, the distroless `nonroot` user.
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+
+# The process writes nothing of its own. /tmp exists only so that a library
+# reaching for a temporary file fails at write time rather than making the
+# read-only root filesystem unusable. Memory-backed, so it counts against the
+# container's memory limit and cannot fill a node.
+tmpDir:
+  enabled: true
+  sizeLimit: 16Mi
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # Asterius never calls the Kubernetes API. A mounted token is a credential
+  # sitting in a pod that has no use for it.
+  automountServiceAccountToken: false
+
+# -- Scheduling and resources -----------------------------------------------
+
+resources: {}
+#  limits:
+#    memory: 512Mi
+#  requests:
+#    cpu: 250m
+#    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+podAnnotations: {}
+podLabels: {}
+commonLabels: {}
+
+# Restart the pods when the rendered configuration changes. Without it, editing
+# `config.contents` updates the ConfigMap and nothing reads it until the next
+# unrelated rollout.
+restartOnConfigChange: true
+
+# -- PodDisruptionBudget ----------------------------------------------------
+
+# Off by default, because the default `replicaCount` is 1 and a PDB over a
+# single replica only blocks node drains without protecting anything. Turn it
+# on together with replicaCount > 1.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  maxUnavailable: ""

@@ -1,0 +1,30 @@
+{{ .Chart.Name }} {{ .Chart.Version }} installed as {{ .Release.Name }} in {{ .Release.Namespace }}.
+
+Image: {{ include "asterius.image" . }}
+Rollout strategy: {{ .Values.updateStrategy.type }}{{ if ne .Values.updateStrategy.type "Recreate" }}  <-- read docs/runbooks/upgrade.md section 4 before the next upgrade: the schema is not generally N/N+1 compatible{{ end }}
+
+A replica is ready when the database answered and every migration compiled into
+this binary is recorded applied. Until both are true /readyz is 503 and the
+Service sends it nothing:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "asterius.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "asterius.fullname" . }} 9443:{{ .Values.service.port }}
+  curl -fsS http://127.0.0.1:9443/readyz
+  # {"ready":true,"database":true,"migrations_applied":true,"features":[...]}
+
+`features` is the flag set this deployment offers. If it is not what you meant,
+the configuration is not what you meant.
+
+{{- if not .Values.ingress.enabled }}
+
+No Ingress was created. The public URL a client reaches must be byte-identical
+to the tenant's issuer -- scheme, host, port and path prefix -- and the proxy
+must overwrite Forwarded, X-Forwarded-Host and the client-certificate header
+unconditionally. See docs/deployment/tls-and-proxy.md before exposing this.
+{{- end }}
+{{- if include "asterius.createsSecret" . }}
+
+WARNING: at least one secret came from your values file, so it is now in the
+Helm release history and in `helm get values`. For anything but a test cluster,
+use secrets.<name>.existingSecret instead.
+{{- end }}

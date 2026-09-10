@@ -1,0 +1,17 @@
+{{- if not .Values.config.existingConfigMap }}
+{{/*
+asterius.toml, verbatim. The chart does not template the schema: an unknown key
+is a startup error rather than a warning, and a structured rendering here would
+be a second copy of docs/configuration.md that goes stale the first time the
+schema moves.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "asterius.configMapName" . }}
+  labels:
+    {{- include "asterius.labels" . | nindent 4 }}
+data:
+  asterius.toml: |
+    {{- required "asterius: set config.contents to the contents of asterius.toml, or point config.existingConfigMap at a ConfigMap holding an `asterius.toml` key. See docs/configuration.md." .Values.config.contents | nindent 4 }}
+{{- end }}
