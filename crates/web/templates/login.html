@@ -121,15 +121,30 @@
     if (pending) {
       pending.abort();
     }
-    pending = new AbortController();
+    const ceremony = new AbortController();
+    pending = ceremony;
     const options = await post(root.dataset.optionsUrl, { csrf: root.dataset.csrf });
+    // Aborting reaches a ceremony that is waiting in `credentials.get`, and
+    // nothing else: one still fetching its options is never told. It has to
+    // notice by itself, or it signs a challenge that has since been replaced
+    // and posts it — which spends the challenge the ceremony that superseded
+    // it is about to use, so the sign-in the user actually asked for is
+    // refused. That is a click landing inside the autofill ceremony's options
+    // request, and it is what it looks like from the outside: pressing the
+    // button too soon says "that did not work".
+    if (pending !== ceremony) {
+      return;
+    }
     options.challenge = decode(options.challenge);
     const assertion = await navigator.credentials.get({
       publicKey: options,
       mediation: mediation,
-      signal: pending.signal,
+      signal: ceremony.signal,
     });
-    if (!assertion) {
+    // The same question again, because the window reopens across the ceremony
+    // itself: an assertion that arrives after a newer one has drawn its
+    // challenge is as stale as one signed before it.
+    if (!assertion || pending !== ceremony) {
       return;
     }
     await post(root.dataset.finishUrl, {

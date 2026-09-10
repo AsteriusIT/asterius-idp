@@ -167,8 +167,34 @@ impl TenantRepository for PgTenantRepository {
     /// from the outside, like a tenant that simply does not work. The salt
     /// write is an insert that yields to whatever is already there, so updating
     /// a tenant never disturbs the salt it was created with.
+    ///
+    /// # Why the lock
+    ///
+    /// `on conflict (tenant_id)` names one arbiter index, and PostgreSQL sends
+    /// a conflict to the `do update` branch only when it is found *there*.
+    /// `issuer` and `custom_host` are unique as well, and those indexes are
+    /// checked with an ordinary uniqueness check: a writer that got past its
+    /// arbiter check just before another inserted the same row meets that
+    /// row on `tenants_issuer_key` instead, and gets `23505` rather than an
+    /// update. Two replicas asserting the configuration at boot do exactly
+    /// that, and one of them fails to start — which is what `ast-1gj` found in
+    /// CI, in the second writer of a two-writer test.
+    ///
+    /// The lock makes the second writer wait for the first to commit, so it
+    /// sees the row and updates it. Per tenant, so tenants do not queue behind
+    /// each other, and in the same two-key space as the key pass
+    /// ([`crate::key_store`]) and [`crate::retention`], with its own second
+    /// key. It is held for the transaction and therefore released at commit,
+    /// before the provisioning that [`crate::ProvisionedTenants`] runs next
+    /// takes the key-rotation lock — the two are never held at once.
     async fn upsert(&self, tenant: &Tenant) -> Result<(), DomainError> {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+
+        sqlx::query("select pg_advisory_xact_lock(hashtext($1), hashtext('tenant-upsert'))")
+            .bind(tenant.id.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(to_domain_error)?;
 
         // `settings` is merged rather than replaced: `refresh` is the only
         // member this server understands today, and an upsert that wrote the

@@ -206,3 +206,81 @@ test.describe.serial('a passkey, end to end', () => {
     await expect(page.locator('input[name="password"]')).toBeVisible();
   });
 });
+
+/**
+ * `ast-1gj`: pressing the button must beat the autofill ceremony it replaces.
+ *
+ * The login page starts a conditional-mediation ceremony as it loads, and
+ * `authenticate` aborts whatever is outstanding before it starts another. That
+ * abort only reaches a ceremony which has got as far as `credentials.get`: one
+ * still *fetching its options* was never told, went on to sign the challenge
+ * the click had already replaced, and posted it — spending the challenge the
+ * deliberate ceremony was about to use. Both are then refused, and a user who
+ * did nothing but press the button early is told "that did not work".
+ *
+ * It surfaced as a red `passkey-clone` on `main` (run 34483437177), where the
+ * autofill options request took 166 ms on a cold CI runner and the click
+ * landed inside it; locally the same request answers in 7 ms. So this holds
+ * the first one open rather than hoping for a slow machine: the click lands
+ * mid-flight every time.
+ */
+test('pressing the button while the autofill ceremony is fetching its options signs in', async ({
+  page,
+  context,
+  request,
+}) => {
+  // --- Arrange: a device with a passkey, and an empty cookie jar ----------
+  const authenticator = await attachVirtualAuthenticator(page);
+  const enrolling = await startWebauthnAuthorization(request);
+  await page.goto(enrolling.authorizationUrl);
+  await page.locator('input[name="username"]').fill(USERNAME);
+  await page.locator('input[name="password"]').fill(PASSWORD);
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Allow' })).toBeVisible();
+
+  await page.goto(`${WEBAUTHN_BASE_URL}/passkeys`);
+  await page.getByRole('button', { name: 'Create a passkey' }).click();
+  await expect
+    .poll(async () => (await authenticator.credentials()).length, {
+      message: 'the enrolment ceremony created no credential',
+    })
+    .toBe(1);
+  await context.clearCookies();
+
+  // --- Act: the click arrives while the autofill options are in flight ----
+  // The *answers* are held, not the requests: the server must draw the
+  // autofill challenge first and the button's second — that is the order the
+  // page produces and the order that decides which challenge is the live one.
+  // Only the delivery is reordered, and only enough to put the click inside
+  // the autofill ceremony's flight and the autofill assertion ahead of the
+  // button's, which is the interleaving CI hit.
+  let drawn = 0;
+  await page.route('**/interaction/*/passkey/options', async (route) => {
+    drawn += 1;
+    const held = drawn === 1 ? 400 : 1_500;
+    const answer = await route.fetch();
+    await new Promise((resolve) => setTimeout(resolve, held));
+    await route.fulfill({ response: answer });
+  });
+
+  await authenticator.simulatePresence(false);
+  const signingIn = await startWebauthnAuthorization(request);
+  await page.goto(signingIn.authorizationUrl);
+  const button = page.getByRole('button', { name: 'Sign in with a passkey' });
+  await expect(button).toBeVisible();
+  await button.click();
+  await authenticator.simulatePresence(true);
+
+  // --- Assert: the ceremony the user asked for is the one that counted ----
+  await expect(page.getByRole('button', { name: 'Allow' })).toBeVisible();
+  expect(
+    (await context.cookies()).find((cookie) => cookie.name === '__Host-asterius_session'),
+    'the sign-in the user asked for wrote no session',
+  ).toBeDefined();
+  expect(
+    drawn,
+    'the button drew no challenge of its own, so nothing was superseded and this proves nothing',
+  ).toBe(2);
+
+  await authenticator.remove();
+});

@@ -7569,6 +7569,45 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed retired subject");
+
+        seed_theme(pool, tenant).await;
+    }
+
+    /// The tenant's theme and one image it could name (`ast-ndk.1`).
+    ///
+    /// Both tables are kept by the policy — a palette an administrator chose
+    /// is configuration, not an artefact of one authorization — so the
+    /// kept-table criterion needs a row in each before it can say anything
+    /// about them. The document is the default one so that it is a document
+    /// this build accepts: a fixture the theme repository would refuse to read
+    /// is a fixture that lies about what is stored.
+    async fn seed_theme(pool: &PgPool, tenant: &str) {
+        sqlx::query(
+            "insert into tenant_themes (tenant_id, document) values ($1, $2)
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .bind(asterius_domain::Theme::default().to_json())
+        .execute(pool)
+        .await
+        .expect("seed theme");
+
+        // Content addressed, so the digest is computed rather than invented:
+        // the column is what a URL path segment is built from, and a fixture
+        // whose digest does not match its bytes is one nothing else can check.
+        let bytes = b"not really a png, but it is what was stored".to_vec();
+        let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+        sqlx::query(
+            "insert into tenant_theme_assets (tenant_id, digest, content_type, bytes)
+             values ($1, $2, 'image/png', $3)
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .bind(digest)
+        .bind(bytes)
+        .execute(pool)
+        .await
+        .expect("seed theme asset");
     }
 
     /// One row per swept expiry-driven table, expiring at `expires`.
@@ -7992,18 +8031,23 @@ mod retention {
         .await
         .expect("seed outbox");
 
-        // One attempt against the oldest row, so the `Kept` rule for
-        // `outbox_attempts` has something to be checked against (`ast-0ju.9`).
-        // It is kept rather than swept because it cascades from `outbox`: the
-        // trail of a delivery disappears exactly when the row it describes
-        // does, and a second cutoff here would either outlive the row or
-        // predecease it.
+        // One attempt, so the `Kept` rule for `outbox_attempts` has something
+        // to be checked against (`ast-0ju.9`). It is kept rather than swept
+        // because it cascades from `outbox`: the trail of a delivery
+        // disappears exactly when the row it describes does, and a second
+        // cutoff here would either outlive the row or predecease it.
+        //
+        // Against the *pending* row, and that is the whole point: an attempt
+        // hung off the delivered row eight days old is deleted by the cascade
+        // when the sweep takes its parent, and "a kept table the sweep did not
+        // empty" then reads as emptied. A delivery still owed, whose first
+        // attempt was refused, is what the rule is about anyway.
         sqlx::query(
             "insert into outbox_attempts
                  (tenant_id, outbox_id, attempt, attempted_at, outcome, detail)
-             select $1, min(outbox_id), 1, $2, 'delivered', null
+             select $1, outbox_id, 1, $2, 'retry', 'the relying party answered 503'
                from outbox
-              where tenant_id = $1",
+              where tenant_id = $1 and status = 'pending'",
         )
         .bind(tenant)
         .bind(now() - Duration::days(8))
@@ -9746,6 +9790,109 @@ db_test! {
             "re-asserting a tenant created a second set of keys"
         );
     }
+}
+
+db_test! {
+    /// `ast-1gj`. The two writers above are not enough to hold the window
+    /// open, and CI found what they miss: `Conflict("tenants_issuer_key")`.
+    ///
+    /// `on conflict (tenant_id) do update` names one arbiter, and Postgres
+    /// only routes a conflict on *that* index to the update. `tenants.issuer`
+    /// and `tenants.custom_host` are unique too, and a duplicate found there
+    /// is a plain `23505`. Between one writer's arbiter check and its index
+    /// insertion another can insert the same row, and the loser then meets the
+    /// concurrent tuple on the issuer index rather than on the primary key —
+    /// so a second replica asserting the configuration at boot fails outright
+    /// instead of updating.
+    ///
+    /// Real threads and repeated rounds, because the window is a few
+    /// microseconds inside one statement's execution: `tokio::join!` on one
+    /// thread sends the statements in an order that keeps missing it — which
+    /// is exactly why the two-writer test above passed here for months and
+    /// then failed on a CI runner.
+    async fn asserting_one_tenant_from_many_writers_at_once_never_conflicts(db) {
+        // Arrange
+        let repository = PgTenantRepository::new(db.pool.clone(), kek());
+        let subject = tenant("stampede", "https://as.example/t/stampede");
+
+        for round in 0..10 {
+            if round > 0 {
+                // Every round starts from no row, because it is the *insert*
+                // that races; an update of an existing row does not.
+                repository
+                    .delete(&TenantId::new("stampede"))
+                    .await
+                    .expect("clear the tenant between rounds");
+            }
+
+            // Act: every writer waits at the barrier and then asserts the same
+            // configuration, which is what a deployment's replicas do at boot.
+            let barrier = Arc::new(std::sync::Barrier::new(8));
+            let racing: Vec<_> = (0..8)
+                .map(|_| {
+                    let schema = db.schema.clone();
+                    let subject = subject.clone();
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("a runtime per writer");
+                        runtime.block_on(async move {
+                            // Its own pool, not the test's: a sqlx connection
+                            // belongs to the runtime that opened it, and this
+                            // thread's runtime is not the one driving that
+                            // one. Sharing it deadlocks on the acquire.
+                            let repository =
+                                PgTenantRepository::new(connect_to_schema(&schema).await, kek());
+                            barrier.wait();
+                            repository.upsert(&subject).await
+                        })
+                    })
+                })
+                .collect();
+
+            // Assert
+            for (index, writer) in racing.into_iter().enumerate() {
+                writer
+                    .join()
+                    .expect("a writer thread")
+                    .unwrap_or_else(|error| panic!("round {round}, writer {index}: {error}"));
+            }
+        }
+
+        assert_eq!(
+            tenant_count(&db.pool, "stampede").await,
+            1,
+            "the stampede left more than one row for one tenant"
+        );
+    }
+}
+
+/// A pool of one connection pinned to an already-migrated schema.
+///
+/// `setup`'s connection options without its schema creation and migrations:
+/// the writers above each need a pool their own runtime opened, and they are
+/// all racing inside a schema that already exists.
+async fn connect_to_schema(schema: &str) -> PgPool {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL is set: setup read it");
+    let options = PgConnectOptions::from_str(&url)
+        .expect("DATABASE_URL is not a valid PostgreSQL URL")
+        .options([("search_path", schema)]);
+    PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("connect")
+}
+
+/// How many rows one tenant id holds. One, or the upsert is not an upsert.
+async fn tenant_count(pool: &PgPool, tenant: &str) -> i64 {
+    sqlx::query_scalar("select count(*) from tenants where tenant_id = $1")
+        .bind(tenant)
+        .fetch_one(pool)
+        .await
+        .expect("count tenants")
 }
 
 db_test! {

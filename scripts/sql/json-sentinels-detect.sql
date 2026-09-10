@@ -47,6 +47,14 @@ docs (table_name, column_name, repairable, row_key, doc) as (
            jsonb_build_object('tenant_id', tenant_id), settings
     from tenants
     union all
+    -- The tenant's design tokens (`0016`). Validated by `Theme::from_json` on
+    -- the way in and on the way out, so a sentinel here is a row this build
+    -- refuses to read — which is a tenant whose pages stop rendering, not a
+    -- claim that leaks somewhere.
+    select 'tenant_themes', 'document', true,
+           jsonb_build_object('tenant_id', tenant_id), document
+    from tenant_themes
+    union all
     select 'clients', 'jwks', true,
            jsonb_build_object('tenant_id', tenant_id, 'client_id', client_id), jwks
     from clients
@@ -135,6 +143,7 @@ docs (table_name, column_name, repairable, row_key, doc) as (
 -- the database before filtering any of them.
 inventory (table_name, column_name) as (
     values ('tenants', 'settings'),
+           ('tenant_themes', 'document'),
            ('clients', 'jwks'),
            ('clients', 'agent_policy'),
            ('clients', 'software_statement'),
