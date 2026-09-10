@@ -645,6 +645,24 @@ create table first_party_interactions (
     -- and read by the same stage machine.
     interaction_state   jsonb       not null default '{}'::jsonb,
     session_id          text,
+    -- The outstanding passkey authentication challenge, and its deadline —
+    -- the same pair `auth_requests` carries, for the same reason and spent by
+    -- the same statement shape (`ast-akl`).
+    --
+    -- Duplicated columns rather than a challenge table joined to both, because
+    -- the binding *is* the interaction and there are two kinds of those. A
+    -- shared table would need a discriminator plus a foreign key that can only
+    -- point at one of two parents, which is the nullable-`client_id` shape this
+    -- table exists to avoid. The cost is one repeated pair of columns; the
+    -- alternative cost is a challenge that can be orphaned from its
+    -- interaction.
+    --
+    -- Not optional to have: ADR-0009 keeps `acr`/`amr` on this path precisely
+    -- so that administration can later be made to require a phishing-resistant
+    -- authenticator, and that demands an administrator be able to use one at
+    -- all.
+    passkey_challenge   bytea,
+    passkey_challenge_expires_at timestamptz,
     started_at          timestamptz not null default now(),
     expires_at          timestamptz not null,
     -- Spent when the browser is sent to the destination, so a completed
@@ -658,7 +676,15 @@ create table first_party_interactions (
     -- has to arbitrate.
     unique (interaction_id_hash),
     constraint first_party_interactions_destination_is_named
-        check (destination <> '')
+        check (destination <> ''),
+    -- WebAuthn L3 section 13.4.3, word for word as `auth_requests` states it:
+    -- a short challenge that reached the table would be a replayable one.
+    constraint first_party_interactions_passkey_challenge_is_long_enough
+        check (passkey_challenge is null or octet_length(passkey_challenge) >= 16),
+    -- A challenge with no deadline never expires, which is the failure the TTL
+    -- exists to prevent.
+    constraint first_party_interactions_passkey_challenge_has_a_deadline
+        check ((passkey_challenge is null) = (passkey_challenge_expires_at is null))
 );
 
 create index first_party_interactions_expiring

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update first_party_interactions\n                set passkey_challenge = $3, passkey_challenge_expires_at = $4\n              where tenant_id = $1\n                and interaction_id_hash = $2\n                and consumed_at is null\n                and expires_at > $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "10d087596dd46832b48b241e828f9245c5c52e177d370370d893b186fbde1313"
+}
