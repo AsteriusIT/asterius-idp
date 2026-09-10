@@ -226,6 +226,7 @@ mod tests {
             device_flow: true,
             token_exchange: true,
             ssf: true,
+            dynamic_client_registration: true,
             authzen: true,
             dpop_nonce: true,
         }

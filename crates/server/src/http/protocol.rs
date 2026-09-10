@@ -1052,11 +1052,19 @@ async fn client_registration_inner(
     headers: &axum::http::HeaderMap,
     body: &axum::body::Bytes,
 ) -> Response {
+    let tenant_policy = match registration_policy_for(endpoints, tenant).await {
+        Ok(policy) => policy,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
     register::register(
         RegisterContext {
             tenant,
+            tenant_policy: &tenant_policy,
             clients: &clients,
             keys: endpoints.keys.as_ref(),
             capabilities: endpoints.capabilities,
@@ -1078,9 +1086,11 @@ fn configuration_context<'a>(
     tenant: &'a Tenant,
     clients: &'a asterius_store_pg::PgClientRepository,
     request_id: &'a crate::http::request_id::RequestId,
+    tenant_policy: &'a asterius_domain::RegistrationPolicy,
 ) -> ConfigurationContext<'a> {
     ConfigurationContext {
         tenant,
+        tenant_policy,
         clients,
         configuration: clients,
         keys: endpoints.keys.as_ref(),
@@ -1118,10 +1128,17 @@ async fn client_configuration_read(
         asterius_domain::LimitedEndpoint::ClientConfiguration,
         None,
         async || {
+            let tenant_policy = match registration_policy_for(&endpoints, &tenant).await {
+                Ok(policy) => policy,
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                    return unavailable();
+                }
+            };
             let scope = endpoints.store.scope(tenant.id.clone());
             let clients = scope.clients(endpoints.capabilities);
             client_configuration::read(
-                &configuration_context(&endpoints, &tenant, &clients, &request_id),
+                &configuration_context(&endpoints, &tenant, &clients, &request_id, &tenant_policy),
                 &client_id,
                 &headers,
                 time::OffsetDateTime::now_utc(),
@@ -1155,10 +1172,17 @@ async fn client_configuration_update(
         asterius_domain::LimitedEndpoint::ClientConfiguration,
         None,
         async || {
+            let tenant_policy = match registration_policy_for(&endpoints, &tenant).await {
+                Ok(policy) => policy,
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                    return unavailable();
+                }
+            };
             let scope = endpoints.store.scope(tenant.id.clone());
             let clients = scope.clients(endpoints.capabilities);
             client_configuration::update(
-                &configuration_context(&endpoints, &tenant, &clients, &request_id),
+                &configuration_context(&endpoints, &tenant, &clients, &request_id, &tenant_policy),
                 &client_id,
                 &headers,
                 &body,
@@ -1192,10 +1216,17 @@ async fn client_configuration_remove(
         asterius_domain::LimitedEndpoint::ClientConfiguration,
         None,
         async || {
+            let tenant_policy = match registration_policy_for(&endpoints, &tenant).await {
+                Ok(policy) => policy,
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                    return unavailable();
+                }
+            };
             let scope = endpoints.store.scope(tenant.id.clone());
             let clients = scope.clients(endpoints.capabilities);
             client_configuration::remove(
-                &configuration_context(&endpoints, &tenant, &clients, &request_id),
+                &configuration_context(&endpoints, &tenant, &clients, &request_id, &tenant_policy),
                 &client_id,
                 &headers,
                 time::OffsetDateTime::now_utc(),
@@ -1430,6 +1461,26 @@ async fn lifetimes_for(
     match &endpoints.tenant_settings {
         None => Ok(endpoints.lifetimes),
         Some(directory) => Ok(directory.for_tenant(&tenant.id).await?.lifetimes()),
+    }
+}
+
+/// This tenant's registration policy, or the deployment's silence.
+///
+/// `None` settings repository means no tenant has an opinion, exactly as
+/// [`lifetimes_for`] reads it. A read that *fails* is an error and never the
+/// default: falling back would reopen a registration endpoint a tenant has just
+/// closed, which is the mistake [`tenant_feature_guard`] refuses to make.
+async fn registration_policy_for(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+) -> Result<asterius_domain::RegistrationPolicy, DomainError> {
+    match &endpoints.tenant_settings {
+        None => Ok(asterius_domain::RegistrationPolicy::default()),
+        Some(directory) => Ok(directory
+            .for_tenant(&tenant.id)
+            .await?
+            .registration()
+            .clone()),
     }
 }
 

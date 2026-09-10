@@ -38,6 +38,7 @@ const EVERYTHING: Capabilities = Capabilities {
     ssf: true,
     authzen: true,
     dpop_nonce: true,
+    dynamic_client_registration: true,
 };
 
 fuzz_target!(|data: &[u8]| {

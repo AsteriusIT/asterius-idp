@@ -52,13 +52,16 @@
 //!
 //! [closed]: RegistrationPolicy::Closed
 
+use crate::http::software_statement;
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::keys::SigningAlgorithm;
 use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration, ClientRegistry,
-    ClientStatus, JwksSource, KeyStore, OpaqueToken, Tenant, ct_eq, sha256,
+    ClientStatus, JwksSource, KeyStore, OpaqueToken, PolicyViolation,
+    RegistrationMode as DomainRegistrationMode, RegistrationPolicy as TenantRegistrationPolicy,
+    Tenant, ct_eq, sha256,
 };
 use asterius_oidc::metadata::Endpoint;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -196,6 +199,21 @@ pub enum RegistrationPolicy {
 }
 
 impl RegistrationPolicy {
+    /// The posture this deployment configured, as the domain spells it.
+    ///
+    /// The same three values a tenant may narrow to
+    /// ([`asterius_domain::RegistrationMode`]), so that "who may register" is
+    /// one vocabulary and not two that have to be mapped onto each other at
+    /// every call site.
+    #[must_use]
+    pub const fn mode(&self) -> DomainRegistrationMode {
+        match self {
+            Self::Closed => DomainRegistrationMode::Closed,
+            Self::Gated(_) => DomainRegistrationMode::InitialAccessToken,
+            Self::Open => DomainRegistrationMode::Open,
+        }
+    }
+
     /// The label this policy carries into the audit trail and the logs.
     ///
     /// A closed set, because it becomes an audit detail and a metric label.
@@ -220,16 +238,45 @@ impl RegistrationPolicy {
     /// this deployment issued.
     // fuzz-target: initial_access_token
     pub fn admit(&self, headers: &HeaderMap) -> Result<(), Denial> {
-        match self {
-            Self::Closed => Err(Denial::Closed),
-            Self::Open => Ok(()),
-            Self::Gated(known) => match bearer(headers) {
-                None => Err(Denial::Missing),
-                // The presented value is hashed before it is compared, so the
-                // only thing this function ever holds next to a stored digest
-                // is another digest.
-                Some(presented) if known.admits(&sha256(presented.as_bytes())) => Ok(()),
-                Some(_) => Err(Denial::Invalid),
+        self.admit_as(self.mode(), headers)
+    }
+
+    /// Whether the request may proceed, under a mode a tenant may have
+    /// narrowed.
+    ///
+    /// `effective` comes from
+    /// [`asterius_domain::RegistrationPolicy::effective_mode`] and is never
+    /// wider than [`RegistrationPolicy::mode`]. The credentials, though, still
+    /// come from this deployment: a tenant that narrows an *open* deployment to
+    /// `initial_access_token` is asking for a credential the operator has
+    /// provisioned none of, and every caller is refused — which is the honest
+    /// reading of "this tenant registers nobody without a token" and is what
+    /// the per-tenant token table (`ast-f7m.5`) will fill in.
+    ///
+    /// # Errors
+    ///
+    /// The [`Denial`] to answer with.
+    pub fn admit_as(
+        &self,
+        effective: DomainRegistrationMode,
+        headers: &HeaderMap,
+    ) -> Result<(), Denial> {
+        match effective {
+            DomainRegistrationMode::Closed => Err(Denial::Closed),
+            DomainRegistrationMode::Open => Ok(()),
+            DomainRegistrationMode::InitialAccessToken => match self {
+                Self::Gated(known) => match bearer(headers) {
+                    None => Err(Denial::Missing),
+                    // The presented value is hashed before it is compared, so
+                    // the only thing this function ever holds next to a stored
+                    // digest is another digest.
+                    Some(presented) if known.admits(&sha256(presented.as_bytes())) => Ok(()),
+                    Some(_) => Err(Denial::Invalid),
+                },
+                Self::Closed | Self::Open => match bearer(headers) {
+                    None => Err(Denial::Missing),
+                    Some(_) => Err(Denial::Invalid),
+                },
             },
         }
     }
@@ -353,8 +400,16 @@ pub struct RegisterContext<'a> {
     /// What this deployment offers. The document is validated against it, so a
     /// client cannot register for a grant the server does not implement.
     pub capabilities: Capabilities,
-    /// Who may call.
+    /// Who may call, as the deployment configured it.
     pub policy: &'a RegistrationPolicy,
+    /// This tenant's own registration policy (`ast-m9c.6`): who may call *here*
+    /// and what they may register.
+    ///
+    /// Narrows the deployment's posture and never widens it — see
+    /// [`asterius_domain::RegistrationPolicy::effective_mode`]. A deployment
+    /// with no settings repository wired passes the default, which has no
+    /// opinion about anything.
+    pub tenant_policy: &'a TenantRegistrationPolicy,
     /// Dereferences the URLs a registration document names.
     ///
     /// One `sector_identifier_uri` per pairwise registration that names one,
@@ -384,36 +439,23 @@ pub async fn register(
     body: &Bytes,
     now: OffsetDateTime,
 ) -> Response {
-    // Authorization first, so that nothing after it is work an unauthorized
-    // caller can make this process do — not a JSON parse, not an allocation the
-    // size of the body, not an audit row.
-    if let Err(denial) = context.policy.admit(headers) {
-        return refusal(denial);
+    if let Some(refusal) = inadmissible(&context, headers, body) {
+        return refusal;
     }
 
-    if body.len() > MAX_BODY_BYTES {
-        return error(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "invalid_client_metadata",
-            "the registration document is too large",
-        );
-    }
-
-    // RFC 7591 §3: the endpoint "MUST accept HTTP POST messages with request
-    // parameters encoded in the entity body using the application/json format".
-    // Only that: a second encoding would be a second parser with a second
-    // chance to disagree about the same document.
-    if !is_json(headers) {
-        return error(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "invalid_client_metadata",
-            "content-type must be application/json",
-        );
-    }
+    // RFC 7591 §2.3 and §3.1.1: a software statement overrides the plain JSON,
+    // so it is resolved *before* the document is validated — what the validator
+    // sees is what the issuer asserted, and a statement therefore cannot
+    // register anything a plain document could not.
+    let merged = match asserted_document(&context, body, now).await {
+        Ok(merged) => merged,
+        Err(response) => return *response,
+    };
+    let document: &[u8] = merged.as_deref().unwrap_or(body);
 
     // The whole of the validation, in one call, in the domain. Nothing below
     // re-checks any part of it.
-    let registration = match ClientRegistration::from_json(body, context.capabilities) {
+    let registration = match ClientRegistration::from_json(document, context.capabilities) {
         Ok(registration) => registration,
         Err(failure) => {
             // Audited, because a caller that got this far holds whatever
@@ -423,38 +465,22 @@ pub async fn register(
             // credential, and an audit row per unauthenticated request is an
             // amplification primitive pointed at the one table that cannot be
             // deleted from.
-            record(&context, now, Outcome::Failure, None, Some(failure.code())).await;
+            record(
+                &context,
+                now,
+                Outcome::Failure,
+                None,
+                Some(failure.code()),
+                None,
+            )
+            .await;
             return metadata_error(&failure);
         }
     };
 
-    // The one check the validator cannot make, because it is a fact about this
-    // tenant's keys rather than about the document. Run before the identifier
-    // is minted and before anything is written: a client this deployment could
-    // never issue an ID token to must not exist as a row. It also runs before
-    // the sector fetch below, because it is a local read and refusing here
-    // spares an unreachable client an outbound request.
-    if let Some(refusal) = unsignable(
-        context.keys,
-        context.tenant,
-        registration.id_token_signed_response_alg,
-    )
-    .await
-    {
-        record(&context, now, Outcome::Failure, None, Some(refusal.code())).await;
-        return refusal.into_response();
-    }
-
-    // OIDC Registration §5: a pairwise client that named a sector has claimed
-    // one, and this is where the claim is checked. It is the only outbound
-    // fetch a registration makes, and it is deliberately blocking: accepting
-    // the client first and confirming the sector later would mint `sub` values
-    // in a sector nobody confirmed, and those cannot be taken back. The same
-    // call also refuses, without any fetch, a pairwise document that has no
-    // sector to name — see `SectorIdentifier::check_registration`.
-    if let Err(failure) = sector::verify(context.outbound, &registration).await {
-        record(&context, now, Outcome::Failure, None, Some(failure.code())).await;
-        return metadata_error(&failure);
+    // The three checks the validated document does not answer on its own.
+    if let Some(refusal) = unacceptable(&context, now, &registration).await {
+        return refusal;
     }
 
     // Minted after validation, so a rejected document consumes no identifier
@@ -492,6 +518,7 @@ pub async fn register(
                 Outcome::Failure,
                 None,
                 Some("temporarily_unavailable"),
+                None,
             )
             .await;
             // RFC 6749 §4.1.2.1's `temporarily_unavailable`, borrowed because
@@ -514,6 +541,7 @@ pub async fn register(
         Outcome::Success,
         Some(stored.id.clone()),
         None,
+        None,
     )
     .await;
 
@@ -534,6 +562,195 @@ pub async fn register(
         )),
     )
         .into_response()
+}
+
+/// Everything decided before a byte of the body is parsed.
+///
+/// Authorization first, so that nothing after it is work an unauthorized caller
+/// can make this process do — not a JSON parse, not an allocation the size of
+/// the body, not an audit row. Then the two framing rules RFC 7591 §3 gives: a
+/// bounded body and `application/json`.
+///
+/// `Some` is the response to return.
+fn inadmissible(
+    context: &RegisterContext<'_>,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Option<Response> {
+    let mode = context.tenant_policy.effective_mode(context.policy.mode());
+    if let Err(denial) = context.policy.admit_as(mode, headers) {
+        return Some(refusal(denial));
+    }
+
+    if body.len() > MAX_BODY_BYTES {
+        return Some(error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "invalid_client_metadata",
+            "the registration document is too large",
+        ));
+    }
+
+    // RFC 7591 §3: the endpoint "MUST accept HTTP POST messages with request
+    // parameters encoded in the entity body using the application/json format".
+    // Only that: a second encoding would be a second parser with a second
+    // chance to disagree about the same document.
+    if !is_json(headers) {
+        return Some(error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "invalid_client_metadata",
+            "content-type must be application/json",
+        ));
+    }
+
+    None
+}
+
+/// The checks a validated registration owes beyond
+/// [`ClientRegistration::from_json`], each of which needs something outside the
+/// document to answer.
+///
+/// Lifted out of [`register`] so that the endpoint's shape — admit, parse,
+/// check, write — stays readable, and named as its counterpart in
+/// [`crate::http::client_configuration`] is, because the two run the same
+/// checks on the same kind of document. `Some` is the response to return.
+async fn unacceptable(
+    context: &RegisterContext<'_>,
+    now: OffsetDateTime,
+    registration: &ClientRegistration,
+) -> Option<Response> {
+    // The tenant's own rules, on the document as it will be stored — after the
+    // software statement has had its say, so a statement is subject to the
+    // policy rather than an escape from it. `ast-f7m.5`'s admin API reaches the
+    // same evaluation through `asterius_admin_api::clients`, so a rule written
+    // once applies to both doors.
+    if let Err(violation) = context.tenant_policy.evaluate(registration) {
+        return Some(refuse_by_policy(context, now, violation).await);
+    }
+
+    // The one check the validator cannot make, because it is a fact about this
+    // tenant's keys rather than about the document. Run before the identifier
+    // is minted and before anything is written: a client this deployment could
+    // never issue an ID token to must not exist as a row. It also runs before
+    // the sector fetch below, because it is a local read and refusing here
+    // spares an unreachable client an outbound request.
+    if let Some(refusal) = unsignable(
+        context.keys,
+        context.tenant,
+        registration.id_token_signed_response_alg,
+    )
+    .await
+    {
+        record(
+            context,
+            now,
+            Outcome::Failure,
+            None,
+            Some(refusal.code()),
+            None,
+        )
+        .await;
+        return Some(refusal.into_response());
+    }
+
+    // OIDC Registration §5: a pairwise client that named a sector has claimed
+    // one, and this is where the claim is checked. It is the only outbound
+    // fetch a registration makes, and it is deliberately blocking: accepting
+    // the client first and confirming the sector later would mint `sub` values
+    // in a sector nobody confirmed, and those cannot be taken back. The same
+    // call also refuses, without any fetch, a pairwise document that has no
+    // sector to name — see `SectorIdentifier::check_registration`.
+    if let Err(failure) = sector::verify(context.outbound, registration).await {
+        record(
+            context,
+            now,
+            Outcome::Failure,
+            None,
+            Some(failure.code()),
+            None,
+        )
+        .await;
+        return Some(metadata_error(&failure));
+    }
+
+    None
+}
+
+/// The document to validate, once any software statement has had its say.
+///
+/// `Ok(None)` is a registration that carried no statement, whose document is
+/// therefore the bytes that arrived. `Err` is the response to return: this is
+/// where a statement's own failures — absent when the tenant requires one,
+/// unapproved, unverifiable — are audited and rendered, so that
+/// [`register`] reads as one sequence of decisions rather than three nested
+/// matches.
+async fn asserted_document(
+    context: &RegisterContext<'_>,
+    body: &Bytes,
+    now: OffsetDateTime,
+) -> Result<Option<Vec<u8>>, Box<Response>> {
+    let statement = match software_statement::extract(body) {
+        Ok(statement) => statement,
+        Err(failure) => return Err(Box::new(refuse_metadata(context, now, &failure).await)),
+    };
+    if let Err(violation) = context
+        .tenant_policy
+        .check_software_statement_present(statement.is_some())
+    {
+        return Err(Box::new(refuse_by_policy(context, now, violation).await));
+    }
+
+    let Some(statement) = statement else {
+        return Ok(None);
+    };
+    // A tenant that names no issuer accepts none, whether or not it requires
+    // one: presenting a statement to such a tenant is
+    // `unapproved_software_statement` and costs no fetch.
+    let rule = context.tenant_policy.software_statement();
+    match software_statement::merge(context.outbound, rule, &statement, body, now).await {
+        Ok(document) => Ok(Some(document)),
+        Err(failure) => Err(Box::new(refuse_metadata(context, now, &failure).await)),
+    }
+}
+
+/// Audits a refused document and renders it.
+async fn refuse_metadata(
+    context: &RegisterContext<'_>,
+    now: OffsetDateTime,
+    failure: &ClientMetadataError,
+) -> Response {
+    record(
+        context,
+        now,
+        Outcome::Failure,
+        None,
+        Some(failure.code()),
+        None,
+    )
+    .await;
+    metadata_error(failure)
+}
+
+/// Records a policy refusal and renders it.
+///
+/// One helper so that the audit detail and the response are written together:
+/// a refusal that reached a client and not the trail is exactly the case an
+/// operator investigating an onboarding failure cannot see.
+async fn refuse_by_policy(
+    context: &RegisterContext<'_>,
+    now: OffsetDateTime,
+    violation: PolicyViolation,
+) -> Response {
+    let failure = violation.to_metadata_error();
+    record(
+        context,
+        now,
+        Outcome::Failure,
+        None,
+        Some(failure.code()),
+        Some(violation.rule.as_str()),
+    )
+    .await;
+    metadata_error(&failure)
 }
 
 /// The path this endpoint is mounted at, from the one registry.
@@ -737,6 +954,7 @@ async fn record(
     outcome: Outcome,
     client: Option<ClientId>,
     reason: Option<&'static str>,
+    rule: Option<&'static str>,
 ) {
     // `Actor::System`, because there is no identity to name. The registrant is
     // either anonymous or holds an initial access token, and an initial access
@@ -750,6 +968,13 @@ async fn record(
     );
     if let Some(reason) = reason {
         detail = detail.label("reason", reason);
+    }
+    // The policy rule that refused, when one did. A client is told
+    // `invalid_client_metadata` and a sentence; the trail is told which rule,
+    // so an operator can tell a misconfigured allow-list from somebody probing
+    // it (`ast-m9c.6`).
+    if let Some(rule) = rule {
+        detail = detail.label("rule", rule);
     }
 
     let mut event = AuditEvent::new(

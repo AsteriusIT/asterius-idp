@@ -183,6 +183,7 @@ async fn every_advertised_endpoint_resolves_to_a_route() {
         ssf: true,
         authzen: true,
         dpop_nonce: true,
+        dynamic_client_registration: true,
     };
     let metadata = document(capabilities).await;
     let object = metadata.as_object().expect("object");
@@ -669,6 +670,7 @@ const ALL_ON: Capabilities = Capabilities {
     ssf: true,
     authzen: true,
     dpop_nonce: true,
+    dynamic_client_registration: true,
 };
 
 fn disabling(feature: asterius_domain::Feature) -> asterius_domain::TenantSettings {
@@ -801,4 +803,50 @@ async fn a_settings_read_that_fails_closes_the_route() {
 
     // Assert
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// `ast-0qv`, the tenant half: a stored registration policy of `closed` takes
+/// the endpoint away from that tenant, through the same subtraction every other
+/// feature goes through — advertised nowhere, mounted nowhere.
+#[tokio::test]
+async fn a_tenant_whose_policy_is_closed_has_no_registration_endpoint() {
+    // Arrange
+    let settings = asterius_domain::TenantSettings::from_json(Some(&serde_json::json!({
+        "registration_policy": { "mode": "closed" }
+    })))
+    .expect("a valid settings document");
+    let router = two_tenant_server(settings);
+
+    // Act
+    let (status, _, body) = get(router.clone(), "/t/demo/.well-known/openid-configuration").await;
+    let (reached, ..) = get(router, &format!("/t/demo{}", Endpoint::Registration.path())).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    let document: Value = serde_json::from_str(&body).expect("a JSON document");
+    assert!(
+        document.get("registration_endpoint").is_none(),
+        "a tenant that registers nobody still advertises the endpoint: {document}"
+    );
+    assert_eq!(reached, StatusCode::NOT_FOUND);
+}
+
+/// The deployment half of the same rule, and the defect `ast-m9c.6` names: a
+/// deployment with `[registration] mode = "closed"` used to advertise a
+/// `registration_endpoint` that answered 403 to everybody.
+#[tokio::test]
+async fn a_closed_deployment_advertises_no_registration_endpoint() {
+    // Arrange
+    let router = server_with(Capabilities::default(), None);
+
+    // Act
+    let (status, _, body) = get(router, "/t/demo/.well-known/openid-configuration").await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    let document: Value = serde_json::from_str(&body).expect("a JSON document");
+    assert!(
+        document.get("registration_endpoint").is_none(),
+        "what gates the announcement must gate the route: {document}"
+    );
 }

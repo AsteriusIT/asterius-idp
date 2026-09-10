@@ -8,6 +8,7 @@ pub mod client;
 pub mod grant;
 pub mod passkey;
 pub mod password;
+pub mod registration_policy;
 pub mod resource_server;
 pub mod role;
 pub mod session;
@@ -30,6 +31,10 @@ pub use client::{
 pub use grant::{
     ClaimedGrant, Grant, GrantAuthentication, GrantError, GrantRecord, GrantStatus,
     LiveAccessToken, RevocationReason,
+};
+pub use registration_policy::{
+    JwksRequirement, PolicyViolation, RegistrationMode, RegistrationPolicy,
+    RegistrationPolicyError, RuleId, SoftwareStatementIssuer, SoftwareStatementRule,
 };
 pub use resource_server::{InvalidTarget, ResourceIdentifier, ResourceRegistry, ResourceServer};
 pub use role::{Role, RoleScope, UserRole};

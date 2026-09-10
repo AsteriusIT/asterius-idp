@@ -489,6 +489,14 @@ pub struct ConfigurationContext<'a> {
     /// What this deployment offers. An update is validated against it, so a
     /// client cannot update its way into a feature the server does not have.
     pub capabilities: Capabilities,
+    /// This tenant's registration policy (`ast-m9c.6`).
+    ///
+    /// Applied to a replacement document exactly as it is to a fresh
+    /// registration, and for the reason RFC 7592 §2.2 makes necessary: a `PUT`
+    /// replaces the whole registration, so a rule enforced only at `POST
+    /// /register` would be a rule every client could walk around by
+    /// registering once and then updating.
+    pub tenant_policy: &'a asterius_domain::RegistrationPolicy,
     /// Dereferences the URLs an updated registration document names.
     ///
     /// The same port `POST /register` holds, for the same reason: RFC 7592 §2.2
@@ -556,6 +564,7 @@ pub async fn read(
         Outcome::Success,
         &client_id,
         None,
+        None,
     )
     .await;
     ok(client_information(&stored, context.tenant, None, now))
@@ -590,6 +599,23 @@ async fn unacceptable(
     now: OffsetDateTime,
     registration: &ClientRegistration,
 ) -> Option<Response> {
+    // This tenant's rules, before anything is fetched: a document the policy
+    // refuses is refused whatever a sector document says.
+    if let Err(violation) = context.tenant_policy.evaluate(registration) {
+        let failure = violation.to_metadata_error();
+        record(
+            context,
+            now,
+            EventType::CLIENT_UPDATED,
+            Outcome::Failure,
+            client_id,
+            Some(failure.code()),
+            Some(violation.rule.as_str()),
+        )
+        .await;
+        return Some(metadata_error(&failure));
+    }
+
     // The same check `POST /register` makes, for the same reason and at the
     // same point: an update that moved a live client onto an algorithm this
     // tenant holds no key for would break every ID token it is issued, and the
@@ -608,6 +634,7 @@ async fn unacceptable(
             Outcome::Failure,
             client_id,
             Some(refusal.code()),
+            None,
         )
         .await;
         return Some(refusal.into_response());
@@ -623,6 +650,7 @@ async fn unacceptable(
             Outcome::Failure,
             client_id,
             Some(failure.code()),
+            None,
         )
         .await;
         return Some(metadata_error(&failure));
@@ -696,6 +724,7 @@ pub async fn update(
                 Outcome::Failure,
                 &client_id,
                 Some(failure.code()),
+                None,
             )
             .await;
             return metadata_error(&failure);
@@ -745,6 +774,7 @@ pub async fn update(
         EventType::CLIENT_UPDATED,
         Outcome::Success,
         &client_id,
+        None,
         None,
     )
     .await;
@@ -814,6 +844,7 @@ pub async fn remove(
         EventType::CLIENT_DELETED,
         Outcome::Success,
         &client_id,
+        None,
         None,
     )
     .await;
@@ -1059,6 +1090,7 @@ async fn unreadable(
         } else {
             "temporarily_unavailable"
         }),
+        None,
     )
     .await;
     if stale_row { stale() } else { unavailable() }
@@ -1080,6 +1112,7 @@ async fn refuse(
             Outcome::Failure,
             client_id,
             Some(denied.reason()),
+            None,
         )
         .await;
     }
@@ -1109,6 +1142,7 @@ async fn rejected(
         Outcome::Failure,
         client_id,
         Some(code),
+        None,
     )
     .await;
     error(status, code, &nqschar(description))
@@ -1132,6 +1166,7 @@ async fn record(
     outcome: Outcome,
     client_id: &ClientId,
     reason: Option<&'static str>,
+    rule: Option<&'static str>,
 ) {
     // A label rather than free text: `Detail::text` would redact
     // `temporarily_unavailable` as a credential — 23 characters over 15
@@ -1139,6 +1174,11 @@ async fn record(
     let mut detail = Detail::new().label("endpoint", "client_configuration");
     if let Some(reason) = reason {
         detail = detail.label("reason", reason);
+    }
+    // Which registration policy rule refused, when one did — the same detail
+    // `POST /register` records, so one query finds both doors.
+    if let Some(rule) = rule {
+        detail = detail.label("rule", rule);
     }
 
     let mut event = AuditEvent::new(

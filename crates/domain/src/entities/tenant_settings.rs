@@ -23,6 +23,9 @@
 //! narrower than the deployment's.
 
 use crate::capabilities::{Capabilities, Feature};
+use crate::entities::registration_policy::{
+    RegistrationMode, RegistrationPolicy, RegistrationPolicyError,
+};
 use std::collections::BTreeSet;
 use time::Duration;
 
@@ -137,6 +140,7 @@ impl TokenLifetimes {
 pub struct TenantSettings {
     disabled_features: BTreeSet<Feature>,
     lifetimes: TokenLifetimes,
+    registration: RegistrationPolicy,
 }
 
 impl TenantSettings {
@@ -156,7 +160,33 @@ impl TenantSettings {
                 authorization_code_lifetime,
                 access_token_lifetime,
             )?,
+            registration: RegistrationPolicy::default(),
         })
+    }
+
+    /// The same settings with a registration policy attached.
+    ///
+    /// A separate builder rather than a fourth argument to
+    /// [`TenantSettings::validated`], because a policy has already been through
+    /// [`RegistrationPolicy::from_json`] by the time it gets here — there is
+    /// nothing left for the validator to refuse, and widening a signature every
+    /// caller passes defaults to would make the two look equally consequential.
+    #[must_use]
+    pub fn with_registration(mut self, registration: RegistrationPolicy) -> Self {
+        self.registration = registration;
+        self
+    }
+
+    /// This tenant's registration policy.
+    #[must_use]
+    pub const fn registration(&self) -> &RegistrationPolicy {
+        &self.registration
+    }
+
+    /// Who may register a client here, given the deployment's own posture.
+    #[must_use]
+    pub fn registration_mode(&self, deployment: RegistrationMode) -> RegistrationMode {
+        self.registration.effective_mode(deployment)
     }
 
     /// The features this tenant has switched off.
@@ -180,6 +210,15 @@ impl TenantSettings {
         for feature in &self.disabled_features {
             effective.disable(*feature);
         }
+        // A tenant that registers nobody has no registration endpoint, and
+        // `ast-0qv` is that this must be the same subtraction every other
+        // feature goes through: the discovery document and
+        // `tenant_feature_guard` both read this, so the endpoint disappears
+        // from the metadata and answers 404 in one step rather than two that
+        // could disagree.
+        if self.registration.mode() == Some(RegistrationMode::Closed) {
+            effective.disable(Feature::DynamicClientRegistration);
+        }
         effective
     }
 
@@ -199,6 +238,7 @@ impl TenantSettings {
             "authorization_code_lifetime_seconds":
                 self.lifetimes.authorization_code.whole_seconds(),
             "access_token_lifetime_seconds": self.lifetimes.access_token.whole_seconds(),
+            "registration_policy": self.registration.to_json(),
         })
     }
 
@@ -245,7 +285,12 @@ impl TenantSettings {
         let access_token = seconds(object.get("access_token_lifetime_seconds"))?
             .unwrap_or(DEFAULT_ACCESS_TOKEN_LIFETIME);
 
-        Self::validated(disabled_features, authorization_code, access_token)
+        let registration = RegistrationPolicy::from_json(object.get("registration_policy"))?;
+
+        Ok(
+            Self::validated(disabled_features, authorization_code, access_token)?
+                .with_registration(registration),
+        )
     }
 }
 
@@ -304,6 +349,9 @@ pub enum TenantSettingsError {
     /// A duration that is not a whole number of seconds.
     #[error("a stored lifetime is not a whole number of seconds")]
     NotAWholeNumberOfSeconds,
+    /// The stored registration policy is not one this server wrote.
+    #[error("the stored registration policy is invalid: {0}")]
+    RegistrationPolicy(#[from] RegistrationPolicyError),
 }
 
 #[cfg(test)]

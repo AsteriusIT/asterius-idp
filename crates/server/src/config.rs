@@ -712,6 +712,14 @@ impl RawConfig {
         };
 
         let registration = validate_registration(self.registration, &mut errors);
+        // The one capability an operator does not write. RFC 7591's endpoint
+        // exists exactly when somebody may register at it, so the flag the
+        // router and the discovery document read is derived from
+        // `[registration] mode` rather than set beside it — `ast-m9c.6`, and
+        // the reason a closed deployment no longer advertises a
+        // `registration_endpoint` that answers 403.
+        let mut features = self.features;
+        features.dynamic_client_registration = registration.mode().is_open_at_all();
         let admin = validate_admin(self.admin, &tenants, &mut errors);
         let login = validate_login(&self.login, &mut errors);
         let limits = validate_limits(&self.limits, &mut errors);
@@ -719,7 +727,7 @@ impl RawConfig {
         errors.finish(Config {
             server,
             database,
-            features: self.features,
+            features,
             tenants,
             log_format: self.log_format.unwrap_or_default(),
             kek: kek.unwrap_or_else(|| KekSource::Env(String::new())),

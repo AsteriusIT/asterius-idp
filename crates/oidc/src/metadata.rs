@@ -133,6 +133,11 @@ impl Endpoint {
             Self::BackchannelAuthentication => Some(Feature::Ciba),
             Self::GrantManagement => Some(Feature::GrantManagement),
             Self::AccessEvaluation => Some(Feature::Authzen),
+            // RFC 7591. Follows `[registration] mode`, narrowed per tenant by
+            // the stored registration policy (`ast-m9c.6`): a tenant that
+            // registers nobody neither advertises the endpoint nor answers at
+            // it, which is the parity `ast-o0t.3` asserts.
+            Self::Registration => Some(Feature::DynamicClientRegistration),
             _ => None,
         }
     }
@@ -504,6 +509,7 @@ mod tests {
             device_flow: true,
             token_exchange: true,
             ssf: true,
+            dynamic_client_registration: true,
             authzen: true,
             dpop_nonce: true,
         }

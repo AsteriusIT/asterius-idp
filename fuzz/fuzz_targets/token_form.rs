@@ -76,6 +76,9 @@ fn capabilities(flags: u8) -> Capabilities {
         ssf: flags & 0b0010_0000 != 0,
         authzen: flags & 0b0100_0000 != 0,
         dpop_nonce: flags & 0b1000_0000 != 0,
+        // Not a token endpoint concern: the flag follows [registration] mode
+        // and gates RFC 7591's endpoint, which this target does not reach.
+        dynamic_client_registration: false,
     }
 }
 
@@ -104,6 +107,7 @@ fn registration(grants: &[GrantType]) -> Option<ClientRegistration> {
             ssf: true,
             authzen: true,
             dpop_nonce: true,
+            dynamic_client_registration: true,
         },
     )
     .ok()
