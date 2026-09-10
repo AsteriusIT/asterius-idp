@@ -9,6 +9,7 @@
 //! because a test that stubs the signature check proves nothing about the one
 //! thing this module exists to do.
 
+use asterius_domain::audit::{AuditEvent, AuditSink, EventType, Outcome};
 use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientRegistration, ClientRepository, ClientStatus,
@@ -226,6 +227,24 @@ impl asterius_domain::ClientUsageRecorder for FakeUsage {
     }
 }
 
+/// An audit trail that keeps what was written to it.
+#[derive(Debug, Default)]
+struct FakeAudit(Mutex<Vec<AuditEvent>>);
+
+#[async_trait::async_trait]
+impl AuditSink for FakeAudit {
+    async fn record(&self, event: AuditEvent) -> Result<(), DomainError> {
+        self.0.lock().expect("lock").push(event);
+        Ok(())
+    }
+}
+
+impl FakeAudit {
+    fn events(&self) -> Vec<AuditEvent> {
+        self.0.lock().expect("lock").clone()
+    }
+}
+
 /// The world: one tenant, one active client with inline keys.
 struct World {
     authenticator: ClientAuthenticator,
@@ -243,6 +262,15 @@ impl World {
 
     fn with_client(status: ClientStatus, auth_method: &str) -> Self {
         Self::recording(status, auth_method, Arc::new(FakeUsage::default()))
+    }
+
+    /// The ordinary world, with an audit trail wired in (`ast-4j1`).
+    fn auditing(audit: Arc<FakeAudit>) -> Self {
+        let mut world = Self::new();
+        world.authenticator = world
+            .authenticator
+            .auditing(audit as Arc<dyn asterius_domain::audit::AuditSink>);
+        world
     }
 
     fn recording(status: ClientStatus, auth_method: &str, usage: Arc<FakeUsage>) -> Self {
@@ -683,4 +711,227 @@ async fn a_client_still_authenticates_when_the_use_cannot_be_recorded() {
         authenticated.is_ok(),
         "a failed usage write refused a client that authenticated"
     );
+}
+
+// ---- the trail a refusal leaves (`ast-4j1`) -------------------------------
+//
+// A client that cannot authenticate gets `invalid_client` and nothing else,
+// which is RFC 6749 §5.2 and is right. The operator, however, was getting
+// nothing else either: a PAR refused for a missing `client_assertion` wrote no
+// log record at any level and no audit row, so "the BFF gets a 401 and the IdP
+// says nothing" was the whole of the diagnosis available. These fix the
+// asymmetry — the caller still learns one word, and this server writes down
+// which of a dozen reasons it was.
+
+/// Collects a subscriber's output for inspection.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl Captured {
+    fn contents(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().expect("lock")).into_owned()
+    }
+}
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for Captured {
+    type Writer = Self;
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// Runs `work` under the real redacting formatter and returns what was logged.
+///
+/// The formatter is the production one rather than a bare collector, because
+/// half of what is asserted below is what the formatter *removes*. A test that
+/// captured raw fields would pass while the deployed server wrote an assertion
+/// into a log file.
+fn captured_logs<F>(work: F) -> String
+where
+    F: FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>,
+{
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let sink = Captured::default();
+    let subscriber = tracing_subscriber::Registry::default().with(
+        tracing_subscriber::fmt::layer()
+            .fmt_fields(asterius_server::observability::redact::RedactingFields)
+            .with_ansi(false)
+            .with_writer(sink.clone()),
+    );
+    // A current-thread runtime under `with_default`: the subscriber is a
+    // thread-local, so a work-stealing runtime could move the future to a
+    // thread that cannot see it and the capture would come back empty.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    tracing::subscriber::with_default(subscriber, || runtime.block_on(work()));
+    sink.contents()
+}
+
+/// The reported bug, reduced: a PAR body with no `client_assertion` at all.
+///
+/// This is what the owner's BFF sent — `client_id`, `redirect_uri`, `scope`,
+/// PKCE, and no credential of any kind. The 401 is correct. The silence was
+/// not.
+#[test]
+fn an_absent_credential_is_logged_with_the_reason() {
+    // Arrange
+    let audit = Arc::new(FakeAudit::default());
+    let sink = Arc::clone(&audit);
+
+    // Act
+    let logs = captured_logs(move || {
+        Box::pin(async move {
+            let world = World::auditing(sink);
+            let refused = world.authenticate(&Attempt::default()).await;
+            assert_eq!(refused.unwrap_err(), ClientAuthError::NoMethod);
+        })
+    });
+
+    // Assert
+    assert!(
+        logs.contains("client authentication failed"),
+        "a refusal wrote no log record: {logs}"
+    );
+    assert!(
+        logs.contains("no_client_authentication_presented"),
+        "the log did not say why: {logs}"
+    );
+}
+
+/// The refusal is in the trail, not only in a log file nobody kept.
+#[test]
+fn an_absent_credential_is_audited() {
+    // Arrange
+    let audit = Arc::new(FakeAudit::default());
+    let sink = Arc::clone(&audit);
+
+    // Act
+    let _ = captured_logs(move || {
+        Box::pin(async move {
+            let world = World::auditing(sink);
+            let _ = world.authenticate(&Attempt::default()).await;
+        })
+    });
+
+    // Assert
+    let events = audit.events();
+    assert_eq!(events.len(), 1, "expected one audit record, got {events:?}");
+    assert_eq!(events[0].event_type, EventType::CLIENT_AUTH_FAILED);
+    assert_eq!(events[0].outcome, Outcome::Failure);
+}
+
+/// The `aud` case, which is the one a client integrator gets wrong most often
+/// — and the one that is impossible to diagnose from `invalid_client`. The
+/// record carries both sides of the comparison.
+#[test]
+fn a_wrong_audience_is_logged_with_what_was_expected_and_what_arrived() {
+    // Arrange
+    let audit = Arc::new(FakeAudit::default());
+    let mut claims = assertion_claims(CLIENT, ISSUER);
+    claims["aud"] = serde_json::json!("https://as.example/t/demo/token");
+
+    // Act
+    let logs = captured_logs(move || {
+        Box::pin(async move {
+            let world = World::auditing(audit);
+            let _ = world.authenticate_claims(&claims).await;
+        })
+    });
+
+    // Assert
+    assert!(
+        logs.contains("aud_is_not_this_issuer"),
+        "the reason was not named: {logs}"
+    );
+    assert!(
+        logs.contains("https://as.example/t/demo/token"),
+        "the received audience was not recorded: {logs}"
+    );
+    assert!(
+        logs.contains(ISSUER),
+        "the expected audience was not recorded: {logs}"
+    );
+}
+
+/// A client this tenant does not have is named, so that "registered in the
+/// wrong tenant" is a fact an operator can read rather than infer.
+#[test]
+fn an_unknown_client_is_logged_with_the_client_id_and_tenant() {
+    // Arrange
+    let audit = Arc::new(FakeAudit::default());
+    let claims = assertion_claims("c.not-registered-here", ISSUER);
+
+    // Act
+    let logs = captured_logs(move || {
+        Box::pin(async move {
+            let world = World::auditing(audit);
+            let _ = world.authenticate_claims(&claims).await;
+        })
+    });
+
+    // Assert
+    assert!(
+        logs.contains("unknown_or_disabled_client"),
+        "the reason was not named: {logs}"
+    );
+    assert!(
+        logs.contains("c.not-registered-here"),
+        "the client_id was not recorded: {logs}"
+    );
+    assert!(logs.contains("demo"), "the tenant was not recorded: {logs}");
+}
+
+/// The whole point of logging more is that it must not log *that*.
+///
+/// The assertion is a bearer credential for this server: a refusal that copied
+/// it into a log line would turn a diagnostic improvement into a credential
+/// store. Same for the audit record, which is kept far longer.
+#[test]
+fn the_refusal_record_never_carries_the_assertion() {
+    // Arrange
+    let audit = Arc::new(FakeAudit::default());
+    let sink = Arc::clone(&audit);
+    let mut claims = assertion_claims(CLIENT, ISSUER);
+    claims["aud"] = serde_json::json!("https://somewhere.else/");
+    let token = sign_with(&client_key().0, &claims);
+    let signed = token.clone();
+
+    // Act
+    let logs = captured_logs(move || {
+        Box::pin(async move {
+            let world = World::auditing(sink);
+            let _ = world.authenticate(&attempt_with(&token)).await;
+        })
+    });
+
+    // Assert
+    assert!(
+        !logs.contains(&signed),
+        "the assertion was written to the log: {logs}"
+    );
+    let signature = signed.rsplit('.').next().expect("signature");
+    assert!(
+        !logs.contains(signature),
+        "the assertion's signature was written to the log: {logs}"
+    );
+    for event in audit.events() {
+        let rendered = format!("{event:?}");
+        assert!(
+            !rendered.contains(&signed),
+            "the assertion reached the audit trail: {rendered}"
+        );
+    }
 }

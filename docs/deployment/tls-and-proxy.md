@@ -309,6 +309,34 @@ For the proxy this reduces to one sentence:
 Serving the token endpoint on a different public hostname from the one in
 `issuer` is not supported: the metadata document is the contract.
 
+### The same rule, from the client's side
+
+The two questions this produces from whoever is integrating a client behind
+your proxy have the same answer, and it is the issuer:
+
+- **What goes in the client assertion's `aud`?** The tenant's issuer
+  identifier, as a JSON string — `https://localhost/t/demo`, not the token
+  endpoint URL and not a one-element array (FAPI 2.0 SP §5.3.2.1 item 8,
+  `crates/oidc/src/client_auth.rs`). Behind a proxy that is the *public*
+  issuer, which is the whole reason §3 insists the configured issuer be the
+  public name.
+- **What goes in a DPoP proof's `htu`?** The public endpoint URL, derived from
+  that same issuer.
+
+There is one more refusal that looks like a proxy problem and is not: a client
+whose registration carries a **`jwks_uri` on a loopback or private address**
+can never authenticate, because the outbound guard of ADR-0006 refuses to
+dereference it before any connection is attempted. This is common when the
+client is a BFF running on the same machine as the stack. The fix is inline
+`jwks` in the registration, not a proxy rule — and since `ast-4j1` the server
+logs the refusal (`client JWK Set fetch failed`, with the address and the range
+it falls in) at `warn` rather than `debug`, so it appears under the default
+filter.
+
+The full list of what a confidential client must send, and the `reason` values
+this server logs when it refuses one, is
+[`../integrating-a-confidential-client.md`](../integrating-a-confidential-client.md).
+
 ---
 
 ## 7. The `/t/<tenant>` mount prefix
@@ -636,6 +664,10 @@ the same `openssl s_client` invocations. It skips when `openssl` is missing.
   `[server.proxy]` and `[mtls]`, generated from the schema.
 - [`../../deploy/README.md`](../../deploy/README.md) — the image, the example
   stack, upgrades.
+- [`../integrating-a-confidential-client.md`](../integrating-a-confidential-client.md)
+  — what a BFF or service must send to authenticate: PAR, `private_key_jwt`,
+  the `aud` this server accepts, DPoP, inline `jwks` versus `jwks_uri`, and how
+  to read a refusal out of the logs.
 - [`kubernetes.md`](kubernetes.md) — the Helm chart: which of the rules on this
   page become Ingress annotations, and what the probes and the
   `PodSecurityContext` have to say.

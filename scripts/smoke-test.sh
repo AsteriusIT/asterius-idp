@@ -318,7 +318,98 @@ if [ -n "$ADMIN_TENANT" ] && [ -n "$ADMIN_PASSWORD" ]; then
   trap - EXIT
 fi
 
-# --- 8. the container is hardened -------------------------------------------
+# --- 8. a refused client authentication is diagnosable ----------------------
+# `ast-4j1`: a BFF posted a PAR with no `client_assertion` at all, got the
+# correct 401 invalid_client, and the IdP wrote *nothing* — no log line at any
+# level, no audit row. "The client is refused and the server is silent" is not
+# a smaller bug than a wrong refusal; it is the one that costs a day.
+#
+# Two shapes are exercised, both from outside, both through the proxy, and
+# neither needs a key: no credential at all, and a credential that is not a
+# JWT. The response must stay RFC 6749 §5.2 — one code, no detail — and the
+# log must carry the internal reason.
+printf '\nclient authentication refusals are logged (ast-4j1)\n'
+
+par_body() {
+  curl --silent --show-error "${tls_opts[@]}" \
+    --header "Host: ${HOST_HEADER}" \
+    --header 'Content-Type: application/x-www-form-urlencoded' \
+    --max-time 10 --write-out '\n%{http_code}' \
+    --data "$1" "${BASE_URL}/t/${TENANT}/par"
+}
+
+# Exactly what the reported BFF sent: the authorization parameters, and no
+# credential of any kind.
+unauthenticated="$(par_body 'response_type=code&client_id=c.smoke-test-no-credential&redirect_uri=https://localhost:8080/bff/callback&scope=openid&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256')"
+expect_eq "a PAR with no client authentication is 401" \
+  "$(tail -n 1 <<<"$unauthenticated")" "401"
+if grep -q '"error"[[:space:]]*:[[:space:]]*"invalid_client"' <<<"$unauthenticated"; then
+  pass "the refusal is invalid_client"
+else
+  fail "the refusal was not invalid_client: ${unauthenticated}"
+fi
+# RFC 6749 §5.2: the client learns the code and nothing else. A body that
+# started explaining which check failed would be an oracle for an
+# unauthenticated caller.
+case "$unauthenticated" in
+  *no_client_authentication_presented*|*unknown_or_disabled_client*)
+    fail "the HTTP response leaked the internal reason: ${unauthenticated}" ;;
+  *) pass "the response body carries no internal reason" ;;
+esac
+
+# A `client_assertion` that is not a JWT: same 401, different internal reason.
+garbage="$(par_body 'response_type=code&client_id=c.smoke-test-bad-assertion&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion=not-a-jwt&redirect_uri=https://localhost:8080/bff/callback&scope=openid')"
+expect_eq "a PAR with a malformed assertion is 401" \
+  "$(tail -n 1 <<<"$garbage")" "401"
+
+# And the operator's half. `warn` clears the deployed filter (asterius=info),
+# so this must be visible with no RUST_LOG set — that is the difference
+# between a diagnosis and a field in a struct.
+if [ -n "$CONTAINER" ] && command -v docker >/dev/null 2>&1 \
+   && [ -n "$(docker compose -f "$COMPOSE_FILE" ps -q "$CONTAINER" 2>/dev/null || true)" ]; then
+  logs="$(docker compose -f "$COMPOSE_FILE" logs --no-log-prefix "$CONTAINER" 2>/dev/null || true)"
+
+  if grep -q 'client authentication failed' <<<"$logs"; then
+    pass "the server logged the refusal at the default filter level"
+  else
+    fail "the server logged nothing for a refused client authentication"
+  fi
+
+  if grep -q 'no_client_authentication_presented' <<<"$logs"; then
+    pass "the log names the reason for the missing credential"
+  else
+    fail "the log does not say why the credential-less request was refused"
+  fi
+
+  if grep -q 'assertion_signature_or_envelope_rejected' <<<"$logs"; then
+    pass "the log names the reason for the malformed assertion"
+  else
+    fail "the log does not distinguish a malformed assertion from a missing one"
+  fi
+
+  if grep -q 'c.smoke-test-no-credential' <<<"$logs"; then
+    fail "the log claims a client_id the request never authenticated as"
+  else
+    pass "an unauthenticated request is not attributed to a client"
+  fi
+
+  # The refusal is in the trail too, not only in a stream nobody kept.
+  if [ -n "$(docker compose -f "$COMPOSE_FILE" ps -q db 2>/dev/null || true)" ]; then
+    trail() {
+      docker compose -f "$COMPOSE_FILE" exec -T db \
+        psql -U asterius -d asterius -tAc "$1" 2>/dev/null | tr -d '[:space:]'
+    }
+    if [ "$(trail "select count(*) from audit_events
+                     where tenant_id = '${TENANT}'
+                       and event_type = 'client.auth_failed'")" -gt 0 ] 2>/dev/null; then
+      pass "the refusal reached the audit trail as client.auth_failed"
+    else
+      fail "no client.auth_failed audit record was written"
+    fi
+  fi
+fi
+
+# --- 9. the container is hardened -------------------------------------------
 # Asserted through `docker inspect` rather than by running anything inside the
 # container: there is nothing in there to run, which is the point.
 if [ -n "$CONTAINER" ] && command -v docker >/dev/null 2>&1; then
