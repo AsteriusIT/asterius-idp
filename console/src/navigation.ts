@@ -1,7 +1,7 @@
 /**
  * The navigation, and the authority each destination needs.
  *
- * Role-aware navigation is a *usability* property and is written down here as
+ * Scope-aware navigation is a *usability* property and is written down here as
  * one: hiding a link the caller may not use spares them a 403 they cannot act
  * on. It is not a security control, and nothing here is trusted by the server
  * — every route re-checks the authority it declares
@@ -20,18 +20,31 @@ export interface Destination {
   readonly label: string;
   /** The authority needed to get anything out of it. */
   readonly reach: Reach;
+  /**
+   * The scope the screen's own first request declares.
+   *
+   * A screen is worth showing when the caller may make the call it opens with,
+   * so this is that call's scope and not a category: Users opens by listing
+   * accounts (`admin.users:read`), Tenant settings opens on a form that only
+   * means something to somebody who may save it (`admin.tenants:write`).
+   */
+  readonly scope: string;
   /** The bead that fills the screen in. */
   readonly bead: string;
 }
 
 /**
- * The role names the schema knows (`crates/domain/src/entities/role.rs`).
+ * What the caller may do, as `GET /session` reports it.
  *
- * A closed set on the server, so a closed set here: an unknown role grants
- * nothing rather than being guessed at.
+ * Roles are deliberately absent. The server maps role to scopes
+ * (`asterius_domain::Role::grants`) and reports the result; repeating the
+ * mapping here would be a second answer to "what may a support agent see",
+ * and the console's copy is the one that would be wrong.
  */
-const TENANT_ADMIN = 'tenant_admin';
-const DEPLOYMENT_ADMIN = 'deployment_admin';
+export interface HeldScopes {
+  readonly scopes: readonly string[];
+  readonly deployment_scopes: readonly string[];
+}
 
 /**
  * Every screen the console will have, in the order they appear.
@@ -47,31 +60,40 @@ const DEPLOYMENT_ADMIN = 'deployment_admin';
  * Tenants names the epic, because no ticket carries it.
  */
 export const DESTINATIONS: readonly Destination[] = [
-  { route: 'overview', label: 'Overview', reach: 'tenant', bead: 'ast-f7m.3' },
-  { route: 'users', label: 'Users', reach: 'tenant', bead: 'ast-f7m.6' },
-  { route: 'clients', label: 'Clients', reach: 'tenant', bead: 'ast-f7m.5' },
+  { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.3' },
+  { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6' },
+  { route: 'clients', label: 'Clients', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5' },
   // The epic and not a child ticket: no bead carries a tenants screen, and
   // the two spellings this line has had — `ast-f7m.6`, which is the *users*
   // screen — were both wrong. A placeholder naming a closed or nonexistent
   // ticket tells an administrator that a screen is arriving when nobody is
   // building it, so this one names the epic until a ticket exists.
-  { route: 'tenants', label: 'Tenants', reach: 'deployment', bead: 'ast-f7m' },
-  { route: 'keys', label: 'Signing keys', reach: 'tenant', bead: 'ast-f7m.7' },
-  { route: 'ssf', label: 'Shared signals', reach: 'tenant', bead: 'ast-f7m.8' },
-  { route: 'policy', label: 'Policy', reach: 'tenant', bead: 'ast-f7m.9' },
-  { route: 'settings', label: 'Tenant settings', reach: 'tenant', bead: 'ast-bfn' },
+  { route: 'tenants', label: 'Tenants', reach: 'deployment', scope: 'admin.tenants:read', bead: 'ast-f7m' },
+  { route: 'keys', label: 'Signing keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-f7m.7' },
+  // Shared signals are delivered through the outbox, and the dead-letter list
+  // is the only part of the story that has a route today: `admin.outbox:read`
+  // is what the screen will open with, not a placeholder.
+  { route: 'ssf', label: 'Shared signals', reach: 'tenant', scope: 'admin.outbox:read', bead: 'ast-f7m.8' },
+  { route: 'policy', label: 'Policy', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.9' },
+  // A form nobody may save is worse than an absent link, so the settings
+  // screen asks for the write scope its only button needs.
+  { route: 'settings', label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn' },
 ];
 
-/** Whether `roles` reach `destination`. */
-export function reaches(roles: readonly string[], destination: Destination): boolean {
-  const deployment = roles.includes(DEPLOYMENT_ADMIN);
-  if (destination.reach === 'deployment') {
-    return deployment;
-  }
-  return deployment || roles.includes(TENANT_ADMIN);
+/**
+ * Whether `held` reaches `destination`.
+ *
+ * The two lists are kept apart on purpose: a scope string does not say how far
+ * it reaches, and a tenant admin holding `admin.tenants:read` over its own
+ * tenant must not be offered the deployment-wide tenant list.
+ */
+export function reaches(held: HeldScopes, destination: Destination): boolean {
+  const granted =
+    destination.reach === 'deployment' ? held.deployment_scopes : held.scopes;
+  return granted.includes(destination.scope);
 }
 
-/** The destinations these roles may use. */
-export function visibleTo(roles: readonly string[]): readonly Destination[] {
-  return DESTINATIONS.filter((destination) => reaches(roles, destination));
+/** The destinations this caller's scopes may use. */
+export function visibleTo(held: HeldScopes): readonly Destination[] {
+  return DESTINATIONS.filter((destination) => reaches(held, destination));
 }

@@ -747,6 +747,35 @@ impl AdminBackend for Deployment {
         Ok(roles.into_iter().map(|granted| granted.role).collect())
     }
 
+    /// Gives a role, through the repository whose insert reads
+    /// `tenants.is_reserved` in the same statement (`ast-3t8`).
+    ///
+    /// The reserved-tenant rule is not restated here and must not be: the
+    /// composite foreign key and the check constraint on `user_roles` are what
+    /// make it true of the data, and a second copy in this method would be the
+    /// one that drifts.
+    async fn grant_role(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        role: Role,
+    ) -> Result<(), DomainError> {
+        PgRoleRepository::new(self.store.pool().clone(), tenant.clone())
+            .grant(user, role)
+            .await
+    }
+
+    async fn revoke_role(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        role: Role,
+    ) -> Result<(), DomainError> {
+        PgRoleRepository::new(self.store.pool().clone(), tenant.clone())
+            .revoke(user, role)
+            .await
+    }
+
     /// Whether this user has an enabled passkey (`ast-895`).
     ///
     /// `credential_ids` is the read `excludeCredentials` already uses, and it

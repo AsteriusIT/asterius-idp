@@ -150,6 +150,10 @@ pub const USER_SESSION_REVOKE_ID: &str = "users.sessions.revoke";
 pub const USER_GRANTS_LIST_ID: &str = "users.grants.list";
 /// The `operationId` of `DELETE /users/{user_id}/grants/{grant_id}`.
 pub const USER_GRANT_REVOKE_ID: &str = "users.grants.revoke";
+/// The `operationId` of `GET /users/{user_id}/roles`.
+pub const USER_ROLES_READ_ID: &str = "users.roles.read";
+/// The `operationId` of `PUT /users/{user_id}/roles`.
+pub const USER_ROLES_UPDATE_ID: &str = "users.roles.update";
 
 /// Who the caller is, and the CSRF token the console must send back.
 ///
@@ -609,7 +613,7 @@ pub const USER_PASSWORD_RESET: Operation = Operation::mutation(
 /// questions and a deployment should be able to grant the second without the
 /// first. "Which sessions does this person have open, and end that one" is
 /// support work; reading and editing the claims that describe them is not, and
-/// `ast-4jy`'s `user-support` role is the shape that distinction is for.
+/// the `user_support` role (`ast-3t8`) is the shape that distinction is for.
 pub const USER_SESSIONS_LIST: Operation = Operation::read(
     USER_SESSIONS_LIST_ID,
     "/users/{user_id}/sessions",
@@ -660,12 +664,46 @@ pub const USER_GRANT_REVOKE: Operation = Operation::mutation(
     "Withdraws one authorization and the credentials issued under it",
 );
 
+/// Who administers this account, and what they hold (`ast-3t8`).
+///
+/// Its own scope — `admin.roles:read` — and not `admin.users:read`, for the
+/// reason [`USER_SESSIONS_LIST`] gives about sessions: "who may administer
+/// this tenant" is a different question from "who has an account here", and a
+/// deployment must be able to grant the second without the first. A support
+/// agent reads accounts and is deliberately not told who the administrators
+/// are; an auditor is told, and may change nothing.
+pub const USER_ROLES_READ: Operation = Operation::read(
+    USER_ROLES_READ_ID,
+    "/users/{user_id}/roles",
+    S::Get,
+    A::new(R::Tenant, "admin.roles:read"),
+    "Lists the administrative roles one account holds",
+);
+
+/// Replaces the administrative roles one account holds.
+///
+/// A replacement rather than a grant and a revoke, because the console shows a
+/// set of checkboxes and "what this account should hold" is what an
+/// administrator decides: two routes would let a form be applied halfway.
+///
+/// `admin.roles:write` is authority over *authority*, which is why it is
+/// separate from `admin.users:write`. An operator who has delegated account
+/// administration has not thereby delegated the power to appoint
+/// administrators, and the threat model calls that boundary out.
+pub const USER_ROLES_UPDATE: Operation = Operation::mutation(
+    USER_ROLES_UPDATE_ID,
+    "/users/{user_id}/roles",
+    M::Put,
+    A::new(R::Tenant, "admin.roles:write"),
+    "Replaces the administrative roles one account holds",
+);
+
 /// Every route this API serves.
 ///
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 35] = [
+static REGISTRY: [Operation; 37] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -701,6 +739,8 @@ static REGISTRY: [Operation; 35] = [
     USER_SESSION_REVOKE,
     USER_GRANTS_LIST,
     USER_GRANT_REVOKE,
+    USER_ROLES_READ,
+    USER_ROLES_UPDATE,
 ];
 
 /// The registry.

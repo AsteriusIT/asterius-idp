@@ -264,12 +264,29 @@ impl EventType {
     /// incident, and an answer that requires reading a boolean out of a detail
     /// map is one a query will get wrong.
     pub const ACCOUNT_ENABLED: Self = Self("account.enabled");
+    /// An administrative role was given to an account (`ast-3t8`).
+    ///
+    /// Its own type rather than a detail on [`Self::ADMIN_CHANGED`], because
+    /// "who was made an administrator here, and by whom" is the first question
+    /// of every incident review that starts with a misused console, and an
+    /// answer that requires reading a detail map is one a query gets wrong.
+    ///
+    /// The record names the account it was granted to as the subject, the role
+    /// as a label, and the administrator who granted it as the actor: all
+    /// three are needed before the change means anything.
+    pub const ROLE_GRANTED: Self = Self("role.granted");
+    /// An administrative role was taken away from an account (`ast-3t8`).
+    ///
+    /// Separate from [`Self::ROLE_GRANTED`] for the reason
+    /// [`Self::ACCOUNT_ENABLED`] is separate from [`Self::ACCOUNT_DISABLED`]:
+    /// the direction of the change is the thing being searched for.
+    pub const ROLE_REVOKED: Self = Self("role.revoked");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 43] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -310,6 +327,8 @@ impl EventType {
         Self::USER_CLAIMS_CHANGED,
         Self::ACCOUNT_DISABLED,
         Self::ACCOUNT_ENABLED,
+        Self::ROLE_GRANTED,
+        Self::ROLE_REVOKED,
         Self::AUDIT_PURGED,
     ];
 

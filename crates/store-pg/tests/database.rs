@@ -9434,6 +9434,46 @@ db_test! {
 }
 
 db_test! {
+    /// Migration 0024: the restricted roles are storable, and an ordinary
+    /// tenant is where they belong.
+    ///
+    /// The check constraint is the schema's copy of `Role::ALL`, so a build
+    /// that knows a role the database does not would write a row PostgreSQL
+    /// refuses — which is this test failing rather than an administrator
+    /// discovering it.
+    async fn a_restricted_role_is_stored_in_an_ordinary_tenant(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let user = seed_user(&db.pool, "demo", "support").await;
+        let roles = PgRoleRepository::new(db.pool.clone(), TenantId::new("demo"));
+
+        roles.grant(user, Role::UserSupport).await.expect("a support role is allowed");
+        roles.grant(user, Role::SecurityAuditor).await.expect("an auditor role is allowed");
+
+        assert!(roles.holds(user, Role::UserSupport).await.expect("holds"));
+        assert!(roles.holds(user, Role::SecurityAuditor).await.expect("holds"));
+    }
+}
+
+db_test! {
+    /// A role this build does not know is refused by the database, so the
+    /// check constraint is a rule about the data and not about the adapter.
+    async fn a_role_outside_the_closed_set_is_refused_by_the_schema(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let user = seed_user(&db.pool, "demo", "mallory").await;
+
+        let refused = sqlx::query(
+            "insert into user_roles (tenant_id, user_id, role, tenant_is_reserved)
+             values ('demo', $1, 'superuser', false)",
+        )
+        .bind(user.as_uuid())
+        .execute(&db.pool)
+        .await;
+
+        assert!(refused.is_err(), "an unknown role was stored");
+    }
+}
+
+db_test! {
     /// The flag cannot be taken off the reserved tenant while a
     /// deployment-scoped role still hangs off it — the update cascades into
     /// `user_roles`, where the check refuses it. Without this, protection 2

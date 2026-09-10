@@ -39,7 +39,7 @@ use asterius_domain::administration::{
     CredentialSummary, PasskeySummary, PasswordReset, SessionSummary, Terminated,
 };
 use asterius_domain::{
-    AcceptedPassword, Claim, ClaimName, ClaimSet, ClaimSource, Grant, PasswordError, User,
+    AcceptedPassword, Claim, ClaimName, ClaimSet, ClaimSource, Grant, PasswordError, Role, User,
     UserStatus,
 };
 use serde::Deserialize;
@@ -317,6 +317,66 @@ pub struct RequestedStatus {
     /// `true` to switch the account back on.
     #[serde(default)]
     pub enabled: bool,
+}
+
+/// The body a role change takes (`ast-3t8`).
+///
+/// The whole set the account should hold, not a grant and not a revoke: the
+/// console renders a list of checkboxes, and a request that said "add this
+/// one" would leave the screen and the row disagreeing whenever two
+/// administrators pressed save at once.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestedRoles {
+    /// The stored spellings of the roles, as `asterius_domain::Role` names
+    /// them.
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+impl RequestedRoles {
+    /// The roles asked for, refusing anything this build does not know.
+    ///
+    /// # Errors
+    ///
+    /// [`AdminError::Invalid`] for a spelling that is not a role, and for a
+    /// role named twice — which is a console sending a set it did not build,
+    /// and answering "done" to it would be answering about a different
+    /// request.
+    pub fn parse(&self) -> Result<Vec<Role>, AdminError> {
+        let mut parsed = Vec::with_capacity(self.roles.len());
+        for name in &self.roles {
+            let role = Role::parse(name).ok_or_else(|| {
+                AdminError::Invalid(format!("{name} is not a role this server knows"))
+            })?;
+            if parsed.contains(&role) {
+                return Err(AdminError::Invalid(format!("{role} is named twice")));
+            }
+            parsed.push(role);
+        }
+        Ok(parsed)
+    }
+}
+
+/// What one account administers, and what may be given to it here.
+///
+/// `grantable` is the list a console draws its checkboxes from, and it is the
+/// server's answer rather than a constant the console keeps: a deployment-wide
+/// role is only offerable to a caller who already holds authority over the
+/// deployment, and a console with its own copy of that rule would draw a box
+/// whose save is a 403.
+#[must_use]
+pub fn roles_document(held: &[Role], deployment_wide: bool) -> Value {
+    let grantable: Vec<&str> = Role::ALL
+        .into_iter()
+        .filter(|role| deployment_wide || !role.needs_the_reserved_tenant())
+        .map(Role::as_str)
+        .collect();
+
+    json!({
+        "roles": held.iter().map(|role| role.as_str()).collect::<Vec<_>>(),
+        "grantable": grantable,
+    })
 }
 
 /// Checks a username.
