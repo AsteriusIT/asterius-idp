@@ -7569,6 +7569,45 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed retired subject");
+
+        seed_theme(pool, tenant).await;
+    }
+
+    /// The tenant's theme and one image it could name (`ast-ndk.1`).
+    ///
+    /// Both tables are kept by the policy — a palette an administrator chose
+    /// is configuration, not an artefact of one authorization — so the
+    /// kept-table criterion needs a row in each before it can say anything
+    /// about them. The document is the default one so that it is a document
+    /// this build accepts: a fixture the theme repository would refuse to read
+    /// is a fixture that lies about what is stored.
+    async fn seed_theme(pool: &PgPool, tenant: &str) {
+        sqlx::query(
+            "insert into tenant_themes (tenant_id, document) values ($1, $2)
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .bind(asterius_domain::Theme::default().to_json())
+        .execute(pool)
+        .await
+        .expect("seed theme");
+
+        // Content addressed, so the digest is computed rather than invented:
+        // the column is what a URL path segment is built from, and a fixture
+        // whose digest does not match its bytes is one nothing else can check.
+        let bytes = b"not really a png, but it is what was stored".to_vec();
+        let digest = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes));
+        sqlx::query(
+            "insert into tenant_theme_assets (tenant_id, digest, content_type, bytes)
+             values ($1, $2, 'image/png', $3)
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .bind(digest)
+        .bind(bytes)
+        .execute(pool)
+        .await
+        .expect("seed theme asset");
     }
 
     /// One row per swept expiry-driven table, expiring at `expires`.
@@ -7992,18 +8031,23 @@ mod retention {
         .await
         .expect("seed outbox");
 
-        // One attempt against the oldest row, so the `Kept` rule for
-        // `outbox_attempts` has something to be checked against (`ast-0ju.9`).
-        // It is kept rather than swept because it cascades from `outbox`: the
-        // trail of a delivery disappears exactly when the row it describes
-        // does, and a second cutoff here would either outlive the row or
-        // predecease it.
+        // One attempt, so the `Kept` rule for `outbox_attempts` has something
+        // to be checked against (`ast-0ju.9`). It is kept rather than swept
+        // because it cascades from `outbox`: the trail of a delivery
+        // disappears exactly when the row it describes does, and a second
+        // cutoff here would either outlive the row or predecease it.
+        //
+        // Against the *pending* row, and that is the whole point: an attempt
+        // hung off the delivered row eight days old is deleted by the cascade
+        // when the sweep takes its parent, and "a kept table the sweep did not
+        // empty" then reads as emptied. A delivery still owed, whose first
+        // attempt was refused, is what the rule is about anyway.
         sqlx::query(
             "insert into outbox_attempts
                  (tenant_id, outbox_id, attempt, attempted_at, outcome, detail)
-             select $1, min(outbox_id), 1, $2, 'delivered', null
+             select $1, outbox_id, 1, $2, 'retry', 'the relying party answered 503'
                from outbox
-              where tenant_id = $1",
+              where tenant_id = $1 and status = 'pending'",
         )
         .bind(tenant)
         .bind(now() - Duration::days(8))
