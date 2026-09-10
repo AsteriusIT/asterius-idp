@@ -131,7 +131,7 @@ pub const POLICY: &[Retention] = &[
             //
             // `coalesce(last_used_at, created_at)` is the honest reading of
             // "unused": a client we have never seen authenticate is as idle as
-            // its registration is old. 0009 deliberately did not backfill the
+            // its registration is old. 0010 deliberately did not backfill the
             // column, so this is also what every client registered before that
             // migration gets.
             //

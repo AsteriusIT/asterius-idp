@@ -7105,6 +7105,10 @@ mod retention {
             ("fresh", now() + Duration::hours(1)),
         ] {
             seed_expiring_rows(pool, tenant, user, grant, label, expires).await;
+            // Called here rather than from `seed_expiring_rows`, which is at
+            // clippy's line ceiling: this row belongs to the same stale/fresh
+            // pair and to no other fixture.
+            seed_initial_access_token(pool, tenant, label, expires).await;
         }
         seed_outbox(pool, tenant).await;
     }
@@ -7474,6 +7478,39 @@ mod retention {
         count > 0
     }
 
+    /// One initial access token of `tenant`, expiring at `expires` (`ast-cu3`).
+    ///
+    /// The expiry is the whole rule: past it the row is only a digest and a
+    /// spent counter, and keeping the digest of every token a tenant ever
+    /// issued turns a database dump into a list of guesses worth trying
+    /// against every other deployment the operator runs.
+    ///
+    /// The digest is derived from the tenant *and* the label, because
+    /// `token_hash` is unique across the deployment and not merely within a
+    /// tenant: the tests that sweep two tenants in one schema would otherwise
+    /// collide on it. It is computed in SQL rather than in Rust because what
+    /// this fixture needs is thirty-two bytes that satisfy the column's check,
+    /// not a credential anybody presents.
+    async fn seed_initial_access_token(
+        pool: &PgPool,
+        tenant: &str,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into initial_access_tokens (id, tenant_id, label, token_hash,
+                                                max_uses, expires_at, created_by)
+             values ($1, $2, $3, sha256(convert_to($2 || ':' || $3, 'UTF8')), 5, $4, 'seed')",
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(tenant)
+        .bind(label)
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed initial access token");
+    }
+
     /// Stores `unused_client_expiry_seconds` on the tenant's settings.
     ///
     /// Written where the settings repository writes it —
@@ -7727,7 +7764,7 @@ mod retention {
 
     db_test! {
         /// A client that has never authenticated is as idle as its
-        /// registration is old: 0009 did not backfill `last_used_at`, so
+        /// registration is old: 0010 did not backfill `last_used_at`, so
         /// `null` has to be read as `created_at` rather than as "used now".
         async fn a_client_that_has_never_authenticated_is_dated_by_its_registration(db) {
             seed_tenant(&db.pool, "fresh").await;
