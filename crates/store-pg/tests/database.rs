@@ -6748,6 +6748,20 @@ mod retention {
         .await
         .expect("seed resource server");
 
+        // A registered authorization details type (RFC 9396). Configuration
+        // too: an unregistered type is refused, so a sweep that took this row
+        // would turn every `authorization_details` request into
+        // `invalid_authorization_details` overnight.
+        sqlx::query(
+            "insert into authorization_details_types (tenant_id, type_name, consent_template)
+             values ($1, 'payment_initiation', 'Initiate a payment on your behalf')
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("seed authorization details type");
+
         sqlx::query(
             "insert into grants (tenant_id, grant_id, client_id, user_id)
              values ($1, $2, 'billing', $3)",
@@ -7105,12 +7119,8 @@ mod retention {
         /// with it.
         async fn a_sweep_does_not_touch_a_table_the_policy_keeps(db) {
             seed(&db.pool, "demo").await;
-            sweeper(&db.pool)
-                .sweep_tenant(&TenantId::new("demo"), now())
-                .await
-                .expect("sweep");
 
-            for kept in POLICY
+            let kept: Vec<&'static str> = POLICY
                 .iter()
                 .filter(|entry| matches!(entry.rule, Rule::Kept(_)))
                 .map(|entry| entry.table)
@@ -7118,10 +7128,30 @@ mod retention {
                                                 | "subject_identifiers" | "credentials"
                                                 | "signing_keys" | "key_rotation_schedules"
                                                 | "tenant_pairwise_salts"))
-            {
+                .collect();
+
+            // Counted *before* the sweep, or the assertion below cannot tell
+            // "the sweep took the row" from "the seed never wrote one": a table
+            // empty at both ends reads as emptied, which is how `ast-hy0` spent
+            // its afternoon looking at the sweep instead of at the seed. A new
+            // kept table arriving with a migration and no seed now says so.
+            for table in &kept {
                 assert!(
-                    count(&db.pool, kept, "demo").await > 0,
-                    "{kept} is kept by the policy but the sweep emptied it"
+                    count(&db.pool, table, "demo").await > 0,
+                    "seed missing for {table}: the policy keeps it, so `seed` must \
+                     write a row there for this test to be able to say anything"
+                );
+            }
+
+            sweeper(&db.pool)
+                .sweep_tenant(&TenantId::new("demo"), now())
+                .await
+                .expect("sweep");
+
+            for table in &kept {
+                assert!(
+                    count(&db.pool, table, "demo").await > 0,
+                    "{table} is kept by the policy but the sweep emptied it"
                 );
             }
         }
