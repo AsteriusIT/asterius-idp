@@ -320,6 +320,55 @@ impl PgOutbox {
         enqueue(transaction, tenant, &entry, now).await
     }
 
+    /// Writes several rows in one transaction of this adapter's own.
+    ///
+    /// The [`OutboxQueue`] port's implementation, and the one enqueue path
+    /// that does *not* take the caller's transaction — because its callers are
+    /// protocol handlers above the adapter layer, which cannot name a
+    /// [`PgTransaction`]. The property the `&mut` transaction on
+    /// [`Self::enqueue`] buys is not lost so much as narrowed: the rows here
+    /// commit together, so a logout that notifies three relying parties queues
+    /// three rows or none.
+    ///
+    /// What it does not buy is the row committing with the change it
+    /// describes. For back-channel logout that is the honest shape: the
+    /// session is revoked first and the tokens are queued after, so a crash
+    /// between the two leaves a session that is *ended* and relying parties
+    /// that were not told — which is a logout that under-notifies, not one
+    /// that announces a session that is still live. The other order would be
+    /// worse, and a single transaction is not available: revoking a session is
+    /// [`crate::sessions`]' statement, not this one's.
+    ///
+    /// Every row gets this deployment's attempt budget, exactly as
+    /// [`Self::enqueue`] gives it.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if any insert or the commit fails. Nothing was
+    /// written.
+    pub async fn queue_all(
+        &self,
+        tenant: &TenantId,
+        events: &[asterius_domain::outbox::QueuedEvent],
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        for event in events {
+            let entry = NewOutboxEntry {
+                kind: &event.kind,
+                destination: &event.destination,
+                payload: event.payload.clone(),
+                ordering_key: event.ordering_key.as_deref(),
+                max_attempts: Some(self.max_attempts),
+            };
+            enqueue(&mut transaction, tenant, &entry, now).await?;
+        }
+        transaction.commit().await.map_err(to_domain_error)
+    }
+
     /// Takes up to `limit` due rows across every tenant, marking them claimed.
     ///
     /// One statement, so the claim is atomic: the rows this returns are rows
@@ -582,6 +631,18 @@ impl Outcome {
             at,
             detail: Some(detail),
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::outbox::OutboxQueue for PgOutbox {
+    async fn queue(
+        &self,
+        tenant: &TenantId,
+        events: &[asterius_domain::outbox::QueuedEvent],
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.queue_all(tenant, events, now).await
     }
 }
 

@@ -1073,6 +1073,13 @@ pub struct ClientMetadata {
     /// `ast-lh3.1`. The UUID of the user an agent acts for. Meaningful only
     /// with `client_kind` of `agent`, and required there.
     pub agent_owner: Option<String>,
+    /// OIDC Back-Channel Logout 1.0 §2.2. Where a logout token is posted when
+    /// a session this client took part in ends. Absent means the client is
+    /// never notified.
+    pub backchannel_logout_uri: Option<String>,
+    /// OIDC Back-Channel Logout 1.0 §2.2. Whether the logout token this client
+    /// receives must carry a `sid`. "If omitted, the default value is false."
+    pub backchannel_logout_session_required: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,6 +1180,29 @@ pub struct ClientRegistration {
     /// an agent under any policy: it authenticates with a key, it names an
     /// owner, and it uses no grant that needs a browser.
     pub agent: Option<AgentProfile>,
+    /// OIDC Back-Channel Logout 1.0 §2.2 `backchannel_logout_uri`.
+    ///
+    /// A [`RedirectUri`] rather than a `String`, and parsed as a `web`
+    /// callback whatever the client's `application_type`: this is a URL this
+    /// server dereferences with a signed assertion in the body, so it must be
+    /// `https`, carry no fragment and no userinfo, and be in a spelling a URL
+    /// parser produces. ADR-0005: one definition of an acceptable
+    /// client-supplied URL rather than a gentler second one for the endpoint
+    /// nobody looks at.
+    ///
+    /// The loopback exception a `native` client gets for its `redirect_uris`
+    /// is deliberately not extended here. Back-channel logout is delivered by
+    /// this server to the relying party's *backend*; an RP whose backend is
+    /// `127.0.0.1` is this deployment's own loopback, which is the SSRF target
+    /// `crate::ports::ClientUrlFetcher` exists to refuse.
+    pub backchannel_logout_uri: Option<RedirectUri>,
+    /// OIDC Back-Channel Logout 1.0 §2.2 `backchannel_logout_session_required`.
+    ///
+    /// `false` unless the client registered `true`, which is §2.2's stated
+    /// default. Read when the logout token is minted: a client that requires a
+    /// `sid` gets one, and — §2.4 — a token that carries `sid` need not also
+    /// carry `sub`.
+    pub backchannel_logout_session_required: bool,
 }
 
 impl ClientRegistration {
@@ -1533,6 +1563,11 @@ impl ClientMetadata {
             backchannel_client_notification_endpoint: backchannel.notification_endpoint,
             backchannel_user_code_parameter: backchannel.user_code_parameter,
             agent,
+            backchannel_logout_uri: self.backchannel_logout_uri()?,
+            // §2.2: "If omitted, the default value is false."
+            backchannel_logout_session_required: self
+                .backchannel_logout_session_required
+                .unwrap_or(false),
         })
     }
 
@@ -1985,6 +2020,32 @@ impl ClientMetadata {
             uris.push(uri);
         }
         Ok(uris)
+    }
+
+    /// OIDC Back-Channel Logout 1.0 §2.2 `backchannel_logout_uri`.
+    ///
+    /// > RP URL that will cause the RP to log itself out when sent a Logout
+    /// > Token by the OP.
+    ///
+    /// Parsed as a `web` redirect URI — see the field on
+    /// [`ClientRegistration`] for why `native`'s loopback exception stops at
+    /// this member. The check happens at registration rather than at delivery:
+    /// a URL refused now never reaches the outbox, and an outbox row whose
+    /// destination cannot be posted is a dead letter somebody has to read.
+    fn backchannel_logout_uri(&self) -> Result<Option<RedirectUri>, ClientMetadataError> {
+        const FIELD: &str = "backchannel_logout_uri";
+        let Some(raw) = self.backchannel_logout_uri.as_deref() else {
+            return Ok(None);
+        };
+        if raw.is_empty() {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                "must not be empty".to_owned(),
+            ));
+        }
+        let uri = RedirectUri::parse(raw, ApplicationType::Web)
+            .map_err(|error| ClientMetadataError::rejected(FIELD, error.to_string()))?;
+        Ok(Some(uri))
     }
 
     fn jwks(&self) -> Result<JwksSource, ClientMetadataError> {
@@ -3124,6 +3185,95 @@ mod tests {
         object.insert("grant_types".to_owned(), json!(["client_credentials"]));
         object.insert("response_types".to_owned(), json!([]));
         assert_eq!(rejection(&document).field(), "redirect_uris");
+    }
+
+    // -----------------------------------------------------------------------
+    // Back-channel logout (OIDC Back-Channel Logout 1.0 §2.2)
+    // -----------------------------------------------------------------------
+
+    /// §2.2 makes both members optional, and states the default of the second:
+    /// "If omitted, the default value is false." A client that registered
+    /// neither is one no logout token is ever minted for.
+    #[test]
+    fn a_client_registers_no_back_channel_logout_by_default() {
+        // Arrange / Act
+        let client = validate(&minimal()).expect("a valid registration");
+
+        // Assert
+        assert!(client.backchannel_logout_uri.is_none());
+        assert!(!client.backchannel_logout_session_required);
+    }
+
+    /// The URL is kept exactly as registered: it is the destination of an
+    /// outbox row, and a normalised spelling would be a POST to a place the
+    /// operator did not write down.
+    #[test]
+    fn a_registered_backchannel_logout_uri_is_kept_byte_for_byte() {
+        // Arrange
+        let document = with(
+            "backchannel_logout_uri",
+            json!("https://rp.example/backchannel?tenant=demo"),
+        );
+
+        // Act
+        let client = validate(&document).expect("a valid registration");
+
+        // Assert
+        assert_eq!(
+            client
+                .backchannel_logout_uri
+                .as_ref()
+                .map(RedirectUri::as_str),
+            Some("https://rp.example/backchannel?tenant=demo")
+        );
+    }
+
+    /// ADR-0005: the URL this server POSTs a signed assertion to passes the
+    /// same gate a callback does. `http`, a fragment, userinfo in the
+    /// authority and loopback are each a destination this deployment refuses
+    /// to dereference, and refusing them here means no outbox row can carry
+    /// one.
+    #[test]
+    fn a_backchannel_logout_uri_that_is_not_a_web_callback_is_refused() {
+        // Arrange
+        for uri in [
+            "http://rp.example/backchannel",
+            "https://rp.example/backchannel#fragment",
+            "https://user@rp.example/backchannel",
+            "http://127.0.0.1:9000/backchannel",
+            "not-a-url",
+            "",
+        ] {
+            // Act
+            let error = rejection(&with("backchannel_logout_uri", json!(uri)));
+
+            // Assert
+            assert_eq!(error.field(), "backchannel_logout_uri", "{uri} passed");
+        }
+    }
+
+    /// §2.2's `backchannel_logout_session_required`: a client that asks for a
+    /// `sid` is recorded as asking for one, because §2.4 lets the token that
+    /// carries `sid` leave out `sub`.
+    #[test]
+    fn a_client_may_require_a_session_identifier_in_its_logout_token() {
+        // Arrange
+        let mut document = minimal();
+        let object = document.as_object_mut().expect("object");
+        object.insert(
+            "backchannel_logout_uri".to_owned(),
+            json!("https://rp.example/backchannel"),
+        );
+        object.insert(
+            "backchannel_logout_session_required".to_owned(),
+            json!(true),
+        );
+
+        // Act
+        let client = validate(&document).expect("a valid registration");
+
+        // Assert
+        assert!(client.backchannel_logout_session_required);
     }
 
     // -----------------------------------------------------------------------

@@ -21,19 +21,26 @@
 //!   and *then* asked would violate the §3 MUST while looking, from the
 //!   outside, almost the same.
 //! * **The relying parties are notified before the browser leaves.** The
-//!   `Location` is built from a [`Notified`] receipt, and the one place in
-//!   this server that mints one is the notifying step itself. That step,
-//!   `notify_participants`, stays private so no second path to a receipt can
-//!   appear beside it.
+//!   `Location` is built from a [`Notified`] receipt, and the only way to
+//!   obtain one is [`asterius_oidc::logout::notifying`], which *takes* the
+//!   notification and returns the receipt after awaiting it. Redirecting
+//!   first therefore does not compile rather than merely being against the
+//!   convention (`ast-t9k`).
+//!
+//! # Back-channel logout
+//!
+//! `notify_participants` mints one logout token per participating client that
+//! registered a `backchannel_logout_uri` and queues it in the outbox, which
+//! POSTs it (OIDC Back-Channel Logout 1.0 §2.4, §2.5). The token itself is
+//! [`asterius_oidc::tokens::logout_token`]; what lives here is which clients
+//! are told, what each one's token says about the person, and the row that
+//! carries it.
 //!
 //! # What is not built yet
 //!
-//! `notify_participants` is the named seam for **back-channel logout**
-//! (OIDC Back-Channel Logout 1.0 §2, `E10_02`) and for the **CAEP
-//! `session-revoked`** signal, which needs the outbox (`ast-0ju.9`). It reads
-//! the participant list and records the count today; it does not send
-//! anything, and it does not pretend to. Both of those land inside this one
-//! function, which is why the redirect is already gated behind its receipt.
+//! The **CAEP `session-revoked`** signal (`ast-o4u.3`) lands in the same
+//! function, beside the logout tokens, and there is still no front-channel
+//! logout and no session-management iframe (`ast-o4u.4`).
 //!
 //! Registered `post_logout_redirect_uris` (§3.1) *are* stored, and
 //! `registered_redirect_uris` reads them off the identified client's
@@ -90,6 +97,34 @@ pub struct LogoutContext<'a> {
     /// The prefix routing removed from this request's path, put back on the
     /// URLs this handler names to the browser (`ast-295`, `ast-j3v`).
     pub mount: MountPrefix,
+    /// The `sub` each participating client knows this person by, for the
+    /// logout token's subject (OIDC Back-Channel Logout 1.0 §2.4, OIDC Core
+    /// §8.1).
+    pub subjects: &'a dyn asterius_domain::ports::SubjectResolver,
+    /// Signs the logout tokens, with the same key and the same port as every
+    /// other JWT this deployment issues — a relying party resolves the key
+    /// from the tenant's published JWKS, so a second signing path would
+    /// produce tokens no RP can verify.
+    pub signer: &'a dyn asterius_domain::keys::Signer,
+    /// Where a logout token is queued for delivery (§2.5).
+    ///
+    /// `None` notifies nobody and says so. See
+    /// [`crate::http::protocol::ClientEndpoints::outbox`].
+    pub outbox: Option<&'a dyn asterius_domain::outbox::OutboxQueue>,
+    /// The long-lived credentials issued under this session, for the tenant
+    /// that has asked a logout to withdraw them.
+    ///
+    /// `None` is a deployment with no such store wired; with the policy off it
+    /// is never reached either way.
+    pub credentials: Option<&'a dyn asterius_domain::ports::SessionCredentials>,
+    /// This tenant's `revoke_refresh_on_logout` (`ast-o4u.2`).
+    ///
+    /// Resolved by the caller from the tenant's settings, so the handler
+    /// applies a decision rather than reading configuration mid-request. False
+    /// for a tenant that has expressed no opinion: a refresh token is offline
+    /// access rather than a session — see
+    /// [`asterius_domain::TenantSettings::revoke_refresh_on_logout`].
+    pub revoke_refresh: bool,
 }
 
 impl std::fmt::Debug for LogoutContext<'_> {
@@ -277,8 +312,10 @@ async fn end_session(
 ) -> Notified {
     let Some(session) = session else {
         // Already signed out. There is no session to revoke and no
-        // participant list to read, so there is nobody to notify.
-        return Notified::after_notifying(0);
+        // participant list to read, so there is nobody to notify — and the
+        // receipt is still earned by running the (empty) notification, which
+        // is the only way to hold one.
+        return asterius_oidc::logout::notifying(|| async { 0 }).await;
     };
 
     if let Err(error) = context
@@ -291,8 +328,18 @@ async fn end_session(
         // happen. The operator gets the error and the failed audit outcome.
         tracing::error!(%error, tenant = %context.tenant.id, "cannot revoke a session at logout");
         record(context, session, requested_by, Outcome::Failure, 0, now).await;
-        return Notified::after_notifying(0);
+        // Nothing was revoked, so there is nothing to tell a relying party
+        // about: a logout token for a session that is still live would be a
+        // statement this server cannot stand behind.
+        return asterius_oidc::logout::notifying(|| async { 0 }).await;
     }
+
+    // Before the notification and after the revocation: a relying party told
+    // that a session ended, whose refresh token still works, is a client that
+    // can mint a fresh access token a second later. The order is the point,
+    // and a failure here is logged rather than fatal — the session is already
+    // ended and the browser must still be let go.
+    revoke_refresh_tokens(context, session, now).await;
 
     let participants = match context.sessions.participants(&session.id_digest).await {
         Ok(participants) => participants,
@@ -301,7 +348,7 @@ async fn end_session(
             Vec::new()
         }
     };
-    let notified = notify_participants(context, session, &participants).await;
+    let notified = notify_participants(context, session, &participants, now).await;
     record(
         context,
         session,
@@ -314,44 +361,295 @@ async fn end_session(
     notified
 }
 
-/// **Extension point: back-channel logout and CAEP `session-revoked`.**
+/// **Back-channel logout: OIDC Back-Channel Logout 1.0 §2.**
 ///
-/// Every relying party that was issued an ID token in this session has to be
-/// told that it ended — OIDC Back-Channel Logout 1.0 §2, tracked as `E10_02`
-/// — and the same event is a CAEP `session-revoked` subject for the SSF
-/// transmitter (`ast-o4u.3`), which needs the outbox in `ast-0ju.9`.
+/// Every relying party that was issued an ID token in this session is told
+/// that it ended: one logout token per participant that registered a
+/// `backchannel_logout_uri` (§2.2), queued in the outbox and posted by its
+/// HTTP deliverer (§2.5).
 ///
-/// Neither exists yet, so this function does the part that does: it reads the
-/// participant list and returns the receipt. It deliberately does **not**
-/// fabricate a notification — a logout that logs "notified 3 clients" while
-/// sending nothing is worse than one that is honestly incomplete, because the
-/// first is a control an auditor would believe.
+/// The receipt comes back through [`asterius_oidc::logout::notifying`], which
+/// is the only way to obtain one: the [`Notified`] is built from what the
+/// queueing returned, so §3's "notify, then redirect" is a property of the
+/// types rather than of the order of statements here (`ast-t9k`).
 ///
-/// What lands here, and nowhere else, is: mint a logout token per participant,
-/// hand it to the outbox, and emit the CAEP event. The signature already
-/// returns [`Notified`], which is what [`RedirectTarget::location`] needs, so
-/// the §3 ordering does not have to be rediscovered when it does.
-#[expect(
-    clippy::unused_async,
-    reason = "this is the seam back-channel logout (E10_02) plugs into, and sending a               logout token per participant is I/O; making it synchronous now would only               have to be undone, and its caller is already async"
-)]
+/// # What the count means
+///
+/// The number of logout tokens **queued**, not the number of relying parties
+/// that acknowledged one. Delivery is the outbox's, is retried, and may end in
+/// a dead letter; a browser cannot be held while three RPs are posted to and
+/// nothing in §3 asks for it to be. A client with no `backchannel_logout_uri`
+/// is not counted, because nothing was sent to it — an audit record saying
+/// "notified 3" when one client is not a participant is a control an auditor
+/// would believe and should not.
+///
+/// The CAEP `session-revoked` signal for the SSF transmitter (`ast-o4u.3`) is
+/// the other thing that lands in this function, and it is still to come.
 async fn notify_participants(
     context: &LogoutContext<'_>,
     session: &Session,
     participants: &[asterius_domain::Participant],
+    now: OffsetDateTime,
 ) -> Notified {
-    if !participants.is_empty() {
-        tracing::info!(
-            tenant = %context.tenant.id,
-            sid = %session.public_sid,
-            participants = participants.len(),
-            "session ended with participating clients; back-channel logout (E10_02) is not built yet"
-        );
-    }
-    // The count is of clients that *should* be notified, and it is used for
-    // the audit detail and nothing else until E10_02 lands.
-    Notified::after_notifying(participants.len())
+    asterius_oidc::logout::notifying(|| queue_logout_tokens(context, session, participants, now))
+        .await
 }
+
+/// Withdraws the refresh tokens issued under this session, if the tenant asked
+/// for that (`revoke_refresh_on_logout`).
+///
+/// Nothing happens for a tenant that has expressed no opinion, which is every
+/// tenant that has never opened the setting: RP-Initiated Logout §2 asks the
+/// OP to end the session, and a refresh token is offline access a person
+/// granted a client rather than part of a browser session. A deployment whose
+/// clients are all first-party turns it on and gets the other reading.
+async fn revoke_refresh_tokens(
+    context: &LogoutContext<'_>,
+    session: &Session,
+    now: OffsetDateTime,
+) {
+    if !context.revoke_refresh {
+        return;
+    }
+    let Some(credentials) = context.credentials else {
+        tracing::warn!(
+            tenant = %context.tenant.id,
+            "revoke_refresh_on_logout is set but no credential store is wired"
+        );
+        return;
+    };
+    match credentials
+        .revoke_refresh_for_session(&session.id_digest, now)
+        .await
+    {
+        Ok(revoked) => tracing::info!(
+            tenant = %context.tenant.id,
+            revoked,
+            "refresh tokens revoked with the session"
+        ),
+        Err(error) => tracing::error!(
+            %error,
+            tenant = %context.tenant.id,
+            "cannot revoke the refresh tokens of an ended session"
+        ),
+    }
+}
+
+/// Mints and queues one logout token per participating relying party.
+///
+/// Returns how many rows were written. Every failure here is logged and
+/// degrades to "this client was not notified": a relying party whose
+/// registration will not load, whose sector cannot be resolved or whose token
+/// will not sign must not stop the session from ending or the other RPs from
+/// being told, and it must not turn a completed logout into an error page.
+async fn queue_logout_tokens(
+    context: &LogoutContext<'_>,
+    session: &Session,
+    participants: &[asterius_domain::Participant],
+    now: OffsetDateTime,
+) -> usize {
+    let Some(queue) = context.outbox else {
+        if !participants.is_empty() {
+            tracing::warn!(
+                tenant = %context.tenant.id,
+                participants = participants.len(),
+                "no outbox is wired; the participating relying parties were not notified"
+            );
+        }
+        return 0;
+    };
+
+    let mut rows = Vec::with_capacity(participants.len());
+    for participant in participants {
+        match logout_notice(context, session, &participant.client, now).await {
+            Ok(Some(row)) => rows.push(row),
+            // §2.2: a client with no `backchannel_logout_uri` is not a
+            // participant of back-channel logout. Nothing to send, nothing to
+            // count, nothing to say.
+            Ok(None) => {}
+            Err(error) => tracing::error!(
+                %error,
+                tenant = %context.tenant.id,
+                client = %participant.client,
+                "cannot build a logout token for a participating client"
+            ),
+        }
+    }
+
+    if rows.is_empty() {
+        return 0;
+    }
+    let queued = rows.len();
+    if let Err(error) = queue.queue(&context.tenant.id, &rows, now).await {
+        // All-or-nothing: the port writes every row or none, so this is a
+        // logout nobody was told about. The session is still ended and the
+        // browser still leaves — the audit record carries the zero.
+        tracing::error!(
+            %error,
+            tenant = %context.tenant.id,
+            "cannot queue the back-channel logout tokens of an ended session"
+        );
+        return 0;
+    }
+    tracing::info!(
+        tenant = %context.tenant.id,
+        queued,
+        "back-channel logout tokens queued"
+    );
+    queued
+}
+
+/// Why one relying party could not be sent a logout token.
+///
+/// Every variant is a reason to skip that client, never to fail the logout.
+/// The `Display` names no URL and no token: it is logged beside a `client_id`.
+#[derive(Debug, thiserror::Error)]
+enum NoticeError {
+    /// The client's registration could not be read.
+    #[error("the client's registration could not be read")]
+    Registration(#[source] asterius_domain::DomainError),
+    /// The session identifier is not one that may appear in a `sid` claim.
+    #[error("the session identifier cannot be a sid claim")]
+    Session(#[source] asterius_oidc::tokens::IssuanceError),
+    /// The `sub` this client knows the person by could not be resolved.
+    #[error("the subject this client knows the user by could not be resolved")]
+    Subject(#[source] asterius_domain::DomainError),
+    /// The client's registration names a sector that will not resolve.
+    #[error("the client's sector identifier cannot be derived")]
+    Sector,
+    /// The claims set was refused by the builder.
+    #[error("the logout token claims were refused")]
+    Claims(#[source] asterius_oidc::tokens::IssuanceError),
+    /// The tenant's signer refused, most often for want of an active key of
+    /// the client's `id_token_signed_response_alg`.
+    #[error("the logout token could not be signed")]
+    Signing(#[source] asterius_domain::DomainError),
+}
+
+/// One relying party's logout token, as an outbox row (§2.4, §2.5).
+///
+/// `Ok(None)` is a client that is not a participant of back-channel logout: it
+/// is gone, disabled, or registered no `backchannel_logout_uri`.
+///
+/// # What goes in the token
+///
+/// §2.4 requires `sub` and/or `sid` and allows both. Which this server sends
+/// is decided here:
+///
+/// * **`sid` and `sub`** by default. The RP matches either (§2.6 step 4), and
+///   a token carrying both is one it can attribute whichever it indexed by.
+/// * **`sid` alone** when the client both requires a session identifier
+///   (`backchannel_logout_session_required`) and is pairwise. It asked to be
+///   told which session ended; a pairwise `sub` adds nothing it needs and puts
+///   a subject identifier on the wire, in a token delivered to a URL, for a
+///   client that said the session was the part it cared about. Data
+///   minimisation, and §2.4 permits it in as many words.
+///
+/// The `sub` is never the local user id: it is [`SubjectResolver`]'s answer
+/// for *this client's* sector, which is the identifier the RP was issued in
+/// its ID token (OIDC Core §8.1). A local identifier here would be a `sub` no
+/// RP recognises and a correlator across every RP that received one.
+///
+/// [`SubjectResolver`]: asterius_domain::ports::SubjectResolver
+async fn logout_notice(
+    context: &LogoutContext<'_>,
+    session: &Session,
+    client: &ClientId,
+    now: OffsetDateTime,
+) -> Result<Option<asterius_domain::outbox::QueuedEvent>, NoticeError> {
+    let Some(registered) = context
+        .clients
+        .find(client)
+        .await
+        .map_err(NoticeError::Registration)?
+    else {
+        return Ok(None);
+    };
+    if !registered.is_active() {
+        // A client an operator has just turned off is not one this server
+        // opens a connection to.
+        return Ok(None);
+    }
+    let Some(endpoint) = registered.registration.backchannel_logout_uri.clone() else {
+        return Ok(None);
+    };
+
+    let sid =
+        asterius_oidc::tokens::Session::new(&asterius_domain::SessionId::new(&session.public_sid))
+            .map_err(NoticeError::Session)?;
+
+    let pairwise_and_session_only = registered.registration.backchannel_logout_session_required
+        && registered.registration.subject_type == asterius_domain::SubjectType::Pairwise;
+    let unsigned = if pairwise_and_session_only {
+        asterius_oidc::tokens::LogoutToken::about_session(sid)
+    } else {
+        let sector = asterius_domain::SectorIdentifier::of_client(&registered)
+            .map_err(|_| NoticeError::Sector)?;
+        let subject = context
+            .subjects
+            .subject(asterius_domain::UserId::new(session.user), &sector)
+            .await
+            .map_err(NoticeError::Subject)?;
+        asterius_oidc::tokens::LogoutToken::about_session(sid).and_subject(
+            asterius_oidc::tokens::LogoutSubject::new(subject.as_str())
+                .map_err(NoticeError::Claims)?,
+        )
+    }
+    .issue(
+        &context.tenant.issuer,
+        client,
+        // §2.6 step 3: the RP validates the signature "in the same manner as
+        // an ID Token", so the algorithm is the one it registered.
+        registered.registration.id_token_signed_response_alg,
+        now,
+        asterius_oidc::tokens::logout_token::MAX_LOGOUT_TOKEN_LIFETIME,
+    )
+    .map_err(NoticeError::Claims)?;
+
+    let token = context
+        .signer
+        .sign(
+            &context.tenant.id,
+            unsigned.required_algorithm(),
+            unsigned.typ(),
+            unsigned.claims(),
+        )
+        .await
+        .map_err(NoticeError::Signing)?;
+
+    // §2.5: "the Logout Token is sent ... using the HTTP POST method ... with
+    // the `logout_token` parameter" in a form-encoded body. The encoding is
+    // done properly rather than by concatenation: a JWT needs no escaping
+    // today, and a body built by `format!` is one that stops being true the
+    // day anything else is added to it.
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("logout_token", token.as_str())
+        .finish();
+
+    Ok(Some(asterius_domain::outbox::QueuedEvent {
+        kind: BACKCHANNEL_LOGOUT_KIND.to_owned(),
+        destination: endpoint.as_str().to_owned(),
+        payload: serde_json::json!({
+            "body": body,
+            "content_type": "application/x-www-form-urlencoded",
+        }),
+        // One key per (session, client): two statements about one session at
+        // one relying party delivered out of order say the opposite of what
+        // happened. Different clients are different keys, so a wedged receiver
+        // holds its own queue and nobody else's.
+        ordering_key: Some(format!("logout:{}:{client}", session.public_sid)),
+    }))
+}
+
+/// The outbox `kind` a queued logout token carries.
+///
+/// The part before the first `.` is the family, and `logout` is the family the
+/// process registers [`crate::outbox::HttpDeliverer`] for. A kind whose family
+/// has no deliverer is dead-lettered on its first attempt, so this constant
+/// and that registration are one fact spelled in two places — which is why it
+/// is a constant and why `the_kind_is_delivered_by_the_http_family` asserts
+/// the prefix.
+pub const BACKCHANNEL_LOGOUT_KIND: &str = "logout.backchannel";
 
 /// The registered `post_logout_redirect_uris` of an identified relying party
 /// (§3.1).

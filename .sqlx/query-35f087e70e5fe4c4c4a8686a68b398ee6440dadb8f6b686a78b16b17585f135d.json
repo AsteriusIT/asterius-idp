@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into clients (tenant_id, client_id, client_name,\n                                  token_endpoint_auth_method, redirect_uris, grant_types,\n                                  response_types, scopes, resources, jwks, jwks_uri,\n                                  id_token_signed_response_alg, application_type, subject_type,\n                                  sector_identifier_uri, request_object_signing_alg,\n                                  backchannel_authentication_request_signing_alg,\n                                  dpop_bound_access_tokens,\n                                  tls_client_certificate_bound_access_tokens,\n                                  authorization_details_types, use_mtls_endpoint_aliases, status,\n                                  post_logout_redirect_uris,\n                                  tls_client_auth_field, tls_client_auth_value,\n                                  userinfo_signed_response_alg,\n                                  backchannel_token_delivery_mode,\n                                  backchannel_client_notification_endpoint,\n                                  backchannel_user_code_parameter,\n                                  is_agent, agent_owner_user_id, agent_policy,\n                                  backchannel_logout_uri, backchannel_logout_session_required)\n             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,\n                     $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,\n                     $32, $33, $34)\n             on conflict (tenant_id, client_id) do update\n             set client_name = excluded.client_name,\n                 token_endpoint_auth_method = excluded.token_endpoint_auth_method,\n                 redirect_uris = excluded.redirect_uris,\n                 grant_types = excluded.grant_types,\n                 response_types = excluded.response_types,\n                 scopes = excluded.scopes,\n                 resources = excluded.resources,\n                 jwks = excluded.jwks,\n                 jwks_uri = excluded.jwks_uri,\n                 id_token_signed_response_alg = excluded.id_token_signed_response_alg,\n                 application_type = excluded.application_type,\n                 subject_type = excluded.subject_type,\n                 sector_identifier_uri = excluded.sector_identifier_uri,\n                 request_object_signing_alg = excluded.request_object_signing_alg,\n                 backchannel_authentication_request_signing_alg =\n                     excluded.backchannel_authentication_request_signing_alg,\n                 dpop_bound_access_tokens = excluded.dpop_bound_access_tokens,\n                 tls_client_certificate_bound_access_tokens =\n                     excluded.tls_client_certificate_bound_access_tokens,\n                 authorization_details_types = excluded.authorization_details_types,\n                 use_mtls_endpoint_aliases = excluded.use_mtls_endpoint_aliases,\n                 status = excluded.status,\n                 post_logout_redirect_uris = excluded.post_logout_redirect_uris,\n                 tls_client_auth_field = excluded.tls_client_auth_field,\n                 tls_client_auth_value = excluded.tls_client_auth_value,\n                 userinfo_signed_response_alg = excluded.userinfo_signed_response_alg,\n                 backchannel_token_delivery_mode = excluded.backchannel_token_delivery_mode,\n                 backchannel_client_notification_endpoint =\n                     excluded.backchannel_client_notification_endpoint,\n                 backchannel_user_code_parameter = excluded.backchannel_user_code_parameter,\n                 is_agent = excluded.is_agent,\n                 agent_owner_user_id = excluded.agent_owner_user_id,\n                 agent_policy = excluded.agent_policy,\n                 backchannel_logout_uri = excluded.backchannel_logout_uri,\n                 backchannel_logout_session_required =\n                     excluded.backchannel_logout_session_required",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Jsonb",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "TextArray",
+        "Bool",
+        "Text",
+        "TextArray",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "Uuid",
+        "Jsonb",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "35f087e70e5fe4c4c4a8686a68b398ee6440dadb8f6b686a78b16b17585f135d"
+}

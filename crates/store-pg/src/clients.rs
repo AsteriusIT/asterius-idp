@@ -149,6 +149,7 @@ impl PgClientRepository {
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
+                    backchannel_logout_uri, backchannel_logout_session_required,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1 and client_id = $2",
@@ -182,6 +183,7 @@ impl PgClientRepository {
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
+                    backchannel_logout_uri, backchannel_logout_session_required,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1
@@ -229,6 +231,8 @@ impl PgClientRepository {
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
         let (tls_field, tls_value) = subject_columns(registration);
+        let (backchannel_uri, backchannel_session_required) =
+            backchannel_logout_columns(registration);
         let (agent, agent_policy) = agent_columns(registration);
 
         sqlx::query!(
@@ -247,10 +251,11 @@ impl PgClientRepository {
                                   backchannel_token_delivery_mode,
                                   backchannel_client_notification_endpoint,
                                   backchannel_user_code_parameter,
-                                  is_agent, agent_owner_user_id, agent_policy)
+                                  is_agent, agent_owner_user_id, agent_policy,
+                                  backchannel_logout_uri, backchannel_logout_session_required)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32)
+                     $32, $33, $34)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  token_endpoint_auth_method = excluded.token_endpoint_auth_method,
@@ -284,7 +289,10 @@ impl PgClientRepository {
                  backchannel_user_code_parameter = excluded.backchannel_user_code_parameter,
                  is_agent = excluded.is_agent,
                  agent_owner_user_id = excluded.agent_owner_user_id,
-                 agent_policy = excluded.agent_policy",
+                 agent_policy = excluded.agent_policy,
+                 backchannel_logout_uri = excluded.backchannel_logout_uri,
+                 backchannel_logout_session_required =
+                     excluded.backchannel_logout_session_required",
             self.tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
@@ -300,12 +308,8 @@ impl PgClientRepository {
             registration.application_type.as_str(),
             registration.subject_type.as_str(),
             registration.sector_identifier_uri.as_deref(),
-            registration
-                .request_object_signing_alg
-                .map(SigningAlgorithm::as_str),
-            registration
-                .backchannel_authentication_request_signing_alg
-                .map(SigningAlgorithm::as_str),
+            algorithm_column(registration.request_object_signing_alg),
+            algorithm_column(registration.backchannel_authentication_request_signing_alg),
             registration.token_binding.is_dpop_bound(),
             registration.token_binding.is_certificate_bound(),
             &lists.authorization_details_types,
@@ -314,9 +318,7 @@ impl PgClientRepository {
             &lists.post_logout_redirect_uris,
             tls_field,
             tls_value,
-            registration
-                .userinfo_signed_response_alg
-                .map(SigningAlgorithm::as_str),
+            algorithm_column(registration.userinfo_signed_response_alg),
             registration
                 .backchannel_token_delivery_mode
                 .map(TokenDeliveryMode::as_str),
@@ -327,6 +329,8 @@ impl PgClientRepository {
             agent.is_some(),
             agent.map(|profile| *profile.owner().user_id().as_uuid()),
             agent_policy,
+            backchannel_uri,
+            backchannel_session_required,
         )
         .execute(&self.pool)
         .await
@@ -381,6 +385,8 @@ impl PgClientRepository {
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
         let (tls_field, tls_value) = subject_columns(registration);
+        let (backchannel_uri, backchannel_session_required) =
+            backchannel_logout_columns(registration);
         let (agent, agent_policy) = agent_columns(registration);
 
         let row = sqlx::query_as!(
@@ -400,10 +406,11 @@ impl PgClientRepository {
                                   backchannel_token_delivery_mode,
                                   backchannel_client_notification_endpoint,
                                   backchannel_user_code_parameter,
-                                  is_agent, agent_owner_user_id, agent_policy)
+                                  is_agent, agent_owner_user_id, agent_policy,
+                                  backchannel_logout_uri, backchannel_logout_session_required)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33)
+                     $32, $33, $34, $35)
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
@@ -416,6 +423,7 @@ impl PgClientRepository {
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
+                       backchannel_logout_uri, backchannel_logout_session_required,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -432,12 +440,8 @@ impl PgClientRepository {
             registration.application_type.as_str(),
             registration.subject_type.as_str(),
             registration.sector_identifier_uri.as_deref(),
-            registration
-                .request_object_signing_alg
-                .map(SigningAlgorithm::as_str),
-            registration
-                .backchannel_authentication_request_signing_alg
-                .map(SigningAlgorithm::as_str),
+            algorithm_column(registration.request_object_signing_alg),
+            algorithm_column(registration.backchannel_authentication_request_signing_alg),
             registration.token_binding.is_dpop_bound(),
             registration.token_binding.is_certificate_bound(),
             &lists.authorization_details_types,
@@ -447,9 +451,7 @@ impl PgClientRepository {
             &lists.post_logout_redirect_uris,
             tls_field,
             tls_value,
-            registration
-                .userinfo_signed_response_alg
-                .map(SigningAlgorithm::as_str),
+            algorithm_column(registration.userinfo_signed_response_alg),
             registration
                 .backchannel_token_delivery_mode
                 .map(TokenDeliveryMode::as_str),
@@ -458,6 +460,8 @@ impl PgClientRepository {
             agent.is_some(),
             agent.map(|profile| *profile.owner().user_id().as_uuid()),
             agent_policy,
+            backchannel_uri,
+            backchannel_session_required,
         )
         .fetch_one(&self.pool)
         .await
@@ -600,6 +604,8 @@ impl PgClientRepository {
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
         let (tls_field, tls_value) = subject_columns(registration);
+        let (backchannel_uri, backchannel_session_required) =
+            backchannel_logout_columns(registration);
         // `ast-lh3.1`. This statement does not write the agent columns — an
         // agent profile is policy the tenant attached, exactly like
         // `resources`, and RFC 7592 §2.2 is the *client* rewriting its own
@@ -636,7 +642,9 @@ impl PgClientRepository {
                  userinfo_signed_response_alg = $24,
                  backchannel_token_delivery_mode = $25,
                  backchannel_client_notification_endpoint = $26,
-                 backchannel_user_code_parameter = $27
+                 backchannel_user_code_parameter = $27,
+                 backchannel_logout_uri = $28,
+                 backchannel_logout_session_required = $29
              where tenant_id = $1 and client_id = $2
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
@@ -650,6 +658,7 @@ impl PgClientRepository {
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
+                       backchannel_logout_uri, backchannel_logout_session_required,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -665,12 +674,8 @@ impl PgClientRepository {
             registration.application_type.as_str(),
             registration.subject_type.as_str(),
             registration.sector_identifier_uri.as_deref(),
-            registration
-                .request_object_signing_alg
-                .map(SigningAlgorithm::as_str),
-            registration
-                .backchannel_authentication_request_signing_alg
-                .map(SigningAlgorithm::as_str),
+            algorithm_column(registration.request_object_signing_alg),
+            algorithm_column(registration.backchannel_authentication_request_signing_alg),
             registration.token_binding.is_dpop_bound(),
             registration.token_binding.is_certificate_bound(),
             &lists.authorization_details_types,
@@ -678,14 +683,14 @@ impl PgClientRepository {
             &lists.post_logout_redirect_uris,
             tls_field,
             tls_value,
-            registration
-                .userinfo_signed_response_alg
-                .map(SigningAlgorithm::as_str),
+            algorithm_column(registration.userinfo_signed_response_alg),
             registration
                 .backchannel_token_delivery_mode
                 .map(TokenDeliveryMode::as_str),
             registration.backchannel_client_notification_endpoint.as_deref(),
             registration.backchannel_user_code_parameter,
+            backchannel_uri,
+            backchannel_session_required,
         )
         .fetch_optional(&self.pool)
         .await
@@ -1011,6 +1016,33 @@ impl ListColumns {
 /// constraint requires of them. Written from the registration rather than from
 /// the document that produced it, so a client whose method changed on an
 /// update loses the subject in the same statement.
+/// The `text` column an optional signing algorithm is stored in.
+///
+/// A helper so that each of the three algorithm members is one line at each
+/// writing site: three lines each, at three sites, is what pushed these
+/// statements past what a reader holds at once.
+const fn algorithm_column(algorithm: Option<SigningAlgorithm>) -> Option<&'static str> {
+    match algorithm {
+        Some(algorithm) => Some(algorithm.as_str()),
+        None => None,
+    }
+}
+
+/// The two back-channel logout columns (OIDC Back-Channel Logout 1.0 §2.2).
+///
+/// A helper rather than an expression at each of the three writing sites: they
+/// are one pair of columns, and a site that wrote the URL without the flag
+/// would store a client that is notified but not the way it registered for.
+fn backchannel_logout_columns(registration: &ClientRegistration) -> (Option<&str>, bool) {
+    (
+        registration
+            .backchannel_logout_uri
+            .as_ref()
+            .map(asterius_domain::RedirectUri::as_str),
+        registration.backchannel_logout_session_required,
+    )
+}
+
 fn subject_columns(registration: &ClientRegistration) -> (Option<&str>, Option<&str>) {
     registration
         .tls_client_auth_subject
@@ -1103,6 +1135,8 @@ struct Row {
     backchannel_token_delivery_mode: Option<String>,
     backchannel_client_notification_endpoint: Option<String>,
     backchannel_user_code_parameter: bool,
+    backchannel_logout_uri: Option<String>,
+    backchannel_logout_session_required: bool,
     is_agent: bool,
     agent_owner_user_id: Option<uuid::Uuid>,
     agent_policy: serde_json::Value,
@@ -1165,6 +1199,8 @@ impl Row {
             // round trip through `validate` exact for a client that is not a
             // CIBA client — that member is refused on one.
             backchannel_user_code_parameter: self.backchannel_user_code_parameter.then_some(true),
+            backchannel_logout_uri: self.backchannel_logout_uri,
+            backchannel_logout_session_required: Some(self.backchannel_logout_session_required),
             ..ClientMetadata::default()
         };
         // RFC 8705 §2.1.2's subject, put back under the one member of the five

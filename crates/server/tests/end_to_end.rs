@@ -94,6 +94,14 @@ const OTHER_CLIENT: &str = "reporting";
 /// person anywhere in its story.
 const SERVICE_CLIENT: &str = "ledger";
 const REDIRECT: &str = "https://rp.example/cb";
+/// Where this client is sent a logout token (Back-Channel Logout §2.2).
+///
+/// Never actually reached: the delivery is the outbox worker's and this test
+/// reads the queued row instead. It could not be reached — `outbound::post`
+/// refuses a loopback address, so an RP listening on `127.0.0.1` is exactly
+/// what the SSRF guard exists to refuse, and weakening it for a test would
+/// weaken it for a deployment.
+const BACKCHANNEL_LOGOUT_URI: &str = "https://rp.example/backchannel-logout";
 const RESOURCE: &str = "https://api.example/";
 const NONCE: &str = "n-0S6_WzA2Mj";
 const STATE: &str = "xyz";
@@ -413,6 +421,10 @@ impl Flow {
                     "scope": "openid offline_access",
                     "token_endpoint_auth_method": "private_key_jwt",
                     "jwks": jwks,
+                    // OIDC Back-Channel Logout 1.0 §2.2. On the shared client
+                    // so that a logout in any journey here queues the token a
+                    // real deployment would send (`ast-o4u.2`).
+                    "backchannel_logout_uri": BACKCHANNEL_LOGOUT_URI,
                 }))
                 .expect("serialise"),
                 Capabilities::default(),
@@ -1285,6 +1297,12 @@ fn assemble(
             endpoint_limits: generous_endpoint_limits(),
             signer,
             dpop,
+            // The real outbox, on the same pool: a back-channel logout token
+            // queued by the end-session endpoint is a row a test can read
+            // back (`ast-o4u.2`).
+            outbox: Some(Arc::new(asterius_store_pg::PgOutbox::new(
+                store.pool().clone(),
+            ))),
         })),
     });
 
@@ -1725,6 +1743,9 @@ fn claims_of(jwt: &str) -> Value {
 struct Issued {
     access_token: String,
     refresh_token: String,
+    /// The ID token the client was issued, whose `sid` a logout token about
+    /// this session has to match (Back-Channel Logout §2.6 step 4).
+    id_token: String,
     key: ProofKey,
 }
 
@@ -1763,6 +1784,10 @@ async fn issue_tokens(flow: &mut Flow) -> Issued {
         refresh_token: tokens["refresh_token"]
             .as_str()
             .expect("an offline_access grant earns a refresh token")
+            .to_owned(),
+        id_token: tokens["id_token"]
+            .as_str()
+            .expect("an openid request earns an ID token")
             .to_owned(),
         key,
     }
@@ -5193,6 +5218,168 @@ async fn another_clients_device_code_is_not_redeemable() {
         .poll_device(&device_key, &proof, "assertion-theft-3", &device_code)
         .await;
     assert_eq!(untouched.json()["error"], "authorization_pending");
+
+    flow.tear_down().await;
+}
+
+// ---------------------------------------------------------------------------
+// Back-channel logout (OIDC Back-Channel Logout 1.0, `ast-o4u.2`)
+// ---------------------------------------------------------------------------
+
+/// The relying party's half of §2.6, steps 1–11, run against a real token.
+///
+/// Deliberately written with `aws_lc_rs` and `serde_json` rather than with
+/// `asterius_jose`: a token verified by the same code that signed it proves
+/// that the code agrees with itself. What a relying party will actually do is
+/// resolve a `kid` from the published JWK Set and verify an Ed25519 signature
+/// over `header.payload`, which is what this does.
+fn validate_as_a_relying_party(token: &str, jwks: &Value, issuer: &str, audience: &str) -> Value {
+    // Step 1: the token is a JWS in compact serialization.
+    let parts: Vec<&str> = token.split('.').collect();
+    assert_eq!(parts.len(), 3, "a logout token is a compact JWS: {token}");
+    let header: Value =
+        serde_json::from_slice(&B64.decode(parts[0]).expect("a base64url header")).expect("JSON");
+    let claims: Value =
+        serde_json::from_slice(&B64.decode(parts[1]).expect("a base64url payload")).expect("JSON");
+
+    // §4.1 and RFC 8725 §3.11: the explicit type, which is what keeps this
+    // token out of the RP's ID token path.
+    assert_eq!(header["typ"], json!("logout+jwt"), "{header}");
+    assert_eq!(header["alg"], json!("EdDSA"), "{header}");
+
+    // Step 3: validate the signature as an ID Token's is validated — the key
+    // resolved by `kid` from the issuer's published JWK Set.
+    let kid = header["kid"].as_str().expect("a kid");
+    let jwk = jwks["keys"]
+        .as_array()
+        .expect("a key set")
+        .iter()
+        .find(|key| key["kid"] == json!(kid))
+        .unwrap_or_else(|| panic!("the logout token names a kid /jwks does not publish: {kid}"));
+    assert_eq!(jwk["kty"], json!("OKP"));
+    let public = B64
+        .decode(jwk["x"].as_str().expect("an x parameter"))
+        .expect("base64url");
+    let signature = B64.decode(parts[2]).expect("a base64url signature");
+    let signed = format!("{}.{}", parts[0], parts[1]);
+    aws_lc_rs::signature::UnparsedPublicKey::new(&aws_lc_rs::signature::ED25519, &public)
+        .verify(signed.as_bytes(), &signature)
+        .expect("the logout token does not verify against the published key");
+
+    // Steps 4 and 5: `iss`, `aud`, `iat` and `exp` as an ID Token's.
+    assert_eq!(claims["iss"], json!(issuer));
+    assert_eq!(claims["aud"], json!(audience));
+    let iat = claims["iat"].as_i64().expect("iat");
+    let exp = claims["exp"].as_i64().expect("exp");
+    let now = OffsetDateTime::now_utc().unix_timestamp();
+    assert!(
+        iat <= now + 5 && exp > now,
+        "iat {iat}, exp {exp}, now {now}"
+    );
+
+    // Step 6: `events` with the back-channel logout member, whose value is an
+    // empty object.
+    assert_eq!(
+        claims["events"],
+        json!({"http://schemas.openid.net/event/backchannel-logout": {}}),
+        "{claims}"
+    );
+
+    // Steps 4 and 7: a `sub`, a `sid`, or both — and a `jti` to deduplicate on
+    // (step 11).
+    assert!(
+        claims.get("sub").is_some() || claims.get("sid").is_some(),
+        "a logout token needs a sub or a sid: {claims}"
+    );
+    assert!(claims["jti"].as_str().is_some_and(|jti| !jti.is_empty()));
+
+    // Step 10: "verify that the Logout Token does not contain a nonce Claim."
+    // An RP that finds one rejects the token, and §4.1 is why.
+    assert!(claims.get("nonce").is_none(), "{claims}");
+
+    claims
+}
+
+/// A sign-in, a logout, and the logout token a relying party is left holding.
+///
+/// End to end because every part of this is a seam between two components: the
+/// participant list is written where an ID token is minted (§2.3), read where
+/// a session ends, turned into a token signed with the tenant's real key, and
+/// queued as an outbox row the delivery worker claims. A unit test of any one
+/// of those would still pass with the chain broken — which is exactly the
+/// state this ticket found, with `record_participant` implemented and called
+/// by nobody.
+///
+/// What is *not* here is the POST. `outbound::post` refuses a loopback
+/// address, so a test RP listening on `127.0.0.1` is the SSRF target the guard
+/// exists to refuse; the row's destination, media type and body are asserted
+/// instead, and `outbound::post`'s own tests own the retry policy — a 5xx or a
+/// timeout is retried, a 4xx other than 429 is not (§2.5).
+#[tokio::test]
+async fn a_logout_queues_a_logout_token_its_relying_party_can_validate() {
+    // Arrange: a person signed in at a client that registered a
+    // `backchannel_logout_uri`, holding an ID token — which is what makes it a
+    // participant of the session (§2.3).
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let tenant_issuer = flow.tenant.issuer.as_str().to_owned();
+    let issued = issue_tokens(&mut flow).await;
+    let jwks = flow.jwks().await;
+
+    // Act: the person logs out and answers the confirmation question.
+    let asked = flow.get(&format!("{}/logout", flow.prefix())).await;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.text());
+    let csrf = csrf_from(&asked.text());
+    let ended = flow
+        .post_form(
+            &format!("{}/logout", flow.prefix()),
+            &[("decision", "logout"), ("csrf", &csrf)],
+            None,
+        )
+        .await;
+    assert_eq!(ended.status, StatusCode::OK, "{}", ended.text());
+
+    // Assert: exactly one row, addressed and shaped as §2.5 says.
+    let outbox = asterius_store_pg::PgOutbox::new(flow.store.pool().clone());
+    let claimed = outbox
+        .claim("e2e-backchannel", 10, OffsetDateTime::now_utc())
+        .await
+        .expect("claim the queued rows");
+    let rows: Vec<_> = claimed
+        .into_iter()
+        .filter(|event| event.tenant == flow.tenant.id)
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one participating client, one logout token: {rows:?}"
+    );
+    let row = &rows[0];
+    assert_eq!(row.kind, "logout.backchannel");
+    assert_eq!(row.destination, BACKCHANNEL_LOGOUT_URI);
+    assert_eq!(
+        row.payload["content_type"],
+        json!("application/x-www-form-urlencoded")
+    );
+
+    // Assert: and the body carries a token this client can validate.
+    let body = row.payload["body"].as_str().expect("a body");
+    let token = body
+        .strip_prefix("logout_token=")
+        .expect("§2.5 names the parameter `logout_token`");
+    let claims = validate_as_a_relying_party(token, &jwks, &tenant_issuer, CLIENT);
+    // The `sid` is the one the RP's own ID token carried, which is how it
+    // knows which of its sessions ended (§2.6 step 4), and the `sub` is the
+    // identifier it was issued for this person.
+    let id_token: Value = serde_json::from_slice(
+        &B64.decode(issued.id_token.split('.').nth(1).expect("a payload"))
+            .expect("base64url"),
+    )
+    .expect("JSON");
+    assert_eq!(claims["sid"], id_token["sid"]);
+    assert_eq!(claims["sub"], id_token["sub"]);
 
     flow.tear_down().await;
 }

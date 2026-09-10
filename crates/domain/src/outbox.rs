@@ -85,6 +85,55 @@ impl OutboxEvent {
     }
 }
 
+/// A row to be written, as everything above the adapter states it.
+///
+/// The mirror of [`OutboxEvent`] on the write side, and deliberately not the
+/// same type: a row being queued has no id, no attempt count and no claim, and
+/// a caller that could set those could queue a row already three attempts into
+/// its budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedEvent {
+    /// What kind of thing this is, e.g. `logout.backchannel`. The part before
+    /// the first `.` chooses the deliverer.
+    pub kind: String,
+    /// Where it goes, in the kind's own spelling.
+    pub destination: String,
+    /// The kind's values, in the shape its deliverer reads. Treated as a
+    /// credential wherever it is logged: a `logout.backchannel` payload holds
+    /// a signed logout token.
+    pub payload: serde_json::Value,
+    /// The group this row must stay in order within, or `None` for one that
+    /// may be delivered concurrently with any other.
+    pub ordering_key: Option<String>,
+}
+
+/// Queueing outbox rows from above the adapter.
+///
+/// A port because the callers are protocol handlers — back-channel logout
+/// today, the SSF transmitter next — and `scripts/check-layering.sh` will not
+/// let those name `sqlx`. It is also what lets the notifying step be tested
+/// without a database: what a logout queues is a property of the
+/// specification, and a test that needed Postgres to assert it would not be
+/// written.
+#[async_trait::async_trait]
+pub trait OutboxQueue: Debug + Send + Sync {
+    /// Writes every row, or none of them.
+    ///
+    /// All-or-nothing on purpose: the rows of one cause — the logout tokens of
+    /// one ended session — are one statement about the world, and half of them
+    /// is a session some relying parties believe is live and others do not.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the rows could not be written. Nothing was.
+    async fn queue(
+        &self,
+        tenant: &TenantId,
+        events: &[QueuedEvent],
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+}
+
 /// A row that has exhausted its attempts, as an operator is shown it.
 ///
 /// See the module documentation for what is deliberately absent.
