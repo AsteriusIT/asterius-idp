@@ -142,6 +142,12 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
         "a boolean saying whether tokens are certificate-bound (RFC 8705 §3.4), not a token",
     ),
     (
+        "clients",
+        "previous_registration_access_token_expires_at",
+        "when the outgoing registration access token stops being accepted — a deadline beside \
+         the digest in previous_registration_access_token_hash, not a token",
+    ),
+    (
         "credentials",
         "credential_id",
         "a row identifier, not the credential",
