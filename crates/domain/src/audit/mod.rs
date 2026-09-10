@@ -142,6 +142,18 @@ impl EventType {
     /// starts from. Its detail carries the reason, which is required at the
     /// call — see [`crate::keys::PurgeReason`].
     pub const KEY_PURGED: Self = Self("key.purged");
+    /// A derived subject identifier landed on a value that has already been
+    /// retired, and the derivation was refused (`ast-2vk.12`).
+    ///
+    /// Its own type because of how much it says. The inputs to the derivation
+    /// are a 256-bit secret salt, a public sector and a random UUID, so this
+    /// record means either that a local account id was reused — a restore, an
+    /// import, a bug in provisioning — or that somebody found a SHA-256
+    /// collision. Both are incidents, and neither looks like anything else in
+    /// the trail. Recorded with [`Outcome::Failure`] and the retired value as
+    /// the subject, because the value is the thing to search the trail and the
+    /// relying party's records for.
+    pub const SUBJECT_COLLISION: Self = Self("subject.collision");
     /// An administrator changed configuration.
     pub const ADMIN_CHANGED: Self = Self("admin.changed");
     /// Audit records were removed by the retention policy.
@@ -149,7 +161,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 30] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -177,6 +189,7 @@ impl EventType {
         Self::CLIENT_DELETED,
         Self::KEY_ROTATED,
         Self::KEY_PURGED,
+        Self::SUBJECT_COLLISION,
         Self::ADMIN_CHANGED,
         Self::AUDIT_PURGED,
     ];

@@ -31,8 +31,10 @@
 //!
 //! [`ClaimName::parse`]: asterius_domain::ClaimName::parse
 
+use crate::audit::PgAuditSink;
 use crate::error::to_domain_error;
 use crate::salts;
+use asterius_domain::audit::{Actor, AuditEvent, AuditSink as _, Detail, EventType, Outcome};
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
     ClaimSet, DomainError, SectorIdentifier, SubjectId, TenantId, User, UserId, UserStatus,
@@ -241,6 +243,11 @@ impl PgUserRepository {
     /// Deletes a user, and by cascade their credentials, sessions and every
     /// subject identifier they were known by.
     ///
+    /// The identifiers are freed as rows and not as values: a trigger copies
+    /// each one into `retired_subject_identifiers` on its way out, which is
+    /// what keeps OIDC Core §8's "never reassigned" true of an account that no
+    /// longer exists (`ast-2vk.12`). See [`Self::subject`].
+    ///
     /// # Errors
     ///
     /// Returns [`DomainError::NotFound`] when there was no such user, or a
@@ -301,7 +308,9 @@ impl PgUserRepository {
     /// the case worth naming — when the derived `sub` is already held by
     /// somebody else in this tenant. Two users sharing an identifier is the one
     /// outcome this table must never reach, so the unique index refuses the
-    /// write rather than the application noticing later.
+    /// write rather than the application noticing later. The same answer covers
+    /// a `sub` held by somebody who no longer exists: see
+    /// [`Self::refuse_a_retired_subject`].
     pub async fn subject(
         &self,
         user: UserId,
@@ -309,6 +318,8 @@ impl PgUserRepository {
     ) -> Result<SubjectId, DomainError> {
         let salt = salts::read(&self.pool, &self.tenant, self.kek.as_ref()).await?;
         let derived = salt.derive_subject(sector, user);
+        self.refuse_a_retired_subject(user, sector, &derived)
+            .await?;
         sqlx::query!(
             "insert into subject_identifiers (tenant_id, user_id, sector_identifier, subject)
              values ($1, $2, $3, $4)
@@ -338,6 +349,83 @@ impl PgUserRepository {
         .ok_or(DomainError::NotFound)?;
 
         Ok(SubjectId::new(stored))
+    }
+
+    /// Refuses a derivation that landed on a `sub` this tenant has already
+    /// retired — OIDC Core §8's "never reassigned" (`ast-2vk.12`).
+    ///
+    /// `subject_identifiers` cascades from `users`, so an account deletion
+    /// frees the row that reserved the value; `retired_subject_identifiers` is
+    /// what remembers it anyway. The database refuses the reservation too, in a
+    /// trigger, and that is the guarantee. This check exists so that the
+    /// refusal reaching a caller is a `Conflict` naming what happened rather
+    /// than a constraint violation, and so that it is recorded: the derivation
+    /// takes a 256-bit secret salt, a public sector and a random UUID, so
+    /// reaching a retired value means either that a local account id was reused
+    /// or that somebody has a SHA-256 collision. Both want an incident, not a
+    /// log line.
+    ///
+    /// **Refused, never regenerated.** There is no second derivation to fall
+    /// back on: §8.1 requires the pairwise calculation to be deterministic, and
+    /// handing out a different `sub` for a user a relying party already knows
+    /// is the reassignment §8 forbids, seen from the other side. A `sub` that
+    /// cannot be minted fails one authorization; a `sub` issued twice cannot be
+    /// taken back.
+    ///
+    /// The audit record is written through a sink built here rather than one
+    /// held by this repository. That is deliberate and it is the narrow choice:
+    /// this is the only path in the file that records anything, and taking a
+    /// sink in the constructor would put one in every call site that builds a
+    /// user repository — `TenantScope::users` included — for a branch that has
+    /// never been taken in production.
+    async fn refuse_a_retired_subject(
+        &self,
+        user: UserId,
+        sector: &SectorIdentifier,
+        derived: &SubjectId,
+    ) -> Result<(), DomainError> {
+        let retired: Option<i32> = sqlx::query_scalar!(
+            "select 1 from retired_subject_identifiers
+             where tenant_id = $1 and subject = $2",
+            self.tenant.as_str(),
+            derived.as_str()
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .flatten();
+        if retired.is_none() {
+            return Ok(());
+        }
+
+        let event = AuditEvent::new(
+            self.tenant.clone(),
+            EventType::SUBJECT_COLLISION,
+            Outcome::Failure,
+            Actor::System,
+            OffsetDateTime::now_utc(),
+        )
+        .subject(derived.as_str())
+        .detail(
+            Detail::new()
+                .text("sector_identifier", sector.as_str())
+                .text("user_id", user.as_uuid().to_string()),
+        );
+        if let Err(error) = PgAuditSink::new(self.pool.clone()).record(event).await {
+            // The refusal stands either way: a collision nobody could record is
+            // still a collision nobody may be handed an identifier through.
+            tracing::error!(
+                %error,
+                tenant = %self.tenant,
+                "could not record a retired subject identifier collision"
+            );
+        }
+
+        Err(DomainError::Conflict(
+            "the derived subject identifier was retired with a deleted account and is \
+             never reassigned (OIDC Core §8)"
+                .to_owned(),
+        ))
     }
 
     /// Every sector this user has ever been identified in, with the `sub` each

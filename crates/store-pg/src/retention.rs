@@ -173,6 +173,14 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "retired_subject_identifiers",
+        rule: Rule::Kept(
+            "a tombstone with an expiry is a `sub` that comes back: the row is \
+             the whole of the promise that OIDC Core §8's `never reassigned` \
+             survives the account it was issued to (`ast-2vk.12`)",
+        ),
+    },
+    Retention {
         table: "tenant_pairwise_salts",
         rule: Rule::Kept(
             "write-once, enforced by a trigger: deleting a salt would reassign \
