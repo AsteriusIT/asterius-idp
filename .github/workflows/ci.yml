@@ -6,9 +6,22 @@ on:
   pull_request:
   merge_group:
 
+# One group per pull request, per merge-queue entry and per branch, so a run
+# never cancels an unrelated one, and cancelling at all is restricted to pull
+# requests.
+#
+# `github.ref` alone was almost enough — it already separates a PR from `main`
+# — but every push to `main` shares `refs/heads/main`, so two merges landed a
+# few minutes apart cancelled each other and the first commit never got a
+# verdict. That is exactly the hole `ast-a33` closes: branches are merged
+# locally with `--no-ff` and pushed (CONTRIBUTING, "How a branch reaches
+# `main`"), which makes back-to-back pushes to `main` the normal case, not the
+# exception. On `main` and in the merge queue runs now queue instead: slower,
+# but every commit is tested. On a pull request an outdated run of a superseded
+# commit is genuinely worthless, so there it still cancels.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always

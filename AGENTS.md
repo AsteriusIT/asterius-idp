@@ -143,14 +143,21 @@ l'orchestrateur gagnent sur tout.
 
 - Source de vérité : beads (voir le bloc Beads ci-dessus).
   `bd ready` → `bd update --status in_progress` → travail → `bd close --reason "<résumé>"`.
-- Une branche `claude/<id>` par ticket, dans un worktree isolé. Merge `--no-ff` dans
-  `main` par l'orchestrateur seulement, puis suppression de la branche et `git worktree prune`.
+- Une branche `claude/<id>` par ticket, dans un worktree isolé. L'orchestrateur
+  la pousse sur `origin`, ouvre une PR et attend un run CI vert
+  (`gh pr checks <n> --watch`) : c'est la composition — build fuzz, sweep
+  navigateur, rustdoc, `deny` — que le `/verify` ciblé d'un worker ne voit pas.
+  Merge `--no-ff` dans `main` par l'orchestrateur seulement, après le verdict
+  vert, puis suppression du worktree et des branches locale et distante
+  (`ast-a33` ; détail dans `CONTRIBUTING.md`, « How a branch reaches `main` »).
 - Commits : Conventional Commits, `Refs: <id>` en pied de message.
 - Jamais : `push --force`, `reset --hard`, `clean`, modification directe de `main` depuis un worker.
 - Après un merge, `./scripts/cleanup-worktrees.sh --apply` : un worktree
   d'agent porte son propre `target/` (~1 Go) et rien ne le supprime tout seul.
-  Le script ne touche que les `claude/*` fusionnés dans `main`, et épargne les
-  worktrees verrouillés par un agent en cours. Les artefacts périmés du dépôt principal se récupèrent séparément avec
+  Le script ne touche que les `claude/*` fusionnés dans `main` — worktree,
+  branche locale et `origin/claude/<id>` —, et épargne les worktrees verrouillés
+  par un agent en cours ainsi que les branches distantes dont le sommet n'est
+  pas contenu dans `main`. Les artefacts périmés du dépôt principal se récupèrent séparément avec
   `./scripts/gc-build-artifacts.sh --apply`. Ne supprime jamais le `target/`
   d'un worktree qui n'est pas le tien. Contrainte WSL2 et détails :
   `CONTRIBUTING.md`, section « Disk space ».
