@@ -3173,6 +3173,227 @@ db_test! {
 }
 
 db_test! {
+    /// `ast-2vk.12`. OIDC Core §8 makes a Subject Identifier "never
+    /// reassigned", and the cascade above deletes the row that reserved it —
+    /// so without a tombstone the value is free again the moment an account is
+    /// deleted. Nothing reissues one in practice, because the local account id
+    /// is a random UUID nobody reuses, but "never in practice" is not the
+    /// guarantee a relying party that keyed its own records on `sub` was given.
+    ///
+    /// The restored user carries the *same* local account id, which is the only
+    /// way a deterministic derivation can be made to produce the old value: an
+    /// operator restoring an account from a backup, or an import that preserves
+    /// ids, gets there without trying.
+    async fn a_deleted_users_subject_is_never_reissued(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert alice");
+        let public = repo
+            .subject(alice.id, &SectorIdentifier::public())
+            .await
+            .expect("mint");
+        let pairwise = repo.subject(alice.id, &sector("rp.example")).await.expect("mint");
+
+        repo.delete(alice.id).await.expect("delete");
+
+        let tombstoned: Vec<String> = sqlx::query_scalar(
+            "select subject from retired_subject_identifiers
+              where tenant_id = 'demo' order by subject",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read tombstones");
+        let mut expected = vec![public.as_str().to_owned(), pairwise.as_str().to_owned()];
+        expected.sort();
+        assert_eq!(tombstoned, expected, "a deleted sub left no tombstone behind");
+
+        // The same person, restored under the same local account id. The
+        // derivation is deterministic, so it produces the retired value — and
+        // must refuse rather than hand it out a second time.
+        let restored = a_user("demo", alice.id, "alice");
+        repo.upsert(&restored).await.expect("restore alice");
+        let refused = repo.subject(restored.id, &sector("rp.example")).await;
+        assert!(
+            matches!(refused, Err(asterius_domain::DomainError::Conflict(_))),
+            "a retired subject was reissued: {refused:?}"
+        );
+        assert!(
+            repo.find_by_subject(&pairwise).await.expect("resolve").is_none(),
+            "a retired sub resolves to the account that took its place"
+        );
+    }
+}
+
+db_test! {
+    /// The collision the refusal is written for, forced by hand: a tombstone
+    /// holding exactly what the derivation is about to produce. It should never
+    /// happen — the inputs are a per-tenant secret salt and a random UUID — but
+    /// "should never" is what the refusal is for, and the alternative reading
+    /// (derive something else and hand that over) is the reassignment OIDC Core
+    /// §8 rules out.
+    async fn a_derivation_that_lands_on_a_tombstone_is_refused(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let carol = a_user("demo", UserId::generate(), "carol");
+        repo.upsert(&carol).await.expect("insert carol");
+        // What the derivation produces for this user and sector, learned the
+        // only way a test can: by asking for it once.
+        let minted = repo.subject(carol.id, &sector("rp.example")).await.expect("mint");
+        sqlx::query("delete from subject_identifiers where tenant_id = 'demo'")
+            .execute(&db.pool)
+            .await
+            .expect("drop the reservation");
+        sqlx::query(
+            "insert into retired_subject_identifiers (tenant_id, subject, sector_identifier)
+             values ('demo', $1, 'rp.example') on conflict do nothing",
+        )
+        .bind(minted.as_str())
+        .execute(&db.pool)
+        .await
+        .expect("tombstone the value");
+
+        let refused = repo.subject(carol.id, &sector("rp.example")).await;
+
+        assert!(
+            matches!(refused, Err(asterius_domain::DomainError::Conflict(_))),
+            "the derivation reissued a tombstoned value: {refused:?}"
+        );
+        let reserved: i64 = sqlx::query_scalar(
+            "select count(*) from subject_identifiers where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("count reservations");
+        assert_eq!(reserved, 0, "the refused derivation still wrote a reservation");
+    }
+}
+
+db_test! {
+    /// The refusal is recorded, because a collision that nobody sees is a
+    /// collision nobody investigates — and this one says either that a SHA-256
+    /// preimage turned up or that a local account id was reused.
+    async fn a_refused_derivation_is_audited(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_salt(&db.pool, "demo").await;
+        let repo = users(&db.pool, "demo");
+        let carol = a_user("demo", UserId::generate(), "carol");
+        repo.upsert(&carol).await.expect("insert carol");
+        let minted = repo.subject(carol.id, &sector("rp.example")).await.expect("mint");
+        sqlx::query("delete from subject_identifiers where tenant_id = 'demo'")
+            .execute(&db.pool)
+            .await
+            .expect("drop the reservation");
+
+        assert!(repo.subject(carol.id, &sector("rp.example")).await.is_err());
+
+        let recorded: Vec<String> = sqlx::query_scalar(
+            "select event_type from audit_events where tenant_id = 'demo' and subject = $1",
+        )
+        .bind(minted.as_str())
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the trail");
+        assert_eq!(
+            recorded,
+            ["subject.collision"],
+            "a refused derivation left no record"
+        );
+    }
+}
+
+db_test! {
+    /// The guarantee is in the schema and not only on the path above: a
+    /// tombstoned value cannot be reserved by any statement that reaches the
+    /// database, including one this crate does not own.
+    async fn the_database_refuses_to_reserve_a_tombstoned_subject(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let user = UserId::generate();
+        sqlx::query("insert into users (tenant_id, user_id, username) values ('demo', $1, 'dave')")
+            .bind(user.as_uuid())
+            .execute(&db.pool)
+            .await
+            .expect("seed user");
+        sqlx::query(
+            "insert into retired_subject_identifiers (tenant_id, subject)
+             values ('demo', 'retired')",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("tombstone");
+
+        let refused = sqlx::query(
+            "insert into subject_identifiers (tenant_id, user_id, sector_identifier, subject)
+             values ('demo', $1, 'rp.example', 'retired')",
+        )
+        .bind(user.as_uuid())
+        .execute(&db.pool)
+        .await;
+
+        assert!(refused.is_err(), "the database reserved a retired subject");
+    }
+}
+
+db_test! {
+    /// A tombstone that can be deleted is not a tombstone. Refused in the
+    /// database for the same reason `audit_events` is append-only: the row
+    /// exists to outlive the code that wrote it.
+    async fn a_tombstone_cannot_be_deleted_or_updated(db) {
+        seed_tenant(&db.pool, "demo").await;
+        sqlx::query(
+            "insert into retired_subject_identifiers (tenant_id, subject) values ('demo', 'gone')",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("tombstone");
+
+        assert!(
+            sqlx::query("delete from retired_subject_identifiers where tenant_id = 'demo'")
+                .execute(&db.pool)
+                .await
+                .is_err(),
+            "a tombstone was deleted"
+        );
+        assert!(
+            sqlx::query(
+                "update retired_subject_identifiers set subject = 'other'
+                  where tenant_id = 'demo'",
+            )
+            .execute(&db.pool)
+            .await
+            .is_err(),
+            "a tombstone was rewritten"
+        );
+    }
+}
+
+db_test! {
+    /// The tombstone outlives the tenant too. Deleting a tenant cascades over
+    /// `users` and therefore over every reservation; if the tombstones went
+    /// with them, recreating a tenant under the same id — the same issuer, as
+    /// far as a relying party can tell — would free every `sub` in it.
+    async fn a_tombstone_outlives_the_tenant(db) {
+        let tenants = PgTenantRepository::new(db.pool.clone(), kek());
+        tenants.upsert(&tenant("demo", "https://as.example/t/demo")).await.expect("insert");
+        let repo = users(&db.pool, "demo");
+        let alice = a_user("demo", UserId::generate(), "alice");
+        repo.upsert(&alice).await.expect("insert alice");
+        let subject = repo.subject(alice.id, &sector("rp.example")).await.expect("mint");
+
+        tenants.delete(&TenantId::new("demo")).await.expect("delete the tenant");
+
+        let tombstoned: Vec<String> =
+            sqlx::query_scalar("select subject from retired_subject_identifiers")
+                .fetch_all(&db.pool)
+                .await
+                .expect("read tombstones");
+        assert_eq!(tombstoned, [subject.as_str().to_owned()]);
+    }
+}
+
+db_test! {
     /// The reason the column is JSONB (`ast-s36.5`, `ast-s36.6`): a claim the
     /// schema has never heard of is a write, not a migration.
     async fn a_claim_the_schema_has_never_heard_of_needs_no_migration(db) {
@@ -6832,6 +7053,19 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed role");
+
+        // A retired `sub` (`ast-2vk.12`). Kept by the policy and never swept —
+        // a tombstone with an expiry is a `sub` that comes back — so the
+        // kept-table test needs a row here to be able to say anything.
+        sqlx::query(
+            "insert into retired_subject_identifiers (tenant_id, subject, sector_identifier)
+             values ($1, 'a-sub-nobody-gets-again', 'rp.example')
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("seed retired subject");
     }
 
     /// One row per swept expiry-driven table, expiring at `expires`.

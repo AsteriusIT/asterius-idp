@@ -23,6 +23,7 @@ const TENANT_SCOPED_TABLES: &[&str] = &[
     "client_key_fetches",
     "users",
     "subject_identifiers",
+    "retired_subject_identifiers",
     "credentials",
     "sessions",
     "session_clients",
