@@ -36,14 +36,26 @@ const DEPLOYMENT_ADMIN = 'deployment_admin';
 /**
  * Every screen the console will have, in the order they appear.
  *
- * The six that are `bead`-tagged are the children of `ast-f7m`; this scaffold
- * mounts the shell around them and each one fills its own in.
+ * `bead` is what the placeholder in `App.tsx` names for a screen that is not
+ * built yet, so it has to be a ticket somebody could go and read: a closed one
+ * says "this shipped, where is it?" and a wrong one sends the reader to
+ * somebody else's work. `ast-f7m.3` tagged Users with `ast-f7m.4` and Tenants
+ * with `ast-f7m.6`, and both were wrong — `.4` had shipped as tenant settings
+ * and `.6` is Users itself. The tags below are the ones that are true at
+ * `ast-f7m.6`: Users, Clients, Signing keys and Tenant settings are built and
+ * their tags are historical; Shared signals and Policy name open tickets; and
+ * Tenants names the epic, because no ticket carries it.
  */
 export const DESTINATIONS: readonly Destination[] = [
   { route: 'overview', label: 'Overview', reach: 'tenant', bead: 'ast-f7m.3' },
-  { route: 'users', label: 'Users', reach: 'tenant', bead: 'ast-f7m.4' },
+  { route: 'users', label: 'Users', reach: 'tenant', bead: 'ast-f7m.6' },
   { route: 'clients', label: 'Clients', reach: 'tenant', bead: 'ast-f7m.5' },
-  { route: 'tenants', label: 'Tenants', reach: 'deployment', bead: 'ast-f7m.6' },
+  // The epic and not a child ticket: no bead carries a tenants screen, and
+  // the two spellings this line has had — `ast-f7m.6`, which is the *users*
+  // screen — were both wrong. A placeholder naming a closed or nonexistent
+  // ticket tells an administrator that a screen is arriving when nobody is
+  // building it, so this one names the epic until a ticket exists.
+  { route: 'tenants', label: 'Tenants', reach: 'deployment', bead: 'ast-f7m' },
   { route: 'keys', label: 'Signing keys', reach: 'tenant', bead: 'ast-f7m.7' },
   { route: 'ssf', label: 'Shared signals', reach: 'tenant', bead: 'ast-f7m.8' },
   { route: 'policy', label: 'Policy', reach: 'tenant', bead: 'ast-f7m.9' },

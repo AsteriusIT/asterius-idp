@@ -62,6 +62,116 @@ impl PgSessionRepository {
     }
 }
 
+impl PgSessionRepository {
+    /// Every session this account has, newest first (`ast-f7m.6`).
+    ///
+    /// Revoked and expired ones included: an operator asking "why is this
+    /// person still signed in somewhere" needs to see the sessions that ended
+    /// as well as the ones that have not, and a list that hid them would make
+    /// a revocation that already happened look like one that did not.
+    ///
+    /// Answers [`asterius_domain::SessionSummary`] and not [`Session`],
+    /// because the caller is the admin API and `session_id` is the lookup key
+    /// — see `asterius_domain::administration` for why it is not on that side
+    /// of the port.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the query fails.
+    pub async fn summaries_for_user(
+        &self,
+        user: uuid::Uuid,
+    ) -> Result<Vec<asterius_domain::SessionSummary>, DomainError> {
+        let rows = sqlx::query!(
+            "select public_sid, created_at, authenticated_at, last_seen_at, expires_at,
+                    acr, amr, revoked_at, revocation_reason
+             from sessions
+             where tenant_id = $1 and user_id = $2
+             order by created_at desc",
+            self.tenant.as_str(),
+            user
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| asterius_domain::SessionSummary {
+                public_sid: row.public_sid,
+                created_at: row.created_at,
+                authenticated_at: row.authenticated_at,
+                last_seen_at: row.last_seen_at,
+                expires_at: row.expires_at,
+                amr: row
+                    .amr
+                    .iter()
+                    .filter_map(|method| AuthenticationMethod::parse(method))
+                    .collect(),
+                acr: row.acr,
+                // The stored spelling, through the enum and back out again:
+                // a reason the database holds and this build does not know is
+                // rendered as nothing rather than as a word a screen would
+                // present as meaningful.
+                revoked: row.revoked_at.and_then(|at| {
+                    row.revocation_reason
+                        .as_deref()
+                        .and_then(SessionRevocation::parse)
+                        .map(|reason| (at, reason.as_str()))
+                }),
+            })
+            .collect())
+    }
+
+    /// The session a `sid` names, whatever state it is in.
+    ///
+    /// The `sid` is what a relying party and the console both hold; the
+    /// digest is what this table is keyed by. One index resolves the first to
+    /// the second (`unique (tenant_id, public_sid)`), and this is the only
+    /// place that does it for an administrative caller.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the query fails.
+    pub async fn digest_of_sid(&self, public_sid: &str) -> Result<Option<String>, DomainError> {
+        sqlx::query_scalar!(
+            "select session_id from sessions where tenant_id = $1 and public_sid = $2",
+            self.tenant.as_str(),
+            public_sid
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)
+    }
+
+    /// Every live session of an account, by digest, newest first.
+    ///
+    /// The digests and not the rows: the caller revokes each one and reads its
+    /// participant list, and both take a digest.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the query fails.
+    pub async fn live_digests_for_user(
+        &self,
+        user: uuid::Uuid,
+        now: OffsetDateTime,
+    ) -> Result<Vec<String>, DomainError> {
+        sqlx::query_scalar!(
+            "select session_id from sessions
+             where tenant_id = $1 and user_id = $2
+               and revoked_at is null and expires_at > $3
+             order by created_at desc",
+            self.tenant.as_str(),
+            user,
+            now
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionRepository for PgSessionRepository {
     async fn begin(&self, session: &Session) -> Result<(), DomainError> {

@@ -19,8 +19,10 @@
 
 use asterius_admin_api::clients::RegistrationGate;
 use asterius_admin_api::{AdminBackend, ClientAddress};
+use asterius_domain::MailSender as _;
 use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::PasskeyRepository as _;
+use asterius_domain::ports::RecoveryTokenStore as _;
 use asterius_domain::ports::{
     ClientAdministration, ClientUrlFetcher, TenantRepository, TenantSettingsRepository,
 };
@@ -55,6 +57,10 @@ pub struct Deployment {
     registration: RegistrationPolicy,
     outbound: Arc<dyn ClientUrlFetcher>,
     outbox: Arc<dyn asterius_domain::outbox::DeadLetterQuery>,
+    kek: Arc<dyn asterius_jose::Kek>,
+    signer: Arc<dyn asterius_domain::keys::Signer>,
+    queue: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
+    argon2: asterius_domain::Argon2Parameters,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -98,6 +104,10 @@ impl Deployment {
             registration: parts.registration,
             outbound: parts.outbound,
             outbox: parts.outbox,
+            kek: parts.kek,
+            signer: parts.signer,
+            queue: parts.queue,
+            argon2: parts.argon2,
         }
     }
 }
@@ -124,6 +134,30 @@ pub struct DeploymentParts {
     pub outbound: Arc<dyn ClientUrlFetcher>,
     /// The process's `PgOutbox`, read-only, for the dead-letter screen.
     pub outbox: Arc<dyn asterius_domain::outbox::DeadLetterQuery>,
+    /// The key-encryption key the tenants' pairwise salts are sealed under.
+    ///
+    /// The process's, for the reason `keys` is the process's: a `sub` derived
+    /// under a salt this module unsealed with a different KEK would be a
+    /// different `sub`, and the logout token carrying it would name a person
+    /// no relying party recognises.
+    pub kek: Arc<dyn asterius_jose::Kek>,
+    /// The signer the back-channel logout tokens are minted with — the same
+    /// one the end-session endpoint uses, so a relying party resolves the key
+    /// from the tenant's published JWKS either way.
+    pub signer: Arc<dyn asterius_domain::keys::Signer>,
+    /// The process's `PgOutbox` as a *queue*, for the logout tokens an
+    /// administrative revocation sends (`ast-f7m.6`).
+    ///
+    /// Separate from `outbox` above, which is the read-only dead-letter view:
+    /// one handle that could both read the backlog and write a delivery would
+    /// give the dead-letter screen the authority to make this server POST to a
+    /// URL, which is precisely what that port's documentation says it must not
+    /// have.
+    pub queue: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
+    /// The cost an administratively created password is hashed at: the
+    /// deployment's, so a console-created account is not cheaper to crack than
+    /// one created at the recovery form.
+    pub argon2: asterius_domain::Argon2Parameters,
 }
 
 impl std::fmt::Debug for DeploymentParts {
@@ -217,6 +251,467 @@ impl ClientAdministration for DeploymentClients {
     }
 }
 
+/// This deployment's accounts, as the admin API's port sees them
+/// (`ast-f7m.6`).
+///
+/// A type of its own rather than a dozen more methods on [`Deployment`],
+/// because the admin API takes a `dyn UserAdministration` handle: the object
+/// behind it is what a handler can reach, and this one can reach a tenant's
+/// accounts, its sessions, its grants, its credentials and the back-channel
+/// notifier — and nothing else.
+///
+/// # Why the ordering lives here
+///
+/// Disabling an account is three effects, and the order is load-bearing:
+///
+/// ```text
+///   mark the account  →  revoke its sessions  →  notify the relying parties
+/// ```
+///
+/// A relying party told that a session ended while the account can still sign
+/// in has been told something this server cannot stand behind, and a session
+/// revoked before the account is marked is a person who can start a fresh one
+/// a moment later. Putting the three in the API layer would make the ordering
+/// a property of a handler somebody may rewrite; putting them here makes it a
+/// property of the one implementation both the console and any future caller
+/// go through.
+#[derive(Clone)]
+struct DeploymentUsers {
+    store: Store,
+    tenants: Arc<dyn TenantRepository>,
+    kek: Arc<dyn asterius_jose::Kek>,
+    keys: Arc<dyn asterius_domain::keys::Signer>,
+    capabilities: Capabilities,
+    argon2: asterius_domain::Argon2Parameters,
+    /// Where a back-channel logout token is queued (§2.5), or `None` in a
+    /// deployment with no outbox wired — which notifies nobody and says so.
+    queue: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
+}
+
+impl std::fmt::Debug for DeploymentUsers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeploymentUsers").finish_non_exhaustive()
+    }
+}
+
+impl DeploymentUsers {
+    /// Ends every live session of an account and notifies the relying parties
+    /// that took part in each.
+    ///
+    /// The revocation comes first and the notification second, for the reason
+    /// `crate::http::logout` gives: a relying party told that a session ended
+    /// whose credentials still work is a client that can mint a fresh access
+    /// token a second later.
+    ///
+    /// Every failure below the first is logged and degrades: an account that
+    /// has been disabled must not come back because one relying party's
+    /// registration would not load.
+    async fn terminate_sessions(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        reason: asterius_domain::SessionRevocation,
+        now: time::OffsetDateTime,
+    ) -> Result<asterius_domain::Terminated, DomainError> {
+        let scope = self.store.scope(tenant.clone());
+        let sessions = scope.sessions();
+        let digests = sessions.live_digests_for_user(*user.as_uuid(), now).await?;
+
+        let mut terminated = asterius_domain::Terminated::default();
+        for digest in digests {
+            if let Err(error) = sessions.revoke(&digest, reason, now).await {
+                tracing::error!(%error, tenant = %tenant, "cannot revoke a session administratively");
+                continue;
+            }
+            terminated.sessions_revoked += 1;
+            terminated.logout_tokens_queued += self.notify_participants(tenant, &digest, now).await;
+        }
+        Ok(terminated)
+    }
+
+    /// Queues one logout token per participating relying party of the session
+    /// `digest` names, through the same [`crate::backchannel::Notifier`] the
+    /// end-session endpoint uses.
+    ///
+    /// Returns zero rather than failing for every reason short of "the session
+    /// is gone": it is called after a revocation that has already happened.
+    async fn notify_participants(
+        &self,
+        tenant: &TenantId,
+        digest: &str,
+        now: time::OffsetDateTime,
+    ) -> usize {
+        let scope = self.store.scope(tenant.clone());
+        let sessions = scope.sessions();
+
+        let Ok(Some(session)) = sessions.find(digest).await else {
+            tracing::error!(tenant = %tenant, "a revoked session could not be read back");
+            return 0;
+        };
+        let participants = match sessions.participants(digest).await {
+            Ok(participants) => participants,
+            Err(error) => {
+                tracing::error!(%error, "cannot read the participants of an ended session");
+                return 0;
+            }
+        };
+        if participants.is_empty() {
+            return 0;
+        }
+        let Ok(Some(tenant_entity)) = self.tenants.find_by_id(tenant).await else {
+            tracing::error!(tenant = %tenant, "cannot read the tenant an ended session belongs to");
+            return 0;
+        };
+
+        let clients = scope.clients(self.capabilities);
+        let users = scope.users(Arc::clone(&self.kek));
+        let notifier = crate::backchannel::Notifier {
+            tenant: &tenant_entity,
+            clients: &clients,
+            subjects: &users,
+            signer: self.keys.as_ref(),
+            outbox: self.queue.as_deref(),
+        };
+        notifier.notify(&session, &participants, now).await
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::UserAdministration for DeploymentUsers {
+    async fn search(
+        &self,
+        tenant: &TenantId,
+        term: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<asterius_domain::User>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .search(term, after, i64::try_from(limit).unwrap_or(i64::MAX))
+            .await
+    }
+
+    async fn find(
+        &self,
+        tenant: &TenantId,
+        id: UserId,
+    ) -> Result<Option<asterius_domain::User>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .users(Arc::clone(&self.kek))
+            .find(id)
+            .await
+    }
+
+    async fn create(
+        &self,
+        account: asterius_domain::NewAccount,
+    ) -> Result<asterius_domain::User, DomainError> {
+        let scope = self.store.scope(account.user.tenant.clone());
+        let users = scope.users(Arc::clone(&self.kek));
+
+        // `upsert` is a create-or-replace, and a creation must never be a
+        // replacement: it would hand an administrator somebody else's account
+        // under a username they typed. The same guard `DeploymentClients` puts
+        // in front of a client registration, and for the same reason.
+        if users
+            .find_by_username(&account.user.username)
+            .await?
+            .is_some()
+        {
+            return Err(DomainError::Conflict(
+                "an account already exists under this username".to_owned(),
+            ));
+        }
+        users.upsert(&account.user).await?;
+
+        if let Some(password) = account.password {
+            let verifier = asterius_store_pg::PgPasswordVerifier::new(
+                self.store.pool().clone(),
+                account.user.tenant.clone(),
+                self.argon2,
+            )?;
+            // The *normalised* form, which is what
+            // `AcceptedPassword::expose` holds and what NIST SP 800-63B
+            // §5.1.1.2 requires be hashed.
+            verifier
+                .set_password(*account.user.id.as_uuid(), password.expose())
+                .await?;
+        }
+
+        // Read back rather than returned: the row after defaults and triggers
+        // is what an administrator is shown.
+        users
+            .find(account.user.id)
+            .await?
+            .ok_or(DomainError::NotFound)
+    }
+
+    async fn set_status(
+        &self,
+        tenant: &TenantId,
+        id: UserId,
+        status: asterius_domain::UserStatus,
+        now: time::OffsetDateTime,
+    ) -> Result<asterius_domain::Terminated, DomainError> {
+        let scope = self.store.scope(tenant.clone());
+        let users = scope.users(Arc::clone(&self.kek));
+        let mut held = users.find(id).await?.ok_or(DomainError::NotFound)?;
+        held.status = status;
+        held.updated_at = now;
+        // First: an account marked disabled cannot start a new session while
+        // the old ones are being ended.
+        users.upsert(&held).await?;
+
+        if status != asterius_domain::UserStatus::Disabled {
+            return Ok(asterius_domain::Terminated::default());
+        }
+        self.terminate_sessions(
+            tenant,
+            id,
+            asterius_domain::SessionRevocation::AccountClosed,
+            now,
+        )
+        .await
+    }
+
+    async fn save(
+        &self,
+        user: &asterius_domain::User,
+    ) -> Result<asterius_domain::User, DomainError> {
+        let users = self
+            .store
+            .scope(user.tenant.clone())
+            .users(Arc::clone(&self.kek));
+        users.upsert(user).await?;
+        users.find(user.id).await?.ok_or(DomainError::NotFound)
+    }
+
+    async fn sessions(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<Vec<asterius_domain::SessionSummary>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .sessions()
+            .summaries_for_user(*user.as_uuid())
+            .await
+    }
+
+    async fn revoke_session(
+        &self,
+        tenant: &TenantId,
+        public_sid: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<asterius_domain::Terminated, DomainError> {
+        let scope = self.store.scope(tenant.clone());
+        let sessions = scope.sessions();
+        // The `sid` is resolved to the digest here and nowhere above: the
+        // admin API never holds one, which is the whole point of the port's
+        // shape.
+        let digest = sessions
+            .digest_of_sid(public_sid)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+
+        sessions
+            .revoke(
+                &digest,
+                asterius_domain::SessionRevocation::Administrative,
+                now,
+            )
+            .await?;
+        Ok(asterius_domain::Terminated {
+            sessions_revoked: 1,
+            logout_tokens_queued: self.notify_participants(tenant, &digest, now).await,
+        })
+    }
+
+    async fn grants(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<Vec<asterius_domain::Grant>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .grants()
+            .list_for_user(&user)
+            .await
+    }
+
+    async fn revoke_grant(
+        &self,
+        tenant: &TenantId,
+        grant: &asterius_domain::GrantId,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        // Grant Management ID1 §6.5 through the same transaction the
+        // client-facing `DELETE /grants/{grant_id}` uses: the refresh tokens
+        // are marked, the access-token cutoff is written (`ast-m9c.13`) and
+        // the grant is stamped last.
+        //
+        // No live access tokens are named, for the reason
+        // `ClientEndpoints::revoke` gives: this caller holds none of the
+        // grant's tokens, and what withdraws them is the cutoff.
+        match self
+            .store
+            .scope(tenant.clone())
+            .grants()
+            .revoke(
+                grant,
+                asterius_domain::RevocationReason::AdminRevoked,
+                &[],
+                now,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            // What a second `DELETE` finds, and what an id this tenant never
+            // held finds. Not an error: both are "there is nothing to
+            // withdraw".
+            Err(DomainError::NotFound) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn credentials(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<asterius_domain::CredentialSummary, DomainError> {
+        let scope = self.store.scope(tenant.clone());
+        let verifier = asterius_store_pg::PgPasswordVerifier::new(
+            self.store.pool().clone(),
+            tenant.clone(),
+            self.argon2,
+        )?;
+        Ok(asterius_domain::CredentialSummary {
+            password: verifier.has_password(*user.as_uuid()).await?,
+            passkeys: scope.passkeys().summaries_for_user(&user).await?,
+        })
+    }
+
+    async fn remove_passkey(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        credential: uuid::Uuid,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .passkeys()
+            .disable_for_user(&user, credential, now)
+            .await
+    }
+
+    async fn force_password_reset(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        now: time::OffsetDateTime,
+    ) -> Result<asterius_domain::PasswordReset, DomainError> {
+        let scope = self.store.scope(tenant.clone());
+        let held = scope
+            .users(Arc::clone(&self.kek))
+            .find(user)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+
+        let verifier = asterius_store_pg::PgPasswordVerifier::new(
+            self.store.pool().clone(),
+            tenant.clone(),
+            self.argon2,
+        )?;
+        let password_invalidated = verifier.invalidate(*user.as_uuid(), now).await?;
+
+        // Every outstanding recovery link goes with the credential, for the
+        // reason `crate::http::recovery` gives: a link quietly requested
+        // before the change must not survive it.
+        scope
+            .recovery_tokens()
+            .invalidate_for_user(user, now)
+            .await?;
+
+        let recovery_sent = self.send_recovery(tenant, &held, now).await;
+
+        // A forced reset ends the sessions, and `CredentialChange` is what
+        // that revocation means: every session predating the change is stale.
+        // Whoever is signed in on the old password is signed out by the same
+        // call that took it away.
+        let terminated = self
+            .terminate_sessions(
+                tenant,
+                user,
+                asterius_domain::SessionRevocation::CredentialChange,
+                now,
+            )
+            .await?;
+
+        Ok(asterius_domain::PasswordReset {
+            password_invalidated,
+            recovery_sent,
+            terminated,
+        })
+    }
+}
+
+impl DeploymentUsers {
+    /// Draws a recovery token and hands the message to the notification port.
+    ///
+    /// The same shape as `crate::http::recovery`'s own: a 256-bit single-use
+    /// token, stored as a digest, in a link built from the tenant's issuer.
+    /// An account with no address gets nothing and reports `false` — there is
+    /// nowhere to send a link, and inventing one would be worse.
+    ///
+    /// Failures are logged and reported as `false` rather than failing the
+    /// reset: the password is already gone by the time this runs, and an
+    /// administrator needs to be told which half worked.
+    async fn send_recovery(
+        &self,
+        tenant: &TenantId,
+        user: &asterius_domain::User,
+        now: time::OffsetDateTime,
+    ) -> bool {
+        let Some(address) = user.email.clone() else {
+            return false;
+        };
+        let Ok(Some(tenant_entity)) = self.tenants.find_by_id(tenant).await else {
+            tracing::error!(tenant = %tenant, "cannot read the tenant an account belongs to");
+            return false;
+        };
+
+        let token = asterius_domain::RecoveryToken::generate();
+        let issued = asterius_domain::IssuedRecovery::new(user.id, &token, now);
+        let scope = self.store.scope(tenant.clone());
+        if let Err(error) = scope.recovery_tokens().issue(&issued).await {
+            tracing::error!(%error, tenant = %tenant, "cannot store a recovery token");
+            return false;
+        }
+
+        // Absolute, because it is going into a message: a browser opening it
+        // has no page to resolve a relative path against.
+        let link = format!(
+            "{}{}?token={}",
+            tenant_entity.issuer.as_str().trim_end_matches('/'),
+            crate::http::recovery::NEW_PASSWORD_PATH,
+            token.expose()
+        );
+        let message = asterius_domain::Notification::account_recovery(
+            address,
+            link,
+            asterius_domain::RECOVERY_LIFETIME.whole_minutes(),
+        );
+        if let Err(error) = scope.mail().send(&message).await {
+            tracing::error!(%error, tenant = %tenant, "cannot hand off a recovery message");
+            return false;
+        }
+        true
+    }
+}
+
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
     async fn session(
@@ -295,6 +790,18 @@ impl AdminBackend for Deployment {
         Arc::new(asterius_store_pg::PgInitialAccessTokens::new(
             self.store.pool().clone(),
         ))
+    }
+
+    fn users(&self) -> Arc<dyn asterius_domain::UserAdministration> {
+        Arc::new(DeploymentUsers {
+            store: self.store.clone(),
+            tenants: Arc::clone(&self.tenants),
+            kek: Arc::clone(&self.kek),
+            keys: Arc::clone(&self.signer),
+            capabilities: self.capabilities,
+            argon2: self.argon2,
+            queue: self.queue.clone(),
+        })
     }
 
     fn keys(&self) -> Arc<dyn KeyAdministration> {

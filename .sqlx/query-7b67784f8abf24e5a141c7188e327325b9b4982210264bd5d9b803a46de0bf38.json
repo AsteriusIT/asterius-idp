@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select session_id from sessions\n             where tenant_id = $1 and user_id = $2\n               and revoked_at is null and expires_at > $3\n             order by created_at desc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "session_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7b67784f8abf24e5a141c7188e327325b9b4982210264bd5d9b803a46de0bf38"
+}

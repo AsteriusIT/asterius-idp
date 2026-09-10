@@ -185,7 +185,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // and the admin API's dead-letter screen reads through it, so the
         // screen reports the schedule the worker is enforcing (`ast-0ju.9`).
         let outbox = outbox_handle(&store, config.outbox);
-        let admin_context = AdminContext::of(&config, &outbound, &outbox);
+        let admin_context = AdminContext::of(&config, &outbound, &outbox, &kek);
         let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = client_authenticator(client_keys, &replay, &store, trust_anchors)?;
@@ -312,6 +312,12 @@ struct AdminContext {
     /// deployment admin. Which tenant may hold deployment authority is the
     /// deployment's decision and this file is where it is read (`ast-8gm`).
     reserved_tenant: Option<asterius_domain::TenantId>,
+    /// The same `PgOutbox` as a queue, for the back-channel logout tokens an
+    /// administrator's revocation sends (`ast-f7m.6`).
+    queue: Arc<dyn asterius_domain::outbox::OutboxQueue>,
+    /// The key-encryption key the pairwise salts are sealed under, which those
+    /// tokens' `sub` is derived through.
+    kek: Arc<dyn asterius_jose::Kek>,
 }
 
 impl AdminContext {
@@ -325,6 +331,7 @@ impl AdminContext {
         config: &Config,
         outbound: &Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
         outbox: &asterius_store_pg::PgOutbox,
+        kek: &Arc<dyn asterius_jose::Kek>,
     ) -> Self {
         Self {
             capabilities: config.features,
@@ -332,6 +339,8 @@ impl AdminContext {
             outbound: Arc::clone(outbound),
             outbox: Arc::new(outbox.clone()),
             reserved_tenant: config.admin.as_ref().map(|admin| admin.tenant.clone()),
+            queue: Arc::new(outbox.clone()),
+            kek: Arc::clone(kek),
         }
     }
 }
@@ -377,6 +386,10 @@ fn admin_routes(
                 registration: context.registration,
                 outbound: context.outbound,
                 outbox: context.outbox,
+                kek: Arc::clone(&context.kek),
+                signer: prepare_signer(keys),
+                queue: Some(context.queue),
+                argon2: Argon2Parameters::default(),
             },
         )),
         // `ast-a05.8` mints the tokens an automation caller would present.

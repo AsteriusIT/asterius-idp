@@ -56,6 +56,89 @@ impl PgPasskeyRepository {
     }
 }
 
+impl PgPasskeyRepository {
+    /// Every passkey this account holds, blocked ones included (`ast-f7m.6`).
+    ///
+    /// Blocked ones included because an operator investigating a lockout needs
+    /// to see the credential that caused it — a list that hid a passkey
+    /// disabled for a signature-counter regression would leave them looking
+    /// for a credential the person can see on their device and this server
+    /// will not accept.
+    ///
+    /// No public key and no signature counter: see
+    /// [`asterius_domain::PasskeySummary`].
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the query fails.
+    pub async fn summaries_for_user(
+        &self,
+        user: &UserId,
+    ) -> Result<Vec<asterius_domain::PasskeySummary>, DomainError> {
+        let rows = sqlx::query!(
+            "select credential_id, label, passkey_rp_id, created_at, last_used_at, disabled_at
+             from credentials
+             where tenant_id = $1 and user_id = $2 and kind = 'passkey'
+             order by created_at",
+            self.tenant.as_str(),
+            user.as_uuid()
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| asterius_domain::PasskeySummary {
+                id: row.credential_id,
+                label: row.label,
+                // A passkey row always carries one — the check constraint on
+                // `credentials` says so — but the column is nullable for the
+                // other kinds, and an empty string is the honest rendering of
+                // a row that somehow has none.
+                rp_id: row.passkey_rp_id.unwrap_or_default(),
+                created_at: row.created_at,
+                last_used_at: row.last_used_at,
+                disabled_at: row.disabled_at,
+            })
+            .collect())
+    }
+
+    /// Blocks one of an account's passkeys, by the credential row.
+    ///
+    /// Scoped to the user as well as to the tenant, so a credential id that
+    /// names somebody else's passkey blocks nothing: the console reaches this
+    /// through a route whose path names an account, and the two must agree.
+    ///
+    /// `false` is a credential this account does not hold or one already
+    /// blocked, which is what a second press finds.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    pub async fn disable_for_user(
+        &self,
+        user: &UserId,
+        credential: uuid::Uuid,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let affected = sqlx::query!(
+            "update credentials set disabled_at = $4
+             where tenant_id = $1 and user_id = $2 and credential_id = $3
+               and kind = 'passkey' and disabled_at is null",
+            self.tenant.as_str(),
+            user.as_uuid(),
+            credential,
+            now
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        Ok(affected > 0)
+    }
+}
+
 #[async_trait::async_trait]
 impl PasskeyRepository for PgPasskeyRepository {
     async fn open_enrolment(

@@ -224,12 +224,52 @@ impl EventType {
     pub const SUBJECT_COLLISION: Self = Self("subject.collision");
     /// An administrator changed configuration.
     pub const ADMIN_CHANGED: Self = Self("admin.changed");
+    /// An account was created by an administrator (`ast-f7m.6`).
+    ///
+    /// Distinct from [`Self::CREDENTIAL_CREATED`] beside it: that one says a
+    /// way of signing in came into existence, and this one says a person did.
+    /// A creation with a password emits both, which is what lets an
+    /// investigator tell an account provisioned for a passkey from one
+    /// provisioned on a password.
+    pub const USER_CREATED: Self = Self("user.created");
+    /// An administrator changed the claims that describe an account, or their
+    /// verification flags (OIDC Core §5.1).
+    ///
+    /// The record names the account and how many claims it ended with, never
+    /// the values: a trail kept for years and read by whoever is on call is
+    /// not the place to copy somebody's date of birth into.
+    pub const USER_CLAIMS_CHANGED: Self = Self("user.claims_changed");
+    /// An account was switched off by an administrator.
+    ///
+    /// # The RISC seam
+    ///
+    /// This is the trail half of the RISC `account-disabled` signal (OpenID
+    /// Shared Signals and Events). The transmitter is `ast-0ju` and is not
+    /// built; until it is, the extension point is
+    /// `asterius_server::admin::notify_account_disabled`, named for the same
+    /// reason `notify_participants` was named on the logout path and
+    /// `notify_credential_change` on the recovery path — a hook with a name is
+    /// one a reviewer can find, and a hook that does not exist is a signal
+    /// nobody remembers to send.
+    ///
+    /// The back-channel logout tokens that go out with it are *not* that
+    /// signal and are not a substitute for it: they tell the relying parties
+    /// that took part in a session that it ended, which is a narrower fact
+    /// about a browser rather than a statement about the account.
+    pub const ACCOUNT_DISABLED: Self = Self("account.disabled");
+    /// An account was switched back on by an administrator.
+    ///
+    /// Its own type rather than an outcome on [`Self::ACCOUNT_DISABLED`]: "who
+    /// re-enabled this account, and when" is the question asked after an
+    /// incident, and an answer that requires reading a boolean out of a detail
+    /// map is one a query will get wrong.
+    pub const ACCOUNT_ENABLED: Self = Self("account.enabled");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 41] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -266,6 +306,10 @@ impl EventType {
         Self::KEY_SCHEDULE_APPLIED,
         Self::SUBJECT_COLLISION,
         Self::ADMIN_CHANGED,
+        Self::USER_CREATED,
+        Self::USER_CLAIMS_CHANGED,
+        Self::ACCOUNT_DISABLED,
+        Self::ACCOUNT_ENABLED,
         Self::AUDIT_PURGED,
     ];
 

@@ -59,6 +59,7 @@ pub mod rbac;
 pub mod router;
 pub mod theme_image;
 pub mod throttle;
+pub mod users;
 
 pub use backend::{AdminBackend, AdminTokens, PresentedToken, TokenPrincipal};
 pub use console::{Asset, Bundle};
@@ -125,6 +126,30 @@ pub const KEYS_SCHEDULE_ID: &str = "keys.schedule";
 pub const KEYS_SCHEDULE_APPLY_ID: &str = "keys.schedule.apply";
 /// The `operationId` of `GET /outbox/dead-letters`.
 pub const OUTBOX_DEAD_LETTERS_ID: &str = "outbox.dead_letters";
+/// The `operationId` of `GET /users`.
+pub const USERS_LIST_ID: &str = "users.list";
+/// The `operationId` of `POST /users`.
+pub const USER_CREATE_ID: &str = "users.create";
+/// The `operationId` of `GET /users/{user_id}`.
+pub const USER_READ_ID: &str = "users.read";
+/// The `operationId` of `PUT /users/{user_id}/claims`.
+pub const USER_CLAIMS_UPDATE_ID: &str = "users.claims.update";
+/// The `operationId` of `PUT /users/{user_id}/status`.
+pub const USER_STATUS_UPDATE_ID: &str = "users.status.update";
+/// The `operationId` of `GET /users/{user_id}/credentials`.
+pub const USER_CREDENTIALS_READ_ID: &str = "users.credentials.read";
+/// The `operationId` of `DELETE /users/{user_id}/credentials/passkeys/{credential_id}`.
+pub const USER_PASSKEY_REMOVE_ID: &str = "users.credentials.passkey.remove";
+/// The `operationId` of `POST /users/{user_id}/credentials/password/reset`.
+pub const USER_PASSWORD_RESET_ID: &str = "users.credentials.password.reset";
+/// The `operationId` of `GET /users/{user_id}/sessions`.
+pub const USER_SESSIONS_LIST_ID: &str = "users.sessions.list";
+/// The `operationId` of `DELETE /users/{user_id}/sessions/{sid}`.
+pub const USER_SESSION_REVOKE_ID: &str = "users.sessions.revoke";
+/// The `operationId` of `GET /users/{user_id}/grants`.
+pub const USER_GRANTS_LIST_ID: &str = "users.grants.list";
+/// The `operationId` of `DELETE /users/{user_id}/grants/{grant_id}`.
+pub const USER_GRANT_REVOKE_ID: &str = "users.grants.revoke";
 
 /// Who the caller is, and the CSRF token the console must send back.
 ///
@@ -461,12 +486,186 @@ pub const OUTBOX_DEAD_LETTERS: Operation = Operation::read(
     "Lists deliveries this tenant's outbox has abandoned",
 );
 
+/// This tenant's accounts, one cursor page at a time, optionally filtered
+/// (`ast-f7m.6`).
+///
+/// [`Reach::Tenant`] and no `{tenant_id}` in the path, for the reason
+/// [`KEYS_LIST`] gives: the tenant is the issuer the request arrived at, not a
+/// parameter a caller chooses. The cursor is the username, which is unique
+/// within a tenant and is what the listing is ordered by.
+pub const USERS_LIST: Operation = Operation::read(
+    USERS_LIST_ID,
+    "/users",
+    S::Get,
+    A::new(R::Tenant, "admin.users:read"),
+    "Lists this tenant's accounts, filtered by an optional q parameter",
+)
+.paginated();
+
+/// One account, with its claims and their provenance.
+pub const USER_READ: Operation = Operation::read(
+    USER_READ_ID,
+    "/users/{user_id}",
+    S::Get,
+    A::new(R::Tenant, "admin.users:read"),
+    "Reads one account and its claims",
+);
+
+/// Creates an account, with a password that passed policy or with none.
+///
+/// The password in the body goes through
+/// [`asterius_domain::AcceptedPassword`] — the deny list included (`ast-895`)
+/// — so the console is not a way around the policy the login form enforces.
+pub const USER_CREATE: Operation = Operation::mutation(
+    USER_CREATE_ID,
+    "/users",
+    M::Post,
+    A::new(R::Tenant, "admin.users:write"),
+    "Creates an account, with a password that passed policy or with none",
+);
+
+/// Replaces one account's claims and its verification flags (OIDC Core §5.1).
+///
+/// `PUT` and not `PATCH`, for the reason [`CLIENT_UPDATE`] gives: a merge
+/// would leave a claim an administrator has just deleted in place, and the
+/// claim being deleted is usually the one that was wrong.
+pub const USER_CLAIMS_UPDATE: Operation = Operation::mutation(
+    USER_CLAIMS_UPDATE_ID,
+    "/users/{user_id}/claims",
+    M::Put,
+    A::new(R::Tenant, "admin.users:write"),
+    "Replaces one account's claims and its verification flags",
+);
+
+/// Switches an account on or off.
+///
+/// A route of its own and not a member of the claims document, because
+/// disabling an account is not an edit: it revokes every live session and
+/// queues a back-channel logout token for each participating relying party
+/// (OIDC Back-Channel Logout 1.0 §2.5). An operation with those effects needs
+/// its own `operationId` — an audit trail and an RBAC policy both read that id
+/// as the name of what was done.
+///
+/// `PUT` and not `POST`: the request states the state the account should be
+/// in, so sending it twice is the same as sending it once, and RFC 9110 §9.2.2
+/// makes that idempotence the verb's own rather than a key the caller must
+/// remember.
+pub const USER_STATUS_UPDATE: Operation = Operation::mutation(
+    USER_STATUS_UPDATE_ID,
+    "/users/{user_id}/status",
+    M::Put,
+    A::new(R::Tenant, "admin.users:write"),
+    "Enables or disables an account, revoking its sessions when it is disabled",
+);
+
+/// What one account can sign in with.
+///
+/// No material is rendered: the port answers with
+/// [`asterius_domain::CredentialSummary`], which carries no password hash, no
+/// public key and no signature counter. See [`users`].
+pub const USER_CREDENTIALS_READ: Operation = Operation::read(
+    USER_CREDENTIALS_READ_ID,
+    "/users/{user_id}/credentials",
+    S::Get,
+    A::new(R::Tenant, "admin.users:read"),
+    "Lists what one account can sign in with",
+);
+
+/// Blocks one passkey.
+///
+/// `DELETE` on the credential, and the row stays: it is stamped rather than
+/// removed, for the reason [`KEYS_RETIRE`] gives about a retired key's row —
+/// an incident review has to be able to see that the credential existed and
+/// when it stopped being usable.
+pub const USER_PASSKEY_REMOVE: Operation = Operation::mutation(
+    USER_PASSKEY_REMOVE_ID,
+    "/users/{user_id}/credentials/passkeys/{credential_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.users:write"),
+    "Blocks one passkey of an account",
+);
+
+/// Forces a password reset (`ast-2vk.10`).
+///
+/// Invalidates the password, ends the account's sessions and mails a recovery
+/// link — it does **not** set a password an administrator chose. A password
+/// two people know is a shared secret, and the recovery path already binds to
+/// a mailbox and already forces a new credential in the same request.
+///
+/// `POST` and therefore an `Idempotency-Key`: pressing it twice must not send
+/// two links and invalidate a credential the person has just re-established.
+pub const USER_PASSWORD_RESET: Operation = Operation::mutation(
+    USER_PASSWORD_RESET_ID,
+    "/users/{user_id}/credentials/password/reset",
+    M::Post,
+    A::new(R::Tenant, "admin.users:write"),
+    "Invalidates an account's password and mails it a recovery link",
+);
+
+/// One account's browser sessions.
+///
+/// A scope of its own — `admin.sessions:read` rather than `admin.users:read` —
+/// for the reason [`OUTBOX_DEAD_LETTERS`] gives: the two answer different
+/// questions and a deployment should be able to grant the second without the
+/// first. "Which sessions does this person have open, and end that one" is
+/// support work; reading and editing the claims that describe them is not, and
+/// `ast-4jy`'s `user-support` role is the shape that distinction is for.
+pub const USER_SESSIONS_LIST: Operation = Operation::read(
+    USER_SESSIONS_LIST_ID,
+    "/users/{user_id}/sessions",
+    S::Get,
+    A::new(R::Tenant, "admin.sessions:read"),
+    "Lists one account's browser sessions",
+);
+
+/// Ends one session, by the `sid` the deployment already publishes.
+///
+/// The path names the `sid` of OIDC Back-Channel Logout 1.0 §2.4 and never the
+/// session's lookup digest — the port this route reaches through carries no
+/// digest at all, so there is no identifier here that names a row.
+///
+/// Revoking notifies the participating relying parties (§2.5) through the same
+/// seam RP-initiated logout uses, so a session ended from the console and one
+/// ended by the person are indistinguishable to a relying party.
+pub const USER_SESSION_REVOKE: Operation = Operation::mutation(
+    USER_SESSION_REVOKE_ID,
+    "/users/{user_id}/sessions/{sid}",
+    M::Delete,
+    A::new(R::Tenant, "admin.sessions:write"),
+    "Ends one session and notifies the relying parties that took part",
+);
+
+/// The authorizations one account has granted.
+///
+/// Its own scope, for the reason [`USER_SESSIONS_LIST`] gives.
+pub const USER_GRANTS_LIST: Operation = Operation::read(
+    USER_GRANTS_LIST_ID,
+    "/users/{user_id}/grants",
+    S::Get,
+    A::new(R::Tenant, "admin.grants:read"),
+    "Lists the authorizations one account has granted",
+);
+
+/// Withdraws one authorization, with Grant Management ID1 §6.5's semantics.
+///
+/// The same call the client-facing `DELETE /grants/{grant_id}` makes, through
+/// the same transaction: the refresh tokens are marked, the access-token
+/// cutoff is written (`ast-m9c.13`) and the grant is stamped last. Two entry
+/// points, one meaning of "revoked".
+pub const USER_GRANT_REVOKE: Operation = Operation::mutation(
+    USER_GRANT_REVOKE_ID,
+    "/users/{user_id}/grants/{grant_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.grants:write"),
+    "Withdraws one authorization and the credentials issued under it",
+);
+
 /// Every route this API serves.
 ///
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 23] = [
+static REGISTRY: [Operation; 35] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -490,6 +689,18 @@ static REGISTRY: [Operation; 23] = [
     KEYS_SCHEDULE,
     KEYS_SCHEDULE_APPLY,
     OUTBOX_DEAD_LETTERS,
+    USERS_LIST,
+    USER_READ,
+    USER_CREATE,
+    USER_CLAIMS_UPDATE,
+    USER_STATUS_UPDATE,
+    USER_CREDENTIALS_READ,
+    USER_PASSKEY_REMOVE,
+    USER_PASSWORD_RESET,
+    USER_SESSIONS_LIST,
+    USER_SESSION_REVOKE,
+    USER_GRANTS_LIST,
+    USER_GRANT_REVOKE,
 ];
 
 /// The registry.

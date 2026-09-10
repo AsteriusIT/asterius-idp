@@ -123,6 +123,22 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// method on it that returns one.
     fn keys(&self) -> Arc<dyn KeyAdministration>;
 
+    /// The deployment's accounts, for the console's user screen (`ast-f7m.6`).
+    ///
+    /// A handle for the same reason [`Self::tenants`] is one, and with a
+    /// sharper consequence: the object behind it is the composition root's,
+    /// which is where the back-channel logout notification lives. Disabling an
+    /// account has to revoke its sessions *and* tell the relying parties that
+    /// took part (OIDC Back-Channel Logout 1.0 §2.5), and a repository
+    /// assembled here would do the first and silently skip the second — the
+    /// failure being a relying party that keeps a person signed in after an
+    /// administrator switched their account off.
+    ///
+    /// The port carries no session digest, no password hash and no public key;
+    /// see [`asterius_domain::administration`] for why that is structural
+    /// rather than a rule about what handlers render.
+    fn users(&self) -> Arc<dyn asterius_domain::UserAdministration>;
+
     /// The deployment's clients, for the console's client screen.
     ///
     /// A handle for the same reason [`Self::tenants`] is one, and with the same

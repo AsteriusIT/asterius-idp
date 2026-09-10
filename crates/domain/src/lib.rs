@@ -6,6 +6,7 @@
 //! never depend on a database driver, an HTTP framework or an async runtime.
 #![forbid(unsafe_code)]
 
+pub mod administration;
 pub mod audit;
 pub mod capabilities;
 pub mod credentials;
@@ -25,6 +26,10 @@ pub mod rate_limit;
 pub mod secret;
 mod secret_audit;
 
+pub use administration::{
+    CredentialSummary, NewAccount, PasskeySummary, PasswordReset, SessionSummary, Terminated,
+    UserAdministration,
+};
 pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};
 pub use credentials::{OpaqueToken, sha256, sha256_hex};

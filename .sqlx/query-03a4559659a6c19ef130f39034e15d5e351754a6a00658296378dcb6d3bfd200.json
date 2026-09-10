@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update credentials set disabled_at = $3\n             where tenant_id = $1 and user_id = $2 and kind = 'password'\n               and disabled_at is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "03a4559659a6c19ef130f39034e15d5e351754a6a00658296378dcb6d3bfd200"
+}

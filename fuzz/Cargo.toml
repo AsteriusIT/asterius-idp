@@ -106,6 +106,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_user_claims"
+path = "fuzz_targets/admin_user_claims.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "agent_profile"
 path = "fuzz_targets/agent_profile.rs"
 test = false

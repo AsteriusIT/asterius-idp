@@ -45,7 +45,13 @@
  */
 import AxeBuilder from '@axe-core/playwright';
 import { type APIRequestContext, type Page, expect, test } from '@playwright/test';
-import { CONSOLE_URL, signIn } from '../src/console.js';
+import {
+  ADMIN_CONSOLE_URL,
+  CONSOLE_URL,
+  open as openScreen,
+  signIn,
+  signInAsDeploymentAdmin,
+} from '../src/console.js';
 import { CspWatcher } from '../src/csp.js';
 import { BASE_URL } from '../src/environment.js';
 
@@ -500,4 +506,187 @@ test('the signed-out screen has no accessibility violation either', async ({
     contentType: 'application/json',
   });
   expect(results.violations).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// The account screen (`ast-f7m.6`)
+// ---------------------------------------------------------------------------
+
+/**
+ * A username nobody else in this run will use.
+ *
+ * The sweep runs against a database somebody keeps between runs, and creating
+ * an account is not idempotent — the route answers 409 for a username this
+ * tenant already holds, which is the behaviour a second run must not trip
+ * over. A UUID rather than a counter, because the specs run in parallel.
+ */
+function freshUsername(): string {
+  return `created-${crypto.randomUUID()}@example.test`;
+}
+
+/** The password the created accounts get; it passes the deployment's policy. */
+const CREATED_PASSWORD = 'a created account passphrase';
+
+/**
+ * Creates an account through the screen and returns its username.
+ *
+ * Through the form and not through the API: what these tests are for is that
+ * an administrator can do this in a browser, and a fixture inserted by `fetch`
+ * would assert the route while skipping every part of that.
+ */
+async function createAccount(page: Page): Promise<string> {
+  const username = freshUsername();
+  await page.getByLabel('Username').fill(username);
+  // Deliberately *not* the username. The directory renders both in the same
+  // row, and an account whose two columns carry one string makes every locator
+  // in this file ambiguous — which is how the first run of these tests failed,
+  // on a strict-mode violation rather than on anything about the screen.
+  await page.getByLabel('Email').fill(username.replace('created-', 'inbox-'));
+  await page.getByLabel('Password').fill(CREATED_PASSWORD);
+  await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page.getByRole('cell', { name: username })).toBeVisible();
+  return username;
+}
+
+/** Opens the account whose row names `username`. */
+async function openAccount(page: Page, username: string): Promise<void> {
+  await page
+    .getByRole('row', { name: new RegExp(username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) })
+    .getByRole('button', { name: 'Open' })
+    .click();
+  await expect(page.getByRole('heading', { name: username })).toBeVisible();
+}
+
+test('the users screen is reachable from the navigation and creates an account', async ({
+  page,
+}) => {
+  // Arrange
+  await signIn(page);
+
+  // Act
+  await openScreen(page, 'Users', 'Users');
+  const username = await createAccount(page);
+
+  // Assert: the row is in the directory, and the search finds it.
+  await page.getByLabel('Search').fill(username);
+  await page.getByRole('button', { name: 'Search' }).click();
+  await expect(page.getByRole('cell', { name: username })).toBeVisible();
+});
+
+test('an account can be disabled from the console', async ({ page }) => {
+  // Arrange
+  await signIn(page);
+  await openScreen(page, 'Users', 'Users');
+  const username = await createAccount(page);
+  await openAccount(page, username);
+  page.once('dialog', (dialog) => void dialog.accept());
+
+  // Act
+  await page.getByRole('button', { name: 'Disable account' }).click();
+
+  // Assert: the account is off, and the screen says what the revocation did —
+  // nothing, for an account that has never signed in, which is the honest
+  // answer rather than a silent success.
+  await expect(page.getByRole('button', { name: 'Enable account' })).toBeVisible();
+  await expect(page.getByRole('definition').filter({ hasText: 'disabled' })).toBeVisible();
+});
+
+/**
+ * The whole path the acceptance criterion names: a person signs in, an
+ * administrator sees their session and ends it.
+ *
+ * The second browser context is what makes it real. The session under test has
+ * to be somebody *else's* — an administrator ending their own would be signed
+ * out mid-test, and the assertion would be about the shell rather than about
+ * the revocation.
+ */
+test('a session belonging to somebody else can be ended from the console', async ({
+  browser,
+  page,
+}) => {
+  // Arrange: an account, and a browser signed in as it.
+  await signIn(page);
+  await openScreen(page, 'Users', 'Users');
+  const username = await createAccount(page);
+
+  const theirs = await browser.newContext({ ignoreHTTPSErrors: true });
+  const theirPage = await theirs.newPage();
+  await theirPage.goto(CONSOLE_URL);
+  await theirPage.locator('input[name="username"]').fill(username);
+  await theirPage.locator('input[name="password"]').fill(CREATED_PASSWORD);
+  await theirPage.getByRole('button', { name: 'Sign in', exact: true }).click();
+  // The account holds no role, so the shell starts and its first call —
+  // `GET /session`, which is `Reach::Authenticated` and still demands *some*
+  // authority — is a 403. What the person sees is the console refusing to
+  // start, which is the honest outcome for somebody who is signed in and
+  // administers nothing. The *session* exists either way, and that is the
+  // whole point of this arrangement: the row the administrator is about to
+  // end belongs to somebody else.
+  await expect(theirPage.getByRole('heading', { name: 'The console could not start' })).toBeVisible();
+
+  // Act
+  await openAccount(page, username);
+  await expect(page.getByRole('cell', { name: 'live' })).toBeVisible();
+  await page.getByRole('button', { name: 'End session' }).click();
+
+  // Assert: the row is no longer live, and the screen reports what was queued
+  // for the relying parties that took part — none here, and it says so.
+  await expect(page.getByRole('status')).toContainText('session ended');
+  await expect(page.getByRole('button', { name: 'End session' })).toHaveCount(0);
+
+  await theirs.close();
+});
+
+/**
+ * The gap `ast-895` left in this harness, and the one `ast-axm` confirmed: the
+ * fixture held `tenant_admin` only, so nothing here had ever put a
+ * *deployment*-scoped console in front of a browser.
+ *
+ * The account is the one the `[admin]` table seeds, signing in on a password —
+ * which `asterius_domain::admin_access_policy` admits because it has no
+ * passkey to demand yet.
+ */
+test('a deployment administrator reaches the users screen', async ({ page }) => {
+  // Arrange
+  await signInAsDeploymentAdmin(page);
+
+  // Assert: the shell is the deployment one — Tenants is a deployment-reach
+  // destination and is hidden from a tenant admin.
+  await expect(page.getByRole('link', { name: 'Tenants' })).toBeVisible();
+
+  // Act
+  await openScreen(page, 'Users', 'Users');
+
+  // Assert: the directory answered rather than 403ing, so the screen shows its
+  // list and its form rather than a refusal.
+  await expect(page.getByRole('heading', { name: 'Add an account' })).toBeVisible();
+});
+
+test('the users screen provokes no CSP violation and passes axe', async ({ context, page }) => {
+  // Arrange
+  const watcher = await CspWatcher.attach(context, true);
+  await signIn(page);
+
+  // Act
+  await openScreen(page, 'Users', 'Users');
+  const username = await createAccount(page);
+  await openAccount(page, username);
+
+  // Assert
+  const audit = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze();
+  expect(audit.violations, JSON.stringify(audit.violations, null, 2)).toEqual([]);
+  watcher.assertClean('the users screen');
+});
+
+/** The entry document, so the deployment console is reachable at all. */
+test('the reserved tenant serves a console of its own', async ({ page }) => {
+  // Arrange / Act
+  await signInAsDeploymentAdmin(page);
+  const response = await page.goto(ADMIN_CONSOLE_URL);
+
+  // Assert
+  expect(response?.status()).toBe(200);
+  await expect(page.getByRole('heading', { name: 'Asterius console' })).toBeVisible();
 });

@@ -1980,6 +1980,1072 @@
         "x-asterius-reach": "tenant",
         "x-asterius-scope": "admin.tenants:write"
       }
+    },
+    "/admin/api/v1/users": {
+      "get": {
+        "operationId": "users.list",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/cursor"
+          },
+          {
+            "$ref": "#/components/parameters/limit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:read"
+            ]
+          }
+        ],
+        "summary": "Lists this tenant's accounts, filtered by an optional q parameter",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:read"
+      },
+      "post": {
+        "operationId": "users.create",
+        "parameters": [
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:write"
+            ]
+          }
+        ],
+        "summary": "Creates an account, with a password that passed policy or with none",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:write"
+      }
+    },
+    "/admin/api/v1/users/{user_id}": {
+      "get": {
+        "operationId": "users.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:read"
+            ]
+          }
+        ],
+        "summary": "Reads one account and its claims",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:read"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/claims": {
+      "put": {
+        "operationId": "users.claims.update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:write"
+            ]
+          }
+        ],
+        "summary": "Replaces one account's claims and its verification flags",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:write"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/credentials": {
+      "get": {
+        "operationId": "users.credentials.read",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:read"
+            ]
+          }
+        ],
+        "summary": "Lists what one account can sign in with",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:read"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/credentials/passkeys/{credential_id}": {
+      "delete": {
+        "operationId": "users.credentials.passkey.remove",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "credential_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:write"
+            ]
+          }
+        ],
+        "summary": "Blocks one passkey of an account",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:write"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/credentials/password/reset": {
+      "post": {
+        "operationId": "users.credentials.password.reset",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:write"
+            ]
+          }
+        ],
+        "summary": "Invalidates an account's password and mails it a recovery link",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:write"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/grants": {
+      "get": {
+        "operationId": "users.grants.list",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.grants:read"
+            ]
+          }
+        ],
+        "summary": "Lists the authorizations one account has granted",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.grants:read"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/grants/{grant_id}": {
+      "delete": {
+        "operationId": "users.grants.revoke",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.grants:write"
+            ]
+          }
+        ],
+        "summary": "Withdraws one authorization and the credentials issued under it",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.grants:write"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/sessions": {
+      "get": {
+        "operationId": "users.sessions.list",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.sessions:read"
+            ]
+          }
+        ],
+        "summary": "Lists one account's browser sessions",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.sessions:read"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/sessions/{sid}": {
+      "delete": {
+        "operationId": "users.sessions.revoke",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "sid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.sessions:write"
+            ]
+          }
+        ],
+        "summary": "Ends one session and notifies the relying parties that took part",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.sessions:write"
+      }
+    },
+    "/admin/api/v1/users/{user_id}/status": {
+      "put": {
+        "operationId": "users.status.update",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.users:write"
+            ]
+          }
+        ],
+        "summary": "Enables or disables an account, revoking its sessions when it is disabled",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.users:write"
+      }
     }
   },
   "security": [

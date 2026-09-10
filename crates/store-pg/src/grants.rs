@@ -377,6 +377,42 @@ impl PgGrantRepository {
         .collect()
     }
 
+    /// Every authorization this account has granted, newest first
+    /// (`ast-f7m.6`).
+    ///
+    /// By the local account id and not by a `sub`, unlike
+    /// [`Self::list_for_subject`] above it: a pairwise deployment gives one
+    /// person a different `sub` per sector (OIDC Core §8.1), so a console
+    /// listing "this person's grants" by subject would show the grants of one
+    /// sector and quietly omit the rest.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::list_for_subject`].
+    pub async fn list_for_user(
+        &self,
+        user: &asterius_domain::UserId,
+    ) -> Result<Vec<Grant>, DomainError> {
+        sqlx::query_as!(
+            Row,
+            "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
+                    authorization_details, resources, actor_chain, parent_grant_id,
+                    session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,
+                    claimed_at, revoked_at, revocation_reason
+               from grants
+               where tenant_id = $1 and user_id = $2
+               order by created_at desc, grant_id",
+            self.tenant.as_str(),
+            user.as_uuid()
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .into_iter()
+        .map(|row| row.into_entity(&self.tenant))
+        .collect()
+    }
+
     /// Takes the authority to mint one credential from a grant, and records
     /// that it was taken.
     ///

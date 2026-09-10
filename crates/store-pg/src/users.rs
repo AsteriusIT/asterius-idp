@@ -148,6 +148,56 @@ impl PgUserRepository {
         row.map(|row| row.into_entity(&self.tenant)).transpose()
     }
 
+    /// One page of this tenant's accounts, ordered by username (`ast-f7m.6`).
+    ///
+    /// The filtering and the cut are the *database's*, not a caller's: a
+    /// tenant may hold millions of accounts, and a listing that read them all
+    /// and filtered in memory would be a way to make this server materialise a
+    /// directory on request. `after` is the username the previous page ended
+    /// on, which turns paging into a range scan over the unique
+    /// `(tenant_id, username)` index instead of an `OFFSET` that walks and
+    /// discards.
+    ///
+    /// `term` matches the username or the address, case-insensitively, and an
+    /// empty one matches everything. `ilike` with the term interpolated as a
+    /// *parameter*: the `%` wrappers are added by the query, so a term
+    /// carrying `%` or `_` widens its own search and nothing else — it is a
+    /// bound value and never SQL.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::find`].
+    pub async fn search(
+        &self,
+        term: &str,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<User>, DomainError> {
+        let pattern = format!("%{term}%");
+        sqlx::query_as!(
+            Row,
+            "select user_id, username, email, email_verified, status, claims,
+                    created_at, updated_at
+             from users
+             where tenant_id = $1
+               and ($2 = '' or username ilike $3 or email ilike $3)
+               and ($4::text is null or username > $4)
+             order by username
+             limit $5",
+            self.tenant.as_str(),
+            term,
+            pattern,
+            after,
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .into_iter()
+        .map(|row| row.into_entity(&self.tenant))
+        .collect()
+    }
+
     /// Finds one user by the login identifier they authenticate with.
     ///
     /// # Errors

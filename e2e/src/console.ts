@@ -9,7 +9,14 @@
  * path are two places to forget that the door exists (`ast-rna`).
  */
 import { type Page, expect } from '@playwright/test';
-import { BASE_URL, PASSWORD, USERNAME } from './environment.js';
+import {
+  ADMIN_BASE_URL,
+  ADMIN_PASSWORD,
+  ADMIN_USERNAME,
+  BASE_URL,
+  PASSWORD,
+  USERNAME,
+} from './environment.js';
 
 /** The entry document, with its trailing slash. */
 export const CONSOLE_URL = `${BASE_URL}/admin/`;
@@ -22,11 +29,46 @@ export const CONSOLE_URL = `${BASE_URL}/admin/`;
  * under test is the one `ast-wr4` built.
  */
 export async function signIn(page: Page): Promise<void> {
-  await page.goto(CONSOLE_URL);
-  await page.locator('input[name="username"]').fill(USERNAME);
-  await page.locator('input[name="password"]').fill(PASSWORD);
+  await signInAt(page, CONSOLE_URL, USERNAME, PASSWORD);
+}
+
+/**
+ * The console of the *reserved* tenant, as the deployment administrator
+ * (`ast-f7m.6`).
+ *
+ * The gap `ast-895` left in this harness: every console spec until now signed
+ * in as a `tenant_admin`, so the branch that decides what a deployment-scoped
+ * caller may see — and the passkey rule that governs it — had never been in
+ * front of a browser. The seeded administrator has a password and no passkey,
+ * which `asterius_domain::admin_access_policy` admits precisely because there
+ * is no passkey to demand yet; enrolling one and signing in on the password
+ * again is the case that must be refused, and it belongs to `ast-895`'s own
+ * spec rather than here.
+ */
+export const ADMIN_CONSOLE_URL = `${ADMIN_BASE_URL}/admin/`;
+
+export async function signInAsDeploymentAdmin(page: Page): Promise<void> {
+  await signInAt(page, ADMIN_CONSOLE_URL, ADMIN_USERNAME, ADMIN_PASSWORD);
+}
+
+/**
+ * Walks the door at `entry` with `username` and `password`.
+ *
+ * One implementation for both callers: two copies of the sign-in path are two
+ * places to forget that the door exists (`ast-rna`), which is the whole reason
+ * this file was written.
+ */
+export async function signInAt(
+  page: Page,
+  entry: string,
+  username: string,
+  password: string,
+): Promise<void> {
+  await page.goto(entry);
+  await page.locator('input[name="username"]').fill(username);
+  await page.locator('input[name="password"]').fill(password);
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.waitForURL(CONSOLE_URL);
+  await page.waitForURL(entry);
 }
 
 /**

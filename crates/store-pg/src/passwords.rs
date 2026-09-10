@@ -25,6 +25,7 @@ use asterius_domain::{
     Argon2Parameters, CredentialVerifier, DomainError, OpaqueToken, Secret, TenantId,
 };
 use sqlx::postgres::PgPool;
+use time::OffsetDateTime;
 
 /// Verifies passwords for one tenant.
 pub struct PgPasswordVerifier {
@@ -187,6 +188,64 @@ impl PgPasswordVerifier {
         .await
         .map_err(to_domain_error)?;
         Ok(credential)
+    }
+
+    /// Whether this account has a password it could sign in with.
+    ///
+    /// A disabled credential does not count: it cannot be presented, so
+    /// reporting it as a way in would tell an operator the account has one
+    /// when the login form would refuse it.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the query fails.
+    pub async fn has_password(&self, user: uuid::Uuid) -> Result<bool, DomainError> {
+        let held = sqlx::query_scalar!(
+            "select 1 from credentials
+             where tenant_id = $1 and user_id = $2 and kind = 'password'
+               and disabled_at is null",
+            self.tenant.as_str(),
+            user
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(held.is_some())
+    }
+
+    /// Invalidates an account's password (`ast-2vk.10`).
+    ///
+    /// The row is *disabled*, not deleted and not overwritten with a hash of
+    /// something random. Disabling is the state the login path already
+    /// understands, and it leaves `created_at` and the label in place for an
+    /// incident review; writing a hash nobody knows would make the account
+    /// look, in every query, like one with a working password.
+    ///
+    /// `false` is an account with no password to invalidate, which is not an
+    /// error: an account that signs in with a passkey has none, and forcing a
+    /// reset on one is a request for a recovery link rather than a failure.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    pub async fn invalidate(
+        &self,
+        user: uuid::Uuid,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let affected = sqlx::query!(
+            "update credentials set disabled_at = $3
+             where tenant_id = $1 and user_id = $2 and kind = 'password'
+               and disabled_at is null",
+            self.tenant.as_str(),
+            user,
+            now
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        Ok(affected > 0)
     }
 
     /// Replaces a stored hash after a successful login.
