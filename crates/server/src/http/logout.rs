@@ -43,6 +43,7 @@
 //! about.
 
 use crate::http::redirect::SeeOther;
+use crate::tenancy::MountPrefix;
 use asterius_domain::entities::session::{COOKIE_NAME, SessionRevocation};
 use asterius_domain::{
     Actor, AuditEvent, AuditSink, ClientId, ClientRepository, Detail, EventType, KeyStore, Outcome,
@@ -79,6 +80,9 @@ pub struct LogoutContext<'a> {
     pub nonce: &'a Nonce,
     /// The request id, for correlating the audit record with the logs.
     pub request_id: Option<&'a str>,
+    /// The prefix routing removed from this request's path, put back on the
+    /// URLs this handler names to the browser (`ast-295`, `ast-j3v`).
+    pub mount: MountPrefix,
 }
 
 impl std::fmt::Debug for LogoutContext<'_> {
@@ -512,7 +516,13 @@ fn confirmation_page(context: &LogoutContext<'_>, session_id: &str) -> Response 
         pages::render(&LogoutConfirmationPage {
             locale: "en",
             tenant_name: &context.tenant.display_name,
-            action: asterius_oidc::metadata::Endpoint::EndSession.path(),
+            // The prefix routing removed, put back: this form is posted by a
+            // browser, and `/logout` is mounted under `/t/{tenant}` and
+            // nowhere else. Without it the button is a 404 and the session
+            // survives a logout the user believes happened (`ast-j3v`).
+            action: &context
+                .mount
+                .absolute(asterius_oidc::metadata::Endpoint::EndSession.path()),
             csrf: &confirmation_token(session_id),
             nonce_attribute: nonce_attribute(nonce),
         })
