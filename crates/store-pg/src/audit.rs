@@ -1,10 +1,10 @@
 //! The audit sink, and the jobs that verify and trim the trail.
 
 use crate::error::to_domain_error;
-use asterius_domain::audit::chain::{self, EventHash, Link};
-use asterius_domain::audit::{Actor, AuditEvent, AuditSink, DetailValue, EventType, Outcome};
-use asterius_domain::{ClientId, DomainError, GrantId, SessionId, TenantId};
-use serde_json::{Map, Value};
+use asterius_domain::audit::chain::{self, Content, EventHash, Link};
+use asterius_domain::audit::record::{self, AuditRecord, StoredEvent};
+use asterius_domain::audit::{AuditEvent, AuditSink};
+use asterius_domain::{ClientId, DomainError, SessionId, TenantId};
 use sqlx::postgres::PgPool;
 use sqlx::{Acquire as _, Row as _};
 use time::OffsetDateTime;
@@ -34,10 +34,67 @@ impl PgAuditSink {
     /// Returns [`DomainError::Invalid`] describing which record failed, or a
     /// storage error if the trail cannot be read.
     pub async fn verify_chain(&self, tenant: &TenantId) -> Result<VerifiedChain, DomainError> {
+        let stored = self.read_stored(tenant).await?;
+
+        let links: Vec<Link<'_>> = stored
+            .iter()
+            .map(|record| Link {
+                content: match &record.record {
+                    AuditRecord::Event(event) => Content::Event(event),
+                    AuditRecord::Opaque { .. } => Content::Opaque,
+                },
+                previous: record.previous,
+                current: record.current,
+            })
+            .collect();
+
+        let start = stored
+            .first()
+            .map_or(EventHash::GENESIS, |record| record.previous);
+        let tip = chain::verify(&links, start)
+            .map_err(|e| DomainError::invalid("audit_events", e.to_string()))?;
+
+        Ok(VerifiedChain {
+            records: links.len(),
+            start,
+            opaque: stored.iter().filter(|r| r.record.is_opaque()).count(),
+            tip,
+        })
+    }
+
+    /// Reads a tenant's trail, oldest first.
+    ///
+    /// Total by construction: a record this build cannot deserialise comes
+    /// back as [`AuditRecord::Opaque`] carrying its hash, its position and why,
+    /// and the records around it are read normally. Failing the read instead
+    /// would let one unreadable row — a row the database will not let anything
+    /// repair, by policy (`ast-1p1`) — cost the readability of the whole trail.
+    ///
+    /// Nothing here writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error if the trail cannot be read at all.
+    pub async fn read_trail(&self, tenant: &TenantId) -> Result<Vec<AuditRecord>, DomainError> {
+        Ok(self
+            .read_stored(tenant)
+            .await?
+            .into_iter()
+            .map(|stored| stored.record)
+            .collect())
+    }
+
+    /// The trail with the hashes each record was stored with.
+    async fn read_stored(&self, tenant: &TenantId) -> Result<Vec<StoredRecord>, DomainError> {
+        // The JSON columns are cast to text rather than decoded as JSON by the
+        // driver: a document the driver cannot parse would otherwise fail the
+        // whole query, which is precisely the outcome an opaque record exists
+        // to avoid.
         let rows = sqlx::query(
-            "select event_id, occurred_at, event_type, outcome, actor, actor_chain, subject,
-                    client_id, session_id, grant_id, request_id, detail,
-                    previous_hash, event_hash
+            "select event_id, occurred_at, event_type, outcome,
+                    actor::text as actor, actor_chain::text as actor_chain, subject,
+                    client_id, session_id, grant_id::text as grant_id, request_id,
+                    detail::text as detail, previous_hash, event_hash
              from audit_events
              where tenant_id = $1
              order by event_id",
@@ -47,39 +104,28 @@ impl PgAuditSink {
         .await
         .map_err(to_domain_error)?;
 
-        let mut events = Vec::with_capacity(rows.len());
-        let mut hashes = Vec::with_capacity(rows.len());
-        for row in &rows {
-            events.push(row_to_event(tenant, row)?);
-            hashes.push((
-                EventHash::from_slice(row.get::<Vec<u8>, _>("previous_hash").as_slice())
-                    .map_err(|e| DomainError::invalid("previous_hash", e.to_string()))?,
-                EventHash::from_slice(row.get::<Vec<u8>, _>("event_hash").as_slice())
-                    .map_err(|e| DomainError::invalid("event_hash", e.to_string()))?,
-            ));
+        let mut stored = Vec::with_capacity(rows.len());
+        for (position, row) in rows.iter().enumerate() {
+            let previous = EventHash::from_slice(row.get::<Vec<u8>, _>("previous_hash").as_slice())
+                .map_err(|e| DomainError::invalid("previous_hash", e.to_string()))?;
+            let current = EventHash::from_slice(row.get::<Vec<u8>, _>("event_hash").as_slice())
+                .map_err(|e| DomainError::invalid("event_hash", e.to_string()))?;
+
+            let record = match read_row(tenant, row) {
+                Ok(event) => AuditRecord::Event(Box::new(event)),
+                Err(reason) => AuditRecord::Opaque {
+                    hash: current,
+                    position,
+                    reason,
+                },
+            };
+            stored.push(StoredRecord {
+                record,
+                previous,
+                current,
+            });
         }
-
-        let links: Vec<Link<'_>> = events
-            .iter()
-            .zip(&hashes)
-            .map(|(event, (previous, current))| Link {
-                event,
-                previous: *previous,
-                current: *current,
-            })
-            .collect();
-
-        let start = hashes
-            .first()
-            .map_or(EventHash::GENESIS, |(previous, _)| *previous);
-        let tip = chain::verify(&links, start)
-            .map_err(|e| DomainError::invalid("audit_events", e.to_string()))?;
-
-        Ok(VerifiedChain {
-            records: links.len(),
-            start,
-            tip,
-        })
+        Ok(stored)
     }
 
     /// Deletes records older than `cutoff` for one tenant.
@@ -126,6 +172,11 @@ impl PgAuditSink {
 pub struct VerifiedChain {
     /// How many records were checked.
     pub records: usize,
+    /// How many of them this build could not deserialise. Their linkage was
+    /// checked; their contents could not be re-hashed, because canonicalising
+    /// a record requires reading it. See
+    /// [`asterius_domain::audit::chain::Content`].
+    pub opaque: usize,
     /// The hash the first retained record follows. [`EventHash::GENESIS`]
     /// unless retention has trimmed the front.
     pub start: EventHash,
@@ -180,16 +231,14 @@ impl AuditSink for PgAuditSink {
         .bind(event.occurred_at)
         .bind(event.event_type.as_str())
         .bind(event.outcome.as_str())
-        .bind(actor_to_json(&event.actor))
-        .bind(Value::Array(
-            event.actor_chain.iter().map(actor_to_json).collect(),
-        ))
+        .bind(record::actor_json(&event.actor))
+        .bind(record::actor_chain_json(&event.actor_chain))
         .bind(event.subject.as_deref())
         .bind(event.client.as_ref().map(ClientId::as_str))
         .bind(event.session.as_ref().map(SessionId::as_str))
         .bind(event.grant.as_ref().and_then(|g| uuid_or_none(g.as_str())))
         .bind(event.request_id.as_deref())
-        .bind(detail_to_json(&event))
+        .bind(record::detail_json(&event.detail))
         .bind(previous.as_bytes().as_slice())
         .bind(current.as_bytes().as_slice())
         .execute(&mut *connection)
@@ -236,146 +285,45 @@ fn uuid_or_none(value: &str) -> Option<uuid::Uuid> {
     value.parse().ok()
 }
 
-fn actor_to_json(actor: &Actor) -> Value {
-    let mut object = Map::new();
-    object.insert("type".to_owned(), Value::String(actor.kind().to_owned()));
-    object.insert("id".to_owned(), Value::String(actor.id().to_owned()));
-    if let Actor::Agent { on_behalf_of, .. } = actor {
-        object.insert(
-            "on_behalf_of".to_owned(),
-            Value::String(on_behalf_of.clone()),
-        );
-    }
-    Value::Object(object)
+/// One stored record and the hashes it was stored with.
+struct StoredRecord {
+    record: AuditRecord,
+    previous: EventHash,
+    current: EventHash,
 }
 
-fn detail_to_json(event: &AuditEvent) -> Value {
-    let mut object = Map::new();
-    for (key, value) in event.detail.iter() {
-        let encoded = match value {
-            DetailValue::Text(text) => Value::String(text.clone()),
-            DetailValue::Number(number) => Value::Number((*number).into()),
-            DetailValue::Flag(flag) => Value::Bool(*flag),
-            // Prefixed so a reader can tell a digest from a value that merely
-            // looks like one.
-            DetailValue::Fingerprint(digest) => Value::String(format!("sha256:{digest}")),
-        };
-        object.insert(key.clone(), encoded);
-    }
-    Value::Object(object)
-}
+/// Rebuilds an event from a row, or says why it cannot be rebuilt.
+///
+/// Every column is read as a type PostgreSQL always produces — text, and bytes
+/// for the hashes — so that the judgment about whether a record is readable is
+/// made by the domain's reader and not by the driver's decoder.
+fn read_row(
+    tenant: &TenantId,
+    row: &sqlx::postgres::PgRow,
+) -> Result<AuditEvent, asterius_domain::audit::OpaqueReason> {
+    let event_type: String = row.get("event_type");
+    let outcome: String = row.get("outcome");
+    let actor: String = row.get("actor");
+    let actor_chain: Option<String> = row.get("actor_chain");
+    let subject: Option<String> = row.get("subject");
+    let client: Option<String> = row.get("client_id");
+    let session: Option<String> = row.get("session_id");
+    let grant: Option<String> = row.get("grant_id");
+    let request_id: Option<String> = row.get("request_id");
+    let detail: Option<String> = row.get("detail");
 
-/// Rebuilds an event from a row, so that its hash can be recomputed.
-fn row_to_event(tenant: &TenantId, row: &sqlx::postgres::PgRow) -> Result<AuditEvent, DomainError> {
-    let event_type = EventType::ALL
-        .into_iter()
-        .find(|candidate| candidate.as_str() == row.get::<String, _>("event_type"))
-        .ok_or_else(|| {
-            DomainError::invalid(
-                "event_type",
-                format!("unknown: {}", row.get::<String, _>("event_type")),
-            )
-        })?;
-
-    let outcome = match row.get::<String, _>("outcome").as_str() {
-        "success" => Outcome::Success,
-        "failure" => Outcome::Failure,
-        other => return Err(DomainError::invalid("outcome", format!("unknown: {other}"))),
-    };
-
-    let mut event = AuditEvent::new(
-        tenant.clone(),
-        event_type,
-        outcome,
-        actor_from_json(&row.get::<Value, _>("actor"))?,
-        row.get::<OffsetDateTime, _>("occurred_at"),
-    );
-
-    event.actor_chain = row
-        .get::<Value, _>("actor_chain")
-        .as_array()
-        .map(|links| {
-            links
-                .iter()
-                .map(actor_from_json)
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-    event.subject = row.get::<Option<String>, _>("subject");
-    event.client = row.get::<Option<String>, _>("client_id").map(ClientId::new);
-    event.session = row
-        .get::<Option<String>, _>("session_id")
-        .map(SessionId::new);
-    event.grant = row
-        .get::<Option<uuid::Uuid>, _>("grant_id")
-        .map(|g| GrantId::new(g.to_string()));
-    event.request_id = row.get::<Option<String>, _>("request_id");
-    event.detail = detail_from_json(&row.get::<Value, _>("detail"))?;
-    Ok(event)
-}
-
-fn actor_from_json(value: &Value) -> Result<Actor, DomainError> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| DomainError::invalid("actor", "not an object"))?;
-    let kind = object
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let id = object
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    Ok(match kind {
-        "user" => Actor::User(id),
-        "client" => Actor::Client(ClientId::new(id)),
-        "agent" => Actor::Agent {
-            client: ClientId::new(id),
-            on_behalf_of: object
-                .get("on_behalf_of")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-        },
-        "admin" => Actor::Admin(id),
-        "system" => Actor::System,
-        other => {
-            return Err(DomainError::invalid(
-                "actor.type",
-                format!("unknown: {other}"),
-            ));
-        }
+    record::read_event(&StoredEvent {
+        tenant,
+        occurred_at: row.get::<OffsetDateTime, _>("occurred_at"),
+        event_type: &event_type,
+        outcome: &outcome,
+        actor: actor.as_bytes(),
+        actor_chain: actor_chain.as_deref().unwrap_or("[]").as_bytes(),
+        subject: subject.as_deref(),
+        client: client.as_deref(),
+        session: session.as_deref(),
+        grant: grant.as_deref(),
+        request_id: request_id.as_deref(),
+        detail: detail.as_deref().unwrap_or("{}").as_bytes(),
     })
-}
-
-fn detail_from_json(value: &Value) -> Result<asterius_domain::Detail, DomainError> {
-    let object = value
-        .as_object()
-        .ok_or_else(|| DomainError::invalid("detail", "not an object"))?;
-    let mut detail = asterius_domain::Detail::new();
-    for (key, encoded) in object {
-        detail = match encoded {
-            Value::String(text) => match text.strip_prefix("sha256:") {
-                // Reconstructed as the digest it already is, not re-hashed.
-                Some(digest) => detail.raw_fingerprint(key, digest),
-                None => detail.raw_text(key, text),
-            },
-            Value::Number(number) => detail.number(
-                key,
-                number.as_i64().ok_or_else(|| {
-                    DomainError::invalid("detail", format!("{key} is not an integer"))
-                })?,
-            ),
-            Value::Bool(flag) => detail.flag(key, *flag),
-            other => {
-                return Err(DomainError::invalid(
-                    "detail",
-                    format!("{key} has type {other:?}"),
-                ));
-            }
-        };
-    }
-    Ok(detail)
 }
