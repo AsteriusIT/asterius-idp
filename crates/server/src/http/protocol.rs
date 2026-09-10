@@ -712,10 +712,15 @@ async fn userinfo_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    // RFC 8705 §3: a certificate-bound access token is checked against the
+    // certificate *this* request arrived with, which reaches this server the
+    // same way the token endpoint's does.
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let limits = endpoint_limits(
         &endpoints,
@@ -734,7 +739,9 @@ async fn userinfo_endpoint(
         &limits,
         asterius_domain::LimitedEndpoint::UserInfo,
         None,
-        async || userinfo_endpoint_inner(&endpoints, &tenant, &method, &uri, &headers).await,
+        async || {
+            userinfo_endpoint_inner(&endpoints, &tenant, &method, &uri, &headers, certificate).await
+        },
     )
     .await
 }
@@ -746,6 +753,7 @@ async fn userinfo_endpoint_inner(
     method: &axum::http::Method,
     uri: &axum::http::Uri,
     headers: &axum::http::HeaderMap,
+    certificate: Option<&asterius_oidc::mtls::ClientCertificate>,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let source = StoredClaims {
@@ -765,6 +773,7 @@ async fn userinfo_endpoint_inner(
             keys: endpoints.keys.as_ref(),
             signer: endpoints.signer.as_ref(),
             dpop: endpoints.dpop.as_ref(),
+            certificate,
             now: time::OffsetDateTime::now_utc(),
         },
         method,
@@ -1008,6 +1017,13 @@ async fn token_endpoint_inner(
     // RFC 8707: what this tenant has registered, which is what a `resource` may
     // name and what an `aud` may hold.
     let resource_servers = scope.resource_servers();
+    // One value for all three grants: what this request proved possession of.
+    // The client's registration decides which half of it binds the token
+    // (RFC 9449 §6, RFC 8705 §3), so no grant handler chooses for itself.
+    let constraint = crate::http::issuance::SenderConstraint {
+        proof_key: binding.as_ref().map(|binding| &binding.jkt),
+        certificate,
+    };
     let authorization_code = AuthorizationCode {
         codes: &codes,
         grants: &grants,
@@ -1017,7 +1033,7 @@ async fn token_endpoint_inner(
         resource_servers: &resource_servers,
         signer: endpoints.signer.as_ref(),
         lifetimes,
-        proof_key: binding.as_ref().map(|binding| &binding.jkt),
+        constraint,
         now,
     };
     // The same repositories, and deliberately the same `now` and proof key:
@@ -1032,7 +1048,7 @@ async fn token_endpoint_inner(
         signer: endpoints.signer.as_ref(),
         audit: endpoints.audit.as_ref(),
         lifetimes,
-        proof_key: binding.as_ref().map(|binding| &binding.jkt),
+        constraint,
         now,
     };
     let refresh_token = RefreshToken {
@@ -1044,7 +1060,7 @@ async fn token_endpoint_inner(
         signer: endpoints.signer.as_ref(),
         audit: endpoints.audit.as_ref(),
         lifetimes,
-        proof_key: binding.as_ref().map(|binding| &binding.jkt),
+        constraint,
         now,
     };
 

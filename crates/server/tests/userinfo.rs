@@ -14,6 +14,7 @@ use asterius_domain::{
 };
 use asterius_jose::dpop::NonceIssuer;
 use asterius_jose::{LocalKeyStore, SigningKey, thumbprint};
+use asterius_oidc::mtls::ClientCertificate;
 use asterius_oidc::tokens::JwtId;
 use asterius_oidc::tokens::access::{AccessToken, Audience, Confirmation};
 use asterius_server::http::dpop::{DpopEndpoint, HEADER as DPOP_HEADER, NONCE_HEADER};
@@ -163,6 +164,10 @@ struct Fixture {
     rows: FakeRows,
     access_token: String,
     dpop: DpopEndpoint,
+    /// The certificate the request arrives with, as the tenancy layer would
+    /// have handed it over (RFC 8705 §2). `None` for the DPoP fixtures, which
+    /// is what every deployment without mTLS sees.
+    certificate: Option<ClientCertificate>,
 }
 
 impl Fixture {
@@ -219,7 +224,52 @@ impl Fixture {
             },
             access_token,
             dpop: DpopEndpoint::new(Arc::new(FakeReplay), None),
+            certificate: None,
         }
+    }
+
+    /// The same grant, with a token bound to `certificate` instead
+    /// (RFC 8705 §3.1).
+    async fn certificate_bound(scopes: &[&str], certificate: &ClientCertificate) -> Self {
+        let mut fixture = Self::new(scopes).await;
+        let grant = fixture.rows.grant.clone().expect("a fixture grant");
+        let claimed = grant.claim(now()).expect("a live grant");
+        let unsigned = AccessToken::new(
+            &Issuer::parse(ISSUER).expect("issuer"),
+            &grant,
+            &claimed,
+            Audience::new(["https://api.example/"]).expect("audience"),
+            Confirmation::certificate(&certificate.thumbprint_b64url()).expect("confirmation"),
+            JwtId::generate(),
+            now(),
+        )
+        .with_grant_id()
+        .build()
+        .expect("an access token");
+        let signed = fixture
+            .keys
+            .sign(
+                &TenantId::new("demo"),
+                unsigned.required_algorithm(),
+                unsigned.typ(),
+                unsigned.claims(),
+            )
+            .await
+            .expect("signed");
+        signed.as_str().clone_into(&mut fixture.access_token);
+        fixture.certificate = Some(certificate.clone());
+        fixture
+    }
+
+    /// What a client holding a certificate-bound token sends: the token as a
+    /// Bearer credential, and the certificate on the connection.
+    fn bearer_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.access_token)).expect("header"),
+        );
+        headers
     }
 
     /// The proof a well-behaved client sends: `ath` over the token it presents.
@@ -278,6 +328,7 @@ impl Fixture {
                 keys: self.keys.as_ref(),
                 signer: self.keys.as_ref(),
                 dpop: &self.dpop,
+                certificate: self.certificate.as_ref(),
                 now: now(),
             },
             &Method::GET,
@@ -446,8 +497,8 @@ async fn a_request_with_no_token_is_challenged_with_dpop_and_bearer() {
 }
 
 /// RFC 9449 §7.1: a DPoP-bound token presented as a bearer token is refused,
-/// however good the token itself is. There is no mTLS here, so `Bearer` has no
-/// binding this endpoint can check (`ast-a05.7`).
+/// however good the token itself is. The `cnf` names a key, and the `Bearer`
+/// scheme presents none.
 #[tokio::test]
 async fn a_dpop_bound_token_is_refused_under_the_bearer_scheme() {
     let fixture = Fixture::new(&["openid"]).await;
@@ -729,4 +780,130 @@ fn unverified_claim(jwt: &str, name: &str) -> String {
 #[test]
 fn the_default_deployment_issues_no_dpop_nonce() {
     assert!(!Capabilities::default().dpop_nonce);
+}
+
+// ---------------------------------------------------------------------------
+// Certificate-bound access tokens (RFC 8705 §3)
+// ---------------------------------------------------------------------------
+
+/// A DER `Certificate` with the shape `ClientCertificate::from_der` reads and
+/// nothing else in it. Nothing here is signed or validated: what this endpoint
+/// compares is the SHA-256 of the bytes, and `serial` is what makes two of
+/// these different certificates.
+fn certificate(serial: u8) -> ClientCertificate {
+    fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+        let length = u8::try_from(value.len()).expect("a short fixture");
+        let mut encoded = vec![tag, length];
+        encoded.extend_from_slice(value);
+        encoded
+    }
+    const SEQUENCE: u8 = 0x30;
+
+    let mut tbs = tlv(0x02, &[serial]);
+    for _ in 0..5 {
+        tbs.extend(tlv(SEQUENCE, &[]));
+    }
+    let mut body = tlv(SEQUENCE, &tbs);
+    body.extend(tlv(SEQUENCE, &[]));
+    body.extend(tlv(0x03, &[0x00]));
+    ClientCertificate::from_der(tlv(SEQUENCE, &body)).expect("a DER certificate")
+}
+
+/// RFC 8705 §3.1: the holder of the certificate the `cnf` names is answered.
+#[tokio::test]
+async fn a_certificate_bound_token_is_answered_to_the_certificate_it_names() {
+    // Arrange
+    let held = certificate(1);
+    let fixture = Fixture::certificate_bound(&["openid", "profile"], &held).await;
+
+    // Act
+    let response = fixture.call(fixture.bearer_headers(), None).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    let claims = body_of(response).await;
+    assert_eq!(claims["sub"], json!(SUBJECT));
+}
+
+/// The whole point of §3: a token taken from one connection and presented on
+/// another is not usable. Two certificates, one token.
+#[tokio::test]
+async fn a_certificate_bound_token_presented_under_another_certificate_is_refused() {
+    // Arrange
+    let held = certificate(1);
+    let another = certificate(2);
+    let mut fixture = Fixture::certificate_bound(&["openid"], &held).await;
+    fixture.certificate = Some(another);
+
+    // Act
+    let response = fixture.call(fixture.bearer_headers(), None).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let challenges = challenges(&response);
+    assert!(
+        challenges
+            .iter()
+            .any(|value| value.contains("invalid_token")),
+        "unexpected challenges: {challenges:?}"
+    );
+}
+
+/// No certificate reached this server — the deployment has no mTLS, or the
+/// caller connected past the proxy that forwards one. Either way there is
+/// nothing to compare `x5t#S256` against, and answering would turn a
+/// sender-constrained token into a bearer token.
+#[tokio::test]
+async fn a_certificate_bound_token_presented_with_no_certificate_is_refused() {
+    // Arrange
+    let held = certificate(1);
+    let mut fixture = Fixture::certificate_bound(&["openid"], &held).await;
+    fixture.certificate = None;
+
+    // Act
+    let response = fixture.call(fixture.bearer_headers(), None).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// RFC 8705 §3 binds the token; it does not define a scheme. A client
+/// presenting a certificate-bound token under `DPoP` is claiming a binding its
+/// token does not carry, and no DPoP proof can be checked against an
+/// `x5t#S256`.
+#[tokio::test]
+async fn a_certificate_bound_token_is_not_presentable_under_the_dpop_scheme() {
+    // Arrange
+    let held = certificate(1);
+    let fixture = Fixture::certificate_bound(&["openid"], &held).await;
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_str(&format!("DPoP {}", fixture.access_token)).expect("header"),
+    );
+    headers.insert(
+        DPOP_HEADER,
+        HeaderValue::from_str(&fixture.proof()).expect("header"),
+    );
+
+    // Act
+    let response = fixture.call(headers, None).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// The mirror of the rule above: a DPoP-bound token is not made presentable by
+/// a certificate. The `cnf` decides, and it names a key nobody proved.
+#[tokio::test]
+async fn a_dpop_bound_token_is_not_answered_because_a_certificate_was_presented() {
+    // Arrange
+    let mut fixture = Fixture::new(&["openid"]).await;
+    fixture.certificate = Some(certificate(1));
+
+    // Act
+    let response = fixture.call(fixture.bearer_headers(), None).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

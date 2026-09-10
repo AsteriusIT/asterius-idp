@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update refresh_tokens\n                set last_used_at = $3,\n                    idle_expires_at = case\n                        when $5::timestamptz is null then null\n                        else least($5, absolute_expires_at)\n                    end\n              where tenant_id = $1\n                and token_hash = $2\n                and revoked_at is null\n                and absolute_expires_at > $3\n                and (idle_expires_at is null or idle_expires_at > $3)\n                and (superseded_at is null or superseded_at > $4)\n             returning grant_id, client_id, scopes, dpop_jkt, issued_at,\n                       absolute_expires_at, superseded_at",
+  "query": "update refresh_tokens\n                set last_used_at = $3,\n                    idle_expires_at = case\n                        when $5::timestamptz is null then null\n                        else least($5, absolute_expires_at)\n                    end\n              where tenant_id = $1\n                and token_hash = $2\n                and revoked_at is null\n                and absolute_expires_at > $3\n                and (idle_expires_at is null or idle_expires_at > $3)\n                and (superseded_at is null or superseded_at > $4)\n             returning grant_id, client_id, scopes, dpop_jkt, cert_thumbprint,\n                       issued_at, absolute_expires_at, superseded_at",
   "describe": {
     "columns": [
       {
@@ -25,16 +25,21 @@
       },
       {
         "ordinal": 4,
+        "name": "cert_thumbprint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
         "name": "issued_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "absolute_expires_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "superseded_at",
         "type_info": "Timestamptz"
       }
@@ -53,10 +58,11 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       true
     ]
   },
-  "hash": "535b6208cf8a0d442ccfa51cda29a8312cd422db0009f3de03aacfb210fa00c1"
+  "hash": "6d228e44539e2477494d6195d952bba4f8fb07ed5f923aeac3f7f9958aba0260"
 }

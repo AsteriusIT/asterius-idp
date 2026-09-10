@@ -13,9 +13,10 @@
 //! 2. **Signature, `typ`, `iss` and expiry**, through the one JWT verifier
 //!    (`asterius_jose::verify`) against the keys this tenant publishes.
 //!    Nothing in a token is read as a fact before this.
-//! 3. **Sender constraint** (RFC 9449 §7.1): the `cnf` decides which scheme is
-//!    acceptable, and a DPoP-bound token needs a proof for its key whose `ath`
-//!    hashes the token that arrived.
+//! 3. **Sender constraint** (RFC 9449 §7.1, RFC 8705 §3): the `cnf` decides
+//!    which scheme is acceptable, and what has to be presented beside the
+//!    token — a proof for the key it is bound to, whose `ath` hashes the token
+//!    that arrived, or the certificate whose thumbprint it names.
 //! 4. **Revocation** — the `jti` denylist, which is the only thing that can
 //!    withdraw a stateless token (FAPI 2.0 SP §5.3.4 item 3).
 //! 5. **Scope**, which is `insufficient_scope` and a 403 rather than a 401.
@@ -120,6 +121,14 @@ pub struct UserInfoContext<'a> {
     pub signer: &'a dyn Signer,
     /// Checks the DPoP proof (RFC 9449 §7.1).
     pub dpop: &'a DpopEndpoint,
+    /// The client certificate this request arrived with, if the deployment saw
+    /// one from a source it trusts (RFC 8705 §2).
+    ///
+    /// The same path the token endpoint's certificate takes — the proxy header
+    /// and `trusted_proxies` — so a certificate-bound token is checked against
+    /// the certificate the *same* deployment believes in. `None` is "no
+    /// certificate", which is what a certificate-bound token is refused for.
+    pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
     /// One clock reading for the whole request.
     pub now: OffsetDateTime,
 }
@@ -284,12 +293,22 @@ fn log_rejection(error: &VerificationError) {
 
 /// Holds the presentation to the token's own `cnf` (RFC 9449 §7.1, RFC 8705 §3).
 ///
-/// A DPoP-bound token is usable only under the `DPoP` scheme and only with a
-/// proof for the key it is bound to, whose `ath` hashes the token that
-/// actually arrived. A certificate-bound token is refused here: this
-/// deployment terminates TLS without requesting a client certificate, so there
-/// is nothing to compare `x5t#S256` against, and accepting it anyway is how a
-/// sender-constrained token becomes a bearer token (`ast-a05.7`).
+/// The `cnf` decides, and it holds exactly one member because
+/// `TokenBinding` admits exactly one:
+///
+/// * `jkt` — a DPoP-bound token, usable only under the `DPoP` scheme and only
+///   with a proof for the key it is bound to, whose `ath` hashes the token
+///   that actually arrived;
+/// * `x5t#S256` — a certificate-bound token (RFC 8705 §3), usable only by a
+///   caller presenting that certificate. §3.1: "the client MUST use the same
+///   certificate ... that was used for mutual TLS authentication" — here, the
+///   certificate a trusted proxy forwarded on this request.
+///
+/// Anything else is refused. A token carrying neither is not
+/// sender-constrained, which is not a token this profile has (FAPI 2.0 SP
+/// §5.3.2.1 item 4); a token carrying both is one no registration can produce,
+/// and honouring whichever half the caller can satisfy would make the binding
+/// the caller's choice.
 async fn check_sender_constraint(
     context: &UserInfoContext<'_>,
     method: &Method,
@@ -297,17 +316,20 @@ async fn check_sender_constraint(
     verified: &Verified,
     presented: Presentation<'_>,
 ) -> Result<(), Refused> {
-    let jkt = verified
-        .claims
-        .get("cnf")
+    let confirmation = verified.claims.get("cnf");
+    let jkt = confirmation
         .and_then(|cnf| cnf.get("jkt"))
         .and_then(Value::as_str);
-    let Some(jkt) = jkt else {
-        // Every token this server issues carries a `cnf` (FAPI 2.0 SP §5.3.2.1
-        // item 4), so one without a `jkt` is either certificate-bound — which
-        // this endpoint cannot check — or not sender-constrained at all, which
-        // is not a token this profile has.
-        return Err(UserInfoError::InvalidToken.into());
+    let x5t = confirmation
+        .and_then(|cnf| cnf.get("x5t#S256"))
+        .and_then(Value::as_str);
+
+    let jkt = match (jkt, x5t) {
+        (Some(jkt), None) => jkt,
+        (None, Some(x5t)) => return check_certificate(context, x5t, presented),
+        (Some(_), Some(_)) | (None, None) => {
+            return Err(UserInfoError::InvalidToken.into());
+        }
     };
 
     if !presented.is_dpop() {
@@ -335,6 +357,31 @@ async fn check_sender_constraint(
     if binding.jkt.as_str() != jkt {
         // A valid proof for the wrong key: whoever sent this holds a DPoP key
         // and a token bound to a different one.
+        return Err(UserInfoError::InvalidToken.into());
+    }
+    Ok(())
+}
+
+/// RFC 8705 §3: the caller presents the certificate the token is bound to.
+///
+/// Three ways to fail, one answer. The token is a Bearer credential — §3 binds
+/// the token, it does not define a scheme — so presenting it under `DPoP` is a
+/// client claiming a binding its token does not carry. No certificate at all
+/// is the case this endpoint used to refuse outright: a deployment that
+/// terminates TLS without a certificate reaching it has nothing to compare,
+/// and answering anything but `invalid_token` would turn a
+/// sender-constrained token into a bearer one. And a certificate whose
+/// thumbprint is not the token's is somebody else's connection.
+fn check_certificate(
+    context: &UserInfoContext<'_>,
+    x5t: &str,
+    presented: Presentation<'_>,
+) -> Result<(), Refused> {
+    if presented.is_dpop() {
+        return Err(UserInfoError::InvalidToken.into());
+    }
+    let certificate = context.certificate.ok_or(UserInfoError::InvalidToken)?;
+    if certificate.thumbprint_b64url() != x5t {
         return Err(UserInfoError::InvalidToken.into());
     }
     Ok(())

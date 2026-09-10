@@ -26,12 +26,158 @@
 //!   rather than papered over with a token that asserts less than it should
 //!   about somebody this server can no longer describe.
 
+use asterius_domain::entities::client::TokenBinding;
 use asterius_domain::keys::Signer;
 use asterius_domain::ports::SessionRepository;
-use asterius_domain::{Client, DomainError, Grant, Tenant};
-use asterius_oidc::tokens::access::{Audience, Authentication};
+use asterius_domain::{Client, DomainError, Grant, Kid, Tenant};
+use asterius_oidc::mtls::ClientCertificate;
+use asterius_oidc::tokens::access::{Audience, Authentication, Confirmation};
 use asterius_oidc::tokens::id_token::IdToken;
-use asterius_store_pg::PgUserRepository;
+use asterius_store_pg::{PgUserRepository, RefreshBinding};
+
+// ---------------------------------------------------------------------------
+// Sender constraining (RFC 9449 §6, RFC 8705 §3)
+// ---------------------------------------------------------------------------
+
+/// What this request proved possession of.
+///
+/// Both halves are facts about *this* request that the endpoint edge resolved
+/// once: the DPoP key a verified proof presented, and the certificate a
+/// trusted proxy forwarded (RFC 8705 §2, `crate::mtls::from_proxy_header`).
+/// The client's registered `TokenBinding` then decides which of them the token
+/// is bound to, so that "how is this client's token constrained" is answered
+/// from the registration and never from what the caller happened to send.
+///
+/// This type is the reason all three grants agree. Each of them mints under
+/// [`Self::confirmation`], so a grant added later cannot arrive at a different
+/// reading of the same registration — and none of them can arrive at no
+/// reading at all, because [`Confirmation`] has no unbound value.
+#[derive(Debug, Clone, Copy)]
+pub struct SenderConstraint<'a> {
+    /// The thumbprint of the DPoP proof presented with this request, if one
+    /// verified (RFC 9449 §4.3).
+    pub proof_key: Option<&'a Kid>,
+    /// The client certificate this request arrived with, if the deployment saw
+    /// one from a source it trusts (RFC 8705 §2).
+    pub certificate: Option<&'a ClientCertificate>,
+}
+
+/// RFC 6749 §5.1's `token_type`, for a token bound the way this client's are.
+///
+/// `DPoP` for a DPoP-bound token (RFC 9449 §5: it "is not a bearer token", and
+/// a resource server must refuse one sent as though it were), `Bearer` for a
+/// certificate-bound one (RFC 8705 §3.1, whose example response carries
+/// `"token_type":"Bearer"` — §3 binds the token without defining a scheme for
+/// it).
+///
+/// Read from the registration rather than from the `cnf` the handler just
+/// built, because they are the same decision and the registration is the one
+/// that survives into the next request.
+#[must_use]
+pub const fn token_type(client: &Client) -> &'static str {
+    match client.registration.token_binding {
+        TokenBinding::Dpop => "DPoP",
+        TokenBinding::Certificate => "Bearer",
+    }
+}
+
+/// Why a token request could not be bound to anything.
+#[derive(Debug)]
+pub enum ConstraintError {
+    /// A DPoP-bound client sent no proof. FAPI 2.0 SP §5.3.2.1 item 5 admits
+    /// no token for it that would not need one — including for a client that
+    /// authenticated with a certificate but did not register certificate
+    /// binding.
+    ProofRequired,
+    /// A certificate-bound client presented no certificate this server
+    /// believes in (RFC 8705 §3): there is nothing to put in `x5t#S256`.
+    CertificateRequired,
+    /// A certificate-bound client also sent a DPoP proof.
+    ///
+    /// RFC 8705 §3.1 and RFC 9449 §6.1 each define one `cnf` member, and a
+    /// client registers one binding method: a request offering both is asking
+    /// for a token whose binding this server would have to choose. It is
+    /// `invalid_request` rather than `invalid_grant` — the credential is fine,
+    /// the request is not — and it is what a client that has half-migrated
+    /// between the two methods sees.
+    TwoBindingsOffered,
+    /// The thumbprint would not go into a `cnf`. This deployment's fault:
+    /// both inputs are values this server computed.
+    Unusable(DomainError),
+}
+
+impl SenderConstraint<'_> {
+    /// The `cnf` this client's access token carries.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstraintError`], which the calling grant renders in its own error
+    /// shape: the three client-facing variants are statements about the
+    /// request, and [`ConstraintError::Unusable`] is one about this server.
+    pub fn confirmation(&self, client: &Client) -> Result<Confirmation, ConstraintError> {
+        match client.registration.token_binding {
+            TokenBinding::Dpop => {
+                let jkt = self.proof_key.ok_or(ConstraintError::ProofRequired)?;
+                Confirmation::dpop(jkt).map_err(|error| {
+                    ConstraintError::Unusable(DomainError::invalid("cnf", error.to_string()))
+                })
+            }
+            TokenBinding::Certificate => {
+                if self.proof_key.is_some() {
+                    return Err(ConstraintError::TwoBindingsOffered);
+                }
+                let certificate = self
+                    .certificate
+                    .ok_or(ConstraintError::CertificateRequired)?;
+                Confirmation::certificate(&certificate.thumbprint_b64url()).map_err(|error| {
+                    ConstraintError::Unusable(DomainError::invalid("cnf", error.to_string()))
+                })
+            }
+        }
+    }
+
+    /// What a refresh token minted beside that access token is bound to.
+    ///
+    /// The same decision, in the shape the row takes: a grant whose access
+    /// tokens are certificate-bound has certificate-bound refresh tokens, so
+    /// that neither credential is redeemable by a caller who cannot present
+    /// what the other one needs.
+    ///
+    /// # Errors
+    ///
+    /// [`ConstraintError`], for the reasons [`Self::confirmation`] gives.
+    pub fn refresh_binding(&self, client: &Client) -> Result<RefreshBinding, ConstraintError> {
+        match client.registration.token_binding {
+            TokenBinding::Dpop => {
+                let jkt = self.proof_key.ok_or(ConstraintError::ProofRequired)?;
+                Ok(RefreshBinding::Dpop(jkt.as_str().to_owned()))
+            }
+            TokenBinding::Certificate => {
+                if self.proof_key.is_some() {
+                    return Err(ConstraintError::TwoBindingsOffered);
+                }
+                let certificate = self
+                    .certificate
+                    .ok_or(ConstraintError::CertificateRequired)?;
+                Ok(RefreshBinding::Certificate(certificate.thumbprint()))
+            }
+        }
+    }
+
+    /// Whether the caller presented the certificate `thumbprint` names.
+    ///
+    /// RFC 8705 §3's check, at the two places a certificate-bound credential
+    /// comes back: redeeming a refresh token, and — through
+    /// `crate::http::userinfo` — presenting an access token. Absent
+    /// certificate is `false`, because "no certificate" and "the wrong
+    /// certificate" are the same answer to "may this caller use this
+    /// credential".
+    #[must_use]
+    pub fn presents(&self, thumbprint: &[u8; 32]) -> bool {
+        self.certificate
+            .is_some_and(|certificate| certificate.thumbprint() == *thumbprint)
+    }
+}
 
 /// What the session a grant was made in contributes to its tokens.
 ///
@@ -375,11 +521,216 @@ mod tests {
     use super::*;
     use asterius_domain::entities::session::AuthenticationMethod;
     use asterius_domain::{
-        ClientId, GrantAuthentication, Participant, Session, SessionId, SessionRevocation, TenantId,
+        Capabilities, ClientId, ClientRegistration, ClientStatus, GrantAuthentication, Participant,
+        Session, SessionId, SessionRevocation, TenantId,
     };
+    use serde_json::json;
     use time::{Duration, OffsetDateTime};
 
     const DIGEST: &str = "the-lookup-digest-of-a-session";
+
+    // -----------------------------------------------------------------------
+    // Sender constraining
+    // -----------------------------------------------------------------------
+
+    /// The smallest registration this server accepts, bound the way the
+    /// argument says. Built through `ClientRegistration::validate` rather than
+    /// assembled field by field, so a binding that registration would refuse
+    /// cannot be tested as though it were reachable.
+    fn client_bound_by(certificate: bool) -> Client {
+        let document = json!({
+            "client_name": "billing",
+            "redirect_uris": ["https://client.example/cb"],
+            "token_endpoint_auth_method": "private_key_jwt",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+            "dpop_bound_access_tokens": !certificate,
+            "tls_client_certificate_bound_access_tokens": certificate,
+        });
+        let capabilities = Capabilities {
+            mtls: true,
+            ..Capabilities::default()
+        };
+        let registration = ClientRegistration::from_json(
+            &serde_json::to_vec(&document).expect("serialise"),
+            capabilities,
+        )
+        .expect("a registration this server accepts");
+        Client {
+            tenant: TenantId::new("demo"),
+            id: ClientId::new("billing"),
+            registration,
+            status: ClientStatus::Active,
+            created_at: epoch(),
+            updated_at: epoch(),
+        }
+    }
+
+    /// A DER `Certificate` with the shape `ClientCertificate::from_der` reads
+    /// and nothing else in it. Nothing here signs or validates anything: what
+    /// is compared is the SHA-256 of the bytes, and `serial` is what makes two
+    /// of these different certificates.
+    fn certificate(serial: u8) -> ClientCertificate {
+        fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
+            let length = u8::try_from(value.len()).expect("a short fixture");
+            let mut encoded = vec![tag, length];
+            encoded.extend_from_slice(value);
+            encoded
+        }
+        const SEQUENCE: u8 = 0x30;
+
+        // TBSCertificate: serialNumber, signature, issuer, validity, subject,
+        // subjectPublicKeyInfo — RFC 5280 §4.1, in that order.
+        let mut tbs = tlv(0x02, &[serial]);
+        for _ in 0..5 {
+            tbs.extend(tlv(SEQUENCE, &[]));
+        }
+        // Certificate: tbsCertificate, signatureAlgorithm, signature.
+        let mut certificate = tlv(SEQUENCE, &tbs);
+        certificate.extend(tlv(SEQUENCE, &[]));
+        certificate.extend(tlv(0x03, &[0x00]));
+        ClientCertificate::from_der(tlv(SEQUENCE, &certificate)).expect("a DER certificate")
+    }
+
+    /// RFC 8705 §3.1: the `cnf` is the thumbprint of the certificate the
+    /// endpoint actually saw.
+    #[test]
+    fn a_certificate_bound_client_mints_a_token_confirmed_by_its_certificate() {
+        let client = client_bound_by(true);
+        let certificate = certificate(1);
+
+        let confirmation = SenderConstraint {
+            proof_key: None,
+            certificate: Some(&certificate),
+        }
+        .confirmation(&client)
+        .expect("a certificate to bind to");
+
+        assert_eq!(confirmation.binding(), TokenBinding::Certificate);
+        assert_eq!(
+            confirmation,
+            Confirmation::certificate(&certificate.thumbprint_b64url()).expect("a thumbprint")
+        );
+    }
+
+    /// A client registers one binding method, so a request that offers two is
+    /// refused rather than silently resolved.
+    #[test]
+    fn a_certificate_bound_request_that_also_proves_a_dpop_key_is_refused() {
+        let client = client_bound_by(true);
+        let certificate = certificate(1);
+        let jkt = Kid::new("a".repeat(43));
+
+        let error = SenderConstraint {
+            proof_key: Some(&jkt),
+            certificate: Some(&certificate),
+        }
+        .confirmation(&client)
+        .expect_err("two bindings offered");
+
+        assert!(
+            matches!(error, ConstraintError::TwoBindingsOffered),
+            "{error:?}"
+        );
+    }
+
+    /// There is nothing to put in `x5t#S256`, and no unbound token to fall
+    /// back to.
+    #[test]
+    fn a_certificate_bound_client_without_a_certificate_gets_no_token() {
+        let error = SenderConstraint {
+            proof_key: None,
+            certificate: None,
+        }
+        .confirmation(&client_bound_by(true))
+        .expect_err("nothing to bind to");
+
+        assert!(
+            matches!(error, ConstraintError::CertificateRequired),
+            "{error:?}"
+        );
+    }
+
+    /// FAPI 2.0 SP §5.3.2.1 item 5: a client that authenticates with a
+    /// certificate but did not register certificate binding still has to send
+    /// a DPoP proof. Presenting a certificate is not a substitute for it.
+    #[test]
+    fn a_dpop_client_that_presents_a_certificate_must_still_prove_its_key() {
+        let client = client_bound_by(false);
+        let certificate = certificate(1);
+
+        let error = SenderConstraint {
+            proof_key: None,
+            certificate: Some(&certificate),
+        }
+        .confirmation(&client)
+        .expect_err("no proof");
+
+        assert!(matches!(error, ConstraintError::ProofRequired), "{error:?}");
+
+        let jkt = Kid::new("a".repeat(43));
+        let confirmation = SenderConstraint {
+            proof_key: Some(&jkt),
+            certificate: Some(&certificate),
+        }
+        .confirmation(&client)
+        .expect("a proven key");
+        assert_eq!(confirmation.binding(), TokenBinding::Dpop);
+    }
+
+    /// The refresh token is bound the same way the access token beside it is.
+    #[test]
+    fn a_refresh_token_is_bound_the_way_its_client_is() {
+        let certificate = certificate(1);
+        let jkt = Kid::new("a".repeat(43));
+
+        assert_eq!(
+            SenderConstraint {
+                proof_key: None,
+                certificate: Some(&certificate),
+            }
+            .refresh_binding(&client_bound_by(true))
+            .expect("a certificate"),
+            RefreshBinding::Certificate(certificate.thumbprint())
+        );
+        assert_eq!(
+            SenderConstraint {
+                proof_key: Some(&jkt),
+                certificate: None,
+            }
+            .refresh_binding(&client_bound_by(false))
+            .expect("a key"),
+            RefreshBinding::Dpop(jkt.as_str().to_owned())
+        );
+    }
+
+    /// "No certificate" and "a different certificate" are one answer.
+    #[test]
+    fn a_credential_is_held_only_by_the_certificate_it_was_issued_under() {
+        let issued_under = certificate(1);
+        let another = certificate(2);
+
+        assert!(
+            SenderConstraint {
+                proof_key: None,
+                certificate: Some(&issued_under),
+            }
+            .presents(&issued_under.thumbprint())
+        );
+        assert!(
+            !SenderConstraint {
+                proof_key: None,
+                certificate: Some(&another),
+            }
+            .presents(&issued_under.thumbprint())
+        );
+        assert!(
+            !SenderConstraint {
+                proof_key: None,
+                certificate: None,
+            }
+            .presents(&issued_under.thumbprint())
+        );
+    }
 
     fn epoch() -> OffsetDateTime {
         OffsetDateTime::UNIX_EPOCH

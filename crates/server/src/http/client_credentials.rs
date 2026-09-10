@@ -52,10 +52,10 @@
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::client::GrantType;
 use asterius_domain::keys::Signer;
-use asterius_domain::{Client, DomainError, Grant, GrantId, Kid, Tenant};
+use asterius_domain::{Client, DomainError, Grant, GrantId, Tenant};
 use asterius_oidc::form::Parameters;
 use asterius_oidc::tokens::JwtId;
-use asterius_oidc::tokens::access::{AccessToken, Confirmation};
+use asterius_oidc::tokens::access::AccessToken;
 use asterius_store_pg::PgGrantRepository;
 use axum::Json;
 use axum::response::{IntoResponse, Response};
@@ -98,12 +98,14 @@ pub struct ClientCredentials<'a> {
     pub audit: &'a dyn AuditSink,
     /// How long this tenant's access tokens live (`ast-5c6`).
     pub lifetimes: asterius_domain::TokenLifetimes,
-    /// The thumbprint of the DPoP proof presented with this request.
+    /// What this request proved possession of: a DPoP key, a client
+    /// certificate, or neither.
     ///
-    /// `None` is a refusal rather than a mode: FAPI 2.0 SP §5.3.2.1 item 4
+    /// "Neither" is a refusal rather than a mode: FAPI 2.0 SP §5.3.2.1 item 4
     /// admits no unbound access token, so there is no token this handler could
-    /// issue without one.
-    pub proof_key: Option<&'a Kid>,
+    /// issue without one. Which of the two binds the token is the client's
+    /// registered `TokenBinding` — see [`issuance::SenderConstraint`].
+    pub constraint: issuance::SenderConstraint<'a>,
     /// When the request arrived. One instant for the grant's stamps and the
     /// token's `iat` and `exp`, so they are judged against one clock reading.
     pub now: OffsetDateTime,
@@ -178,12 +180,30 @@ impl ClientCredentials<'_> {
     ) -> Result<(Response, GrantId), Failure> {
         // RFC 9449 §5.2: with a deployment that issues only sender-constrained
         // tokens, "the authorization server MUST reject token requests from the
-        // client that do not contain the DPoP header". First, because it is the
-        // one check that does not depend on anything the client sent in the
-        // body.
-        let jkt = self
-            .proof_key
-            .ok_or_else(|| Failure::Dpop(dpop::Refusal::missing_proof()))?;
+        // client that do not contain the DPoP header" — and RFC 8705 §3 is the
+        // other way to satisfy that. First, because it is the one check that
+        // does not depend on anything the client sent in the body.
+        let confirmation = self.constraint.confirmation(client).map_err(|error| {
+            match error {
+                // The DPoP refusal renders RFC 9449 §7's own
+                // `WWW-Authenticate` shape, which is what tells a client
+                // *which* proof it failed to send.
+                issuance::ConstraintError::ProofRequired => {
+                    Failure::Dpop(dpop::Refusal::missing_proof())
+                }
+                issuance::ConstraintError::CertificateRequired => Failure::Client(
+                    "invalid_request",
+                    "this client's tokens are bound to a client certificate, and none was \
+                     presented",
+                ),
+                issuance::ConstraintError::TwoBindingsOffered => Failure::Client(
+                    "invalid_request",
+                    "this client binds its tokens to a certificate; a DPoP proof must not be \
+                     sent",
+                ),
+                issuance::ConstraintError::Unusable(error) => Failure::Server(error),
+            }
+        })?;
 
         let scopes = Self::scopes(client, params)?;
 
@@ -211,13 +231,6 @@ impl ClientCredentials<'_> {
         // trail should say what the token was minted *at*, not what the client
         // might have been allowed to ask for.
         grant.resources = targeting.audience.values().map(str::to_owned).collect();
-
-        let confirmation = Confirmation::dpop(jkt).map_err(|_| {
-            Failure::Server(DomainError::invalid(
-                "cnf",
-                "the DPoP thumbprint is not a usable confirmation",
-            ))
-        })?;
 
         // `claim` is the only constructor of the authority to mint, and it
         // refuses a grant that is not issuable. Taken from the assembled grant
@@ -270,6 +283,7 @@ impl ClientCredentials<'_> {
 
         Ok((
             Self::response(
+                issuance::token_type(client),
                 access_token.as_str(),
                 &targeting.scopes,
                 self.lifetimes.access_token(),
@@ -392,17 +406,15 @@ impl ClientCredentials<'_> {
     /// No `refresh_token`, ever — RFC 6749 §4.4.3 — and no `id_token`: there is
     /// no authentication of a person to assert.
     fn response(
+        token_type: &str,
         access_token: &str,
         scopes: &BTreeSet<String>,
         access_token_lifetime: time::Duration,
     ) -> Response {
         let mut body = json!({
             "access_token": access_token,
-            // RFC 9449 §5: a DPoP-bound access token is `DPoP`, not `Bearer`,
-            // and a client that sends it as a bearer token must be refused by
-            // the resource server. Certificate-bound tokens are `Bearer`
-            // (RFC 8705 §3.1) and are `ast-a05.7`.
-            "token_type": "DPoP",
+            // See [`issuance::token_type`].
+            "token_type": token_type,
             // The lifetime this token was actually signed with, not a constant.
             "expires_in": access_token_lifetime.whole_seconds(),
         });

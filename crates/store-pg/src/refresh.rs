@@ -42,6 +42,72 @@ use sqlx::postgres::PgPool;
 use std::collections::BTreeSet;
 use time::{Duration, OffsetDateTime};
 
+/// What a refresh token is bound to (RFC 9449 §5, RFC 8705 §3).
+///
+/// One of the two, never neither and never both, which is the schema's
+/// `refresh_tokens_are_sender_constrained` — `(dpop_jkt is null) <>
+/// (cert_thumbprint is null)` — said in the type that writes the row. A
+/// refresh token bound to nothing is a bearer refresh token, which FAPI 2.0 SP
+/// §5.3.2.1 does not admit, and the binding is always *recorded* even where a
+/// tenant does not *enforce* it: a deployment that turns
+/// `bind_to_dpop_key` on later must find the bindings already there.
+///
+/// The binding of a refresh token is the binding of the access token it was
+/// issued beside, because it is the client's registered `TokenBinding` that
+/// decides both. So a certificate-bound grant refreshed under a different
+/// certificate fails the same way a DPoP-bound one refreshed under a different
+/// key does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshBinding {
+    /// The JWK thumbprint of the DPoP key (RFC 9449 §5), as base64url.
+    Dpop(String),
+    /// The SHA-256 of the DER of the client certificate (RFC 8705 §3.1), as
+    /// bytes rather than base64url because that is the column's type: a digest
+    /// stored as text is a digest two spellings of which compare unequal.
+    Certificate([u8; 32]),
+}
+
+impl RefreshBinding {
+    /// The `dpop_jkt` column's value.
+    fn dpop_jkt(&self) -> Option<&str> {
+        match self {
+            Self::Dpop(jkt) => Some(jkt),
+            Self::Certificate(_) => None,
+        }
+    }
+
+    /// The `cert_thumbprint` column's value.
+    fn cert_thumbprint(&self) -> Option<&[u8]> {
+        match self {
+            Self::Dpop(_) => None,
+            Self::Certificate(digest) => Some(digest),
+        }
+    }
+
+    /// Reads the pair of columns back, refusing a row that is neither.
+    fn from_columns(
+        dpop_jkt: Option<String>,
+        cert_thumbprint: Option<Vec<u8>>,
+    ) -> Result<Self, DomainError> {
+        // `dpop_jkt` first, and the order matters only for a hand-edited row
+        // that carries both: the `CHECK` makes it unreachable, and reading one
+        // binding out of it is better than reading a binding that is the union
+        // of two.
+        if let Some(jkt) = dpop_jkt {
+            return Ok(Self::Dpop(jkt));
+        }
+        let digest: [u8; 32] = cert_thumbprint
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| {
+                DomainError::invalid(
+                    "refresh_token",
+                    "a stored refresh token is not sender-constrained",
+                )
+            })?;
+        Ok(Self::Certificate(digest))
+    }
+}
+
 /// A refresh token about to be written.
 ///
 /// Every field is a binding: the grant it draws on, the client that may
@@ -60,14 +126,10 @@ pub struct NewRefreshToken {
     /// The scopes it may be refreshed for. A narrowed refresh writes a
     /// narrowed set, and the narrowing is then permanent for that token.
     pub scopes: BTreeSet<String>,
-    /// The JWK thumbprint of the DPoP key it is bound to (RFC 9449 §5).
+    /// What holds it: a DPoP key or a client certificate.
     ///
-    /// Not optional. FAPI 2.0 forbids a bearer refresh token, and the schema
-    /// says the same thing with a `CHECK`; whether the binding is *enforced*
-    /// at redemption is the tenant's `bind_to_dpop_key`, but whether it is
-    /// *recorded* is not a choice — a deployment that turns the option on
-    /// later must find the keys already there.
-    pub dpop_jkt: String,
+    /// Not optional, and not two nullable fields. See [`RefreshBinding`].
+    pub binding: RefreshBinding,
     /// The deadline that never moves.
     pub absolute_expires_at: OffsetDateTime,
     /// The deadline that moves on every use, or `None` for a tenant with no
@@ -85,8 +147,8 @@ pub struct RefreshTokenRecord {
     pub client: ClientId,
     /// The scopes it may be refreshed for.
     pub scopes: BTreeSet<String>,
-    /// The DPoP key it is bound to.
-    pub dpop_jkt: Option<String>,
+    /// What holds it, as the row records it.
+    pub binding: RefreshBinding,
     /// When it was minted.
     pub issued_at: OffsetDateTime,
     /// The deadline that never moves.
@@ -205,8 +267,8 @@ impl PgRefreshTokenRepository {
                 and absolute_expires_at > $3
                 and (idle_expires_at is null or idle_expires_at > $3)
                 and (superseded_at is null or superseded_at > $4)
-             returning grant_id, client_id, scopes, dpop_jkt, issued_at,
-                       absolute_expires_at, superseded_at",
+             returning grant_id, client_id, scopes, dpop_jkt, cert_thumbprint,
+                       issued_at, absolute_expires_at, superseded_at",
             self.tenant.as_str(),
             digest,
             now,
@@ -225,7 +287,7 @@ impl PgRefreshTokenRepository {
             grant: GrantId::new(row.grant_id.to_string()),
             client: ClientId::new(row.client_id),
             scopes: row.scopes.into_iter().collect(),
-            dpop_jkt: row.dpop_jkt,
+            binding: RefreshBinding::from_columns(row.dpop_jkt, row.cert_thumbprint)?,
             issued_at: row.issued_at,
             absolute_expires_at: row.absolute_expires_at,
             superseded: row.superseded_at.is_some(),
@@ -348,14 +410,15 @@ impl PgRefreshTokenRepository {
         sqlx::query!(
             "insert into refresh_tokens
                  (tenant_id, token_hash, grant_id, client_id, scopes, dpop_jkt,
-                  issued_at, absolute_expires_at, idle_expires_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                  cert_thumbprint, issued_at, absolute_expires_at, idle_expires_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             tenant.as_str(),
             digest,
             crate::grants::uuid(&token.grant)?,
             token.client.as_str(),
             &scopes,
-            token.dpop_jkt,
+            token.binding.dpop_jkt(),
+            token.binding.cert_thumbprint(),
             now,
             token.absolute_expires_at,
             token.idle_expires_at,

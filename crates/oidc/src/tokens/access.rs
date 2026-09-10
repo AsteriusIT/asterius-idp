@@ -109,10 +109,26 @@ pub const ACCESS_TOKEN_TYP: &str = "at+jwt";
 /// hex-encoded thumbprint would be a binding no resource server ever matches,
 /// which is a token that silently behaves like a bearer token from the
 /// server's point of view and like a broken one from the client's.
+///
+/// Exactly one of the two, never both, because `TokenBinding` admits exactly
+/// one: a `cnf` carrying a `jkt` beside an `x5t#S256` would leave a resource
+/// server to decide for itself which of them it is obliged to check, and a
+/// binding that the verifier chooses is not one this server can state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Confirmation {
-    jkt: Option<String>,
-    x5t_s256: Option<String>,
+    /// The one member, already checked into shape. Private, so that the only
+    /// way to a `Confirmation` is through a constructor that ran
+    /// [`thumbprint`].
+    method: Method,
+}
+
+/// Which `cnf` member a [`Confirmation`] carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Method {
+    /// RFC 9449 §6.1's `jkt`.
+    Dpop(String),
+    /// RFC 8705 §3.1's `x5t#S256`.
+    Certificate(String),
 }
 
 impl Confirmation {
@@ -130,66 +146,47 @@ impl Confirmation {
     /// [`IssuanceError::Thumbprint`] if it is not a base64url SHA-256 digest.
     pub fn dpop(jkt: &Kid) -> Result<Self, IssuanceError> {
         Ok(Self {
-            jkt: Some(thumbprint(jkt.as_str())?),
-            x5t_s256: None,
+            method: Method::Dpop(thumbprint(jkt.as_str())?),
         })
     }
 
     /// Binds a token to a client certificate (RFC 8705 §3.1).
+    ///
+    /// The thumbprint is the one `asterius_oidc::mtls::ClientCertificate`
+    /// computed over the DER a trusted proxy forwarded, so — as with `jkt` —
+    /// what a token is bound to is what the endpoint actually saw.
     ///
     /// # Errors
     ///
     /// [`IssuanceError::Thumbprint`] if it is not a base64url SHA-256 digest.
     pub fn certificate(x5t_s256: &str) -> Result<Self, IssuanceError> {
         Ok(Self {
-            jkt: None,
-            x5t_s256: Some(thumbprint(x5t_s256)?),
+            method: Method::Certificate(thumbprint(x5t_s256)?),
         })
     }
 
-    /// Binds a token to both, for a client registered for both.
-    ///
-    /// Usable only by a caller holding the DPoP key *and* presenting the
-    /// certificate — `TokenBinding::DpopAndCertificate`.
-    ///
-    /// # Errors
-    ///
-    /// [`IssuanceError::Thumbprint`] if either is not a base64url SHA-256
-    /// digest.
-    pub fn dpop_and_certificate(jkt: &Kid, x5t_s256: &str) -> Result<Self, IssuanceError> {
-        Ok(Self {
-            jkt: Some(thumbprint(jkt.as_str())?),
-            x5t_s256: Some(thumbprint(x5t_s256)?),
-        })
-    }
-
-    /// Which binding this confirmation actually expresses.
+    /// Which binding this confirmation expresses.
     ///
     /// So that a caller can check it against the client's registered
     /// `TokenBinding` before minting: a client registered for DPoP that somehow
-    /// received a certificate-only token would hold a credential its own
+    /// received a certificate-bound token would hold a credential its own
     /// software cannot present.
     #[must_use]
     pub const fn binding(&self) -> TokenBinding {
-        match (self.jkt.is_some(), self.x5t_s256.is_some()) {
-            (true, true) => TokenBinding::DpopAndCertificate,
-            (false, true) => TokenBinding::Certificate,
-            // `jkt` alone, and the unreachable arm: a `Confirmation` always
-            // holds at least one member, so `(false, false)` cannot be built.
-            // Reporting it as DPoP rather than panicking keeps this `const`.
-            _ => TokenBinding::Dpop,
+        match self.method {
+            Method::Dpop(_) => TokenBinding::Dpop,
+            Method::Certificate(_) => TokenBinding::Certificate,
         }
     }
 
     /// The `cnf` claim value.
     fn claim(&self) -> Value {
         let mut members = Map::new();
-        if let Some(jkt) = &self.jkt {
-            members.insert("jkt".to_owned(), Value::String(jkt.clone()));
-        }
-        if let Some(x5t) = &self.x5t_s256 {
-            members.insert("x5t#S256".to_owned(), Value::String(x5t.clone()));
-        }
+        let (name, value) = match &self.method {
+            Method::Dpop(jkt) => ("jkt", jkt),
+            Method::Certificate(x5t) => ("x5t#S256", x5t),
+        };
+        members.insert(name.to_owned(), Value::String(value.clone()));
         Value::Object(members)
     }
 }
@@ -915,16 +912,9 @@ mod tests {
     }
 
     #[test]
-    fn a_doubly_bound_token_carries_both_members() {
-        let confirmation =
-            Confirmation::dpop_and_certificate(&Kid::new(JKT), X5T).expect("two thumbprints");
-        assert_eq!(confirmation.binding(), TokenBinding::DpopAndCertificate);
-        assert_eq!(confirmation.claim(), json!({ "jkt": JKT, "x5t#S256": X5T }));
-    }
-
-    #[test]
     fn a_confirmation_reports_the_binding_it_expresses() {
         assert_eq!(dpop().binding(), TokenBinding::Dpop);
+        assert_eq!(dpop().claim(), json!({ "jkt": JKT }));
         assert_eq!(
             Confirmation::certificate(X5T)
                 .expect("a thumbprint")

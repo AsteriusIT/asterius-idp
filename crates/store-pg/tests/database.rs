@@ -9667,7 +9667,7 @@ mod refresh_tokens {
     use super::*;
     use asterius_domain::{Grant, GrantId};
     use asterius_store_pg::{
-        NewRefreshToken, PgGrantRepository, PgRefreshTokenRepository, Presentation,
+        NewRefreshToken, PgGrantRepository, PgRefreshTokenRepository, Presentation, RefreshBinding,
     };
     use std::collections::BTreeSet;
     use time::Duration;
@@ -9722,7 +9722,7 @@ mod refresh_tokens {
             grant: grant.clone(),
             client: ClientId::new("billing"),
             scopes: scopes(),
-            dpop_jkt: "a-thumbprint".to_owned(),
+            binding: RefreshBinding::Dpop("a-thumbprint".to_owned()),
             absolute_expires_at: absolute,
             idle_expires_at: idle,
         }

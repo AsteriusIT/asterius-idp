@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into refresh_tokens\n                 (tenant_id, token_hash, grant_id, client_id, scopes, dpop_jkt,\n                  cert_thumbprint, issued_at, absolute_expires_at, idle_expires_at)\n             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Uuid",
+        "Text",
+        "TextArray",
+        "Text",
+        "Bytea",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8f453e8e83282b4a31eb512c71883509efca7b550e09ecc5c5f1a9163c90b76c"
+}

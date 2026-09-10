@@ -28,6 +28,7 @@ use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
 use asterius_server::http::client_credentials::ClientCredentials;
+use asterius_server::http::issuance::SenderConstraint;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
 use asterius_server::signing::CachedSigner;
 use asterius_store_pg::{
@@ -231,7 +232,10 @@ impl Fixture {
             signer: self.signer.as_ref(),
             audit: self.audit.as_ref(),
             lifetimes: asterius_domain::TokenLifetimes::default(),
-            proof_key,
+            constraint: SenderConstraint {
+                proof_key,
+                certificate: None,
+            },
             now: self.now,
         };
         let handlers: [&dyn GrantHandler; 1] = [&handler];
