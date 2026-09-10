@@ -92,3 +92,15 @@ export const WEBAUTHN_BASE_URL = fromEnv(
 
 /** The RP ID a credential registered on that tenant is scoped to. */
 export const WEBAUTHN_RP_ID = new URL(WEBAUTHN_BASE_URL).hostname;
+
+/**
+ * That tenant's id, as the audit trail records it.
+ *
+ * Read off the base URL rather than named again: the trail is per tenant, and
+ * a second spelling here is how a query starts reading an empty table and
+ * calling it "no event was recorded". Path-based tenancy puts the id in the
+ * last segment of `/t/{id}` — see `scripts/browser-tests.sh`, which builds the
+ * URL from the same value.
+ */
+export const WEBAUTHN_TENANT =
+  new URL(WEBAUTHN_BASE_URL).pathname.split('/').filter(Boolean).pop() ?? '';
