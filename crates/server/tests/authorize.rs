@@ -249,6 +249,20 @@ fn session(age: time::Duration) -> asterius_domain::Session {
     session
 }
 
+/// A stored `claims` request, in the shape `/par` writes down.
+///
+/// The parsed request re-emitted by `ClaimsRequest::to_json`, never the
+/// client's document: `http::par` stores `request.claims.to_json()` and
+/// `/authorize` reads it back with `ClaimsRequest::from_json`. A fixture
+/// holding a hand-written document would assert against a value this server
+/// never stores — once parsed, `acr` lives under `id_token` (OIDC Core
+/// §5.5.1.1).
+fn stored_claims(document: &str) -> Value {
+    asterius_oidc::claims::ClaimsRequest::parse(document)
+        .expect("a claims request this server accepts")
+        .to_json()
+}
+
 /// A stored request with parameters of this test's choosing.
 fn request_with(digest: &str, parameters: Value) -> PushedRequest {
     PushedRequest {
@@ -801,7 +815,9 @@ async fn an_essential_acr_the_tenant_cannot_meet_is_refused_as_unmet() {
         minted.digest(),
         serde_json::json!({
             "redirect_uri": "https://rp.example/cb",
-            "claims": {"acr": {"essential": true, "values": ["urn:mace:incommon:iap:silver"]}},
+            "claims": stored_claims(
+                r#"{"id_token": {"acr": {"essential": true, "values": ["urn:mace:incommon:iap:silver"]}}}"#,
+            ),
         }),
     ));
 
