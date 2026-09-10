@@ -228,6 +228,23 @@ pub const POLICY: &[Retention] = &[
         rule: Rule::Kept("a passkey or password lives as long as its account"),
     },
     Retention {
+        table: "recovery_tokens",
+        rule: Rule::Sweep {
+            // A reset link, one hour wide. Beside `credentials` because that
+            // is what it changes, and swept rather than kept for the reason
+            // `0015_account_recovery.sql` gives: the row holds the digest of a
+            // live link, and a spent or expired one that stays in the table is
+            // material a database copy still yields. `expires_at` alone is the
+            // condition — a consumed row is already unusable, and it is the
+            // same row, so the one deadline covers both.
+            statement: "delete from recovery_tokens where ctid = any (array(
+                            select ctid from recovery_tokens
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "user_roles",
         rule: Rule::Kept(
             "authority is granted and revoked by a person: a deployment admin \

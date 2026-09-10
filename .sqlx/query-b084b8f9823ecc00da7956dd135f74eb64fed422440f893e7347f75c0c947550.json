@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update recovery_tokens\n                set consumed_at = $3, consumed_reason = $4\n              where tenant_id = $1\n                and token_hash = $2\n                and consumed_at is null\n                and expires_at > $3\n          returning user_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b084b8f9823ecc00da7956dd135f74eb64fed422440f893e7347f75c0c947550"
+}

@@ -96,7 +96,7 @@ impl RecoveryTokenStore for PgRecoveryTokens {
 
         sqlx::query!(
             "insert into recovery_tokens
-                 (tenant_id, token_digest, user_id, issued_at, expires_at)
+                 (tenant_id, token_hash, user_id, issued_at, expires_at)
              values ($1, $2, $3, $4, $5)",
             self.tenant.as_str(),
             issued.token_digest,
@@ -125,7 +125,7 @@ impl RecoveryTokenStore for PgRecoveryTokens {
             "update recovery_tokens
                 set consumed_at = $3, consumed_reason = $4
               where tenant_id = $1
-                and token_digest = $2
+                and token_hash = $2
                 and consumed_at is null
                 and expires_at > $3
           returning user_id",
@@ -147,7 +147,7 @@ impl RecoveryTokenStore for PgRecoveryTokens {
         let row = sqlx::query!(
             "select user_id from recovery_tokens
               where tenant_id = $1
-                and token_digest = $2
+                and token_hash = $2
                 and consumed_at is null
                 and expires_at > $3",
             self.tenant.as_str(),

@@ -7414,6 +7414,7 @@ mod retention {
             // clippy's line ceiling: this row belongs to the same stale/fresh
             // pair and to no other fixture.
             seed_initial_access_token(pool, tenant, label, expires).await;
+            seed_recovery_token(pool, tenant, user, label, expires).await;
         }
         seed_outbox(pool, tenant).await;
     }
@@ -7890,6 +7891,33 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed access token cutoff");
+    }
+
+    /// A reset link, live or spent (`ast-2vk.10`).
+    ///
+    /// `issued_at` is placed before `expires_at` rather than at `now()`,
+    /// because the table refuses a row whose link expired before it was drawn
+    /// and the stale fixture is dated in the past.
+    async fn seed_recovery_token(
+        pool: &PgPool,
+        tenant: &str,
+        user: uuid::Uuid,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into recovery_tokens
+                 (tenant_id, token_hash, user_id, issued_at, expires_at)
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(tenant)
+        .bind(format!("digest-of-a-{label}-recovery-link"))
+        .bind(user)
+        .bind(expires - Duration::minutes(15))
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed recovery token");
     }
 
     /// The outbox is aged rather than expiring, and only a terminal row is ever
@@ -11174,7 +11202,6 @@ mod recovery {
         }
     }
 
-
     db_test! {
         /// Single use. The second spend of one token finds nothing, and it is
         /// the `update`'s `consumed_at is null` predicate that decides — not a
@@ -11198,7 +11225,6 @@ mod recovery {
             assert_eq!(again, None);
         }
     }
-
 
     db_test! {
         /// **Fifteen minutes.** NIST SP 800-63B §6.1.2.3 asks for a short
@@ -11227,7 +11253,6 @@ mod recovery {
         }
     }
 
-
     db_test! {
         /// One second inside the window still works. Without this, the test
         /// above would pass against a token that never worked at all.
@@ -11253,7 +11278,6 @@ mod recovery {
         }
     }
 
-
     db_test! {
         /// Issuing supersedes. Two live links in one mailbox is two account
         /// takeovers, and the one nobody used is the one nobody would notice
@@ -11277,7 +11301,6 @@ mod recovery {
             assert_eq!(new, Some(user));
         }
     }
-
 
     db_test! {
         /// **A credential change invalidates a token that was still valid.**
@@ -11305,7 +11328,6 @@ mod recovery {
         }
     }
 
-
     db_test! {
         /// The reason is recorded, so an operator can tell a completed reset
         /// from a link cancelled by a credential change — the distinction the
@@ -11322,7 +11344,7 @@ mod recovery {
             // Act
             let reason: Option<String> = sqlx::query_scalar(
                 "select consumed_reason from recovery_tokens
-                  where tenant_id = $1 and token_digest = $2",
+                  where tenant_id = $1 and token_hash = $2",
             )
             .bind("rec-reason")
             .bind(token.digest())
@@ -11334,7 +11356,6 @@ mod recovery {
             assert_eq!(reason.as_deref(), Some("credential_change"));
         }
     }
-
 
     db_test! {
         /// **Hashed at rest.** No column anywhere holds the token, so a copy
@@ -11363,7 +11384,6 @@ mod recovery {
         }
     }
 
-
     db_test! {
         /// A token nobody issued is refused rather than matched as a prefix.
         async fn a_token_nobody_issued_is_refused(db) {
@@ -11381,7 +11401,6 @@ mod recovery {
             assert_eq!(spent, None);
         }
     }
-
 
     db_test! {
         /// A token belongs to the tenant that issued it. The predicate names
@@ -11409,7 +11428,6 @@ mod recovery {
         }
     }
 
-
     db_test! {
         /// `peek` reads without spending, so rendering the page a link leads
         /// to does not consume the link.
@@ -11430,7 +11448,6 @@ mod recovery {
             assert_eq!(spent, Some(user));
         }
     }
-
 
     db_test! {
         /// `peek` applies the same expiry predicate as `spend`, so a dead link
@@ -11458,7 +11475,6 @@ mod recovery {
         }
     }
 
-
     db_test! {
         /// The sweep drops what has expired. An expired row protects nothing —
         /// `spend` refuses it regardless — and only costs space.
@@ -11483,5 +11499,4 @@ mod recovery {
             assert_eq!(purged, 1);
         }
     }
-
 }
