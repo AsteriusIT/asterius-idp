@@ -626,6 +626,96 @@ db_test! {
     }
 }
 
+// ---- offline_access ------------------------------------------------------
+
+db_test! {
+    /// **OIDC Core §11: the code is where a refresh token comes from**
+    /// (`ast-ixl`).
+    ///
+    /// This file asserted both tokens of §3.1.3.3 and never asserted the
+    /// third. That gap is half of `ast-1h1`: the refresh suite seeded its
+    /// tokens through its own fixture, so no test in the repository crossed
+    /// the seam from a redeemed code to a stored refresh token, and the first
+    /// real client to try it got `invalid_grant`.
+    ///
+    /// The assertion is deliberately not "a string came back". The value is
+    /// presented to the store the refresh endpoint presents it to, because
+    /// what matters is that the client was handed the credential this
+    /// deployment recorded — a response field that digests to no row is
+    /// exactly the failure a shape check would pass.
+    async fn an_offline_access_grant_earns_a_redeemable_refresh_token(fixture) {
+        let client = fixture.client().await;
+        let pkce = Pkce::generate();
+        let grant = fixture.grant(&["openid", "offline_access"]).await;
+        let jkt = thumbprint(9);
+        let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
+
+        let (status, body) = fixture
+            .redeem(&client, &borrowed(&base_form(&code, &pkce)), Some(&jkt))
+            .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let refresh_token = body["refresh_token"]
+            .as_str()
+            .expect("an offline_access grant earns a refresh token");
+        assert_ne!(
+            Some(refresh_token),
+            body["access_token"].as_str(),
+            "the refresh token is the access token again"
+        );
+
+        // The digest of what the client holds is the row the endpoint wrote.
+        let digest = asterius_oidc::refresh::digest_of(refresh_token)
+            .expect("the value this server just issued is one it can digest");
+        let presented = fixture
+            .refresh_tokens()
+            .redeem(&digest, fixture.now, time::Duration::ZERO, None)
+            .await
+            .expect("the store answers");
+        let asterius_store_pg::Presentation::Accepted(record) = presented else {
+            panic!("the refresh token this redemption returned is not redeemable");
+        };
+        assert_eq!(record.grant, grant.id, "it draws on another grant");
+        assert_eq!(record.client.as_str(), CLIENT);
+        assert!(
+            record.scopes.contains("offline_access"),
+            "the stored scopes are {:?}",
+            record.scopes
+        );
+        // FAPI 2.0 SP §5.3.2.1: no bearer refresh token. The binding recorded
+        // is the key that proved *this* redemption.
+        assert_eq!(record.dpop_jkt.as_deref(), Some(jkt.as_str()));
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// The other side of §11: a grant nobody asked offline access for leaves
+    /// no long-lived credential behind, which is the ordinary case and the one
+    /// with nothing to steal.
+    async fn a_grant_without_offline_access_earns_no_refresh_token(fixture) {
+        let client = fixture.client().await;
+        let pkce = Pkce::generate();
+        let grant = fixture.grant(&["openid", "profile"]).await;
+        let jkt = thumbprint(10);
+        let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
+
+        let (status, body) = fixture
+            .redeem(&client, &borrowed(&base_form(&code, &pkce)), Some(&jkt))
+            .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body.get("refresh_token"),
+            None,
+            "a refresh token was issued to a grant that did not ask for one"
+        );
+
+        fixture.tear_down().await;
+    }
+}
+
 // ---- The bindings --------------------------------------------------------
 
 db_test! {
