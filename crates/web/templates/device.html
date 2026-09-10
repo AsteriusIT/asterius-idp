@@ -11,9 +11,12 @@
    worth guessing, so the failure text says only that the code did not work —
    never whether it was unknown, already used, or expired, each of which would
    be an oracle for somebody working through the space. #}
-<h2>Connect a device</h2>
 {% include "error_summary.html" %}
+
+<div class="stack tight">
+<h2>Connect a device</h2>
 <p class="muted">Enter the code shown on the device you are setting up.</p>
+</div>
 
 <form method="post" action="{{ action }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">

@@ -9,8 +9,10 @@
    or URL it also carried is text an attacker chose, and rendering it would
    make this server the one displaying "Log out of Example Bank?" on behalf of
    whoever built the link. The only name here is the provider's own. #}
+<div class="stack tight">
 <h2>{{ text.logout_heading(tenant_name) }}</h2>
 <p class="muted">{{ text.logout_unverified() }}</p>
+</div>
 
 <form method="post" action="{{ action }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">

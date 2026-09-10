@@ -9,15 +9,19 @@
    spot it. It is escaped like everything else — it is a value the user typed,
    which is to say a value an attacker can type. #}
 {% if verified %}
+<div class="stack tight">
 <h2>Email confirmed</h2>
 <p class="muted">Thank you. <strong>{{ email }}</strong> is confirmed.</p>
+</div>
 <div class="actions"><a class="button" href="{{ continue_href }}">Continue</a></div>
 {% else %}
-<h2>Confirm your email</h2>
 {% include "error_summary.html" %}
+<div class="stack tight">
+<h2>Confirm your email</h2>
 <p class="muted">We sent a link to <strong>{{ email }}</strong>. Open it to
 finish setting up your account. The link stops working after a while, and only
 the newest one works.</p>
+</div>
 
 {# The only action here, and it is a POST because it sends mail: a GET that
    sends mail is a GET that any image tag on any page can fire. #}

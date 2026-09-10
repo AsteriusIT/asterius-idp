@@ -328,7 +328,12 @@ const CONTRAST_PAIRS: &[(&str, &str)] = &[
 ];
 
 impl Default for Palette {
-    /// The palette `crates/web/templates/style.css` has always shipped.
+    /// The palette `crates/web/templates/style.css` ships.
+    ///
+    /// The two have to agree: a tenant that sets no theme renders the
+    /// stylesheet's own `:root`, and a tenant that saved the default one
+    /// renders this appended after it. The same page either way is the point,
+    /// so these are the colours of ast-9li's direction A, byte for byte.
     ///
     /// It clears AA on every pair in `CONTRAST_PAIRS`, which
     /// `the_default_palette_clears_the_bar_it_imposes` asserts rather than
@@ -341,19 +346,19 @@ impl Default for Palette {
                 blue: 0xff,
             },
             text: Colour {
-                red: 0x11,
-                green: 0x11,
-                blue: 0x11,
+                red: 0x18,
+                green: 0x18,
+                blue: 0x1b,
             },
             muted_text: Colour {
-                red: 0x55,
-                green: 0x55,
-                blue: 0x55,
+                red: 0x71,
+                green: 0x71,
+                blue: 0x7a,
             },
             accent: Colour {
-                red: 0x2f,
-                green: 0x6f,
-                blue: 0xdb,
+                red: 0x3f,
+                green: 0x3f,
+                blue: 0xbf,
             },
             accent_text: Colour {
                 red: 0xff,
@@ -361,9 +366,9 @@ impl Default for Palette {
                 blue: 0xff,
             },
             danger: Colour {
-                red: 0xc0,
-                green: 0x39,
-                blue: 0x2b,
+                red: 0xb4,
+                green: 0x23,
+                blue: 0x18,
             },
         }
     }
@@ -693,7 +698,7 @@ impl Default for Theme {
         Self {
             palette: Palette::default(),
             font: FontStack::default(),
-            radius_px: 4,
+            radius_px: 8,
             spacing_px: 8,
             product_name: None,
             support: SupportLinks::default(),
@@ -1143,8 +1148,8 @@ mod tests {
         let theme = Theme::default();
 
         assert_eq!(theme.palette().background().to_css(), "#ffffff");
-        assert_eq!(theme.palette().text().to_css(), "#111111");
-        assert_eq!(theme.palette().accent().to_css(), "#2f6fdb");
+        assert_eq!(theme.palette().text().to_css(), "#18181b");
+        assert_eq!(theme.palette().accent().to_css(), "#3f3fbf");
     }
 
     /// The bar this module imposes has to be one the shipped default clears,

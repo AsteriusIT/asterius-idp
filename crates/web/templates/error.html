@@ -1,11 +1,23 @@
 {% extends "base.html" %}
 {% block title %}{{ text.error_title() }} — {{ tenant_name }}{% endblock %}
+{% block card_class %} centered{% endblock %}
 {% block content %}
 {# Deliberately vague. This page is reached by a browser that may not be the
    user's, in a flow that may not be theirs, so it says what happened in the
    broadest terms and nothing about which client, which tenant, or which check
    failed. The correlation id is the only specific thing on it, and it
-   identifies a log line rather than anything about the request. #}
-<p class="error">{{ message }}</p>
-<p class="muted">{{ text.error_correlation() }} <code>{{ correlation_id }}</code>.</p>
+   identifies a log line rather than anything about the request.
+
+   The mark above the heading carries no information the heading does not, so
+   it is drawn in CSS and hidden from the accessibility tree: a screen reader
+   that announced "exclamation mark" before the sentence would be reading the
+   decoration aloud. #}
+<p class="badge-danger" aria-hidden="true">!</p>
+<div class="stack tight">
+<h2>{{ text.error_title() }}</h2>
+<p class="muted">{{ message }}</p>
+</div>
+{# The reference an operator asks for, set apart from the sentence around it
+   because it is read back over the telephone. #}
+<p class="pill">{{ text.error_correlation() }} <code>{{ correlation_id }}</code></p>
 {% endblock %}

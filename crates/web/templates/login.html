@@ -24,7 +24,13 @@
    itself and take the focus. See `error_summary.html`. #}
 {% include "error_summary.html" %}
 
-<div id="passkey-signin"
+<h2>{{ text.login_title() }}</h2>
+
+{# The one accent-coloured control on the page, and it is the phishing-resistant
+   one (ast-9li): a passkey is what this server would rather a person used, so
+   it is offered first and drawn as the primary action. The password form under
+   the separator is the mechanism that always works, drawn as the secondary. #}
+<div class="stack" id="passkey-signin"
      data-options-url="{{ passkey_options_action }}"
      data-finish-url="{{ passkey_finish_action }}"
      data-next-url="{{ action }}"
@@ -34,9 +40,10 @@
      hidden>
   <div class="actions"><button type="button" id="passkey-signin-button">{{ text.login_passkey_button() }}</button></div>
   <p class="muted" id="passkey-signin-status"></p>
+  <p class="separator">{{ text.login_or() }}</p>
 </div>
 
-<form method="post" action="{{ action }}">
+<form class="password-form" method="post" action="{{ action }}">
 {# The synchroniser token. Every POST form in this tree carries one; see
    `crates/web/src/source_audit.rs`, which fails the build if one does not. #}
 <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -54,6 +61,11 @@
   <span>{{ text.login_password() }}</span>
   <input type="password" name="password" autocomplete="current-password" required>
 </label>
+{# Left as the bare element it has always been: `crates/web/src/source_audit.rs`
+   and `e2e/src/no-script.ts` both name `<button type="submit">` as the control
+   that still works when the script never runs, so its appearance is a rule in
+   `style.css` (`form.password-form button[type=submit]`) rather than a class
+   here. #}
 <div class="actions"><button type="submit">{{ text.login_submit() }}</button></div>
 </form>
 

@@ -31,9 +31,16 @@
 <style {{ nonce_attribute|safe }}>{% include "style.css" %}{{ theme_css }}</style>
 </head>
 <body>
-<main>
-<h1>{{ tenant_name }}</h1>
+{# The layout of ast-9li's direction A: a centred card on a neutral backdrop,
+   with the tenant's wordmark above it. The wordmark is the page's `h1` because
+   it is who is asking; each page's own subject is the `h2` inside the card. #}
+<div class="page">
+<div class="shell">
+<h1 class="wordmark">{{ tenant_name }}</h1>
+<main class="card{% block card_class %}{% endblock %}">
 {% block content %}{% endblock %}
 </main>
+</div>
+</div>
 </body>
 </html>
