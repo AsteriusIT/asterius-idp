@@ -21,6 +21,7 @@ use crate::http::par::{self, PushContext};
 use crate::http::passkeys::{self, PasskeyContext, PasskeyLoginContext};
 use crate::http::refresh::RefreshToken;
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
+use crate::http::revocation;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::tenancy::MountPrefix;
@@ -243,6 +244,14 @@ pub fn routes(state: ProtocolState) -> Router {
                 Endpoint::Token.path(),
                 post(token_endpoint).with_state(Arc::clone(&endpoints)),
             )
+            // RFC 7009 §2.1: `POST` only, form-encoded, client-authenticated.
+            // No DPoP check: nothing is issued here, so there is no key to
+            // bind anything to — the client authentication is what says whose
+            // token this is.
+            .route(
+                Endpoint::Revocation.path(),
+                post(revocation_endpoint).with_state(Arc::clone(&endpoints)),
+            )
             // OIDC Core §3.1.2.1 permits GET and POST at the authorization
             // endpoint, and RFC 9126 §4 says what they carry: `client_id` and
             // `request_uri`, nothing else that matters.
@@ -332,9 +341,27 @@ pub fn routes(state: ProtocolState) -> Router {
             );
     }
 
-    // Everything else exists but is not built yet. Mounted from the registry so
-    // that the parity test — and a client reading the document — find a route
-    // rather than a 404.
+    router = mount_the_unbuilt(router, capabilities, built_clients);
+
+    // Outermost of this router's own layers, so it runs before any handler and
+    // after the tenancy middleware has resolved the tenant.
+    router.layer(axum::middleware::from_fn_with_state(
+        guard,
+        tenant_feature_guard,
+    ))
+}
+
+/// Mounts a 501 at every enabled endpoint that has no handler yet.
+///
+/// From the registry, so that the parity test — and a client reading the
+/// document — find a route rather than a 404. `built_clients` is whether the
+/// deployment has the database wiring, because those endpoints are mounted for
+/// real above and must not be shadowed by a constant answer here.
+fn mount_the_unbuilt(
+    mut router: Router,
+    capabilities: Capabilities,
+    built_clients: bool,
+) -> Router {
     for endpoint in Endpoint::enabled(&capabilities) {
         if endpoint == Endpoint::Jwks
             || (built_clients
@@ -342,6 +369,7 @@ pub fn routes(state: ProtocolState) -> Router {
                     endpoint,
                     Endpoint::PushedAuthorizationRequest
                         | Endpoint::Token
+                        | Endpoint::Revocation
                         | Endpoint::Authorization
                         | Endpoint::Registration
                         | Endpoint::EndSession
@@ -352,13 +380,7 @@ pub fn routes(state: ProtocolState) -> Router {
         }
         router = router.route(endpoint.path(), any(not_implemented));
     }
-
-    // Outermost of this router's own layers, so it runs before any handler and
-    // after the tenancy middleware has resolved the tenant.
-    router.layer(axum::middleware::from_fn_with_state(
-        guard,
-        tenant_feature_guard,
-    ))
+    router
 }
 
 /// The per-tenant half of the capability gate.
@@ -680,6 +702,89 @@ async fn userinfo_endpoint_inner(
         uri.query(),
     )
     .await
+}
+
+/// `POST /revoke` — RFC 7009 §2.
+///
+/// Wiring only, like the token endpoint: everything that decides anything is
+/// in [`crate::http::revocation::revoke`], and the client is authenticated by
+/// the same closure the token endpoint passes — one authenticator, so there is
+/// no second opinion about who a caller is (RFC 7009 §2.1).
+///
+/// No per-endpoint limiter yet: `asterius_domain::LimitedEndpoint` covers the
+/// five endpoints that were built when `ast-p2l.3` landed, and adding a sixth
+/// is a change to the configuration surface rather than to this file.
+async fn revocation_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    let store = StoredTokens {
+        grants: scope.grants(),
+        refresh_tokens: scope.refresh_tokens(),
+    };
+
+    let now = time::OffsetDateTime::now_utc();
+    let authenticator = Arc::clone(&endpoints.authenticator);
+    let tenant_for_auth = Arc::clone(&tenant);
+    let clients_for_auth = scope.clients(endpoints.capabilities);
+
+    revocation::revoke(
+        revocation::RevocationContext {
+            tenant: &tenant,
+            clients: &clients,
+            store: &store,
+            keys: endpoints.keys.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            now,
+        },
+        &headers,
+        &body,
+        async |attempt: &Attempt<'_>, rules: &AssertionRules| {
+            authenticator
+                .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
+                .await
+        },
+    )
+    .await
+}
+
+/// The two writes a revocation makes.
+///
+/// Narrow on purpose, like [`StoredClaims`]: RFC 7009 revokes credentials and
+/// leaves the grant standing (Grant Management ID1 §6.5 Note), and an endpoint
+/// holding `PgGrantRepository::revoke` is one edit away from doing otherwise.
+#[derive(Debug)]
+struct StoredTokens {
+    grants: asterius_store_pg::PgGrantRepository,
+    refresh_tokens: asterius_store_pg::PgRefreshTokenRepository,
+}
+
+#[async_trait::async_trait]
+impl revocation::RevocationStore for StoredTokens {
+    async fn revoke_refresh_token(
+        &self,
+        digest: &str,
+        client: &asterius_domain::ClientId,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<asterius_domain::GrantId>, asterius_domain::DomainError> {
+        self.refresh_tokens.revoke(digest, client, now).await
+    }
+
+    async fn denylist_access_token(
+        &self,
+        jti: &str,
+        grant: Option<&asterius_domain::GrantId>,
+        revoked_at: time::OffsetDateTime,
+        expires_at: time::OffsetDateTime,
+    ) -> Result<bool, asterius_domain::DomainError> {
+        self.grants
+            .denylist_access_token(jti, grant, revoked_at, expires_at)
+            .await
+    }
 }
 
 /// The stored rows behind UserInfo.

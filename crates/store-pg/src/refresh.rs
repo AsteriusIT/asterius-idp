@@ -232,6 +232,57 @@ impl PgRefreshTokenRepository {
         })))
     }
 
+    /// Revokes one refresh token, if it belongs to `client`.
+    ///
+    /// RFC 7009 §2.1's revocation, and §2.2's rule about whose token it is,
+    /// written as one statement: the `client_id` is in the `where` clause, so a
+    /// client asking for a token issued to another one matches no row and
+    /// learns nothing. §2.2 requires exactly that — "the client MUST NOT be
+    /// able to revoke a token issued to another client", and such a request is
+    /// treated as one carrying an invalid token, which is a 200 and no action.
+    ///
+    /// The row is stamped, never deleted. A deleted row is a revocation nobody
+    /// can audit afterwards, and the retention sweep already collects revoked
+    /// rows once they are past their expiry as well.
+    ///
+    /// `coalesce` makes a second revocation of the same token a no-op rather
+    /// than a rewrite: §2.2 expects a repeated request to succeed, and the
+    /// instant the trail records must be the one the withdrawal happened at.
+    ///
+    /// Returns the grant the token drew on when a row matched — read by the
+    /// audit event and by nothing else — and `None` when no row of this tenant
+    /// answers to that digest and that client.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] if the digest is not hexadecimal, or
+    /// [`DomainError::Storage`] if the store could not be reached. Never treat
+    /// a storage failure as "there was nothing to revoke": a client told 200
+    /// will not retry, and the token would stay live.
+    pub async fn revoke(
+        &self,
+        digest: &str,
+        client: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<Option<GrantId>, DomainError> {
+        let digest = Self::digest_bytes(digest)?;
+        let row = sqlx::query!(
+            "update refresh_tokens
+                set revoked_at = coalesce(revoked_at, $4)
+              where tenant_id = $1 and token_hash = $2 and client_id = $3
+             returning grant_id",
+            self.tenant.as_str(),
+            digest,
+            client.as_str(),
+            now,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        Ok(row.map(|row| GrantId::new(row.grant_id.to_string())))
+    }
+
     /// Issues a replacement and stamps the token it replaces, together.
     ///
     /// The migration rotation mode only (FAPI 2.0 SP Note 1). The stamp uses
@@ -244,6 +295,11 @@ impl PgRefreshTokenRepository {
     /// [`DomainError::Conflict`] if the replacement's digest already exists,
     /// [`DomainError::Storage`] otherwise. Either way nothing is written: the
     /// old token stays live and the client can retry with it.
+    ///
+    /// # Revocation
+    ///
+    /// See [`Self::revoke`], which is the other writing path and the one RFC
+    /// 7009 defines.
     pub async fn supersede(
         &self,
         superseded: &str,

@@ -351,6 +351,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "revocation_request"
+path = "fuzz_targets/revocation_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tenant_route"
 path = "fuzz_targets/tenant_route.rs"
 test = false

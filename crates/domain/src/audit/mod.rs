@@ -103,6 +103,15 @@ impl EventType {
     /// them against one grant is a stolen token being tried, and splitting
     /// them across two types would hide that behind a join.
     pub const TOKEN_REFRESHED: Self = Self("token.refreshed");
+    /// A token was revoked at the revocation endpoint (RFC 7009).
+    ///
+    /// Deliberately not [`Self::GRANT_REVOKED`]. Grant Management ID1 §6.5
+    /// Note says revoking a token "need not" revoke the grant behind it, and
+    /// this server takes that option: a client that hands back a refresh token
+    /// can reconnect without asking for consent again. Two facts, two event
+    /// types, so a trail can tell "this integration was signed out" from "this
+    /// person withdrew their authorization".
+    pub const TOKEN_REVOKED: Self = Self("token.revoked");
     /// A grant was revoked.
     pub const GRANT_REVOKED: Self = Self("grant.revoked");
     /// A session was revoked.
@@ -132,7 +141,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -149,6 +158,7 @@ impl EventType {
         Self::TOKEN_REFUSED,
         Self::TOKEN_EXCHANGED,
         Self::TOKEN_REFRESHED,
+        Self::TOKEN_REVOKED,
         Self::GRANT_REVOKED,
         Self::SESSION_REVOKED,
         Self::CLIENT_AUTHENTICATED,
