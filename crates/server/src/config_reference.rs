@@ -886,6 +886,9 @@ fn features() -> Vec<Key> {
                     Feature::Ssf => "Shared Signals Framework transmitter and CAEP/RISC events.",
                     Feature::Authzen => "AuthZEN Authorization API 1.0 policy decision point.",
                     Feature::DpopNonce => "Server-issued DPoP nonces (RFC 9449 §8).",
+                    Feature::RequestObject => {
+                        "Signed request objects inside a pushed request (JAR, RFC 9101)."
+                    }
                     // `Feature` is `#[non_exhaustive]`: a flag added without a
                     // sentence here still gets documented, and the row says so
                     // loudly enough that somebody fixes it.

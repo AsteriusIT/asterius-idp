@@ -29,6 +29,15 @@ pub enum Feature {
     Authzen,
     /// Server-issued DPoP nonces (RFC 9449 §8).
     DpopNonce,
+    /// Signed request objects inside a pushed request (JAR, RFC 9101).
+    ///
+    /// Off by default, and off is the honest default: a request object is a
+    /// non-repudiation hook, not a security requirement here. ADR-0002 already
+    /// makes PAR the only way in, so the parameters are neither readable nor
+    /// modifiable in the browser without one. What the object adds is a
+    /// signature the client cannot later disown, which is what FAPI 2.0
+    /// Message Signing will need and what nothing else does yet.
+    RequestObject,
     /// Dynamic client registration (RFC 7591) and client configuration
     /// management (RFC 7592).
     ///
@@ -44,7 +53,7 @@ pub enum Feature {
 
 impl Feature {
     /// Every flag, in a stable order. `/readyz` and the admin API iterate this.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Mtls,
         Self::GrantManagement,
         Self::Ciba,
@@ -53,6 +62,7 @@ impl Feature {
         Self::Ssf,
         Self::Authzen,
         Self::DpopNonce,
+        Self::RequestObject,
         Self::DynamicClientRegistration,
     ];
 
@@ -68,6 +78,7 @@ impl Feature {
             Self::Ssf => "ssf",
             Self::Authzen => "authzen",
             Self::DpopNonce => "dpop_nonce",
+            Self::RequestObject => "request_object",
             Self::DynamicClientRegistration => "dynamic_client_registration",
         }
     }
@@ -93,7 +104,8 @@ impl Feature {
             | Self::TokenExchange
             | Self::Ssf
             | Self::Authzen
-            | Self::DpopNonce => false,
+            | Self::DpopNonce
+            | Self::RequestObject => false,
         }
     }
 
@@ -150,6 +162,8 @@ pub struct Capabilities {
     pub authzen: bool,
     /// Server-issued DPoP nonces (RFC 9449 §8).
     pub dpop_nonce: bool,
+    /// Signed request objects inside a pushed request (JAR, RFC 9101).
+    pub request_object: bool,
     /// Dynamic client registration (RFC 7591), derived from `[registration]`
     /// rather than set directly — see [`Feature::DynamicClientRegistration`].
     ///
@@ -176,6 +190,7 @@ impl Capabilities {
             Feature::Ssf => self.ssf,
             Feature::Authzen => self.authzen,
             Feature::DpopNonce => self.dpop_nonce,
+            Feature::RequestObject => self.request_object,
             Feature::DynamicClientRegistration => self.dynamic_client_registration,
         }
     }
@@ -196,6 +211,7 @@ impl Capabilities {
             Feature::Ssf => self.ssf = false,
             Feature::Authzen => self.authzen = false,
             Feature::DpopNonce => self.dpop_nonce = false,
+            Feature::RequestObject => self.request_object = false,
             Feature::DynamicClientRegistration => self.dynamic_client_registration = false,
         }
     }
@@ -289,6 +305,7 @@ mod tests {
             ssf: true,
             authzen: true,
             dpop_nonce: true,
+            request_object: true,
             dynamic_client_registration: true,
         })
         .expect("serialise");

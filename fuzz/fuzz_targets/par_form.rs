@@ -13,9 +13,11 @@
 //!   trimmed to fit: a client that asked for more is refused.
 //! * **No parameter was accepted twice** (RFC 6749 §3.1), which is the
 //!   parameter-pollution defence.
-//! * **`request` and `request_uri` are never accepted** — the first because JAR
-//!   is not implemented and ignoring it would honour the parameters it exists
-//!   to protect, the second because RFC 9126 §2.1 forbids it in a push.
+//! * **`request` and `request_uri` are never accepted** — the first because a
+//!   request object is unwrapped *before* this validator runs, so one still
+//!   present here belongs to a tenant that does not accept them and ignoring it
+//!   would honour the parameters it exists to protect; the second because
+//!   RFC 9126 §2.1 forbids it in a push.
 #![no_main]
 
 use arbitrary::Arbitrary;
@@ -157,14 +159,14 @@ fuzz_target!(|input: Input| {
         first
     };
 
-    // RFC 9126 §2.1 and the JAR gap.
+    // RFC 9126 §2.1, and RFC 9101 §6.1 for the envelope.
     assert!(
         value_of("request_uri").is_none(),
         "accepted a push carrying request_uri"
     );
     assert!(
         value_of("request").is_none(),
-        "accepted a request object this server cannot process"
+        "accepted a request object without unwrapping it"
     );
 
     // The redirect URI is exactly one that was registered. Compared here

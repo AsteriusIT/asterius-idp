@@ -658,6 +658,22 @@ async fn pushed_authorization_request_inner(
     let tenant_for_auth = Arc::clone(tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
 
+    // JAR (RFC 9101) is a per-tenant flag, read the way every other one is: a
+    // tenant may switch a deployment feature off and never on, and a failed
+    // read is an error rather than the deployment's answer — advertising
+    // `request_parameter_supported: false` while still accepting a `request`
+    // is exactly the drift `tenant_feature_guard` exists to prevent.
+    let capabilities = match capabilities_for(endpoints, tenant).await {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let request_objects = capabilities
+        .is_enabled(asterius_domain::Feature::RequestObject)
+        .then(|| endpoints.authenticator.client_keys().as_ref());
+
     par::push(
         PushContext {
             tenant,
@@ -669,6 +685,7 @@ async fn pushed_authorization_request_inner(
             policy: authorization_policy(),
             lifetime: endpoints.par_lifetime,
             certificate,
+            request_objects,
         },
         headers,
         body,
@@ -1509,6 +1526,25 @@ async fn lifetimes_for(
     match &endpoints.tenant_settings {
         None => Ok(endpoints.lifetimes),
         Some(directory) => Ok(directory.for_tenant(&tenant.id).await?.lifetimes()),
+    }
+}
+
+/// What this tenant can do, given what the deployment can do.
+///
+/// The same narrowing [`discovery`] renders its document from, so an endpoint
+/// cannot honour a feature the tenant's own metadata says is off. A read that
+/// *fails* is an error and never the deployment's capabilities: falling back
+/// would reopen exactly what a tenant has just switched off.
+async fn capabilities_for(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+) -> Result<Capabilities, DomainError> {
+    match &endpoints.tenant_settings {
+        None => Ok(endpoints.capabilities),
+        Some(directory) => Ok(directory
+            .for_tenant(&tenant.id)
+            .await?
+            .effective_capabilities(endpoints.capabilities)),
     }
 }
 

@@ -183,6 +183,7 @@ async fn every_advertised_endpoint_resolves_to_a_route() {
         ssf: true,
         authzen: true,
         dpop_nonce: true,
+        request_object: true,
         dynamic_client_registration: true,
     };
     let metadata = document(capabilities).await;
@@ -670,6 +671,7 @@ const ALL_ON: Capabilities = Capabilities {
     ssf: true,
     authzen: true,
     dpop_nonce: true,
+    request_object: true,
     dynamic_client_registration: true,
 };
 

@@ -268,6 +268,7 @@ async fn run(
         policy: AuthorizationPolicy::default(),
         lifetime: Duration::seconds(90),
         certificate: None,
+        request_objects: None,
     };
 
     let response = push(
@@ -628,6 +629,7 @@ async fn a_body_that_is_not_a_form_is_refused() {
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &headers,
         &Bytes::from_static(br#"{"response_type":"code"}"#),
@@ -665,6 +667,7 @@ async fn a_form_content_type_with_a_charset_is_accepted() {
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &headers,
         &form(&valid_pairs()),
@@ -695,6 +698,7 @@ async fn an_oversized_body_is_refused_before_it_is_parsed() {
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &form_headers(),
         &Bytes::from(vec![b'a'; MAX_BODY_BYTES + 1]),
@@ -747,6 +751,7 @@ async fn a_proof_on_the_push_pins_the_key_the_code_issuer_reads() {
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &form_headers(),
         // No `dpop_jkt` in the body: the proof is the whole pin.
@@ -791,6 +796,7 @@ async fn a_proof_and_a_dpop_jkt_that_disagree_are_refused() {
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &form_headers(),
         &form(&pairs),
@@ -830,6 +836,7 @@ async fn a_proof_and_a_matching_dpop_jkt_are_accepted() {
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &form_headers(),
         &form(&pairs),
@@ -992,6 +999,7 @@ async fn pushed_as(client: Client, pairs: &[(&str, &str)]) -> (StatusCode, Value
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &form_headers(),
         &form(pairs),
@@ -1056,6 +1064,7 @@ async fn a_registered_resource_is_stored_with_the_request() {
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &form_headers(),
         &form(&pairs),
@@ -1200,6 +1209,7 @@ async fn an_accepted_authorization_details_is_stored_with_the_request() {
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
             certificate: None,
+            request_objects: None,
         },
         &form_headers(),
         &form(&pairs),
@@ -1214,4 +1224,412 @@ async fn an_accepted_authorization_details_is_stored_with_the_request() {
         requests.0.lock().expect("lock")[0].parameters["authorization_details"],
         json!([element])
     );
+}
+
+// ---- signed request objects (JAR, RFC 9101) -------------------------------
+//
+// RFC 9126 §3 allows `request` in a pushed request and forbids `request_uri`
+// there. Everything below pushes a *real* signed JWT through the real
+// verifier: the key is generated, the signature is checked against the JWK Set
+// the client registered, and the claims reach `authorize::validate` — because
+// the property under test is that a signed request and a plain one are checked
+// by the same code.
+
+/// The `kid` of the request-object signing key every JAR test uses.
+const JAR_KID: &str = "jar-1";
+
+/// A `jwks_uri` fetcher that fails, so a test that reaches the network is a
+/// test that has stopped exercising what it says it does. Every client here
+/// registers its keys inline.
+#[derive(Debug)]
+struct NoFetch;
+
+#[async_trait::async_trait]
+impl asterius_domain::ports::ClientUrlFetcher for NoFetch {
+    async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
+        Err(DomainError::Invalid {
+            field: "jwks_uri",
+            reason: "no fetch in this test".to_owned(),
+        })
+    }
+}
+
+/// The client's request-object signing key, generated once for the file.
+fn jar_key() -> &'static asterius_jose::SigningKey {
+    static KEY: std::sync::OnceLock<asterius_jose::SigningKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        asterius_jose::SigningKey::generate(asterius_domain::SigningAlgorithm::EdDsa)
+            .expect("a generated key")
+    })
+}
+
+/// The same client as [`client`], holding [`jar_key`] and registered for
+/// `EdDSA` request objects (OIDC Registration §2).
+fn jar_client() -> Client {
+    let mut jwk = jar_key().public_jwk().expect("a public JWK");
+    jwk["kid"] = json!(JAR_KID);
+    Client {
+        registration: ClientRegistration::from_json(
+            &serde_json::to_vec(&json!({
+                "client_name": "Billing",
+                "redirect_uris": [REDIRECT],
+                "grant_types": ["authorization_code"],
+                "scope": "openid profile",
+                "jwks": {"keys": [jwk]},
+                "request_object_signing_alg": "EdDSA",
+            }))
+            .expect("serialise"),
+            Capabilities::default(),
+        )
+        .expect("a valid registration"),
+        ..client()
+    }
+}
+
+/// The claims of a well-formed request object, with `overrides` merged in. A
+/// `null` override removes the claim.
+fn jar_claims(overrides: &Value) -> Value {
+    let mut claims = json!({
+        "iss": CLIENT,
+        "aud": ISSUER,
+        "exp": now().unix_timestamp() + 60,
+        "response_type": "code",
+        "redirect_uri": REDIRECT,
+        "code_challenge": CHALLENGE,
+        "code_challenge_method": "S256",
+        "scope": "openid profile",
+        "state": "xyz",
+    });
+    let object = claims.as_object_mut().expect("object");
+    for (name, value) in overrides.as_object().expect("an object of overrides") {
+        if value.is_null() {
+            object.remove(name);
+        } else {
+            object.insert(name.clone(), value.clone());
+        }
+    }
+    claims
+}
+
+/// Signs `claims` as a request object with `typ` and whichever key is given.
+fn signed(claims: &Value, typ: &str, key: &asterius_jose::SigningKey) -> String {
+    asterius_jose::jws::sign(key, &Kid::new(JAR_KID), typ, claims)
+        .expect("a signed request object")
+        .as_str()
+        .to_owned()
+}
+
+/// A request object this client would ordinarily send.
+fn request_object(overrides: &Value) -> String {
+    signed(&jar_claims(overrides), "oauth-authz-req+jwt", jar_key())
+}
+
+/// Pushes `pairs` with request objects switched **on** for the tenant.
+async fn pushed_with_jar(
+    pairs: &[(&str, &str)],
+    client: &Client,
+) -> (StatusCode, Value, FakeRequests) {
+    let tenant = tenant();
+    let clients = FakeClients(Some(client.clone()));
+    let requests = FakeRequests::default();
+    let keys = asterius_jose::client_keys::ClientKeyCache::new(std::sync::Arc::new(NoFetch));
+
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
+            lifetime: Duration::seconds(90),
+            certificate: None,
+            request_objects: Some(&keys),
+        },
+        &form_headers(),
+        &form(pairs),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client.clone()),
+        None,
+        now(),
+    )
+    .await;
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    (status, json, requests)
+}
+
+/// The parameters the client authenticates with, which RFC 9101 §6.1 keeps
+/// outside the object.
+fn jar_form(object: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("client_id", CLIENT.to_owned()),
+        ("request", object.to_owned()),
+    ]
+}
+
+fn borrowed<'a>(pairs: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
+    pairs.iter().map(|(k, v)| (*k, v.as_str())).collect()
+}
+
+/// RFC 9126 §3 and RFC 9101 §6.1: the request is the object's claims, and the
+/// stored row is what the ordinary validator made of them.
+#[tokio::test]
+async fn a_signed_request_object_becomes_the_authorization_request() {
+    // Arrange
+    let pairs = jar_form(&request_object(&json!({})));
+
+    // Act
+    let (status, body, store) = pushed_with_jar(&borrowed(&pairs), &jar_client()).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let stored = store.0.lock().expect("lock");
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].parameters["redirect_uri"], json!(REDIRECT));
+    assert_eq!(stored[0].parameters["state"], json!("xyz"));
+}
+
+/// RFC 9101 §6.1: "parameters ... outside the Request Object are ignored". A
+/// server that read the form as well would honour exactly the values the
+/// signature exists to fix.
+#[tokio::test]
+async fn parameters_outside_the_object_are_ignored() {
+    // Arrange: the form asks for a different state and a smaller scope.
+    let mut pairs = jar_form(&request_object(&json!({})));
+    pairs.push(("state", "from-the-form".to_owned()));
+    pairs.push(("scope", "openid".to_owned()));
+
+    // Act
+    let (status, body, store) = pushed_with_jar(&borrowed(&pairs), &jar_client()).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let stored = store.0.lock().expect("lock");
+    assert_eq!(stored[0].parameters["state"], json!("xyz"));
+    assert_eq!(stored[0].parameters["scopes"], json!(["openid", "profile"]));
+}
+
+/// RFC 9101 §6.1's exception: the client authentication parameters are not
+/// ignored, and `client_id` is one of them. A form naming one client and an
+/// object signed by another is a request with two authors.
+#[tokio::test]
+async fn a_client_id_outside_the_object_that_disagrees_with_iss_is_refused() {
+    // Arrange
+    let pairs = vec![
+        ("client_id", "somebody-else".to_owned()),
+        ("request", request_object(&json!({}))),
+    ];
+
+    // Act
+    let (status, body, _) = pushed_with_jar(&borrowed(&pairs), &jar_client()).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], json!("invalid_request"));
+}
+
+/// RFC 9126 §3: `request_uri` "MUST NOT be provided" in a pushed request, with
+/// or without an object beside it.
+#[tokio::test]
+async fn a_request_uri_in_a_pushed_request_is_refused() {
+    for extra in [
+        vec![(
+            "request_uri",
+            "urn:ietf:params:oauth:request_uri:abc".to_owned(),
+        )],
+        vec![
+            (
+                "request_uri",
+                "urn:ietf:params:oauth:request_uri:abc".to_owned(),
+            ),
+            ("request", request_object(&json!({}))),
+        ],
+    ] {
+        // Arrange
+        let mut pairs: Vec<(&'static str, String)> = vec![("client_id", CLIENT.to_owned())];
+        pairs.extend(extra);
+
+        // Act
+        let (status, body, _) = pushed_with_jar(&borrowed(&pairs), &jar_client()).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], json!("invalid_request"), "{body}");
+    }
+}
+
+/// RFC 9101 §6.3 and ADR-0003: the object is signed with the algorithm the
+/// client registered, and `none` is not an algorithm that exists here.
+#[tokio::test]
+async fn an_object_whose_signature_is_not_the_clients_is_refused() {
+    let other = asterius_jose::SigningKey::generate(asterius_domain::SigningAlgorithm::Ps256)
+        .expect("a generated key");
+    let unsigned = {
+        // `alg: none`, the classic. It never reaches a key: `jws::parse`
+        // refuses the algorithm before anything else happens.
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let header = b64.encode(br#"{"alg":"none","typ":"oauth-authz-req+jwt"}"#);
+        let payload = b64.encode(serde_json::to_vec(&jar_claims(&json!({}))).expect("serialise"));
+        format!("{header}.{payload}.")
+    };
+
+    for object in [
+        // Signed by a key the client never registered, with an algorithm it
+        // did not register either.
+        signed(&jar_claims(&json!({})), "oauth-authz-req+jwt", &other),
+        unsigned,
+        // Not a JWS at all.
+        "not.a.jwt".to_owned(),
+    ] {
+        // Arrange
+        let pairs = jar_form(&object);
+
+        // Act
+        let (status, body, _) = pushed_with_jar(&borrowed(&pairs), &jar_client()).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], json!("invalid_request_object"), "{body}");
+    }
+}
+
+/// RFC 9101 §10.8 and RFC 8725 §3.11: a JWT minted for one purpose must not be
+/// presentable as another, and only `typ` says which purpose that was.
+#[tokio::test]
+async fn an_object_without_the_registered_media_type_is_refused() {
+    for typ in ["JWT", "at+jwt", "dpop+jwt"] {
+        // Arrange
+        let pairs = jar_form(&signed(&jar_claims(&json!({})), typ, jar_key()));
+
+        // Act
+        let (status, body, _) = pushed_with_jar(&borrowed(&pairs), &jar_client()).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST, "accepted typ {typ}");
+        assert_eq!(body["error"], json!("invalid_request_object"));
+    }
+}
+
+/// OIDC Core §6.3 items 2 and 3, and RFC 9101 §10.2: the object names this
+/// client, this issuer as a string, and an expiry that is soon.
+#[tokio::test]
+async fn the_claims_oidc_core_requires_are_checked() {
+    for overrides in [
+        json!({"iss": "somebody-else"}),
+        json!({"iss": null}),
+        json!({"aud": "https://other.example"}),
+        json!({"aud": [ISSUER]}),
+        json!({"aud": null}),
+        json!({"exp": null}),
+        json!({"exp": now().unix_timestamp() - 1}),
+        json!({"exp": now().unix_timestamp() + 601}),
+    ] {
+        // Arrange
+        let pairs = jar_form(&request_object(&overrides));
+
+        // Act
+        let (status, body, _) = pushed_with_jar(&borrowed(&pairs), &jar_client()).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST, "accepted {overrides}");
+        assert_eq!(
+            body["error"],
+            json!("invalid_request_object"),
+            "{overrides}"
+        );
+    }
+}
+
+/// OIDC Registration §2: a client that registered no
+/// `request_object_signing_alg` never asked to send request objects, and there
+/// is no default that would not be this server choosing an algorithm for it.
+#[tokio::test]
+async fn a_client_that_registered_no_algorithm_may_not_send_an_object() {
+    // Arrange: the file's ordinary client, which registers none.
+    let pairs = jar_form(&request_object(&json!({})));
+
+    // Act
+    let (status, body, _) = pushed_with_jar(&borrowed(&pairs), &client()).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], json!("invalid_request_object"), "{body}");
+}
+
+/// The point of the whole module: the object is an envelope, so a parameter
+/// that is invalid inside it fails the same way it fails in a plain push.
+#[tokio::test]
+async fn an_invalid_parameter_inside_the_object_gives_the_plain_error() {
+    // Arrange: an `authorization_details` element with no `type`, sent both
+    // ways (RFC 9396 §2).
+    let broken = json!([{"actions": ["read"]}]);
+    let encoded = broken.to_string();
+    let mut plain = valid_pairs();
+    plain.push(("authorization_details", &encoded));
+
+    // Act
+    let (plain_status, plain_body, _) = pushed(&plain).await;
+    let pairs = jar_form(&request_object(&json!({"authorization_details": broken})));
+    let (jar_status, jar_body, _) = pushed_with_jar(&borrowed(&pairs), &jar_client()).await;
+
+    // Assert
+    assert_eq!(plain_status, StatusCode::BAD_REQUEST, "{plain_body}");
+    assert_eq!(jar_status, plain_status);
+    assert_eq!(jar_body["error"], plain_body["error"]);
+    assert_eq!(
+        jar_body["error_description"],
+        plain_body["error_description"]
+    );
+}
+
+/// RFC 9396 §3 and OIDC Core §5.5: JSON inside the object, a JSON string in a
+/// form, and one validator for both — so a *valid* rich request survives the
+/// crossing intact.
+#[tokio::test]
+async fn json_valued_parameters_survive_the_crossing() {
+    // Arrange
+    let element = json!({
+        "type": DETAIL_TYPE,
+        "instructedAmount": {"currency": "EUR", "amount": "12.00"},
+    });
+    let pairs = jar_form(&request_object(
+        &json!({"authorization_details": [element.clone()]}),
+    ));
+    let mut client = jar_client();
+    client.registration.authorization_details_types =
+        std::iter::once(DETAIL_TYPE.to_owned()).collect();
+
+    // Act
+    let (status, body, store) = pushed_with_jar(&borrowed(&pairs), &client).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        store.0.lock().expect("lock")[0].parameters["authorization_details"],
+        json!([element])
+    );
+}
+
+/// The flag and the behaviour are one decision: with request objects off, the
+/// parameter is refused with the code OIDC Core §3.1.2.6 defines, which is what
+/// `request_parameter_supported: false` tells a client to expect.
+#[tokio::test]
+async fn a_request_object_is_refused_when_the_tenant_does_not_accept_them() {
+    // Arrange
+    let object = request_object(&json!({}));
+    let mut pairs = valid_pairs();
+    pairs.push(("request", object.as_str()));
+
+    // Act
+    let (status, body, _) = pushed(&pairs).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], json!("request_not_supported"));
 }

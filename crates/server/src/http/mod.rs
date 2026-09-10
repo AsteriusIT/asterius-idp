@@ -24,6 +24,7 @@ pub mod redirect;
 pub mod refresh;
 pub mod register;
 pub mod request_id;
+pub mod request_object;
 pub mod revocation;
 pub mod security_headers;
 pub mod server;

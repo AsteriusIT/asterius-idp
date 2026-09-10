@@ -439,6 +439,7 @@ mod tests {
         // Arrange
         let deployment = Capabilities {
             dpop_nonce: true,
+            request_object: true,
             mtls: true,
             ..Capabilities::default()
         };
