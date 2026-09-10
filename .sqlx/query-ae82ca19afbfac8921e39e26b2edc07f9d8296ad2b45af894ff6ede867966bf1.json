@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from resource_servers where tenant_id = $1 and identifier = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ae82ca19afbfac8921e39e26b2edc07f9d8296ad2b45af894ff6ede867966bf1"
+}

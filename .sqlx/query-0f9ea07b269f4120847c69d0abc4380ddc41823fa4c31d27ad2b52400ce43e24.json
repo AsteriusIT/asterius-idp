@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from authorization_details_types\n              where tenant_id = $1 and type_name = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0f9ea07b269f4120847c69d0abc4380ddc41823fa4c31d27ad2b52400ce43e24"
+}

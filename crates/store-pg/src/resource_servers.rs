@@ -1,19 +1,17 @@
 //! One tenant's registered resource servers, over `PostgreSQL` (RFC 8707).
 //!
-//! # These are runtime queries, not `query!`
+//! # Checked against the schema, not just against the tests
 //!
-//! The same trade [`crate::tenant_settings`] states, and for the same reason:
-//! `sqlx::query!` checks a statement against a live database at compile time
-//! and records the result in `.sqlx/`, so a statement added with it cannot be
-//! compiled without a migrated database to hand. The statements here are a
-//! single-table read and a single-row upsert over a table this crate owns
-//! outright, and what compile-time checking would catch is caught by the
-//! database tests in `crates/store-pg/tests/database.rs`.
+//! Every statement here is `sqlx::query!`, so the column list and the bind
+//! types are checked against a migrated database at compile time and recorded
+//! in `.sqlx/`. That matters more than usual for `scopes`: it is the one
+//! `text[]` this crate binds, and a mismatch between it and `Option<Vec<..>>`
+//! is the kind of error a runtime `query` only reports once a tenant has a
+//! resource server registered.
 
 use crate::error::to_domain_error;
 use asterius_domain::ports::ResourceServerRepository;
 use asterius_domain::{DomainError, ResourceIdentifier, ResourceServer, TenantId};
-use sqlx::Row as _;
 use sqlx::postgres::PgPool;
 use time::Duration;
 
@@ -54,18 +52,18 @@ impl PgResourceServers {
             .and_then(|d| i32::try_from(d.whole_seconds()).ok())
             .filter(|seconds| *seconds > 0);
 
-        sqlx::query(
+        sqlx::query!(
             "insert into resource_servers
                  (tenant_id, identifier, scopes, token_lifetime_seconds)
              values ($1, $2, $3, $4)
              on conflict (tenant_id, identifier) do update
              set scopes = excluded.scopes,
                  token_lifetime_seconds = excluded.token_lifetime_seconds",
+            self.tenant.as_str(),
+            server.identifier.as_str(),
+            scopes.as_deref(),
+            lifetime
         )
-        .bind(self.tenant.as_str())
-        .bind(server.identifier.as_str())
-        .bind(scopes)
-        .bind(lifetime)
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?;
@@ -83,14 +81,15 @@ impl PgResourceServers {
     ///
     /// [`DomainError::Storage`] if the delete fails.
     pub async fn withdraw(&self, identifier: &str) -> Result<bool, DomainError> {
-        let affected =
-            sqlx::query("delete from resource_servers where tenant_id = $1 and identifier = $2")
-                .bind(self.tenant.as_str())
-                .bind(identifier)
-                .execute(&self.pool)
-                .await
-                .map_err(to_domain_error)?
-                .rows_affected();
+        let affected = sqlx::query!(
+            "delete from resource_servers where tenant_id = $1 and identifier = $2",
+            self.tenant.as_str(),
+            identifier
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
         Ok(affected > 0)
     }
 }
@@ -98,24 +97,22 @@ impl PgResourceServers {
 #[async_trait::async_trait]
 impl ResourceServerRepository for PgResourceServers {
     async fn list(&self) -> Result<Vec<ResourceServer>, DomainError> {
-        let rows = sqlx::query(
+        let rows = sqlx::query!(
             "select identifier, scopes, token_lifetime_seconds
                from resource_servers
               where tenant_id = $1
               order by identifier",
+            self.tenant.as_str()
         )
-        .bind(self.tenant.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(to_domain_error)?;
 
         let mut servers = Vec::with_capacity(rows.len());
         for row in rows {
-            let identifier: String = row.try_get("identifier").map_err(to_domain_error)?;
-            let scopes: Option<Vec<String>> = row.try_get("scopes").map_err(to_domain_error)?;
-            let lifetime: Option<i32> = row
-                .try_get("token_lifetime_seconds")
-                .map_err(to_domain_error)?;
+            let identifier = row.identifier;
+            let scopes = row.scopes;
+            let lifetime = row.token_lifetime_seconds;
             // A stored row that is not a resource indicator fails the read
             // rather than being skipped: an audience this server would refuse
             // to issue is an audience it must not quietly stop offering

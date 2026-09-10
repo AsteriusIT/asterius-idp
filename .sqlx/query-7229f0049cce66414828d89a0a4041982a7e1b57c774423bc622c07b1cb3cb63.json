@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select settings from tenants where tenant_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "settings",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7229f0049cce66414828d89a0a4041982a7e1b57c774423bc622c07b1cb3cb63"
+}

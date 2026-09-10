@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select identifier, scopes, token_lifetime_seconds\n               from resource_servers\n              where tenant_id = $1\n              order by identifier",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "identifier",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "token_lifetime_seconds",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "60793a2e61fdc6931611f48ac0b70bdcfc259158b52756a3af7a927d86579eb6"
+}

@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select type_name, schema, consent_template\n               from authorization_details_types\n              where tenant_id = $1\n              order by type_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "type_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "schema",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 2,
+        "name": "consent_template",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "55387a62b0ca0186b299f45a230b23eb6078e8d7605524930564443d306ccc3f"
+}

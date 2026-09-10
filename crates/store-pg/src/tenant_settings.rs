@@ -20,20 +20,19 @@
 //! `options` member itself is replaced whole, because settings read half from
 //! one write and half from another are settings nobody chose.
 //!
-//! # These are runtime queries, not `query!`
+//! # The member name is not a `query!` parameter
 //!
-//! Deliberate, and the trade is worth stating: `sqlx::query!` checks a
-//! statement against a live database at compile time and records the result in
-//! `.sqlx/`, which means a new statement cannot be added without a migrated
-//! database to hand. The two statements here are a single-column read and a
-//! single-column merge on a table this crate already reads with `query!`, so
-//! what compile-time checking would catch is caught by the database tests in
-//! `crates/store-pg/tests/database.rs`. `crate::audit` makes the same choice.
+//! Both statements are `sqlx::query!`, checked against a migrated database at
+//! compile time and recorded in `.sqlx/`, like the rest of this crate. The one
+//! thing the macro cannot take from [`MEMBER`] is the member name itself: a
+//! `query!` statement must be a literal, so `'options'` is spelled out in the
+//! `jsonb_build_object` call and [`MEMBER`] names the read side. The two are
+//! asserted equal in this module's tests, which is what keeps a rename from
+//! producing settings that are written and never read.
 
 use crate::error::to_domain_error;
 use asterius_domain::ports::TenantSettingsRepository;
 use asterius_domain::{DomainError, TenantId, TenantSettings};
-use sqlx::Row as _;
 use sqlx::postgres::PgPool;
 
 /// The member of `tenants.settings` this repository owns.
@@ -60,14 +59,16 @@ impl PgTenantSettings {
 #[async_trait::async_trait]
 impl TenantSettingsRepository for PgTenantSettings {
     async fn settings(&self, tenant: &TenantId) -> Result<TenantSettings, DomainError> {
-        let row = sqlx::query("select settings from tenants where tenant_id = $1")
-            .bind(tenant.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(to_domain_error)?
-            .ok_or(DomainError::NotFound)?;
+        let row = sqlx::query!(
+            "select settings from tenants where tenant_id = $1",
+            tenant.as_str()
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .ok_or(DomainError::NotFound)?;
 
-        let document: serde_json::Value = row.try_get("settings").map_err(to_domain_error)?;
+        let document = row.settings;
 
         // A stored document this build refuses fails the read rather than
         // falling back to the defaults, for the reason
@@ -79,15 +80,15 @@ impl TenantSettingsRepository for PgTenantSettings {
     }
 
     async fn save(&self, tenant: &TenantId, settings: &TenantSettings) -> Result<(), DomainError> {
-        let affected = sqlx::query(
+        let affected = sqlx::query!(
             "update tenants
              set settings = coalesce(settings, '{}'::jsonb)
                             || jsonb_build_object('options', $2::jsonb),
                  updated_at = now()
              where tenant_id = $1",
+            tenant.as_str(),
+            settings.to_json()
         )
-        .bind(tenant.as_str())
-        .bind(settings.to_json())
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?

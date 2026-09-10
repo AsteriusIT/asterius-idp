@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into authorization_details_types\n                 (tenant_id, type_name, schema, consent_template)\n             values ($1, $2, $3, $4)\n             on conflict (tenant_id, type_name) do update\n             set schema = excluded.schema,\n                 consent_template = excluded.consent_template",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Jsonb",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "69870da1c3f2e749f6658a928b194577aba738695111a080344167a845174737"
+}
