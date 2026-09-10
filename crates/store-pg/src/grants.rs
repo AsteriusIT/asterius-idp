@@ -149,6 +149,14 @@ impl PgGrantRepository {
         let resources: Vec<String> = grant.resources.iter().cloned().collect();
         let authorization_details = serde_json::Value::Array(grant.authorization_details.clone());
         let actor_chain = serde_json::Value::Array(grant.actor_chain.clone());
+        // OIDC Core §2's three, written as one: the row constraint and
+        // `GrantRecord::validate` both refuse an `acr` or an `amr` without the
+        // instant they describe, so they are read off one `Option` here rather
+        // than three fields that could be written apart.
+        let authentication = grant.authentication.as_ref();
+        let amr: Vec<String> = authentication
+            .map(|a| a.amr.iter().map(|m| m.as_str().to_owned()).collect())
+            .unwrap_or_default();
 
         // `claimed_at` is written here as well as by `claim`, because the two
         // shapes minted at the token endpoint — `client_credentials` and an RFC
@@ -158,9 +166,10 @@ impl PgGrantRepository {
         sqlx::query!(
             "insert into grants (tenant_id, grant_id, client_id, user_id, subject, scopes,
                                  claims, claims_locales, authorization_details, resources,
-                                 actor_chain, parent_grant_id, session_id, created_at, updated_at,
-                                 expires_at, claimed_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14, $15, $16)",
+                                 actor_chain, parent_grant_id, session_id, authenticated_at,
+                                 acr, amr, created_at, updated_at, expires_at, claimed_at)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                     $17, $18, $19)",
             self.tenant.as_str(),
             id,
             grant.client.as_str(),
@@ -174,6 +183,9 @@ impl PgGrantRepository {
             actor_chain,
             parent,
             grant.session.as_ref().map(SessionId::as_str),
+            authentication.as_ref().map(|a| a.authenticated_at),
+            authentication.and_then(|a| a.acr.as_deref()),
+            &amr,
             grant.created_at,
             grant.expires_at,
             grant.claimed_at,
@@ -195,8 +207,8 @@ impl PgGrantRepository {
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                     authorization_details, resources, actor_chain, parent_grant_id,
-                    session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
-                    revocation_reason
+                    session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,
+                    claimed_at, revoked_at, revocation_reason
                from grants
                where tenant_id = $1 and grant_id = $2",
             self.tenant.as_str(),
@@ -314,8 +326,8 @@ impl PgGrantRepository {
             Row,
             "select grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                     authorization_details, resources, actor_chain, parent_grant_id,
-                    session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
-                    revocation_reason
+                    session_id, authenticated_at, acr, amr, created_at, updated_at, expires_at,
+                    claimed_at, revoked_at, revocation_reason
                from grants
                where tenant_id = $1 and subject = $2
                order by created_at desc, grant_id",
@@ -375,8 +387,8 @@ impl PgGrantRepository {
                and (expires_at is null or expires_at > $3)
              returning grant_id, client_id, user_id, subject, scopes, claims, claims_locales,
                        authorization_details, resources, actor_chain, parent_grant_id,
-                       session_id, created_at, updated_at, expires_at, claimed_at, revoked_at,
-                       revocation_reason",
+                       session_id, authenticated_at, acr, amr, created_at, updated_at,
+                       expires_at, claimed_at, revoked_at, revocation_reason",
             self.tenant.as_str(),
             uuid(id)?,
             now
@@ -603,6 +615,9 @@ struct Row {
     actor_chain: serde_json::Value,
     parent_grant_id: Option<Uuid>,
     session_id: Option<String>,
+    authenticated_at: Option<OffsetDateTime>,
+    acr: Option<String>,
+    amr: Vec<String>,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
     expires_at: Option<OffsetDateTime>,
@@ -635,6 +650,9 @@ impl Row {
                 .parent_grant_id
                 .map(|parent| GrantId::new(parent.to_string())),
             session: self.session_id,
+            authenticated_at: self.authenticated_at,
+            acr: self.acr,
+            amr: self.amr,
             created_at: self.created_at,
             updated_at: self.updated_at,
             expires_at: self.expires_at,

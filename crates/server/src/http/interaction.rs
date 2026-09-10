@@ -1189,6 +1189,19 @@ async fn mint(
     // here, and `claims::resolve_for_grant` reads them from nowhere else.
     asterius_oidc::claims::record_on_grant(&request.parameters, &mut grant);
     grant.session = Some(DomainSessionId::new(digest.to_owned()));
+    // OIDC Core §2's `auth_time`, `acr` and `amr`, copied off the session at
+    // the one moment the session is certainly there (`ast-dlk`). §11 makes
+    // `offline_access` access "when the End-User is not present", so a grant
+    // carrying it outlives the session row — and a sweep, a sign-out or a
+    // retention policy taking that row away must not leave the server with no
+    // honest answer to when the person authenticated. See
+    // `asterius_domain::GrantAuthentication` for why this is a snapshot and
+    // not a pointer, and why a later step-up does not rewrite it.
+    grant.authentication = Some(asterius_domain::GrantAuthentication {
+        authenticated_at: session.authenticated_at,
+        acr: session.acr.clone(),
+        amr: session.amr.clone(),
+    });
     // `claimed_at` stays `None`: Grant Management ID1 §5.6 makes a grant
     // `active` when a credential has been *claimed*, and nothing has been. The
     // token endpoint stamps it when the code is redeemed.

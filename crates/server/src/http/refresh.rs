@@ -459,32 +459,50 @@ impl RefreshToken<'_> {
     /// an authorization that has ended with it — `invalid_grant`, which is
     /// what a client should see when the user has logged out.
     ///
-    /// Either way the facts come from the session row, never from the grant's
-    /// timestamps: `auth_time` says when the person authenticated, and a
-    /// refresh six weeks later must not quietly claim they did so today.
+    /// Either way the facts are ones the server recorded, never derived from
+    /// the grant's timestamps: `auth_time` says when the person authenticated,
+    /// and a refresh six weeks later must not quietly claim they did so today.
+    /// Once the session is gone they come from the copy the grant took of it at
+    /// the authorization (`ast-dlk`), which is why `offline_access` can now
+    /// mean what OIDC Core §11 says it means.
+    ///
+    /// `sid: None` is how [`issuance::session_facts`] reports that it fell back
+    /// to that copy, and it is the whole of the distinction this function
+    /// makes: a grant without `offline_access` gets `invalid_grant` there,
+    /// because for it a session that has ended is an authorization that has
+    /// ended too.
     async fn session_facts(&self, grant: &Grant) -> Result<issuance::SessionFacts, Failure> {
-        match issuance::session_facts(self.sessions, grant).await {
-            Ok(facts) => Ok(facts),
-            Err(error) if grant.scopes.contains("offline_access") => {
-                // The grant is entitled to outlive the session, but this
-                // server still cannot assert an `auth_time` it no longer
-                // holds. `ast-uwv.3` was expected to close this and did not:
-                // the consent memory it delivered is derived from the grants
-                // rather than stored beside them, and a derivation has nowhere
-                // to keep an `auth_time`. Closing it means recording the
-                // authentication facts on the grant itself and reading them
-                // here when the session is gone — a change to the grant model.
-                // Until then the honest answer is to refuse rather than to
-                // invent a claim, and the log says which it was.
+        let offline = grant.scopes.contains("offline_access");
+        let facts = match issuance::session_facts(self.sessions, grant).await {
+            Ok(facts) => facts,
+            Err(_) if !offline => return Err(invalid_grant()),
+            Err(error) => {
+                // Entitled to outlive the session, but nothing recorded the
+                // authentication: a grant created before `ast-dlk` added the
+                // columns, whose session has since been purged. Refusing is
+                // still the honest answer — an `auth_time` this server does
+                // not hold is not one to invent — and the log says which case
+                // it was, because it is the one that ages out on its own.
                 tracing::warn!(
                     %error,
                     grant = %grant.id,
                     "an offline_access grant outlived the session its auth_time came from"
                 );
-                Err(Failure::Server(error))
+                return Err(Failure::Server(error));
             }
-            Err(_) => Err(invalid_grant()),
+        };
+
+        // A live session answered, so the facts are the current ones —
+        // including a step-up that moved them since (`ast-2vk.7`). Otherwise
+        // they came from the grant's copy, which only a grant entitled to
+        // outlive its session may be served from: for any other, a session
+        // that has ended is an authorization that has ended with it, and the
+        // client should see RFC 6749 §5.2's `invalid_grant` rather than a
+        // token.
+        if facts.sid.is_none() && !offline {
+            return Err(invalid_grant());
         }
+        Ok(facts)
     }
 
     /// The value the client gets back, and what that costs the database.
