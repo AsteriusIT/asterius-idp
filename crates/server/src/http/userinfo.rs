@@ -401,8 +401,7 @@ async fn check_sender_constraint(
         &access_token::Presented {
             tenant: context.tenant,
             dpop: context.dpop,
-            endpoint: Endpoint::UserInfo,
-            segment: None,
+            target: crate::http::dpop::ProofTarget::at(Endpoint::UserInfo),
             certificate: context.certificate,
             method,
             headers,

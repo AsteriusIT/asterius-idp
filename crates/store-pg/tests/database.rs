@@ -7834,6 +7834,7 @@ mod retention {
         .expect("seed retired subject");
 
         seed_theme(pool, tenant).await;
+        seed_ssf_stream(pool, tenant).await;
     }
 
     /// The tenant's theme and one image it could name (`ast-ndk.1`).
@@ -7871,6 +7872,28 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed theme asset");
+    }
+
+    /// One SSF stream, so the kept-table criterion has something to say about
+    /// `ssf_streams` (SSF 1.0 §8.1.1, `ast-0ju.3`).
+    ///
+    /// Kept by the policy: a stream is a receiver's standing configuration,
+    /// created by a `POST` and removed by §8.1.1.5's `DELETE`, and a sweep
+    /// that took one would silently stop a continuous-access signal. The row
+    /// is the shape `PgSsfStreams::create` writes — a poll stream, no push
+    /// endpoint — so the schema's own checks apply to it.
+    async fn seed_ssf_stream(pool: &PgPool, tenant: &str) {
+        sqlx::query(
+            "insert into ssf_streams
+                 (tenant_id, stream_id, client_id, audience, delivery_method)
+             values ($1, 'seeded-stream', 'billing', array['https://receiver.example/events'],
+                     'urn:ietf:rfc:8936')
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("seed ssf stream");
     }
 
     /// One row per swept expiry-driven table, expiring at `expires`.

@@ -29,6 +29,7 @@ use crate::http::recovery;
 use crate::http::refresh::RefreshToken;
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::revocation;
+use crate::http::ssf::CONFIGURATION_PATH as SSF_STREAMS_PATH;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::tenancy::MountPrefix;
@@ -422,7 +423,35 @@ fn mount_features(
 ) -> Router {
     let router = mount_grant_management(router, capabilities, &endpoints);
     let router = mount_backchannel_authentication(router, capabilities, &endpoints);
+    let router = mount_ssf(router, capabilities, &endpoints);
     router.merge(device_pages(endpoints))
+}
+
+/// Mounts the SSF Stream Configuration endpoint (SSF 1.0 §8.1.1,
+/// `ast-0ju.3`), where the deployment has it.
+///
+/// Not from the [`Endpoint`] registry, and therefore not from
+/// [`mount_the_unbuilt`]: §7.1 advertises this URL in the transmitter's own
+/// document, and [`ssf_configuration`] names it from the same constant this
+/// route is mounted at. That is the parity the registry buys, kept by hand
+/// across two lines rather than by an iterator across thirteen.
+///
+/// The *deployment's* flag decides whether the route exists at all; a tenant
+/// that has switched `ssf` off is refused inside the handler, exactly as it is
+/// for the transmitter document, because the per-tenant guard reads the
+/// registry and this path is not in it.
+fn mount_ssf(
+    router: Router,
+    capabilities: Capabilities,
+    endpoints: &Arc<ClientEndpoints>,
+) -> Router {
+    if !capabilities.is_enabled(asterius_domain::Feature::Ssf) {
+        return router;
+    }
+    router.route(
+        SSF_STREAMS_PATH,
+        any(ssf_streams).with_state(Arc::clone(endpoints)),
+    )
 }
 
 /// Mounts the backchannel authentication endpoint (CIBA Core 1.0 §7).
@@ -778,8 +807,19 @@ async fn ssf_configuration(
     // keys that verify a SET are the keys that verify an ID token
     // (`ast-0ju.2`), and two ways of spelling their location would be two
     // things to keep in step.
-    let document =
-        asterius_ssf::transmitter_metadata(&tenant.issuer, &Endpoint::Jwks.url(&tenant.issuer));
+    // §7.1's `configuration_endpoint`, named exactly when it is mounted: the
+    // route needs the database wiring a stream is stored in, so a deployment
+    // without it advertises no management endpoint rather than one that 404s
+    // (`asterius_ssf::metadata`).
+    let configuration_endpoint = state
+        .clients
+        .as_ref()
+        .map(|_| format!("{}{SSF_STREAMS_PATH}", tenant.issuer.as_str()));
+    let document = asterius_ssf::transmitter_metadata(
+        &tenant.issuer,
+        &Endpoint::Jwks.url(&tenant.issuer),
+        configuration_endpoint.as_deref(),
+    );
     cacheable_json(&document, METADATA_MAX_AGE)
 }
 
@@ -1164,6 +1204,133 @@ impl grant_management::GrantManagementStore for StoredGrants {
     }
 }
 
+/// `POST`, `GET`, `PATCH`, `PUT` and `DELETE` at `/ssf/streams` — SSF 1.0
+/// §8.1.1.
+///
+/// Wiring only: everything that decides anything is in
+/// [`crate::http::ssf::streams`], which is where the tests are. One `any`
+/// route rather than five, because §8.1.1 is one resource with five verbs and
+/// the module answers 405 for the rest itself — a router that matched only the
+/// five would answer 405 without the `Cache-Control` every response of this
+/// endpoint carries.
+async fn ssf_streams(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    // The per-tenant half of the gate. This path is not in the endpoint
+    // registry, so `tenant_feature_guard` does not cover it; the refusal is
+    // the same 404, for the same reason it gives.
+    match capabilities_for(&endpoints, &tenant).await {
+        Ok(capabilities) if capabilities.is_enabled(asterius_domain::Feature::Ssf) => {}
+        Ok(_) => return crate::http::server::not_found().await.into_response(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    }
+
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let store = StoredStreams {
+        streams: scope.ssf_streams(),
+        grants: scope.grants(),
+    };
+    // What this build can emit. Empty today; see
+    // `asterius_ssf::stream::SUPPORTED_EVENTS`.
+    let events_supported: std::collections::BTreeSet<String> =
+        asterius_ssf::stream::SUPPORTED_EVENTS
+            .iter()
+            .map(|event| (*event).to_owned())
+            .collect();
+    crate::http::ssf::streams(
+        crate::http::ssf::SsfContext {
+            tenant: &tenant,
+            store: &store,
+            keys: endpoints.keys.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            certificate: certificate.as_deref().map(|presented| &presented.leaf),
+            events_supported: &events_supported,
+            now: time::OffsetDateTime::now_utc(),
+        },
+        &method,
+        &headers,
+        uri.query(),
+        &body,
+    )
+    .await
+}
+
+/// The rows behind the SSF management API.
+///
+/// Two repositories, because the endpoint asks two different questions: what
+/// streams this receiver has, and whether the token it presented is still
+/// good. The second is the grant repository's, and it is the same pair of
+/// reads UserInfo and Grant Management make.
+#[derive(Debug)]
+struct StoredStreams {
+    streams: asterius_store_pg::PgSsfStreams,
+    grants: asterius_store_pg::PgGrantRepository,
+}
+
+#[async_trait::async_trait]
+impl crate::http::ssf::SsfStreamStore for StoredStreams {
+    async fn create(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamConfiguration,
+    ) -> Result<(), DomainError> {
+        self.streams.create(receiver, stream).await
+    }
+
+    async fn find(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamId,
+    ) -> Result<Option<asterius_ssf::stream::StreamConfiguration>, DomainError> {
+        self.streams.find(receiver, stream).await
+    }
+
+    async fn list(
+        &self,
+        receiver: &asterius_domain::ClientId,
+    ) -> Result<Vec<asterius_ssf::stream::StreamConfiguration>, DomainError> {
+        self.streams.list(receiver).await
+    }
+
+    async fn save(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamConfiguration,
+    ) -> Result<bool, DomainError> {
+        self.streams.save(receiver, stream).await
+    }
+
+    async fn delete(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamId,
+    ) -> Result<bool, DomainError> {
+        self.streams.delete(receiver, stream).await
+    }
+
+    async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
+        self.grants.is_denylisted(jti).await
+    }
+
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &asterius_domain::ClientId,
+        grant: Option<&asterius_domain::GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, DomainError> {
+        self.grants.revoked_before(client, grant).await
+    }
+}
+
 /// `POST /revoke` — RFC 7009 §2.
 ///
 /// Wiring only, like the token endpoint: everything that decides anything is
@@ -1438,6 +1605,7 @@ async fn dispatch_grants(
         lifetimes,
         grant_id_claim,
         grant_management,
+        ssf,
     } = issuing;
 
     let clients = scope.clients(endpoints.capabilities);
@@ -1493,6 +1661,7 @@ async fn dispatch_grants(
         audit: endpoints.audit.as_ref(),
         grant_id_claim,
         grant_management,
+        ssf,
         lifetimes,
         constraint,
         now,
@@ -2168,6 +2337,14 @@ struct Issuing {
     /// [`tenant_feature_guard`] answers 404 there — so a token audienced at it
     /// would be a token for a URL that does not exist here.
     grant_management: bool,
+    /// Whether the SSF stream configuration endpoint is an audience a
+    /// client-only token may be minted for (SSF 1.0 §8, `ast-0ju.3`).
+    ///
+    /// The tenant's own narrowing, exactly as above and for the same reason: a
+    /// tenant that has switched SSF off has no management endpoint — the
+    /// handler answers 404 there — so a token audienced at it would be a token
+    /// for a URL that does not exist here.
+    ssf: bool,
 }
 
 /// Reads the three, from one settings lookup.
@@ -2187,6 +2364,9 @@ async fn issuing_policy(
             grant_management: endpoints
                 .capabilities
                 .is_enabled(asterius_domain::Feature::GrantManagement),
+            ssf: endpoints
+                .capabilities
+                .is_enabled(asterius_domain::Feature::Ssf),
         });
     };
     let settings = directory.for_tenant(&tenant.id).await?;
@@ -2196,6 +2376,9 @@ async fn issuing_policy(
         grant_management: settings
             .effective_capabilities(endpoints.capabilities)
             .is_enabled(asterius_domain::Feature::GrantManagement),
+        ssf: settings
+            .effective_capabilities(endpoints.capabilities)
+            .is_enabled(asterius_domain::Feature::Ssf),
     })
 }
 

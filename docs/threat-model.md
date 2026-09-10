@@ -610,6 +610,51 @@ served only behind `Feature::Ssf`, deployment-wide and per tenant, so a tenant
 that runs no transmitter answers 404 rather than publishing an issuer a
 receiver could try to configure a stream against.
 
+### SSF stream configuration (`ast-0ju.3`)
+
+**Why this needs a section: a stream is a standing subscription to signals
+about a tenant's users, arranged by a third party over an API that no human
+ever sees.** A receiver creates one with a `client_credentials` token, and from
+then on this server intends to tell it when a session is revoked or an account
+is disabled. The question the endpoint has to answer on every request is not
+"is this a valid token" but "whose streams may this caller touch".
+
+**The frontier: a receiver reaches its own streams and nothing else.** The
+`client_id` from the verified token is in the `WHERE` clause of every read and
+every write (`asterius_store_pg::ssf_streams`), so another receiver's
+`stream_id` is not a row that comes back and gets refused — it is a row that
+does not exist. The 404 of SSF 1.0 §8.1.1.2 is therefore the truthful answer
+rather than a chosen one, and there is no code path in which a `PATCH` or a
+`DELETE` could reach a stream belonging to somebody else. The identifier is
+128 bits from the OS CSPRNG on top of that, so it is not an enumeration space
+either.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Redirecting a stream at itself.** A receiver changes `aud`, or the push `endpoint_url`, on a stream it does not own, and starts receiving another receiver's signals about people it has never seen. | The stream is fetched by `(tenant, client_id, stream_id)` before anything is changed, so there is no stream to edit. `aud` is settled at creation and immutable afterwards (§8.1.1): a request naming a different one is a 400, not a change, and the comparison is over the set so a re-ordering is not a rewrite. |
+| **A1** | **G1** | **Reaching the management API with a token minted for something else.** A receiver's token for the tenant's business API, or any client's token at all, is presented at the stream endpoint. | `aud` must be this tenant's stream configuration endpoint, and the token must carry `ssf.manage` — a scope that exists only on that implicit resource server (`issuance::ImplicitResources`), so a token for `payments` cannot carry it. The token is sender-constrained: `client_credentials` here issues nothing unbound, and the DPoP proof is checked over a `htu` built from the tenant's issuer rather than from the request. Only `client_credentials` may be audienced here — a user-delegated token never is, so no person's authorization can stand behind a stream they were never asked about. |
+| **A1**, **A3** | **G3** | **Using `delivery.endpoint_url` as an SSRF target, or as an amplifier.** | A push endpoint must be `https`, must have a host and may carry neither fragment nor userinfo, checked before it is stored. Nothing is sent to it by this story — push delivery is `ast-0ju.6` — and when it is, it goes through ADR-0006's one outbound path like every other client-supplied URL. |
+| **A2** | **G2** | **Keeping the signals flowing after the stream is gone.** A deleted stream whose queued SETs are still in the outbox delivers events about people to a receiver that has been withdrawn. | §8.1.1.5 is one transaction: whatever the stream still owed is abandoned first, the row is removed last. A crash between the two leaves a stream whose events are already stopped, which is the safe half. |
+| **A5** | **G1** | **Configuring a stream and leaving no trace.** | Every creation, update and deletion is an audit event of its own (`ssf.stream_created`, `ssf.stream_updated`, `ssf.stream_deleted`), with the receiver as the actor and the stream recorded as a fingerprint rather than as its identifier — enough to correlate entries, not enough to act on if the trail leaks. |
+
+**A credential this server will not keep.** RFC 8935 §2.2 lets a receiver hand
+the transmitter an `authorization_header` to present on every push. This build
+refuses the member with a 400 rather than storing it: every other secret in
+this schema is sealed under the tenant's KEK and re-sealed by the rotation
+sweep (`asterius_store_pg::rewrap`), and a column outside that sweep would be a
+receiver's credential silently stranded by a KEK rotation — discovered, at the
+earliest, the first time a delivery is rejected. `ast-0ju.6` adds the sealed
+column, the rewrap arm and the member together, which is the only order in
+which they are safe.
+
+**Residual, stated rather than closed:** one stream per receiver per audience is
+a unique index rather than a tenant setting, so a tenant that legitimately
+wants several gets a 409 until that setting exists; and `events_supported` is
+empty until an emitter lands (`ast-0ju.5`, `ast-0ju.8`), so a receiver that
+configures a stream today is told, in `events_delivered`, that it will receive
+nothing. The second is deliberate: the alternative is a receiver believing it
+has continuous-access coverage it has not got.
+
 ### Back-channel logout (`ast-o4u.2`)
 
 **Why this needs a section: the server now signs a JWT it sends to somebody

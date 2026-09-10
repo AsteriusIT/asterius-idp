@@ -438,11 +438,12 @@ pub async fn targeting(
     client: &Client,
     grant: &Grant,
     requested: &std::collections::BTreeSet<String>,
-    grant_management: bool,
+    implicit: ImplicitResources,
 ) -> Result<Targeting, TargetingError> {
     let registry = asterius_domain::ResourceRegistry::new(
-        grant_management_resource(tenant, grant_management)
+        grant_management_resource(tenant, implicit.grant_management)
             .into_iter()
+            .chain(ssf_resource(tenant, implicit.ssf))
             .chain(resource_servers.list().await?),
     );
 
@@ -459,6 +460,66 @@ pub async fn targeting(
     let audience = Audience::new(&targets).map_err(|_| TargetingError::InvalidTarget)?;
 
     Ok(Targeting { audience, scopes })
+}
+
+/// The APIs this server hosts itself, as audiences a token may be minted for.
+///
+/// Two of this server's own endpoints are protected resources rather than
+/// protocol endpoints — the Grant Management API and the SSF management API —
+/// and neither has a row in the `resource_servers` registry: the identifier is
+/// derived from the tenant's issuer, so there is nothing for an operator to
+/// choose and nothing to keep in step. What an operator *does* choose is
+/// whether the feature is on, which is what these two flags carry.
+///
+/// A struct rather than two booleans in the argument list, because two
+/// adjacent booleans at four call sites is a swap nobody would see.
+#[derive(Debug, Clone, Copy)]
+pub struct ImplicitResources {
+    /// Whether this tenant offers the Grant Management API (ID1 §6.2).
+    pub grant_management: bool,
+    /// Whether this tenant offers the SSF management API (SSF 1.0 §8).
+    ///
+    /// `false` for every grant but `client_credentials`, whatever the tenant
+    /// has switched on: SSF 1.0 §8 makes the receiver a registered client
+    /// acting on its own behalf, so a user-delegated token audienced at the
+    /// stream configuration endpoint would be a person's authorization
+    /// standing behind a stream they were never asked about.
+    pub ssf: bool,
+}
+
+/// The SSF management API as a resource server of this tenant (SSF 1.0 §8,
+/// `ast-0ju.3`).
+///
+/// The same argument [`grant_management_resource`] makes, and the same shape:
+/// the identifier is the stream configuration endpoint, derived from the
+/// tenant's issuer, so a deployment that switched SSF on would otherwise
+/// advertise a transmitter, mount the endpoint, and then answer
+/// `invalid_target` to every receiver asking for a token to call it.
+///
+/// The scopes are exactly one — [`asterius_ssf::stream::SCOPE_MANAGE`] — so a
+/// receiver registered for `payments` and `ssf.manage` gets a stream
+/// configuration token that cannot touch payments, and a payments token that
+/// cannot configure a stream (RFC 8707 §2).
+fn ssf_resource(tenant: &Tenant, offered: bool) -> Option<asterius_domain::ResourceServer> {
+    if !offered {
+        return None;
+    }
+    let url = format!(
+        "{}{}",
+        tenant.issuer.as_str(),
+        crate::http::ssf::CONFIGURATION_PATH
+    );
+    let identifier = asterius_domain::ResourceIdentifier::parse(&url).ok()?;
+    Some(asterius_domain::ResourceServer {
+        identifier,
+        scopes: Some(
+            [asterius_ssf::stream::SCOPE_MANAGE.to_owned()]
+                .into_iter()
+                .collect(),
+        ),
+        // No opinion: the tenant's own access-token lifetime applies.
+        default_token_lifetime: None,
+    })
 }
 
 /// The Grant Management API as a resource server of this tenant (§6.2).

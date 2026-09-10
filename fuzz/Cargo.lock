@@ -264,6 +264,7 @@ dependencies = [
  "argon2",
  "asterius-domain",
  "asterius-jose",
+ "asterius-ssf",
  "async-trait",
  "hex",
  "serde_json",

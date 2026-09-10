@@ -156,6 +156,7 @@ The 72 targets below cover 91 declared entry points. Generated from the
 | `response_mode` | `ResponseMode::parse` | `crates/oidc/src/authorize.rs` |
 | `revocation_request` | `classify` | `crates/oidc/src/revocation.rs` |
 | `ssf_event_uri` | `EventUri::parse` | `crates/ssf/src/event.rs` |
+| `ssf_stream_configuration` | `StreamRequest::parse` | `crates/ssf/src/stream.rs` |
 | `tenant_message_overrides` | `MessageOverrides::from_json` | `crates/domain/src/messages.rs` |
 | `tenant_route` | `route` | `crates/oidc/src/tenancy.rs` |
 | `tenant_settings` | `TenantSettings::from_json` | `crates/domain/src/entities/tenant_settings.rs` |
