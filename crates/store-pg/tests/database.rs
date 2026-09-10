@@ -6680,6 +6680,7 @@ mod client_configuration {
             ]));
             object.insert("authorization_details_types".to_owned(), json!(["payment_initiation"]));
             object.insert("request_object_signing_alg".to_owned(), json!("ES256"));
+            object.insert("userinfo_signed_response_alg".to_owned(), json!("ES256"));
             repo.replace(&client("demo", "c.abc", &rich)).await.expect("the first update");
 
             sqlx::query(
@@ -6696,6 +6697,14 @@ mod client_configuration {
 
             let before = repo.find(&ClientId::new("c.abc")).await.expect("find").expect("present");
             assert_eq!(before.registration.redirect_uris.len(), 2);
+            // The column is the only place `userinfo_signed_response_alg` can
+            // live between two requests, so a registration that survives a
+            // write and a read is the whole of it being registrable (`ast-e89`).
+            assert_eq!(
+                before.registration.userinfo_signed_response_alg,
+                Some(asterius_domain::keys::SigningAlgorithm::Es256),
+                "the registered UserInfo algorithm did not survive the round trip"
+            );
 
             // A client renaming itself, and saying nothing about anything else.
             let minimal = json!({
@@ -6731,6 +6740,11 @@ mod client_configuration {
                 );
                 assert!(after.registration.authorization_details_types.is_empty());
                 assert!(after.registration.request_object_signing_alg.is_none());
+                assert!(
+                    after.registration.userinfo_signed_response_alg.is_none(),
+                    "RFC 7592 §2.2: an omitted member is null, so the client is \
+                     back to the JSON UserInfo response it did not ask to leave"
+                );
                 assert!(after.registration.scopes.is_empty());
                 assert_eq!(after.registration.application_type.as_str(), "web");
 

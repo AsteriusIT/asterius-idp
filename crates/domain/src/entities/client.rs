@@ -978,6 +978,9 @@ pub struct ClientMetadata {
     pub authorization_details_types: Option<Vec<String>>,
     /// FAPI 2.0 SP §5.2.2.1.1, RFC 8705 §5.
     pub use_mtls_endpoint_aliases: Option<bool>,
+    /// OIDC Registration §2. Absent means OIDC Core §5.3.2's default, a plain
+    /// JSON UserInfo response.
+    pub userinfo_signed_response_alg: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,9 +1051,56 @@ pub struct ClientRegistration {
     pub authorization_details_types: BTreeSet<String>,
     /// FAPI 2.0 SP §5.2.2.1.1.
     pub use_mtls_endpoint_aliases: bool,
+    /// OIDC Registration §2. `None` is OIDC Core §5.3.2's default: "the
+    /// UserInfo Claims are returned as a UTF-8 encoded JSON object". `Some`
+    /// makes `/userinfo` answer `application/jwt`, signed by this tenant —
+    /// which is why registering one is checked against the tenant's keys
+    /// (`register::unsignable`) as `id_token_signed_response_alg` is.
+    pub userinfo_signed_response_alg: Option<SigningAlgorithm>,
 }
 
 impl ClientRegistration {
+    /// The metadata members whose algorithm *this server* signs with, paired
+    /// with what this registration put in them.
+    ///
+    /// A table rather than a line per field, and in the domain rather than at
+    /// one endpoint, because two callers ask the same question of it: dynamic
+    /// registration refuses a document whose tenant holds no key for one of
+    /// these (`register::unsignable`), and the admin API refuses the same
+    /// client at the console form (`asterius_admin_api::clients::check_signable`).
+    /// Two lists would let one door create a client the other would have
+    /// refused, which is the failure `ast-f7m.5` exists to prevent.
+    ///
+    /// `None` in the second position means the client registered no such
+    /// member: nothing to check rather than something to refuse.
+    /// `backchannel_authentication_request_signing_alg` is absent altogether
+    /// because it names an algorithm the *client* signs with and this server
+    /// only verifies, so it needs no key of ours.
+    #[must_use]
+    pub fn server_signed_algorithms(&self) -> [(&'static str, Option<SigningAlgorithm>); 3] {
+        [
+            // OIDC Registration §2. Always present — it has a profile default
+            // — so this entry is never `None`.
+            (
+                "id_token_signed_response_alg",
+                Some(self.id_token_signed_response_alg),
+            ),
+            // OIDC Core §5.3.2. `None` is the plain-JSON UserInfo response,
+            // which needs no key at all (`ast-e89`).
+            (
+                "userinfo_signed_response_alg",
+                self.userinfo_signed_response_alg,
+            ),
+            // OIDC Registration §2. Today this names an algorithm the *client*
+            // signs its request objects with and this server only verifies, so
+            // there is no key of ours to hold and the entry contributes
+            // nothing. It is a row rather than a comment so that `ast-gxh.9`,
+            // which lands the JAR path, has one expression to change and no
+            // table to find.
+            ("request_object_signing_alg", None),
+        ]
+    }
+
     /// The only `response_types` value this server accepts (ADR-0002: no
     /// implicit flow, no hybrid flow, so `code` is the only response type that
     /// exists).
@@ -1332,6 +1382,11 @@ impl ClientMetadata {
             token_binding,
             authorization_details_types: self.authorization_details_types()?,
             use_mtls_endpoint_aliases,
+            userinfo_signed_response_alg: self
+                .userinfo_signed_response_alg
+                .as_deref()
+                .map(|raw| signing_algorithm("userinfo_signed_response_alg", raw))
+                .transpose()?,
         })
     }
 
@@ -2874,12 +2929,30 @@ mod tests {
     // Algorithms (ADR-0003, FAPI 2.0 SP §5.4.1)
     // -----------------------------------------------------------------------
 
+    /// OIDC Core §5.3.2: a client that registers no
+    /// `userinfo_signed_response_alg` is served a JSON object, and one that
+    /// registers an algorithm gets a signed JWT. The difference is carried by
+    /// `Option`, so "unsigned" is not one of the algorithms.
+    #[test]
+    fn userinfo_signing_is_off_until_the_client_registers_an_algorithm() {
+        let unsigned = validate(&minimal()).expect("a minimal document");
+        assert_eq!(unsigned.userinfo_signed_response_alg, None);
+
+        let signed = validate(&with("userinfo_signed_response_alg", json!("ES256")))
+            .expect("a document naming an allowed algorithm");
+        assert_eq!(
+            signed.userinfo_signed_response_alg,
+            Some(SigningAlgorithm::Es256)
+        );
+    }
+
     /// The client does not get to choose the algorithm used to check its own
     /// credentials, and `none` is not a value that exists.
     #[test]
     fn no_signing_algorithm_outside_the_allow_list_can_be_registered() {
         for field in [
             "id_token_signed_response_alg",
+            "userinfo_signed_response_alg",
             "request_object_signing_alg",
             "backchannel_authentication_request_signing_alg",
         ] {
@@ -3663,6 +3736,8 @@ mod tests {
             ("grant_types", json!(["password"])),
             ("id_token_signed_response_alg", json!("none")),
             ("id_token_signed_response_alg", json!("RS256")),
+            ("userinfo_signed_response_alg", json!("none")),
+            ("userinfo_signed_response_alg", json!("RS256")),
             ("request_object_signing_alg", json!("HS256")),
             ("require_pushed_authorization_requests", json!(false)),
             ("dpop_bound_access_tokens", json!(false)),

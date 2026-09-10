@@ -39,7 +39,7 @@ use crate::http::access_token;
 use crate::http::dpop::{self, DpopEndpoint, NONCE_HEADER, USE_NONCE};
 use asterius_domain::entities::grant::GrantStatus;
 use asterius_domain::keys::{KeyStore, Signer, SigningAlgorithm};
-use asterius_domain::{DomainError, Grant, GrantId, Tenant, User, UserId};
+use asterius_domain::{ClientId, DomainError, Grant, GrantId, Tenant, User, UserId};
 use asterius_jose::verify::{VerificationError, Verified};
 use asterius_oidc::metadata::Endpoint;
 use asterius_oidc::userinfo::{self, Presentation, UserInfoError};
@@ -82,6 +82,29 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     /// unavailable store: a token that could not be checked is not a token
     /// this endpoint answers.
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError>;
+
+    /// The `userinfo_signed_response_alg` a client registered, if any.
+    ///
+    /// A question rather than the whole client row, so this endpoint still
+    /// cannot reach anything else a client carries. `None` is OIDC Core
+    /// §5.3.2's default — a plain JSON object — and is also what a client that
+    /// no longer exists gets: a response signed for a registration nobody can
+    /// read is not a response this server can stand behind.
+    ///
+    /// Asked with the *grant's* `client_id` and never with the access token's,
+    /// so what shapes the response is the registration the authorization was
+    /// made under.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] when the row cannot be read. Never `None` for an
+    /// unreadable store: silently serving JSON to a client that registered a
+    /// signature would drop the signature on exactly the deployment that is
+    /// already failing.
+    async fn signed_response_alg(
+        &self,
+        client: &ClientId,
+    ) -> Result<Option<SigningAlgorithm>, DomainError>;
 }
 
 /// What one UserInfo request needs.
@@ -97,15 +120,6 @@ pub struct UserInfoContext<'a> {
     pub signer: &'a dyn Signer,
     /// Checks the DPoP proof (RFC 9449 §7.1).
     pub dpop: &'a DpopEndpoint,
-    /// The client's `userinfo_signed_response_alg`, when it registered one.
-    ///
-    /// `None` is OIDC Core §5.3.2's default — "the UserInfo Claims are
-    /// returned as a UTF-8 encoded JSON object" — and is what the wiring
-    /// passes today, because `userinfo_signed_response_alg` is not yet a
-    /// registrable client metadata member. The signing path is exercised by this
-    /// endpoint's own tests, so turning it on is a change to registration and
-    /// not to this file.
-    pub signed_response_alg: Option<SigningAlgorithm>,
     /// One clock reading for the whole request.
     pub now: OffsetDateTime,
 }
@@ -398,7 +412,10 @@ async fn render(
     grant: &Grant,
     body: Map<String, Value>,
 ) -> Result<Response, Refused> {
-    let Some(algorithm) = context.signed_response_alg else {
+    // Read here rather than before the token was verified: the client is the
+    // one the *grant* names, and until `live_grant` ran the only `client_id`
+    // available came out of a token this code had not checked.
+    let Some(algorithm) = context.source.signed_response_alg(&grant.client).await? else {
         return Ok(no_store(
             (StatusCode::OK, axum::Json(Value::Object(body))).into_response(),
         ));

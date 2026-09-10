@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select client_id, client_name, token_endpoint_auth_method, redirect_uris,\n                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    tls_client_auth_field, tls_client_auth_value,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1\n             order by client_id",
+  "query": "update clients\n             set client_name = $3,\n                 token_endpoint_auth_method = $4,\n                 redirect_uris = $5,\n                 grant_types = $6,\n                 response_types = $7,\n                 scopes = $8,\n                 jwks = $9,\n                 jwks_uri = $10,\n                 id_token_signed_response_alg = $11,\n                 application_type = $12,\n                 subject_type = $13,\n                 sector_identifier_uri = $14,\n                 request_object_signing_alg = $15,\n                 backchannel_authentication_request_signing_alg = $16,\n                 dpop_bound_access_tokens = $17,\n                 tls_client_certificate_bound_access_tokens = $18,\n                 authorization_details_types = $19,\n                 use_mtls_endpoint_aliases = $20,\n                 post_logout_redirect_uris = $21,\n                 tls_client_auth_field = $22,\n                 tls_client_auth_value = $23,\n                 userinfo_signed_response_alg = $24\n             where tenant_id = $1 and client_id = $2\n             returning client_id, client_name, token_endpoint_auth_method, redirect_uris,\n                       post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                       id_token_signed_response_alg, application_type, subject_type,\n                       sector_identifier_uri, request_object_signing_alg,\n                       backchannel_authentication_request_signing_alg,\n                       dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                       authorization_details_types, use_mtls_endpoint_aliases,\n                       tls_client_auth_field, tls_client_auth_value,\n                       userinfo_signed_response_alg,\n                       status, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -120,22 +120,50 @@
       },
       {
         "ordinal": 23,
-        "name": "status",
+        "name": "userinfo_signed_response_alg",
         "type_info": "Text"
       },
       {
         "ordinal": 24,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 25,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 25,
+        "ordinal": 26,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Jsonb",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        "TextArray",
+        "Bool",
+        "TextArray",
+        "Text",
+        "Text",
         "Text"
       ]
     },
@@ -163,10 +191,11 @@
       false,
       true,
       true,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "276b953ed7e7d8b382ce260c09de766c51d17ca163df26abd6c65f0ccc1220d2"
+  "hash": "0d1b97a5ee017364687c4524b386b28ec691eafaac157e4afe3f81d159d7c798"
 }

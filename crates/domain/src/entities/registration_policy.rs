@@ -995,6 +995,7 @@ mod tests {
             token_binding: TokenBinding::Dpop,
             authorization_details_types: BTreeSet::new(),
             use_mtls_endpoint_aliases: false,
+            userinfo_signed_response_alg: None,
         }
     }
 

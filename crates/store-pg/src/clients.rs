@@ -124,6 +124,7 @@ impl PgClientRepository {
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                     authorization_details_types, use_mtls_endpoint_aliases,
                     tls_client_auth_field, tls_client_auth_value,
+                    userinfo_signed_response_alg,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1 and client_id = $2",
@@ -153,6 +154,7 @@ impl PgClientRepository {
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                     authorization_details_types, use_mtls_endpoint_aliases,
                     tls_client_auth_field, tls_client_auth_value,
+                    userinfo_signed_response_alg,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1
@@ -209,9 +211,10 @@ impl PgClientRepository {
                                   tls_client_certificate_bound_access_tokens,
                                   authorization_details_types, use_mtls_endpoint_aliases, status,
                                   post_logout_redirect_uris,
-                                  tls_client_auth_field, tls_client_auth_value)
+                                  tls_client_auth_field, tls_client_auth_value,
+                                  userinfo_signed_response_alg)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23, $24, $25)
+                     $18, $19, $20, $21, $22, $23, $24, $25, $26)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  token_endpoint_auth_method = excluded.token_endpoint_auth_method,
@@ -237,7 +240,8 @@ impl PgClientRepository {
                  status = excluded.status,
                  post_logout_redirect_uris = excluded.post_logout_redirect_uris,
                  tls_client_auth_field = excluded.tls_client_auth_field,
-                 tls_client_auth_value = excluded.tls_client_auth_value",
+                 tls_client_auth_value = excluded.tls_client_auth_value,
+                 userinfo_signed_response_alg = excluded.userinfo_signed_response_alg",
             self.tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
@@ -267,6 +271,9 @@ impl PgClientRepository {
             &lists.post_logout_redirect_uris,
             tls_field,
             tls_value,
+            registration
+                .userinfo_signed_response_alg
+                .map(SigningAlgorithm::as_str),
         )
         .execute(&self.pool)
         .await
@@ -337,9 +344,10 @@ impl PgClientRepository {
                                   tls_client_certificate_bound_access_tokens,
                                   authorization_details_types, use_mtls_endpoint_aliases, status,
                                   registration_access_token_hash, post_logout_redirect_uris,
-                                  tls_client_auth_field, tls_client_auth_value)
+                                  tls_client_auth_field, tls_client_auth_value,
+                                  userinfo_signed_response_alg)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23, $24, $25, $26)
+                     $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
@@ -348,6 +356,7 @@ impl PgClientRepository {
                        dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                        authorization_details_types, use_mtls_endpoint_aliases,
                        tls_client_auth_field, tls_client_auth_value,
+                       userinfo_signed_response_alg,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -379,6 +388,9 @@ impl PgClientRepository {
             &lists.post_logout_redirect_uris,
             tls_field,
             tls_value,
+            registration
+                .userinfo_signed_response_alg
+                .map(SigningAlgorithm::as_str),
         )
         .fetch_one(&self.pool)
         .await
@@ -511,7 +523,8 @@ impl PgClientRepository {
                  use_mtls_endpoint_aliases = $20,
                  post_logout_redirect_uris = $21,
                  tls_client_auth_field = $22,
-                 tls_client_auth_value = $23
+                 tls_client_auth_value = $23,
+                 userinfo_signed_response_alg = $24
              where tenant_id = $1 and client_id = $2
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
@@ -521,6 +534,7 @@ impl PgClientRepository {
                        dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                        authorization_details_types, use_mtls_endpoint_aliases,
                        tls_client_auth_field, tls_client_auth_value,
+                       userinfo_signed_response_alg,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -549,6 +563,9 @@ impl PgClientRepository {
             &lists.post_logout_redirect_uris,
             tls_field,
             tls_value,
+            registration
+                .userinfo_signed_response_alg
+                .map(SigningAlgorithm::as_str),
         )
         .fetch_optional(&self.pool)
         .await
@@ -739,6 +756,7 @@ struct Row {
     use_mtls_endpoint_aliases: bool,
     tls_client_auth_field: Option<String>,
     tls_client_auth_value: Option<String>,
+    userinfo_signed_response_alg: Option<String>,
     status: String,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -784,6 +802,7 @@ impl Row {
             ),
             authorization_details_types: Some(self.authorization_details_types),
             use_mtls_endpoint_aliases: Some(self.use_mtls_endpoint_aliases),
+            userinfo_signed_response_alg: self.userinfo_signed_response_alg,
             ..ClientMetadata::default()
         };
         // RFC 8705 §2.1.2's subject, put back under the one member of the five

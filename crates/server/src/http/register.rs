@@ -776,13 +776,7 @@ async fn unacceptable(
     // never issue an ID token to must not exist as a row. It also runs before
     // the sector fetch below, because it is a local read and refusing here
     // spares an unreachable client an outbound request.
-    if let Some(refusal) = unsignable(
-        context.keys,
-        context.tenant,
-        registration.id_token_signed_response_alg,
-    )
-    .await
-    {
+    if let Some(refusal) = unsignable(context.keys, context.tenant, registration).await {
         record(
             context,
             now,
@@ -1055,6 +1049,12 @@ pub(crate) fn client_information(
             json!(alg.as_str()),
         );
     }
+    if let Some(alg) = registration.userinfo_signed_response_alg {
+        object.insert(
+            "userinfo_signed_response_alg".to_owned(),
+            json!(alg.as_str()),
+        );
+    }
     if let Some(uri) = &registration.sector_identifier_uri {
         object.insert("sector_identifier_uri".to_owned(), json!(uri));
     }
@@ -1258,7 +1258,7 @@ pub(crate) fn error(status: StatusCode, code: &str, description: &str) -> Respon
 // The algorithm the tenant has to be able to sign with
 // ---------------------------------------------------------------------------
 
-/// Why a tenant cannot honour an `id_token_signed_response_alg`.
+/// Why a tenant cannot honour an algorithm the document registered.
 ///
 /// Two answers, and not the same answer told twice: one says the document names
 /// something this tenant will never sign, the other says the server could not
@@ -1266,8 +1266,16 @@ pub(crate) fn error(status: StatusCode, code: &str, description: &str) -> Respon
 /// field, the second by retrying — so they do not collapse into one refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Unsignable {
-    /// The tenant holds no active signing key of that algorithm.
-    NoActiveKey(SigningAlgorithm),
+    /// The tenant holds no active signing key of that algorithm. The field is
+    /// carried with it: a document may register several algorithms this server
+    /// signs with, and "one of them is unsignable" is not something the caller
+    /// can act on without knowing which.
+    NoActiveKey {
+        /// The metadata member that named it.
+        field: &'static str,
+        /// The algorithm the tenant holds no active key for.
+        algorithm: SigningAlgorithm,
+    },
     /// The tenant's key set could not be read.
     Unreadable,
 }
@@ -1281,7 +1289,7 @@ impl Unsignable {
     /// [`register`].
     pub(crate) const fn code(self) -> &'static str {
         match self {
-            Self::NoActiveKey(_) => "invalid_client_metadata",
+            Self::NoActiveKey { .. } => "invalid_client_metadata",
             Self::Unreadable => "temporarily_unavailable",
         }
     }
@@ -1289,18 +1297,19 @@ impl Unsignable {
     /// The response a refused caller gets.
     fn response(self) -> Response {
         match self {
-            Self::NoActiveKey(algorithm) => error(
+            Self::NoActiveKey { field, algorithm } => error(
                 StatusCode::BAD_REQUEST,
                 self.code(),
-                // The algorithm is named, which looks like the value echoing
-                // this module refuses everywhere else. It is not: the string is
-                // `SigningAlgorithm::as_str`, one of three literals this
-                // workspace owns, reached only after the parser accepted the
-                // document's own spelling. Nothing a caller wrote travels back
-                // out.
+                // The algorithm and the field are named, which looks like the
+                // value echoing this module refuses everywhere else. It is not:
+                // both strings are literals this workspace owns — the field
+                // comes from `server_signed_algorithms` and the algorithm from
+                // `SigningAlgorithm::as_str` — and are reached only after the
+                // parser accepted the document's own spelling. Nothing a caller
+                // wrote travels back out.
                 &format!(
-                    "id_token_signed_response_alg is {algorithm}, and this tenant holds no \
-                     active {algorithm} signing key; every ID token issued to this client \
+                    "{field} is {algorithm}, and this tenant holds no active {algorithm} \
+                     signing key; every token this client is issued under that member \
                      would be refused"
                 ),
             ),
@@ -1344,9 +1353,13 @@ impl IntoResponse for Unsignable {
 /// the registration document has long stopped looking at it. RFC 7591 §3.2.2
 /// exists to say it while they are.
 ///
-/// Only `id_token_signed_response_alg` is checked. `request_object_signing_alg`
-/// and `backchannel_authentication_request_signing_alg` name algorithms the
-/// *client* signs with and this server verifies, so they need no key of ours.
+/// Which members are checked is
+/// [`ClientRegistration::server_signed_algorithms`], and it is a table
+/// rather than a line per field on purpose: every member this server signs
+/// under has to be there, and a table makes an omission visible where a
+/// forgotten `if` is invisible. `backchannel_authentication_request_signing_alg`
+/// is absent because it names an algorithm the *client* signs with and this
+/// server only verifies, so it needs no key of ours.
 ///
 /// Active is the whole test. A `pending` key does not sign yet and a `retiring`
 /// one has stopped, so a registration honoured by a key in either state is the
@@ -1354,7 +1367,7 @@ impl IntoResponse for Unsignable {
 pub(crate) async fn unsignable(
     keys: &dyn KeyStore,
     tenant: &Tenant,
-    algorithm: SigningAlgorithm,
+    registration: &ClientRegistration,
 ) -> Option<Unsignable> {
     let published = match keys.published_keys(&tenant.id).await {
         Ok(published) => published,
@@ -1362,18 +1375,28 @@ pub(crate) async fn unsignable(
             tracing::error!(
                 %failure,
                 tenant = %tenant.id,
-                "cannot read the signing keys to validate id_token_signed_response_alg"
+                "cannot read the signing keys to validate the registered algorithms"
             );
             return Some(Unsignable::Unreadable);
         }
     };
+    // One read, every member. The order is the table's, so a document that
+    // breaks two of them is always diagnosed on the same one — the reason
+    // `ClientMetadata::validate` fixes the order of its own rules.
+    //
     // The rule itself is [`asterius_domain::keys::signs_with`], and it is there
     // rather than here because the admin API's client screen asks the same
     // question about the same rows (`ast-f7m.5`). Two spellings of "can this
     // tenant sign that" would let the console create a client this endpoint
     // would have refused, which is exactly what sharing the validator is for.
-    (!asterius_domain::keys::signs_with(&published, algorithm))
-        .then_some(Unsignable::NoActiveKey(algorithm))
+    registration
+        .server_signed_algorithms()
+        .into_iter()
+        .find_map(|(field, algorithm)| {
+            let algorithm = algorithm?;
+            (!asterius_domain::keys::signs_with(&published, algorithm))
+                .then_some(Unsignable::NoActiveKey { field, algorithm })
+        })
 }
 
 #[cfg(test)]
@@ -1608,6 +1631,7 @@ mod tests {
         );
         object.insert("request_object_signing_alg".to_owned(), json!("ES256"));
         object.insert("id_token_signed_response_alg".to_owned(), json!("PS256"));
+        object.insert("userinfo_signed_response_alg".to_owned(), json!("ES256"));
         object.insert("dpop_bound_access_tokens".to_owned(), json!(true));
         object.insert(
             "tls_client_certificate_bound_access_tokens".to_owned(),
@@ -1731,6 +1755,7 @@ mod tests {
         for absent in [
             "request_object_signing_alg",
             "backchannel_authentication_request_signing_alg",
+            "userinfo_signed_response_alg",
             "sector_identifier_uri",
         ] {
             assert!(
@@ -1915,25 +1940,86 @@ mod tests {
         }
     }
 
+    /// The members `server_signed_algorithms` checks, as documents that put an
+    /// algorithm in exactly one of them.
+    ///
+    /// `id_token_signed_response_alg` has a profile default, so a document must
+    /// pin the other members' fields away from it when it is not the field
+    /// under test — otherwise every case would fail on the default instead of
+    /// on the field it names.
+    fn document_registering(field: &str, algorithm: SigningAlgorithm) -> Value {
+        let mut document = minimal_document();
+        let object = document.as_object_mut().expect("object");
+        // Signable by the fixture tenant below, so it is never the reason a
+        // case is refused unless it is the field under test.
+        object.insert(
+            "id_token_signed_response_alg".to_owned(),
+            json!(SigningAlgorithm::EdDsa.as_str()),
+        );
+        object.insert(field.to_owned(), json!(algorithm.as_str()));
+        document
+    }
+
     #[tokio::test]
     async fn an_algorithm_the_tenant_signs_with_is_honoured() {
         let keys = FakeKeys::holding(&[(SigningAlgorithm::EdDsa, KeyState::Active)]);
 
-        let refusal = unsignable(&keys, &tenant(), SigningAlgorithm::EdDsa).await;
+        let refusal = unsignable(
+            &keys,
+            &tenant(),
+            &registration(&document_registering(
+                "userinfo_signed_response_alg",
+                SigningAlgorithm::EdDsa,
+            )),
+        )
+        .await;
 
         assert_eq!(refusal, None);
     }
 
+    /// Every member this server signs under is checked, not just the ID token's
+    /// — a document accepted here and refused at first use is the failure this
+    /// check exists to prevent, and it is one per member.
     #[tokio::test]
-    async fn an_algorithm_the_tenant_holds_no_key_for_is_refused() {
+    async fn every_server_signed_member_is_checked_against_the_tenant_keys() {
+        for field in [
+            "id_token_signed_response_alg",
+            "userinfo_signed_response_alg",
+        ] {
+            let keys = FakeKeys::holding(&[(SigningAlgorithm::EdDsa, KeyState::Active)]);
+
+            let refusal = unsignable(
+                &keys,
+                &tenant(),
+                &registration(&document_registering(field, SigningAlgorithm::Es256)),
+            )
+            .await;
+
+            assert_eq!(
+                refusal,
+                Some(Unsignable::NoActiveKey {
+                    field,
+                    algorithm: SigningAlgorithm::Es256
+                }),
+                "{field} was not checked against the tenant's keys"
+            );
+        }
+    }
+
+    /// A member the client did not register names no algorithm, so there is
+    /// nothing to hold a key for.
+    #[tokio::test]
+    async fn a_member_the_client_did_not_register_is_not_checked() {
         let keys = FakeKeys::holding(&[(SigningAlgorithm::EdDsa, KeyState::Active)]);
+        let registration = registration(&document_registering(
+            "id_token_signed_response_alg",
+            SigningAlgorithm::EdDsa,
+        ));
+        assert_eq!(registration.userinfo_signed_response_alg, None);
 
-        let refusal = unsignable(&keys, &tenant(), SigningAlgorithm::Es256).await;
+        let refusal = unsignable(&keys, &tenant(), &registration).await;
 
-        assert_eq!(
-            refusal,
-            Some(Unsignable::NoActiveKey(SigningAlgorithm::Es256))
-        );
+        assert_eq!(refusal, None);
     }
 
     /// A `pending` key does not sign yet and a `retiring` one has stopped, so
@@ -1943,11 +2029,22 @@ mod tests {
         for state in [KeyState::Pending, KeyState::Retiring, KeyState::Retired] {
             let keys = FakeKeys::holding(&[(SigningAlgorithm::Ps256, state)]);
 
-            let refusal = unsignable(&keys, &tenant(), SigningAlgorithm::Ps256).await;
+            let refusal = unsignable(
+                &keys,
+                &tenant(),
+                &registration(&document_registering(
+                    "id_token_signed_response_alg",
+                    SigningAlgorithm::Ps256,
+                )),
+            )
+            .await;
 
             assert_eq!(
                 refusal,
-                Some(Unsignable::NoActiveKey(SigningAlgorithm::Ps256)),
+                Some(Unsignable::NoActiveKey {
+                    field: "id_token_signed_response_alg",
+                    algorithm: SigningAlgorithm::Ps256
+                }),
                 "a {state:?} key was treated as one that signs"
             );
         }
@@ -1959,7 +2056,7 @@ mod tests {
     async fn an_unreadable_key_set_is_not_reported_as_a_bad_document() {
         let keys = FakeKeys::broken();
 
-        let refusal = unsignable(&keys, &tenant(), SigningAlgorithm::EdDsa).await;
+        let refusal = unsignable(&keys, &tenant(), &registration(&minimal_document())).await;
 
         assert_eq!(refusal, Some(Unsignable::Unreadable));
         assert_eq!(
@@ -1969,10 +2066,14 @@ mod tests {
     }
 
     /// RFC 7591 §3.2.2: a metadata value the server will not accept is
-    /// `invalid_client_metadata`, at 400.
+    /// `invalid_client_metadata`, at 400, and the response names the member —
+    /// a caller holding two signed members cannot fix "one of them".
     #[test]
     fn a_missing_key_is_an_rfc_7591_metadata_error() {
-        let refusal = Unsignable::NoActiveKey(SigningAlgorithm::Es256);
+        let refusal = Unsignable::NoActiveKey {
+            field: "userinfo_signed_response_alg",
+            algorithm: SigningAlgorithm::Es256,
+        };
 
         let response = refusal.into_response();
 

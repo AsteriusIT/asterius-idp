@@ -101,6 +101,8 @@ struct FakeRows {
     grant: Option<Grant>,
     user: Option<User>,
     denylisted: Option<String>,
+    /// What the client registered as `userinfo_signed_response_alg`.
+    signed_response_alg: Option<SigningAlgorithm>,
     /// How often anything was read. A request refused before processing must
     /// leave this at zero.
     reads: AtomicUsize,
@@ -121,6 +123,18 @@ impl UserInfoSource for FakeRows {
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.denylisted.as_deref() == Some(jti))
+    }
+
+    async fn signed_response_alg(
+        &self,
+        client: &ClientId,
+    ) -> Result<Option<SigningAlgorithm>, DomainError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        // Keyed on the client the grant names, so a test that changed it would
+        // stop seeing the registration it set up.
+        Ok(self
+            .signed_response_alg
+            .filter(|_| client.as_str() == CLIENT))
     }
 }
 
@@ -149,7 +163,6 @@ struct Fixture {
     rows: FakeRows,
     access_token: String,
     dpop: DpopEndpoint,
-    signed_response_alg: Option<SigningAlgorithm>,
 }
 
 impl Fixture {
@@ -201,11 +214,11 @@ impl Fixture {
                 grant: Some(grant),
                 user: Some(user),
                 denylisted: None,
+                signed_response_alg: None,
                 reads: AtomicUsize::new(0),
             },
             access_token,
             dpop: DpopEndpoint::new(Arc::new(FakeReplay), None),
-            signed_response_alg: None,
         }
     }
 
@@ -265,7 +278,6 @@ impl Fixture {
                 keys: self.keys.as_ref(),
                 signer: self.keys.as_ref(),
                 dpop: &self.dpop,
-                signed_response_alg: self.signed_response_alg,
                 now: now(),
             },
             &Method::GET,
@@ -631,7 +643,7 @@ async fn a_token_signed_by_a_foreign_key_is_refused() {
 #[tokio::test]
 async fn a_signed_response_is_a_jwt_naming_the_issuer_and_the_client() {
     let mut fixture = Fixture::new(&["openid", "email"]).await;
-    fixture.signed_response_alg = Some(SigningAlgorithm::DEFAULT);
+    fixture.rows.signed_response_alg = Some(SigningAlgorithm::DEFAULT);
 
     let response = fixture.get().await;
 
@@ -655,7 +667,7 @@ async fn a_signed_response_is_a_jwt_naming_the_issuer_and_the_client() {
 #[tokio::test]
 async fn a_signed_response_is_signed_with_a_published_key() {
     let mut fixture = Fixture::new(&["openid"]).await;
-    fixture.signed_response_alg = Some(SigningAlgorithm::DEFAULT);
+    fixture.rows.signed_response_alg = Some(SigningAlgorithm::DEFAULT);
 
     let jwt = text_of(fixture.get().await).await;
 
@@ -675,6 +687,26 @@ async fn a_signed_response_is_signed_with_a_published_key() {
             .iter()
             .any(|key| Some(key.kid.as_str()) == header["kid"].as_str()),
         "signed with a key that is not published: {header}"
+    );
+}
+
+/// OIDC Core §5.3.2: a client that registered no algorithm gets the JSON
+/// object, and the endpoint asks the client's registration rather than being
+/// told by its caller.
+#[tokio::test]
+async fn a_client_that_registered_no_algorithm_still_gets_json() {
+    let fixture = Fixture::new(&["openid", "email"]).await;
+    assert_eq!(fixture.rows.signed_response_alg, None);
+
+    let response = fixture.get().await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .expect("content type"),
+        "application/json"
     );
 }
 

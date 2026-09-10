@@ -44,6 +44,7 @@ use asterius_domain::{
     SigningAlgorithm, Tenant, TenantId, TenantSettings, TenantStatus, UserId,
 };
 use asterius_jose::kek::Kek;
+use asterius_jose::verify::KeyResolver;
 use asterius_jose::{LocalKek, SigningKey, jws};
 use asterius_oidc::client_auth::CLIENT_ASSERTION_TYPE;
 use asterius_oidc::metadata::Endpoint;
@@ -975,6 +976,41 @@ impl Flow {
         self.send(request).await
     }
 
+    /// Registers `userinfo_signed_response_alg` on the client this flow acts
+    /// as (OIDC Registration §2).
+    ///
+    /// The stored registration is read back and edited rather than rebuilt
+    /// from a document, so the client keys and everything else stay exactly
+    /// what `register_client` wrote and the only difference between this flow
+    /// and the JSON one is the member under test.
+    async fn sign_userinfo_with(&self, algorithm: SigningAlgorithm) {
+        let clients = self
+            .store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities::default());
+        let mut client = clients
+            .find(&ClientId::new(CLIENT))
+            .await
+            .expect("read the client")
+            .expect("the flow registered a client");
+        client.registration.userinfo_signed_response_alg = Some(algorithm);
+        clients.upsert(&client).await.expect("store the client");
+    }
+
+    /// The tenant's published key set, as any verifier would fetch it.
+    async fn jwks(&mut self) -> Value {
+        let path = format!("{}{}", self.prefix(), Endpoint::Jwks.path());
+        let request = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(header::HOST, HOST)
+            .body(Body::empty())
+            .expect("a request");
+        let reply = self.send(request).await;
+        assert_eq!(reply.status, StatusCode::OK, "/jwks: {}", reply.text());
+        reply.json()
+    }
+
     /// A second registered client, with a key of its own.
     ///
     /// It asks for nothing and is never authorized: its only job is to
@@ -1744,6 +1780,115 @@ async fn another_clients_refresh_token_is_not_revocable() {
         StatusCode::OK,
         "a client revoked a token it was not issued: {}",
         refreshed.text()
+    );
+
+    flow.tear_down().await;
+}
+
+/// OIDC Core §5.3.2: a client that registered `userinfo_signed_response_alg`
+/// is served `application/jwt`, signed by the tenant and verifiable with the
+/// key set `/jwks` publishes.
+///
+/// End to end because every earlier half of this was already true and unreachable
+/// (`ast-e89`): the signing path had tests, the metadata advertised
+/// `userinfo_signing_alg_values_supported`, and no client could ask for it
+/// because the member was not registrable. What this asserts is the wiring —
+/// a document, a row, a response — rather than the signature, which
+/// `tests/userinfo.rs` owns.
+#[tokio::test]
+async fn a_client_that_registered_a_userinfo_algorithm_is_served_a_signed_jwt() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.sign_userinfo_with(SigningAlgorithm::Es256).await;
+    let issued = issue_tokens(&mut flow).await;
+
+    // Act
+    let response = flow.userinfo(&issued.key, &issued.access_token).await;
+
+    // Assert: the media type OIDC Core §5.3.2 gives a signed response.
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "the signed UserInfo request failed: {}",
+        response.text()
+    );
+    assert_eq!(
+        response
+            .headers
+            .get(header::CONTENT_TYPE)
+            .expect("a content type"),
+        "application/jwt",
+        "a client that registered an algorithm was served JSON"
+    );
+
+    // Assert: it verifies against a published key, and says who it is about.
+    let jwt = response.text();
+    let jwks = flow.jwks().await;
+    let keys =
+        asterius_jose::client_keys::parse_jwk_set(&serde_json::to_vec(&jwks).expect("serialise"))
+            .expect("the published key set parses");
+    let unverified = jws::parse(&jwt).expect("a JWS");
+    assert_eq!(unverified.claimed_alg(), SigningAlgorithm::Es256.as_str());
+    let candidates = keys.candidates(unverified.kid().as_ref());
+    assert!(
+        !candidates.is_empty(),
+        "the response names a `kid` that /jwks does not publish"
+    );
+    let payload = candidates
+        .iter()
+        .find_map(|key| jws::parse(&jwt).expect("a JWS").verify(key).ok())
+        .expect("no published key verifies the signed UserInfo response");
+    let claims: Value = serde_json::from_slice(&payload).expect("JSON claims");
+    assert_eq!(
+        claims["iss"],
+        json!(flow.tenant.issuer.as_str()),
+        "the signed response does not name this tenant as the issuer"
+    );
+    assert_eq!(
+        claims["aud"],
+        json!(CLIENT),
+        "the signed response is not addressed to the client that asked"
+    );
+
+    flow.tear_down().await;
+}
+
+/// The other half of the same rule: a client that registered nothing keeps the
+/// JSON object OIDC Core §5.3.2 makes the default. Signing a response nobody
+/// asked to be signed breaks every client that parses JSON.
+#[tokio::test]
+async fn a_client_that_registered_no_userinfo_algorithm_is_served_json() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let issued = issue_tokens(&mut flow).await;
+
+    let response = flow.userinfo(&issued.key, &issued.access_token).await;
+
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "the UserInfo request failed: {}",
+        response.text()
+    );
+    assert!(
+        response
+            .headers
+            .get(header::CONTENT_TYPE)
+            .expect("a content type")
+            .to_str()
+            .expect("a printable content type")
+            .starts_with("application/json"),
+        "a client that registered no algorithm was served a signed response"
+    );
+    assert!(
+        response.json()["sub"].is_string(),
+        "the JSON response carries no `sub`: {}",
+        response.text()
     );
 
     flow.tear_down().await;

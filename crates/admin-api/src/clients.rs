@@ -53,8 +53,10 @@
 //!   on how many configured credentials — which is a fact about the process and
 //!   not about a tenant's rows.
 
-use asterius_domain::keys::{PublicKeyRecord, SigningAlgorithm, signs_with};
-use asterius_domain::{Client, ClientMetadataError, ClientStatus, JwksSource, RedirectUri};
+use asterius_domain::keys::{PublicKeyRecord, signs_with};
+use asterius_domain::{
+    Client, ClientMetadataError, ClientRegistration, ClientStatus, JwksSource, RedirectUri,
+};
 use serde_json::{Value, json};
 
 use crate::error::AdminError;
@@ -208,6 +210,12 @@ pub fn document(client: &Client) -> Value {
             json!(alg.as_str()),
         );
     }
+    if let Some(alg) = registration.userinfo_signed_response_alg {
+        object.insert(
+            "userinfo_signed_response_alg".to_owned(),
+            json!(alg.as_str()),
+        );
+    }
     if let Some(uri) = &registration.sector_identifier_uri {
         object.insert("sector_identifier_uri".to_owned(), json!(uri));
     }
@@ -350,33 +358,43 @@ pub fn requested_status(body: &[u8]) -> Result<Option<ClientStatus>, AdminError>
     }
 }
 
-/// Refuses a client this tenant could never issue an ID token to.
+/// Refuses a client whose registration names an algorithm this tenant cannot
+/// sign with.
 ///
-/// The rule is [`signs_with`], in the domain, which is where
-/// `POST /register`'s `unsignable` asks the same question. A client registered
+/// Which members those are is
+/// [`ClientRegistration::server_signed_algorithms`] and the rule is
+/// [`signs_with`], both in the domain, which is where `POST /register`'s
+/// `unsignable` asks the same question of the same rows. A client registered
 /// against an algorithm with no active signing key authenticates and then fails
-/// at the token endpoint, which is a support ticket rather than an error
-/// message; refusing at the form is `ast-f7m.5`'s "the console cannot create a
-/// client DCR would refuse" applied to the one check that is not in the
-/// document.
+/// at the token or UserInfo endpoint, which is a support ticket rather than an
+/// error message; refusing at the form is `ast-f7m.5`'s "the console cannot
+/// create a client DCR would refuse" applied to the one check that is not in
+/// the document.
 ///
 /// # Errors
 ///
-/// [`AdminError::Invalid`] naming the algorithm and the remedy — rotating a key
-/// for it — because the operator reading this is the person who can do that.
+/// [`AdminError::Invalid`] naming the member, the algorithm and the remedy —
+/// rotating a key for it — because the operator reading this is the person who
+/// can do that.
 pub fn check_signable(
     records: &[PublicKeyRecord],
-    algorithm: SigningAlgorithm,
+    registration: &ClientRegistration,
 ) -> Result<(), AdminError> {
-    if signs_with(records, algorithm) {
-        return Ok(());
+    for (field, algorithm) in registration.server_signed_algorithms() {
+        let Some(algorithm) = algorithm else {
+            continue;
+        };
+        if signs_with(records, algorithm) {
+            continue;
+        }
+        return Err(AdminError::Invalid(format!(
+            "{field}: this tenant has no active {} signing key, so it could never issue \
+             this client a token signed under that member — rotate a {} key first",
+            algorithm.as_str(),
+            algorithm.as_str()
+        )));
     }
-    Err(AdminError::Invalid(format!(
-        "id_token_signed_response_alg: this tenant has no active {} signing key, \
-         so it could never issue this client an ID token — rotate a {} key first",
-        algorithm.as_str(),
-        algorithm.as_str()
-    )))
+    Ok(())
 }
 
 /// A registration document the validator refused, as an admin API refusal.
@@ -445,7 +463,7 @@ pub fn registration_document(gate: RegistrationGate) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asterius_domain::keys::{KeyPurpose, KeyState, Kid};
+    use asterius_domain::keys::{KeyPurpose, KeyState, Kid, SigningAlgorithm};
     use asterius_domain::{
         Capabilities, ClientId, ClientRegistration, ClientStatus, TenantId, keys::PublicKeyRecord,
     };
@@ -597,7 +615,7 @@ mod tests {
         }
     }
 
-    /// The one check that is not in the document: a client whose ID tokens this
+    /// The one check that is not in the document: a client whose tokens this
     /// tenant could not sign is refused at the form. `POST /register` refuses
     /// the same document for the same reason, through the same domain
     /// function.
@@ -605,9 +623,10 @@ mod tests {
     fn a_client_this_tenant_could_not_sign_for_is_refused() {
         // Arrange
         let no_active_key = [key(SigningAlgorithm::EdDsa, KeyState::Pending)];
+        let registration = client_from(&valid_document(), ClientStatus::Active).registration;
 
         // Act
-        let refused = check_signable(&no_active_key, SigningAlgorithm::EdDsa);
+        let refused = check_signable(&no_active_key, &registration);
 
         // Assert
         let AdminError::Invalid(message) = refused.expect_err("a pending key cannot sign") else {
@@ -620,9 +639,33 @@ mod tests {
         assert!(
             check_signable(
                 &[key(SigningAlgorithm::EdDsa, KeyState::Active)],
-                SigningAlgorithm::EdDsa
+                &registration
             )
             .is_ok()
+        );
+    }
+
+    /// Every member the domain's table names, not just the ID token's: the
+    /// console must not be able to create a client that is refused the first
+    /// time it asks for a signed UserInfo response (`ast-e89`).
+    #[test]
+    fn a_userinfo_algorithm_the_tenant_cannot_sign_is_refused_at_the_form() {
+        // Arrange
+        let active = [key(SigningAlgorithm::EdDsa, KeyState::Active)];
+        let mut registration = client_from(&valid_document(), ClientStatus::Active).registration;
+        registration.id_token_signed_response_alg = SigningAlgorithm::EdDsa;
+        registration.userinfo_signed_response_alg = Some(SigningAlgorithm::Es256);
+
+        // Act
+        let refused = check_signable(&active, &registration);
+
+        // Assert
+        let AdminError::Invalid(message) = refused.expect_err("no active ES256 key") else {
+            panic!("the refusal must be one a console can render");
+        };
+        assert!(
+            message.contains("userinfo_signed_response_alg") && message.contains("ES256"),
+            "{message}"
         );
     }
 

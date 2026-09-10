@@ -736,6 +736,9 @@ async fn userinfo_endpoint_inner(
         // The KEK is the same one every other user read takes: the claim bag
         // is encrypted at rest.
         users: scope.users(Arc::clone(&endpoints.kek)),
+        // Read only for its `userinfo_signed_response_alg`, and only after the
+        // access token verified — see `StoredClaims::signed_response_alg`.
+        clients: scope.clients(endpoints.capabilities),
     };
 
     userinfo::userinfo(
@@ -745,11 +748,6 @@ async fn userinfo_endpoint_inner(
             keys: endpoints.keys.as_ref(),
             signer: endpoints.signer.as_ref(),
             dpop: endpoints.dpop.as_ref(),
-            // OIDC Core §5.3.2's default. `userinfo_signed_response_alg` is
-            // not a registrable client metadata member yet, and inventing a
-            // per-deployment default would sign responses no client asked to
-            // be signed.
-            signed_response_alg: None,
             now: time::OffsetDateTime::now_utc(),
         },
         method,
@@ -851,13 +849,14 @@ impl revocation::RevocationStore for StoredTokens {
 
 /// The stored rows behind UserInfo.
 ///
-/// Reads only, and exactly three of them. The port is narrow so that this
+/// Reads only, and exactly four of them. The port is narrow so that this
 /// endpoint cannot reach `revoke` or `claim` through the repository it happens
 /// to hold.
 #[derive(Debug)]
 struct StoredClaims {
     grants: asterius_store_pg::PgGrantRepository,
     users: asterius_store_pg::PgUserRepository,
+    clients: asterius_store_pg::PgClientRepository,
 }
 
 #[async_trait::async_trait]
@@ -878,6 +877,24 @@ impl userinfo::UserInfoSource for StoredClaims {
 
     async fn is_denylisted(&self, jti: &str) -> Result<bool, asterius_domain::DomainError> {
         self.grants.is_denylisted(jti).await
+    }
+
+    /// OIDC Core §5.3.2, from the client's own registration (`ast-e89`).
+    ///
+    /// A client that is gone signs nothing: its grants outlive the row only
+    /// until the next revocation sweep, and answering `application/jwt` for a
+    /// registration this server can no longer read would assert a shape
+    /// nobody registered. An unreadable row is an error and not a `None`, so
+    /// the signature is never dropped by a failing database.
+    async fn signed_response_alg(
+        &self,
+        client: &asterius_domain::ClientId,
+    ) -> Result<Option<asterius_domain::keys::SigningAlgorithm>, asterius_domain::DomainError> {
+        Ok(self
+            .clients
+            .find(client)
+            .await?
+            .and_then(|client| client.registration.userinfo_signed_response_alg))
     }
 }
 
