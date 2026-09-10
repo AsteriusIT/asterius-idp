@@ -537,7 +537,11 @@ const CREATED_PASSWORD = 'a created account passphrase';
 async function createAccount(page: Page): Promise<string> {
   const username = freshUsername();
   await page.getByLabel('Username').fill(username);
-  await page.getByLabel('Email').fill(username);
+  // Deliberately *not* the username. The directory renders both in the same
+  // row, and an account whose two columns carry one string makes every locator
+  // in this file ambiguous — which is how the first run of these tests failed,
+  // on a strict-mode violation rather than on anything about the screen.
+  await page.getByLabel('Email').fill(username.replace('created-', 'inbox-'));
   await page.getByLabel('Password').fill(CREATED_PASSWORD);
   await page.getByRole('button', { name: 'Create account' }).click();
   await expect(page.getByRole('cell', { name: username })).toBeVisible();
@@ -611,9 +615,14 @@ test('a session belonging to somebody else can be ended from the console', async
   await theirPage.locator('input[name="username"]').fill(username);
   await theirPage.locator('input[name="password"]').fill(CREATED_PASSWORD);
   await theirPage.getByRole('button', { name: 'Sign in', exact: true }).click();
-  // The account holds no role, so the console shell answers 401 and shows its
-  // signed-out screen — but the *session* exists, which is the whole point.
-  await expect(theirPage.getByRole('heading', { name: /Signed out|Asterius console/ })).toBeVisible();
+  // The account holds no role, so the shell starts and its first call —
+  // `GET /session`, which is `Reach::Authenticated` and still demands *some*
+  // authority — is a 403. What the person sees is the console refusing to
+  // start, which is the honest outcome for somebody who is signed in and
+  // administers nothing. The *session* exists either way, and that is the
+  // whole point of this arrangement: the row the administrator is about to
+  // end belongs to somebody else.
+  await expect(theirPage.getByRole('heading', { name: 'The console could not start' })).toBeVisible();
 
   // Act
   await openAccount(page, username);
