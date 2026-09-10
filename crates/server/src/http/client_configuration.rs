@@ -102,7 +102,7 @@
 //!   rotation whose response is lost in transit would strand the client
 //!   permanently, for the same reason as above. The predecessor therefore keeps
 //!   working for a bounded grace window, and stops the moment the successor is
-//!   used. See [`authenticate`] and [`rotate`].
+//!   used. See the private `authenticate` and `rotate`.
 //! * **It does not send CORS headers.** OIDC Registration §4 says the endpoint
 //!   "SHOULD support the use of Cross-Origin Resource Sharing (CORS) ... to
 //!   enable JavaScript Clients and other Browser-Based Clients to access it".

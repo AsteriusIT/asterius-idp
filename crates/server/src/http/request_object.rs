@@ -20,7 +20,7 @@
 //!    asked to send request objects, and *any* algorithm would otherwise be
 //!    acceptable for it.
 //! 2. **`typ` is `oauth-authz-req+jwt`**, then the algorithm, then the
-//!    signature — [`asterius_jose::verify`]'s order, which spends nothing
+//!    signature — [`asterius_jose::verify()`]'s order, which spends nothing
 //!    cryptographic on a token that was not meant for this endpoint.
 //! 3. **The algorithm is the one registered, and only that one.** Not the
 //!    allow-list: RFC 9101 §6.3 has the object signed "using the algorithm
