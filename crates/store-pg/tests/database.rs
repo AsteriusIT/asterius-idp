@@ -1256,10 +1256,9 @@ db_test! {
         let mtls_on = Capabilities { mtls: true, ..Capabilities::default() };
 
         let mut document = registration_document();
-        document
-            .as_object_mut()
-            .expect("object")
-            .insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+        let members = document.as_object_mut().expect("object");
+        members.insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+        members.insert("tls_client_auth_subject_dn".to_owned(), json!("CN=billing,O=Demo"));
 
         store
             .scope(TenantId::new("demo"))
@@ -6980,10 +6979,9 @@ mod client_configuration {
             let digest = sha256(b"the-token");
 
             let mut document = registration_document();
-            document
-                .as_object_mut()
-                .expect("object")
-                .insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+            let members = document.as_object_mut().expect("object");
+            members.insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+            members.insert("tls_client_auth_subject_dn".to_owned(), json!("CN=c.abc,O=Demo"));
             Store::from_pool(db.pool.clone())
                 .scope(TenantId::new("demo"))
                 .clients(mtls_on)
