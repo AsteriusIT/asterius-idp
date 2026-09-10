@@ -33,7 +33,7 @@
 //! owner depending on who was reading.
 //!
 //! An owner that goes away takes the agent with it. The store enforces it (the
-//! `clients_disable_ownerless_agent` trigger of migration `0020`) because a
+//! `clients_disable_ownerless_agent` trigger of migration `0021`) because a
 //! deletion is a database event and the domain is not there to see it; what the
 //! domain states is the rule: an agent with no owner is nobody's agent.
 //!

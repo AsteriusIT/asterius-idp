@@ -1,10 +1,6 @@
 {
   "db_name": "PostgreSQL",
-<<<<<<<< HEAD:.sqlx/query-d894ec35234c848253291bbf70fb8078d43916978b2dd9e2f991258648a36fb6.json
-  "query": "select client_id, client_name, token_endpoint_auth_method, redirect_uris,\n                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    tls_client_auth_field, tls_client_auth_value,\n                    userinfo_signed_response_alg,\n                    backchannel_token_delivery_mode, backchannel_client_notification_endpoint,\n                    backchannel_user_code_parameter,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1\n             order by client_id",
-========
-  "query": "select client_id, client_name, token_endpoint_auth_method, redirect_uris,\n                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    tls_client_auth_field, tls_client_auth_value,\n                    userinfo_signed_response_alg,\n                    is_agent, agent_owner_user_id, agent_policy,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1\n             order by client_id",
->>>>>>>> 0e12b3b (feat(agent): un client agent a un propriétaire, un profil et des plafonds):.sqlx/query-a490ef3b483f824f075a4aa1b5655a2dfac740ab475ed275a92fb676a591c808.json
+  "query": "select client_id, client_name, token_endpoint_auth_method, redirect_uris,\n                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    tls_client_auth_field, tls_client_auth_value,\n                    userinfo_signed_response_alg,\n                    backchannel_token_delivery_mode, backchannel_client_notification_endpoint,\n                    backchannel_user_code_parameter,\n                    is_agent, agent_owner_user_id, agent_policy,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1 and client_id = $2",
   "describe": {
     "columns": [
       {
@@ -129,7 +125,6 @@
       },
       {
         "ordinal": 24,
-<<<<<<<< HEAD:.sqlx/query-d894ec35234c848253291bbf70fb8078d43916978b2dd9e2f991258648a36fb6.json
         "name": "backchannel_token_delivery_mode",
         "type_info": "Text"
       },
@@ -145,43 +140,38 @@
       },
       {
         "ordinal": 27,
-        "name": "status",
-        "type_info": "Text"
-      },
-      {
-========
         "name": "is_agent",
         "type_info": "Bool"
       },
       {
-        "ordinal": 25,
+        "ordinal": 28,
         "name": "agent_owner_user_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 26,
+        "ordinal": 29,
         "name": "agent_policy",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 27,
+        "ordinal": 30,
         "name": "status",
         "type_info": "Text"
       },
       {
->>>>>>>> 0e12b3b (feat(agent): un client agent a un propriétaire, un profil et des plafonds):.sqlx/query-a490ef3b483f824f075a4aa1b5655a2dfac740ab475ed275a92fb676a591c808.json
-        "ordinal": 28,
+        "ordinal": 31,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 29,
+        "ordinal": 32,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Text"
       ]
     },
@@ -221,9 +211,5 @@
       false
     ]
   },
-<<<<<<<< HEAD:.sqlx/query-d894ec35234c848253291bbf70fb8078d43916978b2dd9e2f991258648a36fb6.json
-  "hash": "d894ec35234c848253291bbf70fb8078d43916978b2dd9e2f991258648a36fb6"
-========
-  "hash": "a490ef3b483f824f075a4aa1b5655a2dfac740ab475ed275a92fb676a591c808"
->>>>>>>> 0e12b3b (feat(agent): un client agent a un propriétaire, un profil et des plafonds):.sqlx/query-a490ef3b483f824f075a4aa1b5655a2dfac740ab475ed275a92fb676a591c808.json
+  "hash": "10f483c406c06cc1327cd7aa34954f71e53f1e78775eff89858b3da66b9c4273"
 }

@@ -116,6 +116,17 @@ docs (table_name, column_name, repairable, row_key, doc) as (
            jsonb_build_object('tenant_id', tenant_id, 'grant_id', grant_id), actor_chain
     from grants
     union all
+    -- What the device asked for (`0019`), recorded when the request arrives and
+    -- copied onto the grant at approval. The same document as
+    -- `grants.authorization_details` one step earlier, so it is scanned and
+    -- repaired on the same terms: a sentinel here becomes a sentinel on the
+    -- grant the moment somebody approves the code.
+    select 'device_codes', 'authorization_details', true,
+           jsonb_build_object('tenant_id', tenant_id,
+                              'device_code_hash', encode(device_code_hash, 'hex')),
+           authorization_details
+    from device_codes
+    union all
     select 'signing_keys', 'public_jwk', true,
            jsonb_build_object('tenant_id', tenant_id, 'kid', kid), public_jwk
     from signing_keys
@@ -156,6 +167,7 @@ inventory (table_name, column_name) as (
            ('grants', 'claims'),
            ('grants', 'authorization_details'),
            ('grants', 'actor_chain'),
+           ('device_codes', 'authorization_details'),
            ('signing_keys', 'public_jwk'),
            ('outbox', 'payload'),
            ('audit_events', 'actor'),

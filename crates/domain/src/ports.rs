@@ -557,6 +557,16 @@ pub struct ManagedClient {
     pub previous_registration_access_token: Option<PreviousRegistrationAccessToken>,
     /// Whether the client is serving or suspended.
     pub status: ClientStatus,
+    /// The agent profile the row carries (`ast-lh3.1`), or `None` for a client
+    /// that is not an agent.
+    ///
+    /// Here, and not only on the [`Client`] the repository rebuilds, because
+    /// RFC 7592 §2.2's update is judged against it *before* anything is
+    /// written: an agent's limits are the tenant's and a client rewriting its
+    /// own metadata cannot leave them. The endpoint that refuses has to answer
+    /// `400 invalid_client_metadata`, which means it needs the limits in hand
+    /// while it still holds the document — not a storage error afterwards.
+    pub agent: Option<crate::AgentProfile>,
 }
 
 /// A registration access token that has been rotated out but is still accepted.

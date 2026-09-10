@@ -1413,7 +1413,7 @@ db_test! {
 }
 
 db_test! {
-    /// Migration `0020`: an agent whose owner is deleted is disabled, and its
+    /// Migration `0021`: an agent whose owner is deleted is disabled, and its
     /// owner column is emptied. Not cascaded away — the row has an audit history
     /// and possibly live grants, and destroying it would destroy the evidence of
     /// what the agent did.
@@ -6838,6 +6838,9 @@ mod client_configuration {
                     // (`ast-m9c.12`), so there is no second credential.
                     previous_registration_access_token: None,
                     status: ClientStatus::Active,
+                    // Not an agent (`ast-lh3.1`), so there is no profile to
+                    // judge a management request against.
+                    agent: None,
                 }
             );
             assert_ne!(

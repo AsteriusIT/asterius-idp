@@ -246,7 +246,7 @@ impl PgClientRepository {
                                   userinfo_signed_response_alg,
                                   backchannel_token_delivery_mode,
                                   backchannel_client_notification_endpoint,
-                                  backchannel_user_code_parameter)
+                                  backchannel_user_code_parameter,
                                   is_agent, agent_owner_user_id, agent_policy)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
@@ -399,7 +399,7 @@ impl PgClientRepository {
                                   userinfo_signed_response_alg,
                                   backchannel_token_delivery_mode,
                                   backchannel_client_notification_endpoint,
-                                  backchannel_user_code_parameter)
+                                  backchannel_user_code_parameter,
                                   is_agent, agent_owner_user_id, agent_policy)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
@@ -493,7 +493,8 @@ impl PgClientRepository {
         let row = sqlx::query!(
             "select status, registration_access_token_hash,
                     previous_registration_access_token_hash,
-                    previous_registration_access_token_expires_at
+                    previous_registration_access_token_expires_at,
+                    is_agent, agent_owner_user_id, agent_policy
              from clients
              where tenant_id = $1 and client_id = $2",
             self.tenant.as_str(),
@@ -529,10 +530,28 @@ impl PgClientRepository {
                         grace_expires_at,
                     },
                 );
+            // `ast-lh3.1`. A row flagged `is_agent` whose profile does not
+            // parse, or whose owner column is empty, yields `None` rather than
+            // an error: this read exists to authenticate a management request,
+            // and RFC 7592 §2.1/§2.3 make that endpoint the only way such a
+            // client could be repaired or deleted. What `None` costs is the
+            // agent check on an update, and `PgClientRepository::replace`
+            // makes that up before it writes.
+            let agent = row
+                .agent_owner_user_id
+                .zip(asterius_domain::AgentLimits::from_json(&row.agent_policy).ok())
+                .filter(|_| row.is_agent)
+                .map(|(owner, limits)| {
+                    asterius_domain::AgentProfile::new(
+                        asterius_domain::AgentOwner::User(asterius_domain::UserId::new(owner)),
+                        limits,
+                    )
+                });
             Ok(ManagedClient {
                 registration_access_token,
                 previous_registration_access_token,
                 status,
+                agent,
             })
         })
         .transpose()
@@ -551,7 +570,7 @@ impl PgClientRepository {
     /// untouched *by construction* rather than by a check somebody could forget
     /// to write: `registration_access_token_hash` (the credential that
     /// authorised this call), `resources` (the per-client audience allow-list,
-    /// which is policy — `ast-m9c.6`), `is_agent` / `agent_owner_sub` /
+    /// which is policy — `ast-m9c.6`), `is_agent` / `agent_owner_user_id` /
     /// `agent_policy` (`ast-lh3.1`), `software_statement`, `status` (a
     /// suspension is an operator's decision and not a client's), `client_type`
     /// and `created_at`. `updated_at` moves, because the row's trigger moves it.
@@ -1028,7 +1047,7 @@ fn key_columns(registration: &ClientRegistration) -> (Option<serde_json::Value>,
 /// The three columns an agent profile (`ast-lh3.1`) occupies.
 ///
 /// The owner is written to its own column and *not* left only in the document:
-/// the foreign key and the disable-on-delete trigger of migration `0020` act on
+/// the foreign key and the disable-on-delete trigger of migration `0021` act on
 /// a column, and an owner that lived only in the JSON would be a reference the
 /// database cannot enforce. The document therefore stores the limits alone,
 /// which is what [`asterius_domain::AgentLimits::from_json`] reads back — a
