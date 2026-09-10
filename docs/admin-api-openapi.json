@@ -1275,6 +1275,76 @@
         "x-asterius-scope": "admin.openapi:read"
       }
     },
+    "/admin/api/v1/outbox/dead-letters": {
+      "get": {
+        "operationId": "outbox.dead_letters",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.outbox:read"
+            ]
+          }
+        ],
+        "summary": "Lists deliveries this tenant's outbox has abandoned",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.outbox:read"
+      }
+    },
     "/admin/api/v1/registration": {
       "get": {
         "operationId": "registration.read",
