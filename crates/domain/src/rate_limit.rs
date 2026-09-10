@@ -120,14 +120,30 @@ pub fn account_bucket(username: &str) -> Bucket {
 /// This is a *bucketing* key and never a lookup key. The credential lookup
 /// still uses the string as typed, so nothing here changes which account a
 /// password is checked against.
+/// The composition and the case pass are repeated to a fixed point, because
+/// one pass of each does not reach one: `J` followed by a combining caron has
+/// no precomposed form, so NFKC leaves it alone; lowercasing gives `j` plus
+/// the mark, and *that* composes to `ǰ`. Computing the key a second time would
+/// otherwise land in a different bucket from the first, which is a limit that
+/// can be walked out of by whoever notices.
+///
+/// Bounded rather than looped until stable: both passes are stabilising, so
+/// Unicode converges on the second, and a bound is what keeps a value from the
+/// network out of the loop condition.
 #[must_use]
 pub fn normalise_username(username: &str) -> String {
-    username
-        .nfkc()
-        .collect::<String>()
-        .to_lowercase()
-        .trim()
-        .to_owned()
+    /// Enough for the convergence above, with room to spare.
+    const MAX_FOLDING_PASSES: usize = 4;
+
+    let mut folded = username.to_owned();
+    for _ in 0..MAX_FOLDING_PASSES {
+        let next = folded.nfkc().collect::<String>().to_lowercase();
+        if next == folded {
+            break;
+        }
+        folded = next;
+    }
+    folded.trim().to_owned()
 }
 
 /// How many events one bucket may hold, and over how long.
@@ -499,6 +515,23 @@ mod tests {
         let hint = limit.retry_after(last_moment);
 
         assert!(hint >= Duration::seconds(1));
+    }
+
+    /// One pass of NFKC and one of lowercasing do not reach a fixed point:
+    /// `J` plus a combining caron composes only once the case pass has made it
+    /// a `j`. A key that moves the second time it is computed is a limit that
+    /// resets itself.
+    #[test]
+    fn normalising_a_normalised_identifier_changes_nothing() {
+        // Arrange
+        let typed = "J\u{30c}";
+
+        // Act
+        let once = normalise_username(typed);
+
+        // Assert
+        assert_eq!(normalise_username(&once), once);
+        assert_eq!(account_bucket(&once), account_bucket(typed));
     }
 
     #[test]
