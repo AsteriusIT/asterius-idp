@@ -123,6 +123,7 @@ impl PgClientRepository {
                     request_object_signing_alg, backchannel_authentication_request_signing_alg,
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                     authorization_details_types, use_mtls_endpoint_aliases,
+                    tls_client_auth_field, tls_client_auth_value,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1 and client_id = $2",
@@ -151,6 +152,7 @@ impl PgClientRepository {
                     request_object_signing_alg, backchannel_authentication_request_signing_alg,
                     dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                     authorization_details_types, use_mtls_endpoint_aliases,
+                    tls_client_auth_field, tls_client_auth_value,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1
@@ -194,6 +196,7 @@ impl PgClientRepository {
             JwksSource::Inline(value) => (Some(value.clone()), None),
             JwksSource::Uri(uri) => (None, Some(uri.clone())),
         };
+        let (tls_field, tls_value) = subject_columns(registration);
 
         sqlx::query!(
             "insert into clients (tenant_id, client_id, client_name,
@@ -205,9 +208,10 @@ impl PgClientRepository {
                                   dpop_bound_access_tokens,
                                   tls_client_certificate_bound_access_tokens,
                                   authorization_details_types, use_mtls_endpoint_aliases, status,
-                                  post_logout_redirect_uris)
+                                  post_logout_redirect_uris,
+                                  tls_client_auth_field, tls_client_auth_value)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23)
+                     $18, $19, $20, $21, $22, $23, $24, $25)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  token_endpoint_auth_method = excluded.token_endpoint_auth_method,
@@ -231,7 +235,9 @@ impl PgClientRepository {
                  authorization_details_types = excluded.authorization_details_types,
                  use_mtls_endpoint_aliases = excluded.use_mtls_endpoint_aliases,
                  status = excluded.status,
-                 post_logout_redirect_uris = excluded.post_logout_redirect_uris",
+                 post_logout_redirect_uris = excluded.post_logout_redirect_uris,
+                 tls_client_auth_field = excluded.tls_client_auth_field,
+                 tls_client_auth_value = excluded.tls_client_auth_value",
             self.tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
@@ -259,6 +265,8 @@ impl PgClientRepository {
             registration.use_mtls_endpoint_aliases,
             client.status.as_str(),
             &lists.post_logout_redirect_uris,
+            tls_field,
+            tls_value,
         )
         .execute(&self.pool)
         .await
@@ -315,6 +323,7 @@ impl PgClientRepository {
             JwksSource::Inline(value) => (Some(value.clone()), None),
             JwksSource::Uri(uri) => (None, Some(uri.clone())),
         };
+        let (tls_field, tls_value) = subject_columns(registration);
 
         let row = sqlx::query_as!(
             Row,
@@ -327,9 +336,10 @@ impl PgClientRepository {
                                   dpop_bound_access_tokens,
                                   tls_client_certificate_bound_access_tokens,
                                   authorization_details_types, use_mtls_endpoint_aliases, status,
-                                  registration_access_token_hash, post_logout_redirect_uris)
+                                  registration_access_token_hash, post_logout_redirect_uris,
+                                  tls_client_auth_field, tls_client_auth_value)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23, $24)
+                     $18, $19, $20, $21, $22, $23, $24, $25, $26)
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
@@ -337,6 +347,7 @@ impl PgClientRepository {
                        backchannel_authentication_request_signing_alg,
                        dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                        authorization_details_types, use_mtls_endpoint_aliases,
+                       tls_client_auth_field, tls_client_auth_value,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -366,6 +377,8 @@ impl PgClientRepository {
             client.status.as_str(),
             &registration_access_token[..],
             &lists.post_logout_redirect_uris,
+            tls_field,
+            tls_value,
         )
         .fetch_one(&self.pool)
         .await
@@ -473,6 +486,7 @@ impl PgClientRepository {
             JwksSource::Inline(value) => (Some(value.clone()), None),
             JwksSource::Uri(uri) => (None, Some(uri.clone())),
         };
+        let (tls_field, tls_value) = subject_columns(registration);
 
         let row = sqlx::query_as!(
             Row,
@@ -495,7 +509,9 @@ impl PgClientRepository {
                  tls_client_certificate_bound_access_tokens = $18,
                  authorization_details_types = $19,
                  use_mtls_endpoint_aliases = $20,
-                 post_logout_redirect_uris = $21
+                 post_logout_redirect_uris = $21,
+                 tls_client_auth_field = $22,
+                 tls_client_auth_value = $23
              where tenant_id = $1 and client_id = $2
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
@@ -504,6 +520,7 @@ impl PgClientRepository {
                        backchannel_authentication_request_signing_alg,
                        dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,
                        authorization_details_types, use_mtls_endpoint_aliases,
+                       tls_client_auth_field, tls_client_auth_value,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -530,6 +547,8 @@ impl PgClientRepository {
             &lists.authorization_details_types,
             registration.use_mtls_endpoint_aliases,
             &lists.post_logout_redirect_uris,
+            tls_field,
+            tls_value,
         )
         .fetch_optional(&self.pool)
         .await
@@ -680,6 +699,22 @@ impl ListColumns {
 }
 
 /// One row of `clients`, before it becomes an entity.
+/// RFC 8705 §2.1.2's registered subject, as the two columns that hold it.
+///
+/// `(None, None)` for every client that is not `tls_client_auth`, which is the
+/// pair the schema's `clients_tls_client_auth_subject_matches_method`
+/// constraint requires of them. Written from the registration rather than from
+/// the document that produced it, so a client whose method changed on an
+/// update loses the subject in the same statement.
+fn subject_columns(registration: &ClientRegistration) -> (Option<&str>, Option<&str>) {
+    registration
+        .tls_client_auth_subject
+        .as_ref()
+        .map_or((None, None), |subject| {
+            (Some(subject.field()), Some(subject.value()))
+        })
+}
+
 struct Row {
     client_id: String,
     client_name: String,
@@ -702,6 +737,8 @@ struct Row {
     tls_client_certificate_bound_access_tokens: bool,
     authorization_details_types: Vec<String>,
     use_mtls_endpoint_aliases: bool,
+    tls_client_auth_field: Option<String>,
+    tls_client_auth_value: Option<String>,
     status: String,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -724,7 +761,7 @@ impl Row {
         let status = ClientStatus::parse(&self.status)
             .ok_or_else(|| DomainError::invalid("status", format!("unknown: {}", self.status)))?;
 
-        let metadata = ClientMetadata {
+        let mut metadata = ClientMetadata {
             client_name: Some(self.client_name),
             token_endpoint_auth_method: Some(self.token_endpoint_auth_method),
             redirect_uris: Some(self.redirect_uris),
@@ -749,6 +786,18 @@ impl Row {
             use_mtls_endpoint_aliases: Some(self.use_mtls_endpoint_aliases),
             ..ClientMetadata::default()
         };
+        // RFC 8705 §2.1.2's subject, put back under the one member of the five
+        // the row names. A field name the schema's check constraint permits but
+        // this build does not know is dropped here, and the document then fails
+        // "a tls_client_auth client registers exactly one" — which is the same
+        // refusal an edited row gets everywhere else in this file, rather than
+        // a client whose certificate is compared against nothing.
+        if let (Some(field), Some(value)) =
+            (&self.tls_client_auth_field, &self.tls_client_auth_value)
+            && let Some(subject) = asterius_domain::TlsClientAuthSubject::from_field(field, value)
+        {
+            metadata.set_tls_client_auth_subject(&subject);
+        }
         let mut registration = metadata.validate(capabilities).map_err(|error| {
             DomainError::invalid(
                 "clients",

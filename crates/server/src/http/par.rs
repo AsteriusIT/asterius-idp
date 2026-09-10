@@ -75,6 +75,9 @@ pub struct PushContext<'a> {
     /// How long a reference lives, already clamped by
     /// `asterius_oidc::par::clamp_lifetime`.
     pub lifetime: time::Duration,
+    /// The client certificate this request arrived with (RFC 8705 §2), if the
+    /// deployment saw one from a source it trusts.
+    pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
 }
 
 /// Handles a pushed authorization request.
@@ -135,7 +138,7 @@ pub async fn push(
         assertion_type: find(&pairs, "client_assertion_type"),
         client_id: find(&pairs, "client_id"),
         authorization_header: headers.contains_key(header::AUTHORIZATION),
-        client_certificate: false,
+        certificate: context.certificate,
     };
     let rules = AssertionRules::for_issuer(context.tenant.issuer.as_str());
 

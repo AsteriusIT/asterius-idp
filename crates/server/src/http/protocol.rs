@@ -595,6 +595,7 @@ async fn pushed_authorization_request(
     // that arrived without it is a wiring fault, and a limiter with no address
     // still holds the client bucket rather than answering 500.
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -607,11 +608,15 @@ async fn pushed_authorization_request(
         time::OffsetDateTime::now_utc(),
     );
     let claimed = crate::http::limits::claimed_client_id(&body);
+    let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     crate::http::limits::guard(
         &limits,
         asterius_domain::LimitedEndpoint::PushedAuthorizationRequest,
         claimed.as_deref(),
-        async || pushed_authorization_request_inner(&endpoints, &tenant, &headers, &body).await,
+        async || {
+            pushed_authorization_request_inner(&endpoints, &tenant, &headers, &body, certificate)
+                .await
+        },
     )
     .await
 }
@@ -622,6 +627,7 @@ async fn pushed_authorization_request_inner(
     tenant: &Arc<Tenant>,
     headers: &axum::http::HeaderMap,
     body: &axum::body::Bytes,
+    certificate: Option<&asterius_oidc::mtls::ClientCertificate>,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
@@ -662,6 +668,7 @@ async fn pushed_authorization_request_inner(
             keys: endpoints.keys.as_ref(),
             policy: authorization_policy(),
             lifetime: endpoints.par_lifetime,
+            certificate,
         },
         headers,
         body,
@@ -765,9 +772,15 @@ async fn userinfo_endpoint_inner(
 async fn revocation_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
+    // `Option`, like the client address: the extension exists only when the
+    // `mtls` flag is on *and* a certificate reached this server from a source
+    // it trusts (`crate::tenancy::layer`). Its absence is "no certificate",
+    // never an error.
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
     let store = StoredTokens {
@@ -788,6 +801,7 @@ async fn revocation_endpoint(
             keys: endpoints.keys.as_ref(),
             audit: endpoints.audit.as_ref(),
             now,
+            certificate,
         },
         &headers,
         &body,
@@ -880,6 +894,7 @@ async fn token_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -892,11 +907,12 @@ async fn token_endpoint(
         time::OffsetDateTime::now_utc(),
     );
     let claimed = crate::http::limits::claimed_client_id(&body);
+    let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     crate::http::limits::guard(
         &limits,
         asterius_domain::LimitedEndpoint::Token,
         claimed.as_deref(),
-        async || token_endpoint_inner(&endpoints, &tenant, &headers, &body).await,
+        async || token_endpoint_inner(&endpoints, &tenant, &headers, &body, certificate).await,
     )
     .await
 }
@@ -907,6 +923,7 @@ async fn token_endpoint_inner(
     tenant: &Arc<Tenant>,
     headers: &axum::http::HeaderMap,
     body: &axum::body::Bytes,
+    certificate: Option<&asterius_oidc::mtls::ClientCertificate>,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
@@ -1003,6 +1020,7 @@ async fn token_endpoint_inner(
             clients: &clients,
             capabilities: endpoints.capabilities,
             grants: &[&authorization_code, &refresh_token, &client_credentials],
+            certificate,
         },
         headers,
         body,

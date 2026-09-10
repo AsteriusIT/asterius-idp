@@ -171,6 +171,7 @@ impl ClientKey {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientKeySet {
     keys: Vec<ClientKey>,
+    leaf_certificates: Vec<String>,
 }
 
 impl ClientKeySet {
@@ -178,6 +179,24 @@ impl ClientKeySet {
     #[must_use]
     pub fn keys(&self) -> &[ClientKey] {
         &self.keys
+    }
+
+    /// The leaf certificate of each `x5c` in the set, base64 as published.
+    ///
+    /// RFC 8705 §2.2 authenticates a client by matching its certificate
+    /// against these, and RFC 7517 §4.7 makes the *first* entry of an `x5c`
+    /// the leaf — the rest are issuers, and matching one of those would
+    /// authenticate every client the same CA issued.
+    ///
+    /// Collected from the raw `keys` array rather than from the usable keys,
+    /// because a JWK carrying a certificate for a key type this server does
+    /// not verify with is still a certificate the client published. It is
+    /// returned undecoded: the comparison decodes it once, next to the
+    /// thumbprint it is compared against, so there is one place where "these
+    /// bytes are that certificate" is decided.
+    #[must_use]
+    pub fn leaf_certificates(&self) -> &[String] {
+        &self.leaf_certificates
     }
 
     /// Whether the set produced no usable key at all.
@@ -297,6 +316,7 @@ pub fn keys_from_jwk_set(document: &Value) -> Result<ClientKeySet, ClientKeyErro
     }
 
     let mut usable = Vec::new();
+    let mut leaf_certificates = Vec::new();
     for entry in keys {
         // RFC 7517 §5: "The value of the 'keys' parameter is an array of JWK
         // values." Something that is not an object is not a JWK; skip it rather
@@ -304,11 +324,26 @@ pub fn keys_from_jwk_set(document: &Value) -> Result<ClientKeySet, ClientKeyErro
         let Some(jwk) = entry.as_object() else {
             continue;
         };
+        // RFC 7517 §4.7's `x5c`, kept for RFC 8705 §2.2. Taken before `admit`
+        // runs and independently of what it says: a certificate is published
+        // by the client whether or not this server can verify a signature with
+        // the key beside it.
+        if let Some(leaf) = jwk
+            .get("x5c")
+            .and_then(Value::as_array)
+            .and_then(|chain| chain.first())
+            .and_then(Value::as_str)
+        {
+            leaf_certificates.push(leaf.to_owned());
+        }
         if let Some(key) = admit(jwk)? {
             usable.push(key);
         }
     }
-    Ok(ClientKeySet { keys: usable })
+    Ok(ClientKeySet {
+        keys: usable,
+        leaf_certificates,
+    })
 }
 
 /// JWK members that hold private or symmetric key material.

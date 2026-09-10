@@ -58,22 +58,51 @@ fn run() -> Result<(), String> {
     }
 }
 
-/// The client authenticator, with the two collaborators it is never useful
-/// without.
+/// RFC 8705 §2 (`ast-m9c.3`), switched on in both places at once.
+///
+/// The two halves have to agree: the tenancy layer collects the proxy's
+/// certificate at the door, and the authenticator verifies it against the
+/// tenant's CAs. Returning them from one function is what makes "the flag is
+/// off" mean both — a deployment cannot end up collecting certificates it will
+/// never check, or holding anchors nothing reaches.
+///
+/// A named anchors file that cannot be read stops the process. An operator who
+/// listed a CA meant clients to authenticate with it, and a server that started
+/// without it would refuse every one of them for a reason only a debug log
+/// would carry.
+fn mtls(
+    state: TenantState,
+    config: &Config,
+) -> Result<(TenantState, asterius_server::mtls::TenantTrustAnchors), String> {
+    if !config.features.mtls {
+        return Ok((state, asterius_server::mtls::TenantTrustAnchors::default()));
+    }
+    let anchors = asterius_server::mtls::TenantTrustAnchors::load(&config.mtls)
+        .map_err(|e| format!("cannot load the mTLS trust anchors: {e}"))?;
+    Ok((state.with_mtls(Arc::new(config.mtls.clone())), anchors))
+}
+
+/// The client authenticator, with the collaborators it is never useful without.
 ///
 /// Extracted from `serve_forever` because the wiring has a reason attached to
 /// it and a composition root is not the place to read one: recording a use is
 /// wired *here* rather than at the three endpoints that authenticate, so that
 /// `unused_client_expiry_seconds` (`ast-cu3`) has one definition of "used".
+///
+/// `trust_anchors` comes from [`mtls`] and is empty unless the flag is on, so a
+/// deployment without mTLS has an authenticator that refuses `tls_client_auth`
+/// rather than one that could be persuaded otherwise.
 fn client_authenticator(
-    client_keys: Arc<asterius_jose::client_keys::ClientKeyCache>,
+    client_keys: Arc<ClientKeyCache>,
     replay: &Arc<PgReplayGuard>,
     store: &Store,
+    trust_anchors: asterius_server::mtls::TenantTrustAnchors,
 ) -> Result<Arc<ClientAuthenticator>, String> {
     let authenticator =
         ClientAuthenticator::new(client_keys, Arc::clone(replay) as Arc<dyn ReplayGuard>)
             .map_err(|e| format!("cannot build the client authenticator: {e}"))?
-            .recording_use(Arc::new(PgClientUsage::new(store.pool().clone())));
+            .recording_use(Arc::new(PgClientUsage::new(store.pool().clone())))
+            .with_trust_anchors(trust_anchors);
     Ok(Arc::new(authenticator))
 }
 
@@ -134,7 +163,8 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // their own copy and the invalidation would reach neither.
         let settings =
             SettingsDirectory::new(Arc::new(PgTenantSettings::new(store.pool().clone())));
-        let tenant_state = TenantState::new(directory.clone(), &config.server);
+        let (tenant_state, trust_anchors) =
+            mtls(TenantState::new(directory.clone(), &config.server), &config)?;
         let operations = operational_routes(&store, &config, metrics);
 
         // Client-facing endpoints: the ones that need an authenticated client
@@ -153,7 +183,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let admin_clients = AdminClientContext::of(&config, &outbound);
         let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
-        let authenticator = client_authenticator(client_keys, &replay, &store)?;
+        let authenticator = client_authenticator(client_keys, &replay, &store, trust_anchors)?;
 
         let dpop = Arc::new(dpop_endpoint(
             Arc::clone(&replay) as Arc<dyn ReplayGuard>,

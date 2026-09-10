@@ -1026,6 +1026,15 @@ pub(crate) fn client_information(
         );
     }
 
+    // RFC 8705 §2.1.2: exactly one of the five, and only for a
+    // `tls_client_auth` client. The stored registration can hold at most one,
+    // so echoing it from there reproduces "exactly one" rather than deciding
+    // it a second time — a client reading its own record back must see the one
+    // field its certificates will actually be matched on.
+    if let Some(subject) = &registration.tls_client_auth_subject {
+        object.insert(subject.field().to_owned(), json!(subject.value()));
+    }
+
     // RFC 7591 §2: `jwks` and `jwks_uri` must never both appear. The stored
     // registration can only hold one, so this reproduces that rather than
     // deciding it again.

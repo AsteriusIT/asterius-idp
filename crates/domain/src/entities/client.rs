@@ -233,6 +233,111 @@ impl std::fmt::Display for TokenEndpointAuthMethod {
     }
 }
 
+/// The one certificate field a `tls_client_auth` client is matched on.
+///
+/// RFC 8705 §2.1.2 registers five metadata parameters —
+/// `tls_client_auth_subject_dn` and four `tls_client_auth_san_*` — and says of
+/// them:
+///
+/// > … the client MUST use exactly one of the below metadata parameters to
+/// > indicate the certificate subject value that the authorization server is
+/// > to expect when authenticating the respective client.
+///
+/// "Exactly one" is why this is an enum and not five `Option<String>` fields on
+/// the registration. A client that registered both a subject DN and a SAN would
+/// leave the server choosing which one to match, and a server that chooses is a
+/// server whose answer depends on the order its code happens to run in — the
+/// certificate satisfying the weaker of the two is then a certificate that
+/// authenticates. Making the second one unrepresentable removes the question.
+///
+/// The value is compared **byte for byte** against what the presented
+/// certificate says (RFC 8705 §2.1: the expected value is "compared" to the
+/// certificate's). There is no normalisation, no case folding and no wildcard:
+/// each of those is a way for two different certificates to match one
+/// registration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TlsClientAuthSubject {
+    /// `tls_client_auth_subject_dn`: the certificate's subject distinguished
+    /// name, in the RFC 4514 string form.
+    SubjectDn(String),
+    /// `tls_client_auth_san_dns`: a `dNSName` SAN entry.
+    SanDns(String),
+    /// `tls_client_auth_san_uri`: a `uniformResourceIdentifier` SAN entry.
+    SanUri(String),
+    /// `tls_client_auth_san_ip`: an `iPAddress` SAN entry, in its textual form.
+    SanIp(String),
+    /// `tls_client_auth_san_email`: an `rfc822Name` SAN entry.
+    SanEmail(String),
+}
+
+impl TlsClientAuthSubject {
+    /// Every metadata field this type can be built from, in RFC 8705 §2.1.2's
+    /// order.
+    ///
+    /// The registration validator iterates this rather than naming the fields
+    /// a second time, so "exactly one of these" is checked against the same
+    /// list the type is built from.
+    pub const FIELDS: [&'static str; 5] = [
+        "tls_client_auth_subject_dn",
+        "tls_client_auth_san_dns",
+        "tls_client_auth_san_uri",
+        "tls_client_auth_san_ip",
+        "tls_client_auth_san_email",
+    ];
+
+    /// The longest value this server will store or compare.
+    ///
+    /// A DN is a name, not a document. The bound exists because the value is
+    /// attacker-chosen at registration and compared on every token request;
+    /// 1024 is far above any DN a CA issues and far below anything worth
+    /// storing.
+    pub const MAX_LEN: usize = 1024;
+
+    /// Builds the subject from a field name and its value.
+    ///
+    /// Returns `None` for a field name outside [`FIELDS`], which is what makes
+    /// a stored row naming an unknown field fail closed rather than silently
+    /// match nothing.
+    ///
+    /// [`FIELDS`]: TlsClientAuthSubject::FIELDS
+    #[must_use]
+    pub fn from_field(field: &str, value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        match field {
+            "tls_client_auth_subject_dn" => Some(Self::SubjectDn(value)),
+            "tls_client_auth_san_dns" => Some(Self::SanDns(value)),
+            "tls_client_auth_san_uri" => Some(Self::SanUri(value)),
+            "tls_client_auth_san_ip" => Some(Self::SanIp(value)),
+            "tls_client_auth_san_email" => Some(Self::SanEmail(value)),
+            _ => None,
+        }
+    }
+
+    /// The metadata field this value was registered under.
+    #[must_use]
+    pub const fn field(&self) -> &'static str {
+        match self {
+            Self::SubjectDn(_) => "tls_client_auth_subject_dn",
+            Self::SanDns(_) => "tls_client_auth_san_dns",
+            Self::SanUri(_) => "tls_client_auth_san_uri",
+            Self::SanIp(_) => "tls_client_auth_san_ip",
+            Self::SanEmail(_) => "tls_client_auth_san_email",
+        }
+    }
+
+    /// The registered value, as written.
+    #[must_use]
+    pub fn value(&self) -> &str {
+        match self {
+            Self::SubjectDn(value)
+            | Self::SanDns(value)
+            | Self::SanUri(value)
+            | Self::SanIp(value)
+            | Self::SanEmail(value) => value,
+        }
+    }
+}
+
 /// A grant type a client may use.
 ///
 /// Absent by construction: `implicit`, `password`, and anything else that
@@ -858,6 +963,17 @@ pub struct ClientMetadata {
     pub dpop_bound_access_tokens: Option<bool>,
     /// RFC 8705 §3.4.
     pub tls_client_certificate_bound_access_tokens: Option<bool>,
+    /// RFC 8705 §2.1.2. Exactly one of these five is registered, and only by a
+    /// `tls_client_auth` client — see [`TlsClientAuthSubject`].
+    pub tls_client_auth_subject_dn: Option<String>,
+    /// RFC 8705 §2.1.2.
+    pub tls_client_auth_san_dns: Option<String>,
+    /// RFC 8705 §2.1.2.
+    pub tls_client_auth_san_uri: Option<String>,
+    /// RFC 8705 §2.1.2.
+    pub tls_client_auth_san_ip: Option<String>,
+    /// RFC 8705 §2.1.2.
+    pub tls_client_auth_san_email: Option<String>,
     /// RFC 9396 §9.2.
     pub authorization_details_types: Option<Vec<String>>,
     /// FAPI 2.0 SP §5.2.2.1.1, RFC 8705 §5.
@@ -883,6 +999,13 @@ pub struct ClientRegistration {
     pub application_type: ApplicationType,
     /// How the client authenticates.
     pub token_endpoint_auth_method: TokenEndpointAuthMethod,
+    /// RFC 8705 §2.1.2. `Some` exactly when the method is `tls_client_auth`.
+    ///
+    /// The invariant is established by [`ClientMetadata::validate`] and relied
+    /// on by the authenticator: a PKI-mode client with no registered subject
+    /// would be a client whose certificate is compared to nothing, which is a
+    /// client any certificate authenticates.
+    pub tls_client_auth_subject: Option<TlsClientAuthSubject>,
     /// Registered callbacks, in the order registered, compared byte-exactly.
     pub redirect_uris: Vec<RedirectUri>,
     /// Registered post-logout callbacks (OIDC RP-Initiated Logout 1.0 §3.1),
@@ -1133,6 +1256,24 @@ impl ClientRegistration {
 }
 
 impl ClientMetadata {
+    /// Writes a registered subject back into the document it came from.
+    ///
+    /// The storage adapter's inverse of [`Self::tls_client_auth_subject`]: a
+    /// row holds the field name and the value in two columns, and this puts
+    /// them back under the one member of the five they name, so the reloaded
+    /// document goes through the same "exactly one" check as a document that
+    /// arrived over the wire.
+    pub fn set_tls_client_auth_subject(&mut self, subject: &TlsClientAuthSubject) {
+        let value = Some(subject.value().to_owned());
+        match subject {
+            TlsClientAuthSubject::SubjectDn(_) => self.tls_client_auth_subject_dn = value,
+            TlsClientAuthSubject::SanDns(_) => self.tls_client_auth_san_dns = value,
+            TlsClientAuthSubject::SanUri(_) => self.tls_client_auth_san_uri = value,
+            TlsClientAuthSubject::SanIp(_) => self.tls_client_auth_san_ip = value,
+            TlsClientAuthSubject::SanEmail(_) => self.tls_client_auth_san_email = value,
+        }
+    }
+
     /// Validates the document against the FAPI 2.0 profile and this
     /// deployment's capabilities.
     ///
@@ -1147,6 +1288,8 @@ impl ClientMetadata {
         capabilities: Capabilities,
     ) -> Result<ClientRegistration, ClientMetadataError> {
         let token_endpoint_auth_method = self.auth_method(capabilities)?;
+        let tls_client_auth_subject =
+            self.tls_client_auth_subject(token_endpoint_auth_method, capabilities)?;
         let application_type = self.application_type()?;
         let grant_types = self.grant_types(capabilities)?;
         self.check_response_types(&grant_types)?;
@@ -1163,6 +1306,7 @@ impl ClientMetadata {
             client_name: self.client_name()?,
             application_type,
             token_endpoint_auth_method,
+            tls_client_auth_subject,
             redirect_uris,
             post_logout_redirect_uris,
             grant_types,
@@ -1593,6 +1737,98 @@ impl ClientMetadata {
         Ok(())
     }
 
+    /// RFC 8705 §2.1.2: exactly one `tls_client_auth_*` parameter, and only for
+    /// a `tls_client_auth` client.
+    ///
+    /// Three rules, each of which is a way to end up with a certificate matched
+    /// against nothing:
+    ///
+    /// 1. The fields need the `mtls` feature. Without it the deployment does
+    ///    not advertise the methods and does not look at certificates, so
+    ///    storing an expectation nobody will check is worse than refusing it —
+    ///    the client's record would describe an authentication that cannot
+    ///    happen.
+    /// 2. A `tls_client_auth` client registers exactly one. None means every
+    ///    certificate matches; two means the server picks.
+    /// 3. Any other method registers none. `self_signed_tls_client_auth`
+    ///    matches on the JWKS (§2.2) and `private_key_jwt` on a signature, so a
+    ///    subject field there is a value that would never be read — and a
+    ///    value that is never read is one an operator can believe is in force.
+    fn tls_client_auth_subject(
+        &self,
+        method: TokenEndpointAuthMethod,
+        capabilities: Capabilities,
+    ) -> Result<Option<TlsClientAuthSubject>, ClientMetadataError> {
+        let presented: Vec<(&'static str, &str)> = TlsClientAuthSubject::FIELDS
+            .into_iter()
+            .zip([
+                self.tls_client_auth_subject_dn.as_deref(),
+                self.tls_client_auth_san_dns.as_deref(),
+                self.tls_client_auth_san_uri.as_deref(),
+                self.tls_client_auth_san_ip.as_deref(),
+                self.tls_client_auth_san_email.as_deref(),
+            ])
+            .filter_map(|(field, value)| value.map(|value| (field, value)))
+            .collect();
+
+        if let Some((field, _)) = presented.first()
+            && !capabilities.is_enabled(Feature::Mtls)
+        {
+            return Err(ClientMetadataError::needs(field, Feature::Mtls));
+        }
+
+        if method != TokenEndpointAuthMethod::TlsClientAuth {
+            return match presented.first() {
+                None => Ok(None),
+                Some((field, _)) => Err(ClientMetadataError::rejected(
+                    field,
+                    "is only registered by a tls_client_auth client; \
+                     self_signed_tls_client_auth matches the certificate against the \
+                     client's own JWKS instead (RFC 8705 §2.2)",
+                )),
+            };
+        }
+
+        let [(field, value)] = presented[..] else {
+            // Both "none" and "more than one" are the same defect — the
+            // document does not name one thing to compare against — and RFC
+            // 8705 §2.1.2 states them as one requirement, so they get one
+            // message naming the whole set.
+            return Err(ClientMetadataError::rejected(
+                TlsClientAuthSubject::FIELDS[0],
+                "a tls_client_auth client must register exactly one of \
+                 tls_client_auth_subject_dn, tls_client_auth_san_dns, \
+                 tls_client_auth_san_uri, tls_client_auth_san_ip or \
+                 tls_client_auth_san_email (RFC 8705 §2.1.2)",
+            ));
+        };
+
+        // Trimmed only at the ends, and only to catch the empty value: the
+        // comparison itself is byte-exact, so a value with interior whitespace
+        // is stored as written and will match only a certificate that says the
+        // same.
+        if value.trim().is_empty() {
+            return Err(ClientMetadataError::Missing { field });
+        }
+        if value.len() > TlsClientAuthSubject::MAX_LEN {
+            return Err(ClientMetadataError::rejected(
+                field,
+                format!("must be at most {} bytes", TlsClientAuthSubject::MAX_LEN),
+            ));
+        }
+        // A control character cannot appear in any of the five certificate
+        // forms this is compared against, and a newline in a stored expectation
+        // is the shape that breaks whatever renders it back out.
+        if value.chars().any(char::is_control) {
+            return Err(ClientMetadataError::rejected(
+                field,
+                "must not contain control characters",
+            ));
+        }
+
+        Ok(TlsClientAuthSubject::from_field(field, value))
+    }
+
     fn mtls_endpoint_aliases(
         &self,
         capabilities: Capabilities,
@@ -1951,7 +2187,17 @@ mod tests {
     #[test]
     fn the_mtls_authentication_methods_are_refused_unless_the_flag_is_on() {
         for method in ["tls_client_auth", "self_signed_tls_client_auth"] {
-            let document = with("token_endpoint_auth_method", json!(method));
+            let mut document = with("token_endpoint_auth_method", json!(method));
+            // RFC 8705 §2.1.2: the PKI method needs a subject to match. Added
+            // here so that what this test measures is the *flag* — a document
+            // refused for a missing subject would pass the assertion below for
+            // the wrong reason.
+            if method == "tls_client_auth" {
+                document
+                    .as_object_mut()
+                    .expect("object")
+                    .insert("tls_client_auth_subject_dn".to_owned(), json!("CN=billing"));
+            }
             let error = validate_with(&document, caps(false)).expect_err("mtls is off");
             assert_eq!(error.code(), "invalid_client_metadata");
             assert!(error.to_string().contains("mtls"), "{error}");
@@ -3031,6 +3277,130 @@ mod tests {
             rejection(&with("authorization_details_types", json!(many))).field(),
             "authorization_details_types"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // RFC 8705 §2.1.2: the certificate subject a tls_client_auth client is
+    // matched on.
+    // -----------------------------------------------------------------------
+
+    /// A document for a `tls_client_auth` client with one subject field set.
+    fn pki_client(field: &str, value: &str) -> serde_json::Value {
+        let mut document = with("token_endpoint_auth_method", json!("tls_client_auth"));
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert(field.to_owned(), json!(value));
+        document
+    }
+
+    /// RFC 8705 §2.1.2: "the client MUST use exactly one of the below metadata
+    /// parameters". Each of the five, on its own, registers.
+    #[test]
+    fn a_pki_client_registers_exactly_one_subject_field() {
+        for field in TlsClientAuthSubject::FIELDS {
+            // Arrange
+            let document = pki_client(field, "expected-value");
+
+            // Act
+            let registration = validate_with(&document, caps(true))
+                .unwrap_or_else(|e| panic!("{field} was refused: {e}"));
+
+            // Assert
+            let subject = registration
+                .tls_client_auth_subject
+                .expect("a tls_client_auth client carries its subject");
+            assert_eq!(subject.field(), field);
+            assert_eq!(subject.value(), "expected-value");
+        }
+    }
+
+    /// None, and more than one, are the same defect: nothing the certificate
+    /// can be compared against, or two things and a choice.
+    #[test]
+    fn a_pki_client_that_registers_none_or_two_subject_fields_is_refused() {
+        // Arrange
+        let none = with("token_endpoint_auth_method", json!("tls_client_auth"));
+        let mut two = pki_client("tls_client_auth_subject_dn", "CN=billing");
+        two.as_object_mut()
+            .expect("object")
+            .insert("tls_client_auth_san_dns".to_owned(), json!("rp.example"));
+
+        // Act
+        let no_field = validate_with(&none, caps(true)).expect_err("nothing to compare against");
+        let both = validate_with(&two, caps(true)).expect_err("two things to compare against");
+
+        // Assert
+        for error in [no_field, both] {
+            assert_eq!(error.code(), "invalid_client_metadata");
+            assert!(
+                TlsClientAuthSubject::FIELDS.contains(&error.field()),
+                "{error}"
+            );
+        }
+    }
+
+    /// RFC 8705 §2.2 matches a self-signed client against its own JWKS, so a
+    /// subject field there would never be read.
+    #[test]
+    fn only_a_tls_client_auth_client_may_register_a_subject_field() {
+        for method in ["self_signed_tls_client_auth", "private_key_jwt"] {
+            for field in TlsClientAuthSubject::FIELDS {
+                // Arrange
+                let mut document = with("token_endpoint_auth_method", json!(method));
+                document
+                    .as_object_mut()
+                    .expect("object")
+                    .insert(field.to_owned(), json!("expected-value"));
+
+                // Act
+                let error = validate_with(&document, caps(true))
+                    .expect_err("the field belongs to tls_client_auth only");
+
+                // Assert
+                assert_eq!(error.field(), field, "{method}");
+            }
+        }
+    }
+
+    /// Without the flag the methods do not exist, so neither does an
+    /// expectation about a certificate nobody will look at.
+    #[test]
+    fn the_subject_fields_need_the_mtls_flag() {
+        for field in TlsClientAuthSubject::FIELDS {
+            // Arrange: a `private_key_jwt` client, so the only thing the
+            // deployment can object to is the field itself.
+            let document = with(field, json!("expected-value"));
+
+            // Act
+            let error = validate_with(&document, caps(false)).expect_err("mtls is off");
+
+            // Assert
+            assert_eq!(error.field(), field);
+            assert!(error.to_string().contains("mtls"), "{error}");
+        }
+    }
+
+    /// The value is compared byte for byte against a certificate, so an empty
+    /// one matches a certificate that says nothing and an oversized one is a
+    /// document, not a name.
+    #[test]
+    fn a_subject_value_must_be_a_non_empty_bounded_line() {
+        for value in [
+            String::new(),
+            "   ".to_owned(),
+            "CN=a\nCN=b".to_owned(),
+            "x".repeat(TlsClientAuthSubject::MAX_LEN + 1),
+        ] {
+            // Arrange
+            let document = pki_client("tls_client_auth_subject_dn", &value);
+
+            // Act
+            let error = validate_with(&document, caps(true)).expect_err("not a usable expectation");
+
+            // Assert
+            assert_eq!(error.field(), "tls_client_auth_subject_dn");
+        }
     }
 
     #[test]

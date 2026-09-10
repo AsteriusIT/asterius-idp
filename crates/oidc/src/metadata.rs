@@ -142,6 +142,37 @@ impl Endpoint {
         }
     }
 
+    /// Whether a client authenticates at this endpoint.
+    ///
+    /// The set RFC 8705 §5 gives an `mtls_endpoint_aliases` member: the
+    /// aliases exist so a client using mTLS reaches an interface that asks for
+    /// its certificate, and only an endpoint that authenticates the client has
+    /// any use for one. `/authorize` and `/logout` are browser destinations,
+    /// `/jwks` and `/userinfo` authenticate nobody or a *token*, and
+    /// `/register` authenticates an initial access token rather than a client
+    /// that exists yet.
+    ///
+    /// Written as a match over every variant rather than a list, so a new
+    /// endpoint has to answer the question before it compiles.
+    #[must_use]
+    pub const fn is_client_authenticated(self) -> bool {
+        match self {
+            Self::Token
+            | Self::PushedAuthorizationRequest
+            | Self::Introspection
+            | Self::Revocation
+            | Self::DeviceAuthorization
+            | Self::BackchannelAuthentication => true,
+            Self::Authorization
+            | Self::Jwks
+            | Self::UserInfo
+            | Self::Registration
+            | Self::EndSession
+            | Self::GrantManagement
+            | Self::AccessEvaluation => false,
+        }
+    }
+
     /// Whether this deployment exposes this endpoint.
     #[must_use]
     pub fn is_enabled(self, capabilities: &Capabilities) -> bool {
@@ -414,17 +445,24 @@ pub fn provider_metadata(
         );
     }
     if capabilities.mtls {
-        // RFC 8705 §5 and FAPI 2.0 SP §5.2.2.1.1.
-        object.insert(
-            "mtls_endpoint_aliases".to_owned(),
-            json!({
-                "token_endpoint": Endpoint::Token.url(issuer),
-                "revocation_endpoint": Endpoint::Revocation.url(issuer),
-                "introspection_endpoint": Endpoint::Introspection.url(issuer),
-                "pushed_authorization_request_endpoint":
-                    Endpoint::PushedAuthorizationRequest.url(issuer),
-            }),
-        );
+        // RFC 8705 §5 and FAPI 2.0 SP §5.2.2.1.1. Built from the same
+        // `Endpoint::enabled` iterator the router mounts and the rest of this
+        // document is rendered from, rather than written out: an alias is a
+        // second URL for an endpoint, and a second URL for an endpoint that
+        // does not exist is the one kind of drift this whole module is shaped
+        // to prevent. It also means the device-authorization and CIBA aliases
+        // appear exactly when their flags put those endpoints on the server,
+        // with nothing here to remember.
+        let aliases: serde_json::Map<String, Value> = Endpoint::enabled(capabilities)
+            .filter(|endpoint| endpoint.is_client_authenticated())
+            .map(|endpoint| {
+                (
+                    endpoint.metadata_key().to_owned(),
+                    json!(endpoint.url(issuer)),
+                )
+            })
+            .collect();
+        object.insert("mtls_endpoint_aliases".to_owned(), Value::Object(aliases));
         object.insert(
             "tls_client_certificate_bound_access_tokens".to_owned(),
             json!(true),
@@ -809,6 +847,75 @@ mod tests {
 
             assert_eq!(added_owned, expected, "{feature} added the wrong members");
         }
+    }
+
+    /// RFC 8705 §5: an alias is a second URL for an endpoint. It must name an
+    /// endpoint this deployment has and advertises, or a client using mTLS is
+    /// sent to a URL that answers 404 — and it must cover every advertised
+    /// endpoint where a client authenticates, or such a client has nowhere to
+    /// present its certificate.
+    #[test]
+    fn every_mtls_alias_names_an_advertised_client_authenticated_endpoint() {
+        // Arrange: mTLS plus the two flags that add client-authenticated
+        // endpoints, so the parity is tested where it can actually break.
+        let capabilities = Capabilities {
+            mtls: true,
+            device_flow: true,
+            ciba: true,
+            ..Capabilities::default()
+        };
+
+        // Act
+        let document = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+        let aliases = document["mtls_endpoint_aliases"]
+            .as_object()
+            .expect("RFC 8705 §5 makes this an object");
+
+        // Assert
+        let expected: std::collections::BTreeSet<String> = Endpoint::enabled(&capabilities)
+            .filter(|endpoint| endpoint.is_client_authenticated())
+            .map(|endpoint| endpoint.metadata_key().to_owned())
+            .collect();
+        let found: std::collections::BTreeSet<String> = aliases.keys().cloned().collect();
+        assert_eq!(found, expected);
+
+        for (key, url) in aliases {
+            assert_eq!(
+                url, &document[key],
+                "the alias for {key} names a URL the document does not"
+            );
+            assert!(
+                document.get(key).is_some(),
+                "{key} is aliased but not advertised"
+            );
+        }
+    }
+
+    /// An endpoint a flag switches off has no alias either: the alias would be
+    /// the only member of the document naming a route the router never mounts.
+    #[test]
+    fn an_endpoint_behind_an_off_flag_gets_no_mtls_alias() {
+        // Arrange
+        let capabilities = Capabilities {
+            mtls: true,
+            ..Capabilities::default()
+        };
+
+        // Act
+        let document = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+        let aliases = document["mtls_endpoint_aliases"]
+            .as_object()
+            .expect("object");
+
+        // Assert
+        for absent in [
+            "device_authorization_endpoint",
+            "backchannel_authentication_endpoint",
+        ] {
+            assert!(!aliases.contains_key(absent), "{absent} was aliased");
+        }
+        assert!(aliases.contains_key("token_endpoint"));
+        assert!(aliases.contains_key("pushed_authorization_request_endpoint"));
     }
 
     #[test]

@@ -30,6 +30,7 @@
 //! There is one caller, and it verifies first. If a second appears, it must
 //! too.
 
+use crate::mtls::ClientCertificate;
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
 
@@ -185,8 +186,15 @@ pub struct Attempt<'a> {
     /// a header *plus* an assertion is still two attempts, and RFC 6749 §2.3
     /// makes that the client's error rather than something to silently ignore.
     pub authorization_header: bool,
-    /// Whether the TLS layer presented a validated client certificate.
-    pub client_certificate: bool,
+    /// The client certificate this request arrived with, if any.
+    ///
+    /// `Some` means a certificate reached this server from a source it trusts
+    /// — its own TLS layer, or a proxy inside `trusted_proxies`. It does **not**
+    /// mean the certificate has been validated against anything: RFC 8705 §2.1
+    /// and §2.2 validate it in completely different ways, and which one applies
+    /// is a fact about the *client*, which is not known yet at the point this
+    /// is built.
+    pub certificate: Option<&'a ClientCertificate>,
 }
 
 /// The authentication method a request is actually making a play for.
@@ -218,7 +226,7 @@ impl Attempt<'_> {
         // certificate and an assertion is ambiguous however good each is.
         let assertion_offered = self.assertion.is_some() || self.assertion_type.is_some();
         let offered = usize::from(assertion_offered)
-            + usize::from(self.client_certificate)
+            + usize::from(self.certificate.is_some())
             + usize::from(self.authorization_header);
         if offered > 1 {
             return Err(ClientAuthError::MultipleMethods);
@@ -236,7 +244,7 @@ impl Attempt<'_> {
             return Ok(Method::PrivateKeyJwt);
         }
 
-        if self.client_certificate {
+        if self.certificate.is_some() {
             return Ok(Method::Mtls);
         }
 
@@ -714,10 +722,30 @@ mod tests {
         assert_eq!(assertion_attempt().method(), Ok(Method::PrivateKeyJwt));
     }
 
+    /// The smallest thing [`ClientCertificate::from_der`] accepts. What is in
+    /// it does not matter here: `method` counts credentials, it does not read
+    /// them.
+    fn a_certificate() -> crate::mtls::ClientCertificate {
+        crate::mtls::ClientCertificate::from_der(vec![
+            0x30, 0x15, // Certificate
+            0x30, 0x0f, // tbsCertificate
+            0x02, 0x01, 0x01, // serialNumber
+            0x30, 0x00, // signature
+            0x30, 0x00, // issuer
+            0x30, 0x00, // validity
+            0x30, 0x00, // subject: an empty Name
+            0x30, 0x02, 0x30, 0x00, // subjectPublicKeyInfo
+            0x30, 0x00, // signatureAlgorithm
+            0x03, 0x00, // signature
+        ])
+        .expect("a minimal certificate")
+    }
+
     #[test]
     fn a_client_certificate_alone_selects_mtls() {
+        let certificate = a_certificate();
         let attempt = Attempt {
-            client_certificate: true,
+            certificate: Some(&certificate),
             ..Attempt::default()
         };
         assert_eq!(attempt.method(), Ok(Method::Mtls));
@@ -726,8 +754,9 @@ mod tests {
     /// RFC 6749 §2.3: one method per request.
     #[test]
     fn presenting_two_methods_is_a_malformed_request() {
+        let certificate = a_certificate();
         let both_transport = Attempt {
-            client_certificate: true,
+            certificate: Some(&certificate),
             ..assertion_attempt()
         };
         assert_eq!(
@@ -742,7 +771,7 @@ mod tests {
         assert_eq!(with_header.method(), Err(ClientAuthError::MultipleMethods));
 
         let cert_and_header = Attempt {
-            client_certificate: true,
+            certificate: Some(&certificate),
             authorization_header: true,
             ..Attempt::default()
         };

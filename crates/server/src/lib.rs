@@ -10,6 +10,7 @@ pub mod client_auth;
 pub mod config;
 pub mod config_reference;
 pub mod http;
+pub mod mtls;
 pub mod observability;
 pub mod outbound;
 pub mod retention;
