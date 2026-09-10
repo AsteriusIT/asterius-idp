@@ -108,6 +108,11 @@ change before the shape is safe anywhere real, and
 [`docs/configuration.md`](docs/configuration.md) documents every configuration
 key with its type, its default and where its secrets should come from.
 
+Once it is running, [`docs/runbooks/`](docs/runbooks/README.md) holds the
+operational procedures: [upgrading](docs/runbooks/upgrade.md),
+[rotating the key-encryption key](docs/runbooks/kek-rotation.md), and
+[backup and restore](docs/runbooks/backup-restore.md).
+
 ## Contributing
 
 Contributions are welcome once the foundation epics land. Until then, the most useful help is reviewing the backlog against the specs and opening issues where a MUST is missing or misread.

@@ -10,6 +10,8 @@ short.
 - [`../docs/configuration.md`](../docs/configuration.md) — every key, with its
   type and default. Generated from the schema; do not edit it by hand.
 - [`../Dockerfile`](../Dockerfile) — the release image.
+- [`../docs/runbooks/`](../docs/runbooks/README.md) — upgrading, rotating the
+  key-encryption key, backup and restore.
 
 ## The example stack
 
