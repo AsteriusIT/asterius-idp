@@ -129,6 +129,66 @@ impl PgPasswordVerifier {
         stored.is_weaker_than(self.parameters)
     }
 
+    /// Sets this user's password, creating the credential if there is none.
+    ///
+    /// The write half of account recovery, and it is deliberately *not*
+    /// [`Self::rehash`]: that one replaces a hash of the same password after a
+    /// login proved it, and it would silently do nothing for a user who has
+    /// only ever had a passkey. Somebody recovering an account may be in
+    /// exactly that state, and a reset that reported success while writing no
+    /// credential would lock them out with a green tick.
+    ///
+    /// Returns the id of the credential row, for the audit record: a
+    /// credential nobody recognises has to be traceable to the ceremony that
+    /// produced it.
+    ///
+    /// Idempotent by user rather than by row, because `credentials` allows one
+    /// password per user and the update-then-insert here is the same shape the
+    /// admin seed uses. Two concurrent resets cannot reach this: the token
+    /// each would have to spend is single use.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if hashing or the write fails.
+    pub async fn set_password(
+        &self,
+        user: uuid::Uuid,
+        password: &str,
+    ) -> Result<uuid::Uuid, DomainError> {
+        let fresh = self.hash_for_storage(password)?;
+        let updated: Option<uuid::Uuid> = sqlx::query_scalar!(
+            "update credentials
+                set password_hash = $3, disabled_at = null
+              where tenant_id = $1 and user_id = $2 and kind = 'password'
+          returning credential_id",
+            self.tenant.as_str(),
+            user,
+            fresh,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        if let Some(credential) = updated {
+            return Ok(credential);
+        }
+
+        let credential = uuid::Uuid::new_v4();
+        sqlx::query!(
+            "insert into credentials
+                 (tenant_id, credential_id, user_id, kind, password_hash)
+             values ($1, $2, $3, 'password', $4)",
+            self.tenant.as_str(),
+            credential,
+            user,
+            fresh,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(credential)
+    }
+
     /// Replaces a stored hash after a successful login.
     ///
     /// # Errors

@@ -11111,3 +11111,377 @@ mod tenant_settings {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Account recovery (ast-2vk.10)
+// ---------------------------------------------------------------------------
+
+/// The rules a clock decides, and the one an `update` decides.
+///
+/// These are here rather than in `asterius-server`'s `recovery.rs` because
+/// both need `now` to be a parameter. Over HTTP it is not: the handler reads
+/// the system clock, and a test that wanted an expired token would have to
+/// either sleep for a quarter of an hour or reach past the adapter and rewrite
+/// a row — which would be testing SQL written by the test rather than the SQL
+/// that runs.
+mod recovery {
+    use super::*;
+    use asterius_domain::ports::RecoveryTokenStore as _;
+    use asterius_domain::{IssuedRecovery, RECOVERY_LIFETIME, RecoveryToken, UserId};
+    use asterius_store_pg::PgRecoveryTokens;
+    use time::Duration;
+
+    async fn seed_account(pool: &PgPool, tenant: &str) -> UserId {
+        seed_tenant(pool, tenant).await;
+        let id = UserId::generate();
+        sqlx::query(
+            "insert into users (tenant_id, user_id, username, email, status)
+             values ($1, $2, $3, $4, 'active')",
+        )
+        .bind(tenant)
+        .bind(id.as_uuid())
+        .bind(id.as_uuid().to_string())
+        .bind(format!("{}@example.test", id.as_uuid()))
+        .execute(pool)
+        .await
+        .expect("seed a user");
+        id
+    }
+
+    fn tokens(pool: &PgPool, tenant: &str) -> PgRecoveryTokens {
+        PgRecoveryTokens::new(pool.clone(), TenantId::new(tenant))
+    }
+
+    db_test! {
+        /// The ordinary case: a token that was issued and has not expired is
+        /// spent, and the account it names comes back.
+        async fn a_live_token_is_spent_and_names_its_account(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-live").await;
+            let store = tokens(&db.pool, "rec-live");
+            let token = RecoveryToken::generate();
+            let now = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedRecovery::new(user, &token, now))
+                .await
+                .expect("issue");
+
+            // Act
+            let spent = store.spend(&token.digest(), now).await.expect("spend");
+
+            // Assert
+            assert_eq!(spent, Some(user));
+        }
+    }
+
+
+    db_test! {
+        /// Single use. The second spend of one token finds nothing, and it is
+        /// the `update`'s `consumed_at is null` predicate that decides — not a
+        /// read the caller performed first.
+        async fn a_token_is_spent_exactly_once(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-once").await;
+            let store = tokens(&db.pool, "rec-once");
+            let token = RecoveryToken::generate();
+            let now = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedRecovery::new(user, &token, now))
+                .await
+                .expect("issue");
+            store.spend(&token.digest(), now).await.expect("first spend");
+
+            // Act
+            let again = store.spend(&token.digest(), now).await.expect("second spend");
+
+            // Assert
+            assert_eq!(again, None);
+        }
+    }
+
+
+    db_test! {
+        /// **Fifteen minutes.** NIST SP 800-63B §6.1.2.3 asks for a short
+        /// validity and OWASP's Forgot Password Cheat Sheet says the same; the
+        /// number is `RECOVERY_LIFETIME`, and this is the only test that can
+        /// state it against the predicate that actually runs.
+        async fn a_token_past_its_lifetime_is_refused(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-expiry").await;
+            let store = tokens(&db.pool, "rec-expiry");
+            let token = RecoveryToken::generate();
+            let issued_at = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedRecovery::new(user, &token, issued_at))
+                .await
+                .expect("issue");
+
+            // Act
+            let spent = store
+                .spend(&token.digest(), issued_at + RECOVERY_LIFETIME + Duration::seconds(1))
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(spent, None);
+        }
+    }
+
+
+    db_test! {
+        /// One second inside the window still works. Without this, the test
+        /// above would pass against a token that never worked at all.
+        async fn a_token_inside_its_lifetime_still_works(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-inside").await;
+            let store = tokens(&db.pool, "rec-inside");
+            let token = RecoveryToken::generate();
+            let issued_at = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedRecovery::new(user, &token, issued_at))
+                .await
+                .expect("issue");
+
+            // Act
+            let spent = store
+                .spend(&token.digest(), issued_at + RECOVERY_LIFETIME - Duration::seconds(1))
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(spent, Some(user));
+        }
+    }
+
+
+    db_test! {
+        /// Issuing supersedes. Two live links in one mailbox is two account
+        /// takeovers, and the one nobody used is the one nobody would notice
+        /// being used.
+        async fn issuing_a_token_kills_the_one_before_it(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-supersede").await;
+            let store = tokens(&db.pool, "rec-supersede");
+            let now = OffsetDateTime::now_utc();
+            let first = RecoveryToken::generate();
+            let second = RecoveryToken::generate();
+            store.issue(&IssuedRecovery::new(user, &first, now)).await.expect("issue");
+            store.issue(&IssuedRecovery::new(user, &second, now)).await.expect("issue");
+
+            // Act
+            let old = store.spend(&first.digest(), now).await.expect("spend");
+            let new = store.spend(&second.digest(), now).await.expect("spend");
+
+            // Assert
+            assert_eq!(old, None);
+            assert_eq!(new, Some(user));
+        }
+    }
+
+
+    db_test! {
+        /// **A credential change invalidates a token that was still valid.**
+        /// A link quietly requested before the change must not survive it —
+        /// otherwise changing a password after a compromise leaves the way
+        /// back in that the attacker set up.
+        async fn a_credential_change_invalidates_an_outstanding_token(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-change").await;
+            let store = tokens(&db.pool, "rec-change");
+            let now = OffsetDateTime::now_utc();
+            let token = RecoveryToken::generate();
+            store.issue(&IssuedRecovery::new(user, &token, now)).await.expect("issue");
+
+            // Act
+            let invalidated = store
+                .invalidate_for_user(user, now)
+                .await
+                .expect("invalidate");
+            let spent = store.spend(&token.digest(), now).await.expect("spend");
+
+            // Assert
+            assert_eq!(invalidated, 1);
+            assert_eq!(spent, None);
+        }
+    }
+
+
+    db_test! {
+        /// The reason is recorded, so an operator can tell a completed reset
+        /// from a link cancelled by a credential change — the distinction the
+        /// handler deliberately refuses to show a browser.
+        async fn an_invalidated_token_records_why(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-reason").await;
+            let store = tokens(&db.pool, "rec-reason");
+            let now = OffsetDateTime::now_utc();
+            let token = RecoveryToken::generate();
+            store.issue(&IssuedRecovery::new(user, &token, now)).await.expect("issue");
+            store.invalidate_for_user(user, now).await.expect("invalidate");
+
+            // Act
+            let reason: Option<String> = sqlx::query_scalar(
+                "select consumed_reason from recovery_tokens
+                  where tenant_id = $1 and token_digest = $2",
+            )
+            .bind("rec-reason")
+            .bind(token.digest())
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row");
+
+            // Assert
+            assert_eq!(reason.as_deref(), Some("credential_change"));
+        }
+    }
+
+
+    db_test! {
+        /// **Hashed at rest.** No column anywhere holds the token, so a copy
+        /// of this database is a pile of digests rather than a pile of live
+        /// reset links (NIST SP 800-63B §5.1.1.2).
+        async fn no_row_holds_the_token_itself(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-at-rest").await;
+            let store = tokens(&db.pool, "rec-at-rest");
+            let now = OffsetDateTime::now_utc();
+            let token = RecoveryToken::generate();
+            store.issue(&IssuedRecovery::new(user, &token, now)).await.expect("issue");
+
+            // Act
+            let row: String = sqlx::query_scalar(
+                "select recovery_tokens::text from recovery_tokens where tenant_id = $1",
+            )
+            .bind("rec-at-rest")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row");
+
+            // Assert
+            assert!(!row.contains(token.expose()), "the row held the token: {row}");
+            assert!(row.contains(&token.digest()));
+        }
+    }
+
+
+    db_test! {
+        /// A token nobody issued is refused rather than matched as a prefix.
+        async fn a_token_nobody_issued_is_refused(db) {
+            // Arrange
+            seed_account(&db.pool, "rec-unknown").await;
+            let store = tokens(&db.pool, "rec-unknown");
+
+            // Act
+            let spent = store
+                .spend(&RecoveryToken::generate().digest(), OffsetDateTime::now_utc())
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(spent, None);
+        }
+    }
+
+
+    db_test! {
+        /// A token belongs to the tenant that issued it. The predicate names
+        /// `tenant_id`, so one tenant's link cannot reset another's account
+        /// even if the digests somehow collided.
+        async fn a_token_does_not_cross_tenants(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-mine").await;
+            seed_account(&db.pool, "rec-theirs").await;
+            let now = OffsetDateTime::now_utc();
+            let token = RecoveryToken::generate();
+            tokens(&db.pool, "rec-mine")
+                .issue(&IssuedRecovery::new(user, &token, now))
+                .await
+                .expect("issue");
+
+            // Act
+            let elsewhere = tokens(&db.pool, "rec-theirs")
+                .spend(&token.digest(), now)
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(elsewhere, None);
+        }
+    }
+
+
+    db_test! {
+        /// `peek` reads without spending, so rendering the page a link leads
+        /// to does not consume the link.
+        async fn peeking_does_not_spend(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-peek").await;
+            let store = tokens(&db.pool, "rec-peek");
+            let now = OffsetDateTime::now_utc();
+            let token = RecoveryToken::generate();
+            store.issue(&IssuedRecovery::new(user, &token, now)).await.expect("issue");
+
+            // Act
+            let peeked = store.peek(&token.digest(), now).await.expect("peek");
+            let spent = store.spend(&token.digest(), now).await.expect("spend");
+
+            // Assert
+            assert_eq!(peeked, Some(user));
+            assert_eq!(spent, Some(user));
+        }
+    }
+
+
+    db_test! {
+        /// `peek` applies the same expiry predicate as `spend`, so a dead link
+        /// produces an error page rather than a form that will fail after
+        /// somebody has typed a password twice.
+        async fn peeking_an_expired_token_finds_nothing(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-peek-dead").await;
+            let store = tokens(&db.pool, "rec-peek-dead");
+            let issued_at = OffsetDateTime::now_utc();
+            let token = RecoveryToken::generate();
+            store
+                .issue(&IssuedRecovery::new(user, &token, issued_at))
+                .await
+                .expect("issue");
+
+            // Act
+            let peeked = store
+                .peek(&token.digest(), issued_at + RECOVERY_LIFETIME + Duration::seconds(1))
+                .await
+                .expect("peek");
+
+            // Assert
+            assert_eq!(peeked, None);
+        }
+    }
+
+
+    db_test! {
+        /// The sweep drops what has expired. An expired row protects nothing —
+        /// `spend` refuses it regardless — and only costs space.
+        async fn expired_tokens_are_purged(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "rec-purge").await;
+            let store = tokens(&db.pool, "rec-purge");
+            let issued_at = OffsetDateTime::now_utc();
+            let token = RecoveryToken::generate();
+            store
+                .issue(&IssuedRecovery::new(user, &token, issued_at))
+                .await
+                .expect("issue");
+
+            // Act
+            let purged = store
+                .purge_expired(issued_at + RECOVERY_LIFETIME + Duration::seconds(1))
+                .await
+                .expect("purge");
+
+            // Assert
+            assert_eq!(purged, 1);
+        }
+    }
+
+}

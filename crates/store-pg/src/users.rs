@@ -169,6 +169,40 @@ impl PgUserRepository {
         row.map(|row| row.into_entity(&self.tenant)).transpose()
     }
 
+    /// Finds one user by the address on their account.
+    ///
+    /// Case-insensitive on the whole address, against the `users_by_email`
+    /// unique index — which is `lower(email)`, so this query uses it rather
+    /// than scanning. The domain part is case-insensitive by RFC 5321 §2.4 and
+    /// the local part is technically not; folding both anyway is the choice
+    /// the index already made, and it is the one that matches what a person
+    /// typing their own address expects. It cannot merge two accounts,
+    /// because the index forbids two rows that fold together.
+    ///
+    /// Its caller is account recovery, and the shape matters there: this must
+    /// answer the same way for an address with no account as for one with a
+    /// disabled account, which it does, because it says nothing about either —
+    /// the *caller* is what must not turn `None` into a different page.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::find`].
+    pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, DomainError> {
+        let row = sqlx::query_as!(
+            Row,
+            "select user_id, username, email, email_verified, status, claims,
+                    created_at, updated_at
+             from users
+             where tenant_id = $1 and lower(email) = lower($2)",
+            self.tenant.as_str(),
+            email
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        row.map(|row| row.into_entity(&self.tenant)).transpose()
+    }
+
     /// Finds the user a `sub` refers to, in any sector.
     ///
     /// This is the lookup UserInfo and token introspection perform: a token

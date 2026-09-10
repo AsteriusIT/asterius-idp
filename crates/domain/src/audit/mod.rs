@@ -78,6 +78,48 @@ impl EventType {
     /// `credential-change` (create) signal; the signal itself is emitted
     /// elsewhere.
     pub const CREDENTIAL_CREATED: Self = Self("credential.created");
+    /// A user's credential set changed: a password replaced, a recovery
+    /// completed.
+    ///
+    /// Distinct from [`Self::CREDENTIAL_CREATED`], which says a credential
+    /// came into existence. This one says an existing one stopped being valid,
+    /// which is the fact that matters when somebody asks why they were signed
+    /// out of everything.
+    ///
+    /// # The CAEP seam
+    ///
+    /// This is the trail half of the CAEP `credential-change` signal (OpenID
+    /// Shared Signals). The transmitter is `ast-0ju` and is not built; until
+    /// it is, the extension point is
+    /// `asterius_server::http::recovery::notify_credential_change`, named for
+    /// the same reason `notify_participants` was named on the logout path: a
+    /// hook with a name is a thing a reviewer can find, and a hook that does
+    /// not exist is a signal nobody remembers to send.
+    pub const CREDENTIAL_CHANGED: Self = Self("credential.changed");
+    /// Somebody asked for an account recovery link.
+    ///
+    /// Recorded for *every* request, including the ones naming an address this
+    /// tenant has no account for — with [`Outcome::Success`] either way,
+    /// because the request succeeded either way. The trail must not be the
+    /// place the existence oracle the page refuses to be reappears, so the
+    /// record names the bucket, never whether a user was found.
+    pub const RECOVERY_REQUESTED: Self = Self("recovery.requested");
+    /// A recovery link was handed to a sender.
+    ///
+    /// Only ever emitted for a request that matched an account, so this event
+    /// *is* account-existence information — which is why it says nothing a
+    /// browser can see. It is what answers "was a link actually sent" during
+    /// an incident.
+    pub const RECOVERY_SENT: Self = Self("recovery.sent");
+    /// A recovery token was spent and a new credential was set.
+    pub const RECOVERY_USED: Self = Self("recovery.used");
+    /// A recovery token was presented and refused: unknown, spent, expired, or
+    /// invalidated by a credential change.
+    ///
+    /// One type for all four, matching the one answer the browser gets. The
+    /// reason is in the log line beside it, not in a separate event type an
+    /// attacker could count.
+    pub const RECOVERY_REFUSED: Self = Self("recovery.refused");
     /// A user granted consent.
     pub const CONSENT_GRANTED: Self = Self("consent.granted");
     /// A user refused consent.
@@ -176,7 +218,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 31] = [
+    pub const ALL: [Self; 36] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -184,6 +226,11 @@ impl EventType {
         Self::AUTH_THROTTLED,
         Self::REQUEST_THROTTLED,
         Self::CREDENTIAL_CREATED,
+        Self::CREDENTIAL_CHANGED,
+        Self::RECOVERY_REQUESTED,
+        Self::RECOVERY_SENT,
+        Self::RECOVERY_USED,
+        Self::RECOVERY_REFUSED,
         Self::CONSENT_GRANTED,
         Self::CONSENT_DENIED,
         Self::CODE_ISSUED,

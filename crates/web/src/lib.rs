@@ -16,6 +16,7 @@ pub mod csp;
 pub mod document;
 pub mod interaction;
 pub mod pages;
+pub mod recovery;
 pub mod session;
 mod snapshots;
 mod source_audit;

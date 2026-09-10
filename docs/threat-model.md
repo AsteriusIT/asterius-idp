@@ -405,6 +405,53 @@ repeatedly can reach the sixteen-element bound and be refused. The refusal is
 it; the alternative — silently dropping elements — would leave the client
 believing it holds an authorization nobody recorded.
 
+### Account recovery (`ast-2vk.10`)
+
+**The boundary moved, and this section exists to say where it moved to.**
+
+Before account recovery, taking an account over required a credential: a
+password, or a passkey's private key. With it, control of the mailbox on the
+account is enough. That is not a defect — it is what recovery *is*, and NIST
+SP 800-63B §6.1.2.3 treats it as a binding to an out-of-band channel rather
+than as a weaker form of the same authenticator — but it has a consequence
+worth writing down plainly:
+
+> **The mail provider of every account with an address on it is now inside the
+> trust boundary for that account.** It was not before. So is anything on the
+> path to it: a corporate mail gateway that expands links to preview them, an
+> archive, a shared inbox, a forwarding rule nobody remembers setting.
+
+An operator who cannot accept that should not enable a password method at all;
+passkeys are primary here, and an account with no address recovers nothing.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Guessing a reset link.** A token short or structured enough to be searched is an account per guess. | 256 bits from the OS CSPRNG, unpadded `base64url`, twice the FAPI 2.0 SP §5.4.1 item 4 floor the ticket asked for. The parser accepts exactly the 43 characters this server issues, with no trimming, padding tolerance or case folding, and it runs before any database work — so a malformed token costs a length check, not an index probe. Fuzzed (`recovery_token`). |
+| **A2**, and anyone with a database copy | **G1** | **Reading live reset links out of storage.** A table of tokens is a table of account takeovers. | Rows hold the SHA-256 digest and nothing else; there is no plaintext column anywhere and a test asserts the whole row does not contain the token. Unsalted rather than Argon2id on purpose: the input already carries 256 bits, so there is nothing to brute force and a slow hash would only make the lookup slow. |
+| **A1** | **G1** | **Racing one link.** Somebody who obtained a link once uses it at the same moment as its owner, and both succeed. | `spend` is a single `update … returning` whose predicates — unspent, unexpired — are inside the statement. Whichever request wins gets the reset; the other updates nothing and is told nothing. |
+| **A1** | **G1** | **Using a link that has been sitting in a mailbox.** | Fifteen minutes, enforced in SQL against a clock the caller does not choose, and tested against that predicate rather than a Rust-side copy of it. |
+| **A1** | **G1** | **Collecting links.** Somebody asks for three, uses one, and keeps two live takeovers for later — the two nobody will notice being used. | Issuing a token consumes every earlier one for that account in the same transaction. One mailbox, one live link. |
+| **A1** | **G1** | **Surviving the change.** An attacker quietly requests a link, the owner changes their password, and the attacker's link still works. | Any credential change invalidates every outstanding token for that user, and the recovery path calls that hook itself. |
+| **A1** | **G1** | **Keeping the session.** An attacker who got in first stays in after the owner recovers. | A completed recovery revokes **every** session the account had, with reason `credential_change`. The mirror case is covered by the same line: an owner recovering while an attacker holds a session ends it. |
+| **A1** | **G3** | **Enumerating accounts through the reset form.** The textbook oracle (RFC 9700 §4, OWASP Forgot Password Cheat Sheet). | `POST /recovery` renders one page, byte for byte, for an address with an account, an address with a *disabled* account, and an address with none — the page type has no field that could differ, so the absence is structural rather than conditional, and a test compares the two responses byte for byte. A mail-delivery failure does not change it either: "we could not send mail" is only sayable about an address that has an account. The audit trail records **every** request with `Success`, matching or not, so the oracle does not reappear in the database. |
+| **A1** | **G3** | **Using this server as a mail cannon.** An unauthenticated form that sends mail to an address the caller chooses, as often as they like. | Every request is counted against the per-account and per-address buckets of `ast-2vk.9` — the same limiter the login form uses, not a second one with its own opinions — and a full bucket refuses before any lookup. A limiter that cannot be read fails closed. |
+| **A1** | **G3** | **Burning somebody's link cross-site.** A page on the internet POSTs to `/recovery/new` and spends a link, denying its owner for fifteen minutes. | A `__Host-` prefixed, `SameSite=Lax`, `HttpOnly` synchroniser cookie double-submitted with a hidden field: a cross-site POST carries no cookie, so no match is possible, and the `__Host-` prefix stops a sibling subdomain writing one. A failed check re-renders the form **without spending the token**. |
+| **A1** | **G4** | **Taking an account quietly.** | The account is mailed a credential-change notice with nothing in it to click — a link in a message about a password is a phishing lesson — and the change is recorded as `credential.changed`, which is the trail half of the CAEP `credential-change` signal. |
+
+**Residual, and deliberately so:** this repository ships no real mail sender.
+The journal adapter writes the message to the transactional outbox and logs
+that it delivered nothing. An operator who wires a sender should treat the
+outbox as a credential store — an `account_recovery` row contains a live link
+until the token behind it expires — and keep its retention short. See
+`docs/configuration.md`.
+
+**Not built yet:** passkey re-enrolment after a recovery. Today a recovery sets
+a password, which means an account whose only credential was a passkey is
+recovered onto a weaker method. The enrolment page (`/passkeys`) exists and is
+reachable from the session that follows a sign-in, so the path is a redirect
+rather than a mechanism — but until it is wired here, that downgrade is real
+and is the reason a deployment may prefer to leave passwords off entirely.
+
 ### 4. Agent-specific threats (G4)
 
 FAPI's attacker model has no notion of a principal acting for another principal.

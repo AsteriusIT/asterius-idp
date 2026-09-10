@@ -42,6 +42,7 @@ const TENANT_SCOPED_TABLES: &[&str] = &[
     "resource_servers",
     "authorization_details_types",
     "initial_access_tokens",
+    "recovery_tokens",
 ];
 
 /// Extracts the SQL string literals passed to `sqlx` macros in one file.

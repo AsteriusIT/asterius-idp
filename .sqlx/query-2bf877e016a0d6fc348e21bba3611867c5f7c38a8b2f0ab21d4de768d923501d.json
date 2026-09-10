@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kind, destination, payload, created_at\n               from outbox\n              where tenant_id = $1 and kind like 'notification.%' and delivered_at is null\n              order by outbox_id asc",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "destination",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2bf877e016a0d6fc348e21bba3611867c5f7c38a8b2f0ab21d4de768d923501d"
+}
