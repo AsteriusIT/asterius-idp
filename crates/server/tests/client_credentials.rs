@@ -207,7 +207,7 @@ impl Fixture {
 
     /// An agent client (`ast-lh3.1`) owned by a real account, under `limits`.
     ///
-    /// The owner is a row in `users` and not a fixture string: migration `0019`
+    /// The owner is a row in `users` and not a fixture string: migration `0020`
     /// makes the owner a foreign key, so a test that invented one would be
     /// testing a shape the database refuses.
     async fn agent(&self, limits: AgentLimits) -> Client {

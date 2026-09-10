@@ -1413,7 +1413,7 @@ db_test! {
 }
 
 db_test! {
-    /// Migration `0019`: an agent whose owner is deleted is disabled, and its
+    /// Migration `0020`: an agent whose owner is deleted is disabled, and its
     /// owner column is emptied. Not cascaded away — the row has an audit history
     /// and possibly live grants, and destroying it would destroy the evidence of
     /// what the agent did.

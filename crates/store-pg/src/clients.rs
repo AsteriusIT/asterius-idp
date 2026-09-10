@@ -1028,7 +1028,7 @@ fn key_columns(registration: &ClientRegistration) -> (Option<serde_json::Value>,
 /// The three columns an agent profile (`ast-lh3.1`) occupies.
 ///
 /// The owner is written to its own column and *not* left only in the document:
-/// the foreign key and the disable-on-delete trigger of migration `0019` act on
+/// the foreign key and the disable-on-delete trigger of migration `0020` act on
 /// a column, and an owner that lived only in the JSON would be a reference the
 /// database cannot enforce. The document therefore stores the limits alone,
 /// which is what [`asterius_domain::AgentLimits::from_json`] reads back — a
