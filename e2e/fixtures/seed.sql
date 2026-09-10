@@ -66,3 +66,28 @@ values (
 on conflict (tenant_id, credential_id) do update
 set password_hash = excluded.password_hash,
     disabled_at   = null;
+
+-- --------------------------------------------------------------------------
+-- One role, so the console shell has something to draw.
+--
+-- `ast-xka`: since `ast-wr4` the entry document is served only to a session,
+-- and the shell the browser then renders is role-driven — with no role the
+-- navigation is empty and the accessibility sweep would be run over a screen
+-- no administrator ever sees. `tenant_admin` is the smaller of the two roles
+-- `crates/domain/src/entities/role.rs` knows, and it reaches every tenant
+-- destination in `console/src/navigation.ts` without granting anything
+-- deployment-wide.
+--
+-- `tenant_is_reserved` is read from the tenant rather than asserted: the
+-- foreign key on `(tenant_id, tenant_is_reserved)` is what refuses a
+-- deployment-scoped role outside the reserved tenant, and a literal here would
+-- be a second place to be wrong about which tenant this is.
+-- --------------------------------------------------------------------------
+insert into user_roles (tenant_id, user_id, role, tenant_is_reserved)
+select :'tenant',
+       '3f1d5c2a-0000-4000-8000-000000000001'::uuid,
+       'tenant_admin',
+       tenants.is_reserved
+from tenants
+where tenants.tenant_id = :'tenant'
+on conflict (tenant_id, user_id, role) do nothing;
