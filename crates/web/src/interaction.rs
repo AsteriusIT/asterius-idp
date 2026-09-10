@@ -154,6 +154,16 @@ impl fmt::Debug for CsrfToken {
 pub enum Stage {
     /// The user has not been authenticated for this request yet.
     Login,
+    /// The request asked for an account that does not exist yet
+    /// (`prompt=create`, OpenID Connect Prompt Create 1.0 §3).
+    ///
+    /// A stage of its own rather than a flag on [`Stage::Login`], because it is
+    /// a different page taking a different form and producing a different
+    /// audit event. It is also the only stage a *tenant* can switch off: the
+    /// value is refused at the push unless
+    /// [`asterius_domain::Feature::SelfRegistration`] is on, so nothing can
+    /// reach here that the discovery document did not advertise.
+    Register,
     /// Authenticated, but the request asks for an assurance the current
     /// authentication does not meet (`acr_values`, `max_age`).
     StepUp,
@@ -192,7 +202,15 @@ impl Stage {
         match continuation {
             Continuation::Client(_) => matches!(
                 (self, next),
-                (Self::Login, Self::StepUp | Self::Consent)
+                // Prompt Create §3: an account that has just been created has
+                // been authenticated by the act of creating it, so the move
+                // out of `Register` is the move out of `Login` — never
+                // straight to `Response`, which would be a grant nobody was
+                // asked about. The move *to* `Login` is the "already have an
+                // account?" door, and it costs progress rather than granting
+                // any, like the backward move below it.
+                (Self::Register, Self::StepUp | Self::Consent | Self::Login)
+                    | (Self::Login, Self::StepUp | Self::Consent)
                     // Re-authentication: a step-up that fails, or a session
                     // that expires mid-interaction, returns to `Login`. That
                     // backward move is the only one, and it costs nothing — it
@@ -202,7 +220,8 @@ impl Stage {
             ),
             Continuation::FirstParty(_) => matches!(
                 (self, next),
-                (Self::Login, Self::StepUp | Self::Response)
+                (Self::Register, Self::StepUp | Self::Response | Self::Login)
+                    | (Self::Login, Self::StepUp | Self::Response)
                     | (Self::StepUp, Self::Response | Self::Login)
             ),
         }
@@ -956,16 +975,23 @@ mod tests {
 
     #[test]
     fn the_state_machine_allows_exactly_these_moves() {
-        use Stage::{Consent, Login, Response, StepUp};
+        use Stage::{Consent, Login, Register, Response, StepUp};
         let legal = [
+            // Prompt Create 1.0 §3: creating an account authenticates the
+            // person who created it, so `Register` leaves by the doors
+            // `Login` leaves by — and by the one back to `Login` itself,
+            // which is the "already have an account?" link.
+            (Register, StepUp),
+            (Register, Consent),
+            (Register, Login),
             (Login, StepUp),
             (Login, Consent),
             (StepUp, Consent),
             (StepUp, Login),
             (Consent, Response),
         ];
-        for from in [Login, StepUp, Consent, Response] {
-            for to in [Login, StepUp, Consent, Response] {
+        for from in [Register, Login, StepUp, Consent, Response] {
+            for to in [Register, Login, StepUp, Consent, Response] {
                 let expected = legal.contains(&(from, to));
                 assert_eq!(
                     from.may_advance_to(to, &authorization()),
@@ -983,15 +1009,18 @@ mod tests {
     /// skipped by a flag — it is unreachable.
     #[test]
     fn a_first_party_interaction_allows_exactly_these_moves() {
-        use Stage::{Consent, Login, Response, StepUp};
+        use Stage::{Consent, Login, Register, Response, StepUp};
         let legal = [
+            (Register, StepUp),
+            (Register, Response),
+            (Register, Login),
             (Login, StepUp),
             (Login, Response),
             (StepUp, Response),
             (StepUp, Login),
         ];
-        for from in [Login, StepUp, Consent, Response] {
-            for to in [Login, StepUp, Consent, Response] {
+        for from in [Register, Login, StepUp, Consent, Response] {
+            for to in [Register, Login, StepUp, Consent, Response] {
                 let expected = legal.contains(&(from, to));
                 assert_eq!(
                     from.may_advance_to(to, &console()),
@@ -1008,7 +1037,13 @@ mod tests {
     /// `Consent`, and the stage after login is the destination.
     #[test]
     fn a_first_party_interaction_can_never_reach_consent() {
-        for from in [Stage::Login, Stage::StepUp, Stage::Consent, Stage::Response] {
+        for from in [
+            Stage::Register,
+            Stage::Login,
+            Stage::StepUp,
+            Stage::Consent,
+            Stage::Response,
+        ] {
             assert!(
                 !from.may_advance_to(Stage::Consent, &console()),
                 "{from:?} reached a consent screen with nobody to consent to"

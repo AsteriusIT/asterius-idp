@@ -25,7 +25,8 @@
     "sid",
     "email",
     "email_verified",
-    "updated_at"
+    "updated_at",
+    "preferred_username"
   ],
   "code_challenge_methods_supported": [
     "S256"

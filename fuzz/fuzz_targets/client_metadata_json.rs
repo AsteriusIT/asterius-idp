@@ -40,6 +40,7 @@ const EVERYTHING: Capabilities = Capabilities {
     authzen: true,
     dpop_nonce: true,
     request_object: true,
+    self_registration: false,
     dynamic_client_registration: true,
 };
 

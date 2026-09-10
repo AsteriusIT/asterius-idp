@@ -17,17 +17,26 @@
 -- The identifiers are constants so that a re-run updates the same rows rather
 -- than accumulating a directory of sweep users.
 -- --------------------------------------------------------------------------
-insert into users (tenant_id, user_id, username, email, email_verified, status)
+--
+-- The claim bag carries `preferred_username` (OIDC Core §5.1). It is there
+-- because `claims_supported` advertises it (`ast-2vk.8`), and a document that
+-- advertises a claim the fixture user does not have is what made the
+-- conformance suite report a missing identity claim in `ast-8p1`. It is a
+-- *display* name and deliberately not the login identifier: the two differ
+-- here so that a test asserting one cannot pass by reading the other.
+insert into users (tenant_id, user_id, username, email, email_verified, status, claims)
 values (
     :'tenant',
     '3f1d5c2a-0000-4000-8000-000000000001'::uuid,
     :'username',
     :'username',
     true,
-    'active'
+    'active',
+    '{"preferred_username": {"value": "Sweep User", "source": "local"}}'::jsonb
 )
 on conflict (tenant_id, user_id) do update
 set username = excluded.username,
+    claims   = excluded.claims,
     status   = 'active';
 
 -- The Argon2id hash of the password in `e2e/src/environment.ts`, at the

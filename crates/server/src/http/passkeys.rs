@@ -806,7 +806,7 @@ async fn session_from_assertion(
     // consent screen still has to say whose account is about to be granted
     // (`ast-bo5`). The same call the password path makes, so a screen after a
     // passkey sign-in says what a screen after a password one says.
-    state.signed_in_as(&account.username);
+    state.signed_in_as(crate::http::signup::display_name(&account));
 
     // And the same reset the password path makes (`ast-b3u`): an assertion that
     // satisfied §7.2 is a proof, so the wrong guesses counted against this

@@ -20,7 +20,7 @@ use asterius_server::tenant_settings::SettingsDirectory;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -185,6 +185,7 @@ async fn every_advertised_endpoint_resolves_to_a_route() {
         dpop_nonce: true,
         request_object: true,
         dynamic_client_registration: true,
+        self_registration: true,
     };
     let metadata = document(capabilities).await;
     let object = metadata.as_object().expect("object");
@@ -712,6 +713,113 @@ async fn a_tenant_cannot_advertise_a_feature_the_deployment_lacks() {
     assert!(document.get("device_authorization_endpoint").is_none());
 }
 
+// ---- prompt=create (`ast-2vk.8`) ------------------------------------------
+
+/// OpenID Connect Prompt Create 1.0 §4: `prompt_values_supported` names
+/// `create` exactly when the OP supports it.
+///
+/// The deployment default is off, and off is what the golden document above
+/// pins. This is the other half: switching
+/// `Feature::SelfRegistration` on is what puts the value in the document, and
+/// nothing else does.
+#[tokio::test]
+async fn prompt_create_is_advertised_only_where_self_registration_is_on() {
+    // Arrange
+    let path = "/t/demo/.well-known/openid-configuration";
+    let on = Capabilities {
+        self_registration: true,
+        ..Capabilities::default()
+    };
+
+    // Act
+    let (_, _, without) = get(server_with(Capabilities::default(), None), path).await;
+    let (status, _, with) = get(server_with(on, None), path).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    let without: Value = serde_json::from_str(&without).expect("a JSON document");
+    let with: Value = serde_json::from_str(&with).expect("a JSON document");
+    assert_eq!(
+        without["prompt_values_supported"],
+        json!(["none", "login", "consent", "select_account"]),
+        "a deployment that registers nobody advertised `create`: {without}"
+    );
+    assert_eq!(
+        with["prompt_values_supported"],
+        json!(["none", "login", "consent", "select_account", "create"]),
+        "a deployment that registers people did not advertise `create`: {with}"
+    );
+}
+
+/// The per-tenant half, which is what `tenant_feature_guard` gives every other
+/// optional feature: a tenant may switch self-registration off, and then its
+/// own document stops offering `create` even though the deployment runs it.
+///
+/// The value is not merely cosmetic. `protocol::authorization_policy` builds
+/// the pushed-request validator from the same capabilities this document is
+/// rendered from, so a tenant whose document has stopped naming `create` is a
+/// tenant whose pushed request carrying it is refused.
+#[tokio::test]
+async fn a_tenant_can_switch_prompt_create_off() {
+    // Arrange
+    let repository = Arc::new(EditableSettings::default());
+    let directory = SettingsDirectory::new(Arc::clone(&repository) as _);
+    let capabilities = Capabilities {
+        self_registration: true,
+        ..Capabilities::default()
+    };
+    let path = "/t/demo/.well-known/openid-configuration";
+
+    // Act
+    repository
+        .save(
+            &TenantId::parse("demo").expect("tenant id"),
+            &asterius_domain::TenantSettings::validated(
+                std::collections::BTreeSet::from([asterius_domain::Feature::SelfRegistration]),
+                asterius_domain::entities::tenant_settings::DEFAULT_AUTHORIZATION_CODE_LIFETIME,
+                asterius_domain::entities::tenant_settings::DEFAULT_ACCESS_TOKEN_LIFETIME,
+            )
+            .expect("within the caps"),
+        )
+        .await
+        .expect("a write");
+    directory.invalidate();
+    let (status, _, body) = get(server_with(capabilities, Some(directory)), path).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    let document: Value = serde_json::from_str(&body).expect("a JSON document");
+    let prompts = document["prompt_values_supported"]
+        .as_array()
+        .expect("an array");
+    assert!(
+        !prompts.contains(&json!("create")),
+        "a tenant that switched registration off still advertises it: {document}"
+    );
+}
+
+/// `ast-pew`: `preferred_username` is advertised again, because something
+/// writes it now (the sign-up page of `ast-2vk.8`). It is advertised for every
+/// tenant — the claim is a property of the build, not of a feature flag: an
+/// account can carry a display name however it was created.
+#[tokio::test]
+async fn preferred_username_is_advertised() {
+    // Arrange
+    let path = "/t/demo/.well-known/openid-configuration";
+
+    // Act
+    let (status, _, body) = get(server_with(Capabilities::default(), None), path).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    let document: Value = serde_json::from_str(&body).expect("a JSON document");
+    let claims = document["claims_supported"].as_array().expect("an array");
+    assert!(
+        claims.contains(&json!("preferred_username")),
+        "the document does not advertise the claim the sign-up page writes: {document}"
+    );
+}
+
 // ---- per-tenant parity (`ast-edc`) ----------------------------------------
 
 /// A tenant repository serving two tenants under the same host, so a test can
@@ -791,6 +899,7 @@ const ALL_ON: Capabilities = Capabilities {
     dpop_nonce: true,
     request_object: true,
     dynamic_client_registration: true,
+    self_registration: true,
 };
 
 fn disabling(feature: asterius_domain::Feature) -> asterius_domain::TenantSettings {

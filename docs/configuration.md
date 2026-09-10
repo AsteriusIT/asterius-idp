@@ -95,6 +95,7 @@ Everything is off unless switched on here, and what is switched on is exactly wh
 | `features.authzen` | boolean | `false` | AuthZEN Authorization API 1.0 policy decision point. |
 | `features.dpop_nonce` | boolean | `false` | Server-issued DPoP nonces (RFC 9449 §8). |
 | `features.request_object` | boolean | `false` | Signed request objects inside a pushed request (JAR, RFC 9101). |
+| `features.self_registration` | boolean | `false` | Self-service account registration: `prompt=create` (OpenID Connect Prompt Create 1.0 §3) and the sign-up page it lands on. With it off, `prompt_values_supported` does not name `create`, a pushed request asking for it is refused, and no interaction can reach the sign-up page — so a tenant that provisions its accounts neither advertises the value nor creates an account for one. |
 
 ### Per-tenant Grant Management settings
 

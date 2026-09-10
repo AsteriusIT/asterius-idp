@@ -49,6 +49,7 @@ pub mod request_object;
 pub mod revocation;
 pub mod security_headers;
 pub mod server;
+pub mod signup;
 pub mod software_statement;
 mod source_audit;
 pub mod step_up;

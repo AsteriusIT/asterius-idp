@@ -79,6 +79,7 @@ fn capabilities(flags: u8) -> Capabilities {
         // Not a token endpoint concern either: JAR is a pushed-request flag
         // (RFC 9126 §3), and this target does not reach that endpoint.
         request_object: false,
+        self_registration: false,
         // Not a token endpoint concern: the flag follows [registration] mode
         // and gates RFC 7591's endpoint, which this target does not reach.
         dynamic_client_registration: false,
@@ -111,6 +112,7 @@ fn registration(grants: &[GrantType]) -> Option<ClientRegistration> {
             authzen: true,
             dpop_nonce: true,
             request_object: true,
+            self_registration: false,
             dynamic_client_registration: true,
         },
     )

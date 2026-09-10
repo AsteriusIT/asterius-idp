@@ -237,6 +237,7 @@ mod tests {
             token_exchange: true,
             ssf: true,
             dynamic_client_registration: true,
+            self_registration: true,
             authzen: true,
             dpop_nonce: true,
             request_object: true,

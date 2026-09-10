@@ -69,6 +69,15 @@
 <div class="actions"><button type="submit">{{ text.login_submit() }}</button></div>
 </form>
 
+{# ast-ndk.4, on the maquette the owner validated (ast-9li): the way back into
+   an account, under the form that needs it. It sits outside the form so it is
+   not a control the form owns, and it uses `.link-row` like every other
+   standalone link in this tree — a target rather than a word in a sentence
+   (SC 2.5.8). Rendered only where there is a recovery page to reach. #}
+{% if let Some(href) = recovery_href %}
+<p class="link-row"><a href="{{ href }}">{{ text.login_forgot_password() }}</a></p>
+{% endif %}
+
 <noscript>
 {# Rendered only when scripting is off. The page still signs people in — the
    form above is untouched — so this says what is missing rather than

@@ -612,6 +612,29 @@ fn context_with<'a>(
         // the tenancy layer, so nothing removed a prefix. The tests that do
         // exercise a prefix set this field themselves.
         mount: MountPrefix::root(),
+        // No registrar: `Feature::SelfRegistration` is off for these tenants,
+        // which is what the flag defaults to. The sign-up stage is exercised
+        // where the flag is on, in `crates/server/tests/self_registration.rs`.
+        registrar: None,
+        directory: &FakeDirectory,
+    }
+}
+
+/// An account directory that holds nobody.
+///
+/// The sign-in path reads it only to put a display name on the screens that
+/// follow, and `None` is the answer that makes it fall back to the identifier
+/// that was typed — which is what these tests assert.
+#[derive(Debug)]
+struct FakeDirectory;
+
+#[async_trait::async_trait]
+impl asterius_domain::UserDirectory for FakeDirectory {
+    async fn by_id(
+        &self,
+        _id: asterius_domain::UserId,
+    ) -> Result<Option<asterius_domain::User>, DomainError> {
+        Ok(None)
     }
 }
 
@@ -695,6 +718,182 @@ async fn a_registered_passkey_reaches_the_handler_sink() {
     assert_eq!(events[0].actor, Actor::User(user.as_uuid().to_string()));
 }
 
+// ---- prompt=create (`ast-2vk.8`) ---------------------------------------
+
+/// OpenID Connect Prompt Create 1.0 §3: a request that asked for account
+/// creation lands on the sign-up page, not on the sign-in one.
+///
+/// The stage is what `http::authorize` writes when `decision::decide` returns
+/// `Interaction::Register`, which it does for `prompt=create` and nothing
+/// else.
+#[tokio::test]
+async fn a_request_for_account_creation_renders_the_sign_up_form() {
+    // Arrange
+    let id = InteractionId::generate();
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "register"}));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    // Act
+    let response = show(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        None,
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_of(response).await;
+    assert!(html.contains("Create an account"), "{html}");
+    assert!(html.contains("name=\"display_name\""), "{html}");
+    assert!(
+        html.contains("name=\"csrf\""),
+        "no synchroniser token: {html}"
+    );
+    // The sign-up page is not the sign-in page: nothing on it signs anybody in
+    // with a credential they already have.
+    assert!(
+        !html.contains("autocomplete=\"current-password\""),
+        "the sign-up page offers a sign-in field: {html}"
+    );
+}
+
+/// The one script exemption in this tree is the passkey ceremony, and the
+/// sign-up page is not it: a passkey is enrolled after the account exists, on
+/// `passkey.html`. So this page carries no script at all.
+#[tokio::test]
+async fn the_sign_up_form_runs_no_script() {
+    // Arrange
+    let id = InteractionId::generate();
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "register"}));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    // Act
+    let response = show(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        None,
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    let html = body_of(response).await;
+    assert!(!html.contains("<script"), "{html}");
+}
+
+/// The "already have an account?" link: the same interaction, at the sign-in
+/// stage. It is a move the stage machine permits out of `Register` and out of
+/// nowhere else.
+#[tokio::test]
+async fn the_sign_up_page_can_be_abandoned_for_the_sign_in_page() {
+    // Arrange
+    let id = InteractionId::generate();
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "register"}));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    // Act
+    let response = show(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        Some("signin"),
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_of(response).await;
+    assert!(
+        html.contains("autocomplete=\"current-password\""),
+        "the link did not reach the sign-in page: {html}"
+    );
+    assert!(!html.contains("Create an account"), "{html}");
+}
+
+/// A query that merely *contains* the word does nothing. The link is a
+/// parameter, and a parameter is what is parsed — a stored value carrying
+/// `signin` inside it is not somebody pressing a link.
+#[tokio::test]
+async fn a_query_that_only_mentions_the_link_does_not_follow_it() {
+    // Arrange
+    let id = InteractionId::generate();
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "register"}));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    // Act
+    let response = show(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        Some("state=please-signin-now"),
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    let html = body_of(response).await;
+    assert!(html.contains("Create an account"), "{html}");
+}
+
+/// The flag is checked where the row would be written, not only where the
+/// `prompt` value was parsed. These contexts carry no registrar — which is
+/// what a tenant with `Feature::SelfRegistration` off produces — so a
+/// submission that reached the stage anyway creates nothing.
+#[tokio::test]
+async fn a_tenant_that_does_not_register_people_creates_no_account() {
+    // Arrange
+    let id = InteractionId::generate();
+    let mut state = StoredState {
+        stage: asterius_web::interaction::Stage::Register,
+        ..StoredState::default()
+    };
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    // Act
+    let response = submit(
+        context(&tenant, &store, &nonce, None, &sessions, &issued),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&display_name=Ada+L.&email=ada%40example.test\
+             &password=correct+horse+battery+staple",
+            token.expose()
+        )),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(
+        issued.audit.events().is_empty(),
+        "an account was recorded for a tenant that registers nobody: {:?}",
+        issued.audit.events()
+    );
+}
+
 // ---- the two-credential rule (FAPI 2.0 SP §6.5) ------------------------
 
 #[tokio::test]
@@ -709,6 +908,7 @@ async fn a_matching_path_and_cookie_render_the_login_page() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -735,6 +935,7 @@ async fn a_url_without_the_cookie_does_not_render_a_form() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &HeaderMap::new(),
         OffsetDateTime::now_utc(),
     )
@@ -765,6 +966,7 @@ async fn a_cookie_for_another_interaction_destroys_this_one() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(other.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -799,6 +1001,7 @@ async fn an_unknown_interaction_is_indistinguishable_from_an_expired_one() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -1026,6 +1229,7 @@ async fn reloading_the_page_issues_a_fresh_token() {
         show(
             context(&tenant, &store, &nonce, None, &sessions, &issued),
             id.expose(),
+            None,
             &cookie_header(id.expose()),
             OffsetDateTime::now_utc(),
         )
@@ -1036,6 +1240,7 @@ async fn reloading_the_page_issues_a_fresh_token() {
         show(
             context(&tenant, &store, &nonce, None, &sessions, &issued),
             id.expose(),
+            None,
             &cookie_header(id.expose()),
             OffsetDateTime::now_utc(),
         )
@@ -1334,6 +1539,7 @@ async fn a_first_party_interaction_renders_the_ordinary_login_page() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -1375,6 +1581,7 @@ async fn a_first_party_interaction_cannot_be_shown_a_consent_screen() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -1856,6 +2063,7 @@ async fn render_stage(at: &Consenting, issued: &Issued) -> axum::response::Respo
     show(
         context(&tenant, &at.store, &nonce, None, &at.sessions, issued),
         at.id.expose(),
+        None,
         &cookie_header(at.id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -2328,6 +2536,7 @@ async fn show_page(at: &Consenting, issued: &Issued) -> axum::response::Response
     show(
         context(&tenant, &at.store, &nonce, None, &at.sessions, issued),
         at.id.expose(),
+        None,
         &cookie_header(at.id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -2386,6 +2595,7 @@ async fn no_other_page_inherits_the_widened_form_action() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -2645,7 +2855,7 @@ async fn show_route(
         &issued,
     );
     context.mount = mount.map_or_else(MountPrefix::root, |axum::Extension(prefix)| prefix);
-    show(context, &id, &headers, OffsetDateTime::now_utc()).await
+    show(context, &id, None, &headers, OffsetDateTime::now_utc()).await
 }
 
 /// `POST /interaction/{id}`, likewise.

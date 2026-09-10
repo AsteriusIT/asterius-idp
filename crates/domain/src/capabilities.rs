@@ -49,11 +49,22 @@ pub enum Feature {
     /// integrators to a URL that could never work; with the flag, what gates
     /// the announcement gates the route.
     DynamicClientRegistration,
+    /// Self-service account registration: `prompt=create` (OpenID Connect
+    /// Prompt Create 1.0 §3) and the sign-up page it lands on.
+    ///
+    /// Off by default, and off is the only honest default: a tenant that
+    /// switches this on lets anybody who can reach the authorization endpoint
+    /// write a row into `users`, which is a different deployment from one whose
+    /// accounts are provisioned. What gates the announcement gates the screen —
+    /// `prompt_values_supported` names `create` exactly when this flag is on,
+    /// and the registration page answers 404 when it is off, so a client that
+    /// knows the URL learns nothing the metadata did not already say.
+    SelfRegistration,
 }
 
 impl Feature {
     /// Every flag, in a stable order. `/readyz` and the admin API iterate this.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Mtls,
         Self::GrantManagement,
         Self::Ciba,
@@ -64,6 +75,7 @@ impl Feature {
         Self::DpopNonce,
         Self::RequestObject,
         Self::DynamicClientRegistration,
+        Self::SelfRegistration,
     ];
 
     /// The configuration key for this flag, as written in `asterius.toml`.
@@ -80,6 +92,7 @@ impl Feature {
             Self::DpopNonce => "dpop_nonce",
             Self::RequestObject => "request_object",
             Self::DynamicClientRegistration => "dynamic_client_registration",
+            Self::SelfRegistration => "self_registration",
         }
     }
 
@@ -105,7 +118,8 @@ impl Feature {
             | Self::Ssf
             | Self::Authzen
             | Self::DpopNonce
-            | Self::RequestObject => false,
+            | Self::RequestObject
+            | Self::SelfRegistration => false,
         }
     }
 
@@ -175,6 +189,9 @@ pub struct Capabilities {
     /// has.
     #[serde(skip_deserializing)]
     pub dynamic_client_registration: bool,
+    /// Self-service registration and `prompt=create` — see
+    /// [`Feature::SelfRegistration`].
+    pub self_registration: bool,
 }
 
 impl Capabilities {
@@ -192,6 +209,7 @@ impl Capabilities {
             Feature::DpopNonce => self.dpop_nonce,
             Feature::RequestObject => self.request_object,
             Feature::DynamicClientRegistration => self.dynamic_client_registration,
+            Feature::SelfRegistration => self.self_registration,
         }
     }
 
@@ -213,6 +231,7 @@ impl Capabilities {
             Feature::DpopNonce => self.dpop_nonce = false,
             Feature::RequestObject => self.request_object = false,
             Feature::DynamicClientRegistration => self.dynamic_client_registration = false,
+            Feature::SelfRegistration => self.self_registration = false,
         }
     }
 
@@ -307,6 +326,7 @@ mod tests {
             dpop_nonce: true,
             request_object: true,
             dynamic_client_registration: true,
+            self_registration: true,
         })
         .expect("serialise");
         let fields = json.as_object().expect("object");

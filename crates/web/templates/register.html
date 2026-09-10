@@ -24,6 +24,22 @@
          {% if let Some(value) = username %}value="{{ value }}"{% endif %}>
 </label>
 <label>
+  {# OIDC Core §5.1's `preferred_username`, and the reason it is a second field
+     rather than a projection of the first: the login identifier is unique,
+     stable and not a preference, so serving it as `preferred_username` would
+     be answering a question about display with a fact about authentication
+     (`ast-pew`). Optional, because a person who does not care what they are
+     called should not have to invent something — an account with no display
+     name simply has no such claim to release. #}
+  <span>Display name <span class="muted">(optional)</span></span>
+  <input type="text" name="display_name" id="display_name" autocomplete="nickname"
+         maxlength="{{ maximum_display_name_length }}"
+         aria-describedby="display-name-hint"
+         {% if let Some(value) = display_name %}value="{{ value }}"{% endif %}>
+  <span class="muted" id="display-name-hint">What applications should call you.
+  It does not have to be unique, and you can change it later.</span>
+</label>
+<label>
   <span>Email address</span>
   <input type="email" name="email" id="email" autocomplete="email"
          autocapitalize="none" spellcheck="false" required
