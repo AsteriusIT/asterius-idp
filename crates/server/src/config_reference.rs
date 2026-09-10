@@ -18,10 +18,19 @@
 //!   constants the validator applies, so a default cannot be changed in one
 //!   place and described in the other.
 //! * **Which flags exist.** The `[features]` table is generated from
-//!   [`Feature::ALL`], the registry that discovery and `/readyz` also read.
+//!   [`Feature::ALL`], the registry that discovery and `/readyz` also read,
+//!   minus the flags [`Feature::is_derived`] names — those follow another table
+//!   and have no key of their own.
 //!
 //! What stays prose is what only a person can say: why a key exists and what
 //! goes wrong if it is set carelessly. That is the part a reference is for.
+//!
+//! That prose lives *here*, in [`Key::notes`], [`Section::blurb`],
+//! [`Section::after`] and the constants at the end of the file — never in
+//! `docs/configuration.md`, which is overwritten in full by [`render`]. Three
+//! tickets learned that the expensive way by typing paragraphs into the
+//! generated file (`ast-nu8`); the paragraphs are now in this module and the
+//! document says at the top that it is generated.
 
 use crate::config::{
     DEFAULT_ADMIN_TENANT, DEFAULT_ADMIN_USERNAME, DEFAULT_BIND, DEFAULT_BODY_LIMIT,
@@ -64,6 +73,13 @@ pub struct Section {
     pub heading: &'static str,
     /// What the table is for.
     pub blurb: &'static str,
+    /// Prose rendered after the table, or `""`.
+    ///
+    /// What a row of a table cannot hold: a JSON example, a paragraph about
+    /// something the table decides elsewhere. It lives here, in code, because
+    /// the document is generated and anything typed into `docs/configuration.md`
+    /// is lost at the next regeneration.
+    pub after: &'static str,
     /// Its keys, in the order they should be read.
     pub keys: Vec<Key>,
 }
@@ -159,6 +175,7 @@ fn dpop() -> Section {
                 below; the value is 32 bytes, base64: `head -c 32 /dev/urandom | base64`. \
                 It is held redacted in the process and prints as `[REDACTED]` wherever \
                 the configuration is logged.",
+        after: "",
         keys: vec![
             key(
                 "nonce_secret_file",
@@ -188,6 +205,7 @@ fn root() -> Section {
         table: ROOT_TABLE,
         heading: "Top level",
         blurb: "Keys that belong to the process rather than to any one part of it.",
+        after: "",
         keys: vec![key(
             "log_format",
             "`\"text\"` or `\"json\"`",
@@ -205,6 +223,7 @@ fn server() -> Section {
         table: "server",
         heading: "`[server]` — listener and transport",
         blurb: "Where the process listens and how TLS reaches it.",
+        after: "",
         keys: vec![
             key(
                 "bind",
@@ -249,6 +268,7 @@ fn server_tls() -> Section {
         blurb: "Required when `server.mode = \"terminate_tls\"`, and rejected otherwise. \
                 TLS 1.2 and 1.3 only, with the BCP 195 cipher suites FAPI 2.0 SP \
                 §5.2.1-5.2.2 permits. There is no knob to widen either set.",
+        after: "",
         keys: vec![
             key(
                 "certificate",
@@ -274,6 +294,7 @@ fn server_proxy() -> Section {
         heading: "`[server.proxy]` — who may speak for a client",
         blurb: "Only meaningful when `server.mode = \"behind_proxy\"`, and rejected \
                 otherwise.",
+        after: "",
         keys: vec![key(
             "trusted_cidrs",
             "array of CIDR blocks",
@@ -294,6 +315,7 @@ fn database() -> Section {
         heading: "`[database]` — PostgreSQL",
         blurb: "One PostgreSQL instance holds everything. There is no second store to \
                 keep consistent.",
+        after: "",
         keys: vec![
             key(
                 "url",
@@ -326,6 +348,7 @@ fn keys_table() -> Section {
                 Set exactly one of the two keys below; setting both is an error, because \
                 the server would otherwise choose between them silently. The value is 32 \
                 bytes, base64: `head -c 32 /dev/urandom | base64`.",
+        after: "",
         keys: vec![
             key(
                 "kek_file",
@@ -353,7 +376,10 @@ fn features_section() -> Section {
         blurb: "Everything is off unless switched on here, and what is switched on is \
                 exactly what appears in the discovery metadata and on `/readyz`. There is \
                 no flag that weakens the FAPI 2.0 baseline (ADR-0002) and no `rs256` \
-                (ADR-0003).",
+                (ADR-0003). One capability is missing from this table on purpose: \
+                `dynamic_client_registration` follows `[registration] mode` and has no \
+                key here, so that \"who may register\" is written once — see below.",
+        after: "",
         keys: features(),
     }
 }
@@ -369,6 +395,43 @@ fn registration() -> Section {
                 has agreed with in advance, and a FAPI deployment's clients are \
                 counterparties rather than strangers. The cost of the other default is an \
                 internet-writable row in `clients`.",
+        // `ast-m9c.6` and `ast-mxc.8` wrote these two blocks into
+        // `docs/configuration.md` by hand, where the next regeneration would
+        // have deleted them. A JSON example and a paragraph about a decision
+        // taken in another table do not fit in a `| Key | Type |` row, so the
+        // generator carries them instead.
+        after: r#"`registration.mode` also decides whether the endpoint exists at all. It drives the `dynamic_client_registration` capability, which gates both the `registration_endpoint` member of the discovery document and the route itself (`ast-m9c.6`): a closed deployment advertises no such URL and answers 404 at `/register`, rather than advertising one that refuses everybody. The flag is not writable under `[features]` — writing it there is a configuration error naming the key, because "who may register" belongs in one place.
+
+### Per-tenant registration policy
+
+The deployment's posture is a ceiling, not the whole answer. Each tenant carries a `registration_policy` document in its settings (`PUT /tenants/{id}/settings` in the admin API), and it may only narrow what the deployment allows:
+
+```json
+{
+  "profile": "agent",
+  "mode": "initial_access_token",
+  "token_endpoint_auth_methods": ["private_key_jwt"],
+  "grant_types": ["client_credentials"],
+  "scopes": ["agent:read"],
+  "resources": ["https://api.example.com"],
+  "redirect_uri_hosts": ["app.example.com"],
+  "jwks": "uri",
+  "software_statement": {
+    "required": true,
+    "issuers": [
+      { "issuer": "https://vouch.example.com", "jwks_uri": "https://vouch.example.com/jwks" }
+    ]
+  },
+  "max_clients_per_initial_access_token": 25,
+  "unused_client_expiry_seconds": 2592000
+}
+```
+
+Every member is optional and every list is *closed*: an absent list means "this tenant has no opinion", and an empty one means "none". `mode: "closed"` removes the endpoint from that tenant's discovery document and unmounts its route; `mode: "open"` cannot open an endpoint the deployment gated. `profile: "agent"` selects the preset for onboarding agents — `client_credentials` only, no callbacks, a software statement required, a quota and an expiry — which the other members then override; a policy that requires a statement and names no trusted issuer is refused, because nothing could ever register under it.
+
+A software statement issuer is a **root of trust**: RFC 7591 §2.3 makes a statement's claims override the request's, so whoever holds that signing key can create clients in this tenant with metadata of their choosing. Both URLs must be `https`, the `iss` is compared byte-exactly, and the keys are fetched through the one outbound path. See `docs/threat-model.md`.
+
+Two members parse and are stored but are **not enforced yet**: `max_clients_per_initial_access_token` and `unused_client_expiry_seconds` need the `initial_access_tokens` table and a sweep respectively. They are listed as residual risks in the threat model rather than left to be discovered."#,
         keys: vec![
             key(
                 "mode",
@@ -405,6 +468,7 @@ fn login() -> Section {
                 The identifier is hashed before it is counted and the bucket exists \
                 whether the account does or not, so a locked-out identifier and one that \
                 was never registered are the same observable.",
+        after: "",
         keys: vec![
             key(
                 "failure_window_seconds",
@@ -457,6 +521,7 @@ fn limits() -> Section {
                 interaction pages are not here: the sign-in behind them is bounded by \
                 `[login]`, and a second counter over the same requests would halve a \
                 number set once.",
+        after: "",
         keys: vec![
             key(
                 "window_seconds",
@@ -546,6 +611,7 @@ fn tenant() -> Section {
         blurb: "A tenant is an issuer. This array is the source of truth for which \
                 tenants exist at boot; the admin API adds more at runtime. The upsert is \
                 idempotent, so a restart re-asserts the declared shape.",
+        after: "",
         keys: vec![
             key(
                 "id",
@@ -585,6 +651,7 @@ fn tenant_refresh() -> Section {
                 lifetimes below. The table is per tenant because how long an authorization \
                 may be acted on without the user present is a question two tenants of one \
                 deployment routinely answer differently.",
+        after: "",
         keys: vec![
             key(
                 "absolute_lifetime_seconds",
@@ -665,6 +732,7 @@ fn admin() -> Section {
                 idempotent; it finishes by verifying the configured password through the \
                 ordinary login verifier, and the server refuses to start if the account \
                 it just asserted could not sign in.",
+        after: "",
         keys: vec![
             key(
                 "tenant",
@@ -710,15 +778,20 @@ fn admin() -> Section {
     }
 }
 
-/// The `[features]` rows, one per flag in the registry.
+/// The `[features]` rows, one per flag an operator may write.
 ///
 /// Generated from [`Feature::ALL`] so that a flag added to the registry appears
 /// here without anybody remembering to add it, which is the failure mode this
-/// whole module exists to prevent.
+/// whole module exists to prevent. Derived flags — the ones
+/// [`Feature::is_derived`] names, which the `[features]` deserializer refuses —
+/// are left out: a row for a key the file rejects would be an instruction that
+/// stops the server, which is worse than no row. Their section says where they
+/// come from instead.
 fn features() -> Vec<Key> {
     let defaults = Capabilities::default();
     Feature::ALL
         .into_iter()
+        .filter(|feature| !feature.is_derived())
         .map(|feature| {
             Key {
                 name: feature.as_str().to_owned(),
@@ -784,8 +857,12 @@ pub fn render() -> String {
                 path, key.kind, key.default, key.notes
             );
         }
+        if !section.after.is_empty() {
+            let _ = writeln!(out, "\n{}", section.after);
+        }
     }
 
+    let _ = out.write_str(CLIENT_KEY_FETCHES);
     let _ = out.write_str(SECRETS);
     out
 }
@@ -814,6 +891,35 @@ The value is parsed as a TOML scalar, so `true` and `16` mean what they say and
 anything that is not valid TOML on its own is taken as a string — which is what
 makes an unquoted connection URL work.
 ";
+
+/// Outbound traffic that no key switches on. Prose, because there is nothing to
+/// configure — and here anyway, because it is traffic this deployment sends to
+/// somebody else's server and the operator of that server notices it first.
+const CLIENT_KEY_FETCHES: &str = "\n\
+## Client key fetches — outbound traffic you did not ask for\n\
+\n\
+Not configurable, and here because it is traffic your deployment sends to \
+somebody else. A client registered with a `jwks_uri` has its key set fetched by \
+this server; a fetch that fails is remembered so that a broken — or third-party \
+— URL is not fetched again on every request naming that client. The intervals \
+are built in: keys are served for 10 minutes before they are fetched again, an \
+unknown `kid` provokes at most one refresh per client per 60 seconds, and a \
+failed fetch suppresses the next one for 60 seconds.\n\
+\n\
+Those last 60 seconds are a *shared* decision, not a per-process one. Each \
+failure writes a row to `client_key_fetches` — the tenant, the client, a \
+SHA-256 of the URL, the reason, and the instant before which nobody fetches \
+again — and every replica reads it before opening a socket. Without that table \
+the interval would be divided by the number of replicas you run and reset by \
+every restart, which is a rate nobody chose and which the operator of the URL, \
+not you, would notice first. The reason is bounded and the URL is only ever \
+stored as a digest, because a `jwks_uri` may carry a query parameter the client \
+considers a secret.\n\
+\n\
+Rows are removed when a fetch for that URL succeeds, and swept by the retention \
+pass once their window has passed; nothing here needs an operator's attention \
+unless the table is growing, which means clients are registering `jwks_uri` \
+values that never work.\n";
 
 /// Where secrets come from. Prose, because it is a deployment posture rather
 /// than a schema, but it belongs with the keys it talks about.
@@ -941,14 +1047,29 @@ mod tests {
         assert_eq!(find(ROOT_TABLE, "log_format"), "`\"text\"`");
     }
 
-    /// Every feature flag in the registry has a row.
+    /// Every writable feature flag has a row, and no derived one has.
+    ///
+    /// Both directions matter. A missing row hides a capability; a row for a
+    /// flag the `[features]` deserializer refuses tells an operator to write a
+    /// key that stops the server at boot.
     #[test]
     fn every_feature_flag_has_a_row() {
         let names: BTreeSet<String> = features().into_iter().map(|k| k.name).collect();
         for feature in Feature::ALL {
-            assert!(
+            assert_eq!(
                 names.contains(feature.as_str()),
-                "feature {feature} has no row"
+                !feature.is_derived(),
+                "feature {feature} is {} but {} a row",
+                if feature.is_derived() {
+                    "derived"
+                } else {
+                    "writable"
+                },
+                if names.contains(feature.as_str()) {
+                    "has"
+                } else {
+                    "has no"
+                }
             );
         }
         assert!(
@@ -957,6 +1078,28 @@ mod tests {
                 .all(|k| !k.notes.starts_with("Undocumented")),
             "a feature flag has no description in config_reference.rs"
         );
+    }
+
+    /// A flag with no key is still described somewhere in the document.
+    ///
+    /// Leaving a derived flag out of the `[features]` table is only honest if
+    /// the reader is told where it comes from; otherwise a capability that
+    /// shows up on `/readyz` appears in no documentation at all.
+    #[test]
+    fn a_derived_flag_is_named_in_the_document() {
+        // Arrange
+        let rendered = render();
+
+        // Act
+        let derived = Feature::ALL.into_iter().filter(|f| f.is_derived());
+
+        // Assert
+        for feature in derived {
+            assert!(
+                rendered.contains(feature.as_str()),
+                "{feature} has no row and no prose: an operator cannot find it"
+            );
+        }
     }
 
     /// The checked-in document is what this module renders.

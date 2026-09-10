@@ -72,6 +72,31 @@ impl Feature {
         }
     }
 
+    /// Whether the flag is *derived* from other configuration rather than
+    /// written under `[features]`.
+    ///
+    /// A derived flag is real everywhere a flag is read — discovery, routing,
+    /// `/readyz` — but there is no key an operator may set for it, because the
+    /// question it answers is already asked somewhere else in the file and two
+    /// spellings could disagree. Callers that document or enumerate the
+    /// `[features]` table filter on this; `every_flag_is_writable_unless_it_is_derived`
+    /// pins it against the deserializer so a new flag cannot go missing from
+    /// either side.
+    #[must_use]
+    pub const fn is_derived(self) -> bool {
+        match self {
+            Self::DynamicClientRegistration => true,
+            Self::Mtls
+            | Self::GrantManagement
+            | Self::Ciba
+            | Self::DeviceFlow
+            | Self::TokenExchange
+            | Self::Ssf
+            | Self::Authzen
+            | Self::DpopNonce => false,
+        }
+    }
+
     /// The flag a configuration key names, or `None` for a key this build does
     /// not know.
     ///
@@ -198,9 +223,9 @@ mod tests {
     #[test]
     fn every_feature_maps_to_its_own_config_key() {
         for feature in Feature::ALL {
-            // The one flag an operator does not write: it follows
-            // `[registration] mode`, and the test below pins that.
-            if feature == Feature::DynamicClientRegistration {
+            // The flags an operator does not write follow another table, and
+            // `every_flag_is_writable_unless_it_is_derived` pins which.
+            if feature.is_derived() {
                 continue;
             }
             let toml = format!("{} = true", feature.as_str());
@@ -214,6 +239,39 @@ mod tests {
                 caps.enabled().collect::<Vec<_>>(),
                 vec![feature],
                 "{feature} switched on something else"
+            );
+        }
+    }
+
+    /// `ast-nu8`: the registry and the `[features]` deserializer must agree on
+    /// which flags have a key, in both directions.
+    ///
+    /// `Feature::ALL` is what discovery, `/readyz` and the configuration
+    /// reference enumerate; the deserializer is what an `asterius.toml`
+    /// actually accepts. When those two drifted apart, a flag existed that no
+    /// operator could set and that the reference documented as a key. Deriving
+    /// the answer from [`Feature::is_derived`] and checking it against the
+    /// parser leaves no place for the next flag to go missing.
+    #[test]
+    fn every_flag_is_writable_unless_it_is_derived() {
+        for feature in Feature::ALL {
+            // Arrange
+            let toml = format!("{} = true", feature.as_str());
+
+            // Act
+            let outcome = toml::from_str::<Capabilities>(&toml);
+
+            // Assert
+            assert_eq!(
+                outcome.is_ok(),
+                !feature.is_derived(),
+                "{feature}: is_derived() says {} but the [features] parser says {}",
+                feature.is_derived(),
+                if outcome.is_ok() {
+                    "it is a key"
+                } else {
+                    "it is not"
+                }
             );
         }
     }
