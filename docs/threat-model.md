@@ -514,6 +514,22 @@ delivery delay, not a loss, and it is the price of at-least-once; shortening
 the lease trades it for more duplicate deliveries, which is the wrong side of
 the trade.
 
+### SSF transmitter configuration (`ast-0ju.1`)
+
+**The transmitter's `jwks_uri` is the OP's.** A SET is signed through the same
+`Signer` port and the same tenant key as an ID token (`ast-0ju.2`), so
+`/.well-known/ssf-configuration` names the OP's key set rather than one of its
+own: a second set would publish the same material at a second URL and give a
+receiver a second place to be told about a rotation. The cost is that a
+receiver holding the transmitter's keys can also verify an ID token this
+tenant issued — it cannot mint one, and the set is public — and the day a
+tenant wants SET signing separated from token signing, that is a dedicated key
+in the same `KeyStore` and one changed member in this document, not a new
+trust path. The document itself is public, per-tenant and constant: it is
+served only behind `Feature::Ssf`, deployment-wide and per tenant, so a tenant
+that runs no transmitter answers 404 rather than publishing an issuer a
+receiver could try to configure a stream against.
+
 ### 4. Agent-specific threats (G4)
 
 FAPI's attacker model has no notion of a principal acting for another principal.

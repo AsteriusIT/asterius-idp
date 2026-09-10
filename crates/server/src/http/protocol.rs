@@ -244,6 +244,9 @@ pub fn routes(state: ProtocolState) -> Router {
         // serves the path-appended and path-inserted spellings.
         .route("/.well-known/openid-configuration", get(discovery))
         .route("/.well-known/oauth-authorization-server", get(discovery))
+        // SSF 1.0 §7.2 (`ast-0ju.1`). Mounted whatever the deployment's flags
+        // say and gated inside the handler; see [`ssf_configuration`].
+        .route(&ssf_configuration_path(), get(ssf_configuration))
         .route(Endpoint::Jwks.path(), get(jwks))
         .with_state(state);
 
@@ -378,14 +381,11 @@ pub fn routes(state: ProtocolState) -> Router {
         router = mount_features(router, capabilities, endpoints);
     }
 
-    router = mount_the_unbuilt(router, capabilities, built_clients);
-
-    // Outermost of this router's own layers, so it runs before any handler and
-    // after the tenancy middleware has resolved the tenant.
-    router.layer(axum::middleware::from_fn_with_state(
-        guard,
-        tenant_feature_guard,
-    ))
+    // The layer is outermost of this router's own, so it runs before any
+    // handler and after the tenancy middleware has resolved the tenant.
+    mount_the_unbuilt(router, capabilities, built_clients).layer(
+        axum::middleware::from_fn_with_state(guard, tenant_feature_guard),
+    )
 }
 
 /// Mounts the routes of the features this deployment has switched on.
@@ -673,6 +673,62 @@ async fn discovery(
         &authorization_details_types,
         grant_management,
     );
+    cacheable_json(&document, METADATA_MAX_AGE)
+}
+
+/// Where the SSF transmitter configuration is served (SSF 1.0 §7.2).
+///
+/// Built from the document name the `asterius-ssf` crate owns and the prefix
+/// the tenancy middleware strips against, so the path this router mounts is
+/// the path that middleware normalises both well-known forms to — the
+/// `/t/{tenant}/.well-known/…` one and RFC 8414 §3.1's inserted
+/// `/.well-known/…/t/{tenant}`.
+fn ssf_configuration_path() -> String {
+    format!(
+        "{}{}",
+        asterius_oidc::tenancy::WELL_KNOWN_PREFIX,
+        asterius_ssf::WELL_KNOWN_DOCUMENT
+    )
+}
+
+/// `GET /.well-known/ssf-configuration`.
+///
+/// SSF 1.0 §7.2.3: 200 and `application/json`. The document itself is
+/// [`asterius_ssf::transmitter_metadata`], which explains why it names the
+/// OP's `jwks_uri` and why it names no management endpoint yet.
+///
+/// The feature gate is here rather than at mount time because a tenant may
+/// switch `Feature::Ssf` off under a deployment that has it on, and the
+/// refusal is a **404** for the reason `tenant_feature_guard` gives: as far as
+/// this tenant is concerned there is no transmitter, so there is nothing at
+/// this URL. A failed settings read answers 503 rather than falling back to
+/// the deployment's flags, which would publish a transmitter an operator has
+/// just withdrawn.
+async fn ssf_configuration(
+    State(state): State<ProtocolState>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+) -> Response {
+    let capabilities = match &state.tenant_settings {
+        None => state.capabilities,
+        Some(directory) => match directory.for_tenant(&tenant.id).await {
+            Ok(settings) => settings.effective_capabilities(state.capabilities),
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        },
+    };
+
+    if !capabilities.is_enabled(asterius_domain::Feature::Ssf) {
+        return crate::http::server::not_found().await.into_response();
+    }
+
+    // The same URL the OP metadata advertises, from the same registry: the
+    // keys that verify a SET are the keys that verify an ID token
+    // (`ast-0ju.2`), and two ways of spelling their location would be two
+    // things to keep in step.
+    let document =
+        asterius_ssf::transmitter_metadata(&tenant.issuer, &Endpoint::Jwks.url(&tenant.issuer));
     cacheable_json(&document, METADATA_MAX_AGE)
 }
 
