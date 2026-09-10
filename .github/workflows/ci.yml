@@ -6,9 +6,22 @@ on:
   pull_request:
   merge_group:
 
+# One group per pull request, per merge-queue entry and per branch, so a run
+# never cancels an unrelated one, and cancelling at all is restricted to pull
+# requests.
+#
+# `github.ref` alone was almost enough — it already separates a PR from `main`
+# — but every push to `main` shares `refs/heads/main`, so two merges landed a
+# few minutes apart cancelled each other and the first commit never got a
+# verdict. That is exactly the hole `ast-a33` closes: branches are merged
+# locally with `--no-ff` and pushed (CONTRIBUTING, "How a branch reaches
+# `main`"), which makes back-to-back pushes to `main` the normal case, not the
+# exception. On `main` and in the merge queue runs now queue instead: slower,
+# but every commit is tested. On a pull request an outdated run of a superseded
+# commit is genuinely worthless, so there it still cancels.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -400,6 +413,16 @@ jobs:
           targets=$(awk '/^\[\[bin\]\]/ { in_bin = 1; next }
                          in_bin && /^name = / { gsub(/^name = "|"$/, ""); print; in_bin = 0 }' \
                     fuzz/Cargo.toml | jq -R . | jq -sc .)
+          # On a pull request the matrix collapses to one leg, `all`, which
+          # builds every target in a single job (see "fuzz for 60 s" below).
+          # Seven branches in flight were 500 queued runner minutes of
+          # sixty-second fuzz runs, and what they catch on a branch is API
+          # drift — a target that no longer compiles — which one build finds.
+          # The sixty-second run of every target still happens on `main` and
+          # in the merge queue, and the real fuzzing is fuzz-nightly.yml.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            targets='["all"]'
+          fi
           echo "matrix=$targets" >> "$GITHUB_OUTPUT"
 
   fuzz:
@@ -444,8 +467,13 @@ jobs:
       # the job independent of what the runner happens to be configured for.
       - name: fuzz for 60 s
         run: |
-          cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
-            -- -max_total_time=60 -print_final_stats=1
+          if [ "${{ matrix.target }}" = "all" ]; then
+            # The pull-request leg: every target has to build, none is run.
+            cargo fuzz build --target x86_64-unknown-linux-gnu
+          else
+            cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} \
+              -- -max_total_time=60 -print_final_stats=1
+          fi
 
       - name: upload any crash that was found
         if: failure()

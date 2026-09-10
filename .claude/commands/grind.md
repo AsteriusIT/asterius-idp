@@ -14,10 +14,16 @@ jq -n --argjson max "${ARGUMENTS:-30}" '{active: true, iteration: 0, max_iterati
 1. `bd ready -n 1 --json` → id. Si vide : `jq '.active=false' .claude/grind.local.json > t && mv t .claude/grind.local.json`, résume la journée et arrête-toi.
 2. `bd update <id> --status in_progress --assignee claude`
 3. `bd show <id>` puis délègue à l'agent **ticket-worker** avec un prompt autonome contenant : l'id, la description complète du ticket, les critères d'acceptation. Ne lis pas les fichiers du projet toi-même.
-4. À la réponse du worker :
-   - `STATUT: OK` → depuis le dépôt principal : `git merge --no-ff claude/<id> -m "merge(<id>): <titre>"`, `git push origin main`, puis `./scripts/cleanup-worktrees.sh --apply` (supprime worktree et branche des `claude/*` fusionnés — voir plus bas). Puis `bd close <id> --reason "<RESUME du worker>"`.
-   - `STATUT: PARTIEL` → merge si ça compile, `bd close` le ticket en consignant dans le `--reason` ce qui est livré ET ce qui ne l'est pas. Un ticket de suite seulement si le reste passe les filtres du point 5.
-   - `STATUT: BLOQUE` → `bd update <id> --status blocked --reason "<cause>"`, supprime la branche si elle est vide.
+4. À la réponse du worker, `STATUT: OK` ou `PARTIEL` → **jamais de fusion sans un run vert de la branche** (voir « Fusionner par pull request ») :
+   1. `git push -u origin claude/<id>` — jamais `--force`.
+   2. `gh pr create --base main --head claude/<id> --title "<type>(<scope>): <titre> [<id>]" --body "<RESUME du worker>"` ; le corps porte `Refs: <id>` en pied, puis l'attribution PR du dépôt (`🤖 Generated with [Claude Code](https://claude.com/claude-code)` et le lien de session).
+   3. `gh pr checks <numéro> --watch --fail-level fail` — bloquant, ~15 min quand les runners sont libres. C'est le seul verdict qui compte : le `/verify` du worker est ciblé, la CI juge la composition (fuzz build, sweep navigateur, rustdoc, deny, sentinelles).
+   4. **Rouge** → renvoie au worker, même ticket et même branche, avec le nom du job et l'extrait de log : `gh run view <run-id> --log-failed | tail -50`. Quand il répond, reprends au point 1. Un ticket qui revient **une deuxième fois rouge** → `bd update <id> --status blocked --reason "CI rouge deux fois : <job>"`, et au suivant.
+   5. **Vert** → depuis le dépôt principal : `git merge --no-ff claude/<id> -m "merge(<id>): <titre>"`, `git push origin main` — la PR se ferme d'elle-même comme fusionnée —, puis `./scripts/cleanup-worktrees.sh --apply` (worktree, branche locale et `origin/claude/<id>`, voir plus bas), puis `bd close <id> --reason "<RESUME du worker>"`.
+
+   Un `PARTIEL` suit exactement le même chemin ; seul le `--reason` de clôture change : il consigne ce qui est livré ET ce qui ne l'est pas. Un ticket de suite seulement si le reste passe les filtres du point 5.
+
+   `STATUT: BLOQUE` → `bd update <id> --status blocked --reason "<cause>"`, supprime la branche si elle est vide. Rien n'est poussé, aucune PR n'est ouverte.
 5. `SUITE` n'est pas une liste de tickets à créer. Par défaut, on ne crée rien.
    Un ticket ne se justifie que si le point passe **les trois** filtres :
    - c'est un **défaut constaté** ou une **décision à trancher**, pas « il faudrait
@@ -33,15 +39,41 @@ jq -n --argjson max "${ARGUMENTS:-30}" '{active: true, iteration: 0, max_iterati
 6. Écris une ligne de bilan : `[<id>] <statut> — <résumé>`.
 7. Termine ta réponse. Le Stop hook te relancera automatiquement avec le ticket suivant.
 
+## Fusionner par pull request
+Jusqu'à `ast-a33`, les branches étaient fusionnées en local et poussées sur
+`main` : aucune CI ne les voyait avant, et dix `fix(ci)` en quatre jours l'ont
+payé — tous des rouges de composition (build fuzz, sweep navigateur, rustdoc,
+`cargo deny`, gardes sentinelles et rétention), donc hors du `/verify` ciblé du
+worker. La branche passe désormais par une PR que la CI valide, et la fusion
+n'a lieu qu'après verdict vert.
+
+La fusion reste **locale** (`git merge --no-ff` puis `git push origin main`)
+plutôt que `gh pr merge --merge` : elle garde le message `merge(<id>): <titre>`
+de ce dépôt, elle laisse `main` local et distant identiques à la seconde près —
+donc `cleanup-worktrees.sh` juge sur le bon sommet — et elle ne dépend d'aucune
+protection de branche côté GitHub (`main` n'en a aucune aujourd'hui). Pousser
+la fusion ferme la PR comme fusionnée, sans commit supplémentaire.
+
+Deux points à ne pas confondre :
+- Pousser sur `main` pendant qu'une PR tourne **n'annule rien** : la
+  `concurrency` de `ci.yml` groupe par numéro de PR, et `cancel-in-progress`
+  n'est vrai que pour les PR. Deux PR, ou une PR et `main`, tournent en
+  parallèle jusqu'au bout.
+- Un `git push` de plus sur une PR annule *son propre* run en cours et en
+  relance un : c'est voulu, mais chaque aller-retour coûte le run complet.
+  Renvoie donc au worker tout ce qu'il y a à corriger d'un coup.
+
 ## Libérer le worktree d'un ticket fusionné
 Chaque worktree d'agent porte son propre `target/` (≈ 1 Go après un simple
 `cargo check`, bien plus s'il a lancé nextest) et rien ne le supprime tout
 seul : `git worktree prune` ne nettoie que les répertoires déjà disparus.
-`./scripts/cleanup-worktrees.sh --apply` supprime worktree + branche pour tout
-`claude/*` **déjà fusionné dans main**, en épargnant les worktrees verrouillés
-par un agent et les branches encore au sommet de main (worktree qui vient de
-démarrer, rien de fusionné). Sans `--apply` il se contente de lister. Lance-le
-après chaque merge.
+`./scripts/cleanup-worktrees.sh --apply` supprime worktree, branche locale et
+branche distante `origin/claude/<id>` pour tout `claude/*` **déjà fusionné dans
+main**, en épargnant les worktrees verrouillés par un agent, les branches encore
+au sommet de main (worktree qui vient de démarrer, rien de fusionné) et les
+branches distantes dont le sommet n'est pas contenu dans `main` (un agent a
+poussé après la fusion). Sans `--apply` il se contente de lister. Lance-le après
+chaque merge.
 
 Les artefacts périmés du dépôt principal, eux, ne partent avec aucun worktree :
 cargo n'en récupère jamais un seul. `./scripts/gc-build-artifacts.sh` les

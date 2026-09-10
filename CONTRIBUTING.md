@@ -184,11 +184,17 @@ compiling in unless you pass `--worktrees`.
 
 The other half of the bill is the agent worktrees themselves, which nothing
 removes automatically — `git worktree prune` only forgets directories that are
-already gone. `./scripts/cleanup-worktrees.sh --apply` deletes worktree and
-branch for every `claude/*` merged into `main`; without `--apply` it only says
-what it would do. It skips worktrees git reports as locked, which is how a
-running agent marks its own, and branches still sitting on the tip of `main`,
-which have merged nothing and belong to an agent that just started.
+already gone. `./scripts/cleanup-worktrees.sh --apply` deletes worktree, local
+branch and the remote `origin/claude/<id>` for every `claude/*` merged into
+`main`; without `--apply` it only says what it would do. It skips worktrees git
+reports as locked, which is how a running agent marks its own; branches still
+sitting on the tip of `main`, which have merged nothing and belong to an agent
+that just started; and remote branches whose real tip — read with `git
+ls-remote`, not from a possibly stale tracking ref — is not contained in
+`main`, which is an agent that pushed again after the merge. It never forces
+anything. `./scripts/cleanup-worktrees.sh --self-test` builds a throwaway
+repository with its own bare `origin` and asserts each of those cases;
+`check.sh` runs it.
 
 Sharing one `CARGO_TARGET_DIR` across worktrees looks like the obvious fix and
 is not: cargo takes an exclusive lock on the build directory, so concurrent
@@ -270,6 +276,40 @@ dependency and refactors a module will be asked to become three.
 Anything that weakens the FAPI 2.0 baseline, adds complexity without a stated
 reason, or re-introduces a protocol that is out of scope for v1 (SAML, LDAP,
 implicit flow) will be pushed back on — with a compliant alternative.
+
+### How a branch reaches `main`
+
+Every branch is pushed and gets a full CI run *before* it is merged — including
+the agent branches named `claude/<bead-id>`, which used to be merged locally
+and pushed straight to `main`. That shortcut cost ten `fix(ci)` commits in four
+days, and every one of them was a composition failure: the branch was green on
+its own targeted filter, and what broke was the fuzz build, the browser sweep,
+rustdoc, `cargo deny` or one of the schema guards — jobs no local, scoped run
+executes.
+
+```sh
+git push -u origin claude/ast-xxx          # never --force
+gh pr create --base main --head claude/ast-xxx \
+  --title 'feat(area): summary [ast-xxx]' --body '…Refs: ast-xxx'
+gh pr checks <number> --watch --fail-level fail   # the verdict that counts
+git merge --no-ff claude/ast-xxx -m 'merge(ast-xxx): summary'
+git push origin main                       # closes the PR as merged
+./scripts/cleanup-worktrees.sh --apply
+```
+
+The merge is done locally rather than with `gh pr merge --merge`, on purpose:
+it keeps this repository's `merge(<id>): <summary>` commit message, it leaves
+local and remote `main` identical — which is what `cleanup-worktrees.sh` judges
+branches against — and it needs no branch protection or merge queue on the
+GitHub side, of which `main` currently has neither. `--no-ff` either way: the
+merge commit is where the bead id lives.
+
+`ci.yml` runs the same jobs on `pull_request`, on `push` to `main` and in a
+merge queue — no job is conditioned on the event — so a green PR means a green
+`main`, barring a semantic conflict with something merged in between.
+`cancel-in-progress` is restricted to pull requests, so pushing a merge to
+`main` never cancels the run of an open PR, and two merges pushed minutes apart
+each get their own verdict instead of the first being cancelled.
 
 ## Language
 
