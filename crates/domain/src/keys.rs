@@ -122,6 +122,21 @@ pub enum KeyState {
     Retiring,
     /// Gone from the JWKS. Kept only so its `kid` is never reused.
     Retired,
+    /// Gone from the JWKS **and** its private material destroyed, because the
+    /// key was believed to be compromised.
+    ///
+    /// Terminal, and different from [`Self::Retired`] in the one way that
+    /// matters: a retired key's private half is still in the database, sealed
+    /// under the key-encryption key, so a backup taken today can still be made
+    /// to sign tomorrow. A purged key's is gone. FAPI 2.0 SP §6.8 is about
+    /// shrinking "the time window in which a compromised key can be used", and
+    /// this is the state that shuts it.
+    ///
+    /// A purged key does not verify either — see [`Self::is_trusted`]. That is
+    /// the point rather than a side effect: an operator purging a key is
+    /// saying its signatures must stop being accepted, and keeping the public
+    /// half usable would keep honouring exactly the tokens an attacker minted.
+    Purged,
 }
 
 impl KeyState {
@@ -133,6 +148,7 @@ impl KeyState {
             Self::Active => "active",
             Self::Retiring => "retiring",
             Self::Retired => "retired",
+            Self::Purged => "purged",
         }
     }
 
@@ -140,6 +156,26 @@ impl KeyState {
     #[must_use]
     pub const fn is_published(self) -> bool {
         matches!(self, Self::Pending | Self::Active | Self::Retiring)
+    }
+
+    /// Whether a signature made by a key in this state may still be accepted.
+    ///
+    /// Wider than [`Self::is_published`] and narrower than "the row exists". A
+    /// `retired` key has left the JWK Set but its signatures are still this
+    /// server's own: an `id_token_hint` minted last month is the ordinary case
+    /// (OIDC Core §3.1.2.1 requires an expired one to be accepted), and
+    /// refusing it would break a logout for no security gain.
+    ///
+    /// A `purged` key is the one exception, and the reason [`Self::Purged`]
+    /// exists. It was destroyed because it was believed compromised, so its
+    /// signatures are precisely what must stop being trusted — including the
+    /// ones an attacker holding the leaked material made before anybody
+    /// noticed. This server cannot reach into a resource server that already
+    /// accepted such a token, but it can stop accepting them itself, and it
+    /// does.
+    #[must_use]
+    pub const fn is_trusted(self) -> bool {
+        !matches!(self, Self::Purged)
     }
 
     /// Parses the storage spelling.
@@ -154,7 +190,16 @@ impl KeyState {
     }
 
     /// Every state, in the order a key passes through them.
-    pub const ALL: [Self; 4] = [Self::Pending, Self::Active, Self::Retiring, Self::Retired];
+    ///
+    /// `purged` is last because it is a terminal state a key only reaches out
+    /// of `retiring` or `retired`, and never on the ordinary path.
+    pub const ALL: [Self; 5] = [
+        Self::Pending,
+        Self::Active,
+        Self::Retiring,
+        Self::Retired,
+        Self::Purged,
+    ];
 }
 
 /// What a key may be used for.
@@ -435,6 +480,101 @@ pub enum Activation {
     Immediate,
 }
 
+/// Why a key was destroyed.
+///
+/// A purge is the response to a suspected compromise, and the one question an
+/// incident review always asks about one is "why did somebody destroy this
+/// key?". The answer is not derivable from the row — every purge looks
+/// identical there — so it is required at the call rather than encouraged in a
+/// runbook, and it is a type rather than a `String` so that a caller cannot
+/// pass an empty one by writing `""`.
+///
+/// Free text, deliberately: an enum of incident categories would be a
+/// vocabulary this project invented, and the first real incident would not be
+/// in it. The bounds are the ones a text column and an audit trail need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurgeReason(String);
+
+impl PurgeReason {
+    /// The longest reason accepted.
+    ///
+    /// Long enough for a sentence and a ticket reference, short enough that the
+    /// audit trail cannot be used as a data store. A reason is a note, not a
+    /// report.
+    pub const MAX_LENGTH: usize = 500;
+
+    /// Reads a reason an operator typed.
+    ///
+    /// Surrounding whitespace is trimmed before anything else is decided, so
+    /// `"   "` is the empty reason it is, rather than three characters of
+    /// justification.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::DomainError::Invalid`] if the reason is empty once trimmed,
+    /// longer than [`Self::MAX_LENGTH`] characters, or carries a control
+    /// character. Control characters are refused rather than stripped: this
+    /// string is written to an audit record and read back by a console and a
+    /// SIEM, and a newline or an escape sequence in it is how one line becomes
+    /// two.
+    // fuzz-target: admin_key_request
+    pub fn parse(raw: &str) -> Result<Self, crate::DomainError> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(crate::DomainError::invalid(
+                "reason",
+                "destroying a key's private material is recorded, and a record \
+                 without a reason is one nobody can review",
+            ));
+        }
+        if trimmed.chars().count() > Self::MAX_LENGTH {
+            return Err(crate::DomainError::invalid(
+                "reason",
+                format!("must be at most {} characters", Self::MAX_LENGTH),
+            ));
+        }
+        if trimmed.chars().any(char::is_control) {
+            return Err(crate::DomainError::invalid(
+                "reason",
+                "must not contain control characters",
+            ));
+        }
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    /// The reason, trimmed.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for PurgeReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// What a purge did to one key.
+///
+/// Reported rather than inferred, because the two outcomes an operator has to
+/// tell apart look the same from outside: a purge that destroyed the material
+/// now, and a purge of a key somebody already purged. Both leave the key in
+/// [`KeyState::Purged`]; only one of them is the incident response the caller
+/// thought they were performing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyPurge {
+    /// The key that was purged.
+    pub kid: Kid,
+    /// The state it was in when the purge reached it.
+    pub previous_state: KeyState,
+    /// Whether this call is the one that destroyed the private material.
+    ///
+    /// `false` for a repeat of a purge that has already happened, which is what
+    /// a retried request looks like and not a failure.
+    pub destroyed: bool,
+}
+
 /// Administering a tenant's keys: the operations behind a console's key screen.
 ///
 /// Separate from [`KeyStore`], which is the read side every protocol endpoint
@@ -523,6 +663,42 @@ pub trait KeyAdministration: fmt::Debug + Send + Sync {
         actor: Actor,
         now: OffsetDateTime,
     ) -> Result<KeyRotation, crate::DomainError>;
+
+    /// Destroys one key's private material: the response to a compromise.
+    ///
+    /// [`Self::retire`] stops a key being used. This stops it being *usable*.
+    /// The row survives — the `kid` must never be reused and an incident review
+    /// has to see that the key existed — but the sealed private half is erased,
+    /// the key leaves the published set at once, and it moves to
+    /// [`KeyState::Purged`], which is terminal and which no verification path
+    /// trusts (see [`KeyState::is_trusted`]).
+    ///
+    /// **The active key is refused**, with [`crate::DomainError::Conflict`],
+    /// for the reason [`Self::retire`] refuses it: destroying the key a tenant
+    /// signs with leaves it unable to issue a token. The compromise path is
+    /// [`Self::rotate`] with [`Activation::Immediate`] — which installs a
+    /// successor and pushes the suspect key into `retiring` in one call — and
+    /// then this.
+    ///
+    /// A key already purged is reported as a purge that destroyed nothing,
+    /// rather than as an error: that is what a retried request looks like.
+    ///
+    /// `reason` is required by the type, and an implementation must record it
+    /// in the audit trail under [`crate::audit::EventType::KEY_PURGED`].
+    ///
+    /// # Errors
+    ///
+    /// [`crate::DomainError::NotFound`] if the tenant holds no such key,
+    /// [`crate::DomainError::Conflict`] if it is the active one, or a storage
+    /// failure.
+    async fn purge(
+        &self,
+        tenant: &TenantId,
+        kid: &Kid,
+        reason: &PurgeReason,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<KeyPurge, crate::DomainError>;
 }
 
 /// Holds a tenant's keys.
@@ -538,10 +714,18 @@ pub trait KeyStore: fmt::Debug + Send + Sync {
         tenant: &TenantId,
     ) -> Result<Vec<PublicKeyRecord>, crate::DomainError>;
 
-    /// The key a `kid` refers to, whatever its state.
+    /// The key a `kid` refers to, whatever its state — except a purged one.
     ///
     /// Retiring and retired keys must still resolve: a token signed yesterday
     /// is verified today.
+    ///
+    /// A key in [`KeyState::Purged`] must **not** resolve, and an
+    /// implementation must return `None` for it. It was destroyed because it
+    /// was believed compromised, so continuing to check signatures against it
+    /// would be honouring exactly the tokens the purge was performed to
+    /// disown. See [`KeyState::is_trusted`], which is the single definition of
+    /// this, and [`KeyAdministration::inventory`], which is where a row that
+    /// no longer verifies anything is still visible.
     ///
     /// # Errors
     ///
@@ -742,6 +926,64 @@ mod tests {
                 ..KeyRotation::default()
             }
             .is_empty()
+        );
+    }
+
+    /// A retired key's signatures are still this server's own — an
+    /// `id_token_hint` minted last month is the ordinary case — so a retirement
+    /// must not stop them verifying. A *purged* key's must: it was destroyed
+    /// because it was believed compromised, and the tokens an attacker minted
+    /// with it are exactly what has to stop being accepted.
+    #[test]
+    fn only_a_purged_key_stops_being_trusted() {
+        // Arrange / Act / Assert
+        for state in [
+            KeyState::Pending,
+            KeyState::Active,
+            KeyState::Retiring,
+            KeyState::Retired,
+        ] {
+            assert!(state.is_trusted(), "{state:?} is not trusted");
+        }
+        assert!(
+            !KeyState::Purged.is_trusted(),
+            "a purged key still verifies signatures, so destroying it changed nothing \
+             an attacker cares about"
+        );
+        // And it is out of the JWK Set, which is a weaker statement than the
+        // one above and not a substitute for it.
+        assert!(!KeyState::Purged.is_published());
+    }
+
+    /// Destroying key material is recorded, and a record without a reason is
+    /// one nobody can review. The type is what makes "required" true; these are
+    /// the strings that are not a reason.
+    #[test]
+    fn a_purge_reason_that_says_nothing_is_not_a_reason() {
+        // Arrange / Act / Assert
+        for rejected in ["", " ", "\t\n", "\u{a0}"] {
+            assert!(
+                PurgeReason::parse(rejected).is_err(),
+                "accepted {rejected:?} as a reason"
+            );
+        }
+        // A newline in the middle is refused rather than stripped: this string
+        // is written to an audit record and read back by a console and a SIEM,
+        // and an embedded newline is how one line becomes two.
+        assert!(PurgeReason::parse("INC-42\nkey.purged tenant=other").is_err());
+        assert!(PurgeReason::parse(&"x".repeat(PurgeReason::MAX_LENGTH + 1)).is_err());
+
+        let reason =
+            PurgeReason::parse("  private key found in a public bucket  ").expect("a reason");
+        assert_eq!(reason.as_str(), "private key found in a public bucket");
+        assert_eq!(
+            PurgeReason::parse(&"é".repeat(PurgeReason::MAX_LENGTH))
+                .expect("a reason of the maximum length")
+                .as_str()
+                .chars()
+                .count(),
+            PurgeReason::MAX_LENGTH,
+            "the bound is characters, not bytes"
         );
     }
 

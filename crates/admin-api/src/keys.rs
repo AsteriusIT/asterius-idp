@@ -1,4 +1,4 @@
-//! The signing-key screen's resources: inventory, JWKS preview, and the two
+//! The signing-key screen's resources: inventory, JWKS preview, and the
 //! bodies the console posts.
 //!
 //! # A private key cannot reach this module
@@ -32,7 +32,8 @@
 //! diverge exactly when it mattered.
 
 use asterius_domain::keys::{
-    Activation, KeyRotation, Kid, PublicKeyRecord, RotationSchedule, SigningAlgorithm,
+    Activation, KeyPurge, KeyRotation, KeyState, Kid, PublicKeyRecord, PurgeReason,
+    RotationSchedule, SigningAlgorithm,
 };
 use serde_json::{Map, Value, json};
 use time::Duration;
@@ -216,6 +217,61 @@ impl RotationRequest {
         } else {
             Activation::OnSchedule
         }
+    }
+}
+
+/// What one purge did, as the console reports it.
+///
+/// Deliberately not [`rotation_document`]: a purge is not a pass of the
+/// lifecycle, and reporting it as one — `retired_kids: [k]` — would tell an
+/// operator that a key left the JWK Set while saying nothing about the thing
+/// they actually asked for, which is that its private half no longer exists.
+///
+/// `destroyed` is `false` when the key had already been purged. The request
+/// still succeeded; it simply was not the call that did the destroying, and an
+/// operator repeating a request after a timeout deserves to be told which of
+/// the two happened.
+#[must_use]
+pub fn purge_document(purge: &KeyPurge) -> Value {
+    json!({
+        "kid": purge.kid.as_str(),
+        "previous_state": purge.previous_state.as_str(),
+        "state": KeyState::Purged.as_str(),
+        "destroyed": purge.destroyed,
+        "published": false,
+    })
+}
+
+/// What `POST /keys/{kid}/purge` takes.
+///
+/// One member, and it is required. Destroying key material is the response to a
+/// believed compromise, and a record of it that does not say why is one no
+/// incident review can use — so the reason is part of the request rather than
+/// something a runbook asks an operator to write down elsewhere.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PurgeRequest {
+    /// Why the key is being destroyed. Free text; see [`PurgeReason`].
+    pub reason: String,
+}
+
+impl PurgeRequest {
+    /// The reason, validated.
+    ///
+    /// # Errors
+    ///
+    /// [`AdminError::Invalid`] if the reason is blank, over-long, or carries a
+    /// control character — the bounds [`PurgeReason::parse`] applies, which
+    /// live in the domain because the port requires the type and not the
+    /// string.
+    // fuzz-target: admin_key_request
+    pub fn reason(&self) -> Result<PurgeReason, AdminError> {
+        PurgeReason::parse(&self.reason).map_err(|error| match error {
+            asterius_domain::DomainError::Invalid { field, reason } => {
+                AdminError::Invalid(format!("{field}: {reason}"))
+            }
+            other => AdminError::Invalid(other.to_string()),
+        })
     }
 }
 
@@ -462,6 +518,89 @@ mod tests {
 
         // Assert
         assert_eq!(request.activation(), Activation::Immediate);
+    }
+
+    /// The reason is the one member of the body, and a body without one is not
+    /// a purge request. Destroying key material with no recorded reason leaves
+    /// an incident review with a hole exactly where it starts reading.
+    #[test]
+    fn a_purge_without_a_reason_is_not_a_request() {
+        // Arrange / Act / Assert
+        assert!(
+            serde_json::from_value::<PurgeRequest>(json!({})).is_err(),
+            "a body with no reason parsed"
+        );
+        assert!(
+            serde_json::from_value::<PurgeRequest>(json!({"reason": "INC-1", "force": true}))
+                .is_err(),
+            "an unknown member was accepted, so a typo in `reason` would pass silently"
+        );
+
+        for blank in ["", "   ", "\n"] {
+            let request: PurgeRequest =
+                serde_json::from_value(json!({"reason": blank})).expect("parse");
+            assert!(request.reason().is_err(), "accepted {blank:?} as a reason");
+        }
+
+        let request: PurgeRequest =
+            serde_json::from_value(json!({"reason": " leaked in INC-42 "})).expect("parse");
+        assert_eq!(
+            request.reason().expect("a reason").as_str(),
+            "leaked in INC-42"
+        );
+    }
+
+    /// A purge is reported as a purge and not as a pass of the lifecycle: what
+    /// an operator asked for is the destruction of the private half, and
+    /// `retired_kids: [k]` would answer a question they did not ask.
+    #[test]
+    fn a_purge_reports_the_destruction_and_not_a_rotation() {
+        // Arrange
+        let purge = KeyPurge {
+            kid: Kid::new("k-1"),
+            previous_state: KeyState::Retiring,
+            destroyed: true,
+        };
+
+        // Act
+        let document = purge_document(&purge);
+
+        // Assert
+        assert_eq!(document["kid"], json!("k-1"));
+        assert_eq!(document["previous_state"], json!("retiring"));
+        assert_eq!(document["state"], json!("purged"));
+        assert_eq!(document["destroyed"], json!(true));
+        assert_eq!(document["published"], json!(false));
+
+        // A repeat of a purge somebody already performed succeeded, and says so
+        // without claiming to have destroyed anything a second time.
+        let repeat = purge_document(&KeyPurge {
+            kid: Kid::new("k-1"),
+            previous_state: KeyState::Purged,
+            destroyed: false,
+        });
+        assert_eq!(repeat["destroyed"], json!(false));
+        assert_eq!(repeat["state"], json!("purged"));
+    }
+
+    /// A purged key is not in the JWK Set preview, for the same reason a
+    /// retired one is not: the preview is the document a relying party
+    /// fetches, and this key is not in it.
+    #[test]
+    fn a_purged_key_is_not_in_the_jwk_set_preview() {
+        // Arrange
+        let records = [
+            record(KeyState::Active, json!({"kty": "OKP", "x": "active"})),
+            record(KeyState::Purged, json!({"kty": "OKP", "x": "purged"})),
+        ];
+
+        // Act
+        let document = jwks_document(&records);
+
+        // Assert
+        let keys = document["keys"].as_array().expect("keys");
+        assert_eq!(keys.len(), 1, "{document}");
+        assert_eq!(keys[0]["x"], json!("active"));
     }
 
     /// A propagation period that outlasts the rotation period stages a

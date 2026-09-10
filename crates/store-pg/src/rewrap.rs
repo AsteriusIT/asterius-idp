@@ -194,8 +194,15 @@ impl PgKekRewrap {
         from: &dyn Kek,
         to: &dyn Kek,
     ) -> Result<u64, DomainError> {
+        // `kek_id = $2` is what makes the three envelope columns non-null here:
+        // a purged key carries no material and no `kek_id` at all (migration
+        // `0003_key_purge`), so it cannot match, and there is nothing to
+        // re-seal for a key whose private half no longer exists.
         let rows = sqlx::query!(
-            "select kid, alg, purpose, private_key_ciphertext, private_key_nonce, kek_id
+            "select kid, alg, purpose,
+                    private_key_ciphertext as \"private_key_ciphertext!\",
+                    private_key_nonce as \"private_key_nonce!\",
+                    kek_id as \"kek_id!\"
                from signing_keys
               where tenant_id = $1 and kek_id = $2
               for update",

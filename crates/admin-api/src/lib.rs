@@ -109,6 +109,8 @@ pub const KEYS_JWKS_ID: &str = "keys.jwks";
 pub const KEYS_ROTATE_ID: &str = "keys.rotate";
 /// The `operationId` of `POST /keys/{kid}/retire`.
 pub const KEYS_RETIRE_ID: &str = "keys.retire";
+/// The `operationId` of `POST /keys/{kid}/purge`.
+pub const KEYS_PURGE_ID: &str = "keys.purge";
 /// The `operationId` of `PUT /keys/schedule`.
 pub const KEYS_SCHEDULE_ID: &str = "keys.schedule";
 
@@ -337,6 +339,27 @@ pub const KEYS_RETIRE: Operation = Operation::mutation(
     "Retires one signing key, removing it from the published JWK Set",
 );
 
+/// Destroys one key's private material after a compromise.
+///
+/// A second, harder button beside [`KEYS_RETIRE`], and a separate operation
+/// rather than a flag on that one. Retiring stops a key being used; purging
+/// stops it being usable, by erasing the sealed private half so that a database
+/// dump taken afterwards carries nothing to forge with. Two different decisions
+/// with two different consequences should not share an `operationId`, because
+/// an audit trail and an RBAC policy both read that id as the name of what was
+/// done.
+///
+/// `POST` and not `DELETE` for the reason [`KEYS_RETIRE`] gives: the row stays.
+/// The `kid` is never reused and an incident review must be able to see that
+/// the key existed and when it was destroyed.
+pub const KEYS_PURGE: Operation = Operation::mutation(
+    KEYS_PURGE_ID,
+    "/keys/{kid}/purge",
+    M::Post,
+    A::new(R::Tenant, "admin.keys:write"),
+    "Destroys one signing key's private material after a compromise",
+);
+
 /// Replaces one algorithm's rotation policy.
 pub const KEYS_SCHEDULE: Operation = Operation::mutation(
     KEYS_SCHEDULE_ID,
@@ -351,7 +374,7 @@ pub const KEYS_SCHEDULE: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 18] = [
+static REGISTRY: [Operation; 19] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -369,6 +392,7 @@ static REGISTRY: [Operation; 18] = [
     KEYS_JWKS,
     KEYS_ROTATE,
     KEYS_RETIRE,
+    KEYS_PURGE,
     KEYS_SCHEDULE,
 ];
 
