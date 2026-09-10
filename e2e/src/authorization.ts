@@ -46,7 +46,7 @@ export async function discover(api: APIRequestContext, baseUrl: string): Promise
   const response = await api.get(`${baseUrl}/.well-known/openid-configuration`);
   if (!response.ok()) {
     throw new Error(
-      `discovery failed: ${response.status()} ${await response.text()} (is the tenant's custom host seeded?)`,
+      `discovery failed: ${response.status()} ${await response.text()} (does ${baseUrl} name the tenant?)`,
     );
   }
   return (await response.json()) as Discovery;

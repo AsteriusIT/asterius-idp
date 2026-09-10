@@ -1,8 +1,7 @@
 -- Fixture data for the browser sweep. Development values only.
 --
--- Applied by `scripts/browser-tests.sh` *after* the server has started, because
--- the server upserts its configured tenants at boot and that upsert overwrites
--- `custom_host`.
+-- Applied by `scripts/browser-tests.sh` after the server has started, because
+-- the rows below reference tenants the server upserts at boot.
 --
 -- Idempotent: the script is expected to be run repeatedly against a database
 -- somebody keeps around between runs.
@@ -11,20 +10,6 @@
 -- shell.
 
 \set ON_ERROR_STOP on
-
--- --------------------------------------------------------------------------
--- The tenant answers to a hostname, not only to a path.
---
--- Not cosmetic. `/authorize` redirects to `/interaction/{id}` and both pages
--- post to `/interaction/{id}` — root-relative, with no tenant prefix — so a
--- tenant reachable only at `/t/{id}/…` loses its tenant on the second hop and
--- the browser gets a 404 (`crates/server/src/tenancy.rs`: a path with no tenant
--- is resolved by host, and `by_host` is indexed on `custom_host` alone). The
--- flow this sweep exists to walk therefore only completes for a host-routed
--- tenant, and there is no configuration key for `custom_host` yet — hence this
--- statement. See the note in `e2e/README.md`.
--- --------------------------------------------------------------------------
-update tenants set custom_host = :'host' where tenant_id = :'tenant';
 
 -- --------------------------------------------------------------------------
 -- One user, with one password.
