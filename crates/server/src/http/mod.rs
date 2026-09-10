@@ -55,6 +55,7 @@ pub mod step_up;
 pub mod throttle;
 pub mod tls;
 pub mod token;
+pub mod token_exchange;
 pub mod userinfo;
 
 /// The one origin a page of this server's may submit to, other than itself.

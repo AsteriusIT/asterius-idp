@@ -64,6 +64,63 @@ pub async fn verify(
     token: &str,
     now: OffsetDateTime,
 ) -> Result<Verified, Rejected> {
+    let resolver = published(tenant, keys).await?;
+
+    let policy = Policy::new(
+        TypRule::Exactly(asterius_oidc::tokens::access::ACCESS_TOKEN_TYP),
+        SigningAlgorithm::ALL.to_vec(),
+    )
+    .issued_by(tenant.issuer.as_str());
+
+    asterius_jose::verify::verify(token, &policy, &resolver, now).map_err(Rejected::Token)
+}
+
+/// Verifies an ID token this server issued.
+///
+/// The same key set and the same clock as [`verify`], with OIDC Core §2's
+/// `typ` instead of RFC 9068's. A separate function rather than a parameter,
+/// because the whole point of the `typ` check is that the two kinds of token
+/// are not interchangeable: a caller that could pass the rule in could pass
+/// the wrong one.
+///
+/// The `aud` is not constrained here either. An ID token's audience is the
+/// client it was issued to, and *which* client that has to be is a decision
+/// of the caller — token exchange (RFC 8693 §5) requires it to be the acting
+/// client, and nothing else in this server verifies one at all.
+///
+/// # Errors
+///
+/// [`Rejected::Token`] for a token this tenant did not issue or can no longer
+/// stand behind, [`Rejected::Unavailable`] when the key set cannot be read.
+pub async fn verify_id_token(
+    tenant: &Tenant,
+    keys: &dyn KeyStore,
+    token: &str,
+    now: OffsetDateTime,
+) -> Result<Verified, Rejected> {
+    let resolver = published(tenant, keys).await?;
+    let policy = Policy::new(
+        // OIDC Core never required a `typ`, and this server always writes one
+        // (ADR-0002). `OptionalOneOf` accepts both, and the list is still
+        // closed: a token announcing itself as `at+jwt` is refused here, which
+        // is what stops an access token being exchanged as though it were an
+        // assertion about an authentication.
+        TypRule::OptionalOneOf(&[asterius_oidc::tokens::id_token::ID_TOKEN_TYP]),
+        SigningAlgorithm::ALL.to_vec(),
+    )
+    .issued_by(tenant.issuer.as_str());
+
+    asterius_jose::verify::verify(token, &policy, &resolver, now).map_err(Rejected::Token)
+}
+
+/// The resolver over the key set this tenant publishes.
+///
+/// Shared by the two verifiers above so that they cannot come to hold
+/// different opinions about which keys are current.
+async fn published(
+    tenant: &Tenant,
+    keys: &dyn KeyStore,
+) -> Result<asterius_jose::client_keys::ClientKeySet, Rejected> {
     let published = keys.published_keys(&tenant.id).await?;
     let document = json!({
         "keys": published
@@ -83,14 +140,7 @@ pub async fn verify(
             "this tenant publishes no usable key",
         )));
     }
-
-    let policy = Policy::new(
-        TypRule::Exactly(asterius_oidc::tokens::access::ACCESS_TOKEN_TYP),
-        SigningAlgorithm::ALL.to_vec(),
-    )
-    .issued_by(tenant.issuer.as_str());
-
-    asterius_jose::verify::verify(token, &policy, &resolver, now).map_err(Rejected::Token)
+    Ok(resolver)
 }
 
 /// One request presenting an access token at a protected resource.

@@ -27,5 +27,6 @@ pub mod request_object;
 pub mod revocation;
 pub mod tenancy;
 pub mod token;
+pub mod token_exchange;
 pub mod tokens;
 pub mod userinfo;
