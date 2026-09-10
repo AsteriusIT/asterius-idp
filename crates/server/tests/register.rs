@@ -9,6 +9,7 @@
 //! negative assertions possible: a rejected document must leave nothing behind,
 //! and a refused caller must not reach the store at all.
 
+use asterius_domain::RegistrationPolicy as TenantRegistrationPolicy;
 use asterius_domain::audit::{AuditEvent, AuditSink, DetailValue, EventType, Outcome};
 use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
 use asterius_domain::ports::JwksFetcher;
@@ -16,6 +17,8 @@ use asterius_domain::{
     Capabilities, Client, ClientRegistry, DomainError, Issuer, KeyStore, Kid, PublicKeyRecord,
     Tenant, TenantId, TenantStatus, sha256,
 };
+use asterius_jose::jws;
+use asterius_jose::key::SigningKey;
 use asterius_server::http::register::{
     Denial, InitialAccessTokens, MAX_BODY_BYTES, RegisterContext, RegistrationPolicy, register,
 };
@@ -259,6 +262,41 @@ async fn post_with(
     .await
 }
 
+/// [`post`], against a tenant whose stored registration policy is `policy`
+/// (`ast-m9c.6`).
+async fn post_under(
+    tenant_policy: &TenantRegistrationPolicy,
+    outbound: &dyn JwksFetcher,
+    policy: &RegistrationPolicy,
+    registry: &FakeRegistry,
+    audit: &FakeAudit,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    register(
+        RegisterContext {
+            tenant_policy,
+            tenant: &tenant(),
+            clients: registry,
+            keys: &FakeKeys::provisioned(),
+            capabilities: Capabilities::default(),
+            policy,
+            audit,
+            outbound,
+            request_id: Some("req-1"),
+        },
+        headers,
+        &Bytes::copy_from_slice(body),
+        now(),
+    )
+    .await
+}
+
+/// A tenant policy from a stored document.
+fn tenant_policy(document: &Value) -> TenantRegistrationPolicy {
+    TenantRegistrationPolicy::from_json(Some(document)).expect("the test policy is valid")
+}
+
 /// The same request against a tenant holding a chosen set of signing keys.
 async fn post_to(
     keys: &FakeKeys,
@@ -271,6 +309,7 @@ async fn post_to(
 ) -> Response {
     register(
         RegisterContext {
+            tenant_policy: &asterius_domain::RegistrationPolicy::default(),
             tenant: &tenant(),
             clients: registry,
             keys,
@@ -1055,4 +1094,412 @@ async fn a_pairwise_client_with_a_host_of_its_own_still_registers() {
     .await;
 
     assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+// ---- the tenant's registration policy (`ast-m9c.6`) ----------------------
+
+/// The issuer whose software statements the test tenant trusts.
+const VOUCHER: &str = "https://vouch.example";
+/// The `kid` the voucher publishes.
+const VOUCHER_KID: &str = "vouch-1";
+
+/// A policy naming one trusted software statement issuer.
+fn trusting_the_voucher(required: bool) -> Value {
+    json!({
+        "software_statement": {
+            "required": required,
+            "issuers": [{
+                "issuer": VOUCHER,
+                "jwks_uri": "https://vouch.example/jwks"
+            }]
+        }
+    })
+}
+
+/// The voucher's signing key and the JWK Set it publishes.
+fn voucher_key() -> (SigningKey, Value) {
+    let key = SigningKey::generate(SigningAlgorithm::EdDsa).expect("generate");
+    let mut jwk = key.public_jwk().expect("jwk");
+    jwk["kid"] = json!(VOUCHER_KID);
+    (key, json!({ "keys": [jwk] }))
+}
+
+/// A software statement signed by the voucher, asserting `claims`.
+fn statement(key: &SigningKey, claims: &Value) -> String {
+    jws::sign(
+        key,
+        &Kid::new(VOUCHER_KID),
+        "software-statement+jwt",
+        claims,
+    )
+    .expect("sign")
+    .as_str()
+    .to_owned()
+}
+
+/// The detail a refusal recorded under `name`, if any.
+fn detail(audit: &FakeAudit, name: &str) -> Option<String> {
+    let events = audit.events();
+    let event = events.first()?;
+    event
+        .detail
+        .iter()
+        .find(|(key, _)| key.as_str() == name)
+        .and_then(|(_, value)| match value {
+            DetailValue::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+}
+
+/// A tenant may refuse a document the profile would have accepted, and the
+/// refusal is RFC 7591 §3.2.2's `invalid_client_metadata` with the rule in the
+/// trail and not in the response.
+#[tokio::test]
+async fn a_document_the_tenants_policy_refuses_is_not_registered() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let policy = tenant_policy(&json!({ "redirect_uri_hosts": ["trusted.example"] }));
+    let body = serde_json::to_vec(&document()).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &policy,
+        &FakeOutbound::default(),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let rendered = body_of(response).await;
+    assert_eq!(rendered["error"], json!("invalid_client_metadata"));
+    assert!(
+        !rendered["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("rp.example"),
+        "the refusal must not echo a value from the document: {rendered}"
+    );
+    assert!(registry.written().is_empty());
+    assert_eq!(
+        detail(&audit, "rule").as_deref(),
+        Some("redirect_host_not_allowed"),
+        "the failing rule belongs in the audit trail"
+    );
+}
+
+/// RFC 7591 §2.3: "Values of client metadata that are conveyed in the software
+/// statement ... MUST take precedence over those conveyed using plain JSON
+/// values."
+#[tokio::test]
+async fn a_software_statement_overrides_the_requested_metadata() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let (key, jwks) = voucher_key();
+    let mut requested = document();
+    requested["client_name"] = json!("Whatever the registrant typed");
+    requested["software_statement"] = json!(statement(
+        &key,
+        &json!({ "iss": VOUCHER, "client_name": "Vouched by the fleet manager" })
+    ));
+    let body = serde_json::to_vec(&requested).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&trusting_the_voucher(false)),
+        &FakeOutbound::serving(&jwks),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let written = registry.written();
+    assert_eq!(written.len(), 1);
+    assert_eq!(
+        written[0].0.registration.client_name,
+        "Vouched by the fleet manager"
+    );
+}
+
+/// RFC 7591 §3.2.2's `unapproved_software_statement`, and no fetch: a tenant
+/// cannot be made to dereference anything by presenting a statement from
+/// somebody it never trusted.
+#[tokio::test]
+async fn a_statement_from_an_unapproved_issuer_is_refused() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let (key, _) = voucher_key();
+    let mut requested = document();
+    requested["software_statement"] = json!(statement(
+        &key,
+        &json!({ "iss": "https://stranger.example", "client_name": "Trojan" })
+    ));
+    let body = serde_json::to_vec(&requested).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&trusting_the_voucher(false)),
+        // A fetcher that fails, so a passing test proves nothing was fetched
+        // rather than that the fetch succeeded.
+        &FakeOutbound::default(),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("unapproved_software_statement")
+    );
+    assert!(registry.written().is_empty());
+}
+
+/// A statement signed by a key the issuer does not publish is
+/// `invalid_software_statement` — the same answer as a malformed one, because
+/// the difference is the bearer's business and not the client's.
+#[tokio::test]
+async fn a_statement_signed_by_an_unpublished_key_is_invalid() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let (impostor, _) = voucher_key();
+    let (_, published) = voucher_key();
+    let mut requested = document();
+    requested["software_statement"] = json!(statement(
+        &impostor,
+        &json!({ "iss": VOUCHER, "client_name": "Trojan" })
+    ));
+    let body = serde_json::to_vec(&requested).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&trusting_the_voucher(false)),
+        &FakeOutbound::serving(&published),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_software_statement")
+    );
+    assert!(registry.written().is_empty());
+}
+
+#[tokio::test]
+async fn a_statement_that_is_not_a_jwt_is_invalid() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let mut requested = document();
+    requested["software_statement"] = json!("not.a.jwt");
+    let body = serde_json::to_vec(&requested).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&trusting_the_voucher(false)),
+        &FakeOutbound::default(),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_software_statement")
+    );
+}
+
+/// The `agent` onboarding rule (`E11_01`): this tenant registers nothing that
+/// nobody vouched for.
+#[tokio::test]
+async fn a_tenant_that_requires_a_statement_refuses_a_document_without_one() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let body = serde_json::to_vec(&document()).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&trusting_the_voucher(true)),
+        &FakeOutbound::default(),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_client_metadata")
+    );
+    assert_eq!(
+        detail(&audit, "rule").as_deref(),
+        Some("software_statement_required")
+    );
+    assert!(registry.written().is_empty());
+}
+
+/// Precedence decides *which* values are used, never *whether* they are
+/// checked: a trusted issuer cannot assert a client this profile refuses.
+#[tokio::test]
+async fn a_statement_cannot_assert_a_client_the_profile_refuses() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let (key, jwks) = voucher_key();
+    let mut requested = document();
+    requested["software_statement"] = json!(statement(
+        &key,
+        &json!({
+            "iss": VOUCHER,
+            // FAPI 2.0 SP §5.3.2.1 item 3: not a method this server has.
+            "token_endpoint_auth_method": "client_secret_basic"
+        })
+    ));
+    let body = serde_json::to_vec(&requested).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&trusting_the_voucher(false)),
+        &FakeOutbound::serving(&jwks),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_client_metadata")
+    );
+    assert!(registry.written().is_empty());
+}
+
+/// And the tenant's own rules apply to what the statement asserted, so a
+/// vouching issuer is subject to the policy rather than an escape from it.
+#[tokio::test]
+async fn a_statement_is_still_subject_to_the_tenants_policy() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let (key, jwks) = voucher_key();
+    let mut policy_document = trusting_the_voucher(false);
+    policy_document["redirect_uri_hosts"] = json!(["trusted.example"]);
+    let mut requested = document();
+    requested["redirect_uris"] = json!(["https://trusted.example/cb"]);
+    requested["software_statement"] = json!(statement(
+        &key,
+        &json!({ "iss": VOUCHER, "redirect_uris": ["https://elsewhere.example/cb"] })
+    ));
+    let body = serde_json::to_vec(&requested).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&policy_document),
+        &FakeOutbound::serving(&jwks),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        detail(&audit, "rule").as_deref(),
+        Some("redirect_host_not_allowed")
+    );
+    assert!(registry.written().is_empty());
+}
+
+/// `ast-0qv`: a tenant closes its own registration endpoint whatever the
+/// deployment configured. The route is unmounted for it too — that half is
+/// asserted in `tests/discovery.rs`, where the route/metadata parity lives.
+#[tokio::test]
+async fn a_tenant_that_closed_registration_refuses_a_valid_token() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let body = serde_json::to_vec(&document()).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&json!({ "mode": "closed" })),
+        &FakeOutbound::default(),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(Some(&format!("Bearer {TOKEN}"))),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(registry.written().is_empty());
+}
+
+/// And cannot open one the operator gated: a tenant asking for `open` against a
+/// gated deployment still demands the token.
+#[tokio::test]
+async fn a_tenant_cannot_open_a_gated_deployment() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let body = serde_json::to_vec(&document()).expect("serialise");
+
+    // Act
+    let response = post_under(
+        &tenant_policy(&json!({ "mode": "open" })),
+        &FakeOutbound::default(),
+        &gated(),
+        &registry,
+        &audit,
+        &json_headers(None),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(registry.written().is_empty());
 }

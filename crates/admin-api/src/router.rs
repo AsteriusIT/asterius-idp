@@ -587,6 +587,21 @@ impl Handling<'_> {
             disabled.insert(feature);
         }
 
+        let repository = self.state.backend.tenant_settings();
+        let previous = repository
+            .settings(&named)
+            .await
+            .map_err(|error| AdminError::from_storage("tenants.settings.read", &error))?;
+
+        // Read before the new settings are assembled, because an absent
+        // `registration_policy` means "keep the stored one": `TenantSettings`
+        // is replaced wholesale here, so anything not carried over is deleted.
+        let registration = match &requested.registration_policy {
+            None => previous.registration().clone(),
+            Some(document) => asterius_domain::RegistrationPolicy::from_json(Some(document))
+                .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?,
+        };
+
         // The one line this whole operation exists for. `TenantSettings` has
         // private fields and one constructor, so there is no way past it.
         let settings = TenantSettings::validated(
@@ -594,13 +609,8 @@ impl Handling<'_> {
             time::Duration::seconds(requested.authorization_code_lifetime_seconds),
             time::Duration::seconds(requested.access_token_lifetime_seconds),
         )
-        .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?;
-
-        let repository = self.state.backend.tenant_settings();
-        let previous = repository
-            .settings(&named)
-            .await
-            .map_err(|error| AdminError::from_storage("tenants.settings.read", &error))?;
+        .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?
+        .with_registration(registration);
 
         repository
             .save(&named, &settings)
@@ -857,6 +867,23 @@ impl Handling<'_> {
             .await
             .map_err(|error| AdminError::from_storage(operation, &error))?;
         clients::check_signable(&records, registration.id_token_signed_response_alg)?;
+
+        // The tenant's registration policy, applied to the console exactly as
+        // it is to `POST /register` (`ast-m9c.6`). An administrator is not an
+        // exception: a rule that says this tenant registers no callbacks on
+        // other people's hosts is a statement about the tenant, and a second
+        // door that ignored it would be the way around it.
+        let settings = self
+            .state
+            .backend
+            .tenant_settings()
+            .settings(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?;
+        settings
+            .registration()
+            .evaluate(registration)
+            .map_err(|violation| clients::refusal(&violation.to_metadata_error()))?;
 
         self.state
             .backend
@@ -1241,6 +1268,13 @@ struct RequestedSettings {
     disabled_features: Vec<String>,
     authorization_code_lifetime_seconds: i64,
     access_token_lifetime_seconds: i64,
+    /// This tenant's registration policy (`ast-m9c.6`), as a document.
+    ///
+    /// Absent means "leave it as it is", not "clear it": the console's settings
+    /// form and the registration policy are two screens, and a save from the
+    /// first one must not silently reopen an endpoint the second one closed.
+    #[serde(default)]
+    registration_policy: Option<serde_json::Value>,
 }
 
 /// A settings document as this API renders it.
@@ -1264,6 +1298,10 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         "authorization_code_lifetime_seconds":
             settings.lifetimes().authorization_code().whole_seconds(),
         "access_token_lifetime_seconds": settings.lifetimes().access_token().whole_seconds(),
+        // Rendered from the stored policy rather than echoed from a request,
+        // so a console shows the rules that are in force — including the ones
+        // a preset expanded into.
+        "registration_policy": settings.registration().to_json(),
         "limits": {
             "max_authorization_code_lifetime_seconds":
                 MAX_AUTHORIZATION_CODE_LIFETIME.whole_seconds(),
@@ -3280,6 +3318,41 @@ mod tests {
                     .expect("a request"),
             )
             .await
+    }
+
+    /// **The acceptance criterion of `ast-m9c.6` for this crate.** The tenant's
+    /// registration policy is not a property of the `POST /register` endpoint;
+    /// it is a property of the tenant, so the console is bound by it too. A
+    /// second door that ignored the policy would be the way around it.
+    #[tokio::test]
+    async fn the_console_cannot_register_a_client_the_tenants_policy_refuses() {
+        // Arrange
+        let (world, cookie) = console_in_a_signing_tenant();
+        let policy = asterius_domain::RegistrationPolicy::from_json(Some(&serde_json::json!({
+            "redirect_uri_hosts": ["trusted.example.test"]
+        })))
+        .expect("a valid policy");
+        world.handle.0.settings.lock().expect("lock").insert(
+            "asterius-admin".to_owned(),
+            TenantSettings::default().with_registration(policy),
+        );
+
+        // Act
+        let response = post_client(&world, &cookie, &valid_registration()).await;
+
+        // Assert
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "the console registered a callback host the tenant's policy excludes"
+        );
+        let body = body_of(response).await;
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("client_metadata")),
+            "the refusal does not carry the RFC 7591 §3.2.2 code: {body}"
+        );
     }
 
     /// **The acceptance criterion of `ast-f7m.5`.** The console must not be

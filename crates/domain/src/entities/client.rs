@@ -86,6 +86,28 @@ pub enum ClientMetadataError {
         /// Why, in fixed text. Never contains the URI itself.
         reason: String,
     },
+    /// A software statement was presented and is not usable: not a JWS, the
+    /// wrong `typ`, an unverifiable signature, expired, or claims that are not
+    /// client metadata (RFC 7591 §2.3, §3.1.1).
+    ///
+    /// One variant for all of those, and RFC 7591 §3.2.2's
+    /// `invalid_software_statement` for all of them: the statement is signed by
+    /// a third party, and telling its *bearer* which key failed is telling
+    /// somebody about an issuer they may have no relationship with.
+    #[error("software_statement: {reason}")]
+    InvalidSoftwareStatement {
+        /// Why, in fixed text. Never contains anything from the statement.
+        reason: &'static str,
+    },
+    /// A software statement was presented, is well formed, and was signed by an
+    /// issuer this tenant does not trust — RFC 7591 §3.2.2's
+    /// `unapproved_software_statement`.
+    ///
+    /// Distinct from the above because a client acts on the difference: an
+    /// invalid statement is a bug in whatever minted it, an unapproved one is a
+    /// conversation with the operator about who may vouch for clients here.
+    #[error("software_statement: signed by an issuer this tenant does not trust")]
+    UnapprovedSoftwareStatement,
 }
 
 impl ClientMetadataError {
@@ -94,6 +116,11 @@ impl ClientMetadataError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::RedirectUri { .. } | Self::PostLogoutRedirectUri { .. } => "invalid_redirect_uri",
+            // RFC 7591 §3.2.2's two software statement codes. Neither is
+            // `invalid_client_metadata`: the document may be perfect and the
+            // assertion about it not be.
+            Self::InvalidSoftwareStatement { .. } => "invalid_software_statement",
+            Self::UnapprovedSoftwareStatement => "unapproved_software_statement",
             _ => "invalid_client_metadata",
         }
     }
@@ -106,6 +133,9 @@ impl ClientMetadataError {
             Self::Missing { field } | Self::Rejected { field, .. } => field,
             Self::RedirectUri { .. } => "redirect_uris",
             Self::PostLogoutRedirectUri { .. } => "post_logout_redirect_uris",
+            Self::InvalidSoftwareStatement { .. } | Self::UnapprovedSoftwareStatement => {
+                "software_statement"
+            }
         }
     }
 
@@ -534,6 +564,20 @@ impl RedirectUri {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The host this URI points at, lowercased by the URL parser.
+    ///
+    /// `None` only for a URI a parser can no longer read, which
+    /// [`RedirectUri::parse`] makes unreachable for a value that entered
+    /// through it — a stored row edited by hand is the remaining case, and
+    /// "no host" is the safe answer there: a host allow-list
+    /// ([`crate::RegistrationPolicy`]) refuses what it cannot name.
+    #[must_use]
+    pub fn host(&self) -> Option<String> {
+        Url::parse(&self.0)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
     }
 
     /// Validates one redirect URI for a client of `application_type`.
@@ -1768,6 +1812,7 @@ mod tests {
             ssf: true,
             authzen: true,
             dpop_nonce: true,
+            dynamic_client_registration: true,
         }
     }
 

@@ -29,11 +29,22 @@ pub enum Feature {
     Authzen,
     /// Server-issued DPoP nonces (RFC 9449 §8).
     DpopNonce,
+    /// Dynamic client registration (RFC 7591) and client configuration
+    /// management (RFC 7592).
+    ///
+    /// Unlike every other flag here, this one is not switched on directly: it
+    /// follows `[registration] mode` in `asterius.toml`, because "who may
+    /// register" and "is there a registration endpoint" are the same question
+    /// asked twice. A deployment that registers nobody advertised
+    /// `registration_endpoint` and answered 403 before `ast-m9c.6`, which sent
+    /// integrators to a URL that could never work; with the flag, what gates
+    /// the announcement gates the route.
+    DynamicClientRegistration,
 }
 
 impl Feature {
     /// Every flag, in a stable order. `/readyz` and the admin API iterate this.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Mtls,
         Self::GrantManagement,
         Self::Ciba,
@@ -42,6 +53,7 @@ impl Feature {
         Self::Ssf,
         Self::Authzen,
         Self::DpopNonce,
+        Self::DynamicClientRegistration,
     ];
 
     /// The configuration key for this flag, as written in `asterius.toml`.
@@ -56,6 +68,7 @@ impl Feature {
             Self::Ssf => "ssf",
             Self::Authzen => "authzen",
             Self::DpopNonce => "dpop_nonce",
+            Self::DynamicClientRegistration => "dynamic_client_registration",
         }
     }
 
@@ -112,6 +125,17 @@ pub struct Capabilities {
     pub authzen: bool,
     /// Server-issued DPoP nonces (RFC 9449 §8).
     pub dpop_nonce: bool,
+    /// Dynamic client registration (RFC 7591), derived from `[registration]`
+    /// rather than set directly — see [`Feature::DynamicClientRegistration`].
+    ///
+    /// Not deserialised, and that is the point: with `deny_unknown_fields`, an
+    /// operator who writes `dynamic_client_registration = true` under
+    /// `[features]` gets a configuration error naming the key rather than a
+    /// flag that contradicts `[registration] mode`. It is still serialised, so
+    /// `/readyz` and the admin API report the surface the deployment actually
+    /// has.
+    #[serde(skip_deserializing)]
+    pub dynamic_client_registration: bool,
 }
 
 impl Capabilities {
@@ -127,6 +151,7 @@ impl Capabilities {
             Feature::Ssf => self.ssf,
             Feature::Authzen => self.authzen,
             Feature::DpopNonce => self.dpop_nonce,
+            Feature::DynamicClientRegistration => self.dynamic_client_registration,
         }
     }
 
@@ -146,6 +171,7 @@ impl Capabilities {
             Feature::Ssf => self.ssf = false,
             Feature::Authzen => self.authzen = false,
             Feature::DpopNonce => self.dpop_nonce = false,
+            Feature::DynamicClientRegistration => self.dynamic_client_registration = false,
         }
     }
 
@@ -172,6 +198,11 @@ mod tests {
     #[test]
     fn every_feature_maps_to_its_own_config_key() {
         for feature in Feature::ALL {
+            // The one flag an operator does not write: it follows
+            // `[registration] mode`, and the test below pins that.
+            if feature == Feature::DynamicClientRegistration {
+                continue;
+            }
             let toml = format!("{} = true", feature.as_str());
             let caps: Capabilities = toml::from_str(&toml)
                 .unwrap_or_else(|e| panic!("key {} is not a field: {e}", feature.as_str()));
@@ -200,6 +231,7 @@ mod tests {
             ssf: true,
             authzen: true,
             dpop_nonce: true,
+            dynamic_client_registration: true,
         })
         .expect("serialise");
         let fields = json.as_object().expect("object");
@@ -216,6 +248,25 @@ mod tests {
                 "no field for {feature}"
             );
         }
+    }
+
+    /// `ast-m9c.6`: "who may register" is written once, in `[registration]`. A
+    /// second spelling under `[features]` could disagree with it, so it is
+    /// refused as loudly as a misspelt flag.
+    #[test]
+    fn dynamic_client_registration_is_not_a_feature_key() {
+        // Arrange
+        let toml = "dynamic_client_registration = true";
+
+        // Act
+        let outcome = toml::from_str::<Capabilities>(toml);
+
+        // Assert
+        let error = outcome.expect_err("the flag follows [registration], not [features]");
+        assert!(
+            error.to_string().contains("dynamic_client_registration"),
+            "{error}"
+        );
     }
 
     #[test]

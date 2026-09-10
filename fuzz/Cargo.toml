@@ -358,6 +358,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "registration_policy"
+path = "fuzz_targets/registration_policy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "request_uri"
 path = "fuzz_targets/request_uri.rs"
 test = false

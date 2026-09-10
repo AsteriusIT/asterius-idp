@@ -269,6 +269,9 @@ impl KeyStore for FakeKeys {
 }
 
 struct Fixture {
+    /// This tenant's registration policy: no opinion, unless a test gives it
+    /// one with [`Fixture::under_policy`].
+    policy: asterius_domain::RegistrationPolicy,
     tenant: Tenant,
     clients: FakeClients,
     audit: FakeAudit,
@@ -321,6 +324,7 @@ impl Fixture {
             resources: Vec::new(),
         });
         Self {
+            policy: asterius_domain::RegistrationPolicy::default(),
             tenant: tenant(),
             clients,
             audit: FakeAudit::default(),
@@ -340,8 +344,17 @@ impl Fixture {
         self
     }
 
+    /// The same fixture on a tenant whose stored registration policy is
+    /// `document`.
+    fn under_policy(mut self, document: &serde_json::Value) -> Self {
+        self.policy = asterius_domain::RegistrationPolicy::from_json(Some(document))
+            .expect("the test policy is valid");
+        self
+    }
+
     fn context(&self) -> ConfigurationContext<'_> {
         ConfigurationContext {
+            tenant_policy: &self.policy,
             tenant: &self.tenant,
             clients: &self.clients,
             configuration: &self.clients,
@@ -579,6 +592,7 @@ async fn a_revocation_is_not_visible_in_the_refusal() {
     let audit = FakeAudit::default();
     let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
     let context = ConfigurationContext {
+        tenant_policy: &asterius_domain::RegistrationPolicy::default(),
         tenant: &tenant,
         clients: &sunk,
         configuration: &sunk,
@@ -1439,6 +1453,7 @@ async fn a_store_that_cannot_be_reached_is_not_a_refusal() {
     let tenant = tenant();
     let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
     let context = ConfigurationContext {
+        tenant_policy: &asterius_domain::RegistrationPolicy::default(),
         tenant: &tenant,
         clients: &clients,
         configuration: &clients,
@@ -1581,6 +1596,7 @@ fn the_postgres_repository_satisfies_both_ports_this_endpoint_holds() {
         let audit = FakeAudit::default();
         let keys = FakeKeys(SigningAlgorithm::ALL.to_vec());
         let _context = ConfigurationContext {
+            tenant_policy: &asterius_domain::RegistrationPolicy::default(),
             tenant,
             clients: repository,
             configuration: repository,
@@ -1688,5 +1704,53 @@ async fn an_update_to_pairwise_with_only_loopback_callbacks_is_refused() {
             .subject_type,
         SubjectType::Public,
         "a refused update replaced the row anyway"
+    );
+}
+
+/// `ast-m9c.6`: RFC 7592 §2.2 replaces the whole registration, so the tenant's
+/// registration policy is checked here too. A rule enforced only at `POST
+/// /register` would be a rule any client walks around by registering once and
+/// then updating.
+#[tokio::test]
+async fn an_update_the_tenants_policy_refuses_does_not_update() {
+    // Arrange
+    let fixture =
+        Fixture::new().under_policy(&json!({ "redirect_uri_hosts": ["trusted.example"] }));
+    let before = fixture.clients.row("c.alpha").expect("alpha").client;
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "client_id": "c.alpha",
+            "client_name": "Billing",
+            "redirect_uris": ["https://rp.example/cb"],
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        }))
+        .expect("serialise"),
+    );
+
+    // Act
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &body,
+        now(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_of(response).await["error"],
+        json!("invalid_client_metadata")
+    );
+    assert_eq!(
+        fixture
+            .clients
+            .row("c.alpha")
+            .expect("alpha")
+            .client
+            .registration,
+        before.registration,
+        "an update the policy refused changed the row"
     );
 }

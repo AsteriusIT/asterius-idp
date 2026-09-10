@@ -102,6 +102,39 @@ Everything is off unless switched on here, and what is switched on is exactly wh
 | `registration.mode` | `"closed"`, `"initial_access_token"` or `"open"` | **required** when `[registration]` is present | Never inferred from whether tokens are present: deleting the last token would otherwise turn a gated endpoint into an open one. |
 | `registration.initial_access_tokens` | array of strings (**secret**) | **required** under `initial_access_token`, rejected otherwise | Hashed at startup, so the running process holds only digests. Each must be at least 22 characters, which is the 128 bits FAPI 2.0 SP §5.4.1 requires of a credential no end user handles. |
 
+`registration.mode` also decides whether the endpoint exists at all. It drives the `dynamic_client_registration` capability, which gates both the `registration_endpoint` member of the discovery document and the route itself (`ast-m9c.6`): a closed deployment advertises no such URL and answers 404 at `/register`, rather than advertising one that refuses everybody. The flag is not writable under `[features]` — writing it there is a configuration error naming the key, because "who may register" belongs in one place.
+
+### Per-tenant registration policy
+
+The deployment's posture is a ceiling, not the whole answer. Each tenant carries a `registration_policy` document in its settings (`PUT /tenants/{id}/settings` in the admin API), and it may only narrow what the deployment allows:
+
+```json
+{
+  "profile": "agent",
+  "mode": "initial_access_token",
+  "token_endpoint_auth_methods": ["private_key_jwt"],
+  "grant_types": ["client_credentials"],
+  "scopes": ["agent:read"],
+  "resources": ["https://api.example.com"],
+  "redirect_uri_hosts": ["app.example.com"],
+  "jwks": "uri",
+  "software_statement": {
+    "required": true,
+    "issuers": [
+      { "issuer": "https://vouch.example.com", "jwks_uri": "https://vouch.example.com/jwks" }
+    ]
+  },
+  "max_clients_per_initial_access_token": 25,
+  "unused_client_expiry_seconds": 2592000
+}
+```
+
+Every member is optional and every list is *closed*: an absent list means "this tenant has no opinion", and an empty one means "none". `mode: "closed"` removes the endpoint from that tenant's discovery document and unmounts its route; `mode: "open"` cannot open an endpoint the deployment gated. `profile: "agent"` selects the preset for onboarding agents — `client_credentials` only, no callbacks, a software statement required, a quota and an expiry — which the other members then override; a policy that requires a statement and names no trusted issuer is refused, because nothing could ever register under it.
+
+A software statement issuer is a **root of trust**: RFC 7591 §2.3 makes a statement's claims override the request's, so whoever holds that signing key can create clients in this tenant with metadata of their choosing. Both URLs must be `https`, the `iss` is compared byte-exactly, and the keys are fetched through the one outbound path. See `docs/threat-model.md`.
+
+Two members parse and are stored but are **not enforced yet**: `max_clients_per_initial_access_token` and `unused_client_expiry_seconds` need the `initial_access_tokens` table and a sweep respectively. They are listed as residual risks in the threat model rather than left to be discovered.
+
 ## `[login]` — abuse protection at sign-in
 
 Failed sign-ins are counted per client address and per typed identifier, in fixed windows held in the database so that every replica sees the same counter (NIST SP 800-63B §5.2.2). Both limits apply and they stop different attacks: the per-account one bounds the guessing of one password, the per-address one bounds a sweep across many accounts. The identifier is hashed before it is counted and the bucket exists whether the account does or not, so a locked-out identifier and one that was never registered are the same observable.

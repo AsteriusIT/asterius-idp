@@ -27,6 +27,7 @@ pub mod request_id;
 pub mod revocation;
 pub mod security_headers;
 pub mod server;
+pub mod software_statement;
 mod source_audit;
 pub mod step_up;
 pub mod throttle;
