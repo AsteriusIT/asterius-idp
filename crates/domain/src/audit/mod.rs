@@ -199,6 +199,17 @@ impl EventType {
     /// starts from. Its detail carries the reason, which is required at the
     /// call — see [`crate::keys::PurgeReason`].
     pub const KEY_PURGED: Self = Self("key.purged");
+    /// An operator ran the rotation sweep by hand from the console
+    /// (`ast-sep`).
+    ///
+    /// Recorded whether or not the pass changed anything, which is what makes
+    /// it worth its own type. `key.rotated` is written by the repository only
+    /// when a key actually moved, so a trail holding only those cannot answer
+    /// "did anyone try?" — and "an administrator forced the sweep and nothing
+    /// was due" is exactly the fact an incident review needs when the next
+    /// question is why a key everyone expected to turn over did not. The detail
+    /// says what each algorithm's pass did; the actor says who asked.
+    pub const KEY_SCHEDULE_APPLIED: Self = Self("key.schedule_applied");
     /// A derived subject identifier landed on a value that has already been
     /// retired, and the derivation was refused (`ast-2vk.12`).
     ///
@@ -218,7 +229,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 36] = [
+    pub const ALL: [Self; 37] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -252,6 +263,7 @@ impl EventType {
         Self::CLIENT_CREDENTIAL_ROTATED,
         Self::KEY_ROTATED,
         Self::KEY_PURGED,
+        Self::KEY_SCHEDULE_APPLIED,
         Self::SUBJECT_COLLISION,
         Self::ADMIN_CHANGED,
         Self::AUDIT_PURGED,

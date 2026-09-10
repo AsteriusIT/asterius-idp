@@ -641,6 +641,37 @@ pub trait KeyAdministration: fmt::Debug + Send + Sync {
         now: OffsetDateTime,
     ) -> Result<KeyRotation, crate::DomainError>;
 
+    /// Runs the rotation sweep for this tenant now, exactly as the periodic
+    /// pass would.
+    ///
+    /// The button behind `POST /keys/schedule/apply`: an operator who has just
+    /// shortened a rotation period should not have to wait for the next sweep
+    /// to find out what that period does. Every algorithm in
+    /// [`SigningAlgorithm::ALL`] is swept, because the sweep is per tenant and
+    /// a caller asking for "the schedule" means the tenant's, not one
+    /// algorithm's — that one is [`Self::rotate`].
+    ///
+    /// **Idempotent, and that is the point.** A pass stages a key only when the
+    /// schedule is due, promotes one only when its propagation period has run
+    /// out and retires one only when its grace period has expired; so a second
+    /// call a second later does nothing and reports an empty
+    /// [`KeyRotation`] for each algorithm. A caller can tell the two apart with
+    /// [`KeyRotation::is_empty`], which is what lets the console say "nothing
+    /// was due" rather than implying a rotation nobody asked for.
+    ///
+    /// `actor` is recorded against whatever the pass changed, so a rotation a
+    /// person triggered is attributable to them and not to the sweep.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::DomainError`] if the keys cannot be read or written.
+    async fn apply_schedule_now(
+        &self,
+        tenant: &TenantId,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<Vec<(SigningAlgorithm, KeyRotation)>, crate::DomainError>;
+
     /// Takes one key out of the published set, naming it by `kid`.
     ///
     /// The active key is **not** retirable this way, and an implementation must

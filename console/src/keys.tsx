@@ -85,6 +85,17 @@ export interface RotationResult {
   readonly changed: boolean;
 }
 
+/** One algorithm's pass, as `POST /keys/schedule/apply` reports it. */
+export interface SchedulePass extends RotationResult {
+  readonly alg: string;
+}
+
+/** What `POST /keys/schedule/apply` answers. */
+export interface ScheduleApplied {
+  readonly algorithms: readonly SchedulePass[];
+  readonly changed: boolean;
+}
+
 /** What the screen is doing. */
 type Load =
   | { readonly kind: 'loading' }
@@ -116,6 +127,25 @@ export function describe(result: RotationResult): string {
     said.push(`left the JWK Set: ${result.retired_kids.join(', ')}`);
   }
   return `${said.join('; ')}.`;
+}
+
+/**
+ * A sentence describing what an on-demand sweep did.
+ *
+ * A pass that changed nothing is the ordinary outcome — the schedule was not
+ * due — and it is reported as one rather than left silent: an operator who
+ * cannot tell "nothing was due" from "the request never arrived" presses the
+ * button again, which is exactly what the idempotency of the route is there to
+ * survive but not what anybody wants them doing.
+ */
+export function describeApplied(applied: ScheduleApplied): string {
+  if (!applied.changed) {
+    return 'Nothing was due: no key was staged, promoted or retired.';
+  }
+  return applied.algorithms
+    .filter((pass) => pass.changed)
+    .map((pass) => `${pass.alg}: ${describe(pass)}`)
+    .join(' ');
 }
 
 /** Seconds, as a person reads them. */
@@ -185,6 +215,12 @@ export function Keys({ session }: { session: Session }): JSX.Element {
       (value) => describe(value as RotationResult),
     );
 
+  const applySchedule = (): void =>
+    run(
+      () => mutate('keys/schedule/apply', 'POST', session),
+      (value) => describeApplied(value as ScheduleApplied),
+    );
+
   const retire = (kid: string): void =>
     run(
       () => mutate(`keys/${encodeURIComponent(kid)}/retire`, 'POST', session),
@@ -239,6 +275,20 @@ export function Keys({ session }: { session: Session }): JSX.Element {
           </p>
         </section>
       ))}
+      <section aria-labelledby="schedule-sweep">
+        <h3 id="schedule-sweep">Rotation schedule</h3>
+        <p>
+          <button type="button" disabled={busy} onClick={applySchedule}>
+            Apply the rotation schedule now
+          </button>
+        </p>
+        <p className="muted">
+          Runs the pass the server runs in the background: it stages a key only if the schedule is
+          due, promotes one only once its propagation period has elapsed, and retires one only once
+          its grace period has expired. Pressing it twice is safe — the second press does nothing
+          and says so. To force a new key whatever the schedule says, rotate the algorithm above.
+        </p>
+      </section>
       <section aria-labelledby="jwks">
         <h3 id="jwks">Published JWK Set</h3>
         <p className="muted">

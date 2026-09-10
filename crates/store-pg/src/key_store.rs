@@ -192,6 +192,36 @@ impl KeyAdministration for TenantKeyStore {
         })
     }
 
+    /// One pass per advertised algorithm, attributed to the caller.
+    ///
+    /// The same `PgKeyRepository` pass the sweep runs, and deliberately not a
+    /// second implementation of the lifecycle: a "run it now" button that
+    /// promoted or retired by rules of its own would be a second answer to
+    /// "when does this key stop signing", and the two would differ exactly
+    /// during the incident somebody pressed it in.
+    ///
+    /// Unlike the inherent `TenantKeyStore::apply_schedule`, this does not open
+    /// the active key afterwards. That check exists to make a wrong
+    /// key-encryption key a boot failure; here the server is already running,
+    /// has already made it, and a decryption on every button press would be
+    /// work for no answer.
+    async fn apply_schedule_now(
+        &self,
+        tenant: &TenantId,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<Vec<(SigningAlgorithm, KeyRotation)>, DomainError> {
+        let repository = self.for_tenant(tenant);
+        let mut passes = Vec::with_capacity(SigningAlgorithm::ALL.len());
+        for algorithm in SigningAlgorithm::ALL {
+            let pass = repository
+                .apply_schedule_as(actor.clone(), algorithm, now)
+                .await?;
+            passes.push((algorithm, pass));
+        }
+        Ok(passes)
+    }
+
     async fn retire(
         &self,
         tenant: &TenantId,

@@ -279,6 +279,7 @@ async fn route(
         crate::KEYS_RETIRE_ID => context.retire_key().await,
         crate::KEYS_PURGE_ID => context.purge_key(body).await,
         crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
+        crate::KEYS_SCHEDULE_APPLY_ID => context.apply_key_schedule().await,
         // Unreachable while `every_registered_operation_has_a_handler` passes,
         // which is why that test exists rather than a comment here.
         other => {
@@ -1311,6 +1312,53 @@ impl Handling<'_> {
         ))
     }
 
+    /// `POST /keys/schedule/apply` — runs the rotation sweep now.
+    ///
+    /// Takes no body. There is nothing to choose: the pass is the tenant's
+    /// whole schedule, every advertised algorithm, by the rules already stored.
+    /// An `alg` here would be a different operation — one that rotates what a
+    /// caller names — and that operation exists, it is `POST /keys/rotate`.
+    ///
+    /// Idempotent because the pass is: a second call finds nothing due and
+    /// changes nothing, and says so in `changed`. The `Idempotency-Key` the
+    /// console sends on every `POST` still applies, and covers the narrower
+    /// case the header is for — the same request arriving twice because a
+    /// connection dropped.
+    async fn apply_key_schedule(&self) -> Result<Response, AdminError> {
+        let passes = self
+            .state
+            .backend
+            .keys()
+            .apply_schedule_now(
+                &self.tenant.id,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|error| AdminError::from_storage(crate::KEYS_SCHEDULE_APPLY_ID, &error))?;
+
+        // Whatever the pass moved is already in the trail as `key.rotated`,
+        // written by the repository under the actor passed above. This record
+        // is the other fact, and the one those cannot carry: that a person ran
+        // the sweep by hand at this moment — including when it turned out
+        // nothing was due, which is precisely the case that leaves no
+        // `key.rotated` behind and precisely the case an incident review asks
+        // about.
+        let changed = passes.iter().any(|(_, pass)| !pass.is_empty());
+        self.record(
+            EventType::KEY_SCHEDULE_APPLIED,
+            Detail::new()
+                .label("operation", crate::KEYS_SCHEDULE_APPLY_ID)
+                .label("changed", if changed { "yes" } else { "no" }),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &keys::schedule_applied_document(&passes),
+        ))
+    }
+
     /// Reads a JSON body, under the shared size limit.
     async fn parse_body<T: serde::de::DeserializeOwned>(
         &self,
@@ -1895,6 +1943,57 @@ mod tests {
                 superseded,
                 retired: Vec::new(),
             })
+        }
+
+        /// One pass per algorithm, by the one rule the store's pass turns on:
+        /// a schedule stages a key when it is due, and does nothing when it is
+        /// not. That is enough to model what the tests read — a due schedule
+        /// rotates, a schedule just rotated does not — and modelling the
+        /// propagation and grace periods too would be a second implementation
+        /// of the lifecycle in a test double.
+        async fn apply_schedule_now(
+            &self,
+            tenant: &TenantId,
+            actor: Actor,
+            now: OffsetDateTime,
+        ) -> Result<Vec<(SigningAlgorithm, KeyRotation)>, DomainError> {
+            let mut passes = Vec::with_capacity(SigningAlgorithm::ALL.len());
+            for algorithm in SigningAlgorithm::ALL {
+                let schedule = {
+                    let held = self.0.key_schedules.lock().expect("an uncontended lock");
+                    held.get(algorithm.as_str())
+                        .copied()
+                        .unwrap_or(default_schedule())
+                };
+
+                if !schedule.is_due(now) {
+                    passes.push((algorithm, KeyRotation::default()));
+                    continue;
+                }
+
+                let pass = self
+                    .rotate(
+                        tenant,
+                        algorithm,
+                        Activation::OnSchedule,
+                        actor.clone(),
+                        now,
+                    )
+                    .await?;
+                self.0
+                    .key_schedules
+                    .lock()
+                    .expect("an uncontended lock")
+                    .insert(
+                        algorithm.as_str().to_owned(),
+                        RotationSchedule {
+                            last_rotated_at: Some(now),
+                            ..schedule
+                        },
+                    );
+                passes.push((algorithm, pass));
+            }
+            Ok(passes)
         }
 
         async fn retire(
@@ -4537,6 +4636,139 @@ mod tests {
         assert!(
             matches!(recorded.actor, Actor::Admin(_)),
             "the rotation was not attributed to an administrator: {:?}",
+            recorded.actor
+        );
+    }
+
+    /// A schedule whose next rotation is already overdue: pressing "apply now"
+    /// runs the pass, and the report names the key it staged.
+    ///
+    /// The acceptance criterion of `ast-sep`, and the reason the route exists:
+    /// an operator who has just shortened a rotation period should not have to
+    /// wait for the background sweep to see the policy take effect.
+    #[tokio::test]
+    async fn applying_a_schedule_that_is_overdue_rotates_now() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        world.handle.0.key_schedules.lock().expect("a lock").insert(
+            "EdDSA".to_owned(),
+            RotationSchedule {
+                // Rotated a year ago on a ninety-day period: due, and overdue.
+                last_rotated_at: Some(OffsetDateTime::UNIX_EPOCH),
+                ..default_schedule()
+            },
+        );
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::KEYS_SCHEDULE_APPLY, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["changed"], serde_json::json!(true), "{document}");
+        let eddsa = document["algorithms"]
+            .as_array()
+            .expect("algorithms")
+            .iter()
+            .find(|group| group["alg"] == serde_json::json!("EdDSA"))
+            .expect("an EdDSA pass")
+            .clone();
+        assert_eq!(eddsa["changed"], serde_json::json!(true), "{eddsa}");
+        assert!(
+            eddsa["created_kid"].is_string(),
+            "the overdue schedule staged no key: {eddsa}"
+        );
+    }
+
+    /// The second press: nothing is due any more, nothing happens, and the
+    /// response says so. An operator who cannot tell "nothing to do" from "the
+    /// request was lost" presses the button again.
+    #[tokio::test]
+    async fn applying_a_schedule_twice_changes_nothing_the_second_time() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        let first = world
+            .send(
+                as_console(&crate::KEYS_SCHEDULE_APPLY, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(body_of(first).await["changed"], serde_json::json!(true));
+        let after_one = world.handle.0.keys.lock().expect("a lock").len();
+
+        // Act
+        let second = world
+            .send(
+                as_console(&crate::KEYS_SCHEDULE_APPLY, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(second.status(), StatusCode::OK);
+        let document = body_of(second).await;
+        assert_eq!(document["changed"], serde_json::json!(false), "{document}");
+        for group in document["algorithms"].as_array().expect("algorithms") {
+            assert_eq!(group["changed"], serde_json::json!(false), "{group}");
+            assert_eq!(group["created_kid"], serde_json::Value::Null, "{group}");
+        }
+        assert_eq!(
+            world.handle.0.keys.lock().expect("a lock").len(),
+            after_one,
+            "a second apply minted a key"
+        );
+    }
+
+    /// Recorded whether or not anything moved, and attributed to the person who
+    /// pressed it: "somebody forced the sweep and nothing was due" is a fact no
+    /// `key.rotated` record can carry, because none is written.
+    #[tokio::test]
+    async fn applying_a_schedule_that_did_nothing_is_still_recorded() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        for algorithm in SigningAlgorithm::ALL {
+            world.handle.0.key_schedules.lock().expect("a lock").insert(
+                algorithm.as_str().to_owned(),
+                RotationSchedule {
+                    last_rotated_at: Some(OffsetDateTime::now_utc()),
+                    ..default_schedule()
+                },
+            );
+        }
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::KEYS_SCHEDULE_APPLY, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await["changed"], serde_json::json!(false));
+        let events = world.handle.0.events.lock().expect("a lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::KEY_SCHEDULE_APPLIED)
+            .expect("the sweep was not recorded");
+        assert!(
+            matches!(recorded.actor, Actor::Admin(_)),
+            "the sweep was not attributed to an administrator: {:?}",
             recorded.actor
         );
     }

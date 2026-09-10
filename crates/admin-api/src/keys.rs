@@ -177,6 +177,40 @@ pub fn rotation_document(rotation: &KeyRotation) -> Value {
     })
 }
 
+/// What one on-demand sweep did, algorithm by algorithm.
+///
+/// The pass behind `POST /keys/schedule/apply` runs once per advertised
+/// algorithm, so the report is one [`rotation_document`] per algorithm rather
+/// than a merged one: "a key was staged" is only an answer if it says which
+/// algorithm's key, and the sweep the console is replaying is per algorithm in
+/// the store too.
+///
+/// `changed` at the top is the whole answer to the question an operator
+/// pressing the button twice is asking. The second press does nothing — the
+/// schedule is no longer due, no propagation period has run out, no grace
+/// period has expired — and a screen that stayed silent about that would leave
+/// them wondering whether the request arrived. It is derived from the passes
+/// rather than reported separately, so it cannot disagree with the rows
+/// beneath it.
+#[must_use]
+pub fn schedule_applied_document(passes: &[(SigningAlgorithm, KeyRotation)]) -> Value {
+    let algorithms: Vec<Value> = passes
+        .iter()
+        .map(|(algorithm, rotation)| {
+            let mut document = rotation_document(rotation);
+            if let Some(object) = document.as_object_mut() {
+                object.insert("alg".to_owned(), json!(algorithm.as_str()));
+            }
+            document
+        })
+        .collect();
+
+    json!({
+        "algorithms": algorithms,
+        "changed": passes.iter().any(|(_, rotation)| !rotation.is_empty()),
+    })
+}
+
 /// What `POST /keys/rotate` takes.
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -601,6 +635,61 @@ mod tests {
         let keys = document["keys"].as_array().expect("keys");
         assert_eq!(keys.len(), 1, "{document}");
         assert_eq!(keys[0]["x"], json!("active"));
+    }
+
+    /// The button an operator presses after shortening a rotation period: the
+    /// pass that was due ran, and the report names the algorithm it ran for.
+    #[test]
+    fn a_sweep_that_rotated_reports_what_it_did_and_for_which_algorithm() {
+        // Arrange
+        let passes = vec![
+            (
+                SigningAlgorithm::EdDsa,
+                KeyRotation {
+                    created: Some(Kid::new("k-2")),
+                    activated: None,
+                    superseded: None,
+                    retired: vec![Kid::new("k-0")],
+                },
+            ),
+            (SigningAlgorithm::Es256, KeyRotation::default()),
+        ];
+
+        // Act
+        let document = schedule_applied_document(&passes);
+
+        // Assert
+        assert_eq!(document["changed"], json!(true));
+        let algorithms = document["algorithms"].as_array().expect("algorithms");
+        assert_eq!(algorithms.len(), 2);
+        assert_eq!(algorithms[0]["alg"], json!("EdDSA"));
+        assert_eq!(algorithms[0]["created_kid"], json!("k-2"));
+        assert_eq!(algorithms[0]["retired_kids"], json!(["k-0"]));
+        assert_eq!(algorithms[0]["changed"], json!(true));
+        assert_eq!(algorithms[1]["alg"], json!("ES256"));
+        assert_eq!(algorithms[1]["changed"], json!(false));
+    }
+
+    /// The second press of the button: nothing was due, and the report says so
+    /// rather than being empty. An operator who cannot tell "nothing to do"
+    /// from "the request never arrived" presses it again.
+    #[test]
+    fn a_sweep_with_nothing_due_says_nothing_changed() {
+        // Arrange
+        let passes: Vec<(SigningAlgorithm, KeyRotation)> = SigningAlgorithm::ALL
+            .into_iter()
+            .map(|algorithm| (algorithm, KeyRotation::default()))
+            .collect();
+
+        // Act
+        let document = schedule_applied_document(&passes);
+
+        // Assert
+        assert_eq!(document["changed"], json!(false));
+        assert_eq!(
+            document["algorithms"].as_array().expect("algorithms").len(),
+            3
+        );
     }
 
     /// A propagation period that outlasts the rotation period stages a
