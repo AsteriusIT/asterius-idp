@@ -114,3 +114,19 @@ ever verify with it. So the lists differ in both directions:
   a new decision.
 - If `webauthn-rs` ever drops `openssl`, this should be revisited: the argument
   here is entirely about the dependency, not about wanting to own the code.
+
+## Corrections
+
+**2026-09-10.** Consequences said the implementation is "roughly 500 lines".
+The real figure is 1 461 lines of production code in `crates/webauthn/src`
+(2 592 with its tests): `assertion.rs` 230, `cose.rs` 276,
+`authenticator_data.rs` 263, `lib.rs` 214, `client_data.rs` 158,
+`registration.rs` 120, `signature.rs` 100, `attestation.rs` 100. The estimate
+was low by a factor of three.
+
+The decision is unchanged, and the split it promised held: the cryptography is
+still delegated — `signature.rs` calls into `aws_lc_rs` and does no more than
+three `verify()` calls — and what we own is the CBOR/COSE decoding and the
+§7.1 comparisons. But an ADR that declines a dependency is judged on its cost
+estimate, and this one understated the bill. Anyone re-opening this decision
+should weigh 1 461 lines plus four fuzz targets against `webauthn-rs`, not 500.

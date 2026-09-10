@@ -16,10 +16,21 @@ jq -n --argjson max "${ARGUMENTS:-30}" '{active: true, iteration: 0, max_iterati
 3. `bd show <id>` puis délègue à l'agent **ticket-worker** avec un prompt autonome contenant : l'id, la description complète du ticket, les critères d'acceptation. Ne lis pas les fichiers du projet toi-même.
 4. À la réponse du worker :
    - `STATUT: OK` → depuis le dépôt principal : `git merge --no-ff claude/<id> -m "merge(<id>): <titre>"`, `git push origin main`, puis `./scripts/cleanup-worktrees.sh --apply` (supprime worktree et branche des `claude/*` fusionnés — voir plus bas). Puis `bd close <id> --reason "<RESUME du worker>"`.
-   - `STATUT: PARTIEL` → merge si ça compile, `bd close` le ticket, et `bd create` un ticket de suite avec le contenu de SUITE.
+   - `STATUT: PARTIEL` → merge si ça compile, `bd close` le ticket en consignant dans le `--reason` ce qui est livré ET ce qui ne l'est pas. Un ticket de suite seulement si le reste passe les filtres du point 5.
    - `STATUT: BLOQUE` → `bd update <id> --status blocked --reason "<cause>"`, supprime la branche si elle est vide.
-5. Si `SUITE` contient des points concrets, crée des tickets beads (priorité basse).
-6. `bd sync`. Écris une ligne de bilan : `[<id>] <statut> — <résumé>`.
+5. `SUITE` n'est pas une liste de tickets à créer. Par défaut, on ne crée rien.
+   Un ticket ne se justifie que si le point passe **les trois** filtres :
+   - c'est un **défaut constaté** ou une **décision à trancher**, pas « il faudrait
+     aussi tester X » ni un garde-fou contre un cas qui n'existe pas ;
+   - il ne recoupe **aucun ticket ouvert** (`bd list` avant `bd create` : le backlog
+     dépasse 140, le doublon est le mode d'échec courant) ;
+   - il survivrait à la question « si personne ne le fait jamais, que casse-t-il ? ».
+
+   Sinon : écris le constat **dans la description du ticket concerné** (`bd update -d`)
+   ou dans le `--reason` de clôture. Un fait consigné au bon endroit vaut mieux
+   qu'un ticket de plus. Une session qui produit plus de tickets qu'elle n'en
+   ferme va dans le mauvais sens — dis-le dans le bilan.
+6. Écris une ligne de bilan : `[<id>] <statut> — <résumé>`.
 7. Termine ta réponse. Le Stop hook te relancera automatiquement avec le ticket suivant.
 
 ## Libérer le worktree d'un ticket fusionné

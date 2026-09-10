@@ -8,7 +8,7 @@
 2. `bd ready` lists unblocked work; `bd dep tree <epic-id>` shows an epic; labels filter by area/spec/flag (`bd list -l area:token`).
 3. Priorities: **P0** = critical path; **P1** = v1 core; **P2** = v1 differentiator; **P3** = optional; **P4** = track only.
 4. Labels: `area:*` (module), `spec:*` (normative source), `status:final|impl-draft|draft` (spec maturity), `flag:*` (feature flag), `differentiator:*`, `adr` (decision beads), `track` (not implemented in v1).
-5. Definition of done (project rule): spec-derived or conformance-suite test passes; fuzz target exists for every new parser/validator; threat-model note updated; no new `unsafe`; generated crypto/parsing code is not done until a human has read the cited spec sections.
+5. Definition of done (project rule): spec-derived or conformance-suite test passes; fuzz target exists for every new parser/validator; threat-model note updated when the change moves a trust boundary; no new `unsafe`; generated crypto/parsing code is not done until a human has read the cited spec sections.
 
 ## Fixed product decisions this backlog encodes
 

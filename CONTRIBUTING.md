@@ -27,8 +27,11 @@ A story is not done until all of these hold:
    test, so a reader can check the test against the text.
 2. **A fuzz target exists for every new parser or validator.** Anything that
    takes attacker-controlled bytes and produces a typed value is a parser.
-3. **`docs/threat-model.md` is updated.** Add or update the row, with the bead
-   id. A new endpoint with no row in the threat model is not finished.
+3. **`docs/threat-model.md` is updated when the change moves a trust
+   boundary.** A new HTTP endpoint, a new outbound fetch, a new stored secret
+   or a new principal type needs a row, with the bead id. A change that adds no
+   attacker-reachable surface does not: the file is a threat model, not a
+   changelog, and it stops being readable as one when every story adds a line.
 4. **No new `unsafe`.** Every crate root carries `#![forbid(unsafe_code)]` and
    `scripts/check-layering.sh` fails if one loses it.
 5. **A human has read the cited spec clauses.**

@@ -347,6 +347,9 @@ done for any protocol story is:
 
 1. a spec-derived or conformance-suite test passes;
 2. a fuzz target exists for every new parser or validator;
-3. the relevant row here is added or updated, with the bead id;
+3. the relevant row here is added or updated, with the bead id, when the
+   change moves a trust boundary (a new endpoint, outbound fetch, stored
+   secret or principal type) — a change with no attacker-reachable surface
+   adds no row;
 4. no new `unsafe` (enforced: `#![forbid(unsafe_code)]` in every crate);
 5. a human has read the cited spec clause.
