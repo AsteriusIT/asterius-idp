@@ -131,6 +131,14 @@ users_claims as (
               jsonb_build_object('tenant_id', tenant_id, 'user_id', user_id),
               pg_temp.quarantined_keys(claims)
 ),
+authorization_details_types_schema as (
+    update authorization_details_types
+       set schema = pg_temp.quarantine_serde_json_sentinels(schema)
+    where pg_temp.has_serde_json_sentinel(schema)
+    returning 'authorization_details_types', 'schema',
+              jsonb_build_object('tenant_id', tenant_id, 'type_name', type_name),
+              pg_temp.quarantined_keys(schema)
+),
 auth_requests_parameters as (
     update auth_requests set parameters = pg_temp.quarantine_serde_json_sentinels(parameters)
     where pg_temp.has_serde_json_sentinel(parameters)
@@ -192,6 +200,7 @@ repaired as (
     union all select * from auth_requests_parameters
     union all select * from auth_requests_interaction_state
     union all select * from grants_claims
+    union all select * from authorization_details_types_schema
     union all select * from grants_authorization_details
     union all select * from grants_actor_chain
     union all select * from signing_keys_public_jwk

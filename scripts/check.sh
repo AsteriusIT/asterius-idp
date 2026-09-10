@@ -3,6 +3,10 @@
 #
 #   ./scripts/check.sh          fast: no database, database tests skip
 #   ./scripts/check.sh --db     also starts PostgreSQL and runs the DB tests
+#
+# The JSONB sentinel scan needs a database. It runs whenever there is one --
+# `--db`, or a `DATABASE_URL` already in the environment -- and prints a loud
+# SKIPPED line when there is not.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,9 +36,23 @@ if $want_db; then
   # `query!` against an empty schema. Starting the container and migrating it
   # are one step, never two.
   run cargo sqlx migrate run --source crates/store-pg/migrations
+  # Before the tests, not after: `ast-9g2` seeds a row carrying a sentinel on
+  # purpose in an isolated database test, and a leftover of that kind would be
+  # reported as a finding here. Ordering makes the answer about the schema and
+  # the rows that were already there.
+  run ./scripts/check-json-sentinels.sh
   run cargo test --workspace
   run cargo sqlx prepare --check --workspace -- --all-targets
 else
+  # A skipped check proves nothing, so it says so rather than staying quiet.
+  # With `DATABASE_URL` already exported the scan can still run: the database
+  # it points at is migrated by whoever exported it.
+  if [[ -n "${DATABASE_URL:-}" ]]; then
+    run ./scripts/check-json-sentinels.sh
+  else
+    printf '\n\033[33m==> SKIPPED ./scripts/check-json-sentinels.sh: no DATABASE_URL\033[0m\n'
+    printf '    set DATABASE_URL, or use --db, to scan the JSONB columns\n'
+  fi
   SQLX_OFFLINE=true run env -u DATABASE_URL cargo test --workspace
 fi
 

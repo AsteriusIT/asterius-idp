@@ -173,6 +173,56 @@ jobs:
         run: cargo sqlx prepare --check --workspace -- --all-targets
 
   # -------------------------------------------------------------------------
+  # A JSONB member named `$serde_json::private::...` makes its row unreadable
+  # by every binary here (`raw_value` is on workspace-wide). `json_sentinel.rs`
+  # stops new ones being written; this job proves the schema a migration
+  # produces carries none, and that the reserved names listed in the SQL still
+  # match the Rust list.
+  #
+  # Its own PostgreSQL service, and no test runs against it: `ast-9g2` seeds a
+  # row carrying a sentinel on purpose inside an isolated database test, and
+  # sharing a database with the test job would turn that fixture into a
+  # finding. Migrated and scanned, nothing else.
+  # -------------------------------------------------------------------------
+  json-sentinels:
+    name: no serde_json sentinel in JSONB
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: asterius
+          POSTGRES_PASSWORD: asterius
+          POSTGRES_DB: asterius
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U asterius -d asterius"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgres://asterius:asterius@localhost:5432/asterius
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: sqlx-cli@0.8.6
+
+      # The script applies whatever migrations the tree has; it never lists
+      # them, so a new one is covered the day it lands.
+      - name: apply migrations
+        run: cd crates/store-pg && sqlx migrate run
+
+      # Exit 1 means findings, exit 2 means the check could not run (no psql,
+      # no database, or the sentinel lists in the SQL drifted from the Rust
+      # one). Both are failures, which is what an unguarded `run` gives.
+      - name: scan every JSONB column
+        run: ./scripts/check-json-sentinels.sh
+
+  # -------------------------------------------------------------------------
   # Supply chain. Advisories move without us touching the tree, so this also
   # runs on a schedule in audit.yml.
   # -------------------------------------------------------------------------
@@ -392,7 +442,18 @@ jobs:
   ci:
     name: CI
     if: always()
-    needs: [lint, test, sqlx-check, supply-chain, docs, browser, fuzz-targets, fuzz]
+    needs:
+      [
+        lint,
+        test,
+        sqlx-check,
+        json-sentinels,
+        supply-chain,
+        docs,
+        browser,
+        fuzz-targets,
+        fuzz,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: all jobs succeeded
