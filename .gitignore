@@ -41,6 +41,18 @@ node_modules/
 !/fuzz/corpus/pkce/
 /fuzz/corpus/pkce/*
 !/fuzz/corpus/pkce/crash-*
+!/fuzz/corpus/admin_fetch_metadata/
+/fuzz/corpus/admin_fetch_metadata/*
+!/fuzz/corpus/admin_fetch_metadata/crash-*
+!/fuzz/corpus/admin_cursor/
+/fuzz/corpus/admin_cursor/*
+!/fuzz/corpus/admin_cursor/crash-*
+!/fuzz/corpus/login_bucket/
+/fuzz/corpus/login_bucket/*
+!/fuzz/corpus/login_bucket/crash-*
+!/fuzz/corpus/refresh_token_scope/
+/fuzz/corpus/refresh_token_scope/*
+!/fuzz/corpus/refresh_token_scope/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.
