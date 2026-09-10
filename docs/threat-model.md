@@ -358,6 +358,53 @@ a DPoP client, and it is deliberate — a `cnf` this server declines to check is
 a bearer token carrying a claim about itself. A deployment that rotates
 certificates often should bind its clients by DPoP.
 
+### Grant Management request parameters (Grant Management ID1 §5)
+
+`ast-uwv.4` lets a client name an existing grant in an authorization request and
+say what to do with it — `grant_id` plus `grant_management_action` of `create`,
+`merge` or `replace`. Both parameters are off unless `[features]
+grant_management` is on: with the flag off they are ignored, the discovery
+document names neither `grant_management_actions_supported` nor
+`grant_management_action_required`, and there is no grant store wired into the
+pushed-request endpoint to look an id up in. The specification is an
+Implementer's Draft, which is why the whole vocabulary sits behind one module
+(`asterius_oidc::grant_management`) and one port
+(`asterius_domain::GrantAmendments`).
+
+What is new here is that **a client can now name somebody else's
+authorization**. Everything below follows from that.
+
+**The three ownership checks, and when each can be made.** A `grant_id` is
+attacker-chosen input from an authenticated client. Whether the grant exists and
+whether it belongs to *this client* are decided at the push, where the client is
+on the connection and a refusal is a JSON error. Whether it belongs to *the
+person who signs in* cannot be decided there — nobody has signed in — so it is
+checked where the flow completes and reported as an RFC 6749 §4.1.2.1 error
+redirect. A revoked or lapsed grant is refused at both moments, because the
+ninety seconds a `request_uri` lives is a window a revocation can land in.
+
+**One code for every refusal.** §5.4 registers `invalid_grant_id` and this
+server returns it for "no such grant", "another client's grant", "another
+person's grant" and "revoked" alike. A client that could tell them apart would
+have an oracle for whether an id it guessed was ever real, and for what happened
+to an authorization it was never party to. A store that cannot be read answers
+`temporarily_unavailable` instead, so an outage does not read as a withdrawal.
+
+| Attacker | Goal | Attack it enables | Control | Bead |
+|---|---|---|---|---|
+| A1 | G1 | An authenticated client guesses or replays a `grant_id` — from a log, from another tenant, from a token it once held — and merges its own request into somebody else's authorization | Three checks with one answer: the grant is this tenant's (the repository is tenant-scoped), this client's (checked at the push), and this person's (checked after the sign-in, because it cannot be checked before). A v4 UUID minted by `Grant::new` is the only shape accepted, and the shape is checked before the database is touched | `ast-uwv.4` |
+| A1 | G1, G2 | Uses `merge` to widen a grant quietly — the person consented to a narrow request, and the grant they already had is widened by the union | The consent screen is shown for the request as pushed, and the union is taken over what the person has *already* approved for this client: a merge can only re-affirm scopes an earlier screen carried. Nothing is added that nobody ever agreed to, and `replace` is the action that narrows | `ast-uwv.4`, `ast-uwv.3` |
+| A2, A5 | G1 | Holds a refresh or access token from before the amendment and keeps using the privileges the amendment withdrew — a `replace` that narrows three scopes to one leaves stateless JWTs (RFC 9068) claiming all three | §5.2's "shall invalidate existing refresh tokens" and the access-token cutoff are one transaction with the write of the new permissions (`PgGrantRepository::amend`). The cutoff is the same mechanism revocation uses (`ast-m9c.13`) and not a second path, so introspection cannot disagree with it. Access tokens are withdrawn too, which §5.2 does not require and silence does not forbid: the alternative is a live token describing an authorization that no longer exists | `ast-uwv.4`, `ast-m9c.13` |
+| A1 | G3 | Sends a `grant_id` to a deployment that never advertised Grant Management, hoping an unadvertised code path is less carefully guarded | With the flag off `grant_management::parse` returns "nothing was asked for" whatever the input, so the parameters cannot reach a lookup, a grant or a store. The fuzz target asserts exactly that over arbitrary input, and the same flag decides what the discovery document says | `ast-uwv.4` |
+| A1 | G3 | Uses the parameters as a public client, where §5.1 forbids them | Unreachable: ADR-0002 makes the pushed authorization request the only way to start a flow and FAPI 2.0 SP §5.3.2.2 item 4 refuses one without client authentication, so a public client never reaches the validator. Every client this server registers is confidential for the same reason | `ast-uwv.4` |
+
+**Accepted, and recorded here:** a `merge` accumulates
+`authorization_details` elements across authorizations, so a client that merges
+repeatedly can reach the sixteen-element bound and be refused. The refusal is
+`invalid_request` after the person has consented, which is a poor place to learn
+it; the alternative — silently dropping elements — would leave the client
+believing it holds an authorization nobody recorded.
+
 ### 4. Agent-specific threats (G4)
 
 FAPI's attacker model has no notion of a principal acting for another principal.

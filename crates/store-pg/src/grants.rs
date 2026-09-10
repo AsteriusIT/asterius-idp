@@ -577,6 +577,128 @@ impl PgGrantRepository {
         })
     }
 
+    /// Rewrites a grant's permissions and invalidates what it has already paid
+    /// for — Grant Management ID1 §5.2's `merge` and `replace`.
+    ///
+    /// One transaction, in the order [`Self::revoke`] uses and for the same
+    /// reason:
+    ///
+    /// 1. take the grant's row with `select … for update`, refusing one that is
+    ///    revoked, so a concurrent revocation cannot lose to this write;
+    /// 2. mark every live refresh token of the grant revoked — §5.2's "shall
+    ///    invalidate existing refresh tokens";
+    /// 3. write the cutoff that withdraws the access tokens already minted from
+    ///    it, through `cutoffs::withdraw`, which is the mechanism `ast-m9c.13`
+    ///    put there and the *only* one: a second path for the same fact would be
+    ///    a second thing for introspection to disagree with;
+    /// 4. write the new permissions.
+    ///
+    /// ## Why the access tokens go too, when §5.2 only names refresh tokens
+    ///
+    /// Because the alternative is a live token describing an authorization that
+    /// no longer exists. A `replace` that narrows a grant from three scopes to
+    /// one leaves access tokens carrying all three, and a resource server has no
+    /// way to know: RFC 9068 §2.2's `scope` claim is what it reads, and the
+    /// token verifies. The draft's silence is about what it *requires*, not
+    /// about what a server may do, and §6.5's note says the same thing about
+    /// revocation. Writing the cutoff costs one upsert and closes the window.
+    ///
+    /// The grant itself is **not** stamped revoked. It is the same
+    /// authorization with different privileges, and its `grant_id` is one the
+    /// client keeps using (§5.2).
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] when the grant belongs to another tenant or its
+    /// id is not a UUID, [`DomainError::NotFound`] when this tenant has no such
+    /// live grant, or a storage error — in which case nothing was written and
+    /// nothing was revoked.
+    pub async fn amend(&self, grant: &Grant, now: OffsetDateTime) -> Result<(), DomainError> {
+        if grant.tenant != self.tenant {
+            return Err(DomainError::invalid(
+                "tenant_id",
+                "does not match the tenant this repository is scoped to",
+            ));
+        }
+        let id = uuid(&grant.id)?;
+        let scopes: Vec<String> = grant.scopes.iter().cloned().collect();
+        let resources: Vec<String> = grant.resources.iter().cloned().collect();
+        let claims_locales: Vec<String> = grant.claims_locales.clone();
+        let authorization_details = serde_json::Value::Array(grant.authorization_details.clone());
+        let authentication = grant.authentication.as_ref();
+        let amr: Vec<String> = authentication
+            .map(|a| a.amr.iter().map(|m| m.as_str().to_owned()).collect())
+            .unwrap_or_default();
+
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+
+        // Step 1.
+        let live = sqlx::query_scalar!(
+            "select grant_id from grants
+             where tenant_id = $1 and grant_id = $2 and revoked_at is null
+             for update",
+            self.tenant.as_str(),
+            id
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+        if live.is_none() {
+            return Err(DomainError::NotFound);
+        }
+
+        // Step 2. §5.2: "shall invalidate existing refresh tokens".
+        sqlx::query!(
+            "update refresh_tokens set revoked_at = $3
+             where tenant_id = $1 and grant_id = $2 and revoked_at is null",
+            self.tenant.as_str(),
+            id,
+            now
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        // Step 3.
+        crate::cutoffs::withdraw(
+            &mut *transaction,
+            &self.tenant,
+            crate::cutoffs::Principal::Grant(grant.id.as_str()),
+            now,
+        )
+        .await?;
+
+        // Step 4. The permissions and the authentication that amended them.
+        // `client_id`, `user_id`, `subject`, `created_at` and `claimed_at` are
+        // deliberately absent: a merge does not move a grant to another client
+        // or another person, and the caller has already refused a request that
+        // asked it to.
+        sqlx::query!(
+            "update grants
+                set scopes = $3, claims = $4, claims_locales = $5,
+                    authorization_details = $6, resources = $7, session_id = $8,
+                    authenticated_at = $9, acr = $10, amr = $11, updated_at = $12
+              where tenant_id = $1 and grant_id = $2",
+            self.tenant.as_str(),
+            id,
+            &scopes,
+            grant.claims,
+            &claims_locales,
+            authorization_details,
+            &resources,
+            grant.session.as_ref().map(SessionId::as_str),
+            authentication.map(|a| a.authenticated_at),
+            authentication.and_then(|a| a.acr.as_deref()),
+            &amr,
+            now,
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        transaction.commit().await.map_err(to_domain_error)
+    }
+
     /// Deletes this tenant's grants that nobody ever took a credential from.
     ///
     /// Grant Management ID1 §5.6: "If the tokens haven't been claimed the grant
@@ -720,5 +842,18 @@ impl asterius_domain::GrantRepository for PgGrantRepository {
     /// about which grants a person holds.
     async fn for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError> {
         Self::list_for_subject(self, subject).await
+    }
+}
+
+/// Grant Management ID1 §5.2, behind its own port so that the draft's churn
+/// cannot reach the consent path that only ever creates grants.
+#[async_trait::async_trait]
+impl asterius_domain::GrantAmendments for PgGrantRepository {
+    async fn find(&self, id: &GrantId) -> Result<Option<Grant>, DomainError> {
+        Self::find(self, id).await
+    }
+
+    async fn amend(&self, grant: &Grant, now: OffsetDateTime) -> Result<(), DomainError> {
+        Self::amend(self, grant, now).await
     }
 }

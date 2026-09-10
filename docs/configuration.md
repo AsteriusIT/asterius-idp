@@ -96,6 +96,16 @@ Everything is off unless switched on here, and what is switched on is exactly wh
 | `features.dpop_nonce` | boolean | `false` | Server-issued DPoP nonces (RFC 9449 §8). |
 | `features.request_object` | boolean | `false` | Signed request objects inside a pushed request (JAR, RFC 9101). |
 
+### Per-tenant Grant Management settings
+
+`features.grant_management` is the ceiling. A tenant may switch the feature off in its own settings like any other, and it carries one setting of its own:
+
+| Setting | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `grant_management_action_required` | boolean | `false` | Grant Management ID1 §7.1. When true, an authorization request that names no `grant_management_action` is refused with `invalid_request`, and the discovery document publishes `grant_management_action_required: true`. Ignored — and never published — for a tenant that does not offer Grant Management, because a tenant cannot require a parameter it also ignores. |
+
+With `features.grant_management` off, `grant_id` and `grant_management_action` are ignored rather than refused, and the discovery document carries neither `grant_management_actions_supported` nor `grant_management_action_required`. A client that sends the parameters to such a deployment gets the ordinary authorization a server built before the draft would have given it.
+
 ## `[registration]` — dynamic client registration
 
 `POST /register` (RFC 7591 §3). Omit the table entirely and the endpoint registers nobody. That is a deliberate departure from RFC 7591 §3's SHOULD: the SHOULD exists so clients can interoperate with servers nobody has agreed with in advance, and a FAPI deployment's clients are counterparties rather than strangers. The cost of the other default is an internet-writable row in `clients`.

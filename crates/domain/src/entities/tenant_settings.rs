@@ -141,6 +141,14 @@ pub struct TenantSettings {
     disabled_features: BTreeSet<Feature>,
     lifetimes: TokenLifetimes,
     registration: RegistrationPolicy,
+    /// Grant Management ID1 §7.1's `grant_management_action_required`.
+    ///
+    /// Last, and read through [`TenantSettings::grant_management_action_required`]
+    /// rather than directly, because it is only meaningful when
+    /// [`Feature::GrantManagement`] survives this tenant's own subtraction: a
+    /// tenant that has switched the feature off cannot require a parameter it
+    /// also ignores.
+    grant_management_action_required: bool,
 }
 
 impl TenantSettings {
@@ -161,6 +169,7 @@ impl TenantSettings {
                 access_token_lifetime,
             )?,
             registration: RegistrationPolicy::default(),
+            grant_management_action_required: false,
         })
     }
 
@@ -175,6 +184,33 @@ impl TenantSettings {
     pub fn with_registration(mut self, registration: RegistrationPolicy) -> Self {
         self.registration = registration;
         self
+    }
+
+    /// The same settings with Grant Management ID1 §7.1 switched on.
+    ///
+    /// A builder rather than a fourth argument to [`TenantSettings::validated`],
+    /// for the reason [`Self::with_registration`] gives.
+    #[must_use]
+    pub const fn requiring_a_grant_management_action(mut self, required: bool) -> Self {
+        self.grant_management_action_required = required;
+        self
+    }
+
+    /// Whether every authorization request here must name a
+    /// `grant_management_action` (Grant Management ID1 §7.1).
+    ///
+    /// Never true for a tenant that does not offer Grant Management, whatever
+    /// the stored row says: `deployment` is the deployment's own flag set, and
+    /// the answer is taken from [`Self::effective_capabilities`] so that the
+    /// discovery document and the pushed-request validator read one decision
+    /// rather than two. A tenant that requires a parameter it also ignores
+    /// would refuse every request it receives.
+    #[must_use]
+    pub fn grant_management_action_required(&self, deployment: Capabilities) -> bool {
+        self.grant_management_action_required
+            && self
+                .effective_capabilities(deployment)
+                .is_enabled(Feature::GrantManagement)
     }
 
     /// This tenant's registration policy.
@@ -239,6 +275,7 @@ impl TenantSettings {
                 self.lifetimes.authorization_code.whole_seconds(),
             "access_token_lifetime_seconds": self.lifetimes.access_token.whole_seconds(),
             "registration_policy": self.registration.to_json(),
+            "grant_management_action_required": self.grant_management_action_required,
         })
     }
 
@@ -287,9 +324,24 @@ impl TenantSettings {
 
         let registration = RegistrationPolicy::from_json(object.get("registration_policy"))?;
 
+        // Grant Management ID1 §7.1. Absent is `false`, which is what every row
+        // written before this setting existed means; present and not a boolean
+        // is refused rather than coerced, for the reason the lifetimes give.
+        let grant_management_action_required = match object.get("grant_management_action_required")
+        {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(required)) => *required,
+            Some(_) => {
+                return Err(TenantSettingsError::NotABoolean(
+                    "grant_management_action_required",
+                ));
+            }
+        };
+
         Ok(
             Self::validated(disabled_features, authorization_code, access_token)?
-                .with_registration(registration),
+                .with_registration(registration)
+                .requiring_a_grant_management_action(grant_management_action_required),
         )
     }
 }
@@ -352,11 +404,92 @@ pub enum TenantSettingsError {
     /// The stored registration policy is not one this server wrote.
     #[error("the stored registration policy is invalid: {0}")]
     RegistrationPolicy(#[from] RegistrationPolicyError),
+    /// A member that must be `true` or `false` is something else.
+    ///
+    /// Refused rather than read as `false`, for the reason a stored lifetime is
+    /// refused rather than defaulted: a row gets edited by hand during an
+    /// incident, and a setting that quietly fell back is one an operator
+    /// believes is in force and is not.
+    #[error("the stored tenant setting {0} is not a boolean")]
+    NotABoolean(&'static str),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Grant Management ID1 §7.1 round-trips through the stored document, and
+    /// a row written before the setting existed reads back as "not required".
+    #[test]
+    fn the_grant_management_action_requirement_round_trips() {
+        // Arrange
+        let offering = Capabilities {
+            grant_management: true,
+            ..Capabilities::default()
+        };
+        let settings = TenantSettings::default().requiring_a_grant_management_action(true);
+
+        // Act
+        let stored = settings.to_json();
+        let read_back = TenantSettings::from_json(Some(&stored)).expect("this server wrote it");
+
+        // Assert
+        assert!(read_back.grant_management_action_required(offering));
+        assert!(
+            !TenantSettings::default().grant_management_action_required(offering),
+            "a row that never mentioned the setting does not require an action"
+        );
+    }
+
+    /// §7.1 is a statement about Grant Management: a tenant that has switched
+    /// the feature off, or a deployment that never offered it, cannot require
+    /// the parameter — it would refuse every request it receives.
+    #[test]
+    fn a_tenant_without_grant_management_never_requires_the_action() {
+        // Arrange
+        let offering = Capabilities {
+            grant_management: true,
+            ..Capabilities::default()
+        };
+        let settings = TenantSettings::validated(
+            [Feature::GrantManagement].into_iter().collect(),
+            DEFAULT_AUTHORIZATION_CODE_LIFETIME,
+            DEFAULT_ACCESS_TOKEN_LIFETIME,
+        )
+        .expect("valid lifetimes")
+        .requiring_a_grant_management_action(true);
+
+        // Act & Assert
+        assert!(
+            !settings.grant_management_action_required(offering),
+            "the tenant disabled the feature"
+        );
+        assert!(
+            !TenantSettings::default()
+                .requiring_a_grant_management_action(true)
+                .grant_management_action_required(Capabilities::default()),
+            "the deployment never offered the feature"
+        );
+    }
+
+    /// A hand-edited row that says something other than `true` or `false` is
+    /// refused, not read as `false`.
+    #[test]
+    fn a_non_boolean_action_requirement_is_refused() {
+        // Arrange
+        let stored = serde_json::json!({"grant_management_action_required": "yes"});
+
+        // Act
+        let outcome = TenantSettings::from_json(Some(&stored));
+
+        // Assert
+        assert_eq!(
+            outcome,
+            Err(TenantSettingsError::NotABoolean(
+                "grant_management_action_required"
+            ))
+        );
+    }
 
     /// FAPI 2.0 SP §5.3.2.1 item 11, which is the acceptance criterion of
     /// `ast-f7m.4`: the refusal happens below the API, so no caller can reach

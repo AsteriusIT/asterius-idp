@@ -545,11 +545,30 @@ async fn discovery(
         }
     };
 
+    // Grant Management ID1 §7.1. Read from the same place the pushed-request
+    // validator reads it, so `grant_management_action_required` in this
+    // document and the answer a request without an action gets are one
+    // decision rather than two.
+    let grant_management = match &state.clients {
+        None => asterius_oidc::grant_management::Policy::new(
+            capabilities.is_enabled(asterius_domain::Feature::GrantManagement),
+            false,
+        ),
+        Some(endpoints) => match grant_management_policy(endpoints, &tenant, capabilities).await {
+            Ok(policy) => policy,
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        },
+    };
+
     let document = metadata::provider_metadata(
         &tenant.issuer,
         &capabilities,
         acr_policy(),
         &authorization_details_types,
+        grant_management,
     );
     cacheable_json(&document, METADATA_MAX_AGE)
 }
@@ -674,6 +693,20 @@ async fn pushed_authorization_request_inner(
         .is_enabled(asterius_domain::Feature::RequestObject)
         .then(|| endpoints.authenticator.client_keys().as_ref());
 
+    // Grant Management ID1 §5.2, read exactly the way JAR is: one flag decides
+    // both what the discovery document advertises and whether this endpoint has
+    // a store to look a `grant_id` up in.
+    let grant_management = match grant_management_policy(endpoints, tenant, capabilities).await {
+        Ok(policy) => policy,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let grant_store = scope.grants();
+    let grants: Option<&dyn asterius_domain::GrantAmendments> =
+        grant_management.supported.then_some(&grant_store);
+
     par::push(
         PushContext {
             tenant,
@@ -682,10 +715,11 @@ async fn pushed_authorization_request_inner(
             resource_servers: &resource_servers,
             authorization_details_types: &authorization_details_types,
             keys: endpoints.keys.as_ref(),
-            policy: authorization_policy(),
+            policy: authorization_policy().with_grant_management(grant_management),
             lifetime: endpoints.par_lifetime,
             certificate,
             request_objects,
+            grants,
         },
         headers,
         body,
@@ -1526,6 +1560,33 @@ const fn authorization_policy() -> asterius_oidc::authorize::AuthorizationPolicy
     asterius_oidc::authorize::AuthorizationPolicy::new(false)
 }
 
+/// This tenant's Grant Management posture (Grant Management ID1 §7.1).
+///
+/// Both halves come from the same two reads the discovery document is built
+/// from — the deployment's flag, narrowed by the tenant's own subtraction, and
+/// the tenant's `grant_management_action_required` — so a tenant cannot
+/// advertise one thing and validate another. A deployment with no settings
+/// repository wired has no tenant to require anything, and the deployment flag
+/// alone decides.
+async fn grant_management_policy(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    capabilities: asterius_domain::Capabilities,
+) -> Result<asterius_oidc::grant_management::Policy, DomainError> {
+    let supported = capabilities.is_enabled(asterius_domain::Feature::GrantManagement);
+    let action_required = match &endpoints.tenant_settings {
+        None => false,
+        Some(directory) => directory
+            .for_tenant(&tenant.id)
+            .await?
+            .grant_management_action_required(endpoints.capabilities),
+    };
+    Ok(asterius_oidc::grant_management::Policy::new(
+        supported,
+        action_required,
+    ))
+}
+
 /// The lifetimes this request issues under (`ast-5c6`).
 ///
 /// The tenant's, when a settings repository is wired; the deployment's
@@ -1709,6 +1770,20 @@ async fn interaction_show(
             return unavailable();
         }
     };
+    // Grant Management ID1 §5.2. The same flag the pushed-request endpoint
+    // read: a stored request can only name a `grant_id` if it was on then, and
+    // a tenant that has switched it off since must not have the amendment made
+    // for it anyway.
+    let capabilities = match capabilities_for(&endpoints, &tenant).await {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let grant_amendments: Option<&dyn asterius_domain::GrantAmendments> = capabilities
+        .is_enabled(asterius_domain::Feature::GrantManagement)
+        .then_some(&grants);
     interaction::show(
         InteractionContext {
             tenant: &tenant,
@@ -1721,6 +1796,7 @@ async fn interaction_show(
             acr: acr_policy(),
             clients: &clients,
             grants: &grants,
+            grant_amendments,
             memory: memory_policy(),
             authorization_details_types: Some(&detail_types),
             codes: &codes,
@@ -1777,6 +1853,20 @@ async fn interaction_submit(
             return unavailable();
         }
     };
+    // Grant Management ID1 §5.2. The same flag the pushed-request endpoint
+    // read: a stored request can only name a `grant_id` if it was on then, and
+    // a tenant that has switched it off since must not have the amendment made
+    // for it anyway.
+    let capabilities = match capabilities_for(&endpoints, &tenant).await {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let grant_amendments: Option<&dyn asterius_domain::GrantAmendments> = capabilities
+        .is_enabled(asterius_domain::Feature::GrantManagement)
+        .then_some(&grants);
     interaction::submit(
         InteractionContext {
             tenant: &tenant,
@@ -1789,6 +1879,7 @@ async fn interaction_submit(
             acr: acr_policy(),
             clients: &clients,
             grants: &grants,
+            grant_amendments,
             memory: memory_policy(),
             authorization_details_types: Some(&detail_types),
             codes: &codes,

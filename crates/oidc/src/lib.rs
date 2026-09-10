@@ -14,6 +14,7 @@ pub mod consent;
 pub mod consent_memory;
 pub mod decision;
 pub mod form;
+pub mod grant_management;
 pub mod logout;
 pub mod metadata;
 pub mod mtls;

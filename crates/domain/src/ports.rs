@@ -1325,6 +1325,61 @@ pub trait GrantRepository: Debug + Send + Sync {
     async fn for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError>;
 }
 
+/// Amending a grant a client already holds — Grant Management ID1 §5.2.
+///
+/// # Why this is not two more methods on [`GrantRepository`]
+///
+/// Because it is an Implementer's Draft. The two operations here exist only for
+/// `grant_management_action`, they are reachable only when
+/// [`crate::Feature::GrantManagement`] is on, and the draft that defines them is
+/// still moving. A separate port means the flag switches a *capability* off
+/// rather than leaving dead methods on the trait every consent path implements,
+/// and it means a change to the draft cannot reach the handlers that only ever
+/// create grants.
+#[async_trait::async_trait]
+pub trait GrantAmendments: Debug + Send + Sync {
+    /// The grant a `grant_id` names, if this tenant holds one.
+    ///
+    /// `None` is "this tenant has no such grant", which is what the endpoint
+    /// reports as `invalid_grant_id` (§5.4). Whether the grant belongs to the
+    /// client that asked, and to the person who signed in, is the caller's to
+    /// decide — those are protocol rules and they live in
+    /// `asterius_oidc::grant_management`.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] when the id is not one this store could hold or
+    /// the stored row is not one the grant model accepts, and
+    /// [`DomainError::Storage`] otherwise. Never `Ok(None)` because the store
+    /// was unreachable: "we cannot tell" must not be spelled like "no such
+    /// grant", or an outage looks to a client like its grant was withdrawn.
+    async fn find(&self, id: &crate::GrantId) -> Result<Option<Grant>, DomainError>;
+
+    /// Writes the amended permissions and invalidates what the grant has
+    /// already paid for.
+    ///
+    /// §5.2: `merge` and `replace` "shall invalidate existing refresh tokens".
+    /// One operation and not two, because the two halves must not be able to
+    /// commit apart: a grant whose scopes were widened while the old refresh
+    /// token still lives is a token that can be exchanged for the *new*
+    /// authorization without anyone having asked for it, and a grant whose
+    /// tokens were revoked while the write failed is a client locked out of an
+    /// authorization it still holds.
+    ///
+    /// The access tokens already minted from the grant are withdrawn by the
+    /// same mechanism revocation uses — a cutoff instant for the grant, not a
+    /// second path — because they are stateless JWTs (RFC 9068) and cannot be
+    /// listed. `ast-m9c.13` is where that mechanism lives.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] when this tenant has no such live grant,
+    /// [`DomainError::Invalid`] when the grant belongs to another tenant, and
+    /// [`DomainError::Storage`] otherwise — in which case nothing was written
+    /// and nothing was revoked.
+    async fn amend(&self, grant: &Grant, now: OffsetDateTime) -> Result<(), DomainError>;
+}
+
 /// Issuing an authorization code — and nothing else.
 ///
 /// Split from redemption for the same reason [`InteractionRepository`] is

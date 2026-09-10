@@ -314,7 +314,21 @@ struct Flow {
 
 impl Flow {
     /// `None` without `DATABASE_URL`, so the default suite stays fast.
+    ///
+    /// The deployment offers nothing optional, which is what
+    /// `Capabilities::default` means and what every test here but the Grant
+    /// Management ones needs.
     async fn new() -> Option<Self> {
+        Self::with_capabilities(Capabilities::default()).await
+    }
+
+    /// The same flow on a deployment that has switched some flags on.
+    ///
+    /// A parameter rather than a second `assemble`, because a feature flag is
+    /// read in three places — the router, the discovery document and the
+    /// pushed-request endpoint — and a test that set it in one would be
+    /// asserting against a server no operator can configure.
+    async fn with_capabilities(capabilities: Capabilities) -> Option<Self> {
         let url = std::env::var("DATABASE_URL").ok()?;
         let store = Store::connect(&url, 4)
             .await
@@ -359,7 +373,14 @@ impl Flow {
         let settings =
             SettingsDirectory::new(Arc::new(PgTenantSettings::new(store.pool().clone())));
         let flow = Self {
-            app: assemble(&store, &kek, &keys, Arc::clone(&audit), settings.clone()),
+            app: assemble(
+                &store,
+                &kek,
+                &keys,
+                Arc::clone(&audit),
+                settings.clone(),
+                capabilities,
+            ),
             store,
             kek,
             tenant,
@@ -1167,6 +1188,7 @@ fn assemble(
     keys: &TenantKeyStore,
     audit: Arc<PgAuditSink>,
     settings: SettingsDirectory,
+    capabilities: Capabilities,
 ) -> Router {
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("a literal address"),
@@ -1195,13 +1217,13 @@ fn assemble(
         .expect("a client authenticator"),
     );
     let dpop = Arc::new(
-        DpopEndpoint::for_capabilities(Arc::clone(&replay), &Capabilities::default(), None)
+        DpopEndpoint::for_capabilities(Arc::clone(&replay), &capabilities, None)
             .expect("a DPoP endpoint"),
     );
 
     let routes = protocol::routes(ProtocolState {
         keys: Arc::clone(&key_store),
-        capabilities: Capabilities::default(),
+        capabilities,
         // The real repository, as the binary wires it: a tenant that has
         // never expressed an opinion reads back the defaults, and one that has
         // gets what it asked for (`ast-f7m.4`, `ast-5c6`).
@@ -1211,7 +1233,7 @@ fn assemble(
             authenticator,
             store: store.clone(),
             keys: key_store,
-            capabilities: Capabilities::default(),
+            capabilities,
             par_lifetime: time::Duration::seconds(90),
             tenant_settings: Some(settings),
             // The deployment fallback. Every test here that cares about a
@@ -3496,6 +3518,514 @@ async fn a_journey_survives_cookies_split_across_two_fields() {
             .any(|value| value.contains("__Host-asterius_session=")),
         "the session cookie was not cleared: {:?}",
         ended.headers
+    );
+
+    flow.tear_down().await;
+}
+
+// ---- Grant Management (ID1 §5.2, §5.4, §7.1) ------------------------------
+
+/// A deployment that offers Grant Management and nothing else optional.
+fn offering_grant_management() -> Capabilities {
+    Capabilities {
+        grant_management: true,
+        ..Capabilities::default()
+    }
+}
+
+impl Flow {
+    /// Approves the consent screen for exactly `scopes`, and returns the URL
+    /// the browser is sent to.
+    ///
+    /// Separate from [`Flow::consent`] because that one approves everything and
+    /// asserts the wording of an `offline_access` screen; a Grant Management
+    /// test needs to approve a *narrower* set, and needs the redirect whether
+    /// it carries a code or an error (Grant Management ID1 §5.3: the
+    /// authorization response is unchanged, so an amendment that fails is an
+    /// ordinary RFC 6749 §4.1.2.1 error redirect).
+    async fn approve(&mut self, interaction: &str, scopes: &[&str]) -> String {
+        let consent = self.get(interaction).await;
+        // A second authorization for a client this person has already agreed to
+        // is completed without a screen (`ast-uwv.3`): the consent memory is
+        // the grants themselves. That is not a case a Grant Management test
+        // needs to avoid — the amendment happens at the same place either way —
+        // so the redirect is taken as it comes.
+        if consent.status == StatusCode::SEE_OTHER {
+            return consent.location();
+        }
+        assert_eq!(consent.status, StatusCode::OK, "{}", consent.text());
+        let csrf = csrf_from(&consent.text());
+        let mut pairs: Vec<(&str, &str)> = vec![("csrf", &csrf), ("decision", "allow")];
+        pairs.extend(scopes.iter().map(|scope| ("scope", *scope)));
+        let decided = self.post_form(interaction, &pairs, None).await;
+        assert_eq!(
+            decided.status,
+            StatusCode::SEE_OTHER,
+            "consent did not produce an authorization response: {}",
+            decided.text()
+        );
+        decided.location()
+    }
+
+    /// The grants this tenant holds for whoever the `id_token` is about.
+    ///
+    /// Read through the repository the server writes with, so a test asserting
+    /// "the same `grant_id`" is asserting about the row rather than about a
+    /// value the test itself carried.
+    async fn grants_of(&self, id_token: &str) -> Vec<asterius_domain::Grant> {
+        let subject = claims_of(id_token)["sub"]
+            .as_str()
+            .expect("OIDC Core §2 requires a sub")
+            .to_owned();
+        self.store
+            .scope(self.tenant.id.clone())
+            .grants()
+            .list_for_subject(&asterius_domain::SubjectId::new(subject))
+            .await
+            .expect("read the grants")
+    }
+
+    /// A live grant of this client, held by somebody who is not this flow's
+    /// person.
+    ///
+    /// Written straight through the repository: the only way to reach §5.4's
+    /// "a grant whose user is not the authenticated user" is to have a second
+    /// person's grant, and enrolling a second passkey would be a page of
+    /// ceremony proving nothing about this rule.
+    async fn seed_another_persons_grant(&self) -> asterius_domain::GrantId {
+        let now = OffsetDateTime::now_utc();
+        let other = UserId::generate();
+        PgUserRepository::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+            Arc::clone(&self.kek),
+        )
+        .upsert(&User {
+            tenant: self.tenant.id.clone(),
+            id: other,
+            username: other.as_uuid().to_string(),
+            email: None,
+            email_verified: false,
+            status: UserStatus::Active,
+            claims: ClaimSet::default(),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("store the other person");
+
+        let mut grant =
+            asterius_domain::Grant::new(self.tenant.id.clone(), ClientId::new(CLIENT), now);
+        grant.user = Some(other);
+        grant.subject = Some(asterius_domain::SubjectId::new(other.as_uuid().to_string()));
+        grant.scopes = ["openid".to_owned()].into_iter().collect();
+        let id = grant.id.clone();
+        self.store
+            .scope(self.tenant.id.clone())
+            .grants()
+            .create(&grant)
+            .await
+            .expect("store the other person's grant");
+        id
+    }
+}
+
+/// One whole flow, returning the grant it produced and the refresh token it
+/// earned.
+async fn first_authorization(flow: &mut Flow, key: &ProofKey) -> (asterius_domain::Grant, String) {
+    let request_uri = flow.push(key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let back = flow
+        .approve(&interaction, &["openid", "offline_access"])
+        .await;
+    let code = parameter(&back, "code").expect("RFC 6749 §4.1.2 requires a code");
+    let redeemed = flow
+        .token(
+            key,
+            "assertion-first",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "the first code was refused: {}",
+        redeemed.text()
+    );
+    let tokens = redeemed.json();
+    let refresh = tokens["refresh_token"]
+        .as_str()
+        .expect("an offline_access grant earns a refresh token")
+        .to_owned();
+    let id_token = tokens["id_token"].as_str().expect("an OIDC response");
+    let grants = flow.grants_of(id_token).await;
+    assert_eq!(grants.len(), 1, "one authorization, one grant");
+    (grants.into_iter().next().expect("exactly one"), refresh)
+}
+
+/// **`merge` unions the permissions, keeps the `grant_id`, and invalidates the
+/// refresh tokens the grant had already paid for** (Grant Management ID1 §5.2).
+///
+/// The second authorization asks for *less* than the first — `openid` alone,
+/// where the first also carried `offline_access` — so a server that replaced
+/// instead of merging would show a narrower grant, and one that ignored the
+/// action would show a second grant with a new id. The refresh token from the
+/// first flow is presented afterwards: §5.2 says merge "shall invalidate
+/// existing refresh tokens", and the only honest way to check that is to try
+/// to use one.
+#[tokio::test]
+async fn a_merge_unions_the_grant_keeps_its_id_and_kills_the_old_refresh_token() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+    let (first, refresh) = first_authorization(&mut flow, &key).await;
+    assert!(first.scopes.contains("offline_access"));
+
+    // The discovery document is where a client learns it may send the
+    // parameters at all (§7.1), and it is built from the same flag.
+    let metadata = flow
+        .get(&format!(
+            "{}/.well-known/openid-configuration",
+            flow.prefix()
+        ))
+        .await
+        .json();
+    assert_eq!(
+        metadata["grant_management_actions_supported"],
+        json!(["create", "merge", "replace"]),
+        "{metadata}"
+    );
+    assert_eq!(metadata["grant_management_action_required"], json!(false));
+
+    // Act: a second authorization that merges into the first grant, asking for
+    // a strictly smaller set of scopes.
+    let grant_id = first.id.as_str().to_owned();
+    let pushed = flow
+        .push_as(
+            CLIENT,
+            None,
+            "openid",
+            &key,
+            &[
+                ("grant_management_action", "merge"),
+                ("grant_id", &grant_id),
+            ],
+        )
+        .await;
+    assert_eq!(pushed.status, StatusCode::CREATED, "{}", pushed.text());
+    let interaction = flow.authorize(&pushed.request_uri()).await;
+    let back = flow.approve(&interaction, &["openid"]).await;
+    let code = parameter(&back, "code").unwrap_or_else(|| panic!("no code in {back}"));
+    let redeemed = flow
+        .token(
+            &key,
+            "assertion-merge",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text());
+
+    // Assert: one grant, the same id, and the union of the two requests.
+    let grants = flow
+        .grants_of(
+            redeemed.json()["id_token"]
+                .as_str()
+                .expect("an OIDC response"),
+        )
+        .await;
+    assert_eq!(grants.len(), 1, "a merge must not mint a second grant");
+    let merged = &grants[0];
+    assert_eq!(merged.id.as_str(), grant_id, "§5.2 keeps the same grant_id");
+    assert!(
+        merged.scopes.contains("openid") && merged.scopes.contains("offline_access"),
+        "a merge narrowed the grant: {:?}",
+        merged.scopes
+    );
+
+    // Assert: §5.2's "shall invalidate existing refresh tokens".
+    let stale = flow
+        .token(
+            &ProofKey::generate(),
+            "assertion-stale",
+            &[("grant_type", "refresh_token"), ("refresh_token", &refresh)],
+        )
+        .await;
+    assert_eq!(
+        stale.status,
+        StatusCode::BAD_REQUEST,
+        "the refresh token the merge should have invalidated still works: {}",
+        stale.text()
+    );
+    assert_eq!(stale.json()["error"], "invalid_grant");
+
+    flow.tear_down().await;
+}
+
+/// **`replace` sets the permissions exactly, keeps the `grant_id`, and
+/// invalidates the refresh tokens** (Grant Management ID1 §5.2).
+///
+/// The mirror of the merge test, and the reason both exist: the two actions
+/// differ in exactly one observable, and a server that implemented one for both
+/// would pass a test that only ran the other.
+#[tokio::test]
+async fn a_replace_sets_the_grant_exactly_and_keeps_its_id() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+    let (first, refresh) = first_authorization(&mut flow, &key).await;
+    let grant_id = first.id.as_str().to_owned();
+
+    // Act
+    let pushed = flow
+        .push_as(
+            CLIENT,
+            None,
+            "openid",
+            &key,
+            &[
+                ("grant_management_action", "replace"),
+                ("grant_id", &grant_id),
+            ],
+        )
+        .await;
+    assert_eq!(pushed.status, StatusCode::CREATED, "{}", pushed.text());
+    let interaction = flow.authorize(&pushed.request_uri()).await;
+    let back = flow.approve(&interaction, &["openid"]).await;
+    let code = parameter(&back, "code").unwrap_or_else(|| panic!("no code in {back}"));
+    let redeemed = flow
+        .token(
+            &key,
+            "assertion-replace",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text());
+
+    // Assert
+    let grants = flow
+        .grants_of(
+            redeemed.json()["id_token"]
+                .as_str()
+                .expect("an OIDC response"),
+        )
+        .await;
+    assert_eq!(grants.len(), 1, "a replace must not mint a second grant");
+    let replaced = &grants[0];
+    assert_eq!(
+        replaced.id.as_str(),
+        grant_id,
+        "§5.2 keeps the same grant_id"
+    );
+    assert_eq!(
+        replaced.scopes,
+        ["openid".to_owned()].into_iter().collect::<BTreeSet<_>>(),
+        "a replace must leave exactly what was asked for"
+    );
+    // No refresh token was issued this time — the grant no longer carries
+    // `offline_access` — and the one the first flow earned is gone.
+    assert!(
+        redeemed.json()["refresh_token"].is_null(),
+        "a grant without offline_access earned a refresh token"
+    );
+    let stale = flow
+        .token(
+            &ProofKey::generate(),
+            "assertion-stale-replace",
+            &[("grant_type", "refresh_token"), ("refresh_token", &refresh)],
+        )
+        .await;
+    assert_eq!(stale.status, StatusCode::BAD_REQUEST, "{}", stale.text());
+
+    flow.tear_down().await;
+}
+
+/// **A grant belonging to somebody else is `invalid_grant_id`, and the client
+/// is told after the person signs in** (Grant Management ID1 §5.4).
+///
+/// This is the case the pushed authorization request cannot decide: at the
+/// push there is no authenticated user, and the grant's client and liveness are
+/// all that can be checked — so the push *succeeds*. The refusal happens where
+/// the flow completes and reaches the client the only way left, as an RFC 6749
+/// §4.1.2.1 error redirect (§5.3: the authorization response is otherwise
+/// unchanged).
+#[tokio::test]
+async fn a_grant_of_another_person_is_refused_after_the_sign_in() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+    let theirs = flow.seed_another_persons_grant().await;
+    let grant_id = theirs.as_str().to_owned();
+
+    // Act: the push is accepted — the grant is live and belongs to this client.
+    let pushed = flow
+        .push_with(
+            &key,
+            &[
+                ("grant_management_action", "merge"),
+                ("grant_id", &grant_id),
+            ],
+        )
+        .await;
+    assert_eq!(
+        pushed.status,
+        StatusCode::CREATED,
+        "the push could not have known whose grant it is: {}",
+        pushed.text()
+    );
+
+    let interaction = flow.authorize(&pushed.request_uri()).await;
+    flow.sign_in(&interaction).await;
+    let back = flow
+        .approve(&interaction, &["openid", "offline_access"])
+        .await;
+
+    // Assert
+    assert!(
+        back.starts_with(REDIRECT),
+        "the browser was sent somewhere else: {back}"
+    );
+    assert_eq!(
+        parameter(&back, "error").as_deref(),
+        Some("invalid_grant_id"),
+        "{back}"
+    );
+    assert_eq!(
+        parameter(&back, "state").as_deref(),
+        Some(STATE),
+        "an error response still echoes state (RFC 6749 §4.1.2.1)"
+    );
+    assert!(
+        parameter(&back, "code").is_none(),
+        "a refused amendment still issued a code: {back}"
+    );
+
+    // And the other person's grant was not touched.
+    let untouched = flow
+        .store
+        .scope(flow.tenant.id.clone())
+        .grants()
+        .find(&theirs)
+        .await
+        .expect("read the grant")
+        .expect("it is still there");
+    assert_eq!(
+        untouched.scopes,
+        ["openid".to_owned()].into_iter().collect::<BTreeSet<_>>()
+    );
+
+    flow.tear_down().await;
+}
+
+/// **With the flag off, both parameters are ignored and the metadata says
+/// nothing about them.**
+///
+/// The whole isolation claim in one test: the same request that merges a grant
+/// on the tenant above produces an ordinary, brand-new grant here, and a client
+/// reading the discovery document is never told to send the parameters.
+#[tokio::test]
+async fn with_the_feature_off_the_parameters_are_ignored_and_unadvertised() {
+    // Arrange: the default deployment, which offers nothing optional.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+    let (first, _) = first_authorization(&mut flow, &key).await;
+
+    // Assert: the document mentions neither member.
+    let metadata = flow
+        .get(&format!(
+            "{}/.well-known/openid-configuration",
+            flow.prefix()
+        ))
+        .await
+        .json();
+    assert!(
+        metadata.get("grant_management_actions_supported").is_none(),
+        "{metadata}"
+    );
+    assert!(
+        metadata.get("grant_management_action_required").is_none(),
+        "{metadata}"
+    );
+
+    // Act: a push carrying both parameters anyway.
+    let grant_id = first.id.as_str().to_owned();
+    let pushed = flow
+        .push_with(
+            &key,
+            &[
+                ("grant_management_action", "replace"),
+                ("grant_id", &grant_id),
+            ],
+        )
+        .await;
+    assert_eq!(
+        pushed.status,
+        StatusCode::CREATED,
+        "an unadvertised parameter was refused rather than ignored: {}",
+        pushed.text()
+    );
+    let interaction = flow.authorize(&pushed.request_uri()).await;
+    let back = flow
+        .approve(&interaction, &["openid", "offline_access"])
+        .await;
+    let code = parameter(&back, "code").unwrap_or_else(|| panic!("no code in {back}"));
+    let redeemed = flow
+        .token(
+            &key,
+            "assertion-ignored",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text());
+
+    // Assert: a second, ordinary grant — the `replace` did nothing.
+    let grants = flow
+        .grants_of(
+            redeemed.json()["id_token"]
+                .as_str()
+                .expect("an OIDC response"),
+        )
+        .await;
+    assert_eq!(
+        grants.len(),
+        2,
+        "the ignored parameters still amended a grant"
+    );
+    assert!(
+        grants.iter().any(|grant| grant.id == first.id),
+        "the first grant was amended by a parameter nobody advertised"
     );
 
     flow.tear_down().await;
