@@ -846,6 +846,12 @@ impl AdminBackend for Deployment {
         Arc::clone(&self.outbox)
     }
 
+    fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {
+        Arc::new(asterius_store_pg::PgApplicationRoles::new(
+            self.store.pool().clone(),
+        ))
+    }
+
     fn clients(&self) -> Arc<dyn ClientAdministration> {
         Arc::new(DeploymentClients {
             store: self.store.clone(),

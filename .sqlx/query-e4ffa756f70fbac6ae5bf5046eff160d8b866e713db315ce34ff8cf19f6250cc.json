@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into user_tenant_roles (tenant_id, user_id, name, granted_at)\n                 values ($1, $2, $3, $4)\n                 on conflict (tenant_id, user_id, name) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4ffa756f70fbac6ae5bf5046eff160d8b866e713db315ce34ff8cf19f6250cc"
+}

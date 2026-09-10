@@ -287,7 +287,9 @@ impl Fixture {
             self.tenant.id.clone(),
             Arc::clone(&self.kek),
         );
+        let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
         let handler = RefreshToken {
+            roles: &roles,
             tokens: &tokens,
             grants: &grants,
             sessions: &sessions,
@@ -472,7 +474,9 @@ impl Fixture {
             self.tenant.id.clone(),
             Arc::clone(&self.kek),
         );
+        let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
         let handler = AuthorizationCode {
+            roles: &roles,
             codes: &codes,
             grants: &grants,
             refresh_tokens: &refresh_tokens,
@@ -523,7 +527,9 @@ impl Fixture {
             self.tenant.id.clone(),
             Arc::clone(&self.kek),
         );
+        let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
         let handler = RefreshToken {
+            roles: &roles,
             tokens: &tokens,
             grants: &grants,
             sessions: &sessions,

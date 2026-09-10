@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod admin_seed;
+mod application_roles;
 mod audit;
 mod auth_requests;
 mod authorization_details_types;
@@ -47,6 +48,7 @@ mod themes;
 mod users;
 
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
+pub use application_roles::PgApplicationRoles;
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;
 pub use authorization_details_types::PgAuthorizationDetailsTypes;

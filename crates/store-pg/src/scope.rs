@@ -100,6 +100,18 @@ impl<'a> TenantScope<'a> {
         PgResourceServers::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// The application-role catalogues and assignments (`ast-095`).
+    ///
+    /// The port is deployment-wide and takes the tenant on every call, so this
+    /// hands back the repository rather than a scoped one; the tenant this
+    /// scope was built for is the one a caller passes. It is here so that the
+    /// token endpoint reaches roles through the same seam as everything else
+    /// it reads, over the same pool.
+    #[must_use]
+    pub fn application_roles(&self) -> crate::PgApplicationRoles {
+        crate::PgApplicationRoles::new(self.pool.clone())
+    }
+
     /// The authorization details type registry for this tenant (RFC 9396
     /// §2.1, `ast-gxh.6`).
     ///

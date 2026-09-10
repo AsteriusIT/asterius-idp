@@ -23,7 +23,8 @@ use asterius_domain::entities::user::{User, UserStatus};
 use asterius_domain::ports::{SessionRepository, TenantRepository};
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientRegistration, ClientStatus, CodeBinding, Grant, GrantId,
-    Issuer, KeyStore, Kid, RevocationReason, SubjectId, Tenant, TenantId, TenantStatus, UserId,
+    Issuer, KeyStore, Kid, RevocationReason, RoleOwner, SubjectId, Tenant, TenantId, TenantStatus,
+    UserId,
 };
 use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
@@ -229,6 +230,64 @@ impl Fixture {
         client
     }
 
+    /// A second client of the same tenant, so that "another client's roles"
+    /// is a real row rather than a hypothesis.
+    async fn second_client(&self, id: &ClientId) {
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: id.clone(),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&json!({
+                    "client_name": "Reporting",
+                    "redirect_uris": [REDIRECT],
+                    "grant_types": ["authorization_code"],
+                    "scope": "openid",
+                    "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+                }))
+                .expect("serialise"),
+                Capabilities::default(),
+            )
+            .expect("a valid registration"),
+            status: ClientStatus::Active,
+            created_at: self.now,
+            updated_at: self.now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities::default())
+            .upsert(&client)
+            .await
+            .expect("store the second client");
+    }
+
+    /// Puts a role in a catalogue and gives it to `user` (`ast-095`).
+    ///
+    /// Through the port rather than by raw SQL, so that the test exercises the
+    /// same two statements the admin API runs — including the foreign key that
+    /// refuses an assignment of a role nobody created.
+    async fn define_and_assign(&self, user: UserId, owner: RoleOwner, name: &str) {
+        use asterius_domain::ports::ApplicationRoleDirectory;
+        let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
+        let name = asterius_domain::RoleName::parse(name).expect("a role name");
+        roles
+            .define(
+                &asterius_domain::ApplicationRole::new(
+                    self.tenant.id.clone(),
+                    owner.clone(),
+                    name.as_str(),
+                    None,
+                    self.now,
+                )
+                .expect("a role"),
+            )
+            .await
+            .expect("define the role");
+        roles
+            .assign(&self.tenant.id, user, &owner, &name, self.now)
+            .await
+            .expect("assign the role");
+    }
+
     /// A user, a session they authenticated in, and a grant naming both.
     ///
     /// The session is what carries `auth_time`, `acr` and `amr` into both
@@ -393,7 +452,9 @@ impl Fixture {
             self.tenant.id.clone(),
             Arc::clone(&self.kek),
         );
+        let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
         let handler = AuthorizationCode {
+            roles: &roles,
             codes: &codes,
             grants: &grants,
             refresh_tokens: &refresh_tokens,
@@ -598,6 +659,125 @@ db_test! {
         assert_ne!(
             sid, session_digest,
             "the ID token published the session lookup digest as its sid"
+        );
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// **Application roles reach the token in the right claim, and no
+    /// further** (`ast-095`).
+    ///
+    /// One account holding three roles: a tenant role, a role of the client
+    /// redeeming the code, and a role of a *different* client of the same
+    /// tenant. What the resource server behind this token is entitled to see
+    /// is the first two — and the third is the whole point of the assertion:
+    /// nothing in the schema says which clients an API serves, so an API is
+    /// told about the client that authenticated at the token endpoint and
+    /// about no other. The authority somebody holds in an unrelated
+    /// application is not this token's business (`ast-gxh.7`, threat model).
+    async fn a_token_carries_tenant_roles_and_only_its_own_clients_roles(fixture) {
+        // Arrange.
+        let client = fixture.client().await;
+        let other = ClientId::new("reporting");
+        fixture.second_client(&other).await;
+        let pkce = Pkce::generate();
+        let (session, user) = fixture.session().await;
+        let grant = fixture.grant_in(&["openid"], &session, user).await;
+
+        fixture.define_and_assign(user, RoleOwner::Tenant, "auditor").await;
+        fixture
+            .define_and_assign(user, RoleOwner::Client(ClientId::new(CLIENT)), "refund")
+            .await;
+        fixture
+            .define_and_assign(user, RoleOwner::Client(other.clone()), "export")
+            .await;
+
+        let jkt = thumbprint(7);
+        let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
+
+        // Act.
+        let (status, body) = fixture
+            .redeem(
+                &client,
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("redirect_uri", REDIRECT),
+                    ("code_verifier", pkce.verifier),
+                ],
+                Some(&jkt),
+            )
+            .await;
+
+        // Assert.
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let access = fixture
+            .verify(body["access_token"].as_str().expect("access_token"))
+            .await;
+
+        // The tenant's shared vocabulary, flat, as every application of the
+        // tenant sees it.
+        assert_eq!(access["roles"], json!(["auditor"]));
+        // This client's own, under its own name.
+        assert_eq!(access["resource_access"][CLIENT]["roles"], json!(["refund"]));
+        // And nothing about the other client, which this resource server has
+        // no relationship with.
+        assert!(
+            access["resource_access"].get(other.as_str()).is_none(),
+            "a resource server was told about another client's roles: {}",
+            access["resource_access"]
+        );
+        assert_eq!(
+            access["resource_access"]
+                .as_object()
+                .expect("resource_access is an object")
+                .len(),
+            1,
+            "a token named more than one client in resource_access"
+        );
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// An account holding nothing gets neither claim (`ast-095`).
+    ///
+    /// An empty `roles` array is a statement a resource server may cache;
+    /// absence is the same fact in fewer bytes, and it is what every token
+    /// issued before this feature existed already looked like.
+    async fn an_account_holding_no_role_gets_neither_claim(fixture) {
+        let client = fixture.client().await;
+        let pkce = Pkce::generate();
+        let (session, user) = fixture.session().await;
+        let grant = fixture.grant_in(&["openid"], &session, user).await;
+        let jkt = thumbprint(8);
+        let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
+
+        let (status, body) = fixture
+            .redeem(
+                &client,
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("redirect_uri", REDIRECT),
+                    ("code_verifier", pkce.verifier),
+                ],
+                Some(&jkt),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let access = fixture
+            .verify(body["access_token"].as_str().expect("access_token"))
+            .await;
+
+        assert!(access.get("roles").is_none(), "an empty roles claim");
+        assert!(
+            access.get("resource_access").is_none(),
+            "an empty resource_access claim"
         );
 
         fixture.tear_down().await;

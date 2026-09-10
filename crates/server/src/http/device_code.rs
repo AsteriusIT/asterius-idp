@@ -84,6 +84,12 @@ pub struct DeviceCode<'a> {
     /// Users for this tenant, read only to resolve the claims the grant
     /// covers.
     pub users: &'a PgUserRepository,
+    /// The application roles this token asserts (`ast-095`).
+    ///
+    /// Read at issuance rather than frozen onto the grant, so a role withdrawn
+    /// since the authorization is not asserted by the next token minted from
+    /// it.
+    pub roles: &'a asterius_store_pg::PgApplicationRoles,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// Whether this tenant offers Grant Management, which is what makes the
@@ -122,6 +128,7 @@ impl<'a> DeviceCode<'a> {
             sessions: code.sessions,
             resource_servers: code.resource_servers,
             users: code.users,
+            roles: code.roles,
             signer: code.signer,
             grant_management: code.grant_management,
             grant_id_claim: code.grant_id_claim,
@@ -243,6 +250,10 @@ impl DeviceCode<'_> {
         .authenticated_by(session.authentication.clone())
         .restricted_to_scopes(targeting.scopes)
         .with_grant_id_when(self.grant_id_claim)
+        // `ast-095`: the tenant's shared roles under `roles`, this client's own
+        // under `resource_access.<client_id>.roles`. The builder narrows them
+        // to this client; see `AccessToken::with_roles`.
+        .with_roles(&issuance::held_roles(self.roles, &grant).await?)
         .for_lifetime(self.lifetimes.access_token())
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;

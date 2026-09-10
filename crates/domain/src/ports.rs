@@ -4,13 +4,13 @@
 //! Protocol crates depend on these traits and never on an implementation.
 
 use crate::{
-    AuthenticationMethod, AuthorizationDetailsType, Client, ClientId, ClientMetadataError,
-    ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError, Enrolment,
-    FirstPartyDestination, Grant, InitialAccessToken, InitialAccessTokenReservation,
+    ApplicationRole, AuthenticationMethod, AuthorizationDetailsType, Client, ClientId,
+    ClientMetadataError, ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError,
+    Enrolment, FirstPartyDestination, Grant, InitialAccessToken, InitialAccessTokenReservation,
     InteractionRecord, IssuedRecovery, Issuer, NewInitialAccessToken, NewPasskey, Participant,
-    PushedRequest, RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session,
-    SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, Theme, User, UserId,
-    entities::theme::ImageFormat,
+    PushedRequest, RegisteredPasskey, ResourceServer, RoleName, RoleOwner, Secret,
+    SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings,
+    Theme, User, UserId, entities::application_role::HeldRoles, entities::theme::ImageFormat,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -1742,6 +1742,114 @@ pub trait RecoveryTokenStore: Debug + Send + Sync {
         user: UserId,
         now: OffsetDateTime,
     ) -> Result<u64, DomainError>;
+}
+
+// ---------------------------------------------------------------------------
+// Application roles
+// ---------------------------------------------------------------------------
+
+/// The catalogues of application roles, and who holds what (`ast-095`).
+///
+/// Deployment-wide rather than tenant-scoped, with `tenant` on every method,
+/// following [`crate::UserAdministration`]: the admin API holds one handle and
+/// the tenant it acts on is the one the request resolved to, so a handler
+/// cannot be given a repository bound to the wrong tenant by construction of
+/// the wiring.
+///
+/// **This is not [`crate::Role`].** Nothing on this port can grant authority
+/// over this server; every name it carries is a [`RoleName`], which the
+/// administrative vocabulary is not.
+#[async_trait::async_trait]
+pub trait ApplicationRoleDirectory: Debug + Send + Sync {
+    /// Adds a role to a catalogue.
+    ///
+    /// Returns `false` if a role of that name is already defined there, which
+    /// is not an error: the catalogue ends in the state the caller asked for.
+    /// The description of an existing role is *not* overwritten, so a repeated
+    /// create cannot quietly rewrite what somebody documented.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the role names a client that does not
+    /// exist, [`DomainError::Storage`] otherwise.
+    async fn define(&self, role: &ApplicationRole) -> Result<bool, DomainError>;
+
+    /// One catalogue, ordered by name.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails, or [`DomainError::Invalid`]
+    /// for a stored name this build's parser refuses — a row from a newer
+    /// schema, which must not be silently dropped from a list an administrator
+    /// is about to act on.
+    async fn catalogue(
+        &self,
+        tenant: &TenantId,
+        owner: &RoleOwner,
+    ) -> Result<Vec<ApplicationRole>, DomainError>;
+
+    /// Removes a role from a catalogue.
+    ///
+    /// Returns `false` if there was nothing to remove.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if somebody still holds it — the schema
+    /// refuses the delete rather than cascading it; see
+    /// `0023_application_roles.sql` for why that direction was chosen.
+    /// [`DomainError::Storage`] otherwise.
+    async fn remove(
+        &self,
+        tenant: &TenantId,
+        owner: &RoleOwner,
+        name: &RoleName,
+    ) -> Result<bool, DomainError>;
+
+    /// Gives `user` a role from a catalogue.
+    ///
+    /// Returns `false` if they already held it. A role that is not in the
+    /// catalogue is a [`DomainError::Conflict`] and not a silent creation:
+    /// assignment must never be a way to invent a name that ends up in a
+    /// token.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the user or the role does not exist,
+    /// [`DomainError::Storage`] otherwise.
+    async fn assign(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        owner: &RoleOwner,
+        name: &RoleName,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError>;
+
+    /// Takes a role away from `user`. Returns `false` if they did not hold it.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn withdraw(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        owner: &RoleOwner,
+        name: &RoleName,
+    ) -> Result<bool, DomainError>;
+
+    /// Everything one account holds, in the shape a token needs it.
+    ///
+    /// One call rather than one per client, because it is on the hot path of
+    /// every access token issued to a user.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails, or [`DomainError::Invalid`]
+    /// for a stored name this build's parser refuses. Refused rather than
+    /// skipped: a token minted with a *subset* of somebody's roles is an
+    /// authorization decision taken by a parse failure.
+    async fn held_by(&self, tenant: &TenantId, user: UserId) -> Result<HeldRoles, DomainError>;
 }
 
 #[cfg(test)]
