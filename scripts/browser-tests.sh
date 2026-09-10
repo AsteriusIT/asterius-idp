@@ -120,7 +120,11 @@ step "server"
 binary="${ASTERIUS_BIN:-}"
 if [ -z "$binary" ]; then
   ./scripts/build-console.sh
-  cargo build --bin asterius
+  # `SQLX_OFFLINE=true` because this build runs before the server has migrated
+  # anything: an exported `DATABASE_URL`, or the `crates/store-pg/.env` that
+  # CONTRIBUTING.md asks for, would take sqlx online and make it verify every
+  # `query!` against an empty schema. The committed `.sqlx/` answers offline.
+  SQLX_OFFLINE=true cargo build --bin asterius
   binary="$(cargo metadata --format-version 1 --no-deps \
     | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/debug/asterius"
 fi

@@ -47,8 +47,8 @@ Individually, in the order they fail fastest:
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace                 # pure logic, no database
+SQLX_OFFLINE=true cargo clippy --workspace --all-targets -- -D warnings
+SQLX_OFFLINE=true cargo test --workspace   # pure logic, no database
 ./scripts/check-layering.sh            # ports-and-adapters rule
 cargo deny check                       # licences, advisories, bans
 ```
@@ -58,9 +58,25 @@ without it they print a skip line and the suite stays fast.
 
 ```sh
 cp .env.example .env && cp .env crates/store-pg/.env
-docker compose up -d db
+docker compose up -d --wait db
+cargo sqlx migrate run --source crates/store-pg/migrations
 cargo test --workspace          # now includes the database tests
 ```
+
+Do not skip that migration line. A database that is running but not migrated is
+worse than no database at all: `DATABASE_URL` — from the environment or from
+the `crates/store-pg/.env` copied just above — takes sqlx *out* of offline
+mode, and it then verifies all 122 `query!` invocations against an empty
+schema and fails every one of them. Start the container and migrate it in one
+step, or start neither.
+
+The same asymmetry explains why anything that compiles without a database
+should say so explicitly. `scripts/check.sh` (no `--db`), `scripts/check-geiger.sh`,
+`scripts/check-fuzz-coverage.sh`, `scripts/browser-tests.sh` and the
+`.claude/hooks/cargo-check.sh` edit hook all set `SQLX_OFFLINE=true` for that
+reason. Left unset with nothing listening on 5433, sqlx dials the database and
+waits out its connect timeout while holding cargo's build lock, which looks
+exactly like a hung build.
 
 Each database test creates its own PostgreSQL schema, migrates it and works
 inside it, so they run in parallel and share nothing.

@@ -8,12 +8,19 @@ description: Conventions Rust de CE projet — gestion d'erreurs, tests, organis
 ## Commandes
 | Moment | Commande |
 |---|---|
-| Après chaque édition | `cargo check --all-targets` (automatique via hook) |
-| Fin de tâche, une fois | `cargo fmt && cargo clippy --all-targets -- -D warnings && cargo nextest run <filtre>` |
+| Après chaque édition | `cargo check --all-targets` (automatique via hook, en `SQLX_OFFLINE=true`) |
+| Fin de tâche, une fois | `cargo fmt && SQLX_OFFLINE=true cargo clippy --all-targets -- -D warnings && SQLX_OFFLINE=true cargo nextest run <filtre>` |
 | Interdit en local | `cargo test`, `cargo nextest run` sans filtre |
 | Réservé à la CI | suite complète, `--run-ignored all`, Sonar |
 
 Filtre nextest = nom du module ou du test : `cargo nextest run auth::` ou `cargo nextest run test_parse_token`.
+
+`SQLX_OFFLINE=true` n'est pas décoratif : sans base sur 5433, sqlx compose le
+`DATABASE_URL` (variable d'environnement ou `crates/store-pg/.env`) et attend
+son timeout en gardant le verrou de build — la commande paraît figée. Le
+répertoire `.sqlx` est commité, l'hors-ligne suffit. Et ne démarre jamais la
+base sans appliquer les migrations (`./scripts/check.sh --db` fait les deux) :
+une base vide fait sortir sqlx du mode offline et échouer les 122 requêtes.
 
 ## Erreurs
 - Bibliothèque / modules : enum d'erreur par domaine avec `thiserror`, variantes explicites, `#[from]` pour les conversions.
