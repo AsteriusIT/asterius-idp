@@ -299,6 +299,13 @@ struct Flow {
     settings: SettingsDirectory,
     /// What the browser is holding, by cookie name.
     jar: BTreeMap<String, String>,
+    /// Whether the jar is sent as two `cookie` fields instead of one.
+    ///
+    /// RFC 6265 §5.4 lets a user agent send its list in several fields, and
+    /// RFC 9113 §8.2.3 has HTTP/2 clients do it routinely; `ast-bze` was this
+    /// server reading the first field only. Off by default — one field is the
+    /// ordinary shape and every other test here sends it.
+    split_cookie_fields: bool,
     client_key: SigningKey,
     authenticator: Authenticator,
     user: UserId,
@@ -358,6 +365,7 @@ impl Flow {
             tenant,
             settings,
             jar: BTreeMap::new(),
+            split_cookie_fields: false,
             client_key,
             authenticator,
             user,
@@ -458,16 +466,38 @@ impl Flow {
     /// that forged its own cookies would not really exercise.
     async fn send(&mut self, mut request: Request<Body>) -> Reply {
         if !self.jar.is_empty() {
-            let cookies = self
-                .jar
-                .iter()
-                .map(|(name, value)| format!("{name}={value}"))
-                .collect::<Vec<_>>()
-                .join("; ");
-            request.headers_mut().insert(
-                header::COOKIE,
-                cookies.parse().expect("a cookie header value"),
-            );
+            let render = |pairs: &[(&String, &String)]| {
+                pairs
+                    .iter()
+                    .map(|(name, value)| format!("{name}={value}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
+            if self.split_cookie_fields {
+                // The `ast-bze` order: the interaction cookie in the first
+                // field, the session in a second one. A reader that took
+                // `HeaderMap::get` would see the interaction cookie and miss
+                // the session, which is the bug exactly.
+                let (session, rest): (Vec<_>, Vec<_>) = self
+                    .jar
+                    .iter()
+                    .partition(|(name, _)| name.contains("session"));
+                for field in [render(&rest), render(&session)] {
+                    if field.is_empty() {
+                        continue;
+                    }
+                    request.headers_mut().append(
+                        header::COOKIE,
+                        field.parse().expect("a cookie header value"),
+                    );
+                }
+            } else {
+                let cookies = render(&self.jar.iter().collect::<Vec<_>>());
+                request.headers_mut().insert(
+                    header::COOKIE,
+                    cookies.parse().expect("a cookie header value"),
+                );
+            }
         }
         let response = self
             .app
@@ -3350,6 +3380,122 @@ async fn an_offline_access_grant_outlives_the_purge_of_its_session() {
     assert_eq!(
         again["amr"], first["amr"],
         "amr is not the one the authentication used: {again}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **A whole journey with the cookies split across two `cookie` fields**
+/// (`ast-0bq`).
+///
+/// RFC 6265 §5.4 allows a user agent to send its cookie list in several
+/// fields, and RFC 9113 §8.2.3 has HTTP/2 clients do exactly that; Chromium
+/// does. `ast-bze` was three readers here taking `HeaderMap::get`, so whichever
+/// cookie happened to arrive first was the only one seen — and every page of a
+/// signed-in user mid-flow carries two `__Host-` cookies at once.
+///
+/// The unit tests cover each reader site. This one covers the class: one real
+/// sign-in, consent and logout against the assembled application, with the
+/// interaction cookie in the first field and the session cookie in a second.
+/// Checked to be about something: with `http::cookies` reverted to
+/// `HeaderMap::get`, the logout no longer recognises the session it was handed
+/// in the second field and serves the neutral "You are signed out" page
+/// instead of the confirmation question — the user is told they are signed out
+/// while their session is untouched, which is `ast-bze`'s symptom. Restored
+/// after, and the test is green again.
+#[tokio::test]
+async fn a_journey_survives_cookies_split_across_two_fields() {
+    // Arrange: a tenant, a person with a passkey, and a browser that sends its
+    // jar the way HTTP/2 lets it.
+    let Some(mut flow) = Flow::new().await else {
+        return;
+    };
+    flow.split_cookie_fields = true;
+    let key = ProofKey::generate();
+
+    // Act: push, authorize, sign in — after which the browser holds both the
+    // interaction cookie and the session cookie, which is the situation the
+    // split matters in.
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+
+    // Assert: two cookies really are in flight, or the split below is one
+    // field with a second name and this test asserts nothing.
+    assert!(
+        flow.jar.contains_key("__Host-asterius_ix"),
+        "no interaction cookie to split: {:?}",
+        flow.jar.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        flow.jar.contains_key("__Host-asterius_session"),
+        "no session cookie to split: {:?}",
+        flow.jar.keys().collect::<Vec<_>>()
+    );
+
+    // Act: consent, which reads the interaction cookie and the session, and
+    // redeem the code it returns.
+    let code = flow.consent(&interaction).await;
+    let redeemed = flow
+        .token(
+            &key,
+            "split-redeem",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+
+    // Assert: the code was good, so the journey up to here really completed.
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "the code from a split-cookie journey was refused: {}",
+        redeemed.text()
+    );
+
+    // Act: RP-Initiated Logout 1.0 §2 — an unverifiable request, so the server
+    // asks first. It can only ask somebody it recognised, and the session
+    // cookie is in the second field.
+    let asked = flow.get(&format!("{}/logout", flow.prefix())).await;
+
+    // Assert: the question, not the neutral page a missed session would give.
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.text());
+    let question = asked.text();
+    assert!(
+        question.contains("Log out of"),
+        "the logout did not see the session in the second cookie field:\n{question}"
+    );
+    let csrf = csrf_from(&question);
+
+    // Act: the user answers.
+    let ended = flow
+        .post_form(
+            &format!("{}/logout", flow.prefix()),
+            &[("decision", "logout"), ("csrf", &csrf)],
+            None,
+        )
+        .await;
+
+    // Assert: the session ended and the cookie was cleared.
+    assert_eq!(ended.status, StatusCode::OK, "{}", ended.text());
+    assert!(
+        ended.text().contains("You are signed out"),
+        "the logout did not end the session:\n{}",
+        ended.text()
+    );
+    assert!(
+        ended
+            .headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .any(|value| value.contains("__Host-asterius_session=")),
+        "the session cookie was not cleared: {:?}",
+        ended.headers
     );
 
     flow.tear_down().await;
