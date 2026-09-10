@@ -16,6 +16,7 @@ mod client_usage;
 mod clients;
 mod codes;
 mod cutoffs;
+mod device_codes;
 mod error;
 mod grants;
 mod initial_access_tokens;
@@ -52,6 +53,9 @@ pub use client_key_fetches::PgClientKeyFetches;
 pub use client_usage::PgClientUsage;
 pub use clients::PgClientRepository;
 pub use codes::{PgCodeRepository, Redemption};
+pub use device_codes::{
+    NewDeviceAuthorization, PendingDevice, PgDeviceCodeRepository, Poll, Polled, RedeemedDevice,
+};
 pub use error::to_domain_error;
 pub use grants::{PgGrantRepository, Revocation};
 pub use initial_access_tokens::PgInitialAccessTokens;

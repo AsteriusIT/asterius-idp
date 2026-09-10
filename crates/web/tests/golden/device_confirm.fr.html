@@ -66,6 +66,45 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 <p class="muted">Example App is asking to connect. Continue only if this
 code matches the one your device is showing.</p>
 
+
+<p class="error">If somebody sent you this code or asked you to enter it,
+stop: they are trying to connect their device to your account. Only continue
+with a code you read from a device you are setting up yourself.</p>
+
+
+
+<p class="muted">Example App will be able to:</p>
+<ul class="scopes">
+
+  <li>
+    read your payment history
+    <span class="muted">(payments)</span>
+  </li>
+
+</ul>
+
+
+
+<p class="muted">Example App is also asking to:</p>
+<ul class="scopes">
+
+  <li>
+    move money on your behalf
+    <span class="muted">(payment_initiation)</span>
+    
+    <br><span class="muted">Operations: initiate</span>
+    
+    
+    <br><span class="muted">Data: account</span>
+    
+    
+    <br><span class="muted">At: https://api.example/payments</span>
+    
+  </li>
+
+</ul>
+
+
 <form method="post" action="/device/confirm">
 <input type="hidden" name="csrf" value="snapshot-csrf">
 

@@ -228,6 +228,28 @@ pub const POLICY: &[Retention] = &[
         rule: Rule::Kept("a passkey or password lives as long as its account"),
     },
     Retention {
+        table: "device_codes",
+        rule: Rule::Sweep {
+            // A device authorization is over the moment it expires: the token
+            // endpoint answers `expired_token` off the clock rather than off a
+            // status, so nothing reads an expired row again. The row holds the
+            // digests of a device code and a user code, which is material a
+            // database copy still yields, so it is swept rather than kept.
+            //
+            // A grace period, unlike most tables here, for the reason
+            // `authorization_codes` has one: the *device* is still polling when
+            // the authorization expires, and RFC 8628 §3.5 wants it told
+            // `expired_token` rather than the "unknown device code" a deleted
+            // row would produce. Five minutes is longer than any remaining poll
+            // and shorter than anything worth keeping.
+            statement: "delete from device_codes where ctid = any (array(
+                            select ctid from device_codes
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::minutes(5),
+        },
+    },
+    Retention {
         table: "recovery_tokens",
         rule: Rule::Sweep {
             // A reset link, one hour wide. Beside `credentials` because that

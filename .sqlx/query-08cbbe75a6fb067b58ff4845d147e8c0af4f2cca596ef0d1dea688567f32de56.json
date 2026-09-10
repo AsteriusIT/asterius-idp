@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update device_codes\n                set status = 'approved', user_id = $3, grant_id = $4, approved_at = $5\n              where tenant_id = $1 and user_code_hash = $2\n                and status = 'pending' and expires_at > $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "08cbbe75a6fb067b58ff4845d147e8c0af4f2cca596ef0d1dea688567f32de56"
+}

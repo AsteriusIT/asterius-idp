@@ -232,6 +232,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "device_authorization_request"
+path = "fuzz_targets/device_authorization_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "device_user_code"
+path = "fuzz_targets/device_user_code.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "dpop_proof"
 path = "fuzz_targets/dpop_proof.rs"
 test = false

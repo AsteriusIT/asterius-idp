@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update device_codes\n                set failed_attempts = failed_attempts + 1,\n                    status = case\n                        when failed_attempts + 1 >= $3 and status = 'pending'\n                        then 'denied' else status\n                    end\n              where tenant_id = $1 and user_code_hash = $2 and expires_at > $4\n          returning failed_attempts",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "failed_attempts",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e88cc94dbe0ae2f5cc4dc494a6db32779b7959633276d775f7b9143779828dc4"
+}

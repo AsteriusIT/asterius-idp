@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update device_codes\n                set status = 'denied'\n              where tenant_id = $1 and user_code_hash = $2\n                and status = 'pending' and expires_at > $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "21b66c6f188233ac1a79430e49ed7e835836e14ddcb6bbb90469ac2c2457ca8d"
+}

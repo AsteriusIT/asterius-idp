@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select client_id, scopes, authorization_details, expires_at, failed_attempts\n               from device_codes\n              where tenant_id = $1 and user_code_hash = $2\n                and status = 'pending' and expires_at > $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "authorization_details",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "failed_attempts",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "861d37ad9492f257f18cad3db1f198bfa7b814f4eb4beabd6e51e2d96cc1aa39"
+}

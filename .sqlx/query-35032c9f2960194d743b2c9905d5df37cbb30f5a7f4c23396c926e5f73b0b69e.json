@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update device_codes\n                set redeemed_at = $3\n              where tenant_id = $1 and device_code_hash = $2\n                and status = 'approved' and redeemed_at is null and expires_at > $3\n          returning client_id, grant_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "35032c9f2960194d743b2c9905d5df37cbb30f5a7f4c23396c926e5f73b0b69e"
+}

@@ -22,6 +22,55 @@
 <p class="muted">{{ client_name }} is asking to connect. Continue only if this
 code matches the one your device is showing.</p>
 
+{# RFC 8628 §5.3, "Remote Phishing": the whole flow can be run by an attacker
+   who never touches the victim's network — they start it, then send the code
+   to somebody and ask them to type it in. The one thing that stops it is the
+   person knowing that a code they did not read off their own screen is a code
+   somebody else is waiting on, so this is said plainly rather than left to be
+   inferred from the heading. #}
+<p class="error">If somebody sent you this code or asked you to enter it,
+stop: they are trying to connect their device to your account. Only continue
+with a code you read from a device you are setting up yourself.</p>
+
+{# What the approval actually grants. §3.3 leaves the content of this page to
+   the server; a confirmation that named no scopes would be a person agreeing
+   to a device rather than to what the device may do. Same markup and same
+   rules as the consent screen: never the element's JSON (RFC 9396 §12), only
+   the operator's own sentence for a type and the §2.2 fields with an agreed
+   meaning, all of it autoescaped. #}
+{% if !scopes.is_empty() %}
+<p class="muted">{{ client_name }} will be able to:</p>
+<ul class="scopes">
+{% for scope in scopes %}
+  <li>
+    {% if let Some(description) = scope.description %}{{ description }}{% else %}{{ scope.name }}{% endif %}
+    <span class="muted">({{ scope.name }})</span>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if !authorization_details.is_empty() %}
+<p class="muted">{{ client_name }} is also asking to:</p>
+<ul class="scopes">
+{% for detail in authorization_details %}
+  <li>
+    {% if let Some(description) = detail.description %}{{ description }}{% else %}Perform an action this server has no description for{% endif %}
+    <span class="muted">({{ detail.name }})</span>
+    {% if !detail.actions.is_empty() %}
+    <br><span class="muted">Operations: {% for action in detail.actions %}{{ action }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if !detail.datatypes.is_empty() %}
+    <br><span class="muted">Data: {% for datatype in detail.datatypes %}{{ datatype }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if !detail.locations.is_empty() %}
+    <br><span class="muted">At: {% for location in detail.locations %}{{ location }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
 <form method="post" action="{{ action }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">
 {# Both answers under one token, as on the consent and logout pages: a forged
