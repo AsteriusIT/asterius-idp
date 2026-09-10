@@ -96,13 +96,16 @@ See [`docs/BACKLOG.md`](docs/BACKLOG.md) for the full breakdown and `scripts/bea
 There is no tagged release yet, but the example stack runs from a checkout:
 
 ```sh
+export ASTERIUS_ADMIN_PASSWORD="$(head -c 24 /dev/urandom | base64)"
 docker compose -f deploy/compose/docker-compose.yml up --build -d
 ./scripts/smoke-test.sh
-curl -s http://127.0.0.1:9443/t/demo/.well-known/openid-configuration
+curl -s --cacert deploy/certs/server.crt https://localhost/t/demo/.well-known/openid-configuration
 ```
 
-That brings up PostgreSQL and one Asterius process with a `demo` tenant, and
-the smoke test asserts the tenant actually works. Every value in the stack is a
+That brings up PostgreSQL, one Asterius process with a `demo` tenant, and an
+nginx terminating TLS in front of them with a certificate the stack generates
+for itself at first start; the smoke test asserts the tenant actually works
+through it. Every value in the stack is a
 development value; [`deploy/README.md`](deploy/README.md) lists what has to
 change before the shape is safe anywhere real, and
 [`docs/configuration.md`](docs/configuration.md) documents every configuration

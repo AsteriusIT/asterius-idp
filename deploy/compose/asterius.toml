@@ -1,11 +1,11 @@
 # Configuration for the example compose stack. NOT a production configuration.
 #
-# One deliberate difference from a real deployment: `mode = "behind_proxy"` with
-# nothing actually in front, so the stack speaks plain HTTP on the loopback and
-# the smoke test can reach it without a certificate. A real deployment either
-# terminates TLS in this process (`mode = "terminate_tls"` plus `[server.tls]`)
-# or puts a reverse proxy in front and lists it in `[server.proxy]`. FAPI 2.0 SP
-# §5.2 requires TLS on every endpoint — see deploy/README.md.
+# TLS is terminated by the nginx in front (`mode = "behind_proxy"`), with a
+# self-signed certificate generated at first start into deploy/certs/. That is
+# the shape docs/deployment/tls-and-proxy.md describes; the only development
+# thing about it is the certificate, which nobody should be asked to trust.
+# The alternative shape is `mode = "terminate_tls"` plus `[server.tls]`, with
+# the process owning the listener.
 #
 # Every key is described, with its type and default, in docs/configuration.md.
 
@@ -16,10 +16,13 @@ bind = "0.0.0.0:9443"
 mode = "behind_proxy"
 
 [server.proxy]
-# Nothing but the compose network reaches this container, and the smoke test
-# arrives through the published loopback port. 172.16/12 is the range Docker
-# hands its default bridge networks.
-trusted_cidrs = ["127.0.0.0/8", "::1/128", "172.16.0.0/12"]
+# The single trust switch of the whole proxy setup (tls-and-proxy.md §1): a
+# peer inside this list may assert the client's address, the client's host and
+# the client's certificate. It is exactly the compose network declared with a
+# fixed subnet in docker-compose.yml — not 172.16/12, which is every bridge
+# network Docker might ever create on this host, and not the loopback, which
+# nothing reaches now that the cleartext port is unpublished.
+trusted_cidrs = ["172.28.0.0/16"]
 
 [keys]
 # Development only. The key sits in the compose file in plaintext, which is
@@ -36,13 +39,14 @@ max_connections = 8
 # Everything off is the FAPI 2.0 baseline. Switch one on and it appears both in
 # the discovery document and on /readyz.
 
-# The issuer must be https even here (RFC 8414 §2): it is an identifier, not a
-# fetch target, and the smoke test reaches the same server over plain HTTP with
-# a matching `Host` header. Point a TLS terminator at :9443 and this becomes
-# true rather than merely well-formed.
+# The issuer's authority is what clients read out of the discovery document,
+# so it must be the public name nginx answers on — `localhost`, port 443 and
+# therefore no port in the URL. Publish nginx on another port, or set
+# ASTERIUS_TLS_HOST to another name, and both issuers here have to follow
+# (tls-and-proxy.md §3).
 [[tenant]]
 id = "demo"
-issuer = "https://localhost:9443/t/demo"
+issuer = "https://localhost/t/demo"
 
 # The deployment admin (ADR-0010): a user of the reserved tenant `admin`,
 # holding a deployment-scoped role. Without this table `docker compose up`
@@ -55,6 +59,6 @@ issuer = "https://localhost:9443/t/demo"
 # (`password_file`); see "Secret sources" in docs/configuration.md.
 [admin]
 tenant = "admin"
-issuer = "https://localhost:9443/t/admin"
+issuer = "https://localhost/t/admin"
 username = "admin"
 password_env = "ASTERIUS_ADMIN_PASSWORD"

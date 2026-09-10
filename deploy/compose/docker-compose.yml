@@ -1,11 +1,14 @@
-# An example Asterius deployment: PostgreSQL and one Asterius process.
+# An example Asterius deployment: PostgreSQL, one Asterius process, and nginx
+# terminating TLS in front of it.
 #
+#     export ASTERIUS_ADMIN_PASSWORD="$(head -c 24 /dev/urandom | base64)"
 #     docker compose -f deploy/compose/docker-compose.yml up --build -d
 #     ./scripts/smoke-test.sh
 #
 # This is a demonstration stack, not a production one. Every value in it is a
 # development value, chosen to be obviously so; deploy/README.md lists what has
-# to change before this shape is safe to run anywhere real.
+# to change before this shape is safe to run anywhere real — starting with the
+# self-signed certificate, which no client should ever be asked to trust.
 #
 # The `asterius` service is where the container hardening is asserted, and the
 # settings there are the acceptance criteria of `ast-p2l.7` written as
@@ -15,6 +18,25 @@
 name: asterius
 
 services:
+  # The certificate, generated once into deploy/certs/ and then reused. This
+  # runs the same deploy/scripts/gen-self-signed.sh an operator can run by
+  # hand, rather than a second copy of it inlined here.
+  certs:
+    image: alpine/openssl:3.5.4@sha256:42c7389ef077aed0eb4e96d0abbd094083d701bbaff1313073b061c0c9cd8278
+    entrypoint: ["/bin/sh"]
+    command: ["/usr/local/bin/gen-self-signed.sh"]
+    environment:
+      CERT_DIR: /certs
+      # The SAN the certificate is issued for. It must match the authority in
+      # the tenants' issuers in asterius.toml, or every client that verifies
+      # the name is right to refuse.
+      ASTERIUS_TLS_HOST: ${ASTERIUS_TLS_HOST:-localhost}
+    volumes:
+      - ../scripts/gen-self-signed.sh:/usr/local/bin/gen-self-signed.sh:ro
+      - ../certs:/certs
+    # It generates a file; it needs no network at all.
+    network_mode: none
+
   db:
     image: postgres:16-alpine
     environment:
@@ -30,6 +52,8 @@ services:
       retries: 30
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks:
+      - asterius
 
   asterius:
     build:
@@ -54,12 +78,17 @@ services:
       #
       # Production mounts a file and sets `admin.password_file` instead.
       ASTERIUS_ADMIN_PASSWORD: ${ASTERIUS_ADMIN_PASSWORD:?export ASTERIUS_ADMIN_PASSWORD before starting the stack; it seeds the deployment admin}
-    ports:
-      # Loopback only. The stack terminates no TLS (see asterius.toml), so
-      # exposing it on 0.0.0.0 would publish an OpenID Provider over cleartext.
-      - "127.0.0.1:9443:9443"
+    # No `ports`. In `behind_proxy` mode this listener speaks cleartext and
+    # believes forwarding headers from any peer inside `server.proxy
+    # .trusted_cidrs`; publishing it would let anyone on the host bypass every
+    # rule nginx enforces (docs/deployment/tls-and-proxy.md §1 and §10 check 6).
+    # `expose` documents the port without opening it to the host.
+    expose:
+      - "9443"
     volumes:
       - ./asterius.toml:/etc/asterius/asterius.toml:ro
+    networks:
+      - asterius
     # --- the hardening, which is the point of this file --------------------
     # uid/gid 65532, the distroless `nonroot` user. Repeated here so that the
     # guarantee survives someone rebuilding the image from a different base.
@@ -74,6 +103,44 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  # The TLS terminator. Its configuration is §8 of
+  # docs/deployment/tls-and-proxy.md, deployed unchanged except for the
+  # hostnames and certificate paths; see deploy/nginx/nginx.conf.
+  nginx:
+    # Pinned by digest as well as tag: a tag can be re-pointed, and the thing
+    # holding the private key is not where you want a surprise rebuild.
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    depends_on:
+      certs:
+        condition: service_completed_successfully
+      asterius:
+        condition: service_started
+    ports:
+      # The only two ports this stack publishes. 80 serves one 308 to https and
+      # nothing else. Change the left-hand side if either is taken on your
+      # machine — and then change the issuers in asterius.toml to match, since
+      # the issuer's authority is what clients read out of the discovery
+      # document (tls-and-proxy.md §3).
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../certs:/etc/asterius/tls:ro
+    networks:
+      - asterius
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  # A fixed subnet, because `server.proxy.trusted_cidrs` in asterius.toml has
+  # to name it and a compose-assigned range is whatever is free that day. It is
+  # the single trust switch of the whole proxy setup (tls-and-proxy.md §1), so
+  # it is worth being exactly as wide as this network and no wider.
+  asterius:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
   pgdata:
