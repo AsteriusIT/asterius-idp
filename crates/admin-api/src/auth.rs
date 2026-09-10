@@ -183,10 +183,15 @@ pub struct Credentials<'a> {
 
 /// Resolves whoever is making this request.
 ///
-/// `tenant` is the tenant the request was routed to, which for a session is
-/// the tenant whose store the cookie is looked up in: sessions are per tenant
-/// (ADR-0010 keeps `Session::tenant` non-optional), so a cookie minted in one
-/// tenant simply does not resolve in another's.
+/// `tenant` is the tenant the request was routed to and `reserved` is the
+/// tenant a deployment admin's session lives in, when the deployment has one.
+/// Sessions are per tenant (ADR-0010 keeps `Session::tenant` non-optional), so
+/// a cookie minted in one tenant does not resolve in another's — with exactly
+/// one exception, the reserved tenant, because a deployment-scoped role is
+/// only ever held there and `Reach::Tenant` routes are addressed at the tenant
+/// they act on. Resolving such a session is not admitting it: the authority
+/// check in [`crate::rbac::Held::satisfies`] is still given both tenants and
+/// still refuses everything but a deployment-scoped role (`ast-8gm`).
 ///
 /// # Errors
 ///
@@ -198,12 +203,13 @@ pub async fn authenticate(
     backend: &dyn AdminBackend,
     tokens: Option<&dyn AdminTokens>,
     tenant: &Tenant,
+    reserved: Option<&TenantId>,
     headers: &HeaderMap,
     credentials: Credentials<'_>,
 ) -> Result<Principal, AdminError> {
     match presented(headers, credentials.cookies)? {
         Presented::Nothing => Err(AdminError::Unauthenticated),
-        Presented::Cookie(id) => console(backend, tenant, id).await,
+        Presented::Cookie(id) => console(backend, tenant, reserved, id).await,
         Presented::Token { token, proof } => {
             // Not yet buildable: `ast-a05.8` mints the tokens this would
             // resolve. Refusing is the honest answer — accepting a token
@@ -228,14 +234,41 @@ pub async fn authenticate(
 async fn console(
     backend: &dyn AdminBackend,
     tenant: &Tenant,
+    reserved: Option<&TenantId>,
     id: &str,
 ) -> Result<Principal, AdminError> {
     let presented = SessionId::from_presented(id.to_owned());
-    let session = backend
-        .session(&tenant.id, &presented.digest())
+    let digest = presented.digest();
+    let mut session = backend
+        .session(&tenant.id, &digest)
         .await
-        .map_err(|error| AdminError::from_storage("admin.session", &error))?
-        .ok_or(AdminError::SessionUnusable)?;
+        .map_err(|error| AdminError::from_storage("admin.session", &error))?;
+
+    // A deployment admin has one session and it lives in the reserved tenant
+    // (ADR-0010), so this is the only way a `Reach::Tenant` route of any other
+    // tenant can be reached at all: those routes name no tenant in their path,
+    // and the tenant they act on is the issuer the request arrived at. Looking
+    // only in that tenant answered "the session presented is not usable" to
+    // the one administrator every deployment seeds (`ast-8gm`).
+    //
+    // Resolving is not admitting. The authority check that follows is given
+    // the tenant the *request* was routed to and the tenant the *session* is
+    // held in, and `Held::roles_satisfy` admits this session elsewhere only
+    // for a deployment-scoped role — a tenant-scoped one held in the reserved
+    // tenant reaches exactly as far as it did before, which is 403 and not
+    // 401. No other tenant is ever consulted: a session of tenant A stays
+    // invisible at tenant B, which is the check the multi-tenant model rests
+    // on.
+    if session.is_none()
+        && let Some(reserved) = reserved.filter(|reserved| *reserved != &tenant.id)
+    {
+        session = backend
+            .session(reserved, &digest)
+            .await
+            .map_err(|error| AdminError::from_storage("admin.session", &error))?;
+    }
+
+    let session = session.ok_or(AdminError::SessionUnusable)?;
 
     // Every non-`Active` state is one 401: idle, expired and revoked are the
     // same instruction to a console — sign in again — and distinguishing them
@@ -244,20 +277,25 @@ async fn console(
         return Err(AdminError::SessionUnusable);
     }
 
+    // The session's own tenant, which is the tenant the request was routed to
+    // except for the reserved-tenant case above. Roles are read where the user
+    // is: reading them in the route's tenant would be reading a *different*
+    // user's grants, since a user id is only unique within a tenant.
+    let held_in = session.tenant.clone();
     let user = UserId::new(session.user);
     let roles = backend
-        .roles(&tenant.id, user)
+        .roles(&held_in, user)
         .await
         .map_err(|error| AdminError::from_storage("admin.roles", &error))?;
 
-    admit(backend, tenant, user, &roles, &session).await?;
+    admit(backend, &held_in, user, &roles, &session).await?;
 
     Ok(Principal::Console {
-        tenant: tenant.id.clone(),
+        tenant: held_in.clone(),
         user,
         session_id: id.to_owned(),
         held: Held::Roles {
-            tenant: tenant.id.clone(),
+            tenant: held_in,
             roles,
         },
     })
@@ -279,7 +317,7 @@ async fn console(
 /// not exist would be a check on nothing.
 async fn admit(
     backend: &dyn AdminBackend,
-    tenant: &Tenant,
+    tenant: &TenantId,
     user: UserId,
     roles: &[Role],
     session: &asterius_domain::Session,
@@ -295,7 +333,7 @@ async fn admit(
     // as "no passkey" — would make an unreachable database the way past this
     // rule.
     let enrolment = backend
-        .passkey_enrolment(&tenant.id, user)
+        .passkey_enrolment(tenant, user)
         .await
         .map_err(|error| AdminError::from_storage("admin.passkey_enrolment", &error))?;
 
@@ -306,7 +344,7 @@ async fn admit(
             // on every request rather than once, because the thing an operator
             // needs to notice is that it is still open.
             tracing::warn!(
-                tenant = %tenant.id,
+                tenant = %tenant,
                 user = %user.as_uuid(),
                 "a deployment admin is acting on a password: this account has no passkey, \
                  and the admin surface stays open to a phishable credential until it enrols"

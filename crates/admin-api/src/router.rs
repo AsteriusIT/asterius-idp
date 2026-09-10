@@ -63,6 +63,16 @@ pub struct AdminState {
     pub tokens: Option<Arc<dyn AdminTokens>>,
     /// Requests one address may make per window.
     pub rate_limit: asterius_domain::RateLimit,
+    /// The reserved tenant a deployment admin's session lives in (ADR-0010),
+    /// when the deployment configures one.
+    ///
+    /// Named here rather than discovered per request, because "which tenant may
+    /// hold deployment authority" is a deployment's decision — the `[admin]`
+    /// table — and looking it up by scanning tenants would make an
+    /// unauthenticated caller's bad cookie cost a table read. `None` is a
+    /// deployment with no admin account, where a session resolves in its own
+    /// tenant and nowhere else.
+    pub reserved_tenant: Option<TenantId>,
 }
 
 impl std::fmt::Debug for AdminState {
@@ -187,6 +197,7 @@ async fn handle(
         backend,
         state.tokens.as_deref(),
         &tenant,
+        state.reserved_tenant.as_ref(),
         &headers,
         Credentials {
             cookies: &cookies(&headers),
@@ -2673,6 +2684,9 @@ mod tests {
                     max: 10_000,
                     window: time::Duration::minutes(1),
                 },
+                reserved_tenant: Some(
+                    TenantId::parse("asterius-admin").expect("a valid tenant id"),
+                ),
             })
         }
 
@@ -3594,6 +3608,46 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// **`ast-8gm`.** A deployment admin's session lives in the reserved
+    /// tenant and can live nowhere else (ADR-0010), so administering another
+    /// tenant means presenting that session at that tenant's prefix — there is
+    /// no other address for `Reach::Tenant` routes, which name no tenant in
+    /// their path on purpose. Looking the cookie up only in the tenant the
+    /// request was routed to made every one of those routes answer 401 "the
+    /// session presented is not usable" to the only administrator a deployment
+    /// seeds, and left `Held::roles_satisfy`'s deployment-wide branch
+    /// unreachable for the console.
+    #[tokio::test]
+    async fn a_deployment_admin_administers_another_tenant_with_the_session_it_has() {
+        // Arrange
+        let world = World::new().routed_at("acme");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        // Act
+        let response = world.get(&crate::CLIENTS_LIST, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// The other half of the same rule: resolving a reserved-tenant session
+    /// elsewhere is not admitting it. A user of the reserved tenant holding a
+    /// *tenant*-scoped role has authority over that tenant and over no other,
+    /// so the answer is 403 — "not you" — rather than the 401 that would tell
+    /// a console to sign in again for a session that is perfectly good.
+    #[tokio::test]
+    async fn a_reserved_tenant_user_without_deployment_scope_is_refused_elsewhere() {
+        // Arrange
+        let world = World::new().routed_at("acme");
+        let cookie = world.sign_in("asterius-admin", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world.get(&crate::CLIENTS_LIST, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
     /// The automation mode is implemented and not yet buildable: refusing is
     /// the honest answer until `ast-a05.8` can mint a token to resolve.
     #[tokio::test]
@@ -3636,6 +3690,7 @@ mod tests {
                 max: 1,
                 window: time::Duration::minutes(1),
             },
+            reserved_tenant: None,
         });
         let send = async || {
             let mut request = request_for(&crate::SESSION_READ)
@@ -3654,6 +3709,7 @@ mod tests {
                     max: 1,
                     window: time::Duration::minutes(1),
                 },
+                reserved_tenant: None,
             })
             .into_router()
             .oneshot(request)

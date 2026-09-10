@@ -185,7 +185,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // and the admin API's dead-letter screen reads through it, so the
         // screen reports the schedule the worker is enforcing (`ast-0ju.9`).
         let outbox = outbox_handle(&store, config.outbox);
-        let admin_clients = AdminClientContext::of(&config, &outbound, &outbox);
+        let admin_context = AdminContext::of(&config, &outbound, &outbox);
         let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = client_authenticator(client_keys, &replay, &store, trust_anchors)?;
@@ -246,7 +246,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             })),
         });
 
-        let admin = admin_routes(&store, &tenants, &keys, directory, settings, admin_clients);
+        let admin = admin_routes(&store, &tenants, &keys, directory, settings, admin_context);
         let routes = routes.merge(admin).merge(console_routes(&store));
         let routes = routes.fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
@@ -287,17 +287,18 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
     }
 }
 
-/// What the admin API's client screen needs from the protocol wiring
+/// What the admin API needs from the configuration and the protocol wiring
 /// (`ast-f7m.5`).
 ///
-/// The three are grouped because they are one decision: a client the console
-/// registers must be one `POST /register` would have accepted, so the console
-/// validates against the deployment's capabilities, resolves a sector through
-/// the deployment's one outbound adapter, and reports the deployment's
-/// registration policy. Passing them individually would let a future edit hand
-/// the admin API a *different* capability set from the protocol endpoints', and
-/// the two would then disagree about what a valid client is.
-struct AdminClientContext {
+/// The client-screen three are grouped because they are one decision: a client
+/// the console registers must be one `POST /register` would have accepted, so
+/// the console validates against the deployment's capabilities, resolves a
+/// sector through the deployment's one outbound adapter, and reports the
+/// deployment's registration policy. Passing them individually would let a
+/// future edit hand the admin API a *different* capability set from the
+/// protocol endpoints', and the two would then disagree about what a valid
+/// client is.
+struct AdminContext {
     capabilities: asterius_domain::Capabilities,
     registration: asterius_server::http::register::RegistrationPolicy,
     outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
@@ -306,9 +307,14 @@ struct AdminClientContext {
     /// deployment's one handle, and a second one built for the console would
     /// report a backlog nothing is working through.
     outbox: Arc<dyn asterius_domain::DeadLetterQuery>,
+    /// The reserved tenant a deployment admin's session lives in (ADR-0010),
+    /// or `None` for a deployment with no `[admin]` table and therefore no
+    /// deployment admin. Which tenant may hold deployment authority is the
+    /// deployment's decision and this file is where it is read (`ast-8gm`).
+    reserved_tenant: Option<asterius_domain::TenantId>,
 }
 
-impl AdminClientContext {
+impl AdminContext {
     /// Takes the deployment's own three, and never builds one of its own.
     ///
     /// `outbound` in particular is *cloned* from the process's single adapter:
@@ -325,6 +331,7 @@ impl AdminClientContext {
             registration: config.registration.clone(),
             outbound: Arc::clone(outbound),
             outbox: Arc::new(outbox.clone()),
+            reserved_tenant: config.admin.as_ref().map(|admin| admin.tenant.clone()),
         }
     }
 }
@@ -335,8 +342,12 @@ impl AdminClientContext {
 /// administrator's session is a tenant's session: ADR-0010 keeps
 /// `Session::tenant` non-optional, so "which tenant's sessions do I look this
 /// cookie up in" must be answered before a handler runs. A deployment admin
-/// therefore reaches the API at the reserved tenant's issuer, which is where
-/// their session lives.
+/// therefore signs in at the reserved tenant's issuer, which is where their
+/// session lives — and presents that session at whichever tenant's issuer they
+/// are administering, since a `Reach::Tenant` route names no tenant in its
+/// path. `reserved_tenant` is what lets the cookie resolve there; the authority
+/// check is unchanged and still admits only a deployment-scoped role
+/// (`ast-8gm`).
 ///
 /// `tenants` is the process's one `dyn TenantRepository`, which is
 /// `ProvisionedTenants`: a tenant created through this API gets its signing
@@ -352,7 +363,7 @@ fn admin_routes(
     keys: &Arc<TenantKeyStore>,
     directory: TenantDirectory,
     settings: SettingsDirectory,
-    clients: AdminClientContext,
+    context: AdminContext,
 ) -> axum::Router {
     asterius_admin_api::AdminApi::new(&asterius_admin_api::AdminState {
         backend: Arc::new(asterius_server::admin::Deployment::new(
@@ -362,10 +373,10 @@ fn admin_routes(
                 keys: Arc::clone(keys) as Arc<dyn asterius_domain::KeyAdministration>,
                 directory,
                 settings,
-                capabilities: clients.capabilities,
-                registration: clients.registration,
-                outbound: clients.outbound,
-                outbox: clients.outbox,
+                capabilities: context.capabilities,
+                registration: context.registration,
+                outbound: context.outbound,
+                outbox: context.outbox,
             },
         )),
         // `ast-a05.8` mints the tokens an automation caller would present.
@@ -373,6 +384,7 @@ fn admin_routes(
         // nothing verified.
         tokens: None,
         rate_limit: asterius_admin_api::throttle::DEFAULT_LIMIT,
+        reserved_tenant: context.reserved_tenant,
     })
     .into_router()
     .layer(axum::middleware::from_fn(

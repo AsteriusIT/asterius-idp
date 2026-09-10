@@ -224,7 +224,101 @@ if [ -n "$ADMIN_TENANT" ] && command -v docker >/dev/null 2>&1; then
   fi
 fi
 
-# --- 7. the container is hardened -------------------------------------------
+# --- 7. the console signs in, navigates and signs out ------------------------
+# Everything above is a request with no session. This is the other half of a
+# deployment: an administrator arrives at the console, the login sets a cookie,
+# the console reads the admin API with it, and signing out ends it. It runs
+# through whatever terminates TLS, because that is where the cookie's `Secure`
+# and `__Host-` attributes, the CSRF origin check and the session lookup all
+# meet — `ast-8gm` was a 401 on this path that no test outside a browser saw.
+#
+# ADMIN_PASSWORD is the password the stack was started with; without it there
+# is nothing to sign in as, and the section is skipped rather than failed.
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-${ASTERIUS_ADMIN_PASSWORD:-}}"
+if [ -n "$ADMIN_TENANT" ] && [ -n "$ADMIN_PASSWORD" ]; then
+  printf '\nthe console, behind the proxy\n'
+  jar="$(mktemp)"
+  trap 'rm -f "$jar"' EXIT
+
+  console() {
+    curl --silent --show-error "${tls_opts[@]}" \
+      --cookie "$jar" --cookie-jar "$jar" \
+      --max-time 10 "$@"
+  }
+  admin_url="${BASE_URL}/t/${ADMIN_TENANT}"
+
+  # The console's entry document redirects anyone without a session to a login
+  # interaction. The `Location` is relative, so the tenant prefix survives a
+  # proxy that does not rewrite it (tls-and-proxy.md §7).
+  location="$(console --dump-header - --output /dev/null "${admin_url}/admin/" \
+              | sed -n 's/^[Ll]ocation: *//p' | tr -d '\r')"
+  case "$location" in
+    ../interaction/*) pass "the console sends an anonymous visitor to a login interaction" ;;
+    *) fail "the console entry did not redirect to an interaction: ${location:-<none>}" ;;
+  esac
+  interaction="${location##*/}"
+
+  page="$(console "${admin_url}/interaction/${interaction}")"
+  csrf="$(printf '%s' "$page" | sed -n 's/.*name="csrf" value="\([^"]*\)".*/\1/p')"
+  if [ -n "$csrf" ]; then
+    pass "the login page renders with a synchroniser token"
+  else
+    fail "the login page carried no csrf field"
+  fi
+
+  console --output /dev/null -X POST "${admin_url}/interaction/${interaction}" \
+    --data-urlencode "csrf=${csrf}" \
+    --data-urlencode "username=${ADMIN_USERNAME}" \
+    --data-urlencode "password=${ADMIN_PASSWORD}" >/dev/null
+
+  if grep -q '__Host-asterius_session' "$jar"; then
+    pass "signing in sets the __Host- session cookie"
+  else
+    fail "signing in set no session cookie"
+  fi
+
+  session="$(console -H "Origin: ${BASE_URL}" "${admin_url}/admin/api/v1/session")"
+  token="$(json_string "$session" csrf_token)"
+  expect_eq "the admin API resolves the session it just issued" \
+    "$(json_string "$session" tenant)" "$ADMIN_TENANT"
+
+  # A navigation: the tenant list is a deployment-scoped read, and the tenant
+  # the console is signed in to is in it.
+  expect_eq "the deployment admin lists the deployment's tenants" \
+    "$(console --output /dev/null --write-out '%{http_code}' \
+        -H "Origin: ${BASE_URL}" "${admin_url}/admin/api/v1/tenants")" "200"
+
+  # `ast-8gm`: a deployment admin's session lives in the reserved tenant and
+  # nowhere else, and a route that acts on *another* tenant is addressed at
+  # that tenant's issuer. This answered 401 "the session presented is not
+  # usable" until the session was resolved where it is held rather than where
+  # the request was routed, which made every client, key and settings screen of
+  # every other tenant unreachable for the only administrator a deployment
+  # seeds.
+  expect_eq "the same session administers another tenant at that tenant's prefix" \
+    "$(console --output /dev/null --write-out '%{http_code}' \
+        -H "Origin: ${BASE_URL}" "${BASE_URL}/t/${TENANT}/admin/api/v1/clients")" "200"
+
+  # Signing out. A mutation, so it carries the synchroniser token the session
+  # endpoint just handed out (ADR-0009). 200 and a body rather than 204: the
+  # response also carries the clearing `Set-Cookie`, which is the half of a
+  # sign-out the console cannot do for itself.
+  expect_eq "signing out is accepted" \
+    "$(console --output /dev/null --write-out '%{http_code}' \
+        -X DELETE -H "Origin: ${BASE_URL}" -H "X-CSRF-Token: ${token}" \
+        "${admin_url}/admin/api/v1/session")" "200"
+
+  # And what the browser kept is no longer a session: the row is revoked, so
+  # the next call is a 401 whatever cookie is still in the jar.
+  expect_eq "the ended session no longer authenticates" \
+    "$(console --output /dev/null --write-out '%{http_code}' \
+        -H "Origin: ${BASE_URL}" "${admin_url}/admin/api/v1/session")" "401"
+
+  rm -f "$jar"
+  trap - EXIT
+fi
+
+# --- 8. the container is hardened -------------------------------------------
 # Asserted through `docker inspect` rather than by running anything inside the
 # container: there is nothing in there to run, which is the point.
 if [ -n "$CONTAINER" ] && command -v docker >/dev/null 2>&1; then
