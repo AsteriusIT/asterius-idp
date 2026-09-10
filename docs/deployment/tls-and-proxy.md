@@ -380,6 +380,10 @@ server {
     # client must still connect. `optional_no_ca` forwards what the client sent
     # without nginx deciding whose CA is acceptable — that decision is per
     # tenant and it belongs to Asterius (crates/server/src/mtls.rs:180-201).
+    # `ssl_client_certificate` names the CAs whose certificates nginx will
+    # ask for by name. With `optional_no_ca` it is optional: a deployment with
+    # no client-CA list omits the line, and what the client sent is still
+    # forwarded. `deploy/compose/` is that case.
     ssl_client_certificate /etc/asterius/tls/client-cas.pem;
     ssl_verify_client optional_no_ca;
     ssl_verify_depth 3;
@@ -433,6 +437,15 @@ them and the deployment is wrong in a way nothing will tell you.
 With this configuration `[server.proxy] trusted_cidrs` is
 `["127.0.0.0/8", "::1/128"]` — the default — and Asterius must be bound to the
 loopback.
+
+`deploy/nginx/nginx.conf` is this file, running. The example compose stack
+([`../../deploy/README.md`](../../deploy/README.md)) puts it in front of the
+server with a self-signed certificate, and the only things it changes are
+deployment facts: `server_name localhost`, an upstream on the compose network
+rather than the loopback — which is why its `trusted_cidrs` is that network's
+fixed subnet rather than the loopback — the certificate paths, and the omitted
+`ssl_client_certificate` above. If the two ever have to disagree about a
+*rule*, this page is what gets corrected first.
 
 ---
 

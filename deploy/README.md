@@ -6,7 +6,8 @@ and every process is interchangeable with every other. That is a product
 decision rather than an accident, and it is what makes the rest of this document
 short.
 
-- [`compose/`](compose/) — a runnable example stack.
+- [`compose/`](compose/) — a runnable example stack, behind
+  [`nginx/nginx.conf`](nginx/nginx.conf) terminating TLS.
 - [`helm/asterius/`](helm/asterius/) — the Helm chart, and
   [`../docs/deployment/kubernetes.md`](../docs/deployment/kubernetes.md), the
   guide that goes with it.
@@ -30,6 +31,11 @@ docker compose -f deploy/compose/docker-compose.yml up --build -d
 ./scripts/smoke-test.sh
 ```
 
+That is the whole gesture: nothing has to be generated or edited first. The
+stack is four services — PostgreSQL, the server, an nginx terminating TLS in
+front of it, and a one-shot `certs` container that writes the certificate nginx
+needs before nginx starts.
+
 The password is exported rather than written into the compose file on purpose:
 it seeds the deployment admin, and a literal in a file everybody clones is a
 credential everybody has. The stack refuses to start without it.
@@ -43,12 +49,72 @@ a deployment-scoped role and authenticated at boot, the reserved tenant refuses
 to be deleted — and the container is running non-root, read-only and without a
 shell.
 
+It answers on **https://localhost** — 443, and 80 for a 308 to it. The server
+itself publishes no port at all: in `behind_proxy` mode it speaks cleartext and
+believes forwarding headers from the compose network, so reaching it directly
+would bypass every rule nginx enforces. If 443 or 80 is taken on your machine,
+change the left-hand side of the `ports:` entries *and* the two `issuer` values
+in `compose/asterius.toml`, which have to carry the port clients will use.
+
+### The certificate
+
+`deploy/certs/server.crt` and `server.key`, generated at first start by
+[`scripts/gen-self-signed.sh`](scripts/gen-self-signed.sh) and never committed
+— the directory is git-ignored. It is a self-signed P-256 certificate whose SAN
+is `localhost`, and it is its own trust anchor, so verification works without
+turning verification off:
+
+```sh
+curl --cacert deploy/certs/server.crt https://localhost/t/demo/.well-known/openid-configuration
+```
+
+The smoke test uses that same file by default, and never `--insecure`.
+
+- **Regenerate it**, after expiry or to change the name it is issued for:
+
+  ```sh
+  ASTERIUS_TLS_HOST=idp.lan ./deploy/scripts/gen-self-signed.sh --force
+  docker compose -f deploy/compose/docker-compose.yml restart nginx
+  ```
+
+  A new hostname also means new `issuer` values in `compose/asterius.toml` and
+  a `server_name` in `nginx/nginx.conf`: the issuer's authority is what clients
+  read out of the discovery document.
+
+- **Replace it with a real one** by putting the certificate chain at
+  `deploy/certs/server.crt` and its key at `server.key` — the generator skips a
+  pair that already exists — or by pointing the `../certs` mount at wherever
+  your certificates live. Nothing else changes: the nginx configuration names
+  those two paths and nothing about how they were obtained. The init container
+  writes as root, so `rm deploy/certs/server.*` first; the directory is yours,
+  which is enough to remove them.
+
+A self-signed certificate is the one development value in this stack that a
+client cannot be talked into accepting, and that is deliberate: it fails loudly
+rather than quietly becoming a deployment.
+
+### The proxy
+
+[`nginx/nginx.conf`](nginx/nginx.conf) is §8 of
+[`../docs/deployment/tls-and-proxy.md`](../docs/deployment/tls-and-proxy.md),
+deployed. Not a second version of it: the guide is the example, this file
+follows it, and where a rule and this deployment disagree it is the guide that
+gets corrected first. Four lines there are load-bearing — `proxy_pass` with no
+trailing slash so `/t/<tenant>` survives, `Host $http_host`, `Forwarded ""` and
+`X-Client-Cert $asterius_client_cert`, the last two of which overwrite anything
+a client sent. §10 of the guide is how you check that they did.
+
+`[server.proxy] trusted_cidrs` in `compose/asterius.toml` is the compose
+network's subnet, which is why that network is declared with a fixed one:
+"whatever Docker had free that day" is not a trust boundary anybody can write
+down.
+
 Everything in that stack is a development value, and every file says so. Before
 this shape is safe anywhere real:
 
 | Change | Why |
 | --- | --- |
-| Terminate TLS, in front or in-process | The example speaks cleartext on the loopback. FAPI 2.0 SP §5.2 requires TLS on every endpoint. [`../docs/deployment/tls-and-proxy.md`](../docs/deployment/tls-and-proxy.md) is the guide for both shapes. |
+| Replace the self-signed certificate | The example issues one to itself for `localhost`, which no client should ever be configured to trust. TLS itself is already there, per FAPI 2.0 SP §5.2; the certificate is the development value. [`../docs/deployment/tls-and-proxy.md`](../docs/deployment/tls-and-proxy.md) is the guide. |
 | Replace `ASTERIUS_KEK` with a mounted `keys.kek_file` | The example KEK is in the compose file, and an environment variable is readable through `/proc/self/environ`. |
 | Replace the database password | `asterius:asterius` is not a credential. |
 | Replace `ASTERIUS_ADMIN_PASSWORD` with a mounted `admin.password_file` | The variable is fine for a demo you started by hand; a real deployment mounts the admin password from its secret store, and rotating it is an edit to that file and a restart. |

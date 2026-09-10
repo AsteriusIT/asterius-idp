@@ -11,9 +11,15 @@
 #     ./scripts/smoke-test.sh
 #
 # Environment:
-#   BASE_URL   where to reach the server. Default http://127.0.0.1:9443
+#   BASE_URL   where to reach the deployment, through whatever terminates TLS
+#              in front of it. Default https://localhost
 #   ISSUER     the issuer the tenant must announce.
-#              Default https://localhost:9443/t/demo
+#              Default https://localhost/t/demo
+#   CACERT     a certificate to verify the deployment against. Defaults to the
+#              example stack's self-signed deploy/certs/server.crt when that
+#              file exists, and to the system trust store otherwise. This
+#              script never disables verification: a smoke test that accepts
+#              any certificate cannot tell you the right one is installed.
 #   TENANT     the tenant id. Default demo
 #   TIMEOUT    seconds to wait for readiness. Default 90
 #   CONTAINER  compose service to inspect for the container hardening checks.
@@ -23,9 +29,9 @@
 #   ADMIN_USERNAME the seeded admin's login identifier. Default admin.
 set -euo pipefail
 
-BASE_URL="${BASE_URL:-http://127.0.0.1:9443}"
+BASE_URL="${BASE_URL:-https://localhost}"
 TENANT="${TENANT:-demo}"
-ISSUER="${ISSUER:-https://localhost:9443/t/${TENANT}}"
+ISSUER="${ISSUER:-https://localhost/t/${TENANT}}"
 TIMEOUT="${TIMEOUT:-90}"
 CONTAINER="${CONTAINER:-asterius}"
 ADMIN_TENANT="${ADMIN_TENANT:-admin}"
@@ -33,8 +39,18 @@ ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 COMPOSE_FILE="${COMPOSE_FILE:-$(dirname "$0")/../deploy/compose/docker-compose.yml}"
 
 # The `Host` header decides which tenant a request is speaking to, and it has
-# to be the issuer's authority even when the transport is plain HTTP.
+# to be the issuer's authority. The proxy passes it through untouched
+# (docs/deployment/tls-and-proxy.md §3).
 HOST_HEADER="${HOST_HEADER:-$(printf '%s' "$ISSUER" | sed -e 's#^https\?://##' -e 's#/.*##')}"
+
+# The example stack terminates TLS with a certificate it generated for itself,
+# so it is its own trust anchor (deploy/scripts/gen-self-signed.sh). Against a
+# real deployment CACERT is empty and curl uses the system store.
+CACERT="${CACERT:-$(dirname "$0")/../deploy/certs/server.crt}"
+tls_opts=()
+if [ -n "$CACERT" ] && [ -s "$CACERT" ]; then
+  tls_opts=(--cacert "$CACERT")
+fi
 
 failures=0
 
@@ -48,6 +64,7 @@ fail() {
 # retries hides the flakiness it exists to find.
 get() {
   curl --silent --show-error --fail-with-body \
+    "${tls_opts[@]}" \
     --header "Host: ${HOST_HEADER}" \
     --max-time 10 \
     "${BASE_URL}$1"
@@ -55,6 +72,7 @@ get() {
 
 status_of() {
   curl --silent --output /dev/null --write-out '%{http_code}' \
+    "${tls_opts[@]}" \
     --header "Host: ${HOST_HEADER}" \
     --max-time 10 \
     "${BASE_URL}$1"
