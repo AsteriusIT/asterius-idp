@@ -38,7 +38,7 @@ cryptography, and not through ad-hoc calls at each feature — a second path is 
 path with a second policy.
 
 **Layering.** The port takes bytes in and bytes out
-(`asterius_domain::ports::JwksFetcher`); parsing lives in `asterius-jose`; the
+(`asterius_domain::ports::ClientUrlFetcher`); parsing lives in `asterius-jose`; the
 socket lives in `asterius-server`. `scripts/check-layering.sh` bans `hyper` from
 `asterius-jose` and that ban is right on its merits: dereferencing an
 attacker-chosen URL is a security decision with its own surface, and it belongs

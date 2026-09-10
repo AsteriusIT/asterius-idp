@@ -15,6 +15,7 @@ pub mod ids;
 pub mod issuer;
 pub mod json_sentinel;
 pub mod keys;
+pub mod limits;
 pub mod ports;
 pub mod rate_limit;
 pub mod secret;
@@ -64,6 +65,7 @@ pub use keys::{
     Activation, CompactJws, KeyAdministration, KeyRotation, KeyState, KeyStore, Kid,
     PublicKeyRecord, RotationSchedule, Signer, SigningAlgorithm,
 };
+pub use limits::MAX_JWT_BYTES;
 pub use ports::{
     AuthRequestRepository, AuthorizationDetailsTypeRepository, ClientAdministration,
     ClientConfiguration, ClientRegistry, ClientRepository, ClientUsageRecorder, CodeIssuer,

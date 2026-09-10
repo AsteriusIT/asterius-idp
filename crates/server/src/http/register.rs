@@ -56,7 +56,7 @@ use crate::http::software_statement;
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::keys::SigningAlgorithm;
-use asterius_domain::ports::{InitialAccessTokenStore, JwksFetcher};
+use asterius_domain::ports::{ClientUrlFetcher, InitialAccessTokenStore};
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration, ClientRegistry,
     ClientStatus, InitialAccessTokenReservation, JwksSource, KeyStore, OpaqueToken,
@@ -417,7 +417,7 @@ pub struct RegisterContext<'a> {
     /// authenticates, so a registration is not the moment to find out whether
     /// its key server is up. The port is ADR-0006's single outbound path, held
     /// as a port so the rule can be tested without a socket.
-    pub outbound: &'a dyn JwksFetcher,
+    pub outbound: &'a dyn ClientUrlFetcher,
     /// This tenant's own initial access tokens (`ast-cu3`), when a store is
     /// wired.
     ///

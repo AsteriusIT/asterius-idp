@@ -413,7 +413,7 @@ Confidential-only client model with FAPI 2.0 metadata, private_key_jwt (and opti
 
 *feature · P0 · labels: area:clients, spec:rfc7591, spec:oidc-registration, spec:fapi2-sp, status:final*
 
-**Spec:** RFC 7591 §2 (client metadata), §2.1 (grant_types ↔ response_types consistency); OIDC Registration §2 (application_type, subject_type, sector_identifier_uri, id_token_signed_response_alg, token_endpoint_auth_method …); RFC 9126 §6 (`require_pushed_authorization_requests`); RFC 9449 §12 (`dpop_bound_access_tokens`); RFC 9396 §9.2 (`authorization_details_types`); CIBA §4 (backchannel_* client metadata); FAPI 2.0 SP §5.2.2.1.1 (`use_mtls_endpoint_aliases`), §5.3.2.1 item 3 ('shall only support confidential clients').
+**Spec:** RFC 7591 §2 (client metadata), §2.1 (grant_types ↔ response_types consistency); OIDC Registration §2 (application_type, subject_type, sector_identifier_uri, id_token_signed_response_alg, token_endpoint_auth_method …); RFC 9126 §6 (`require_pushed_authorization_requests`); RFC 9449 §5.2 (`dpop_bound_access_tokens`); RFC 9396 §9.2 (`authorization_details_types`); CIBA §4 (backchannel_* client metadata); FAPI 2.0 SP §5.2.2.1.1 (`use_mtls_endpoint_aliases`), §5.3.2.1 item 3 ('shall only support confidential clients').
 
 `Client` aggregate + validating parser used by DCR, admin API and seed scripts. Defaults are the FAPI values; anything weaker is rejected, not defaulted.
 
@@ -563,7 +563,7 @@ OpenID Provider configuration and RFC 8414 metadata generated from a single capa
 
 *feature · P0 · labels: area:discovery, spec:oidc-discovery, spec:fapi2-sp, spec:mcp, status:final*
 
-**Spec:** OIDC Discovery §3 (OpenID Provider Metadata: REQUIRED issuer, authorization_endpoint, token_endpoint, jwks_uri, response_types_supported, subject_types_supported, id_token_signing_alg_values_supported; others), §4.1 (request), §4.2 (response: application/json, 200), §4.3 (validation: issuer MUST be identical to the URL used); FAPI 2.0 SP §5.3.2.1 item 1 (distribute metadata via OIDD/RFC 8414); RFC 9126 §5; RFC 9207 §3; RFC 9449 §11; RFC 9396 §9.1; MCP Authorization 2025-11-25 ('Authorization servers providing OpenID Connect Discovery 1.0 MUST include code_challenge_methods_supported').
+**Spec:** OIDC Discovery §3 (OpenID Provider Metadata: REQUIRED issuer, authorization_endpoint, token_endpoint, jwks_uri, response_types_supported, subject_types_supported, id_token_signing_alg_values_supported; others), §4.1 (request), §4.2 (response: application/json, 200), §4.3 (validation: issuer MUST be identical to the URL used); FAPI 2.0 SP §5.3.2.1 item 1 (distribute metadata via OIDD/RFC 8414); RFC 9126 §5; RFC 9207 §3; RFC 9449 §5.1 (`dpop_signing_alg_values_supported`); RFC 9396 §9.1; MCP Authorization 2025-11-25 ('Authorization servers providing OpenID Connect Discovery 1.0 MUST include code_challenge_methods_supported').
 
 Rendered from the capability registry (E04_03) per tenant; served at the path-appended form and the path-inserted form.
 
@@ -1198,7 +1198,7 @@ Opaque ≥256-bit refresh tokens stored as SHA-256 digests with grant, client, s
 
 *feature · P0 · labels: area:token, spec:rfc9449, spec:fapi2-sp, status:final*
 
-**Spec:** RFC 9449 §4.1 (`DPoP` header), §4.2 (proof JWT: typ dpop+jwt, alg asymmetric ≠ none, jwk public key; claims jti, htm, htu, iat, nonce, ath), §4.3 (checking: exactly one header; parse; typ; alg; signature with jwk; jti replay; htm/htu match; iat window; nonce), §5 (token request: `token_type: DPoP`; error `invalid_dpop_proof`), §6.1 (`cnf.jkt` = JWK thumbprint RFC 7638), §8 (AS-provided nonce: `use_dpop_nonce` 400 + `DPoP-Nonce` header), §10.1 (`dpop_jkt` authorization request parameter), §10.2 (in PAR), §11 (`dpop_signing_alg_values_supported`), §12 (`dpop_bound_access_tokens`), §13 (security: htu normalisation, replay); FAPI 2.0 SP §5.3.2.1 items 4–5 (sender-constrained via DPoP), 10 (nonce MAY), 12 (must support code binding to DPoP key), 13 (skew).
+**Spec:** RFC 9449 §4.1 (`DPoP` header), §4.2 (proof JWT: typ dpop+jwt, alg asymmetric ≠ none, jwk public key; claims jti, htm, htu, iat, nonce, ath), §4.3 (checking: exactly one header; parse; typ; alg; signature with jwk; jti replay; htm/htu match; iat window; nonce), §5 (token request: `token_type: DPoP`; error `invalid_dpop_proof`), §5.1 (`dpop_signing_alg_values_supported`), §5.2 (`dpop_bound_access_tokens`), §6.1 (`cnf.jkt` = JWK thumbprint RFC 7638), §8 (AS-provided nonce: `use_dpop_nonce` 400 + `DPoP-Nonce` header), §10 (`dpop_jkt` authorization request parameter), §10.1 (in PAR), §11.1 (security: proof replay; htu normalisation is §4.3's last paragraph, per RFC 3986 §6.2.2–6.2.3); FAPI 2.0 SP §5.3.2.1 items 4–5 (sender-constrained via DPoP), 10 (nonce MAY), 12 (must support code binding to DPoP key), 13 (skew).
 
 Proof validation middleware for token, PAR (dpop_jkt correlation), UserInfo, introspection (optional), grant-management, SSF-management and AuthZEN endpoints. Replay store in PostgreSQL keyed by (tenant, jkt, jti) with TTL = iat window.
 

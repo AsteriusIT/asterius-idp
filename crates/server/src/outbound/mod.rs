@@ -7,7 +7,7 @@
 //!
 //! [`ssrf`] answers that as pure functions over a URL and an address, so the
 //! rules can be table-tested without a socket. [`jwks`] is the one adapter
-//! behind [`asterius_domain::ports::JwksFetcher`], written for a client's
+//! behind [`asterius_domain::ports::ClientUrlFetcher`], written for a client's
 //! `jwks_uri` in `ast-mxc.5`; [`sector`] is a second *caller* of that same
 //! adapter — ADR-0006's "one outbound path" — for the
 //! `sector_identifier_uri` of `ast-m9c.9`.
@@ -16,4 +16,4 @@ pub mod jwks;
 pub mod sector;
 pub mod ssrf;
 
-pub use jwks::HttpsJwksFetcher;
+pub use jwks::HttpsClientUrlFetcher;

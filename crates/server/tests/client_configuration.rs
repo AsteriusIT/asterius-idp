@@ -13,7 +13,7 @@
 
 use asterius_domain::audit::{AuditEvent, AuditSink, EventType, Outcome};
 use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
     ClientStatus, DomainError, Issuer, KeyStore, Kid, ManagedClient, OpaqueToken, PublicKeyRecord,
@@ -300,7 +300,7 @@ impl FakeOutbound {
 }
 
 #[async_trait::async_trait]
-impl JwksFetcher for FakeOutbound {
+impl ClientUrlFetcher for FakeOutbound {
     async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
         self.document
             .clone()

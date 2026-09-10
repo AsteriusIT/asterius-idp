@@ -1116,7 +1116,7 @@ fn assemble(
         keys.clone(),
         Arc::new(asterius_domain::ports::SystemClock),
     ));
-    let outbound: Arc<dyn asterius_domain::ports::JwksFetcher> = Arc::new(NoFetching);
+    let outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher> = Arc::new(NoFetching);
     let replay: Arc<dyn asterius_domain::ReplayGuard> =
         Arc::new(PgReplayGuard::new(store.pool().clone()));
     let authenticator = Arc::new(
@@ -1177,7 +1177,7 @@ fn assemble(
 struct NoFetching;
 
 #[async_trait::async_trait]
-impl asterius_domain::ports::JwksFetcher for NoFetching {
+impl asterius_domain::ports::ClientUrlFetcher for NoFetching {
     async fn fetch(&self, _url: &str) -> Result<Vec<u8>, asterius_domain::DomainError> {
         panic!("a test reached the network; the client's keys are inline");
     }
@@ -2895,7 +2895,7 @@ async fn second_code(flow: &mut Flow, request_uri: &str) -> String {
     parameter(&answered.location(), "code").expect("RFC 6749 §4.1.2 requires a code")
 }
 
-/// **RFC 9449 §10.2**: a `DPoP` header on the push pins the code to that key,
+/// **RFC 9449 §10.1**: a `DPoP` header on the push pins the code to that key,
 /// and no other key redeems it.
 ///
 /// This is `ast-36g`'s shape end to end, through the assembled application:

@@ -1,6 +1,6 @@
 //! Fetching a client's JWK Set, over a connection this server chose.
 //!
-//! The adapter behind [`asterius_domain::ports::JwksFetcher`]. It lives in the
+//! The adapter behind [`asterius_domain::ports::ClientUrlFetcher`]. It lives in the
 //! composition root and nowhere else: `asterius-jose` parses JWK Sets and
 //! caches them but cannot open a socket, which
 //! [`scripts/check-layering.sh`](../../../../../scripts/check-layering.sh)
@@ -35,7 +35,7 @@
 
 use crate::outbound::ssrf::{self, Target, UrlRefused};
 use asterius_domain::DomainError;
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::ClientUrlFetcher;
 use http_body_util::{BodyExt as _, Empty};
 use hyper::body::Bytes;
 use hyper::header::{ACCEPT, CONTENT_TYPE, HOST, USER_AGENT};
@@ -204,17 +204,18 @@ impl From<FetchError> for DomainError {
 /// that outlives the request it was opened for, and the saving — one handshake
 /// per client per cache TTL — is not worth reasoning about it.
 #[derive(Clone)]
-pub struct HttpsJwksFetcher {
+pub struct HttpsClientUrlFetcher {
     tls: Arc<rustls::ClientConfig>,
 }
 
-impl std::fmt::Debug for HttpsJwksFetcher {
+impl std::fmt::Debug for HttpsClientUrlFetcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HttpsJwksFetcher").finish_non_exhaustive()
+        f.debug_struct("HttpsClientUrlFetcher")
+            .finish_non_exhaustive()
     }
 }
 
-impl HttpsJwksFetcher {
+impl HttpsClientUrlFetcher {
     /// Builds a fetcher trusting the Mozilla root programme's certificate
     /// authorities.
     ///
@@ -440,7 +441,7 @@ fn is_jwk_set_media_type(header: &str) -> bool {
 }
 
 #[async_trait::async_trait]
-impl JwksFetcher for HttpsJwksFetcher {
+impl ClientUrlFetcher for HttpsClientUrlFetcher {
     async fn fetch(&self, url: &str) -> Result<Vec<u8>, DomainError> {
         // One timeout over the whole exchange, resolution included. A per-step
         // timeout would let a server that is slow at every step hold the
@@ -474,7 +475,7 @@ mod tests {
     /// deployment that cannot fetch any client's keys.
     #[test]
     fn the_tls_configuration_builds_and_offers_only_http_1_1() {
-        let fetcher = HttpsJwksFetcher::new().expect("build");
+        let fetcher = HttpsClientUrlFetcher::new().expect("build");
         assert_eq!(fetcher.tls.alpn_protocols, vec![b"http/1.1".to_vec()]);
     }
 
@@ -482,7 +483,7 @@ mod tests {
     /// client offers what the listener offers, not rustls' defaults.
     #[test]
     fn the_outbound_client_uses_the_same_cipher_suites_as_the_listener() {
-        let fetcher = HttpsJwksFetcher::new().expect("build");
+        let fetcher = HttpsClientUrlFetcher::new().expect("build");
         let offered: Vec<_> = fetcher
             .tls
             .crypto_provider()
@@ -548,8 +549,9 @@ mod tests {
     /// `jwks` resolves through the pair without a socket existing.
     #[tokio::test]
     async fn the_fetcher_satisfies_the_port_the_key_cache_is_built_on() {
-        let cache =
-            asterius_jose::ClientKeyCache::new(Arc::new(HttpsJwksFetcher::new().expect("build")));
+        let cache = asterius_jose::ClientKeyCache::new(Arc::new(
+            HttpsClientUrlFetcher::new().expect("build"),
+        ));
         let key = asterius_jose::SigningKey::generate(asterius_domain::SigningAlgorithm::EdDsa)
             .expect("generate");
         let mut jwk = key.public_jwk().expect("jwk");
@@ -573,7 +575,7 @@ mod tests {
     /// one that needs no network to test.
     #[tokio::test]
     async fn a_loopback_url_is_refused_without_a_connection_being_attempted() {
-        let fetcher = HttpsJwksFetcher::new().expect("build");
+        let fetcher = HttpsClientUrlFetcher::new().expect("build");
         for refused in [
             "https://127.0.0.1/jwks",
             "https://[::1]/jwks",

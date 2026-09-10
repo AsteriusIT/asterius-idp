@@ -21,7 +21,7 @@
 //! chose is a security decision of its own size — which addresses, which
 //! redirects, how many bytes — and it belongs in one place, next to the socket,
 //! rather than smuggled into a crate whose job is cryptography. The fetch is
-//! [`asterius_domain::ports::JwksFetcher`], implemented in
+//! [`asterius_domain::ports::ClientUrlFetcher`], implemented in
 //! `asterius_server::outbound`, and this module holds it at arm's length behind
 //! that port.
 //!
@@ -41,7 +41,7 @@
 
 use crate::verify::KeyResolver;
 use crate::{MIN_RSA_BITS, VerifyingKey};
-use asterius_domain::ports::{ClientKeyFetchBackoff, JwksFetcher};
+use asterius_domain::ports::{ClientKeyFetchBackoff, ClientUrlFetcher};
 use asterius_domain::{ClientId, JwksSource, Kid, SigningAlgorithm, TenantId};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -648,7 +648,7 @@ struct Entry {
 /// consulted only when the map would otherwise fetch, which is exactly the
 /// moment the decision matters.
 pub struct ClientKeyCache {
-    fetcher: std::sync::Arc<dyn JwksFetcher>,
+    fetcher: std::sync::Arc<dyn ClientUrlFetcher>,
     limits: CacheLimits,
     entries: Mutex<HashMap<(TenantId, ClientId), Entry>>,
     counters: Counters,
@@ -672,13 +672,13 @@ impl std::fmt::Debug for ClientKeyCache {
 impl ClientKeyCache {
     /// A cache over `fetcher`, with the defaults above.
     #[must_use]
-    pub fn new(fetcher: std::sync::Arc<dyn JwksFetcher>) -> Self {
+    pub fn new(fetcher: std::sync::Arc<dyn ClientUrlFetcher>) -> Self {
         Self::with_limits(fetcher, CacheLimits::default())
     }
 
     /// A cache with limits chosen by the caller.
     #[must_use]
-    pub fn with_limits(fetcher: std::sync::Arc<dyn JwksFetcher>, limits: CacheLimits) -> Self {
+    pub fn with_limits(fetcher: std::sync::Arc<dyn ClientUrlFetcher>, limits: CacheLimits) -> Self {
         Self {
             fetcher,
             limits,
@@ -1416,7 +1416,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl JwksFetcher for StubFetcher {
+    impl ClientUrlFetcher for StubFetcher {
         async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.response
