@@ -22,6 +22,10 @@
 //!   host would let a proof for one server be accepted at another.
 //! * **Normalisation is idempotent**, or the comparison depends on how many
 //!   times each side has been through it.
+//! * **The hex digits of a percent-triplet are case-insensitive** (RFC 3986
+//!   §2.1) and come out uppercase (§6.2.2.1). `%2f` and `%2F` name one path, so
+//!   a proof that spells a reserved octet in lowercase must not be refused —
+//!   that is a false break of the binding, and it is what `ast-7t9` was.
 //! * **A nonce is only ever accepted inside its two windows**, and never one
 //!   derived from a different secret or a different audience.
 //!
@@ -154,6 +158,9 @@ enum HtuChoice {
     EncodedDotSegment,
     PercentEncodedUnreserved,
     EncodedSlash,
+    /// The same reserved slash, spelled with lowercase hex — RFC 3986 §2.1
+    /// makes it the same path (`ast-7t9`).
+    LowerCaseEncodedSlash,
     TrailingSlash,
     OtherPath,
     OtherHost,
@@ -257,6 +264,23 @@ fn check_uri_normalisation(input: &Input) {
             "normalising {raw:?} twice changed the answer"
         );
 
+        // RFC 3986 §2.1: the two hex digits of a triplet are case-insensitive,
+        // and §6.2.2.1 makes uppercase the normal form. Two consequences, and
+        // the first is the one `ast-7t9` broke: a path spelled with lowercase
+        // hex must normalise to the same string, or a conforming client's
+        // proof is refused for naming the endpoint it does name.
+        assert!(
+            !has_lowercase_triplet(normalised.as_str()),
+            "normalising {raw:?} left a lowercase triplet: {normalised}"
+        );
+        let flipped = with_lowercased_triplets(&normalised);
+        let reflipped =
+            NormalisedUri::parse(&flipped).expect("lowercasing hex changes no octet, so it parses");
+        assert_eq!(
+            normalised, reflipped,
+            "{flipped:?} and {normalised} are one URI but normalised differently"
+        );
+
         // The authority is preserved up to case. This is the property that
         // makes the whole comparison a binding: if normalisation could rewrite
         // the host, a proof for one server would be accepted at another.
@@ -287,6 +311,57 @@ fn check_uri_normalisation(input: &Input) {
         // And only the two schemes whose normalisation RFC 9110 §4.2.3 defines.
         assert!(matches!(after.scheme(), "http" | "https"));
     }
+}
+
+/// Walks a path the way the normaliser does — three bytes for a well-formed
+/// triplet, one otherwise — reporting each triplet's two hex digits and
+/// returning the path with those digits lowercased. Scanning the same way
+/// matters: a `%` that begins no triplet must not let the two scanners
+/// disagree about where the next one starts.
+fn lowercase_triplets(path: &str, mut on_triplet: impl FnMut(u8, u8)) -> String {
+    let bytes = path.as_bytes();
+    let mut out = String::with_capacity(path.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match (bytes.get(index + 1).copied(), bytes.get(index + 2).copied()) {
+            (Some(high), Some(low))
+                if bytes[index] == b'%' && high.is_ascii_hexdigit() && low.is_ascii_hexdigit() =>
+            {
+                on_triplet(high, low);
+                out.push('%');
+                out.push(char::from(high.to_ascii_lowercase()));
+                out.push(char::from(low.to_ascii_lowercase()));
+                index += 3;
+            }
+            _ => {
+                out.push(char::from(bytes[index]));
+                index += 1;
+            }
+        }
+    }
+    out
+}
+
+/// True if any triplet in the URI's path spells a hex digit in lowercase.
+fn has_lowercase_triplet(uri: &str) -> bool {
+    let parsed = url::Url::parse(uri).expect("a normalised URI parses");
+    let mut lowercase = false;
+    lowercase_triplets(parsed.path(), |high, low| {
+        lowercase |= high.is_ascii_lowercase() || low.is_ascii_lowercase();
+    });
+    lowercase
+}
+
+/// The same URI with every triplet's hex digits lowercased. Only the path is
+/// touched, and the path is a suffix of a normalised URI (no query, no
+/// fragment), so this is string surgery rather than a re-encode that could
+/// introduce escapes of its own.
+fn with_lowercased_triplets(uri: &NormalisedUri) -> String {
+    let text = uri.as_str();
+    let parsed = url::Url::parse(text).expect("a normalised URI parses");
+    let path = parsed.path();
+    let start = text.len() - path.len();
+    format!("{}{}", &text[..start], lowercase_triplets(path, |_, _| {}))
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +731,7 @@ fn render_htu(choice: &HtuChoice) -> String {
         HtuChoice::EncodedDotSegment => "https://as.example/t/other/%2E%2E/demo/token".to_owned(),
         HtuChoice::PercentEncodedUnreserved => "https://as.example/t/demo/%74oken".to_owned(),
         HtuChoice::EncodedSlash => "https://as.example/t%2Fdemo/token".to_owned(),
+        HtuChoice::LowerCaseEncodedSlash => "https://as.example/t%2fdemo/token".to_owned(),
         HtuChoice::TrailingSlash => "https://as.example/t/demo/token/".to_owned(),
         HtuChoice::OtherPath => "https://as.example/t/demo/introspect".to_owned(),
         HtuChoice::OtherHost => "https://attacker.example/t/demo/token".to_owned(),

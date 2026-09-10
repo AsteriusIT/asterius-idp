@@ -283,7 +283,12 @@ impl DpopError {
 ///    removed again. RFC 9110 §4.2.3, fourth bullet: `%7E` and `~` are the same
 ///    character and the normal form is not to encode it. Decoding is limited
 ///    to the unreserved set of RFC 3986 §2.3 — never `%2F`, never `%3F` — so
-///    it cannot introduce a delimiter and change the URI's structure. The
+///    it cannot introduce a delimiter and change the URI's structure. A
+///    triplet that stays encoded has its **hex digits uppercased**, per RFC
+///    3986 §6.2.2.1 ("should be normalized to use uppercase letters"): §2.1
+///    makes `%2f` and `%2F` the same octet, so a client that spells a reserved
+///    character in lowercase names the same path and its proof must not be
+///    refused. The
 ///    second dot-segment pass is RFC 3986 §6.2.2's own ordering: percent-
 ///    encoding normalisation (§6.2.2.2) precedes path segment normalisation
 ///    (§6.2.2.3), so a decoded `%2E%2E` has to be collapsed like the `..` it
@@ -378,10 +383,12 @@ impl std::fmt::Display for NormalisedUri {
 
 /// Decodes percent-escapes that name an unreserved character (RFC 3986 §2.3).
 ///
-/// Only `ALPHA / DIGIT / "-" / "." / "_" / "~"`. Every other escape is left
-/// exactly as it arrived — decoding a reserved octet such as `%2F` would change
-/// where the path's segment boundaries are, which is the difference between
-/// normalising a URI and rewriting it.
+/// Only `ALPHA / DIGIT / "-" / "." / "_" / "~"`. Every other escape is kept as
+/// an escape — decoding a reserved octet such as `%2F` would change where the
+/// path's segment boundaries are, which is the difference between normalising
+/// a URI and rewriting it — but its two hex digits are uppercased, which is the
+/// normal form of RFC 3986 §6.2.2.1 and changes no octet (§2.1: the hexadecimal
+/// digits are case-insensitive).
 ///
 /// A `%` that begins no escape at all is written out as `%25`, which is what
 /// RFC 3986 §2.1 says a literal percent sign is. The output therefore contains
@@ -420,10 +427,20 @@ fn decode_unreserved(path: &str) -> String {
                 index += 3;
             }
             // A well-formed triplet that must stay encoded — `%2F`, `%3F`.
-            // Copied whole, so the two hex digits are never re-examined as
-            // the start of something else.
-            (Some(_), Some(_)) => {
-                out.extend_from_slice(&bytes[index..index + 3]);
+            // Rewritten from the decoded nibbles rather than copied, so that
+            // the hex digits come out uppercase: RFC 3986 §2.1 makes `%2f`
+            // and `%2F` the same octet and §6.2.2.1 names the uppercase
+            // spelling as the normal form. Copying the input verbatim let two
+            // spellings of one path compare unequal, which is a false break
+            // of the `htu` binding (`ast-7t9`). Uppercase hex maps to itself,
+            // so this stays a fixed point. Three bytes in, three bytes out,
+            // and `index` still steps past both digits, so neither is ever
+            // re-examined as the start of something else.
+            (Some(high), Some(low)) => {
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                out.push(b'%');
+                out.push(HEX[high as usize]);
+                out.push(HEX[low as usize]);
                 index += 3;
             }
             // A `%` that begins no triplet at all. RFC 3986 §2.1 has no such
@@ -1531,6 +1548,30 @@ mod tests {
         assert_eq!(
             NormalisedUri::parse("https://as.example/a%25").expect("parse"),
             NormalisedUri::parse("https://as.example/a%").expect("parse")
+        );
+    }
+
+    /// RFC 3986 §2.1: "The uppercase hexadecimal digits 'A' through 'F' are
+    /// equivalent to the lowercase digits". §6.2.2.1 names the uppercase
+    /// spelling as the normal form. A client that encodes a reserved octet in
+    /// lowercase names the very same path, and refusing its proof would be a
+    /// false break of the `htu` binding.
+    #[test]
+    fn the_hex_of_a_retained_triplet_is_case_insensitive() {
+        assert_eq!(
+            NormalisedUri::parse("https://as.example/t%2fdemo/token").expect("parse"),
+            NormalisedUri::parse("https://as.example/t%2Fdemo/token").expect("parse")
+        );
+    }
+
+    /// RFC 3986 §6.2.2.1: the normal form of a retained triplet is uppercase.
+    #[test]
+    fn a_retained_triplet_is_normalised_to_uppercase_hex() {
+        assert_eq!(
+            NormalisedUri::parse("https://as.example/t%2fdemo/token")
+                .expect("parse")
+                .as_str(),
+            "https://as.example/t%2Fdemo/token"
         );
     }
 
