@@ -37,10 +37,10 @@
 
 use crate::csp::Nonce;
 use crate::pages::{
-    ConsentPage, DeviceConfirmationPage, DeviceOutcomePage, DevicePage, EmailVerificationPage,
-    ErrorPage, FormPostPage, LoggedOutPage, LoginPage, LogoutConfirmationPage, NewPasswordPage,
-    PasskeyPage, PasswordResetRequestPage, PasswordResetSentPage, RegistrationPage, ResponseField,
-    ScopeLine, nonce_attribute, render,
+    ConsentPage, DetailLine, DeviceConfirmationPage, DeviceOutcomePage, DevicePage,
+    EmailVerificationPage, ErrorPage, FormPostPage, LoggedOutPage, LoginPage,
+    LogoutConfirmationPage, NewPasswordPage, PasskeyPage, PasswordResetRequestPage,
+    PasswordResetSentPage, RegistrationPage, ResponseField, ScopeLine, nonce_attribute, render,
 };
 use std::path::{Path, PathBuf};
 
@@ -147,6 +147,25 @@ fn consent(locale: &str) -> String {
         ],
         offline_access: true,
         resources: vec!["https://api.example.test/".to_owned()],
+        // RFC 9396 §2: one described element and one the operator registered
+        // without a sentence, so the golden pins both — and pins that neither
+        // renders the element's JSON.
+        authorization_details: vec![
+            DetailLine {
+                name: "payment_initiation".to_owned(),
+                description: Some("Initiate a payment of 30.00 EUR".to_owned()),
+                locations: vec!["https://api.example.test/".to_owned()],
+                actions: vec!["initiate".to_owned(), "status".to_owned()],
+                datatypes: vec!["payments".to_owned()],
+            },
+            DetailLine {
+                name: "account_information".to_owned(),
+                description: None,
+                locations: Vec::new(),
+                actions: Vec::new(),
+                datatypes: Vec::new(),
+            },
+        ],
         action: "/interaction/abc/consent",
         csrf: CSRF,
         nonce_attribute: nonce(),

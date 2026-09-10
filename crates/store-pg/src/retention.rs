@@ -140,6 +140,14 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "authorization_details_types",
+        rule: Rule::Kept(
+            "a registered authorization details type is configuration: it is withdrawn by an \
+             operator, and a sweep that removed one would refuse every pushed request naming it \
+             (RFC 9396 §2.1)",
+        ),
+    },
+    Retention {
         table: "users",
         rule: Rule::Kept("an account is deleted by a person, not by a sweep"),
     },

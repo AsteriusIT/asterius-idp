@@ -4,11 +4,11 @@
 //! Protocol crates depend on these traits and never on an implementation.
 
 use crate::{
-    AuthenticationMethod, Client, ClientId, ClientMetadataError, ClientRegistration, ClientStatus,
-    CodeBinding, Consumed, DomainError, Enrolment, FirstPartyDestination, Grant, InteractionRecord,
-    Issuer, NewPasskey, Participant, PushedRequest, RegisteredPasskey, ResourceServer, Secret,
-    SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings,
-    User, UserId,
+    AuthenticationMethod, AuthorizationDetailsType, Client, ClientId, ClientMetadataError,
+    ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError, Enrolment,
+    FirstPartyDestination, Grant, InteractionRecord, Issuer, NewPasskey, Participant,
+    PushedRequest, RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session,
+    SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -112,6 +112,27 @@ pub trait ResourceServerRepository: Debug + Send + Sync {
     /// nothing": that would refuse every token request during an outage while
     /// looking like a configuration change rather than a failure.
     async fn list(&self) -> Result<Vec<ResourceServer>, DomainError>;
+}
+
+/// One tenant's registered authorization details types (RFC 9396 §2.1).
+///
+/// The same shape as [`ResourceServerRepository`] and for the same reason: it
+/// is read on the request path — every pushed authorization request that
+/// carries `authorization_details`, and the metadata document that advertises
+/// §9.1's `authorization_details_types_supported` — and one request may name
+/// several types.
+#[async_trait::async_trait]
+pub trait AuthorizationDetailsTypeRepository: Debug + Send + Sync {
+    /// Every type this tenant has registered, ordered by name.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store cannot be reached, or
+    /// [`DomainError::Invalid`] if a stored schema is not one this server can
+    /// validate against. Neither may be read as "this tenant has registered
+    /// nothing": that would turn an outage into what looks like a deliberate
+    /// withdrawal of every type, and admit nothing while advertising nothing.
+    async fn list(&self) -> Result<Vec<AuthorizationDetailsType>, DomainError>;
 }
 
 /// Something that can only be reached through a tenant.

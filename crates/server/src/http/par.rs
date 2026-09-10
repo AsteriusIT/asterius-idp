@@ -55,6 +55,15 @@ pub struct PushContext<'a> {
     /// storing the request instead would mean the flow runs, the person signs
     /// in and consents, and the redemption then fails with `invalid_target`.
     pub resource_servers: &'a dyn asterius_domain::ResourceServerRepository,
+    /// This tenant's registered authorization details types (RFC 9396 §2.1).
+    ///
+    /// Consulted here for the reason the resource server registry is: an
+    /// `authorization_details` naming a type this deployment does not define,
+    /// or an element that does not satisfy that type's schema, is a mistake the
+    /// client can fix on this connection. Storing the request instead would
+    /// mean the flow runs, the person is shown a consent page describing an
+    /// authorization nobody can render, and the redemption then fails.
+    pub authorization_details_types: &'a dyn asterius_domain::AuthorizationDetailsTypeRepository,
     /// This tenant's published and retired keys, for the `id_token_hint`.
     ///
     /// OIDC Core §3.1.2.1 says the hint "MUST be validated", and this is the
@@ -180,6 +189,15 @@ pub async fn push(
     // parameter". `authorize::validate` has checked its shape and the client's
     // own allow-list; what is left needs the registry, and so needs I/O.
     if let Some(refusal) = refuse_an_unregistered_resource(&context, &request).await {
+        return refusal;
+    }
+
+    // RFC 9396 §3, the half `authorize::validate` could not do without I/O:
+    // the type is one this tenant defines, and the element satisfies its
+    // schema.
+    if let Some(refusal) =
+        refuse_an_unusable_authorization_detail(&context, &client, &request).await
+    {
         return refusal;
     }
 
@@ -391,6 +409,91 @@ async fn refuse_an_unregistered_resource(
         })
 }
 
+/// Refuses an `authorization_details` this tenant cannot honour (RFC 9396 §3).
+///
+/// `authorize::validate` has already checked the shape, the limits and the
+/// client's own §9.2 `authorization_details_types`. What is left needs the
+/// registry, and so needs I/O: the type must be one this tenant has defined,
+/// the element must satisfy that type's schema, and every §2.2 `locations`
+/// value must be a resource server the client could actually be issued a token
+/// for.
+///
+/// That last set is the intersection of the client's RFC 8707 allow-list and
+/// this tenant's resource registry, computed here rather than taken from either
+/// alone: a `locations` naming an API the client may not reach is an
+/// authorization it could never exercise, and one naming an API this deployment
+/// withdrew is an audience nothing answers to.
+///
+/// A registry that cannot be read is `temporarily_unavailable` and not
+/// `invalid_authorization_details`, for the reason the resource check gives:
+/// "we cannot tell" must not be spelled like "you asked for something that does
+/// not exist".
+///
+/// `None` when the request may be stored, which is every request that carried
+/// no `authorization_details`.
+async fn refuse_an_unusable_authorization_detail(
+    context: &PushContext<'_>,
+    client: &Client,
+    request: &authorize::AuthorizationRequest,
+) -> Option<Response> {
+    if request.authorization_details.is_empty() {
+        return None;
+    }
+    let registry = match context.authorization_details_types.list().await {
+        Ok(types) => asterius_domain::AuthorizationDetailsRegistry::new(types),
+        Err(failure) => {
+            tracing::error!(%failure, tenant = %context.tenant.id, "cannot read the authorization details type registry");
+            return Some(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                "the request could not be validated",
+            ));
+        }
+    };
+
+    // Only read when an element actually names a location, so a tenant whose
+    // clients do not use `locations` pays nothing for the feature.
+    let permitted_locations = if request.authorization_details.locations().is_empty() {
+        std::collections::BTreeSet::new()
+    } else {
+        match context.resource_servers.list().await {
+            Ok(servers) => {
+                let registered = asterius_domain::ResourceRegistry::new(servers);
+                client
+                    .registration
+                    .resources
+                    .iter()
+                    .filter(|resource| registered.registers(resource))
+                    .cloned()
+                    .collect()
+            }
+            Err(failure) => {
+                tracing::error!(%failure, tenant = %context.tenant.id, "cannot read the resource server registry");
+                return Some(error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "temporarily_unavailable",
+                    "the request could not be validated",
+                ));
+            }
+        }
+    };
+
+    registry
+        .validate(
+            &request.authorization_details,
+            &client.registration.authorization_details_types,
+            &permitted_locations,
+        )
+        .err()
+        .map(|_| {
+            error(
+                StatusCode::BAD_REQUEST,
+                asterius_domain::InvalidAuthorizationDetails::CODE,
+                "the authorization_details parameter is not one this client may be authorized for",
+            )
+        })
+}
+
 /// The path this endpoint is mounted at, from the one registry.
 #[must_use]
 pub const fn path() -> &'static str {
@@ -476,6 +579,13 @@ fn serialise(
         // OIDC Core §5.2. Stored with the authorization it was expressed in,
         // because the token request that follows carries no such parameter.
         "claims_locales": request.claims_locales.preferences(),
+        // RFC 9396 §2, the *parsed* elements and not the document the client
+        // sent, for the same reason `claims` is parsed: this is what will be
+        // copied onto the grant when the user consents, and it has already been
+        // held to its type's schema. `consent_memory` reads this member under
+        // this name, so a request whose rich authorization is already covered
+        // by a standing grant is not put in front of the user again.
+        "authorization_details": request.authorization_details.to_json(),
         "openid": request.openid,
     })
 }

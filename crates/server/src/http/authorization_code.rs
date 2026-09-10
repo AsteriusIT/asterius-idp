@@ -500,6 +500,20 @@ impl AuthorizationCode<'_> {
             // needs to know, and consent may have narrowed it.
             "scope": grant.scopes.iter().cloned().collect::<Vec<_>>().join(" "),
         });
+        // RFC 9396 §6: "The AS […] SHOULD return the `authorization_details`
+        // […] in the token response." What the *grant* holds, not what the
+        // request asked for: consent may have refused, and a client that read
+        // its own request back would believe it had an authorization it does
+        // not. Present exactly when the grant carries elements, because a
+        // client that sees the member treats the capability as exercised.
+        if !grant.authorization_details.is_empty()
+            && let Some(object) = body.as_object_mut()
+        {
+            object.insert(
+                "authorization_details".to_owned(),
+                json!(grant.authorization_details),
+            );
+        }
         if let Some(id_token) = id_token
             && let Some(object) = body.as_object_mut()
         {

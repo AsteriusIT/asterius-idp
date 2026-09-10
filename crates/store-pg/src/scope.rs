@@ -1,6 +1,7 @@
 //! The tenant scope: the handle every tenant-scoped repository hangs off.
 
 use crate::auth_requests::PgAuthRequestRepository;
+use crate::authorization_details_types::PgAuthorizationDetailsTypes;
 use crate::clients::PgClientRepository;
 use crate::codes::PgCodeRepository;
 use crate::grants::PgGrantRepository;
@@ -84,6 +85,17 @@ impl<'a> TenantScope<'a> {
     #[must_use]
     pub fn resource_servers(&self) -> PgResourceServers {
         PgResourceServers::new(self.pool.clone(), self.tenant.clone())
+    }
+
+    /// The authorization details type registry for this tenant (RFC 9396
+    /// §2.1, `ast-gxh.6`).
+    ///
+    /// Tenant-scoped for the same reason the resource-server registry is: a
+    /// `type` name means what the tenant that registered it says it means, and
+    /// two tenants may register the same name for different things.
+    #[must_use]
+    pub fn authorization_details_types(&self) -> PgAuthorizationDetailsTypes {
+        PgAuthorizationDetailsTypes::new(self.pool.clone(), self.tenant.clone())
     }
 
     /// The grant repository for this tenant.

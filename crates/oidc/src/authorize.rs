@@ -25,7 +25,9 @@
 //! and modify, which is exactly what JAR exists to prevent.
 
 use asterius_domain::entities::client::{ClientRegistration, RedirectUri};
-use asterius_domain::{InvalidTarget, ResourceIdentifier};
+use asterius_domain::{
+    AuthorizationDetails, InvalidAuthorizationDetails, InvalidTarget, ResourceIdentifier,
+};
 use std::collections::BTreeSet;
 
 use crate::claims::{ClaimsLocales, ClaimsRequest, ClaimsRequestError};
@@ -168,6 +170,15 @@ pub enum AuthorizationError {
     /// a typo in a value that is spelled correctly.
     #[error("resource: {0}")]
     InvalidTarget(#[from] asterius_domain::InvalidTarget),
+    /// An `authorization_details` this server will not honour (RFC 9396 §5).
+    ///
+    /// Its own variant rather than [`Self::Invalid`], for the same reason
+    /// [`Self::InvalidTarget`] is: RFC 9396 §5 registers its own error code,
+    /// and a client told `invalid_request` would go looking for a typo in a
+    /// parameter that is spelled correctly and simply asks for something it may
+    /// not have.
+    #[error("authorization_details: {0}")]
+    InvalidAuthorizationDetails(#[from] asterius_domain::InvalidAuthorizationDetails),
 }
 
 impl From<Duplicated> for AuthorizationError {
@@ -192,6 +203,12 @@ impl AuthorizationError {
             // indicator the authorization server will not honour, at the
             // authorization endpoint as at the token endpoint.
             Self::InvalidTarget(_) => asterius_domain::InvalidTarget::CODE,
+            // RFC 9396 §5: "invalid_authorization_details" is the code for an
+            // `authorization_details` the authorization server will not
+            // honour, at the authorization endpoint as at the token endpoint.
+            Self::InvalidAuthorizationDetails(_) => {
+                asterius_domain::InvalidAuthorizationDetails::CODE
+            }
             _ => "invalid_request",
         }
     }
@@ -507,6 +524,16 @@ pub struct AuthorizationRequest {
     pub id_token_hint: Option<String>,
     /// RFC 8707 resource indicators.
     pub resources: BTreeSet<String>,
+    /// The RFC 9396 §2 `authorization_details`, parsed and bounded.
+    ///
+    /// Parsed here, for the reason `claims` gives: this is the one place an
+    /// authorization request is validated, and what is stored on the grant
+    /// should be the thing that was checked. What is *not* decided here is
+    /// whether this tenant has registered the types named or whether each
+    /// element satisfies its type's schema — both need the registry, so both
+    /// need I/O, and the pushed authorization request endpoint does them a
+    /// moment later with the same error code.
+    pub authorization_details: AuthorizationDetails,
     /// RFC 9449 §10: the thumbprint the issued code is bound to.
     pub dpop_jkt: Option<String>,
     /// The OIDC Core §5.5 `claims` request, parsed. Empty when the client sent
@@ -628,6 +655,11 @@ pub fn validate(
 
     let resources = parse_resources(params.multi("resource"), registration)?;
 
+    // RFC 9396 §3. Shape, limits and the client's own §9.2 allow-list; the
+    // registry and the per-type schemas are the caller's, a moment later.
+    let authorization_details =
+        parse_authorization_details(params.get("authorization_details")?, registration)?;
+
     // OIDC Core §5.5. Bounded and shape-checked here; what it *releases* is
     // `claims::resolve`, run against the grant rather than against this
     // request, because a request is what was asked for and a grant is what was
@@ -671,6 +703,7 @@ pub fn validate(
         login_hint,
         id_token_hint,
         resources,
+        authorization_details,
         dpop_jkt,
         claims,
         claims_locales,
@@ -902,6 +935,40 @@ fn is_compact_jws(raw: &str) -> bool {
         // deciding it is worth parsing.
         segment.is_some_and(|segment| !segment.is_empty() && segment.bytes().all(is_base64url))
     })
+}
+
+/// RFC 9396 §3: the `authorization_details` parameter of an authorization
+/// request.
+///
+/// Two gates here, as with `resource`, and the third is the caller's. The
+/// *shape and the limits* are [`AuthorizationDetails::parse`], the one parser
+/// this server has for the job. The *permission* is the client's RFC 9396 §9.2
+/// `authorization_details_types`: an empty registration means "no types
+/// permitted" rather than "all of them", for the reason an empty `resources`
+/// means no audiences — a client that has not been registered for a type must
+/// not be able to name one, and §9.2's list is the registration that says which
+/// ones it may.
+///
+/// What is **not** checked here is whether this tenant has registered the type
+/// and whether the element satisfies that type's schema; both need the registry
+/// and so need I/O, and the pushed authorization request endpoint does them a
+/// moment later with the same `invalid_authorization_details`.
+fn parse_authorization_details(
+    raw: Option<&str>,
+    registration: &ClientRegistration,
+) -> Result<AuthorizationDetails, AuthorizationError> {
+    let Some(raw) = raw else {
+        return Ok(AuthorizationDetails::default());
+    };
+    let details = AuthorizationDetails::parse(raw)?;
+    for name in details.types() {
+        if !registration.authorization_details_types.contains(name) {
+            return Err(AuthorizationError::InvalidAuthorizationDetails(
+                InvalidAuthorizationDetails,
+            ));
+        }
+    }
+    Ok(details)
 }
 
 /// RFC 8707 §2.1: the `resource` parameters of an authorization request.
@@ -1463,6 +1530,76 @@ mod tests {
                 "accepted id_token_hint {wrong:?}"
             );
         }
+    }
+
+    /// RFC 9396 §2: an `authorization_details` that is not a JSON array of
+    /// objects each carrying a string `type` is
+    /// `invalid_authorization_details`, and RFC 9396 §5 is the code.
+    #[test]
+    fn a_malformed_authorization_details_is_invalid_authorization_details() {
+        for wrong in [
+            "not json",
+            "{}",
+            r#"{"type":"payments"}"#,
+            "[7]",
+            "[{}]",
+            r#"[{"type":7}]"#,
+            r#"[{"type":"payments","locations":"https://api.example/"}]"#,
+        ] {
+            assert_eq!(
+                refuse(&[("authorization_details", wrong)]),
+                Err(AuthorizationError::InvalidAuthorizationDetails(
+                    InvalidAuthorizationDetails
+                )),
+                "accepted authorization_details {wrong:?}"
+            );
+        }
+        assert_eq!(
+            AuthorizationError::InvalidAuthorizationDetails(InvalidAuthorizationDetails).code(),
+            "invalid_authorization_details"
+        );
+    }
+
+    /// RFC 9396 §9.2: `authorization_details_types` is the client's list of
+    /// types, and a client that registered none may name none.
+    #[test]
+    fn a_type_the_client_did_not_register_is_refused() {
+        let details = r#"[{"type":"payment_initiation"}]"#;
+        assert_eq!(
+            refuse(&[("authorization_details", details)]),
+            Err(AuthorizationError::InvalidAuthorizationDetails(
+                InvalidAuthorizationDetails
+            ))
+        );
+
+        let mut registration = registration();
+        registration
+            .authorization_details_types
+            .insert("payment_initiation".to_owned());
+        let pairs: Vec<(String, String)> = base()
+            .into_iter()
+            .chain([("authorization_details".to_owned(), details.to_owned())])
+            .collect();
+        let request = validate(
+            &Parameters::from_pairs(pairs),
+            CLIENT,
+            &registration,
+            policy(),
+        )
+        .expect("a registered type");
+        assert_eq!(
+            request.authorization_details.to_json(),
+            vec![json!({"type": "payment_initiation"})]
+        );
+    }
+
+    /// A request that sends no `authorization_details` carries none, which is
+    /// not the same as carrying something empty that a later reader has to
+    /// interpret.
+    #[test]
+    fn no_authorization_details_is_an_empty_request() {
+        let request = with(&[]).expect("the base request");
+        assert!(request.authorization_details.is_empty());
     }
 
     /// RFC 8707 §2.2: a `resource` this server will not honour is
