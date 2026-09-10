@@ -217,6 +217,20 @@ pub struct CodeBinding {
     pub nonce: Option<String>,
     /// The DPoP key the code is pinned to, if any.
     pub dpop_jkt: Option<String>,
+    /// The Grant Management action the authorization request carried, if it
+    /// carried one (Grant Management ID1 §5.2).
+    ///
+    /// Unlike every other field here it is not *compared* at redemption:
+    /// nothing about it could be presented again. It travels on the code
+    /// because §5.5 makes the token response carry `grant_id` "if a valid
+    /// grant management action was requested", and the token endpoint has no
+    /// other way to learn that — the pushed request is long gone by then.
+    ///
+    /// A string rather than an enum, because the vocabulary belongs to
+    /// `asterius_oidc::grant_management::Action` and this crate does not
+    /// depend on that one. It is written from a parsed action, so the value is
+    /// never a client's spelling.
+    pub grant_management_action: Option<String>,
     /// When it stops being redeemable.
     pub expires_at: OffsetDateTime,
 }

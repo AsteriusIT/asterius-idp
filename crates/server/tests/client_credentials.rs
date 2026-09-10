@@ -231,6 +231,8 @@ impl Fixture {
             resource_servers: &resource_servers,
             signer: self.signer.as_ref(),
             audit: self.audit.as_ref(),
+            grant_id_claim: true,
+            grant_management: false,
             lifetimes: asterius_domain::TokenLifetimes::default(),
             constraint: SenderConstraint {
                 proof_key,

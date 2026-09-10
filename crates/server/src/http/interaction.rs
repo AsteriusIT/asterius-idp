@@ -1390,29 +1390,65 @@ async fn mint(
         return Err("server_error");
     };
     let minted = MintedCode::generate();
-    let binding = CodeBinding {
-        client_id: request.client.as_str().to_owned(),
+    let binding = code_binding(
+        request,
         grant_id,
         code_challenge,
-        // Byte-for-byte the URI the code is being sent to, so redemption can
-        // compare rather than re-derive (OIDC Core §3.1.3.2).
-        redirect_uri: string("redirect_uri").unwrap_or_default(),
-        nonce: string("nonce"),
-        // RFC 9449 §10: when the request pinned a key, the code is pinned too.
-        dpop_jkt: string("dpop_jkt"),
-        // The tenant's setting, used as it stands. It reached this context
-        // through `asterius_domain::TokenLifetimes`, which cannot hold a value
-        // above FAPI 2.0 SP §5.3.2.1 item 11's sixty seconds, so there is
-        // nothing to clamp here — and a clamp would be the second, silent
-        // authority `ast-5c6` removed.
-        expires_at: now + context.code_lifetime,
-    };
+        &string,
+        now + context.code_lifetime,
+    );
     if let Err(error) = context.codes.issue(minted.digest(), &binding, now).await {
         tracing::error!(%error, tenant = %context.tenant.id, "cannot store a code");
         return Err("server_error");
     }
 
     Ok(minted.expose().to_owned())
+}
+
+/// Everything an authorization code is bound to, assembled from the stored
+/// request.
+///
+/// A function of its own so that [`mint`] stays a readable sequence of steps.
+/// `parameter` is the stored request's reader, passed in rather than the map
+/// itself, because the map's shape is `mint`'s business and not this one's.
+fn code_binding(
+    request: &ClientRequest,
+    grant_id: asterius_domain::GrantId,
+    code_challenge: String,
+    parameter: &impl Fn(&str) -> Option<String>,
+    expires_at: OffsetDateTime,
+) -> CodeBinding {
+    CodeBinding {
+        client_id: request.client.as_str().to_owned(),
+        grant_id,
+        code_challenge,
+        // Byte-for-byte the URI the code is being sent to, so redemption can
+        // compare rather than re-derive (OIDC Core §3.1.3.2).
+        redirect_uri: parameter("redirect_uri").unwrap_or_default(),
+        nonce: parameter("nonce"),
+        // RFC 9449 §10: when the request pinned a key, the code is pinned too.
+        dpop_jkt: parameter("dpop_jkt"),
+        // Grant Management ID1 §5.5: the token response carries `grant_id`
+        // "if a valid grant management action was requested", and the code is
+        // the only thing that still connects this request to the redemption.
+        //
+        // Re-parsed rather than copied, so the value written to the row is one
+        // of the three `Action` spellings and never whatever a stored
+        // parameter happens to hold. All three count, `create` included: §5.5
+        // is about an *action* having been requested, not about a grant having
+        // been amended, and a client that asked to create a grant is precisely
+        // the one with no other way to learn its id.
+        grant_management_action: parameter("grant_management_action")
+            .as_deref()
+            .and_then(asterius_oidc::grant_management::Action::parse)
+            .map(|action| action.as_str().to_owned()),
+        // The tenant's setting, used as it stands. It reached the caller
+        // through `asterius_domain::TokenLifetimes`, which cannot hold a value
+        // above FAPI 2.0 SP §5.3.2.1 item 11's sixty seconds, so there is
+        // nothing to clamp here — and a clamp would be the second, silent
+        // authority `ast-5c6` removed.
+        expires_at,
+    }
 }
 
 /// The end of a first-party interaction: the browser goes to the destination.

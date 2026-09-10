@@ -100,6 +100,9 @@ fn grant(user: &User, scopes: &[&str]) -> Grant {
 #[derive(Debug, Default)]
 struct FakeRows {
     grant: Option<Grant>,
+    /// Further grants this person holds, for the fallback resolution a tenant
+    /// that withholds the `grant_id` claim falls back to.
+    other_grants: Vec<Grant>,
     user: Option<User>,
     denylisted: Option<String>,
     /// What the client registered as `userinfo_signed_response_alg`.
@@ -118,6 +121,17 @@ impl UserInfoSource for FakeRows {
     async fn grant(&self, id: &GrantId) -> Result<Option<Grant>, DomainError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.grant.clone().filter(|grant| grant.id == *id))
+    }
+
+    async fn grants_for_subject(&self, subject: &SubjectId) -> Result<Vec<Grant>, DomainError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(self
+            .grant
+            .iter()
+            .chain(self.other_grants.iter())
+            .filter(|grant| grant.subject.as_ref() == Some(subject))
+            .cloned()
+            .collect())
     }
 
     async fn user(&self, id: UserId) -> Result<Option<User>, DomainError> {
@@ -229,6 +243,7 @@ impl Fixture {
             keys,
             dpop_key,
             rows: FakeRows {
+                other_grants: Vec::new(),
                 grant: Some(grant),
                 user: Some(user),
                 denylisted: None,

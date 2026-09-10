@@ -85,6 +85,26 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     /// accepts.
     async fn grant(&self, id: &GrantId) -> Result<Option<Grant>, DomainError>;
 
+    /// Every grant this tenant holds for one `sub`.
+    ///
+    /// The fallback resolution, for a tenant that withholds the `grant_id`
+    /// claim (`TenantSettings::grant_id_in_access_token`). A `sub` is
+    /// per-client — pairwise or public, as the client is registered — so this
+    /// list plus the token's `client_id` is as close as anything can get to
+    /// the row [`Self::grant`] would have returned.
+    ///
+    /// It is a *list* and not a "find the one": the caller has to be able to
+    /// see that there was more than one candidate, because that is the case it
+    /// must refuse rather than choose in.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] when the rows cannot be read.
+    async fn grants_for_subject(
+        &self,
+        subject: &asterius_domain::SubjectId,
+    ) -> Result<Vec<Grant>, DomainError>;
+
     /// The person a grant was made for.
     ///
     /// # Errors
@@ -366,22 +386,10 @@ fn log_rejection(error: &VerificationError) {
 
 /// Holds the presentation to the token's own `cnf` (RFC 9449 §7.1, RFC 8705 §3).
 ///
-/// The `cnf` decides, and it holds exactly one member because
-/// `TokenBinding` admits exactly one:
-///
-/// * `jkt` — a DPoP-bound token, usable only under the `DPoP` scheme and only
-///   with a proof for the key it is bound to, whose `ath` hashes the token
-///   that actually arrived;
-/// * `x5t#S256` — a certificate-bound token (RFC 8705 §3), usable only by a
-///   caller presenting that certificate. §3.1: "the client MUST use the same
-///   certificate ... that was used for mutual TLS authentication" — here, the
-///   certificate a trusted proxy forwarded on this request.
-///
-/// Anything else is refused. A token carrying neither is not
-/// sender-constrained, which is not a token this profile has (FAPI 2.0 SP
-/// §5.3.2.1 item 4); a token carrying both is one no registration can produce,
-/// and honouring whichever half the caller can satisfy would make the binding
-/// the caller's choice.
+/// The rule itself is [`access_token::check_sender_constraint`], shared with
+/// the Grant Management endpoint so that two endpoints of this server cannot
+/// hold different opinions about how one of its tokens may be presented. What
+/// is decided here is what a failure *means* at UserInfo.
 async fn check_sender_constraint(
     context: &UserInfoContext<'_>,
     method: &Method,
@@ -389,75 +397,25 @@ async fn check_sender_constraint(
     verified: &Verified,
     presented: Presentation<'_>,
 ) -> Result<(), Refused> {
-    let confirmation = verified.claims.get("cnf");
-    let jkt = confirmation
-        .and_then(|cnf| cnf.get("jkt"))
-        .and_then(Value::as_str);
-    let x5t = confirmation
-        .and_then(|cnf| cnf.get("x5t#S256"))
-        .and_then(Value::as_str);
-
-    let jkt = match (jkt, x5t) {
-        (Some(jkt), None) => jkt,
-        (None, Some(x5t)) => return check_certificate(context, x5t, presented),
-        (Some(_), Some(_)) | (None, None) => {
-            return Err(UserInfoError::InvalidToken.into());
-        }
-    };
-
-    if !presented.is_dpop() {
-        // RFC 9449 §7.1: "a DPoP-bound access token ... MUST be presented
-        // using the DPoP authentication scheme". A client sending one as a
-        // bearer token is asking for the binding to be ignored.
-        return Err(UserInfoError::InvalidToken.into());
-    }
-
-    let binding = context
-        .dpop
-        .check_with_access_token(
-            context.tenant,
-            Endpoint::UserInfo,
+    access_token::check_sender_constraint(
+        &access_token::Presented {
+            tenant: context.tenant,
+            dpop: context.dpop,
+            endpoint: Endpoint::UserInfo,
+            segment: None,
+            certificate: context.certificate,
             method,
             headers,
-            presented.token(),
-            context.now,
-        )
-        .await
-        .map_err(Refused::Dpop)?
-        // No `DPoP` header at all, beside a token bound to a key.
-        .ok_or(UserInfoError::InvalidToken)?;
-
-    if binding.jkt.as_str() != jkt {
-        // A valid proof for the wrong key: whoever sent this holds a DPoP key
-        // and a token bound to a different one.
-        return Err(UserInfoError::InvalidToken.into());
-    }
-    Ok(())
-}
-
-/// RFC 8705 §3: the caller presents the certificate the token is bound to.
-///
-/// Three ways to fail, one answer. The token is a Bearer credential — §3 binds
-/// the token, it does not define a scheme — so presenting it under `DPoP` is a
-/// client claiming a binding its token does not carry. No certificate at all
-/// is the case this endpoint used to refuse outright: a deployment that
-/// terminates TLS without a certificate reaching it has nothing to compare,
-/// and answering anything but `invalid_token` would turn a
-/// sender-constrained token into a bearer one. And a certificate whose
-/// thumbprint is not the token's is somebody else's connection.
-fn check_certificate(
-    context: &UserInfoContext<'_>,
-    x5t: &str,
-    presented: Presentation<'_>,
-) -> Result<(), Refused> {
-    if presented.is_dpop() {
-        return Err(UserInfoError::InvalidToken.into());
-    }
-    let certificate = context.certificate.ok_or(UserInfoError::InvalidToken)?;
-    if certificate.thumbprint_b64url() != x5t {
-        return Err(UserInfoError::InvalidToken.into());
-    }
-    Ok(())
+            presented,
+            now: context.now,
+        },
+        verified,
+    )
+    .await
+    .map_err(|refusal| match refusal {
+        access_token::NotBound::Refused => UserInfoError::InvalidToken.into(),
+        access_token::NotBound::Dpop(refusal) => Refused::Dpop(refusal),
+    })
 }
 
 /// The grant the token was minted from, if it is still standing.
@@ -471,19 +429,22 @@ fn check_certificate(
 /// the authorization behind the credential is gone, which is the same fact the
 /// denylist carries for a token whose revocation was recorded in time.
 async fn live_grant(context: &UserInfoContext<'_>, verified: &Verified) -> Result<Grant, Refused> {
-    let Some(id) = verified.claim_str("grant_id") else {
-        // A token minted without the claim cannot be answered, and that is
-        // this deployment's gap rather than the caller's mistake.
-        return Err(Refused::Server(DomainError::invalid(
-            "grant_id",
-            "the access token names no grant, so its claims cannot be resolved",
-        )));
+    let grant = if let Some(id) = verified.claim_str("grant_id") {
+        context
+            .source
+            .grant(&GrantId::new(id.to_owned()))
+            .await?
+            .ok_or(UserInfoError::InvalidToken)?
+    } else {
+        // The tenant withholds the correlator. The grant is found from what is
+        // left, and the cutoff check `withdrawn` could not make is made here
+        // instead — it needs a `grant_id` and there was none to read.
+        let grant = resolved_without_the_claim(context, verified).await?;
+        if withdrawn_grant(context, verified, &grant).await? {
+            return Err(UserInfoError::InvalidToken.into());
+        }
+        grant
     };
-    let grant = context
-        .source
-        .grant(&GrantId::new(id.to_owned()))
-        .await?
-        .ok_or(UserInfoError::InvalidToken)?;
 
     if !matches!(grant.status(context.now), GrantStatus::Active) {
         return Err(UserInfoError::InvalidToken.into());
@@ -494,6 +455,91 @@ async fn live_grant(context: &UserInfoContext<'_>, verified: &Verified) -> Resul
         return Err(UserInfoError::InvalidToken.into());
     }
     Ok(grant)
+}
+
+/// The grant behind a token that does not name one.
+///
+/// A tenant may withhold the `grant_id` claim
+/// (`TenantSettings::grant_id_in_access_token`), and RFC 9068 §6 is why it
+/// would: the claim is a correlator, and two tokens carrying the same one tell
+/// a resource server they came from a single authorization. A deployment whose
+/// resource servers are all third parties has no use for that.
+///
+/// This server is one of those resource servers, though, so it still has to
+/// find the row. What a token always carries is `client_id` and `sub` (RFC
+/// 9068 §2.2, both REQUIRED), and `sub` is this client's own view of the
+/// person — pairwise or public as the client is registered, and taken from
+/// [`Grant::subject`] at issuance. So the candidates are the live grants this
+/// tenant holds for that `sub` and that client.
+///
+/// **More than one candidate is refused, never chosen between.** A person may
+/// hold several grants to one client — Grant Management's `create` is how —
+/// and picking among them by scope or by recency would sometimes release the
+/// claims of an authorization this token was not minted from, which is the
+/// exact mistake the claim exists to prevent. The refusal is `invalid_token`
+/// with a warning in the log naming the tenant: it is a configuration the
+/// operator chose, and the log line is what tells them the two settings do not
+/// go together.
+///
+/// The alternative — writing a row per access token so the `jti` could be
+/// looked up — is the inventory `ast-1sk.2` refused: a table that grows at the
+/// rate tokens are minted, to hold a fact that is already in the token.
+async fn resolved_without_the_claim(
+    context: &UserInfoContext<'_>,
+    verified: &Verified,
+) -> Result<Grant, Refused> {
+    let (Some(subject), Some(client)) =
+        (verified.claim_str("sub"), verified.claim_str("client_id"))
+    else {
+        // RFC 9068 §2.2 makes both REQUIRED, so a token without them is not
+        // one this server minted.
+        return Err(UserInfoError::InvalidToken.into());
+    };
+    let client = ClientId::new(client.to_owned());
+    let mut candidates = context
+        .source
+        .grants_for_subject(&asterius_domain::SubjectId::new(subject.to_owned()))
+        .await?
+        .into_iter()
+        .filter(|grant| {
+            grant.client == client && matches!(grant.status(context.now), GrantStatus::Active)
+        });
+
+    let Some(grant) = candidates.next() else {
+        return Err(UserInfoError::InvalidToken.into());
+    };
+    if candidates.next().is_some() {
+        tracing::warn!(
+            tenant = %context.tenant.id,
+            %client,
+            "this tenant withholds the grant_id claim and holds several live grants for one \
+             subject and client, so a UserInfo token cannot be resolved to one of them"
+        );
+        return Err(UserInfoError::InvalidToken.into());
+    }
+    Ok(grant)
+}
+
+/// Whether the resolved grant withdrew this token in bulk (`ast-m9c.13`).
+///
+/// The half of [`withdrawn`] that could not run: RFC 7009 §2.1's revocation of
+/// a refresh token leaves the grant standing on purpose (Grant Management ID1
+/// §6.5 Note) and writes a cutoff instead, so the grant's own status will not
+/// refuse the access tokens it withdrew. With the claim present that cutoff is
+/// read before any row is; without it there was no id to read it with.
+///
+/// The client half is not asked again — [`withdrawn`] already did — so this is
+/// one read for one mark.
+async fn withdrawn_grant(
+    context: &UserInfoContext<'_>,
+    verified: &Verified,
+    grant: &Grant,
+) -> Result<bool, Refused> {
+    let cutoff = context
+        .source
+        .access_tokens_revoked_before(&grant.client, Some(&grant.id))
+        .await?;
+    Ok(access_token::withdrawn(verified, cutoff))
 }
 
 /// The claims this grant releases at UserInfo.

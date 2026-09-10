@@ -1162,6 +1162,20 @@ impl Flow {
         self.settings.invalidate();
     }
 
+    /// Decides whether this tenant's access tokens carry the `grant_id` claim.
+    ///
+    /// Written the way the admin API writes a setting, and the cache is
+    /// dropped afterwards, so what the endpoints read is the stored row rather
+    /// than a value this test kept to itself.
+    async fn set_grant_id_in_access_token(&self, carried: bool) {
+        let settings = TenantSettings::default().with_grant_id_in_access_token(carried);
+        PgTenantSettings::new(self.store.pool().clone())
+            .save(&self.tenant.id, &settings)
+            .await
+            .expect("store the tenant's settings");
+        self.settings.invalidate();
+    }
+
     /// The stored binding of a code this flow was just handed.
     ///
     /// Read through the repository port rather than by a query of its own, and
@@ -3657,6 +3671,38 @@ impl Flow {
     }
 }
 
+impl Flow {
+    /// A live grant of *another* client, held by this flow's person.
+    ///
+    /// Written straight through the repository, for the reason
+    /// [`Flow::seed_another_persons_grant`] is: §6.6's "only the client that
+    /// owns the grant" cannot be reached without a second client's grant, and
+    /// running a whole authorization as that client would be a page of
+    /// ceremony proving nothing about this rule.
+    async fn seed_another_clients_grant(&self) -> asterius_domain::GrantId {
+        // A grant's `client_id` is a foreign key, so the second client has to
+        // exist before it can hold anything.
+        let _ = self.register_other_client().await;
+        let now = OffsetDateTime::now_utc();
+        let mut grant =
+            asterius_domain::Grant::new(self.tenant.id.clone(), ClientId::new(OTHER_CLIENT), now);
+        grant.user = Some(self.user);
+        grant.subject = Some(asterius_domain::SubjectId::new(
+            self.user.as_uuid().to_string(),
+        ));
+        grant.scopes = ["openid".to_owned()].into_iter().collect();
+        grant.claimed_at = Some(now);
+        let id = grant.id.clone();
+        self.store
+            .scope(self.tenant.id.clone())
+            .grants()
+            .create(&grant)
+            .await
+            .expect("store the other client's grant");
+        id
+    }
+}
+
 /// One whole flow, returning the grant it produced and the refresh token it
 /// earned.
 async fn first_authorization(flow: &mut Flow, key: &ProofKey) -> (asterius_domain::Grant, String) {
@@ -3728,7 +3774,7 @@ async fn a_merge_unions_the_grant_keeps_its_id_and_kills_the_old_refresh_token()
         .json();
     assert_eq!(
         metadata["grant_management_actions_supported"],
-        json!(["create", "merge", "replace"]),
+        json!(["query", "revoke", "create", "merge", "replace"]),
         "{metadata}"
     );
     assert_eq!(metadata["grant_management_action_required"], json!(false));
@@ -4166,6 +4212,562 @@ async fn a_ui_locales_preference_survives_from_the_push_to_the_consent_screen() 
     assert!(
         login_html.contains("<html lang=\"fr\">") && login_html.contains("Mot de passe"),
         "the browser's Accept-Language was not consulted:\n{login_html}"
+    );
+
+    flow.tear_down().await;
+}
+
+// ---- Grant Management API (ID1 §6) ---------------------------------------
+
+impl Flow {
+    /// Lets this flow's client ask for tokens on its own behalf.
+    ///
+    /// The Grant Management API is called by the client that *holds* the grant
+    /// (§6.6), and this flow's client is the one that holds it — so the two
+    /// roles are one registration, exactly as a real deployment has it. The
+    /// stored row is edited rather than rebuilt from a document, so the keys
+    /// and everything else stay what `register_client` wrote.
+    async fn also_a_grant_manager(&self) {
+        let clients = self
+            .store
+            .scope(self.tenant.id.clone())
+            .clients(offering_grant_management());
+        let mut client = clients
+            .find(&ClientId::new(CLIENT))
+            .await
+            .expect("read the client")
+            .expect("the flow registered a client");
+        client
+            .registration
+            .grant_types
+            .insert(asterius_domain::GrantType::ClientCredentials);
+        client
+            .registration
+            .scopes
+            .insert("grant_management_query".to_owned());
+        client
+            .registration
+            .scopes
+            .insert("grant_management_revoke".to_owned());
+        // §6.2's resource is an audience like any other, and RFC 8707 §2.2
+        // makes a token request reach only what its client may target. The
+        // business API stays on the list beside it: taking it off would change
+        // this client's default audience and make every other token in the
+        // test a different token.
+        client.registration.resources.insert(RESOURCE.to_owned());
+        client
+            .registration
+            .resources
+            .insert(Endpoint::GrantManagement.url(&self.tenant.issuer));
+        clients.upsert(&client).await.expect("store the client");
+    }
+
+    /// §6.2's resource: the grant management endpoint of this tenant.
+    fn grant_management_resource(&self) -> String {
+        Endpoint::GrantManagement.url(&self.tenant.issuer)
+    }
+
+    /// A `client_credentials` token audienced at the Grant Management API.
+    ///
+    /// `scope` is what the caller asks for, so a test can hold one of §6.1's
+    /// two scopes and not the other — which is the only way to check that the
+    /// endpoint reads them separately.
+    async fn api_token(&mut self, key: &ProofKey, jti: &str, scope: &str) -> String {
+        let resource = self.grant_management_resource();
+        let issued = self
+            .token(
+                key,
+                jti,
+                &[
+                    ("grant_type", "client_credentials"),
+                    ("scope", scope),
+                    ("resource", &resource),
+                ],
+            )
+            .await;
+        assert_eq!(
+            issued.status,
+            StatusCode::OK,
+            "no token for the grant management API: {}",
+            issued.text()
+        );
+        let body = issued.json();
+        body["access_token"]
+            .as_str()
+            .expect("an access token")
+            .to_owned()
+    }
+
+    /// One request to §6.3's resource URL, presented under DPoP.
+    async fn grant_request(
+        &mut self,
+        method: &str,
+        grant_id: &str,
+        key: &ProofKey,
+        access_token: Option<&str>,
+    ) -> Reply {
+        let url = format!("{}/{grant_id}", self.grant_management_resource());
+        let path = format!(
+            "{}{}/{grant_id}",
+            self.prefix(),
+            Endpoint::GrantManagement.path()
+        );
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, HOST);
+        if let Some(token) = access_token {
+            let proof = key.proof_over(method, &url, &self.next_jti(), Some(token));
+            request = request
+                .header(header::AUTHORIZATION, format!("DPoP {token}"))
+                .header(asterius_server::http::dpop::HEADER, proof);
+        }
+        let request = request.body(Body::empty()).expect("a request");
+        self.send(request).await
+    }
+}
+
+/// **A client reads its own grant, and the answer is §6.4's and nothing else**
+/// (Grant Management ID1 §6.4).
+///
+/// The body is asserted whole. "No tokens are exposed" is a statement about
+/// everything that is there, so checking one member would not be checking it —
+/// and the access token the request was made with is searched for in the bytes,
+/// because the most likely way a credential appears in a response is by being
+/// echoed.
+#[tokio::test]
+async fn a_client_reads_its_own_grant_and_the_answer_holds_no_credential() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.also_a_grant_manager().await;
+    let key = ProofKey::generate();
+    let (grant, _refresh) = first_authorization(&mut flow, &key).await;
+
+    // §7.1 and §6.3: the URL this test calls is the one the document
+    // advertises, plus the grant id. Read here rather than assumed, because
+    // parity between the metadata and the route is the property.
+    let metadata = flow
+        .get(&format!(
+            "{}/.well-known/openid-configuration",
+            flow.prefix()
+        ))
+        .await
+        .json();
+    assert_eq!(
+        metadata["grant_management_endpoint"],
+        json!(flow.grant_management_resource()),
+        "{metadata}"
+    );
+
+    let token = flow
+        .api_token(&key, "assertion-query", "grant_management_query")
+        .await;
+
+    // Act
+    let read = flow
+        .grant_request("GET", grant.id.as_str(), &key, Some(&token))
+        .await;
+
+    // Assert
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text());
+    let body = read.text();
+    assert!(
+        !body.contains(&token),
+        "the query response echoed the access token: {body}"
+    );
+    let document: Value = serde_json::from_str(&body).expect("§6.4 answers JSON");
+    assert_eq!(
+        document["scopes"][0]["scope"], "offline_access openid",
+        "§6.4 reports what the grant covers: {document}"
+    );
+    assert_eq!(document["claims"], json!([]), "{document}");
+    assert_eq!(document["authorization_details"], json!([]), "{document}");
+    assert!(document["created_at"].is_i64(), "{document}");
+    assert!(document["last_updated_at"].is_i64(), "{document}");
+    for forbidden in ["access_token", "refresh_token", "id_token"] {
+        assert!(
+            document.get(forbidden).is_none(),
+            "§6.4 exposes no token, and this one has {forbidden}: {document}"
+        );
+    }
+
+    flow.tear_down().await;
+}
+
+/// **A grant belonging to another client is 404** (§6.6).
+///
+/// Not 403: telling "not yours" apart from "not there" would let any client
+/// with one token enumerate which grant ids this tenant has ever minted.
+#[tokio::test]
+async fn another_clients_grant_is_not_found() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.also_a_grant_manager().await;
+    let key = ProofKey::generate();
+    let token = flow
+        .api_token(&key, "assertion-other", "grant_management_query")
+        .await;
+    let theirs = flow.seed_another_clients_grant().await;
+
+    // Act
+    let read = flow
+        .grant_request("GET", theirs.as_str(), &key, Some(&token))
+        .await;
+
+    // Assert
+    assert_eq!(read.status, StatusCode::NOT_FOUND, "{}", read.text());
+
+    flow.tear_down().await;
+}
+
+/// **A valid token without §6.1's scope is 403** (§6.6).
+///
+/// The two scopes are read separately: this token carries `query` and the
+/// request is a `DELETE`, so a server that checked "either scope" would revoke
+/// a grant on the authority of a read-only token.
+#[tokio::test]
+async fn a_token_without_the_scope_for_the_verb_is_refused() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.also_a_grant_manager().await;
+    let key = ProofKey::generate();
+    let (grant, _refresh) = first_authorization(&mut flow, &key).await;
+    let read_only = flow
+        .api_token(&key, "assertion-readonly", "grant_management_query")
+        .await;
+
+    // Act
+    let refused = flow
+        .grant_request("DELETE", grant.id.as_str(), &key, Some(&read_only))
+        .await;
+
+    // Assert
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text());
+    let challenge = refused
+        .headers
+        .get(header::WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        challenge.contains("insufficient_scope"),
+        "RFC 6750 §3.1: {challenge}"
+    );
+    assert!(
+        challenge.contains("grant_management_revoke"),
+        "the challenge should name the scope that was wanted: {challenge}"
+    );
+
+    // Assert: and the grant is still there.
+    let reader = flow
+        .api_token(&key, "assertion-still", "grant_management_query")
+        .await;
+    let still_there = flow
+        .grant_request("GET", grant.id.as_str(), &key, Some(&reader))
+        .await;
+    assert_eq!(still_there.status, StatusCode::OK, "{}", still_there.text());
+
+    flow.tear_down().await;
+}
+
+/// **No token, and a token for another resource, are both `invalid_token`**
+/// (§6.6, RFC 6750 §3.1).
+///
+/// The audience half is the one worth a test: a `client_credentials` token for
+/// the tenant's business API is a perfectly valid token of this tenant, and it
+/// must not open this endpoint (§6.2, RFC 9068 §5).
+#[tokio::test]
+async fn a_missing_or_misaudienced_token_is_invalid_token() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.also_a_grant_manager().await;
+    flow.register_resource_server(RESOURCE, Some(&["grant_management_query"]))
+        .await;
+    let key = ProofKey::generate();
+    let (grant, _refresh) = first_authorization(&mut flow, &key).await;
+
+    // Act & Assert: nothing presented.
+    let bare = flow
+        .grant_request("GET", grant.id.as_str(), &key, None)
+        .await;
+    assert_eq!(bare.status, StatusCode::UNAUTHORIZED, "{}", bare.text());
+    let challenge = bare
+        .headers
+        .get(header::WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(challenge.contains("invalid_token"), "{challenge}");
+
+    // Act & Assert: a token for the business API.
+    let elsewhere = flow
+        .token(
+            &key,
+            "assertion-elsewhere",
+            &[
+                ("grant_type", "client_credentials"),
+                ("scope", "grant_management_query"),
+                ("resource", RESOURCE),
+            ],
+        )
+        .await;
+    assert_eq!(elsewhere.status, StatusCode::OK, "{}", elsewhere.text());
+    let elsewhere = elsewhere.json()["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let refused = flow
+        .grant_request("GET", grant.id.as_str(), &key, Some(&elsewhere))
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNAUTHORIZED,
+        "a token audienced elsewhere opened the grant management API: {}",
+        refused.text()
+    );
+
+    flow.tear_down().await;
+}
+
+/// **`DELETE` revokes the grant, its refresh tokens and its access tokens, and
+/// a second one is 404** (§6.5, §6.6).
+///
+/// Every clause is checked by *using* a credential rather than by reading a
+/// row: the refresh token is presented at the token endpoint, and the access
+/// token at UserInfo. §6.5 makes the first two a MUST and the third a SHOULD;
+/// this server implements the SHOULD as a MUST, through the one cutoff
+/// mechanism (`ast-m9c.13`).
+#[tokio::test]
+async fn deleting_a_grant_withdraws_everything_minted_from_it() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.also_a_grant_manager().await;
+    let key = ProofKey::generate();
+    let (grant, refresh) = first_authorization(&mut flow, &key).await;
+    // A fresh access token *of that grant*, so the §6.5 SHOULD can be checked
+    // by presenting it rather than by reading a mark.
+    let refreshed = flow
+        .token(
+            &key,
+            "assertion-before-delete",
+            &[("grant_type", "refresh_token"), ("refresh_token", &refresh)],
+        )
+        .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{}", refreshed.text());
+    let refreshed = refreshed.json();
+    let access_token = refreshed["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    let refresh = refreshed["refresh_token"]
+        .as_str()
+        .expect("a rotated refresh token")
+        .to_owned();
+    let token = flow
+        .api_token(&key, "assertion-revoke", "grant_management_revoke")
+        .await;
+
+    // Act
+    let deleted = flow
+        .grant_request("DELETE", grant.id.as_str(), &key, Some(&token))
+        .await;
+
+    // Assert: §6.5's status, and no body.
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text());
+    assert!(deleted.text().is_empty(), "204 carries no body");
+
+    // Assert: the refresh token of that grant is gone.
+    let refreshed = flow
+        .token(
+            &key,
+            "assertion-after-delete",
+            &[("grant_type", "refresh_token"), ("refresh_token", &refresh)],
+        )
+        .await;
+    assert_eq!(
+        refreshed.status,
+        StatusCode::BAD_REQUEST,
+        "a revoked grant still refreshed: {}",
+        refreshed.text()
+    );
+
+    // Assert: and so is the access token it had already minted — §6.5's
+    // SHOULD, kept here as a MUST, through the grant's cutoff.
+    let userinfo = flow.userinfo(&key, &access_token).await;
+    assert_eq!(
+        userinfo.status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked grant's access token still answered at UserInfo: {}",
+        userinfo.text()
+    );
+
+    // Assert: a second DELETE is 404, not a second 204.
+    let again = flow
+        .grant_request("DELETE", grant.id.as_str(), &key, Some(&token))
+        .await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.text());
+
+    // Assert: and the grant can no longer be read.
+    let reader = flow
+        .api_token(&key, "assertion-read-back", "grant_management_query")
+        .await;
+    let read = flow
+        .grant_request("GET", grant.id.as_str(), &key, Some(&reader))
+        .await;
+    assert_eq!(read.status, StatusCode::NOT_FOUND, "{}", read.text());
+
+    flow.tear_down().await;
+}
+
+/// **A token response carries `grant_id` when an action was requested, and
+/// never otherwise** (§5.5).
+///
+/// Two redemptions in one flow: the first names no action and must not carry
+/// the member, the second sends `create` and must. And the *authorization*
+/// response carries it in neither case — §5.3 leaves that response alone, and a
+/// grant id in a redirect is a correlator in the browser's history.
+#[tokio::test]
+async fn a_token_response_carries_grant_id_only_when_an_action_was_requested() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(offering_grant_management()).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+
+    // Act: an ordinary authorization.
+    let (grant, _refresh) = first_authorization(&mut flow, &key).await;
+
+    // Act: one that asks to create a grant.
+    let pushed = flow
+        .push_with(&key, &[("grant_management_action", "create")])
+        .await;
+    assert_eq!(pushed.status, StatusCode::CREATED, "{}", pushed.text());
+    let interaction = flow.authorize(&pushed.request_uri()).await;
+    let back = flow.approve(&interaction, &["openid"]).await;
+    assert!(
+        parameter(&back, "grant_id").is_none(),
+        "§5.3: the authorization response carries no grant_id: {back}"
+    );
+    let code = parameter(&back, "code").unwrap_or_else(|| panic!("no code in {back}"));
+    let redeemed = flow
+        .token(
+            &key,
+            "assertion-create",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+
+    // Assert
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text());
+    let body = redeemed.json();
+    let returned = body["grant_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("§5.5 requires grant_id after an action: {body}"));
+    assert_ne!(
+        returned,
+        grant.id.as_str(),
+        "`create` made a grant of its own"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **The default is the claim, and UserInfo resolves the grant through it**
+/// (RFC 9068 §2.2.3.1).
+///
+/// The half that must not change: every token this server has ever minted
+/// carried `grant_id`, and a tenant that has never opened the setting keeps
+/// getting it.
+#[tokio::test]
+async fn a_tenant_that_says_nothing_still_gets_the_grant_id_claim() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+
+    // Act
+    let issued = issue_tokens(&mut flow).await;
+    let claims = claims_of(&issued.access_token);
+    let answered = flow.userinfo(&issued.key, &issued.access_token).await;
+
+    // Assert
+    assert!(
+        claims["grant_id"].is_string(),
+        "the default is the claim: {claims}"
+    );
+    assert_eq!(answered.status, StatusCode::OK, "{}", answered.text());
+    assert!(
+        answered.json()["sub"].is_string(),
+        "OIDC Core §5.3.2 requires a sub"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **A tenant may withhold the correlator, and UserInfo still answers**
+/// (RFC 9068 §6).
+///
+/// `grant_id` lets a resource server tell that two tokens came from one
+/// authorization, which a deployment whose resource servers are all third
+/// parties has every reason not to publish. This server is one of its own
+/// resource servers, though, so it has to find the grant anyway: the fallback
+/// is the token's `client_id` and `sub`, which RFC 9068 §2.2 makes required
+/// and which no client can forge — they are inside a signature this server
+/// made.
+///
+/// A separate tenant from the test above rather than a second act in it,
+/// because the setting is a property of the tenant and a flow that flipped it
+/// halfway would be asserting about a deployment nobody runs.
+#[tokio::test]
+async fn a_tenant_that_withholds_the_grant_id_claim_is_still_answered_at_userinfo() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.set_grant_id_in_access_token(false).await;
+
+    // Act
+    let issued = issue_tokens(&mut flow).await;
+    let claims = claims_of(&issued.access_token);
+    let answered = flow.userinfo(&issued.key, &issued.access_token).await;
+
+    // Assert
+    assert!(
+        claims.get("grant_id").is_none(),
+        "the tenant withholds the claim and the token still carries it: {claims}"
+    );
+    assert_eq!(
+        answered.status,
+        StatusCode::OK,
+        "UserInfo could not resolve a grant without the claim: {}",
+        answered.text()
+    );
+    assert_eq!(
+        answered.json()["sub"],
+        claims["sub"],
+        "the fallback resolved a grant that is not this token's"
     );
 
     flow.tear_down().await;

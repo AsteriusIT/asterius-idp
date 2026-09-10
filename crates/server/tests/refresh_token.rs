@@ -295,6 +295,8 @@ impl Fixture {
             resource_servers: &resource_servers,
             signer: self.signer.as_ref(),
             audit: self.audit.as_ref(),
+            grant_id_claim: true,
+            grant_management: false,
             lifetimes: asterius_domain::TokenLifetimes::default(),
             constraint: SenderConstraint {
                 proof_key: None,
@@ -453,6 +455,7 @@ impl Fixture {
                     // RFC 9449 §10: the authorization request pinned the key,
                     // which is what the conformance suite's client does.
                     dpop_jkt: Some(jkt.as_str().to_owned()),
+                    grant_management_action: None,
                     expires_at: self.now + Duration::seconds(60),
                 },
                 self.now,
@@ -479,6 +482,8 @@ impl Fixture {
             signer: self.signer.as_ref(),
             // The deployment fallback: these tests write the tenant no
             // settings of its own (`ast-5c6`).
+            grant_id_claim: true,
+            grant_management: false,
             lifetimes: asterius_domain::TokenLifetimes::default(),
             constraint: SenderConstraint {
                 proof_key: Some(jkt),
@@ -526,6 +531,8 @@ impl Fixture {
             resource_servers: &resource_servers,
             signer: self.signer.as_ref(),
             audit: self.audit.as_ref(),
+            grant_id_claim: true,
+            grant_management: false,
             lifetimes: asterius_domain::TokenLifetimes::default(),
             constraint: SenderConstraint {
                 proof_key,

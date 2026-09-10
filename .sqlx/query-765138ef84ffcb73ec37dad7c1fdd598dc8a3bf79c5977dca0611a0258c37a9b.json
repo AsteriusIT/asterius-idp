@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update authorization_codes\n                set consumed_at = $3\n              where tenant_id = $1\n                and code_hash = $2\n                and consumed_at is null\n                and expires_at > $3\n             returning client_id, grant_id, code_challenge, redirect_uri,\n                       nonce, dpop_jkt, expires_at",
+  "query": "update authorization_codes\n                set consumed_at = $3\n              where tenant_id = $1\n                and code_hash = $2\n                and consumed_at is null\n                and expires_at > $3\n             returning client_id, grant_id, code_challenge, redirect_uri,\n                       nonce, dpop_jkt, expires_at, grant_management_action",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,11 @@
         "ordinal": 6,
         "name": "expires_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "grant_management_action",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -53,8 +58,9 @@
       false,
       true,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "2fd99fcfc55ad8d7675e99ee12a5b80f60b5c1421936b4bcf7df20d4be1c85e4"
+  "hash": "765138ef84ffcb73ec37dad7c1fdd598dc8a3bf79c5977dca0611a0258c37a9b"
 }

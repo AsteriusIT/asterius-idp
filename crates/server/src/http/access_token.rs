@@ -10,9 +10,13 @@
 //! the failure mode of two copies is not that one is wrong today: it is that
 //! `issued_by` gets added to one of them.
 
+use crate::http::dpop::{self, DpopEndpoint};
 use asterius_domain::keys::{KeyStore, SigningAlgorithm};
 use asterius_domain::{DomainError, Tenant};
 use asterius_jose::verify::{Policy, TypRule, VerificationError, Verified};
+use asterius_oidc::metadata::Endpoint;
+use asterius_oidc::userinfo::Presentation;
+use axum::http::{HeaderMap, Method};
 use serde_json::{Value, json};
 use time::OffsetDateTime;
 
@@ -87,6 +91,171 @@ pub async fn verify(
     .issued_by(tenant.issuer.as_str());
 
     asterius_jose::verify::verify(token, &policy, &resolver, now).map_err(Rejected::Token)
+}
+
+/// One request presenting an access token at a protected resource.
+///
+/// A struct rather than eight arguments, because [`check_sender_constraint`]
+/// is called from two endpoints and every one of the eight has to be *this*
+/// request's: a proof is checked against the method and the URL it was made
+/// for, and a certificate against the connection it arrived on.
+pub struct Presented<'a> {
+    /// The tenant the request arrived at.
+    pub tenant: &'a Tenant,
+    /// Checks the DPoP proof (RFC 9449 §7.1).
+    pub dpop: &'a DpopEndpoint,
+    /// The endpoint the proof's `htu` is compared against.
+    pub endpoint: Endpoint,
+    /// The path segment under that endpoint this request addresses, when the
+    /// resource is one (Grant Management ID1 §6.3).
+    ///
+    /// `None` is an endpoint addressed at its own URL, which is every one but
+    /// the Grant Management API. See
+    /// [`DpopEndpoint::check_with_access_token_under`].
+    pub segment: Option<&'a str>,
+    /// The client certificate the request arrived with, if a trusted proxy
+    /// forwarded one (RFC 8705 §2). `None` is "no certificate".
+    pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
+    /// The router's method, which is a proof's `htm`.
+    pub method: &'a Method,
+    /// The request's headers, which is where a proof lives.
+    pub headers: &'a HeaderMap,
+    /// How the token was presented: the scheme, and the token itself.
+    pub presented: Presentation<'a>,
+    /// One clock reading for the whole request.
+    pub now: OffsetDateTime,
+}
+
+impl std::fmt::Debug for Presented<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Presented")
+            .field("endpoint", &self.endpoint)
+            .field("now", &self.now)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Why a token was not accepted from the caller that presented it.
+#[derive(Debug)]
+pub enum NotBound {
+    /// The presentation does not match the token's `cnf`. RFC 6750 §3.1's
+    /// `invalid_token`, whichever of the several ways it happened.
+    Refused,
+    /// A DPoP proof that did not check out (RFC 9449 §7.1), which has its own
+    /// challenge and may carry a nonce.
+    Dpop(dpop::Refusal),
+}
+
+/// Holds the presentation to the token's own `cnf` (RFC 9449 §7.1, RFC 8705 §3).
+///
+/// The `cnf` decides, and it holds exactly one member because
+/// `TokenBinding` admits exactly one:
+///
+/// * `jkt` — a DPoP-bound token, usable only under the `DPoP` scheme and only
+///   with a proof for the key it is bound to, whose `ath` hashes the token
+///   that actually arrived;
+/// * `x5t#S256` — a certificate-bound token (RFC 8705 §3), usable only by a
+///   caller presenting that certificate. §3.1: "the client MUST use the same
+///   certificate ... that was used for mutual TLS authentication" — here, the
+///   certificate a trusted proxy forwarded on this request.
+///
+/// Anything else is refused. A token carrying neither is not
+/// sender-constrained, which is not a token this profile has (FAPI 2.0 SP
+/// §5.3.2.1 item 4); a token carrying both is one no registration can produce,
+/// and honouring whichever half the caller can satisfy would make the binding
+/// the caller's choice.
+///
+/// Shared between UserInfo and the Grant Management endpoint for the reason
+/// [`verify`] is shared: two copies of this would not be wrong today, they
+/// would be wrong the day one of them learns something.
+///
+/// # Errors
+///
+/// [`NotBound::Refused`] for a presentation the `cnf` does not admit, and
+/// [`NotBound::Dpop`] for a proof that did not check out.
+pub async fn check_sender_constraint(
+    request: &Presented<'_>,
+    verified: &Verified,
+) -> Result<(), NotBound> {
+    let confirmation = verified.claims.get("cnf");
+    let jkt = confirmation
+        .and_then(|cnf| cnf.get("jkt"))
+        .and_then(Value::as_str);
+    let x5t = confirmation
+        .and_then(|cnf| cnf.get("x5t#S256"))
+        .and_then(Value::as_str);
+
+    let jkt = match (jkt, x5t) {
+        (Some(jkt), None) => jkt,
+        (None, Some(x5t)) => return check_certificate(request, x5t),
+        (Some(_), Some(_)) | (None, None) => return Err(NotBound::Refused),
+    };
+
+    if !request.presented.is_dpop() {
+        // RFC 9449 §7.1: "a DPoP-bound access token ... MUST be presented
+        // using the DPoP authentication scheme". A client sending one as a
+        // bearer token is asking for the binding to be ignored.
+        return Err(NotBound::Refused);
+    }
+
+    let binding = match request.segment {
+        None => {
+            request
+                .dpop
+                .check_with_access_token(
+                    request.tenant,
+                    request.endpoint,
+                    request.method,
+                    request.headers,
+                    request.presented.token(),
+                    request.now,
+                )
+                .await
+        }
+        Some(segment) => {
+            request
+                .dpop
+                .check_with_access_token_under(
+                    request.tenant,
+                    dpop::ProofTarget::under(request.endpoint, segment),
+                    request.method,
+                    request.headers,
+                    request.presented.token(),
+                    request.now,
+                )
+                .await
+        }
+    }
+    .map_err(NotBound::Dpop)?
+    // No `DPoP` header at all, beside a token bound to a key.
+    .ok_or(NotBound::Refused)?;
+
+    if binding.jkt.as_str() != jkt {
+        // A valid proof for the wrong key: whoever sent this holds a DPoP key
+        // and a token bound to a different one.
+        return Err(NotBound::Refused);
+    }
+    Ok(())
+}
+
+/// RFC 8705 §3: the caller presents the certificate the token is bound to.
+///
+/// Three ways to fail, one answer. The token is a Bearer credential — §3 binds
+/// the token, it does not define a scheme — so presenting it under `DPoP` is a
+/// client claiming a binding its token does not carry. No certificate at all
+/// is a deployment that terminates TLS without one reaching it: there is
+/// nothing to compare, and answering anything but a refusal would turn a
+/// sender-constrained token into a bearer one. And a certificate whose
+/// thumbprint is not the token's is somebody else's connection.
+fn check_certificate(request: &Presented<'_>, x5t: &str) -> Result<(), NotBound> {
+    if request.presented.is_dpop() {
+        return Err(NotBound::Refused);
+    }
+    let certificate = request.certificate.ok_or(NotBound::Refused)?;
+    if certificate.thumbprint_b64url() != x5t {
+        return Err(NotBound::Refused);
+    }
+    Ok(())
 }
 
 /// Whether a verified token was withdrawn in bulk before its own expiry.

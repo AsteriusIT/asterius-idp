@@ -96,6 +96,13 @@ pub struct ClientCredentials<'a> {
     pub signer: &'a dyn Signer,
     /// The trail. Every request is recorded, successful or not.
     pub audit: &'a dyn AuditSink,
+    /// Whether this tenant offers Grant Management, which is what makes the
+    /// grant management endpoint an audience a token may be minted for
+    /// (Grant Management ID1 §6.2).
+    pub grant_management: bool,
+    /// Whether this tenant's access tokens carry the `grant_id` claim
+    /// (`TenantSettings::grant_id_in_access_token`).
+    pub grant_id_claim: bool,
     /// How long this tenant's access tokens live (`ast-5c6`).
     pub lifetimes: asterius_domain::TokenLifetimes,
     /// What this request proved possession of: a DPoP key, a client
@@ -256,7 +263,7 @@ impl ClientCredentials<'_> {
         // RFC 9068 §2.2.3.1's private claim, and what `/revoke` (`ast-1sk.2`)
         // reaches this token through. A client-only token that did not carry it
         // would be the one credential this server cannot withdraw.
-        .with_grant_id()
+        .with_grant_id_when(self.grant_id_claim)
         .for_lifetime(self.lifetimes.access_token())
         // Deliberately no `authenticated_by`: RFC 9068 §2.2.1's `auth_time`,
         // `acr` and `amr` describe how a *person* authenticated, and asserting
@@ -344,14 +351,21 @@ impl ClientCredentials<'_> {
     ) -> Result<issuance::Targeting, Failure> {
         let requested = asterius_oidc::token::requested_resources(params)
             .map_err(|_| Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
-        issuance::targeting(self.resource_servers, tenant, client, grant, &requested)
-            .await
-            .map_err(|error| match error {
-                issuance::TargetingError::InvalidTarget => {
-                    Failure::Client(INVALID_TARGET, TARGET_REFUSED)
-                }
-                issuance::TargetingError::Storage(error) => Failure::Server(error),
-            })
+        issuance::targeting(
+            self.resource_servers,
+            tenant,
+            client,
+            grant,
+            &requested,
+            self.grant_management,
+        )
+        .await
+        .map_err(|error| match error {
+            issuance::TargetingError::InvalidTarget => {
+                Failure::Client(INVALID_TARGET, TARGET_REFUSED)
+            }
+            issuance::TargetingError::Storage(error) => Failure::Server(error),
+        })
     }
 
     /// Writes one entry to the trail.
