@@ -25,6 +25,7 @@
 //! and modify, which is exactly what JAR exists to prevent.
 
 use asterius_domain::entities::client::{ClientRegistration, RedirectUri};
+use asterius_domain::{InvalidTarget, ResourceIdentifier};
 use std::collections::BTreeSet;
 
 use crate::claims::{ClaimsLocales, ClaimsRequest, ClaimsRequestError};
@@ -157,6 +158,16 @@ pub enum AuthorizationError {
     /// The `client_id` parameter is not the authenticated client.
     #[error("client_id does not match the authenticated client")]
     ClientMismatch,
+    /// A `resource` value this server will not honour (RFC 8707 §2.2).
+    ///
+    /// Its own variant rather than [`Self::Invalid`] because RFC 8707 §2
+    /// registers its own error code for it: a client that sent a resource
+    /// indicator this deployment does not serve has made a different mistake
+    /// from one that misspelled a parameter, and `invalid_target` is what tells
+    /// it so — a client library reading `invalid_request` would go looking for
+    /// a typo in a value that is spelled correctly.
+    #[error("resource: {0}")]
+    InvalidTarget(#[from] asterius_domain::InvalidTarget),
 }
 
 impl From<Duplicated> for AuthorizationError {
@@ -177,6 +188,10 @@ impl AuthorizationError {
             // `invalid_request`, which would send a client looking for a typo.
             Self::RequestObjectNotSupported => "request_not_supported",
             Self::ClientMismatch => "invalid_client",
+            // RFC 8707 §2: "invalid_target" is the code for a resource
+            // indicator the authorization server will not honour, at the
+            // authorization endpoint as at the token endpoint.
+            Self::InvalidTarget(_) => asterius_domain::InvalidTarget::CODE,
             _ => "invalid_request",
         }
     }
@@ -889,34 +904,34 @@ fn is_compact_jws(raw: &str) -> bool {
     })
 }
 
-/// RFC 8707 §2: each `resource` is an absolute URI without a fragment.
+/// RFC 8707 §2.1: the `resource` parameters of an authorization request.
+///
+/// Two gates, and a value must pass both. The *shape* is
+/// [`ResourceIdentifier::parse`] — an absolute, fragment-free URI, the one
+/// parser this server has for the job, shared with the token endpoint so that
+/// the two cannot disagree about what a resource indicator is. The *permission*
+/// is the client's own allow-list: an empty one means "no resource indicators
+/// permitted" rather than "all of them", because a client that has not been
+/// granted an audience must not be able to name one.
+///
+/// What is **not** checked here is whether this tenant has registered the
+/// resource server, which needs the registry and so needs I/O; the pushed
+/// authorization request endpoint does that a moment later, and answers with
+/// the same `invalid_target`.
 fn parse_resources(
     values: &[String],
     registration: &ClientRegistration,
 ) -> Result<BTreeSet<String>, AuthorizationError> {
     if values.len() > MAX_RESOURCES {
-        return Err(AuthorizationError::Invalid("resource"));
+        return Err(AuthorizationError::InvalidTarget(InvalidTarget));
     }
     let mut resources = BTreeSet::new();
     for raw in values {
-        // "The URI MUST NOT include a fragment component." A fragment never
-        // reaches a server, so two resource indicators differing only there
-        // name one resource while looking like two.
-        if raw.contains('#') {
-            return Err(AuthorizationError::Invalid("resource"));
+        let identifier = ResourceIdentifier::parse(raw)?;
+        if !registration.resources.contains(identifier.as_str()) {
+            return Err(AuthorizationError::InvalidTarget(InvalidTarget));
         }
-        let parsed = url::Url::parse(raw).map_err(|_| AuthorizationError::Invalid("resource"))?;
-        if !parsed.has_host() || parsed.cannot_be_a_base() {
-            return Err(AuthorizationError::Invalid("resource"));
-        }
-        // The per-client allow-list is `ast-m9c.6`. Until a client has one,
-        // an empty set means "no resource indicators permitted" rather than
-        // "all of them": a client that has not been granted an audience must
-        // not be able to name one.
-        if !registration.resources.contains(raw) {
-            return Err(AuthorizationError::Invalid("resource"));
-        }
-        resources.insert(raw.clone());
+        resources.insert(identifier.as_str().to_owned());
     }
     Ok(resources)
 }
@@ -1450,9 +1465,11 @@ mod tests {
         }
     }
 
-    /// RFC 8707 §2, and the per-client allow-list that is not built yet.
+    /// RFC 8707 §2.2: a `resource` this server will not honour is
+    /// `invalid_target`, and the per-client allow-list is one of the reasons it
+    /// might not.
     #[test]
-    fn a_resource_the_client_was_not_granted_is_refused() {
+    fn a_resource_the_client_was_not_granted_is_invalid_target() {
         // The fixture registers none, so every indicator is refused. An empty
         // allow-list must mean "none", not "all".
         for wrong in [
@@ -1462,10 +1479,78 @@ mod tests {
         ] {
             assert_eq!(
                 refuse(&[("resource", wrong)]),
-                Err(AuthorizationError::Invalid("resource")),
+                Err(AuthorizationError::InvalidTarget(InvalidTarget)),
                 "accepted resource {wrong:?}"
             );
         }
+    }
+
+    /// RFC 8707 §2: "an absolute URI […] MUST NOT include a fragment
+    /// component". A relative URI and a fragment are refused even when the
+    /// spelling is on the client's allow-list, because a value the allow-list
+    /// holds and the parser refuses is a value nothing could ever match.
+    #[test]
+    fn a_fragment_or_a_relative_uri_is_invalid_target_whatever_the_client_registered() {
+        for wrong in ["https://api.example/v1#section", "/v1/accounts", ""] {
+            let mut registration = registration();
+            registration.resources.insert(wrong.to_owned());
+            let pairs: Vec<(String, String)> = base()
+                .into_iter()
+                .chain([("resource".to_owned(), wrong.to_owned())])
+                .collect();
+            assert_eq!(
+                validate(
+                    &Parameters::from_pairs(pairs),
+                    CLIENT,
+                    &registration,
+                    policy()
+                )
+                .map(|_| ()),
+                Err(AuthorizationError::InvalidTarget(InvalidTarget)),
+                "accepted resource {wrong:?}"
+            );
+        }
+    }
+
+    /// RFC 8707 §2: "Multiple `resource` parameters MAY be used". They are, and
+    /// the request carries every one of them.
+    #[test]
+    fn several_resources_are_all_carried_onto_the_request() {
+        let first = "https://api.example/v1";
+        let second = "https://reports.example/";
+        let mut registration = registration();
+        registration.resources.insert(first.to_owned());
+        registration.resources.insert(second.to_owned());
+        let pairs: Vec<(String, String)> = base()
+            .into_iter()
+            .chain([
+                ("resource".to_owned(), first.to_owned()),
+                ("resource".to_owned(), second.to_owned()),
+            ])
+            .collect();
+        let request = validate(
+            &Parameters::from_pairs(pairs),
+            CLIENT,
+            &registration,
+            policy(),
+        )
+        .expect("two registered resources");
+        assert_eq!(
+            request.resources,
+            [first.to_owned(), second.to_owned()]
+                .into_iter()
+                .collect::<BTreeSet<String>>()
+        );
+    }
+
+    /// RFC 8707 §2.2 registers `invalid_target`, and a client library that read
+    /// `invalid_request` would go looking for a typo it does not have.
+    #[test]
+    fn a_refused_resource_carries_the_error_code_rfc_8707_registers() {
+        assert_eq!(
+            AuthorizationError::InvalidTarget(InvalidTarget).code(),
+            "invalid_target"
+        );
     }
 
     #[test]

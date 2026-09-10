@@ -28,7 +28,8 @@
 //! is.
 
 use asterius_domain::entities::client::GrantType;
-use asterius_domain::{Capabilities, ClientRegistration};
+use asterius_domain::{Capabilities, ClientRegistration, InvalidTarget, ResourceIdentifier};
+use std::collections::BTreeSet;
 
 use crate::form::{Duplicated, Parameters};
 
@@ -162,6 +163,36 @@ pub fn dispatch(
     }
 
     Ok(Dispatch { grant })
+}
+
+/// The `resource` parameters of a token request (RFC 8707 §2.2).
+///
+/// Shape only: each value must be a resource indicator, and there must not be
+/// more of them than an authorization request may carry. Whether this tenant
+/// registered them, and whether the authorization being redeemed authorized
+/// them, are the caller's two remaining questions — both need the registry and
+/// the grant, and both answer with the same `invalid_target`
+/// ([`asterius_domain::ResourceRegistry::targets`]).
+///
+/// A duplicated `resource` is *not* an error here: RFC 8707 §2 makes the
+/// parameter explicitly repeatable, which is the one exception to RFC 6749
+/// §3.2's rule, and two spellings of one identifier collapse into one member of
+/// the set.
+///
+/// # Errors
+///
+/// [`InvalidTarget`] for a value that is not an absolute, fragment-free URI, or
+/// for more values than [`crate::authorize::MAX_RESOURCES`].
+pub fn requested_resources(params: &Parameters) -> Result<BTreeSet<String>, InvalidTarget> {
+    let values = params.multi("resource");
+    if values.len() > crate::authorize::MAX_RESOURCES {
+        return Err(InvalidTarget);
+    }
+    let mut resources = BTreeSet::new();
+    for raw in values {
+        resources.insert(ResourceIdentifier::parse(raw)?.as_str().to_owned());
+    }
+    Ok(resources)
 }
 
 #[cfg(test)]
@@ -377,6 +408,51 @@ mod tests {
         ] {
             assert_eq!(other.status(), 400, "{other}");
         }
+    }
+
+    /// RFC 8707 §2.2: a token request may carry `resource`, and §2 makes the
+    /// parameter repeatable — the one exception to RFC 6749 §3.2's "not more
+    /// than once".
+    #[test]
+    fn a_token_request_may_name_several_resources() {
+        assert_eq!(
+            requested_resources(&params(&[
+                ("grant_type", "authorization_code"),
+                ("resource", "https://api.example/v1"),
+                ("resource", "https://reports.example/"),
+            ]))
+            .expect("two resource indicators"),
+            [
+                "https://api.example/v1".to_owned(),
+                "https://reports.example/".to_owned()
+            ]
+            .into_iter()
+            .collect::<BTreeSet<String>>()
+        );
+    }
+
+    /// RFC 8707 §2: absolute, and no fragment — at the token endpoint as at the
+    /// authorization endpoint, because it is the same parser.
+    #[test]
+    fn a_fragment_or_a_relative_resource_is_invalid_target_at_the_token_endpoint() {
+        for wrong in ["https://api.example/v1#f", "/v1", "not-a-uri", ""] {
+            assert_eq!(
+                requested_resources(&params(&[("resource", wrong)])),
+                Err(InvalidTarget),
+                "accepted resource {wrong:?}"
+            );
+        }
+    }
+
+    /// A token request naming nothing names nothing: the audience then comes
+    /// from what the authorization request settled on.
+    #[test]
+    fn a_token_request_with_no_resource_names_none() {
+        assert_eq!(
+            requested_resources(&params(&[("grant_type", "authorization_code")]))
+                .expect("no resource is not an error"),
+            BTreeSet::new()
+        );
     }
 
     /// An error rendered to a client must not quote its input back.

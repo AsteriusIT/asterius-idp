@@ -76,6 +76,7 @@ use std::collections::BTreeSet;
 use time::OffsetDateTime;
 
 use crate::http::issuance;
+use crate::http::issuance::{INVALID_TARGET, TARGET_REFUSED};
 use crate::http::token::{GrantHandler, not_issued, refused};
 
 /// What every refusal in this file says.
@@ -102,6 +103,10 @@ pub struct RefreshToken<'a> {
     pub sessions: &'a dyn SessionRepository,
     /// Users for this tenant, read only to resolve the claims the grant covers.
     pub users: &'a PgUserRepository,
+    /// This tenant's registered resource servers (RFC 8707): a refresh is a
+    /// token request, so it may name a `resource` and is audienced by the same
+    /// rules as the redemption before it.
+    pub resource_servers: &'a dyn asterius_domain::ResourceServerRepository,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// The trail. Every refresh is recorded, successful or not.
@@ -274,7 +279,16 @@ impl RefreshToken<'_> {
             Failure::Client("invalid_scope", "the requested scope exceeds the granted scope")
         })?;
 
-        let (access_token, id_token) = self.mint(tenant, client, &grant, jkt, &effective).await?;
+        // RFC 8707 §2.2 applies to every token request, and a refresh is one:
+        // the resources named here must be a subset of what the authorization
+        // authorized, and a refresh that names none is audienced the way the
+        // redemption before it was.
+        let targets = asterius_oidc::token::requested_resources(params)
+            .map_err(|_| Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
+
+        let (access_token, id_token) = self
+            .mint(tenant, client, &grant, jkt, &effective, &targets)
+            .await?;
 
         let returned = self
             .refresh_token_to_return(&policy, presented, &digest, &record, &effective)
@@ -317,6 +331,7 @@ impl RefreshToken<'_> {
         grant: &Grant,
         jkt: &Kid,
         effective: &BTreeSet<String>,
+        targets: &BTreeSet<String>,
     ) -> Result<(String, Option<String>), Failure> {
         let session = self.session_facts(grant).await?;
         let claimed = self.grants.claim(&grant.id, self.now).await?;
@@ -332,11 +347,25 @@ impl RefreshToken<'_> {
             ))
         })?;
 
+        // RFC 8707 §2.2 and RFC 9068 §3, from the narrowed grant: the audience
+        // is what this request named, or what the authorization authorized, and
+        // the scopes are narrowed again by what those resource servers
+        // understand.
+        let targeting =
+            issuance::targeting(self.resource_servers, tenant, client, &narrowed, targets)
+                .await
+                .map_err(|error| match error {
+                    issuance::TargetingError::InvalidTarget => {
+                        Failure::Client(INVALID_TARGET, TARGET_REFUSED)
+                    }
+                    issuance::TargetingError::Storage(error) => Failure::Server(error),
+                })?;
+
         let access = AccessToken::new(
             &tenant.issuer,
             &narrowed,
             &claimed,
-            issuance::audience(tenant, &narrowed)?,
+            targeting.audience,
             confirmation,
             JwtId::generate(),
             self.now,

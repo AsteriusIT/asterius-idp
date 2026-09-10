@@ -32,7 +32,7 @@ use asterius_server::http::authorization_code::AuthorizationCode;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
 use asterius_server::signing::CachedSigner;
 use asterius_store_pg::{
-    PgAuditSink, PgCodeRepository, PgGrantRepository, PgRefreshTokenRepository,
+    PgAuditSink, PgCodeRepository, PgGrantRepository, PgRefreshTokenRepository, PgResourceServers,
     PgSessionRepository, PgTenantRepository, PgUserRepository, Store, TenantKeyStore,
 };
 use axum::body::Bytes;
@@ -151,6 +151,11 @@ impl Fixture {
 
     fn sessions(&self) -> PgSessionRepository {
         PgSessionRepository::new(self.store.pool().clone(), self.tenant.id.clone())
+    }
+
+    /// This tenant's registered resource servers (RFC 8707).
+    fn resource_servers(&self) -> PgResourceServers {
+        PgResourceServers::new(self.store.pool().clone(), self.tenant.id.clone())
     }
 
     /// A client registered for this grant, stored so the endpoint can load it.
@@ -320,6 +325,7 @@ impl Fixture {
         let grants = self.grants();
         let refresh_tokens = self.refresh_tokens();
         let sessions = self.sessions();
+        let resource_servers = self.resource_servers();
         let users = PgUserRepository::new(
             self.store.pool().clone(),
             self.tenant.id.clone(),
@@ -331,6 +337,7 @@ impl Fixture {
             refresh_tokens: &refresh_tokens,
             sessions: &sessions,
             users: &users,
+            resource_servers: &resource_servers,
             signer: self.signer.as_ref(),
             // The deployment fallback: these tests write the tenant no
             // settings of its own (`ast-5c6`).

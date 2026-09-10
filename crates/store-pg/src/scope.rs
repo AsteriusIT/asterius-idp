@@ -6,6 +6,7 @@ use crate::codes::PgCodeRepository;
 use crate::grants::PgGrantRepository;
 use crate::passkeys::PgPasskeyRepository;
 use crate::refresh::PgRefreshTokenRepository;
+use crate::resource_servers::PgResourceServers;
 use crate::sessions::PgSessionRepository;
 use crate::users::PgUserRepository;
 use asterius_domain::ports::TenantScoped;
@@ -73,6 +74,16 @@ impl<'a> TenantScope<'a> {
     #[must_use]
     pub fn auth_requests(&self) -> PgAuthRequestRepository {
         PgAuthRequestRepository::new(self.pool.clone(), self.tenant.clone())
+    }
+
+    /// The resource-server registry for this tenant (RFC 8707, `ast-gxh.7`).
+    ///
+    /// Tenant-scoped like everything else here, and that is what makes a
+    /// resource identifier meaningful *inside* a tenant: two tenants may front
+    /// the same API, and neither may name the other's audiences.
+    #[must_use]
+    pub fn resource_servers(&self) -> PgResourceServers {
+        PgResourceServers::new(self.pool.clone(), self.tenant.clone())
     }
 
     /// The grant repository for this tenant.

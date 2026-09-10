@@ -257,6 +257,24 @@ impl Reply {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
     }
 
+    /// The reference a successful push handed back (RFC 9126 §2.2).
+    ///
+    /// The success assertion lives here rather than in `push_with`, because a
+    /// *refused* push is a scenario this file tests: a caller that wants the
+    /// reference says so by asking for it.
+    fn request_uri(&self) -> String {
+        assert_eq!(
+            self.status,
+            StatusCode::CREATED,
+            "the push was refused: {}",
+            self.text()
+        );
+        self.json()["request_uri"]
+            .as_str()
+            .expect("RFC 9126 §2.2 requires a request_uri")
+            .to_owned()
+    }
+
     fn location(&self) -> String {
         self.headers
             .get(header::LOCATION)
@@ -524,54 +542,90 @@ impl Flow {
     /// a push is what the conformance suite does, and it went to a different
     /// column from the one the code issuer reads.
     async fn push(&mut self, key: &ProofKey) -> String {
-        self.push_with(key, &[]).await
+        self.push_with(key, &[]).await.request_uri()
     }
 
-    /// The same push, plus whatever else this scenario needs on it.
+    /// The push itself, with whatever `extra` parameters a test is about, and
+    /// the raw reply — a refused push is a scenario here, not an accident.
     ///
-    /// `extra` is appended to the form, so a test that needs `claims` or
-    /// `acr_values` sends them the way a client does — through the pushed
-    /// request, where the validator sees them and the store keeps them.
-    async fn push_with(&mut self, key: &ProofKey, extra: &[(&str, &str)]) -> String {
+    /// `extra` is appended to the form, so a test that needs `claims`,
+    /// `acr_values` or `resource` sends them the way a client does: through the
+    /// pushed request, where the validator sees them and the store keeps them.
+    async fn push_with(&mut self, key: &ProofKey, extra: &[(&str, &str)]) -> Reply {
         let url = Endpoint::PushedAuthorizationRequest.url(&self.tenant.issuer);
         let path = format!(
             "{}{}",
             self.prefix(),
             Endpoint::PushedAuthorizationRequest.path()
         );
-        let assertion = self.assertion("assertion-par");
+        // A fresh `jti` per push: RFC 7523 §3 item 7 makes a client assertion
+        // single-use and the replay guard here is the real one, so a test that
+        // pushes twice must not present one assertion twice.
+        let assertion = self.assertion(&format!("assertion-par-{}", self.next_jti()));
         let proof = key.proof("POST", &url, &self.next_jti());
-        let pushed = self
-            .post_form(
-                &path,
-                &[
-                    ("client_id", CLIENT),
-                    ("client_assertion_type", CLIENT_ASSERTION_TYPE),
-                    ("client_assertion", &assertion),
-                    ("response_type", "code"),
-                    ("redirect_uri", REDIRECT),
-                    ("scope", "openid offline_access"),
-                    ("code_challenge", CHALLENGE),
-                    ("code_challenge_method", "S256"),
-                    ("state", STATE),
-                    ("nonce", NONCE),
-                ]
-                .into_iter()
-                .chain(extra.iter().copied())
-                .collect::<Vec<_>>(),
-                Some(&proof),
+        let mut pairs = vec![
+            ("client_id", CLIENT),
+            ("client_assertion_type", CLIENT_ASSERTION_TYPE),
+            ("client_assertion", assertion.as_str()),
+            ("response_type", "code"),
+            ("redirect_uri", REDIRECT),
+            ("scope", "openid offline_access"),
+            ("code_challenge", CHALLENGE),
+            ("code_challenge_method", "S256"),
+            ("state", STATE),
+            ("nonce", NONCE),
+        ];
+        pairs.extend_from_slice(extra);
+        self.post_form(&path, &pairs, Some(&proof)).await
+    }
+
+    /// Registers a resource server for this tenant (RFC 8707).
+    ///
+    /// The administrative API for this is follow-up work, so the registry is
+    /// written through its repository — which is what an operator's SQL does
+    /// today and what the token endpoint reads.
+    async fn register_resource_server(&self, identifier: &str, scopes: Option<&[&str]>) {
+        asterius_store_pg::PgResourceServers::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+        )
+        .register(&asterius_domain::ResourceServer {
+            identifier: asterius_domain::ResourceIdentifier::parse(identifier)
+                .expect("a resource indicator"),
+            scopes: scopes.map(|s| s.iter().map(|s| (*s).to_owned()).collect()),
+            default_token_lifetime: None,
+        })
+        .await
+        .expect("register the resource server");
+    }
+
+    /// Withdraws one, which is how a tenant ends up with no default audience.
+    async fn withdraw_resource_server(&self, identifier: &str) {
+        assert!(
+            asterius_store_pg::PgResourceServers::new(
+                self.store.pool().clone(),
+                self.tenant.id.clone(),
             )
-            .await;
-        assert_eq!(
-            pushed.status,
-            StatusCode::CREATED,
-            "the push was refused: {}",
-            pushed.text()
+            .withdraw(identifier)
+            .await
+            .expect("withdraw the resource server"),
+            "there was no resource server to withdraw: {identifier}"
         );
-        pushed.json()["request_uri"]
-            .as_str()
-            .expect("RFC 9126 §2.2 requires a request_uri")
-            .to_owned()
+    }
+
+    /// Puts `allowed` on the client's own resource allow-list.
+    ///
+    /// Not registration metadata (RFC 7591 has no such member): it is policy,
+    /// written beside the registration, so it is set on the stored client.
+    async fn allow_client_resources(&self, allowed: &[&str]) {
+        let scope = self.store.scope(self.tenant.id.clone());
+        let clients = scope.clients(Capabilities::default());
+        let mut client = asterius_domain::ClientRepository::find(&clients, &ClientId::new(CLIENT))
+            .await
+            .expect("read the client")
+            .expect("the client is registered");
+        client.registration.resources = allowed.iter().map(|r| (*r).to_owned()).collect();
+        clients.upsert(&client).await.expect("store the client");
     }
 
     /// OIDC Core §3.1.2.1: the browser arrives at the authorization endpoint
@@ -1205,7 +1259,6 @@ async fn an_access_token_expires_when_the_tenants_setting_says_so() {
     flow.tear_down().await;
 }
 
-
 /// **An essential `acr`, over the wire, from the push to the ID token**
 /// (`ast-2vk.7`, absorbing `ast-0zg`).
 ///
@@ -1240,7 +1293,10 @@ async fn an_essential_acr_travels_from_the_push_into_the_id_token() {
     .to_string();
 
     // Act: the browser half, with the essential request on the push.
-    let request_uri = flow.push_with(&key, &[("claims", &claims)]).await;
+    let request_uri = flow
+        .push_with(&key, &[("claims", &claims)])
+        .await
+        .request_uri();
     let interaction = flow.authorize(&request_uri).await;
     flow.sign_in(&interaction).await;
     let code = flow.consent(&interaction).await;
@@ -1601,6 +1657,247 @@ async fn an_id_token_presented_for_revocation_is_an_unsupported_token_type() {
         answered.text()
     );
     assert_eq!(answered.json()["error"], "unsupported_token_type");
+
+    flow.tear_down().await;
+}
+
+// ---- RFC 8707: resource indicators drive `aud` ---------------------------
+
+/// A second API this tenant serves, for the multi-audience and subset cases.
+const OTHER_RESOURCE: &str = "https://reports.example/";
+
+/// Drives push, sign-in, consent and redemption, with `push_extra` on the
+/// pushed request and `token_extra` on the token request.
+async fn redeemed(
+    flow: &mut Flow,
+    push_extra: &[(&str, &str)],
+    token_extra: &[(&str, &str)],
+) -> Reply {
+    let key = ProofKey::generate();
+    let request_uri = flow.push_with(&key, push_extra).await.request_uri();
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+
+    let mut form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", REDIRECT),
+        ("code_verifier", VERIFIER),
+    ];
+    form.extend_from_slice(token_extra);
+    flow.token(&key, "assertion-code", &form).await
+}
+
+/// **RFC 8707 §2 and §2.1**: a `resource` with a fragment, a relative URI, or a
+/// value this tenant has not registered is `invalid_target` at the pushed
+/// authorization request endpoint — where an authenticated client is still on
+/// the connection to be told.
+#[tokio::test]
+async fn a_bad_resource_is_invalid_target_at_the_pushed_request_endpoint() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    // Everything the client asks for below is on its own allow-list, so the
+    // only rules left to refuse it are RFC 8707 §2's shape and §3's registry.
+    flow.allow_client_resources(&[
+        RESOURCE,
+        "https://api.example/v1#section",
+        "/v1/accounts",
+        "https://unregistered.example/",
+    ])
+    .await;
+    let key = ProofKey::generate();
+
+    for wrong in [
+        "https://api.example/v1#section",
+        "/v1/accounts",
+        "https://unregistered.example/",
+    ] {
+        let pushed = flow.push_with(&key, &[("resource", wrong)]).await;
+        assert_eq!(
+            pushed.status,
+            StatusCode::BAD_REQUEST,
+            "the push was accepted with resource {wrong:?}"
+        );
+        assert_eq!(
+            pushed.json()["error"],
+            "invalid_target",
+            "for resource {wrong:?}: {}",
+            pushed.text()
+        );
+    }
+
+    flow.tear_down().await;
+}
+
+/// **RFC 8707 §2.2**: "the requested resources MUST be a subset of the
+/// resources authorized" — a token request cannot reach past the authorization
+/// request it is redeeming.
+#[tokio::test]
+async fn a_token_request_naming_a_resource_the_authorization_did_not_is_invalid_target() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.register_resource_server(OTHER_RESOURCE, None).await;
+    flow.allow_client_resources(&[RESOURCE, OTHER_RESOURCE])
+        .await;
+
+    // Authorized for one API; redeemed asking for the other.
+    let refused = redeemed(
+        &mut flow,
+        &[("resource", RESOURCE)],
+        &[("resource", OTHER_RESOURCE)],
+    )
+    .await;
+
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "a token was issued for a resource the authorization never named: {}",
+        refused.text()
+    );
+    assert_eq!(
+        refused.json()["error"],
+        "invalid_target",
+        "{}",
+        refused.text()
+    );
+
+    flow.tear_down().await;
+}
+
+/// **RFC 9068 §3**: "the `aud` claim […] SHOULD be the same value as the
+/// `resource` parameter in the request", and RFC 8707 §2 lets the AS narrow the
+/// scope to what that resource understands.
+#[tokio::test]
+async fn the_access_token_is_audienced_at_the_requested_resource_with_its_scopes() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    // A resource server that understands `openid` and nothing else, so the
+    // `offline_access` the grant carries must not reach it.
+    flow.register_resource_server(OTHER_RESOURCE, Some(&["openid"]))
+        .await;
+    flow.allow_client_resources(&[OTHER_RESOURCE]).await;
+
+    let issued = redeemed(
+        &mut flow,
+        &[("resource", OTHER_RESOURCE)],
+        &[("resource", OTHER_RESOURCE)],
+    )
+    .await;
+    assert_eq!(
+        issued.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        issued.text()
+    );
+    let claims = claims_of(issued.json()["access_token"].as_str().expect("a token"));
+    assert_eq!(claims["aud"], json!(OTHER_RESOURCE), "{claims}");
+    assert_eq!(
+        claims["scope"],
+        json!("openid"),
+        "the token carried a scope the resource server does not understand: {claims}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **RFC 8707 §2**: "Multiple `resource` parameters MAY be used". The policy
+/// this server chose is one token with an `aud` array rather than a refusal —
+/// and the scopes are the ones *both* resource servers understand, so widening
+/// the audience never widens the authority.
+#[tokio::test]
+async fn two_resources_are_one_token_with_an_array_audience() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.register_resource_server(RESOURCE, Some(&["openid", "offline_access"]))
+        .await;
+    flow.register_resource_server(OTHER_RESOURCE, Some(&["openid"]))
+        .await;
+    flow.allow_client_resources(&[RESOURCE, OTHER_RESOURCE])
+        .await;
+
+    let issued = redeemed(
+        &mut flow,
+        &[("resource", RESOURCE), ("resource", OTHER_RESOURCE)],
+        &[],
+    )
+    .await;
+    assert_eq!(
+        issued.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        issued.text()
+    );
+    let claims = claims_of(issued.json()["access_token"].as_str().expect("a token"));
+    assert_eq!(claims["aud"], json!([RESOURCE, OTHER_RESOURCE]), "{claims}");
+    assert_eq!(
+        claims["scope"],
+        json!("openid"),
+        "a two-audience token carried a scope only one of them understands: {claims}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **RFC 9068 §2.2 and §3**: `aud` is REQUIRED, so a client that names no
+/// `resource` and has no default audience left gets `invalid_target` rather
+/// than a token nothing can safely accept.
+///
+/// The tenant's own default audience is a registered resource server; this
+/// withdraws it, which is the only way to have no default at all.
+#[tokio::test]
+async fn a_client_with_no_resource_and_no_default_audience_gets_no_token() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.withdraw_resource_server(RESOURCE).await;
+
+    let refused = redeemed(&mut flow, &[], &[]).await;
+
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "an audience-less access token was issued: {}",
+        refused.text()
+    );
+    assert_eq!(
+        refused.json()["error"],
+        "invalid_target",
+        "{}",
+        refused.text()
+    );
+
+    flow.tear_down().await;
+}
+
+/// **RFC 9068 §3**: a client that names no `resource` still gets an
+/// audience-bound token — the tenant's registered default, which is what its
+/// tokens have always carried.
+#[tokio::test]
+async fn no_resource_falls_back_to_the_registered_default_audience() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+
+    let issued = redeemed(&mut flow, &[], &[]).await;
+    assert_eq!(
+        issued.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        issued.text()
+    );
+    let claims = claims_of(issued.json()["access_token"].as_str().expect("a token"));
+    assert_eq!(claims["aud"], json!(RESOURCE), "{claims}");
 
     flow.tear_down().await;
 }

@@ -6,6 +6,7 @@ pub mod client;
 pub mod grant;
 pub mod passkey;
 pub mod password;
+pub mod resource_server;
 pub mod role;
 pub mod session;
 pub mod tenant;
@@ -21,6 +22,7 @@ pub use client::{
 pub use grant::{
     ClaimedGrant, Grant, GrantError, GrantRecord, GrantStatus, LiveAccessToken, RevocationReason,
 };
+pub use resource_server::{InvalidTarget, ResourceIdentifier, ResourceRegistry, ResourceServer};
 pub use role::{Role, RoleScope, UserRole};
 pub use tenant::{RefreshPolicy, RefreshPolicyError, Rotation, Tenant, TenantStatus};
 pub use tenant_settings::{TenantSettings, TenantSettingsError, TokenLifetimes};
