@@ -1314,6 +1314,10 @@ async fn run_authorize(
             interactions: &requests,
             session: session.as_ref(),
             grants: &scope.grants(),
+            // The same repository the subject resolver below reads, asked a
+            // different question: the name a consent screen shown without a
+            // sign-in has to display (`ast-k7f`, `ast-bo5`).
+            users: &subjects,
             policy: decision_policy(),
             acr: acr_policy(),
             memory: memory_policy(),

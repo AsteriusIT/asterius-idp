@@ -555,6 +555,24 @@ impl Flow {
     /// `acr_values` or `resource` sends them the way a client does: through the
     /// pushed request, where the validator sees them and the store keeps them.
     async fn push_with(&mut self, key: &ProofKey, extra: &[(&str, &str)]) -> Reply {
+        self.push_as(CLIENT, None, "openid offline_access", key, extra)
+            .await
+    }
+
+    /// The same push, made by whichever client holds `signing_key`.
+    ///
+    /// `None` is this flow's own client. `scope` is a parameter rather than a
+    /// constant because a second client is registered for a smaller set, and a
+    /// push asking for a scope its client is not registered for is refused
+    /// before any of this reaches `/authorize` (RFC 9126 §2.1).
+    async fn push_as(
+        &mut self,
+        client_id: &str,
+        signing_key: Option<&SigningKey>,
+        scope: &str,
+        key: &ProofKey,
+        extra: &[(&str, &str)],
+    ) -> Reply {
         let url = Endpoint::PushedAuthorizationRequest.url(&self.tenant.issuer);
         let path = format!(
             "{}{}",
@@ -564,15 +582,19 @@ impl Flow {
         // A fresh `jti` per push: RFC 7523 §3 item 7 makes a client assertion
         // single-use and the replay guard here is the real one, so a test that
         // pushes twice must not present one assertion twice.
-        let assertion = self.assertion(&format!("assertion-par-{}", self.next_jti()));
+        let assertion = self.assertion_for(
+            client_id,
+            signing_key,
+            &format!("assertion-par-{}", self.next_jti()),
+        );
         let proof = key.proof("POST", &url, &self.next_jti());
         let mut pairs = vec![
-            ("client_id", CLIENT),
+            ("client_id", client_id),
             ("client_assertion_type", CLIENT_ASSERTION_TYPE),
             ("client_assertion", assertion.as_str()),
             ("response_type", "code"),
             ("redirect_uri", REDIRECT),
-            ("scope", "openid offline_access"),
+            ("scope", scope),
             ("code_challenge", CHALLENGE),
             ("code_challenge_method", "S256"),
             ("state", STATE),
@@ -675,8 +697,16 @@ impl Flow {
     /// session already covers is answered without a page (`ast-ovr`). A caller
     /// that wants the interaction says so by asking for it.
     async fn authorize_raw(&mut self, request_uri: &str) -> Reply {
+        self.authorize_raw_as(CLIENT, request_uri).await
+    }
+
+    /// The same arrival, under whichever client pushed the request.
+    ///
+    /// RFC 9126 §4: the `client_id` in the URL is checked against the one the
+    /// request was pushed by, so the two travel together.
+    async fn authorize_raw_as(&mut self, client_id: &str, request_uri: &str) -> Reply {
         let path = format!(
-            "{}{}?client_id={CLIENT}&request_uri={}",
+            "{}{}?client_id={client_id}&request_uri={}",
             self.prefix(),
             Endpoint::Authorization.path(),
             url::form_urlencoded::byte_serialize(request_uri.as_bytes()).collect::<String>()
@@ -687,7 +717,12 @@ impl Flow {
     /// OIDC Core §3.1.2.1: the browser arrives at the authorization endpoint
     /// carrying nothing but the reference, and is sent into an interaction.
     async fn authorize(&mut self, request_uri: &str) -> String {
-        let started = self.authorize_raw(request_uri).await;
+        self.authorize_as(CLIENT, request_uri).await
+    }
+
+    /// The same, under whichever client pushed the request.
+    async fn authorize_as(&mut self, client_id: &str, request_uri: &str) -> String {
+        let started = self.authorize_raw_as(client_id, request_uri).await;
         assert_eq!(
             started.status,
             StatusCode::SEE_OTHER,
@@ -954,12 +989,9 @@ impl Flow {
         key
     }
 
-    /// A `private_key_jwt` assertion for this client (OIDC Core §9).
-    fn assertion(&self, jti: &str) -> String {
-        self.assertion_for(CLIENT, None, jti)
-    }
-
-    /// The same assertion, for whichever client holds `key`.
+    /// A `private_key_jwt` assertion for a client (OIDC Core §9).
+    ///
+    /// `key` is `None` for this flow's own client.
     fn assertion_for(&self, client_id: &str, key: Option<&SigningKey>, jti: &str) -> String {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let claims = json!({
@@ -2195,6 +2227,219 @@ async fn a_returning_user_is_sent_back_to_the_client_without_a_screen() {
     assert_eq!(
         second, first,
         "OIDC Core §2: a reused session keeps its auth_time"
+    );
+
+    flow.tear_down().await;
+}
+
+/// A second client, and a request pushed for it by a browser that is already
+/// signed in to the first.
+///
+/// Returns the `auth_time` the first client's ID token reported, the second
+/// client's signing key, the DPoP key the push was made under, and the
+/// interaction the browser was sent into — everything the assertions below
+/// need, so that each test says only what it is about.
+async fn meet_a_new_client(
+    flow: &mut Flow,
+    extra: &[(&str, &str)],
+) -> (i64, SigningKey, ProofKey, String) {
+    let first = sign_in_and_consent(flow).await;
+    let other = flow.register_other_client().await;
+    let key = ProofKey::generate();
+    let request_uri = flow
+        .push_as(OTHER_CLIENT, Some(&other), "openid", &key, extra)
+        .await
+        .request_uri();
+    let interaction = flow.authorize_as(OTHER_CLIENT, &request_uri).await;
+    (first, other, key, interaction)
+}
+
+/// **`ast-k7f`**: single sign-on is about the *second client*, not about the
+/// second visit.
+///
+/// A user who is signed in and meets a client they have never consented to has
+/// one thing left to do — decide — and OIDC Core §3.1.2.1 has nothing that
+/// asks them to authenticate again for it: the session is live, it is recent
+/// enough, and it is about the right person. Before the fix, `/authorize`
+/// answered `Interaction::Consent` and the interaction still began at
+/// `Stage::Login`, so every new client cost the user their credentials again.
+///
+/// The `auth_time` is what proves the session was reused rather than quietly
+/// replaced: a server that signed the user in again would report a later
+/// instant, and `max_age` would mean nothing across clients.
+#[tokio::test]
+async fn a_new_client_asks_a_signed_in_user_to_consent_and_not_to_sign_in_again() {
+    // Arrange: signed in and consented for one client; a second one asking.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let (first, other, key, interaction) = meet_a_new_client(&mut flow, &[]).await;
+
+    // Act
+    let page = flow.get(&interaction).await;
+
+    // Assert: the consent screen, and no sign-in form.
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let html = page.text();
+    assert!(
+        !html.contains(r#"id="passkey-signin-button""#),
+        "a signed-in user was sent back to the sign-in form by a new client:\n{html}"
+    );
+    assert!(
+        html.contains("Reporting"),
+        "the consent screen did not name the client that is asking:\n{html}"
+    );
+    // `ast-bo5`: the screen has to say whose account is about to be granted,
+    // and nobody typed a name on this request at all.
+    assert!(
+        html.contains(&format!("Signed in as {}.", flow.user.as_uuid())),
+        "the consent screen did not name who is signed in:\n{html}"
+    );
+
+    // Act: the decision the user does still owe.
+    let csrf = csrf_from(&html);
+    let decided = flow
+        .post_form(
+            &interaction,
+            &[("csrf", &csrf), ("decision", "allow"), ("scope", "openid")],
+            None,
+        )
+        .await;
+    assert_eq!(
+        decided.status,
+        StatusCode::SEE_OTHER,
+        "consent did not produce an authorization response: {}",
+        decided.text()
+    );
+    let back = decided.location();
+    assert!(
+        back.starts_with(REDIRECT),
+        "the browser was sent somewhere else: {back}"
+    );
+    let code = parameter(&back, "code").expect("RFC 6749 §4.1.2 requires a code");
+
+    // Assert: the session was reused, not replaced.
+    let redeemed = flow
+        .token_as(
+            OTHER_CLIENT,
+            Some(&other),
+            &key,
+            "assertion-sso-new-client",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        redeemed.text()
+    );
+    let claims = claims_of(
+        redeemed.json()["id_token"]
+            .as_str()
+            .expect("an openid grant earns an ID token"),
+    );
+    assert_eq!(
+        claims["auth_time"].as_i64(),
+        Some(first),
+        "OIDC Core §2: a reused session keeps its auth_time: {claims}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **OIDC Core §3.1.2.1**: `prompt=login` is not weakened by a new client.
+///
+/// The guard on the rule above: the session is live and the client is new, and
+/// the request still asked for the user to authenticate again.
+#[tokio::test]
+async fn a_new_client_asking_prompt_login_still_gets_the_sign_in_form() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let (_, _, _, interaction) = meet_a_new_client(&mut flow, &[("prompt", "login")]).await;
+
+    // Act
+    let page = flow.get(&interaction).await;
+
+    // Assert
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let html = page.text();
+    assert!(
+        html.contains(r#"id="passkey-signin-button""#),
+        "prompt=login did not ask the user to authenticate again:\n{html}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **OIDC Core §3.1.2.3**: `max_age=0` is not weakened by a new client either.
+#[tokio::test]
+async fn a_new_client_asking_max_age_zero_still_gets_the_sign_in_form() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let (_, _, _, interaction) = meet_a_new_client(&mut flow, &[("max_age", "0")]).await;
+
+    // Act
+    let page = flow.get(&interaction).await;
+
+    // Assert
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let html = page.text();
+    assert!(
+        html.contains(r#"id="passkey-signin-button""#),
+        "max_age=0 did not ask the user to authenticate again:\n{html}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **OIDC Core §5.5.1.1**: an essential `acr` the session does not carry sends
+/// the user through the step-up, new client or not.
+///
+/// The session was established by a user-verified passkey, so it carries
+/// `urn:asterius:acr:passkey-uv` and satisfies nothing else by name. A client
+/// asking for a context this tenant *can* produce and this session has not is
+/// `Interaction::StepUp`, which renders the authentication page — the one
+/// screen a consent-first shortcut must never skip.
+#[tokio::test]
+async fn a_new_client_asking_an_unmet_essential_acr_still_gets_the_step_up() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let claims = json!({
+        "id_token": {
+            "acr": {
+                "essential": true,
+                "values": [asterius_domain::acr::PASSWORD],
+            }
+        }
+    })
+    .to_string();
+    let (_, _, _, interaction) = meet_a_new_client(&mut flow, &[("claims", &claims)]).await;
+
+    // Act
+    let page = flow.get(&interaction).await;
+
+    // Assert
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    let html = page.text();
+    assert!(
+        html.contains(r#"id="passkey-signin-button""#),
+        "an unmet essential acr was answered with a consent screen:\n{html}"
     );
 
     flow.tear_down().await;

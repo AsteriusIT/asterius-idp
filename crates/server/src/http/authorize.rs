@@ -67,6 +67,14 @@ pub struct AuthorizeContext<'a> {
     /// The grants this user already holds, for the consent memory
     /// (`ast-uwv.3`).
     pub grants: &'a dyn GrantRepository,
+    /// The accounts, read for one thing only: the name the consent screen puts
+    /// on the person it is about (`ast-bo5`).
+    ///
+    /// Needed here because an interaction that begins at [`Stage::Consent`]
+    /// has had no sign-in step to record it (`ast-k7f`), and a screen that
+    /// says "Signed in as ." is a screen somebody on a shared machine cannot
+    /// check.
+    pub users: &'a dyn asterius_domain::UserDirectory,
     /// What this tenant will do without being asked.
     pub policy: DecisionPolicy,
     /// The authentication contexts this tenant can produce (`ast-2vk.7`).
@@ -231,26 +239,47 @@ pub async fn authorize(
     // Where the interaction starts, when it does not start at the beginning.
     //
     // `Stage::Login` is the default and it is the right default: it asks for
-    // more than may be needed and never for less. The two decisions that may
-    // start later are the two this handler resolved a *session* to make — the
-    // step-up rotates that session (`ast-2vk.7`), and a silent request is
-    // answered from it (`ast-ovr`) — and neither of them is a question the
-    // interaction can re-decide, because the browser's cookie is not something
-    // it resolves.
+    // more than may be needed and never for less. The decisions that may start
+    // later are the ones this handler resolved a *session* to make — the
+    // step-up rotates that session (`ast-2vk.7`), a silent request is answered
+    // from it (`ast-ovr`), and a consent decision was reached only because the
+    // session was found live, fresh and about the right person (`ast-k7f`) —
+    // and none of them is a question the interaction can re-decide, because the
+    // browser's cookie is not something it resolves.
     match decision {
-        Interaction::StepUp => begin_at(&context, &id.digest(), Stage::StepUp, now).await,
-        // The user is signed in and has already agreed to what is being asked.
-        // Starting at `Stage::Consent` is what lets the interaction skip
-        // straight to the response: `http::interaction::show` reads the same
+        Interaction::StepUp => begin_at(&context, &id.digest(), Stage::StepUp, None, now).await,
+        // Two arrivals at one stage, because from here they are the same fact:
+        // the person is signed in and the only thing that might still be owed
+        // is a decision.
+        //
+        // `Silent` owes nothing — `http::interaction::show` reads the consent
         // memory back and advances `Consent -> Response` without drawing a
-        // screen. It is not a shortcut around the stage machine — the move is
-        // still made through `Stage::may_advance_to`, and a memory that no
-        // longer covers the request renders the consent screen to the person
-        // the session names rather than granting anything.
-        Interaction::Silent => begin_at(&context, &id.digest(), Stage::Consent, now).await,
+        // screen. `Consent` owes exactly one screen, which is what single
+        // sign-on is: a client this user has never agreed to costs them a
+        // decision and not their credentials (`ast-k7f`). `decide` returns it
+        // only for a session that is usable, that `prompt=login` and `max_age`
+        // did not make stale, and whose `acr` meets an essential request — so
+        // the guards of OIDC Core §3.1.2.1, §3.1.2.3 and §5.5.1.1 are already
+        // spent by the time this arm is reached, and every one of them lands
+        // on `Login` or `StepUp` instead.
+        //
+        // Neither is a shortcut around the stage machine: the move out of
+        // `Consent` is still made through `Stage::may_advance_to`, and a memory
+        // that does not cover the request renders the consent screen to the
+        // person the session names rather than granting anything.
+        Interaction::Silent | Interaction::Consent => {
+            // The name the screen puts on that person (`ast-bo5`). Resolved for
+            // the consent decision only: the silent path draws no screen, and a
+            // query per silent authorization would buy nothing.
+            let username = if decision == Interaction::Consent {
+                signed_in_username(&context, now).await
+            } else {
+                None
+            };
+            begin_at(&context, &id.digest(), Stage::Consent, username, now).await;
+        }
         Interaction::Login
         | Interaction::SelectAccount
-        | Interaction::Consent
         | Interaction::Register
         | Interaction::Refuse(_) => {}
     }
@@ -284,11 +313,20 @@ pub async fn authorize(
 
 /// Records that an interaction begins somewhere other than the beginning.
 ///
+/// The one place an interaction is started anywhere other than
+/// [`Stage::Login`]: the step-up, the silent request and the consent of a
+/// signed-in user all come through here, so there is a single answer to "what
+/// does it mean to begin at a stage" rather than one per decision.
+///
 /// Written after `begin_interaction` because the row has to exist to be
 /// updated, and it carries the session the stage is *about* — the step-up
-/// needs to know which session to rotate (`ast-2vk.7`) and a silent request
-/// needs to know whose consent to look up (`ast-ovr`), and the browser's
-/// cookie is not something the interaction handler re-resolves.
+/// needs to know which session to rotate (`ast-2vk.7`), a silent request needs
+/// to know whose consent to look up (`ast-ovr`), and a consent screen shown
+/// without a sign-in needs to name the person it is about (`ast-k7f`), while
+/// the browser's cookie is not something the interaction handler re-resolves.
+///
+/// `username` is what that screen displays, and `None` for every stage that
+/// draws no screen naming anybody.
 ///
 /// A failure here is logged and not fatal. An interaction whose state was not
 /// written starts at [`Stage::Login`], which asks the user for more than was
@@ -299,10 +337,12 @@ async fn begin_at(
     context: &AuthorizeContext<'_>,
     interaction: &str,
     stage: Stage,
+    username: Option<String>,
     now: OffsetDateTime,
 ) {
     let beginning = serde_json::to_value(StoredState {
         stage,
+        username,
         ..StoredState::default()
     })
     .unwrap_or_default();
@@ -318,6 +358,38 @@ async fn begin_at(
             ?stage,
             "cannot record the stage an interaction begins at"
         );
+    }
+}
+
+/// The name of the person whose session this browser is carrying.
+///
+/// Read for one purpose: the consent screen has to say whose account is about
+/// to be granted (`ast-bo5`). An interaction that begins at [`Stage::Consent`]
+/// never passes through the sign-in that would otherwise have recorded it.
+///
+/// `None` whenever the answer is not certain — no usable session, an account
+/// that is gone, a store that will not answer. The screen then names nobody,
+/// which is what it did before this path existed; refusing the authorization
+/// over a display name would be a worse answer than an unnamed screen, and the
+/// grant that follows is keyed by the session either way.
+async fn signed_in_username(context: &AuthorizeContext<'_>, now: OffsetDateTime) -> Option<String> {
+    let session = context
+        .session
+        .filter(|session| session.status(now).is_usable())?;
+    match context
+        .users
+        .by_id(asterius_domain::UserId::new(session.user))
+        .await
+    {
+        Ok(account) => account.map(|account| account.username),
+        Err(error) => {
+            tracing::error!(
+                %error,
+                tenant = %context.tenant.id,
+                "cannot read the account a consent screen names"
+            );
+            None
+        }
     }
 }
 
