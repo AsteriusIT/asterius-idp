@@ -210,7 +210,8 @@ pub struct HttpsClientUrlFetcher {
 
 impl std::fmt::Debug for HttpsClientUrlFetcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HttpsClientUrlFetcher").finish_non_exhaustive()
+        f.debug_struct("HttpsClientUrlFetcher")
+            .finish_non_exhaustive()
     }
 }
 
@@ -548,8 +549,9 @@ mod tests {
     /// `jwks` resolves through the pair without a socket existing.
     #[tokio::test]
     async fn the_fetcher_satisfies_the_port_the_key_cache_is_built_on() {
-        let cache =
-            asterius_jose::ClientKeyCache::new(Arc::new(HttpsClientUrlFetcher::new().expect("build")));
+        let cache = asterius_jose::ClientKeyCache::new(Arc::new(
+            HttpsClientUrlFetcher::new().expect("build"),
+        ));
         let key = asterius_jose::SigningKey::generate(asterius_domain::SigningAlgorithm::EdDsa)
             .expect("generate");
         let mut jwk = key.public_jwk().expect("jwk");

@@ -56,7 +56,6 @@ pub use entities::{
     UserRole, UserStatus,
 };
 pub use error::DomainError;
-pub use limits::MAX_JWT_BYTES;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
 pub use json_sentinel::{
@@ -66,6 +65,7 @@ pub use keys::{
     Activation, CompactJws, KeyAdministration, KeyRotation, KeyState, KeyStore, Kid,
     PublicKeyRecord, RotationSchedule, Signer, SigningAlgorithm,
 };
+pub use limits::MAX_JWT_BYTES;
 pub use ports::{
     AuthRequestRepository, AuthorizationDetailsTypeRepository, ClientAdministration,
     ClientConfiguration, ClientRegistry, ClientRepository, ClientUsageRecorder, CodeIssuer,

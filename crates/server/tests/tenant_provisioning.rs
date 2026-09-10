@@ -19,7 +19,7 @@
 
 use asterius_domain::audit::{AuditEvent, AuditSink};
 use asterius_domain::keys::SigningAlgorithm;
-use asterius_domain::ports::{Clock, ClientUrlFetcher, SystemClock, TenantRepository as _};
+use asterius_domain::ports::{ClientUrlFetcher, Clock, SystemClock, TenantRepository as _};
 use asterius_domain::{
     Capabilities, Client, ClientRegistry, DomainError, Issuer, Tenant, TenantId, TenantStatus,
 };

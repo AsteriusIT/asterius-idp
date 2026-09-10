@@ -56,7 +56,7 @@ use crate::http::software_statement;
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::keys::SigningAlgorithm;
-use asterius_domain::ports::{InitialAccessTokenStore, ClientUrlFetcher};
+use asterius_domain::ports::{ClientUrlFetcher, InitialAccessTokenStore};
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration, ClientRegistry,
     ClientStatus, InitialAccessTokenReservation, JwksSource, KeyStore, OpaqueToken,

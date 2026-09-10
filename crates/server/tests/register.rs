@@ -12,7 +12,7 @@
 use asterius_domain::RegistrationPolicy as TenantRegistrationPolicy;
 use asterius_domain::audit::{AuditEvent, AuditSink, DetailValue, EventType, Outcome};
 use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
-use asterius_domain::ports::{InitialAccessTokenStore, ClientUrlFetcher};
+use asterius_domain::ports::{ClientUrlFetcher, InitialAccessTokenStore};
 use asterius_domain::{
     Capabilities, Client, ClientRegistry, DomainError, InitialAccessToken,
     InitialAccessTokenReservation, Issuer, KeyStore, Kid, NewInitialAccessToken, PublicKeyRecord,
