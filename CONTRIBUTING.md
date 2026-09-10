@@ -91,6 +91,12 @@ mode, and it then verifies all 122 `query!` invocations against an empty
 schema and fails every one of them. Start the container and migrate it in one
 step, or start neither.
 
+That is a development trap, not a production one: a deployed `asterius` applies
+its own migrations at boot, before it binds, and the release image builds with
+`SQLX_OFFLINE=true`. What that means for a rollout — including which migrations
+an un-restarted replica does *not* survive — is
+[`docs/runbooks/upgrade.md`](docs/runbooks/upgrade.md).
+
 The same asymmetry explains why anything that compiles without a database
 should say so explicitly. `scripts/check.sh` (no `--db`), `scripts/check-geiger.sh`,
 `scripts/check-fuzz-coverage.sh`, `scripts/browser-tests.sh` and the
