@@ -14,7 +14,6 @@ use crate::http::dpop::{self, DpopEndpoint};
 use asterius_domain::keys::{KeyStore, SigningAlgorithm};
 use asterius_domain::{DomainError, Tenant};
 use asterius_jose::verify::{Policy, TypRule, VerificationError, Verified};
-use asterius_oidc::metadata::Endpoint;
 use asterius_oidc::userinfo::Presentation;
 use axum::http::{HeaderMap, Method};
 use serde_json::{Value, json};
@@ -104,15 +103,16 @@ pub struct Presented<'a> {
     pub tenant: &'a Tenant,
     /// Checks the DPoP proof (RFC 9449 §7.1).
     pub dpop: &'a DpopEndpoint,
-    /// The endpoint the proof's `htu` is compared against.
-    pub endpoint: Endpoint,
-    /// The path segment under that endpoint this request addresses, when the
-    /// resource is one (Grant Management ID1 §6.3).
+    /// The URL the proof's `htu` is compared against, as this server derives
+    /// it (RFC 9449 §4.3 item 8).
     ///
-    /// `None` is an endpoint addressed at its own URL, which is every one but
-    /// the Grant Management API. See
-    /// [`DpopEndpoint::check_with_access_token_under`].
-    pub segment: Option<&'a str>,
+    /// A [`dpop::ProofTarget`] rather than an [`Endpoint`], because not every
+    /// endpoint that takes an access token is one URL of the registry: the
+    /// Grant Management API addresses a resource *under* its endpoint (ID1
+    /// §6.3), and the SSF management API is mounted outside the registry
+    /// altogether (`ast-0ju.3`). All three derive the URL from the tenant's
+    /// issuer and from nothing the caller sent.
+    pub target: dpop::ProofTarget<'a>,
     /// The client certificate the request arrived with, if a trusted proxy
     /// forwarded one (RFC 8705 §2). `None` is "no certificate".
     pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
@@ -129,7 +129,7 @@ pub struct Presented<'a> {
 impl std::fmt::Debug for Presented<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Presented")
-            .field("endpoint", &self.endpoint)
+            .field("target", &self.target)
             .field("now", &self.now)
             .finish_non_exhaustive()
     }
@@ -198,37 +198,20 @@ pub async fn check_sender_constraint(
         return Err(NotBound::Refused);
     }
 
-    let binding = match request.segment {
-        None => {
-            request
-                .dpop
-                .check_with_access_token(
-                    request.tenant,
-                    request.endpoint,
-                    request.method,
-                    request.headers,
-                    request.presented.token(),
-                    request.now,
-                )
-                .await
-        }
-        Some(segment) => {
-            request
-                .dpop
-                .check_with_access_token_under(
-                    request.tenant,
-                    dpop::ProofTarget::under(request.endpoint, segment),
-                    request.method,
-                    request.headers,
-                    request.presented.token(),
-                    request.now,
-                )
-                .await
-        }
-    }
-    .map_err(NotBound::Dpop)?
-    // No `DPoP` header at all, beside a token bound to a key.
-    .ok_or(NotBound::Refused)?;
+    let binding = request
+        .dpop
+        .check_with_access_token_under(
+            request.tenant,
+            request.target,
+            request.method,
+            request.headers,
+            request.presented.token(),
+            request.now,
+        )
+        .await
+        .map_err(NotBound::Dpop)?
+        // No `DPoP` header at all, beside a token bound to a key.
+        .ok_or(NotBound::Refused)?;
 
     if binding.jkt.as_str() != jkt {
         // A valid proof for the wrong key: whoever sent this holds a DPoP key

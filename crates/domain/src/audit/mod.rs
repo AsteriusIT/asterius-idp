@@ -266,10 +266,22 @@ impl EventType {
     pub const ACCOUNT_ENABLED: Self = Self("account.enabled");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
+    /// A receiver configured a new SSF stream (SSF 1.0 §8.1.1.1).
+    ///
+    /// Its own type rather than a detail on an update: a stream is a standing
+    /// arrangement to send a third party signals about this tenant's users,
+    /// and "who arranged to be told, and when" is the first question asked of
+    /// this trail after a receiver turns out not to have been trustworthy.
+    pub const SSF_STREAM_CREATED: Self = Self("ssf.stream_created");
+    /// A receiver changed a stream's configuration (§8.1.1.3, §8.1.1.4).
+    pub const SSF_STREAM_UPDATED: Self = Self("ssf.stream_updated");
+    /// A stream was deleted, and whatever it still owed was abandoned
+    /// (§8.1.1.5).
+    pub const SSF_STREAM_DELETED: Self = Self("ssf.stream_deleted");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 44] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -311,6 +323,9 @@ impl EventType {
         Self::ACCOUNT_DISABLED,
         Self::ACCOUNT_ENABLED,
         Self::AUDIT_PURGED,
+        Self::SSF_STREAM_CREATED,
+        Self::SSF_STREAM_UPDATED,
+        Self::SSF_STREAM_DELETED,
     ];
 
     /// The wire and storage spelling.

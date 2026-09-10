@@ -100,6 +100,14 @@ pub struct ClientCredentials<'a> {
     /// grant management endpoint an audience a token may be minted for
     /// (Grant Management ID1 §6.2).
     pub grant_management: bool,
+    /// Whether this tenant offers the SSF management API, which is what makes
+    /// the stream configuration endpoint an audience a token may be minted for
+    /// (SSF 1.0 §8, `ast-0ju.3`).
+    ///
+    /// Only this grant carries the flag: a receiver is a registered client
+    /// acting on its own behalf, and every other grant passes `false` — see
+    /// [`issuance::ImplicitResources`].
+    pub ssf: bool,
     /// Whether this tenant's access tokens carry the `grant_id` claim
     /// (`TenantSettings::grant_id_in_access_token`).
     pub grant_id_claim: bool,
@@ -396,7 +404,10 @@ impl ClientCredentials<'_> {
             client,
             grant,
             &requested,
-            self.grant_management,
+            issuance::ImplicitResources {
+                grant_management: self.grant_management,
+                ssf: self.ssf,
+            },
         )
         .await
         .map_err(|error| match error {

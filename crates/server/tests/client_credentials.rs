@@ -300,6 +300,9 @@ impl Fixture {
             audit: self.audit.as_ref(),
             grant_id_claim: true,
             grant_management: false,
+            // The SSF management API as an audience is `ssf_streams.rs`'s
+            // subject; here every request is about the ordinary resources.
+            ssf: false,
             lifetimes: asterius_domain::TokenLifetimes::default(),
             constraint: SenderConstraint {
                 proof_key,

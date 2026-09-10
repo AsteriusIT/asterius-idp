@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update outbox\n                set status = 'abandoned',\n                    last_error = 'the stream was deleted (SSF 1.0 §8.1.1.5)'\n              where tenant_id = $1\n                and kind = $2\n                and destination = $3\n                and status in ('pending', 'failed', 'claimed')\n                and exists (select 1 from ssf_streams\n                             where tenant_id = $1\n                               and client_id = $4\n                               and stream_id = $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dfdd8737de71dfdbc27be93bb5f1991f03e2e030df1a6fe3055a9933f481fda3"
+}

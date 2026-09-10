@@ -27,15 +27,28 @@
 //! SSF 1.0 §7.1 makes `configuration_endpoint`, `status_endpoint`,
 //! `add_subject_endpoint`, `remove_subject_endpoint`, `verification_endpoint`
 //! and `delivery_methods_supported` REQUIRED for a transmitter that supports
-//! stream configuration. None of those routes exist yet (`ast-0ju.3` through
-//! `ast-0ju.7`), and this document names none of them. A strict reading of
-//! §7.1 calls that incomplete, and it is the honest incompleteness: the
-//! alternative is advertising five URLs that answer 404, which is what RFC
-//! 8414 §2's rule against documents that do not describe actual behaviour
-//! exists to stop, and which would let a receiver believe it had configured a
-//! stream it had not. Each of those stories adds its own member with its own
-//! route, and the parity test in `crates/server/tests/ssf_configuration.rs`
-//! holds in both states.
+//! stream configuration. Of those, one route exists: `configuration_endpoint`
+//! (`ast-0ju.3`), and it is named here exactly when it is mounted. The rest
+//! are `ast-0ju.4` through `ast-0ju.7` and are named by none of this.
+//!
+//! A strict reading of §7.1 calls that incomplete, and it is the honest
+//! incompleteness: the alternative is advertising URLs that answer 404, which
+//! is what RFC 8414 §2's rule against documents that do not describe actual
+//! behaviour exists to stop, and which would let a receiver believe it had
+//! configured a stream it had not.
+//!
+//! `delivery_methods_supported` is absent for the same reason and is the case
+//! worth spelling out, because a stream *can* now be configured for either
+//! method. Configuring a delivery is not delivering one: nothing pushes
+//! (`ast-0ju.6`) and nothing answers a poll (`ast-0ju.7`) yet, so a document
+//! advertising a delivery method would be telling a receiver its signals are
+//! on their way. The stream a receiver creates says what it will get —
+//! `events_delivered`, which is empty until an emitter lands — and that is the
+//! member §8.1.1 makes it rely on.
+//!
+//! Each of those stories adds its own member with its own route, and the
+//! parity test in `crates/server/tests/ssf_configuration.rs` holds in every
+//! state.
 
 use asterius_domain::Issuer;
 use serde_json::{Value, json};
@@ -58,9 +71,19 @@ pub const SPEC_VERSION: &str = "1_0";
 /// The `issuer` is the tenant's, which is what [`crate::ReadySet::issue`] puts in
 /// `iss`. SSF 1.0 §7.2.4 is that identity, and [`Issuer`] is what enforces the
 /// rest of §7.1's shape: https, no query, no fragment, canonical form.
+///
+/// `configuration_endpoint` is `Some` exactly when this deployment mounts the
+/// stream configuration endpoint (`ast-0ju.3`) — which is a deployment with
+/// the database wiring the endpoint needs, since a stream is a row. `None`
+/// omits the member rather than naming a URL that answers 404: the parity rule
+/// this module exists for, applied to the one endpoint that has a handler.
 #[must_use]
-pub fn transmitter_metadata(issuer: &Issuer, jwks_uri: &str) -> Value {
-    json!({
+pub fn transmitter_metadata(
+    issuer: &Issuer,
+    jwks_uri: &str,
+    configuration_endpoint: Option<&str>,
+) -> Value {
+    let mut document = json!({
         "spec_version": SPEC_VERSION,
 
         // SSF 1.0 §7.1 and §7.2.4: identical to the `iss` of every SET, and to
@@ -92,7 +115,19 @@ pub fn transmitter_metadata(issuer: &Issuer, jwks_uri: &str) -> Value {
         // because every subject this crate builds is a plain RFC 9493 format
         // with no member a receiver may skip.
         "critical_subject_members": [],
-    })
+    });
+
+    // §7.1: where a receiver creates, reads, updates and deletes a stream
+    // (§8.1.1). Inserted rather than written above, so that the document a
+    // deployment without the endpoint serves is the document it served before
+    // this story — one member fewer, and no URL that 404s.
+    if let Some(endpoint) = configuration_endpoint
+        && let Some(object) = document.as_object_mut()
+    {
+        object.insert("configuration_endpoint".to_owned(), json!(endpoint));
+    }
+
+    document
 }
 
 #[cfg(test)]
@@ -103,8 +138,20 @@ mod tests {
         Issuer::parse("https://as.example/t/demo").expect("an issuer")
     }
 
+    const CONFIGURATION: &str = "https://as.example/t/demo/ssf/streams";
+
+    /// The document a deployment that mounts the management endpoint serves.
     fn document() -> Value {
-        transmitter_metadata(&issuer(), "https://as.example/t/demo/jwks")
+        transmitter_metadata(
+            &issuer(),
+            "https://as.example/t/demo/jwks",
+            Some(CONFIGURATION),
+        )
+    }
+
+    /// The document a deployment without the endpoint serves.
+    fn without_the_endpoint() -> Value {
+        transmitter_metadata(&issuer(), "https://as.example/t/demo/jwks", None)
     }
 
     /// SSF 1.0 §7.1.
@@ -165,13 +212,19 @@ mod tests {
         }
     }
 
-    /// The parity rule, asserted where the document is built as well as where
-    /// it is served: no endpoint is named while no endpoint is routed
-    /// (`ast-0ju.3` through `ast-0ju.7`). A story that adds a member here adds
-    /// a route with it, and updates this test as it does.
+    /// SSF 1.0 §7.1: where a receiver configures a stream (`ast-0ju.3`).
     #[test]
-    fn no_management_endpoint_is_advertised_before_one_exists() {
-        let document = document();
+    fn the_configuration_endpoint_is_the_one_the_caller_passed() {
+        assert_eq!(document()["configuration_endpoint"], json!(CONFIGURATION));
+    }
+
+    /// The parity rule, asserted where the document is built as well as where
+    /// it is served: no endpoint is named while no endpoint is routed. A
+    /// deployment that does not mount the management endpoint does not
+    /// advertise it, and then the document names no endpoint at all.
+    #[test]
+    fn a_deployment_without_the_endpoint_advertises_none() {
+        let document = without_the_endpoint();
         let object = document.as_object().expect("an object");
         let endpoints: Vec<&String> = object
             .keys()
@@ -181,6 +234,26 @@ mod tests {
             endpoints.is_empty(),
             "advertised without a route: {endpoints:?}"
         );
+    }
+
+    /// The other four management endpoints are `ast-0ju.4` through
+    /// `ast-0ju.7` and have no route, so nothing names them. A story that adds
+    /// a member here adds a route with it, and updates this test as it does.
+    #[test]
+    fn no_unbuilt_management_endpoint_is_advertised() {
+        let document = document();
+        let object = document.as_object().expect("an object");
+        for member in [
+            "status_endpoint",
+            "add_subject_endpoint",
+            "remove_subject_endpoint",
+            "verification_endpoint",
+        ] {
+            assert!(
+                object.get(member).is_none(),
+                "{member} is advertised before it is routed"
+            );
+        }
         assert!(
             object.get("delivery_methods_supported").is_none(),
             "a delivery method is advertised before `ast-0ju.6` delivers one"

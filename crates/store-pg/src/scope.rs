@@ -127,6 +127,15 @@ impl<'a> TenantScope<'a> {
         crate::PgRecoveryTokens::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// This tenant's SSF streams (SSF 1.0 §8.1.1, `ast-0ju.3`).
+    ///
+    /// Tenant-scoped like everything else here, and the receiver is the *other*
+    /// half of every statement it makes: see [`crate::PgSsfStreams`].
+    #[must_use]
+    pub fn ssf_streams(&self) -> crate::PgSsfStreams {
+        crate::PgSsfStreams::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The journal mail sender for this tenant.
     ///
     /// Scoped like everything else, so an outbox row can never be written

@@ -20,6 +20,11 @@ hex.workspace = true
 # lives in one adapter (ADR-0004), so this one calls it rather than growing a
 # second copy.
 asterius-jose.workspace = true
+# The stream table stores `asterius_ssf::stream::StreamConfiguration`, which is
+# the SSF 1.0 §8.1.1 object itself. The alternative — a row struct of this
+# crate's own — would be a second opinion about what a stream is, and the
+# endpoint would translate between the two on every request.
+asterius-ssf.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

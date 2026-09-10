@@ -28,7 +28,7 @@
 use asterius_oidc::metadata::Endpoint;
 use asterius_oidc::tenancy;
 use asterius_server::config::Config;
-use asterius_server::http::{client_configuration, passkeys};
+use asterius_server::http::{client_configuration, passkeys, ssf};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -104,6 +104,13 @@ fn mounted_paths() -> Vec<String> {
     paths.push(passkeys::FINISH_PATH.to_owned());
     paths.push(passkeys::LOGIN_OPTIONS_PATH.to_owned());
     paths.push(passkeys::LOGIN_FINISH_PATH.to_owned());
+    // The SSF management API (SSF 1.0 §8.1.1, `ast-0ju.3`), which is
+    // deliberately absent from the [`Endpoint`] registry: §7.1 advertises it
+    // in the transmitter's own document. It is mounted under the tenant like
+    // everything else here, so a plan that ever waits on it resolves.
+    if conformance_capabilities().is_enabled(asterius_domain::Feature::Ssf) {
+        paths.push(ssf::CONFIGURATION_PATH.to_owned());
+    }
     paths
 }
 

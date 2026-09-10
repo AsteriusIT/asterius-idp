@@ -83,6 +83,7 @@
 pub mod event;
 pub mod metadata;
 pub mod set;
+pub mod stream;
 pub mod subject;
 
 pub use event::{EventError, EventUri, MAX_EVENT_URI_LEN, SecurityEvent};
