@@ -7307,7 +7307,8 @@ mod passkeys {
         AuthenticationMethod, DomainError, ENROLMENT_TTL, Lifetimes, NewPasskey, PasskeyRepository,
         Session, SessionRepository, UserId,
     };
-    use asterius_store_pg::{PgPasskeyRepository, PgSessionRepository};
+    use asterius_domain::{FirstPartyDestination, InteractionRepository};
+    use asterius_store_pg::{PgAuthRequestRepository, PgPasskeyRepository, PgSessionRepository};
     use time::Duration;
 
     fn repo(pool: &PgPool, tenant: &str) -> PgPasskeyRepository {
@@ -7586,6 +7587,155 @@ mod passkeys {
 
             // Assert
             assert_eq!(listed, vec![b"mine".to_vec()]);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Authentication against a first-party interaction (`ast-akl`)
+    // -----------------------------------------------------------------------
+
+    /// The other kind of interaction, begun the way `/t/{tenant}/admin/` does.
+    ///
+    /// Returns the digest the browser's credential is looked up by, which is
+    /// the same handle the authorization path passes to these statements.
+    async fn seed_first_party(pool: &PgPool, tenant: &str, seed: &str) -> String {
+        seed_tenant(pool, tenant).await;
+        let now = OffsetDateTime::now_utc();
+        let ix = super::auth_requests::digest(seed);
+        PgAuthRequestRepository::new(pool.clone(), TenantId::new(tenant))
+            .begin_first_party_interaction(
+                &ix,
+                FirstPartyDestination::AdminConsole,
+                now + Duration::minutes(10),
+                now,
+            )
+            .await
+            .expect("begin a first-party interaction");
+        ix
+    }
+
+    db_test! {
+        /// `ast-akl`. An administrator arriving at `/t/{tenant}/admin/` gets a
+        /// login page with a passkey button on it, and that button posts to
+        /// the same two routes an authorization's login page posts to. So the
+        /// challenge those routes store has to reach whichever table holds the
+        /// interaction: one that can only attach to an `auth_requests` row
+        /// leaves the page offering an option that cannot work, which is worse
+        /// than offering none.
+        async fn a_challenge_attaches_to_a_first_party_interaction(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let ix = seed_first_party(&db.pool, "demo", "an-admin-at-the-console").await;
+            let repo = repo(&db.pool, "demo");
+
+            // Act
+            let issued = repo
+                .issue_assertion_challenge(&ix, &[9u8; 32], now + Duration::minutes(5), now)
+                .await
+                .expect("issue");
+
+            // Assert
+            assert!(issued, "a first-party interaction took no challenge");
+            assert_eq!(
+                repo.spend_assertion_challenge(&ix, now).await.expect("spend").as_deref(),
+                Some([9u8; 32].as_slice()),
+            );
+        }
+    }
+
+    db_test! {
+        /// `ast-akl`. Single use, on the first-party table too: two finishes
+        /// racing one ceremony must not both come away with bytes, or a
+        /// captured assertion replays into a second administrator session.
+        async fn a_first_party_challenge_can_be_spent_exactly_once(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let ix = seed_first_party(&db.pool, "demo", "a-replayed-console-ceremony").await;
+            let repo = repo(&db.pool, "demo");
+            repo.issue_assertion_challenge(&ix, &[9u8; 32], now + Duration::minutes(5), now)
+                .await
+                .expect("issue");
+
+            // Act
+            let first = repo.spend_assertion_challenge(&ix, now).await.expect("spend");
+            let second = repo.spend_assertion_challenge(&ix, now).await.expect("spend again");
+
+            // Assert
+            assert_eq!(first.as_deref(), Some([9u8; 32].as_slice()));
+            assert_eq!(second, None, "a spent first-party challenge came back");
+        }
+    }
+
+    db_test! {
+        /// `ast-akl`. The challenge carries its own deadline, shorter than the
+        /// interaction's: a page left open all afternoon must not still be
+        /// able to finish the ceremony it started (§13.4.3).
+        async fn an_expired_first_party_challenge_is_not_spendable(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let ix = seed_first_party(&db.pool, "demo", "a-console-page-left-open").await;
+            let repo = repo(&db.pool, "demo");
+            repo.issue_assertion_challenge(&ix, &[9u8; 32], now + Duration::minutes(5), now)
+                .await
+                .expect("issue");
+
+            // Act
+            let spent = repo
+                .spend_assertion_challenge(&ix, now + Duration::minutes(5) + Duration::seconds(1))
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(spent, None);
+        }
+    }
+
+    db_test! {
+        /// `ast-akl`. A consumed interaction is a finished one, and the
+        /// predicate that makes it unresumable holds for the passkey route as
+        /// well as for the password form.
+        async fn a_consumed_first_party_interaction_takes_no_challenge(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let ix = seed_first_party(&db.pool, "demo", "a-finished-console-visit").await;
+            PgAuthRequestRepository::new(db.pool.clone(), TenantId::new("demo"))
+                .complete_interaction(&ix, now)
+                .await
+                .expect("complete");
+
+            // Act
+            let issued = repo(&db.pool, "demo")
+                .issue_assertion_challenge(&ix, &[9u8; 32], now + Duration::minutes(5), now)
+                .await
+                .expect("issue");
+
+            // Assert
+            assert!(!issued, "a spent interaction accepted a new challenge");
+        }
+    }
+
+    db_test! {
+        /// `ast-akl`. Tenancy, on a statement reached before any account is
+        /// known: a challenge issued for one tenant's interaction is not
+        /// spendable through another tenant's repository.
+        async fn a_first_party_challenge_stops_at_the_tenant_boundary(db) {
+            // Arrange
+            let now = OffsetDateTime::now_utc();
+            let ix = seed_first_party(&db.pool, "demo", "a-shared-handle").await;
+            seed_tenant(&db.pool, "other").await;
+            repo(&db.pool, "demo")
+                .issue_assertion_challenge(&ix, &[9u8; 32], now + Duration::minutes(5), now)
+                .await
+                .expect("issue");
+
+            // Act
+            let stolen = repo(&db.pool, "other")
+                .spend_assertion_challenge(&ix, now)
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(stolen, None, "another tenant spent this challenge");
         }
     }
 }

@@ -227,6 +227,34 @@ impl PasskeyRepository for PgPasskeyRepository {
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?;
+        if result.rows_affected() == 1 {
+            return Ok(true);
+        }
+
+        // The other table (`ast-akl`). An interaction is one of two things
+        // (ADR-0009) and the browser's credential does not say which, so a
+        // miss here is a question for the first-party rows rather than an
+        // answer — the same fallback, in the same order, that
+        // `PgAuthRequestRepository::by_interaction` makes. Without it the
+        // passkey button on the console's login page draws a challenge that is
+        // stored nowhere, and offering an option that cannot work is worse
+        // than offering none.
+        let result = sqlx::query!(
+            "update first_party_interactions
+                set passkey_challenge = $3, passkey_challenge_expires_at = $4
+              where tenant_id = $1
+                and interaction_id_hash = $2
+                and consumed_at is null
+                and expires_at > $5",
+            self.tenant.as_str(),
+            interaction,
+            challenge,
+            expires_at,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -250,6 +278,40 @@ impl PasskeyRepository for PgPasskeyRepository {
                       where tenant_id = $1 and interaction_id_hash = $2) as previous
               where current.tenant_id = previous.tenant_id
                 and current.request_uri_hash = previous.request_uri_hash
+                and current.consumed_at is null
+                and current.expires_at > $3
+                and current.passkey_challenge_expires_at > $3
+                and current.passkey_challenge is not null
+             returning previous.passkey_challenge",
+            self.tenant.as_str(),
+            interaction,
+            now,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        if let Some(challenge) = row.and_then(|row| row.passkey_challenge) {
+            return Ok(Some(challenge));
+        }
+
+        // The first-party half (`ast-akl`), statement for statement: same
+        // pre-update snapshot, same row lock, same single use. The join key is
+        // this table's own primary key rather than `request_uri_hash`, because
+        // a first-party interaction has no client credential to be keyed by.
+        //
+        // A row found here but holding no challenge and a row not found at all
+        // are deliberately the same answer, as they already are above: the
+        // caller refuses either way, and telling them apart would say whether
+        // an interaction id names a live row.
+        let row = sqlx::query!(
+            "update first_party_interactions as current
+                set passkey_challenge = null, passkey_challenge_expires_at = null
+               from (select tenant_id, interaction_id_hash, passkey_challenge
+                       from first_party_interactions
+                      where tenant_id = $1 and interaction_id_hash = $2) as previous
+              where current.tenant_id = previous.tenant_id
+                and current.interaction_id_hash = previous.interaction_id_hash
                 and current.consumed_at is null
                 and current.expires_at > $3
                 and current.passkey_challenge_expires_at > $3
