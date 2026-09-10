@@ -139,6 +139,13 @@ pub enum FirstPartyDestination {
     /// `/t/{tenant}/admin/` (ADR-0009 for what it is, ADR-0010 for why it is
     /// under a tenant).
     AdminConsole,
+    /// The device verification page (RFC 8628 §3.3, `ast-lh3.3`).
+    ///
+    /// A person who opens `verification_uri` with no session is sent to sign
+    /// in and comes back here to type the code. It is a destination rather
+    /// than a redirect parameter for the reason the console is one: a
+    /// destination that is data is a destination somebody else can supply.
+    DeviceVerification,
 }
 
 impl FirstPartyDestination {
@@ -147,6 +154,7 @@ impl FirstPartyDestination {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AdminConsole => "admin_console",
+            Self::DeviceVerification => "device_verification",
         }
     }
 
@@ -160,6 +168,7 @@ impl FirstPartyDestination {
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "admin_console" => Some(Self::AdminConsole),
+            "device_verification" => Some(Self::DeviceVerification),
             _ => None,
         }
     }

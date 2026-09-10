@@ -252,6 +252,24 @@ pub async fn show(
         Err(response) => return *response,
     };
 
+    // A first-party interaction whose sign-in is finished has nowhere left to
+    // go but its destination, and the passkey path is how it gets here: that
+    // ceremony answers 204 and the page's script then navigates *to this URL*
+    // (`login.html`'s `data-next-url`), because the same script serves an
+    // authorization, where the next screen is consent. The password path
+    // redirects from inside `sign_in`; this is the same redirect for the
+    // browser that arrived by the other door, and without it a passkey sign-in
+    // to a first-party page ends on the error page below (`ast-lh3.3` found
+    // it on the device flow; the admin console reaches it the same way).
+    //
+    // `arrive` spends the interaction, so a reload finds nothing and the
+    // response is not replayable.
+    if state.stage == Stage::Response
+        && let Some(destination) = record.continuation.first_party()
+    {
+        return arrive(&context, &presented, destination, now).await;
+    }
+
     // Before a token is issued and a page is drawn: a consent this person has
     // already given is a screen they do not have to see again (`ast-uwv.3`).
     if let Some(response) =

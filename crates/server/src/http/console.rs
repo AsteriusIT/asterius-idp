@@ -85,6 +85,9 @@ pub const ENTRY_LIFETIME: Duration = Duration::minutes(10);
 pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
     match destination {
         FirstPartyDestination::AdminConsole => "../admin/",
+        // The device verification page (`ast-lh3.3`), reached from
+        // `/interaction/{id}` and so one segment up, like the console.
+        FirstPartyDestination::DeviceVerification => "../device",
     }
 }
 

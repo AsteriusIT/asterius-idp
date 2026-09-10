@@ -59,6 +59,12 @@ impl<'a> TenantScope<'a> {
         PgCodeRepository::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// The device-authorization repository for this tenant (RFC 8628).
+    #[must_use]
+    pub fn device_codes(&self) -> crate::PgDeviceCodeRepository {
+        crate::PgDeviceCodeRepository::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The refresh-token repository for this tenant.
     #[must_use]
     pub fn refresh_tokens(&self) -> PgRefreshTokenRepository {

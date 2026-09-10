@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into device_codes\n                 (tenant_id, device_code_hash, user_code_hash, client_id, scopes,\n                  authorization_details, issued_at, expires_at, poll_interval_seconds)\n             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Text",
+        "TextArray",
+        "Jsonb",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e50e3a87e59a651e6f4019fd8bc302a579a22e9cfdc6931dfaa884c885dc822f"
+}

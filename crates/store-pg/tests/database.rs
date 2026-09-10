@@ -7467,6 +7467,7 @@ mod retention {
             // pair and to no other fixture.
             seed_initial_access_token(pool, tenant, label, expires).await;
             seed_recovery_token(pool, tenant, user, label, expires).await;
+            seed_device_code(pool, tenant, label, expires).await;
         }
         seed_outbox(pool, tenant).await;
     }
@@ -8009,6 +8010,28 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed recovery token");
+    }
+
+    /// A pending device authorization, live or long over (`ast-lh3.3`).
+    ///
+    /// `issued_at` is a minute before `expires_at` rather than at `now()`,
+    /// because the table refuses a row that claims to live longer than
+    /// RFC 8628 §3.2 permits and the stale fixture is dated in the past.
+    async fn seed_device_code(pool: &PgPool, tenant: &str, label: &str, expires: OffsetDateTime) {
+        sqlx::query(
+            "insert into device_codes
+                 (tenant_id, device_code_hash, user_code_hash, client_id,
+                  issued_at, expires_at, poll_interval_seconds)
+             values ($1, $2, $3, 'billing', $4, $5, 5)",
+        )
+        .bind(tenant)
+        .bind(format!("digest-of-a-{label}-device-code").into_bytes())
+        .bind(format!("digest-of-a-{label}-user-code").into_bytes())
+        .bind(expires - Duration::minutes(1))
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed device code");
     }
 
     /// The outbox is aged rather than expiring, and only a terminal row is ever
@@ -12528,6 +12551,319 @@ mod outbox {
             assert_eq!(delivered, total);
             let rate = f64::from(delivered) / elapsed.as_secs_f64();
             println!("outbox throughput: {rate:.0} deliveries/s over {elapsed:?}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device authorizations (RFC 8628), `ast-lh3.3`
+// ---------------------------------------------------------------------------
+
+mod device_codes {
+    use super::*;
+    use asterius_domain::{Grant, GrantId};
+    use asterius_store_pg::{
+        NewDeviceAuthorization, PgDeviceCodeRepository, PgGrantRepository, Poll,
+    };
+    use time::Duration;
+
+    use super::grants::seed_client;
+
+    /// RFC 8628 §3.5's five seconds, as every caller passes it.
+    const SLOW_DOWN: Duration = Duration::seconds(5);
+
+    fn repo(pool: &PgPool, tenant: &str) -> PgDeviceCodeRepository {
+        PgDeviceCodeRepository::new(pool.clone(), TenantId::new(tenant))
+    }
+
+    /// The digest of a label. Real codes come from the minter; a test needs a
+    /// value it can name twice.
+    fn digest(label: &str) -> String {
+        asterius_domain::sha256_hex(label.as_bytes())
+    }
+
+    fn request(now: OffsetDateTime) -> NewDeviceAuthorization {
+        NewDeviceAuthorization {
+            client_id: "billing".to_owned(),
+            scopes: vec!["openid".to_owned()],
+            authorization_details: serde_json::Value::Array(Vec::new()),
+            expires_at: now + Duration::minutes(10),
+            interval: Duration::seconds(5),
+        }
+    }
+
+    /// A user and a grant for an approval to point at.
+    async fn an_approver(pool: &PgPool, tenant: &str) -> (UserId, GrantId) {
+        let user = UserId::generate();
+        sqlx::query("insert into users (tenant_id, user_id, username) values ($1, $2, $3)")
+            .bind(tenant)
+            .bind(user.as_uuid())
+            .bind(format!("user-{}", user.as_uuid()))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        let mut grant = Grant::new(TenantId::new(tenant), ClientId::new("billing"), epoch());
+        grant.user = Some(user);
+        grant.subject = Some(asterius_domain::SubjectId::new("sub-device"));
+        grant.scopes = ["openid"].into_iter().map(str::to_owned).collect();
+        PgGrantRepository::new(pool.clone(), TenantId::new(tenant))
+            .create(&grant)
+            .await
+            .expect("create grant");
+        (user, grant.id)
+    }
+
+    async fn issued(pool: &PgPool, tenant: &str, label: &str, now: OffsetDateTime) {
+        seed_client(pool, tenant, "billing").await;
+        repo(pool, tenant)
+            .issue(
+                &digest(label),
+                &digest(&format!("{label}-user")),
+                &request(now),
+                now,
+            )
+            .await
+            .expect("issue");
+    }
+
+    db_test! {
+        /// RFC 8628 §3.5: "`authorization_pending` ... The authorization request
+        /// is still pending as the end user hasn't yet completed the
+        /// user-interaction steps."
+        async fn a_fresh_authorization_polls_as_pending(db) {
+            let now = OffsetDateTime::now_utc();
+            issued(&db.pool, "demo", "pending", now).await;
+
+            let polled = repo(&db.pool, "demo")
+                .poll(&digest("pending"), SLOW_DOWN, now)
+                .await
+                .expect("poll")
+                .expect("a live authorization");
+            assert_eq!(polled.client_id, "billing");
+            assert_eq!(polled.state, Poll::Pending);
+        }
+    }
+
+    db_test! {
+        /// §3.5: "`slow_down` ... the client MUST increase its polling interval
+        /// by 5 seconds", and the server raises its own copy by the same
+        /// amount so that the two agree from the next poll onwards.
+        ///
+        /// The first poll is never `slow_down`: there is nothing to have been
+        /// too fast after.
+        async fn polling_inside_the_interval_slows_the_device_down_for_this_code_only(db) {
+            let now = OffsetDateTime::now_utc();
+            issued(&db.pool, "demo", "fast", now).await;
+            issued(&db.pool, "demo", "patient", now).await;
+            let repo = repo(&db.pool, "demo");
+
+            assert_eq!(
+                repo.poll(&digest("fast"), SLOW_DOWN, now).await.expect("first").expect("live").state,
+                Poll::Pending,
+                "the first poll cannot be too fast"
+            );
+            assert_eq!(
+                repo.poll(&digest("fast"), SLOW_DOWN, now + Duration::seconds(1))
+                    .await
+                    .expect("second")
+                    .expect("live")
+                    .state,
+                Poll::SlowDown { interval: Duration::seconds(10) },
+                "a poll one second later is inside the five it was given"
+            );
+            // ...and the raised interval is what the *next* one is judged
+            // against: seven seconds is outside five and inside ten.
+            assert_eq!(
+                repo.poll(&digest("fast"), SLOW_DOWN, now + Duration::seconds(8))
+                    .await
+                    .expect("third")
+                    .expect("live")
+                    .state,
+                Poll::SlowDown { interval: Duration::seconds(15) },
+            );
+            // The other authorization was never told to slow down, so it is
+            // still on the interval it was issued with. A shared counter would
+            // have punished it for a different device's behaviour.
+            assert_eq!(
+                repo.poll(&digest("patient"), SLOW_DOWN, now).await.expect("first").expect("live").state,
+                Poll::Pending,
+            );
+            assert_eq!(
+                repo.poll(&digest("patient"), SLOW_DOWN, now + Duration::seconds(6))
+                    .await
+                    .expect("second")
+                    .expect("live")
+                    .state,
+                Poll::Pending,
+                "six seconds is outside the five this device was given"
+            );
+        }
+    }
+
+    db_test! {
+        /// §3.5: "`expired_token` ... the `device_code` has expired". Off the
+        /// clock rather than off a status, so it is the honest answer from the
+        /// moment it is true rather than from the moment a sweep runs.
+        async fn an_expired_authorization_polls_as_expired(db) {
+            let now = OffsetDateTime::now_utc();
+            issued(&db.pool, "demo", "stale", now).await;
+
+            let polled = repo(&db.pool, "demo")
+                .poll(&digest("stale"), SLOW_DOWN, now + Duration::minutes(11))
+                .await
+                .expect("poll")
+                .expect("the row is still there");
+            assert_eq!(polled.state, Poll::Expired);
+        }
+    }
+
+    db_test! {
+        /// §3.5: "`access_denied` ... The authorization request was denied."
+        async fn a_refused_authorization_polls_as_denied(db) {
+            let now = OffsetDateTime::now_utc();
+            issued(&db.pool, "demo", "refused", now).await;
+            let repo = repo(&db.pool, "demo");
+
+            assert!(repo.deny(&digest("refused-user"), now).await.expect("deny"));
+            assert_eq!(
+                repo.poll(&digest("refused"), SLOW_DOWN, now).await.expect("poll").expect("live").state,
+                Poll::Denied,
+            );
+            // And a second refusal changes nothing: there is nothing pending
+            // left to refuse.
+            assert!(!repo.deny(&digest("refused-user"), now).await.expect("again"));
+        }
+    }
+
+    db_test! {
+        /// RFC 8628 §3.4 through RFC 6749 §4.1.3: the code is spent once.
+        ///
+        /// The check and the spend are one statement, so the second attempt
+        /// matches no row rather than reading a flag somebody else is about to
+        /// set.
+        async fn an_approved_device_code_is_redeemable_exactly_once(db) {
+            let now = OffsetDateTime::now_utc();
+            issued(&db.pool, "demo", "approved", now).await;
+            let (user, grant) = an_approver(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+
+            assert!(repo.approve(&digest("approved-user"), &user, &grant, now).await.expect("approve"));
+            assert_eq!(
+                repo.poll(&digest("approved"), SLOW_DOWN, now).await.expect("poll").expect("live").state,
+                Poll::Approved,
+            );
+
+            let redeemed = repo
+                .redeem(&digest("approved"), now)
+                .await
+                .expect("redeem")
+                .expect("an approved code redeems");
+            assert_eq!(redeemed.grant_id, grant);
+            assert_eq!(redeemed.client_id, "billing");
+
+            assert!(
+                repo.redeem(&digest("approved"), now).await.expect("second").is_none(),
+                "a device code was redeemed twice"
+            );
+            // ...and a poll after the spend says nothing about the code having
+            // been real.
+            assert_eq!(
+                repo.poll(&digest("approved"), SLOW_DOWN, now).await.expect("poll").expect("row").state,
+                Poll::Spent,
+            );
+        }
+    }
+
+    db_test! {
+        /// A second approval of the same authorization is not an approval.
+        ///
+        /// Two tabs, or a double-clicked button: the second finds nothing
+        /// pending, so the grant the first one created is not joined by
+        /// another that nobody was shown.
+        async fn an_authorization_is_approved_once(db) {
+            let now = OffsetDateTime::now_utc();
+            issued(&db.pool, "demo", "twice", now).await;
+            let (user, grant) = an_approver(&db.pool, "demo").await;
+            let repo = repo(&db.pool, "demo");
+
+            assert!(repo.approve(&digest("twice-user"), &user, &grant, now).await.expect("first"));
+            assert!(!repo.approve(&digest("twice-user"), &user, &grant, now).await.expect("second"));
+        }
+    }
+
+    db_test! {
+        /// §5.1: an authorization somebody is working at is taken out of the
+        /// guessing space rather than left to be attempted again.
+        async fn ten_failed_confirmations_refuse_the_authorization(db) {
+            let now = OffsetDateTime::now_utc();
+            issued(&db.pool, "demo", "guessed", now).await;
+            let repo = repo(&db.pool, "demo");
+
+            for expected in 1..=9 {
+                assert_eq!(
+                    repo.record_failure(&digest("guessed-user"), 10, now).await.expect("count"),
+                    expected
+                );
+                assert!(
+                    repo.pending(&digest("guessed-user"), now).await.expect("read").is_some(),
+                    "the row was refused early, at {expected}"
+                );
+            }
+            assert_eq!(
+                repo.record_failure(&digest("guessed-user"), 10, now).await.expect("tenth"),
+                10
+            );
+            assert!(
+                repo.pending(&digest("guessed-user"), now).await.expect("read").is_none(),
+                "a code survived its tenth failed confirmation"
+            );
+            assert_eq!(
+                repo.poll(&digest("guessed"), SLOW_DOWN, now).await.expect("poll").expect("row").state,
+                Poll::Denied,
+                "the device is told the flow was refused rather than left to time out"
+            );
+        }
+    }
+
+    db_test! {
+        /// The verification page finds a live pending row by user code, and
+        /// nothing else: an expired, approved or refused one reads as absent,
+        /// so the page says the same thing to all four (§5.1).
+        async fn only_a_live_pending_authorization_is_found_by_user_code(db) {
+            let now = OffsetDateTime::now_utc();
+            issued(&db.pool, "demo", "live", now).await;
+            let repo = repo(&db.pool, "demo");
+
+            let found = repo
+                .pending(&digest("live-user"), now)
+                .await
+                .expect("read")
+                .expect("a live authorization");
+            assert_eq!(found.client_id, "billing");
+            assert_eq!(found.scopes, vec!["openid".to_owned()]);
+            assert_eq!(found.failed_attempts, 0);
+
+            assert!(
+                repo.pending(&digest("live-user"), now + Duration::minutes(11)).await.expect("read").is_none(),
+                "an expired authorization was offered for approval"
+            );
+            assert!(
+                repo.pending(&digest("nobody"), now).await.expect("read").is_none(),
+            );
+        }
+    }
+
+    db_test! {
+        /// One tenant's device code is not another's, whatever the digest.
+        async fn a_device_code_does_not_cross_tenants(db) {
+            let now = OffsetDateTime::now_utc();
+            seed_tenant(&db.pool, "other").await;
+            issued(&db.pool, "demo", "mine", now).await;
+
+            assert!(
+                repo(&db.pool, "other").poll(&digest("mine"), SLOW_DOWN, now).await.expect("poll").is_none(),
+                "a device code resolved in another tenant"
+            );
         }
     }
 }

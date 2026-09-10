@@ -75,6 +75,26 @@ pub fn ip_bucket(ip: std::net::IpAddr) -> Bucket {
     Bucket(format!("login:ip:{ip}"))
 }
 
+/// The bucket for failed user-code submissions at the device verification page
+/// (RFC 8628 §5.1, `ast-lh3.3`).
+///
+/// Its own prefix rather than a share of [`ip_bucket`]'s, for the reason
+/// [`admin_api_bucket`] has one: a person guessing user codes and a person
+/// mistyping a password are different attacks with different budgets, and one
+/// counter for both would let either exhaust the other's.
+///
+/// `None` is a peer the forwarded-header policy would not vouch for. It gets a
+/// bucket of its own rather than a free pass: an unattributable flood is then
+/// limited as though it came from one address, which is the safe direction
+/// when what is behind the limit is a code space of ~34.5 bits.
+#[must_use]
+pub fn device_verification_bucket(ip: Option<std::net::IpAddr>) -> Bucket {
+    ip.map_or_else(
+        || Bucket("device:ip:unattributed".to_owned()),
+        |ip| Bucket(format!("device:ip:{ip}")),
+    )
+}
+
 /// The bucket for one client address at the admin API (`ast-f7m.1`).
 ///
 /// Deliberately its own prefix rather than a share of [`ip_bucket`]'s: an

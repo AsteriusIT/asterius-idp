@@ -4772,3 +4772,427 @@ async fn a_tenant_that_withholds_the_grant_id_claim_is_still_answered_at_userinf
 
     flow.tear_down().await;
 }
+
+// ---------------------------------------------------------------------------
+// The device authorization grant (RFC 8628), `ast-lh3.3`
+// ---------------------------------------------------------------------------
+
+/// The client a headless device authenticates as.
+const DEVICE_CLIENT: &str = "kiosk";
+
+impl Flow {
+    /// A confidential device client: the device grant and nothing else.
+    ///
+    /// FAPI 2.0 SP §5.3.2.1 item 3 admits no public client, so a device here
+    /// holds a key and authenticates with `private_key_jwt` exactly as every
+    /// other client does. No redirect URI and no response type: this flow has
+    /// no authorization response to send anywhere.
+    async fn register_device_client(&self) -> SigningKey {
+        let (key, jwks) = client_credentials();
+        let now = OffsetDateTime::now_utc();
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(DEVICE_CLIENT),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&json!({
+                    "client_name": "Lobby kiosk",
+                    "grant_types": ["urn:ietf:params:oauth:grant-type:device_code"],
+                    "response_types": [],
+                    "scope": "openid",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                    "jwks": jwks,
+                }))
+                .expect("serialise"),
+                // The grant is behind a flag, and this deployment has it on:
+                // a registration naming a grant the deployment does not offer
+                // is refused, which is the parity the flag exists for.
+                Capabilities {
+                    device_flow: true,
+                    ..Capabilities::default()
+                },
+            )
+            .expect("a valid device registration"),
+            status: ClientStatus::Active,
+            created_at: now,
+            updated_at: now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities {
+                device_flow: true,
+                ..Capabilities::default()
+            })
+            .upsert(&client)
+            .await
+            .expect("store the device client");
+        key
+    }
+
+    /// RFC 8628 §3.1: the device asks, authenticating as itself.
+    async fn device_authorization(&mut self, key: &SigningKey, jti: &str) -> Reply {
+        let path = format!("{}{}", self.prefix(), Endpoint::DeviceAuthorization.path());
+        let assertion = self.assertion_for(DEVICE_CLIENT, Some(key), jti);
+        self.post_form(
+            &path,
+            &[
+                ("client_id", DEVICE_CLIENT),
+                ("client_assertion_type", CLIENT_ASSERTION_TYPE),
+                ("client_assertion", assertion.as_str()),
+                ("scope", "openid"),
+            ],
+            None,
+        )
+        .await
+    }
+
+    /// RFC 8628 §3.4: one poll of the token endpoint.
+    async fn poll_device(
+        &mut self,
+        client_key: &SigningKey,
+        proof: &ProofKey,
+        jti: &str,
+        device_code: &str,
+    ) -> Reply {
+        self.token_as(
+            DEVICE_CLIENT,
+            Some(client_key),
+            proof,
+            jti,
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", device_code),
+            ],
+        )
+        .await
+    }
+
+    /// RFC 8628 §3.3: the browser half of the flow, from a visitor with no
+    /// session to a device that has been approved.
+    ///
+    /// Its own function because it is a *page* journey with page assertions,
+    /// and the test that calls it is about the protocol either side of it.
+    async fn approve_device(&mut self, user_code: &str) {
+        let device_path = format!("{}/device", self.prefix());
+
+        // A visitor with no session meets the ordinary interaction pages
+        // first: an approval creates a grant on somebody's account, so
+        // "somebody" has to be a person this server has authenticated.
+        let unauthenticated = self.get(&device_path).await;
+        assert_eq!(
+            unauthenticated.status,
+            StatusCode::SEE_OTHER,
+            "an unauthenticated visitor was shown the device page: {}",
+            unauthenticated.text()
+        );
+        let interaction = format!("{}/{}", self.prefix(), unauthenticated.location());
+        self.sign_in(&interaction).await;
+        // The interaction is finished, which sends the browser to the
+        // destination it was opened for — a variant of a closed enum, never a
+        // URL anybody supplied (ADR-0009).
+        let arrived = self.get(&interaction).await;
+        assert_eq!(arrived.status, StatusCode::SEE_OTHER, "{}", arrived.text());
+        assert!(
+            arrived.location().contains("device"),
+            "the first-party interaction did not end at the device page: {}",
+            arrived.location()
+        );
+
+        // The code-entry page, and the code typed the way a person types it —
+        // lower case, no separator (§6.1).
+        let page = self.get(&device_path).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+        let csrf = csrf_from(&page.text());
+        let typed = user_code.replace('-', "").to_ascii_lowercase();
+        let confirm = self
+            .post_form(
+                &device_path,
+                &[("csrf", &csrf), ("user_code", &typed)],
+                None,
+            )
+            .await;
+        assert_eq!(
+            confirm.status,
+            StatusCode::OK,
+            "the code was not recognised: {}",
+            confirm.text()
+        );
+        let html = confirm.text();
+        // §3.3.1: the code this server holds, for the person to compare
+        // against the device in front of them.
+        assert!(
+            html.contains(user_code),
+            "the confirmation page did not show the code:\n{html}"
+        );
+        // §5.3: the client is named and the phishing case is spelled out.
+        assert!(
+            html.contains("Lobby kiosk"),
+            "the client was not named:\n{html}"
+        );
+        assert!(
+            html.contains("If somebody sent you this code"),
+            "no anti-phishing warning:\n{html}"
+        );
+        // What the approval grants, so it is an authorization that is
+        // approved and not merely a device.
+        assert!(
+            html.contains("openid"),
+            "the scopes were not shown:\n{html}"
+        );
+
+        // §3.3: the person confirms.
+        let confirm_csrf = csrf_from(&html);
+        let approved = self
+            .post_form(
+                &format!(
+                    "{}/device/confirm?user_code={}",
+                    self.prefix(),
+                    url::form_urlencoded::byte_serialize(user_code.as_bytes()).collect::<String>()
+                ),
+                &[("csrf", &confirm_csrf), ("decision", "confirm")],
+                None,
+            )
+            .await;
+        assert_eq!(approved.status, StatusCode::OK, "{}", approved.text());
+        assert!(
+            approved.text().contains("Device connected"),
+            "the browser was not told the device was connected:\n{}",
+            approved.text()
+        );
+    }
+}
+
+/// RFC 8628 §3.2, field by field, and the two codes it hands back.
+///
+/// A function rather than twenty lines in the test, because the same response
+/// is what every other device test starts from and because §3.2 is a list of
+/// requirements: a reader checking this server against the specification wants
+/// them in one place.
+fn device_response(response: &Value, issuer: &str) -> (String, String) {
+    let device_code = response["device_code"]
+        .as_str()
+        .expect("§3.2 requires a device_code")
+        .to_owned();
+    let user_code = response["user_code"]
+        .as_str()
+        .expect("§3.2 requires a user_code")
+        .to_owned();
+    // §6.1: eight characters of an unambiguous alphabet, displayed in two
+    // groups. The device shows this string and a person copies it.
+    assert_eq!(user_code.len(), 9, "{user_code}");
+    assert_eq!(&user_code[4..5], "-", "{user_code}");
+    assert!(
+        user_code
+            .bytes()
+            .all(|b| b == b'-' || asterius_oidc::device::USER_CODE_ALPHABET.contains(&b)),
+        "a user code outside §6.1's alphabet: {user_code}"
+    );
+    assert_ne!(device_code, user_code);
+    assert!(
+        device_code.len() >= 22,
+        "a device code below the entropy floor: {device_code}"
+    );
+    // `ast-295`: the URL a person will type carries the tenant prefix, or the
+    // browser lands outside the tenant that issued the code.
+    let verification_uri = response["verification_uri"]
+        .as_str()
+        .expect("§3.2 requires a verification_uri");
+    assert_eq!(
+        verification_uri,
+        format!("{issuer}/device"),
+        "the verification URI is not this tenant's"
+    );
+    // §3.3.1: the same URI with the code in it, for a device that can show a
+    // QR code.
+    let complete = response["verification_uri_complete"]
+        .as_str()
+        .expect("§3.2's OPTIONAL complete URI, which this server sends");
+    assert!(complete.contains("user_code="), "{complete}");
+    assert!(complete.contains(&user_code), "{complete}");
+    // §3.2's `expires_in` and `interval`, and the acceptance criterion's cap.
+    assert_eq!(response["interval"], 5, "{response}");
+    let expires_in = response["expires_in"].as_i64().expect("§3.2's expires_in");
+    assert!((1..=600).contains(&expires_in), "{response}");
+    (device_code, user_code)
+}
+
+/// **A device with no browser is authorized by a person who has one**
+/// (`ast-lh3.3`).
+///
+/// The whole of RFC 8628 against the assembled application, in the order the
+/// specification puts it: §3.1 the request, §3.2 the response, §3.5 the two
+/// answers a device gets while it waits, §3.3 the person typing the code into
+/// a browser, §3.3.1 the confirmation, §3.4 the redemption — and then the
+/// access token at UserInfo, which is what says the grant the approval created
+/// is a real authorization for a real person and not a shape.
+///
+/// The properties that would otherwise only be asserted against a handler:
+///
+/// * the two codes are drawn independently and only one of them ever reaches
+///   the browser;
+/// * `slow_down` is per device code, and the interval it raises is the one the
+///   *next* poll is judged against;
+/// * §6.1's case-insensitivity survives the round trip — the code is displayed
+///   `XXXX-XXXX` and typed back in lower case with no separator;
+/// * the device code is redeemable exactly once.
+#[tokio::test]
+async fn a_device_flow_is_approved_in_a_browser_and_redeemed_by_the_device() {
+    let capabilities = Capabilities {
+        device_flow: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let device_key = flow.register_device_client().await;
+    let proof = ProofKey::generate();
+
+    // Act: RFC 8628 §3.1 — the device asks, authenticating as itself.
+    let asked = flow
+        .device_authorization(&device_key, "assertion-device-1")
+        .await;
+    assert_eq!(
+        asked.status,
+        StatusCode::OK,
+        "the device authorization request was refused: {}",
+        asked.text()
+    );
+    // Assert: §3.2's response, field by field.
+    let (device_code, user_code) = device_response(&asked.json(), flow.tenant.issuer.as_str());
+
+    // Act: §3.4 — the device starts polling before anybody has answered.
+    let waiting = flow
+        .poll_device(&device_key, &proof, "assertion-device-2", &device_code)
+        .await;
+    // Assert: §3.5's `authorization_pending`.
+    assert_eq!(
+        waiting.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        waiting.text()
+    );
+    assert_eq!(waiting.json()["error"], "authorization_pending");
+
+    // Act: it polls again straight away, inside the five seconds it was given.
+    let hurried = flow
+        .poll_device(&device_key, &proof, "assertion-device-3", &device_code)
+        .await;
+    // Assert: §3.5's `slow_down`.
+    assert_eq!(
+        hurried.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        hurried.text()
+    );
+    assert_eq!(hurried.json()["error"], "slow_down");
+
+    // Act: §3.3 — the person opens the verification URI in a browser, signs
+    // in, types the code and confirms it. Every assertion about those pages is
+    // in `approve_device`.
+    flow.approve_device(&user_code).await;
+
+    // Act: §3.4 — the device polls once more.
+    let redeemed = flow
+        .poll_device(&device_key, &proof, "assertion-device-4", &device_code)
+        .await;
+
+    // Assert: RFC 6749 §5.1's token response, bound to the key that polled.
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "an approved device code was refused: {}",
+        redeemed.text()
+    );
+    let tokens = redeemed.json();
+    assert_eq!(tokens["token_type"], "DPoP", "{tokens}");
+    assert!(tokens["id_token"].is_string(), "{tokens}");
+    // RFC 6749 §4.4.3's argument applies here too: nothing asked for
+    // `offline_access`, so nothing long-lived was handed out.
+    assert!(tokens["refresh_token"].is_null(), "{tokens}");
+    let access_token = tokens["access_token"]
+        .as_str()
+        .expect("a token response carries an access token")
+        .to_owned();
+
+    // Assert: the grant behind it is a person's. UserInfo answers with the
+    // `sub` the approval resolved, which a grant that was a shape could not
+    // produce.
+    let who = flow.userinfo(&proof, &access_token).await;
+    assert_eq!(who.status, StatusCode::OK, "{}", who.text());
+    assert!(who.json()["sub"].is_string(), "{}", who.text());
+
+    // Act: the same device code again — a broken client, or somebody who read
+    // it off a log.
+    let again = flow
+        .poll_device(&device_key, &proof, "assertion-device-5", &device_code)
+        .await;
+
+    // Assert: RFC 8628 §3.4 through RFC 6749 §4.1.3. One redemption, and the
+    // second says nothing about the code having been real.
+    assert_eq!(again.status, StatusCode::BAD_REQUEST, "{}", again.text());
+    assert_eq!(again.json()["error"], "invalid_grant");
+
+    flow.tear_down().await;
+}
+
+/// **A device code belongs to the device it was issued to** (RFC 8628 §3.4).
+///
+/// Another authenticated client of the same tenant presents it. It learns
+/// `invalid_grant` and nothing else — not that the code exists, not that it is
+/// pending, not whose it is — and the flow it tried to steal is untouched.
+#[tokio::test]
+async fn another_clients_device_code_is_not_redeemable() {
+    let capabilities = Capabilities {
+        device_flow: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let device_key = flow.register_device_client().await;
+    let service_key = flow.register_service_client().await;
+    let proof = ProofKey::generate();
+
+    let asked = flow
+        .device_authorization(&device_key, "assertion-theft-1")
+        .await;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.text());
+    let device_code = asked.json()["device_code"]
+        .as_str()
+        .expect("a device code")
+        .to_owned();
+
+    // Act: the other client polls with it, authenticating perfectly well as
+    // itself.
+    let stolen = flow
+        .token_as(
+            SERVICE_CLIENT,
+            Some(&service_key),
+            &proof,
+            "assertion-theft-2",
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", &device_code),
+            ],
+        )
+        .await;
+
+    // Assert: it is refused. The code is not confirmed to exist, and the
+    // status is the ordinary one — a different answer here would be a way to
+    // enumerate the device codes of other clients (§5.2).
+    assert_eq!(stolen.status, StatusCode::BAD_REQUEST, "{}", stolen.text());
+    let body = stolen.json();
+    assert!(
+        body["error"] == "invalid_grant" || body["error"] == "unauthorized_client",
+        "{body}"
+    );
+
+    // ...and the flow it tried to take is still exactly where it was.
+    let untouched = flow
+        .poll_device(&device_key, &proof, "assertion-theft-3", &device_code)
+        .await;
+    assert_eq!(untouched.json()["error"], "authorization_pending");
+
+    flow.tear_down().await;
+}

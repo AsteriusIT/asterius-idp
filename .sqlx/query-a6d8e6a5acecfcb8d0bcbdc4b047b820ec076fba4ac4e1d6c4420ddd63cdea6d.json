@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with target as (\n                 select device_code_hash, client_id, status, expires_at,\n                        redeemed_at, last_polled_at, poll_interval_seconds\n                   from device_codes\n                  where tenant_id = $1 and device_code_hash = $2\n                    for update\n             ),\n             stamped as (\n                 update device_codes as d\n                    set last_polled_at = $3,\n                        poll_interval_seconds = case\n                            when t.status <> 'approved'\n                             and t.last_polled_at is not null\n                             and $3 < t.last_polled_at\n                                      + make_interval(secs => t.poll_interval_seconds)\n                            then t.poll_interval_seconds + $4\n                            else t.poll_interval_seconds\n                        end\n                   from target as t\n                  where d.tenant_id = $1 and d.device_code_hash = t.device_code_hash\n              returning d.poll_interval_seconds as new_interval\n             )\n             select t.client_id, t.status, t.expires_at, t.redeemed_at,\n                    t.last_polled_at, t.poll_interval_seconds, s.new_interval\n               from target as t, stamped as s",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "redeemed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_polled_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "poll_interval_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "new_interval",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "a6d8e6a5acecfcb8d0bcbdc4b047b820ec076fba4ac4e1d6c4420ddd63cdea6d"
+}

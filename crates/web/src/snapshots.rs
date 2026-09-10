@@ -278,6 +278,18 @@ fn device_confirmation(text: &Catalog) -> String {
         tenant_name: TENANT,
         client_name: CLIENT,
         user_code: "BDWD-HQPK",
+        scopes: vec![ScopeLine {
+            name: "payments".to_owned(),
+            description: Some("read your payment history".to_owned()),
+            required: true,
+        }],
+        authorization_details: vec![DetailLine {
+            name: "payment_initiation".to_owned(),
+            description: Some("move money on your behalf".to_owned()),
+            locations: vec!["https://api.example/payments".to_owned()],
+            actions: vec!["initiate".to_owned()],
+            datatypes: vec!["account".to_owned()],
+        }],
         action: "/device/confirm",
         csrf: CSRF,
         message: None,

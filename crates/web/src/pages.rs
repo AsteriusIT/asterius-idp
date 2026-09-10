@@ -479,6 +479,18 @@ pub struct DeviceConfirmationPage<'a> {
     pub client_name: &'a str,
     /// The code this server matched, shown for the user to compare.
     pub user_code: &'a str,
+    /// What the device asked for, so the approval is to an authorization and
+    /// not merely to a device (RFC 8628 §3.3).
+    ///
+    /// Every line is rendered read-only: unlike the consent screen there is no
+    /// checkbox, because the device has already been told what it asked for
+    /// and a narrowed grant would leave it holding a token it cannot explain.
+    /// The answer to "not that" is Cancel.
+    pub scopes: Vec<ScopeLine>,
+    /// RFC 9396 §3's elements, described the way the consent screen describes
+    /// them: the operator's sentence for the type, never the client's JSON
+    /// (§12).
+    pub authorization_details: Vec<DetailLine>,
     /// Where the form posts to.
     pub action: &'a str,
     /// The synchroniser token for this rendering.
@@ -1700,12 +1712,68 @@ mod tests {
             tenant_name: "Demo",
             client_name,
             user_code,
+            scopes: vec![ScopeLine {
+                name: client_name.to_owned(),
+                description: Some(client_name.to_owned()),
+                required: true,
+            }],
+            authorization_details: vec![DetailLine {
+                name: client_name.to_owned(),
+                description: Some(client_name.to_owned()),
+                locations: vec![client_name.to_owned()],
+                actions: vec![client_name.to_owned()],
+                datatypes: vec![client_name.to_owned()],
+            }],
             action: "/device/confirm",
             csrf: "token",
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
         })
+    }
+
+    /// RFC 8628 §5.3: the page says what the phishing attack looks like, in
+    /// words, because the person is the only control that stops it.
+    #[test]
+    fn the_confirmation_page_warns_about_a_code_somebody_else_sent() {
+        let html = device_confirmation("Example App", "BDWD-HQPK");
+        assert!(
+            html.contains("If somebody sent you this code"),
+            "no anti-phishing warning: {html}"
+        );
+    }
+
+    /// The approval is to an authorization, not merely to a device: what the
+    /// device asked for is on the page it is approved from.
+    #[test]
+    fn the_confirmation_page_names_what_the_device_asked_for() {
+        let html = render(&DeviceConfirmationPage {
+            text: &Catalog::new(Locale::English),
+            tenant_name: "Demo",
+            client_name: "Example App",
+            user_code: "BDWD-HQPK",
+            scopes: vec![ScopeLine {
+                name: "payments".to_owned(),
+                description: Some("read your payment history".to_owned()),
+                required: true,
+            }],
+            authorization_details: vec![DetailLine {
+                name: "payment_initiation".to_owned(),
+                description: Some("move money".to_owned()),
+                locations: Vec::new(),
+                actions: vec!["initiate".to_owned()],
+                datatypes: Vec::new(),
+            }],
+            action: "/device/confirm",
+            csrf: "token",
+            message: None,
+            nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
+        });
+        assert!(html.contains("read your payment history"), "{html}");
+        assert!(html.contains("payments"), "{html}");
+        assert!(html.contains("move money"), "{html}");
+        assert!(html.contains("initiate"), "{html}");
     }
 
     /// The code, the client name and the retry message all land in markup.

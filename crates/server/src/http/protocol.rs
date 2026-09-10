@@ -15,6 +15,9 @@ use crate::http::authorization_code::AuthorizationCode;
 use crate::http::authorize::{self, AuthorizeContext};
 use crate::http::client_configuration::{self, ConfigurationContext};
 use crate::http::client_credentials::ClientCredentials;
+use crate::http::device::{self, DeviceContext};
+use crate::http::device_authorization::{self, DeviceAuthorizationContext};
+use crate::http::device_code::DeviceCode;
 use crate::http::dpop::DpopEndpoint;
 use crate::http::grant_management;
 use crate::http::interaction::{self, InteractionContext};
@@ -372,7 +375,7 @@ pub fn routes(state: ProtocolState) -> Router {
                     .with_state(Arc::clone(&endpoints)),
             );
 
-        router = mount_grant_management(router, capabilities, &endpoints);
+        router = mount_features(router, capabilities, endpoints);
     }
 
     router = mount_the_unbuilt(router, capabilities, built_clients);
@@ -383,6 +386,19 @@ pub fn routes(state: ProtocolState) -> Router {
         guard,
         tenant_feature_guard,
     ))
+}
+
+/// Mounts the routes of the features this deployment has switched on.
+///
+/// One call rather than two at the call site, because [`routes`] is at
+/// clippy's line ceiling and because these are the same kind of thing: a
+/// router that exists only where the deployment's flag does.
+fn mount_features(
+    router: Router,
+    capabilities: Capabilities,
+    endpoints: Arc<ClientEndpoints>,
+) -> Router {
+    mount_grant_management(router, capabilities, &endpoints).merge(device_pages(endpoints))
 }
 
 /// Mounts the Grant Management API (ID1 §6.3), where the deployment has it.
@@ -414,6 +430,39 @@ fn mount_grant_management(
     )
 }
 
+/// The whole of the device authorization grant's HTTP surface (RFC 8628).
+///
+/// The endpoint of §3.1, which is in the registry and therefore in the
+/// discovery document, and the two verification pages of §3.3, which are
+/// deliberately not: they are this server's own user interface, reached with a
+/// session cookie, and `verification_uri` is published in the *device
+/// authorization response* rather than in a document a client reads.
+///
+/// A router of their own, merged rather than chained, because [`routes`] is at
+/// clippy's line ceiling and because these three are one feature: a reader
+/// looking for the device flow finds it here rather than in three places.
+fn device_pages(endpoints: Arc<ClientEndpoints>) -> Router {
+    Router::new()
+        // RFC 8628 §3.1: `POST` only, form-encoded, and — FAPI 2.0 SP
+        // §5.3.2.1 item 3 — client-authenticated. No DPoP check: nothing is
+        // issued here, so there is no key to bind anything to. The proof is
+        // required at the token endpoint, where the access token is.
+        .route(
+            Endpoint::DeviceAuthorization.path(),
+            post(device_authorization_endpoint).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            device::PAGE_PATH,
+            get(device_page)
+                .post(device_submit)
+                .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            device::CONFIRM_PATH,
+            post(device_confirm).with_state(endpoints),
+        )
+}
+
 /// Mounts a 501 at every enabled endpoint that has no handler yet.
 ///
 /// From the registry, so that the parity test — and a client reading the
@@ -437,6 +486,7 @@ fn mount_the_unbuilt(
                         | Endpoint::Registration
                         | Endpoint::EndSession
                         | Endpoint::UserInfo
+                        | Endpoint::DeviceAuthorization
                 ))
         {
             continue;
@@ -1233,8 +1283,7 @@ async fn token_endpoint_inner(
     let refresh_tokens = scope.refresh_tokens();
     let sessions = scope.sessions();
     // Read only, to project the claims the grant covers into the ID token
-    // (OIDC Core §5.4, §5.5). The KEK is the same one every other user read
-    // takes, because the claim bag is encrypted at rest.
+    // (OIDC Core §5.4, §5.5). The KEK is the one every other user read takes.
     let users = scope.users(Arc::clone(&endpoints.kek));
     // One read for all three grants, so that whichever this request turns out
     // to be it mints under the same settings — the same argument `now` and the
@@ -1250,12 +1299,11 @@ async fn token_endpoint_inner(
             return unavailable();
         }
     };
-    // RFC 8707: what this tenant has registered, which is what a `resource` may
-    // name and what an `aud` may hold.
+    // RFC 8707: what a `resource` may name and what an `aud` may hold.
     let resource_servers = scope.resource_servers();
-    // One value for all three grants: what this request proved possession of.
-    // The client's registration decides which half of it binds the token
-    // (RFC 9449 §6, RFC 8705 §3), so no grant handler chooses for itself.
+    // One value for every grant: what this request proved possession of. The
+    // registration decides which half binds the token (RFC 9449 §6, RFC 8705
+    // §3), so no grant handler chooses for itself.
     let constraint = crate::http::issuance::SenderConstraint {
         proof_key: binding.as_ref().map(|binding| &binding.jkt),
         certificate,
@@ -1291,6 +1339,11 @@ async fn token_endpoint_inner(
         constraint,
         now,
     };
+    // The fourth grant (RFC 8628 §3.4). Built from the code grant's own
+    // borrows, so the two cannot be handed different repositories, a different
+    // clock reading or a different proven key.
+    let device_codes = scope.device_codes();
+    let device_code = DeviceCode::sharing(&authorization_code, &device_codes);
     let refresh_token = RefreshToken {
         tokens: &refresh_tokens,
         grants: &grants,
@@ -1311,7 +1364,12 @@ async fn token_endpoint_inner(
             tenant,
             clients: &clients,
             capabilities: endpoints.capabilities,
-            grants: &[&authorization_code, &refresh_token, &client_credentials],
+            grants: &[
+                &authorization_code,
+                &refresh_token,
+                &client_credentials,
+                &device_code,
+            ],
             certificate,
         },
         headers,
@@ -2676,6 +2734,190 @@ fn cacheable_json(document: &Value, max_age: u32) -> Response {
         body,
     )
         .into_response()
+}
+
+/// `POST /device_authorization` — RFC 8628 §3.1.
+async fn device_authorization_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    let device_codes = scope.device_codes();
+    let certificate = certificate.as_deref().map(|presented| &presented.leaf);
+    let now = time::OffsetDateTime::now_utc();
+
+    let authenticator = Arc::clone(&endpoints.authenticator);
+    let tenant_for_auth = Arc::clone(&tenant);
+    let clients_for_auth = scope.clients(endpoints.capabilities);
+
+    device_authorization::authorize(
+        DeviceAuthorizationContext {
+            tenant: &tenant,
+            clients: &clients,
+            device_codes: &device_codes,
+            certificate,
+            mount: mount_of(mount),
+        },
+        &headers,
+        &body,
+        async |attempt: &Attempt<'_>, rules: &AssertionRules| {
+            authenticator
+                .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
+                .await
+        },
+        now,
+    )
+    .await
+}
+
+/// The parameters `GET /device` reads: RFC 8628 §3.3.1's prefilled code.
+#[derive(Debug, serde::Deserialize)]
+struct UserCodeQuery {
+    /// The code a `verification_uri_complete` carried, if any.
+    user_code: Option<String>,
+}
+
+/// `GET /device` — the code-entry page.
+async fn device_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    axum::extract::Query(query): axum::extract::Query<UserCodeQuery>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = device_parts(&endpoints, &tenant);
+    device::page(
+        &device_context(
+            &endpoints,
+            &tenant,
+            &parts,
+            client.as_deref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        query.user_code.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /device` — the code somebody typed.
+#[allow(clippy::too_many_arguments)]
+async fn device_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = device_parts(&endpoints, &tenant);
+    device::submit(
+        &device_context(
+            &endpoints,
+            &tenant,
+            &parts,
+            client.as_deref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /device/confirm` — the answer.
+#[allow(clippy::too_many_arguments)]
+async fn device_confirm(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    axum::extract::Query(query): axum::extract::Query<UserCodeQuery>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = device_parts(&endpoints, &tenant);
+    device::confirm(
+        &device_context(
+            &endpoints,
+            &tenant,
+            &parts,
+            client.as_deref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        &body,
+        query.user_code.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// The tenant-scoped repositories the device pages hold borrows of.
+///
+/// A struct rather than seven locals at three call sites: the context borrows
+/// all of them, so they have to outlive it, and one owner is one lifetime to
+/// get right instead of seven.
+struct DeviceParts {
+    device_codes: asterius_store_pg::PgDeviceCodeRepository,
+    sessions: asterius_store_pg::PgSessionRepository,
+    interactions: asterius_store_pg::PgAuthRequestRepository,
+    clients: asterius_store_pg::PgClientRepository,
+    grants: asterius_store_pg::PgGrantRepository,
+    users: asterius_store_pg::PgUserRepository,
+    limiter: asterius_store_pg::PgRateLimitStore,
+}
+
+fn device_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> DeviceParts {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    DeviceParts {
+        device_codes: scope.device_codes(),
+        sessions: scope.sessions(),
+        interactions: scope.auth_requests(),
+        clients: scope.clients(endpoints.capabilities),
+        grants: scope.grants(),
+        users: scope.users(Arc::clone(&endpoints.kek)),
+        limiter: asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone()),
+    }
+}
+
+fn device_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    parts: &'a DeviceParts,
+    client: Option<&crate::http::forwarded::ClientAddr>,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: Option<Extension<MountPrefix>>,
+) -> DeviceContext<'a> {
+    DeviceContext {
+        tenant,
+        device_codes: &parts.device_codes,
+        sessions: &parts.sessions,
+        interactions: &parts.interactions,
+        clients: &parts.clients,
+        grants: &parts.grants,
+        subjects: &parts.users,
+        acr: acr_policy(),
+        limits: &parts.limiter,
+        address: client.map(|client| client.ip),
+        nonce,
+        audit: endpoints.audit.as_ref(),
+        mount: mount_of(mount),
+    }
 }
 
 #[cfg(test)]
