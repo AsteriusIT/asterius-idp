@@ -287,7 +287,9 @@ impl DpopError {
 ///    second dot-segment pass is RFC 3986 §6.2.2's own ordering: percent-
 ///    encoding normalisation (§6.2.2.2) precedes path segment normalisation
 ///    (§6.2.2.3), so a decoded `%2E%2E` has to be collapsed like the `..` it
-///    now is.
+///    now is. A `%` that begins no escape is written as `%25`, so that the
+///    output holds no `%` this function would read differently on a second
+///    pass — normalisation has to be a fixed point to be a comparison.
 ///
 /// # What is refused outright
 ///
@@ -380,6 +382,11 @@ impl std::fmt::Display for NormalisedUri {
 /// exactly as it arrived — decoding a reserved octet such as `%2F` would change
 /// where the path's segment boundaries are, which is the difference between
 /// normalising a URI and rewriting it.
+///
+/// A `%` that begins no escape at all is written out as `%25`, which is what
+/// RFC 3986 §2.1 says a literal percent sign is. The output therefore contains
+/// no `%` that is not the start of a triplet, and feeding it back in is a
+/// fixed point.
 fn decode_unreserved(path: &str) -> String {
     const fn hex(byte: u8) -> Option<u8> {
         match byte {
@@ -397,24 +404,41 @@ fn decode_unreserved(path: &str) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        let decoded = if bytes[index] == b'%' {
-            match (
-                bytes.get(index + 1).copied().and_then(hex),
-                bytes.get(index + 2).copied().and_then(hex),
-            ) {
-                (Some(high), Some(low)) => Some(high * 16 + low),
-                _ => None,
-            }
-        } else {
-            None
-        };
-        match decoded {
-            Some(octet) if is_unreserved(octet) => {
-                out.push(octet);
+        if bytes[index] != b'%' {
+            out.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        match (
+            bytes.get(index + 1).copied().and_then(hex),
+            bytes.get(index + 2).copied().and_then(hex),
+        ) {
+            // An unreserved octet: RFC 3986 §6.2.2.2, the normal form is the
+            // character itself.
+            (Some(high), Some(low)) if is_unreserved(high * 16 + low) => {
+                out.push(high * 16 + low);
                 index += 3;
             }
+            // A well-formed triplet that must stay encoded — `%2F`, `%3F`.
+            // Copied whole, so the two hex digits are never re-examined as
+            // the start of something else.
+            (Some(_), Some(_)) => {
+                out.extend_from_slice(&bytes[index..index + 3]);
+                index += 3;
+            }
+            // A `%` that begins no triplet at all. RFC 3986 §2.1 has no such
+            // thing: the normal form of a literal percent sign is `%25`.
+            //
+            // Leaving it bare is not merely untidy, it breaks idempotence,
+            // and idempotence is what makes this function a canonical form
+            // rather than one step of an unbounded rewrite. Decoding an
+            // unreserved octet shortens the string, so a bare `%` can end up
+            // against the hex digits that followed the triplet: `%%370`
+            // becomes `%70`, which the *next* normalisation reads as `p`.
+            // Two spellings of one path then compare unequal, and `htu`
+            // stops being a binding.
             _ => {
-                out.push(bytes[index]);
+                out.extend_from_slice(b"%25");
                 index += 1;
             }
         }
@@ -1463,11 +1487,51 @@ mod tests {
             "https://AS.EXAMPLE:443/t/./demo/%74oken?x=1#y",
             "http://as.example",
             "https://as.example/a/b/../c",
+            // A `%` that begins no valid escape. Decoding an unreserved octet
+            // shortens what follows it, so two of these in a row can slide a
+            // stray `%` up against hex digits and manufacture an escape that
+            // was not in the input (`ast-l4n`, found by the `dpop_proof`
+            // fuzz target).
+            "https://as.example/a%%370",
+            "https://as.example/%%%370",
+            "https://as.example/100%",
+            "https://as.example/%zz",
         ] {
             let once = NormalisedUri::parse(raw).expect("parse");
             let twice = NormalisedUri::parse(once.as_str()).expect("re-parse");
             assert_eq!(once, twice, "normalising {raw:?} twice changed the answer");
         }
+    }
+
+    /// RFC 3986 §2.1: a `%` in a URI always introduces a triplet. One that
+    /// does not is malformed, and its normal form is the escape for the
+    /// character itself. Leaving it bare is what let the fuzzer build
+    /// `%%370` -> `%70` -> `p`: a path that means one thing to this server
+    /// and another to whoever normalises once more.
+    #[test]
+    fn a_stray_percent_is_escaped_rather_than_left_to_form_a_new_escape() {
+        let uri = NormalisedUri::parse("https://as.example/a%%370").expect("parse");
+        // `%` -> `%25`, then `%37` is `7`, then a literal `0`.
+        assert_eq!(uri.as_str(), "https://as.example/a%2570");
+        assert!(
+            !uri.as_str().contains("%70"),
+            "normalisation manufactured an escape: {}",
+            uri.as_str()
+        );
+    }
+
+    /// The escaping of a stray `%` must not make two different paths equal,
+    /// nor split one path in two.
+    #[test]
+    fn escaping_a_stray_percent_keeps_distinct_paths_distinct() {
+        assert_ne!(
+            NormalisedUri::parse("https://as.example/a%").expect("parse"),
+            NormalisedUri::parse("https://as.example/a").expect("parse")
+        );
+        assert_eq!(
+            NormalisedUri::parse("https://as.example/a%25").expect("parse"),
+            NormalisedUri::parse("https://as.example/a%").expect("parse")
+        );
     }
 
     #[test]

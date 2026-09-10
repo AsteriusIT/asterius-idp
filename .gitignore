@@ -53,6 +53,9 @@ node_modules/
 !/fuzz/corpus/refresh_token_scope/
 /fuzz/corpus/refresh_token_scope/*
 !/fuzz/corpus/refresh_token_scope/crash-*
+!/fuzz/corpus/dpop_proof/
+/fuzz/corpus/dpop_proof/*
+!/fuzz/corpus/dpop_proof/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.
