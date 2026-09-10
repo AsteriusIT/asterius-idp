@@ -1,0 +1,258 @@
+name: Release
+
+# Publishing a tag: the image, its provenance, and the bill of materials that
+# says what is inside it.
+#
+# `release-gate.yml` used to own the `v*` trigger and was the whole of the
+# release process. Its own closing comment asked for this: "when a publish
+# workflow appears it should depend on this job (`needs: gate`) instead of
+# repeating it: two places that decide what 'releasable' means will disagree,
+# and the day they disagree is the day a release goes out on the wrong one."
+# So the gate is now a reusable workflow (`workflow_call`), this file owns the
+# tag, and the `gate` job below is that same file called — not a copy of it.
+# Nothing here re-decides what releasable means; if the gate refuses, no image
+# is built and no release is created.
+#
+# What a tag produces, and why each piece:
+#
+#   * **The image**, pushed to GHCR by digest. Every step after this one refers
+#     to the digest and never to the tag: a tag can be re-pointed, and a
+#     signature over a name that moves is a signature over nothing.
+#   * **Two SBOMs, both CycloneDX JSON.** One for the binary, from
+#     `cargo-cyclonedx`, which reads the same `Cargo.lock` that `deny.toml` and
+#     the audit workflow judge — so the SBOM and the advisory verdict describe
+#     the same dependency graph, and neither can drift from the other. One for
+#     the image, from `syft`, because the image is not only the binary: the
+#     distroless base carries glibc and a handful of Debian packages that
+#     `Cargo.lock` has never heard of, and an operator asking "is this image
+#     affected by a glibc CVE" is asking about exactly those.
+#
+#     CycloneDX rather than SPDX because cargo-cyclonedx is the cargo-native
+#     producer and syft speaks both, so this is the format that needs no
+#     conversion at either end. Nothing in the repository consumed an SBOM
+#     before this workflow, so there was no existing choice to match.
+#   * **A keyless cosign signature**, and the image SBOM attached as a signed
+#     attestation. Keyless means the signing key is minted for the run and
+#     discarded: there is no long-lived key in the repository secrets to leak,
+#     and what a verifier checks is the identity in the certificate — this
+#     workflow file, at this tag, in this repository.
+#   * **The SBOMs and their checksums as release assets**, for an operator who
+#     wants to read a bill of materials without pulling the image first.
+#
+# `docs/deployment/verifying-a-release.md` is the other half: the commands that
+# check all of this from the outside.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Read-only by default; the one job that writes says so for itself.
+permissions:
+  contents: read
+
+jobs:
+  # The gate, unchanged and not re-implemented. It refuses the tag unless a
+  # recent conformance run says this server is what it claims to be.
+  gate:
+    uses: ./.github/workflows/release-gate.yml
+    permissions:
+      contents: read
+      # `gh run list` / `gh run download` against conformance.yml.
+      actions: read
+
+  release:
+    name: image, SBOM, signature
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      # Creating the release and attaching assets to it.
+      contents: write
+      # Pushing the image to GHCR.
+      packages: write
+      # The whole of the keyless story: this is the OIDC token cosign exchanges
+      # with Fulcio for a short-lived certificate. Without it `cosign sign`
+      # falls back to an interactive browser flow and hangs.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR rejects an uppercase path, and `github.repository` is
+      # `AsteriusIT/asterius-idp`. Lowercased once, here, rather than in five
+      # places where one of them would eventually be forgotten.
+      - name: name the image
+        id: image
+        run: |
+          set -euo pipefail
+          repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          echo "ref=ghcr.io/${repo}" >>"$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------------
+      # The binary SBOM. This is the part that runs off the source tree, so it
+      # comes first: if the dependency graph cannot be described, there is no
+      # point building an image around it.
+      # ---------------------------------------------------------------------
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Pinned, for the reason audit.yml pins cargo-geiger: install-action
+      # resolves an unpinned tool at run time, and a producer that changes its
+      # output under us on a day nobody touched this repository is a release
+      # artefact that silently changes shape. 0.5.9 is the version whose flags
+      # below were run against this tree.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx@0.5.9
+
+      # `--describe binaries` emits one SBOM per binary target rather than one
+      # per crate, which is what we ship: `crates/server/asterius_bin.cdx.json`.
+      # It is not compatible with `--override-filename`, so the file is renamed
+      # afterwards. `--all` lists the whole transitive graph and not just the
+      # direct dependencies — a bill of materials that stops at depth one is
+      # not one. Offline, like every other cargo invocation in CI: the
+      # committed .sqlx data means no database is needed to read the metadata.
+      - name: SBOM for the binary
+        env:
+          SQLX_OFFLINE: "true"
+        run: |
+          set -euo pipefail
+          mkdir -p sbom
+          cargo cyclonedx \
+            --manifest-path crates/server/Cargo.toml \
+            --format json \
+            --describe binaries \
+            --all \
+            --spec-version 1.5
+          mv crates/server/asterius_bin.cdx.json \
+             "sbom/asterius-${GITHUB_REF_NAME}-binary.cdx.json"
+          jq -e '.components | length > 0' \
+            "sbom/asterius-${GITHUB_REF_NAME}-binary.cdx.json" >/dev/null
+
+      # ---------------------------------------------------------------------
+      # The image.
+      # ---------------------------------------------------------------------
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `provenance: false` and `sbom: false` deliberately: buildkit would
+      # otherwise push its own attestation manifests, which turns the pushed
+      # reference into an index whose digest is not the image's, and every
+      # cosign command below would then be signing and attesting something
+      # other than what `docker pull` resolves. The SBOM is produced explicitly
+      # two steps down, and the provenance is the cosign certificate.
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ steps.image.outputs.ref }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.ref }}:latest
+          labels: |
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------------------
+      # Provenance: SBOM of the image, signature, attestation. Everything from
+      # here down addresses the image by digest.
+      # ---------------------------------------------------------------------
+      - uses: anchore/sbom-action/download-syft@v0
+        id: syft
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: SBOM for the image
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          syft "registry:${IMAGE}" \
+            -o cyclonedx-json="sbom/asterius-${GITHUB_REF_NAME}-image.cdx.json"
+          jq -e '.components | length > 0' \
+            "sbom/asterius-${GITHUB_REF_NAME}-image.cdx.json" >/dev/null
+
+      # Keyless. No `--key`, no secret: cosign exchanges the workflow's OIDC
+      # token for a Fulcio certificate that names this repository, this
+      # workflow file and this tag, signs, and logs the entry in Rekor. The
+      # certificate expires in minutes; the transparency log entry does not.
+      - name: sign the image
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}"
+
+      # The image SBOM, attached to the image itself as a signed attestation,
+      # so that "what is in this image" travels with the image rather than
+      # depending on somebody keeping a release asset next to it. The binary
+      # SBOM is a release asset only: attesting two CycloneDX predicates to one
+      # digest would make `cosign verify-attestation --type cyclonedx` return
+      # two answers to a question that has one.
+      - name: attest the SBOM
+        env:
+          IMAGE: ${{ steps.image.outputs.ref }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign attest --yes \
+            --type cyclonedx \
+            --predicate "sbom/asterius-${GITHUB_REF_NAME}-image.cdx.json" \
+            "${IMAGE}"
+
+      # ---------------------------------------------------------------------
+      # The release.
+      # ---------------------------------------------------------------------
+      # Over the assets that are actually published. The image is not in here
+      # because an image is not a file: its integrity is the digest, which the
+      # release notes carry and the signature covers.
+      - name: checksums
+        run: |
+          set -euo pipefail
+          cd sbom
+          sha256sum ./*.cdx.json >checksums.txt
+          cat checksums.txt
+
+      - name: publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sbom/*.cdx.json
+            sbom/checksums.txt
+          # Not a draft and not a prerelease: the gate above already decided
+          # this tag may stand.
+          body: |
+            ## Image
+
+            ```
+            ${{ steps.image.outputs.ref }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.ref }}@${{ steps.build.outputs.digest }}
+            ```
+
+            Pull by digest. A tag can be re-pointed; the digest is what the
+            signature below covers.
+
+            ## Verifying this release
+
+            Full instructions, including what identity to expect and how to
+            read the SBOM out of the image:
+            [`docs/deployment/verifying-a-release.md`](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/deployment/verifying-a-release.md).
+
+            ```sh
+            cosign verify \
+              --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/${{ github.ref_name }}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              ${{ steps.image.outputs.ref }}@${{ steps.build.outputs.digest }}
+            ```
+
+            ## Bill of materials
+
+            Attached: a CycloneDX SBOM for the binary and one for the image,
+            with `checksums.txt`. The image SBOM is also attached to the image
+            as a cosign attestation.

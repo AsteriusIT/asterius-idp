@@ -13,6 +13,9 @@ short.
   TLS, HSTS and what a reverse proxy must set, and must strip, in front of this
   server.
 - [`../Dockerfile`](../Dockerfile) — the release image.
+- [`../docs/deployment/verifying-a-release.md`](../docs/deployment/verifying-a-release.md) —
+  checking the signature and reading the SBOM of a published image, before it
+  reaches a deployment.
 - [`../docs/runbooks/`](../docs/runbooks/README.md) — upgrading, rotating the
   key-encryption key, backup and restore.
 
@@ -129,7 +132,6 @@ form nobody has run:
 
 - A Helm chart, and the Kubernetes-specific parts of this guide (probes,
   `PodSecurityContext`, secret mounts).
-- SBOM generation and publication with each release, plus image signing.
 - Runbooks for upgrade and for key-encryption-key rotation. Until the rotation
   runbook exists, treat the KEK as unrotatable.
 - A conformance-suite service in the example stack.
