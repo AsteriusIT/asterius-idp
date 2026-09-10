@@ -77,6 +77,8 @@ One PostgreSQL instance holds everything. There is no second store to keep consi
 | --- | --- | --- | --- |
 | `keys.kek_file` | path (**points at a secret**) | **required**, unless `kek_env` is set | The production shape: the orchestrator mounts the file read-only and it is never in the image. |
 | `keys.kek_env` | variable name (**names a secret**) | **required**, unless `kek_file` is set | Convenient in a container and readable through `/proc/self/environ`, so the file is preferred. |
+| `keys.kek_previous_file` | path (**points at a secret**) | optional | The key a rotation is moving *away* from, during the rotation only. A row that does not open under the current key is retried under this one, which is what lets `asterius rewrap-kek` run without a window in which a replica cannot open a row that has already moved. Nothing is ever written under it. **Remove it once the re-wrap is complete**: while it is set, a retired key stays readable by this process. See `docs/runbooks/backup-restore.md` §4. |
+| `keys.kek_previous_env` | variable name (**names a secret**) | optional | The same, from the environment. Set at most one of `kek_previous_file` and `kek_previous_env`. |
 
 ## `[features]` — optional capabilities
 

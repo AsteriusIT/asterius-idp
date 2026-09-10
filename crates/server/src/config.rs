@@ -60,6 +60,15 @@ pub struct Config {
     pub log_format: LogFormat,
     /// Where the key-encryption key comes from.
     pub kek: KekSource,
+    /// Where the key being rotated *away from* comes from, if a rotation is in
+    /// flight.
+    ///
+    /// Absent for a deployment that is not rotating, which is nearly always.
+    /// When it is set, sealed rows that do not open under [`Config::kek`] are
+    /// retried under this one — reads only, never writes — so a re-wrap can run
+    /// while the replicas keep serving. It is removed again at the end of the
+    /// rotation: see `docs/runbooks/backup-restore.md` §4.
+    pub kek_previous: Option<KekSource>,
     /// Who, if anyone, may register a client dynamically (RFC 7591 §3).
     pub registration: RegistrationPolicy,
     /// The deployment admin to seed at boot, if the operator declared one.
@@ -406,8 +415,17 @@ enum RegistrationMode {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawKeys {
-    kek_file: Option<PathBuf>,
-    kek_env: Option<String>,
+    // Named for the table, not for the keys: `[keys] kek_file` is what an
+    // operator writes, and the `kek` prefix on all four fields is what the
+    // TOML spells. The fields drop it and `serde` puts it back.
+    #[serde(rename = "kek_file")]
+    file: Option<PathBuf>,
+    #[serde(rename = "kek_env")]
+    env: Option<String>,
+    #[serde(rename = "kek_previous_file")]
+    previous_file: Option<PathBuf>,
+    #[serde(rename = "kek_previous_env")]
+    previous_env: Option<String>,
 }
 
 /// The `[admin]` table.
@@ -699,25 +717,31 @@ impl RawConfig {
         // Exactly one source, and one is required. Two would leave the server
         // choosing between them silently; none would leave it unable to read
         // the keys it wrote yesterday.
-        let kek = match (self.keys.kek_file, self.keys.kek_env) {
-            (Some(path), None) => Some(KekSource::File(path)),
-            (None, Some(variable)) => Some(KekSource::Env(variable)),
-            (None, None) => {
-                errors.problem(
-                    "keys.kek_file",
-                    "a key-encryption key is required: set keys.kek_file or keys.kek_env. \
-                     Signing keys are encrypted at rest under it, so there is no safe default",
-                );
-                None
-            }
-            (Some(_), Some(_)) => {
-                errors.problem(
-                    "keys",
-                    "set exactly one of keys.kek_file and keys.kek_env, not both",
-                );
-                None
-            }
-        };
+        let (kek_file, kek_env) = (self.keys.file, self.keys.env);
+        // Required, unlike the previous key: nothing said at all is its own
+        // problem, and "two sources" has already been reported by the parser,
+        // so only the empty case is added here.
+        let missing = kek_file.is_none() && kek_env.is_none();
+        let kek = kek_source(kek_file, kek_env, &mut errors, "kek");
+        if missing {
+            errors.problem(
+                "keys.kek_file",
+                "a key-encryption key is required: set keys.kek_file or keys.kek_env. \
+                 Signing keys are encrypted at rest under it, so there is no safe default",
+            );
+        }
+
+        // Optional, and read by the same parser: an operator mid-rotation
+        // should be writing the shape they already know, and a second
+        // mechanism here would be a second set of mistakes to make. Absent is
+        // the ordinary case — a deployment that is not rotating keeps no
+        // retired key readable.
+        let kek_previous = kek_source(
+            self.keys.previous_file,
+            self.keys.previous_env,
+            &mut errors,
+            "kek_previous",
+        );
 
         let registration = validate_registration(self.registration, &mut errors);
         // The one capability an operator does not write. RFC 7591's endpoint
@@ -740,6 +764,7 @@ impl RawConfig {
             tenants,
             log_format: self.log_format.unwrap_or_default(),
             kek: kek.unwrap_or_else(|| KekSource::Env(String::new())),
+            kek_previous,
             registration,
             admin,
             login,
@@ -1005,6 +1030,35 @@ impl RawServer {
             }
         }
         nets
+    }
+}
+
+/// Reads one key-encryption key out of its `_file` / `_env` pair.
+///
+/// One parser for both keys in `[keys]`, deliberately: the current key and the
+/// previous one are the same kind of secret read from the same two places, and
+/// two parsers would be two sets of behaviour to keep in step. Two sources is a
+/// problem here rather than a precedence rule — the server would be picking one
+/// silently while the operator read the other. Whether *absent* is a problem is
+/// the caller's question, and it is the only difference between the two: the
+/// current key is required, the previous one is not.
+fn kek_source(
+    file: Option<PathBuf>,
+    env: Option<String>,
+    errors: &mut Collector,
+    field: &str,
+) -> Option<KekSource> {
+    match (file, env) {
+        (Some(path), None) => Some(KekSource::File(path)),
+        (None, Some(variable)) => Some(KekSource::Env(variable)),
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            errors.problem(
+                "keys",
+                format!("set exactly one of keys.{field}_file and keys.{field}_env, not both"),
+            );
+            None
+        }
     }
 }
 
@@ -2415,6 +2469,41 @@ mod tests {
             parse(env).expect("valid").kek,
             KekSource::Env("ASTERIUS_KEK".to_owned())
         );
+    }
+
+    /// A deployment that is not rotating says nothing, and gets nothing. A
+    /// previous key that defaulted to anything would keep a retired key
+    /// readable by a process nobody asked to keep it readable.
+    #[test]
+    fn the_previous_key_encryption_key_is_absent_unless_it_is_configured() {
+        let text = "[database]\nurl = \"x\"\n\n[keys]\nkek_env = \"ASTERIUS_KEK\"\n";
+
+        let config = parse(text).expect("valid");
+
+        assert_eq!(config.kek_previous, None);
+    }
+
+    /// The same parser as the current key, so an operator mid-rotation writes
+    /// the shape they already know — and the same refusal when it is malformed.
+    #[test]
+    fn the_previous_key_encryption_key_takes_one_source_like_the_current_one() {
+        let file = "[database]\nurl = \"x\"\n\n[keys]\nkek_file = \"/k\"\n\
+                    kek_previous_file = \"/k.old\"\n";
+        assert_eq!(
+            parse(file).expect("valid").kek_previous,
+            Some(KekSource::File(PathBuf::from("/k.old")))
+        );
+
+        let env = "[database]\nurl = \"x\"\n\n[keys]\nkek_file = \"/k\"\n\
+                   kek_previous_env = \"ASTERIUS_KEK_OLD\"\n";
+        assert_eq!(
+            parse(env).expect("valid").kek_previous,
+            Some(KekSource::Env("ASTERIUS_KEK_OLD".to_owned()))
+        );
+
+        let both = "[database]\nurl = \"x\"\n\n[keys]\nkek_file = \"/k\"\n\
+                    kek_previous_file = \"/k.old\"\nkek_previous_env = \"K\"\n";
+        assert_eq!(problems(parse(both)).paths().collect::<Vec<_>>(), ["keys"]);
     }
 
     // ---- redaction -------------------------------------------------------
