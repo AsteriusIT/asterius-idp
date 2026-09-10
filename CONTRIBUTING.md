@@ -53,6 +53,24 @@ SQLX_OFFLINE=true cargo test --workspace   # pure logic, no database
 cargo deny check                       # licences, advisories, bans
 ```
 
+Before a merge, when you only want your own scope rather than the whole suite:
+
+```sh
+./scripts/verify.sh tenancy             # fmt, clippy -D warnings, targeted tests
+./scripts/verify.sh --print-filter -p asterius-web   # see the filter it builds
+```
+
+`verify.sh` always ORs the whole-tree audits into the nextest filter, whatever
+scope you name: `http::source_audit` in `asterius-server` (redirect status
+codes, `SEE_OTHER` confinement, reads of the `Cookie` header, absence of CORS),
+`source_audit` in `asterius-web`, `secret_audit` in `asterius-domain`. They
+scan every source file in the workspace but live in one crate each, so a change
+to `crates/web` filtered on `crates/web` never runs them and the violation only
+appears in CI on `main`, after the merge. Adding them is mechanical for that
+reason: a rule that depends on remembering it is not a rule.
+`./scripts/verify.sh --self-test`, which `check.sh` runs, covers the filters it
+builds.
+
 Integration tests need PostgreSQL 16 and run only when `DATABASE_URL` is set;
 without it they print a skip line and the suite stays fast.
 
