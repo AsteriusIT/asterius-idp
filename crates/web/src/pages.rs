@@ -83,6 +83,39 @@ pub struct ScopeLine {
     pub required: bool,
 }
 
+/// One `authorization_details` element, as shown on the consent screen
+/// (RFC 9396 §2).
+///
+/// # Why there is no JSON here
+///
+/// An `authorization_details` element is a JSON object a client composed, and a
+/// consent page that rendered it would be showing a person attacker-composed
+/// text and asking them to agree to it. RFC 9396 §12 requires the user to be
+/// able to understand what they are approving; a JSON blob is a prompt nobody
+/// reads.
+///
+/// So the page shows the operator's own sentence for the type — from the
+/// tenant's registry, escaped like everything else — and the §2.2 common fields
+/// that have an agreed meaning: `locations`, `actions`, `datatypes`. The
+/// element itself is authorised and stored; it is not displayed.
+#[derive(Debug, Clone)]
+pub struct DetailLine {
+    /// The `type`, shown so a technical user can check what was asked for.
+    pub name: String,
+    /// The operator's sentence for this type.
+    ///
+    /// `None` renders a plain statement that the type is undescribed. That is
+    /// deliberately ugly, like an undescribed scope: an unexplained
+    /// authorization should look unexplained.
+    pub description: Option<String>,
+    /// RFC 9396 §2.2 `locations`: the resource servers this element is for.
+    pub locations: Vec<String>,
+    /// RFC 9396 §2.2 `actions`: the operations it authorises.
+    pub actions: Vec<String>,
+    /// RFC 9396 §2.2 `datatypes`: the kinds of data it reaches.
+    pub datatypes: Vec<String>,
+}
+
 /// The sign-in page.
 ///
 /// # The scripted half is an enhancement, and the form is the mechanism
@@ -154,6 +187,8 @@ pub struct ConsentPage<'a> {
     pub offline_access: bool,
     /// RFC 8707 resource indicators named by the request.
     pub resources: Vec<String>,
+    /// RFC 9396 `authorization_details`, one line per element.
+    pub authorization_details: Vec<DetailLine>,
     /// Where the form posts to.
     pub action: &'a str,
     /// The synchroniser token for this rendering.
@@ -664,6 +699,16 @@ mod tests {
                 }],
                 offline_access: true,
                 resources: vec![(*hostile).to_owned()],
+                // RFC 9396 §2.2's fields are copied from a document the client
+                // composed, so every one of them is hostile input on the one
+                // page where a person is being asked to agree to something.
+                authorization_details: vec![DetailLine {
+                    name: (*hostile).to_owned(),
+                    description: Some((*hostile).to_owned()),
+                    locations: vec![(*hostile).to_owned()],
+                    actions: vec![(*hostile).to_owned()],
+                    datatypes: vec![(*hostile).to_owned()],
+                }],
                 action: "/interaction/x/consent",
                 csrf: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
@@ -1093,6 +1138,7 @@ mod tests {
                 }],
                 offline_access: false,
                 resources: Vec::new(),
+                authorization_details: Vec::new(),
                 action: "/x",
                 csrf: "t",
                 nonce_attribute: nonce_attribute(&nonce),
@@ -1143,6 +1189,7 @@ mod tests {
                 scopes: Vec::new(),
                 offline_access: false,
                 resources: Vec::new(),
+                authorization_details: Vec::new(),
                 action: "/x",
                 csrf: "the-token",
                 nonce_attribute: nonce_attribute(&nonce),
@@ -1171,6 +1218,7 @@ mod tests {
             scopes: Vec::new(),
             offline_access: false,
             resources: Vec::new(),
+            authorization_details: Vec::new(),
             action: "/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),
@@ -1197,6 +1245,7 @@ mod tests {
             scopes,
             offline_access: offline,
             resources,
+            authorization_details: Vec::new(),
             action: "/interaction/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),

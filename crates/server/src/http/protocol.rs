@@ -511,7 +511,37 @@ async fn discovery(
     // for the reason RFC 8414 §2 gives: a document that advertised a class this
     // server would refuse as `unmet_authentication_requirements` would be
     // telling clients to ask for something it cannot do (`ast-2vk.7`).
-    let document = metadata::provider_metadata(&tenant.issuer, &capabilities, acr_policy());
+    // RFC 9396 §9.1, and the same argument again: the types a tenant has
+    // registered are rows in a table, so the document is built from the table.
+    // A deployment with no store wired advertises none, which is honest — it
+    // has no registry, so it can honour no `authorization_details`.
+    let authorization_details_types = match &state.clients {
+        None => Vec::new(),
+        Some(endpoints) => {
+            use asterius_domain::AuthorizationDetailsTypeRepository as _;
+            let scope = endpoints.store.scope(tenant.id.clone());
+            match scope.authorization_details_types().list().await {
+                Ok(types) => {
+                    asterius_domain::AuthorizationDetailsRegistry::new(types).supported_types()
+                }
+                // Fails closed, like the capabilities read above: advertising a
+                // list this server cannot presently check against would tell a
+                // client to send a value the pushed request endpoint is
+                // refusing for the very same reason.
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read the authorization details type registry");
+                    return unavailable();
+                }
+            }
+        }
+    };
+
+    let document = metadata::provider_metadata(
+        &tenant.issuer,
+        &capabilities,
+        acr_policy(),
+        &authorization_details_types,
+    );
     cacheable_json(&document, METADATA_MAX_AGE)
 }
 
@@ -588,6 +618,7 @@ async fn pushed_authorization_request_inner(
     let clients = scope.clients(endpoints.capabilities);
     let requests = scope.auth_requests();
     let resource_servers = scope.resource_servers();
+    let authorization_details_types = scope.authorization_details_types();
 
     // RFC 9449 §10.1: a pushed request may carry a proof as well as the
     // `dpop_jkt` parameter. Checked before the body is looked at, because a
@@ -618,6 +649,7 @@ async fn pushed_authorization_request_inner(
             clients: &clients,
             requests: &requests,
             resource_servers: &resource_servers,
+            authorization_details_types: &authorization_details_types,
             keys: endpoints.keys.as_ref(),
             policy: authorization_policy(),
             lifetime: endpoints.par_lifetime,
@@ -1497,6 +1529,7 @@ async fn interaction_show(
     let clients = scope.clients(endpoints.capabilities);
     let grants = scope.grants();
     let codes = scope.codes();
+    let detail_types = scope.authorization_details_types();
     let users = scope.users(Arc::clone(&endpoints.kek));
     let passwords = endpoints.passwords(&tenant.id);
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
@@ -1520,6 +1553,7 @@ async fn interaction_show(
             clients: &clients,
             grants: &grants,
             memory: memory_policy(),
+            authorization_details_types: Some(&detail_types),
             codes: &codes,
             subjects: &users,
             code_lifetime: lifetimes.authorization_code(),
@@ -1563,6 +1597,7 @@ async fn interaction_submit(
     let clients = scope.clients(endpoints.capabilities);
     let grants = scope.grants();
     let codes = scope.codes();
+    let detail_types = scope.authorization_details_types();
     let users = scope.users(Arc::clone(&endpoints.kek));
     let passwords = endpoints.passwords(&tenant.id);
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
@@ -1586,6 +1621,7 @@ async fn interaction_submit(
             clients: &clients,
             grants: &grants,
             memory: memory_policy(),
+            authorization_details_types: Some(&detail_types),
             codes: &codes,
             subjects: &users,
             code_lifetime: lifetimes.authorization_code(),

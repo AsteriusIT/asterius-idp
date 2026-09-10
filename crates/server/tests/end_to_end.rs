@@ -620,6 +620,42 @@ impl Flow {
     ///
     /// Not registration metadata (RFC 7591 has no such member): it is policy,
     /// written beside the registration, so it is set on the stored client.
+    /// Registers an authorization details type for this tenant (RFC 9396
+    /// §2.1).
+    ///
+    /// The administrative API for this is follow-up work, so the registry is
+    /// written through its repository — which is what an operator's SQL does
+    /// today and what the pushed request endpoint reads.
+    async fn register_authorization_details_type(&self, name: &str, schema: &Value) {
+        asterius_store_pg::PgAuthorizationDetailsTypes::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+        )
+        .register(
+            &asterius_domain::AuthorizationDetailsType {
+                name: name.to_owned(),
+                schema: asterius_domain::JsonSchema::parse(schema).expect("a supported schema"),
+                consent_template: Some("Initiate a payment".to_owned()),
+            },
+            schema,
+        )
+        .await
+        .expect("register the authorization details type");
+    }
+
+    /// RFC 9396 §9.2: the types this client is registered to ask for.
+    async fn allow_client_detail_types(&self, allowed: &[&str]) {
+        let scope = self.store.scope(self.tenant.id.clone());
+        let clients = scope.clients(Capabilities::default());
+        let mut client = asterius_domain::ClientRepository::find(&clients, &ClientId::new(CLIENT))
+            .await
+            .expect("read the client")
+            .expect("the client is registered");
+        client.registration.authorization_details_types =
+            allowed.iter().map(|t| (*t).to_owned()).collect();
+        clients.upsert(&client).await.expect("store the client");
+    }
+
     async fn allow_client_resources(&self, allowed: &[&str]) {
         let scope = self.store.scope(self.tenant.id.clone());
         let clients = scope.clients(Capabilities::default());
@@ -2312,6 +2348,216 @@ async fn prompt_none_without_a_remembered_consent_is_consent_required() {
         parameter(&back, "error").as_deref(),
         Some("consent_required"),
         "the session was there; only the decision was missing: {back}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// The type the rich-authorization tests register, and the schema it must
+/// satisfy — RFC 9396 §2's own payment example, narrowed to the subset
+/// `asterius_domain::JsonSchema` validates against.
+const DETAIL_TYPE: &str = "payment_initiation";
+
+fn detail_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["type", "instructedAmount"],
+        "properties": {
+            "instructedAmount": {
+                "type": "object",
+                "required": ["currency"],
+                "properties": {"currency": {"type": "string", "maxLength": 3}}
+            }
+        }
+    })
+}
+
+/// **RFC 9396 §2, §2.1, §5**: an `authorization_details` that is not an array
+/// of objects, names a type this tenant has not registered or the client may
+/// not ask for, breaks the limits, or fails its type's schema is
+/// `invalid_authorization_details` at the pushed authorization request
+/// endpoint — where an authenticated client is still on the connection to be
+/// told.
+#[tokio::test]
+async fn a_bad_authorization_details_is_refused_at_the_pushed_request_endpoint() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.register_authorization_details_type(DETAIL_TYPE, &detail_schema())
+        .await;
+    flow.allow_client_detail_types(&[DETAIL_TYPE]).await;
+
+    let over_sixteen = serde_json::to_string(&vec![
+        json!({"type": DETAIL_TYPE, "instructedAmount": {}});
+        17
+    ])
+    .expect("serialise");
+    let too_long = json!([{
+        "type": DETAIL_TYPE,
+        "instructedAmount": {"currency": "EUR"},
+        "note": "a".repeat(9 * 1024)
+    }])
+    .to_string();
+    let schema_failure = json!([{"type": DETAIL_TYPE}]).to_string();
+    let bad_currency =
+        json!([{"type": DETAIL_TYPE, "instructedAmount": {"currency": "EURO"}}]).to_string();
+
+    for wrong in [
+        // §2: a JSON array of objects, each with a string `type`.
+        "{}",
+        "[7]",
+        "[{}]",
+        // §2.1: a type this tenant has not registered.
+        r#"[{"type":"account_information"}]"#,
+        // §2: the element must satisfy its type's schema.
+        &schema_failure,
+        &bad_currency,
+        // The limits, applied before any schema is consulted.
+        &over_sixteen,
+        &too_long,
+    ] {
+        let key = ProofKey::generate();
+        let refused = flow
+            .push_with(&key, &[("authorization_details", wrong)])
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "the push was accepted for {wrong:?}: {}",
+            refused.text()
+        );
+        assert_eq!(
+            refused.json()["error"],
+            json!("invalid_authorization_details"),
+            "for {wrong:?}"
+        );
+    }
+
+    flow.tear_down().await;
+}
+
+/// **RFC 9396 §9.2**: `authorization_details_types` is the client's own list,
+/// and a client registered for none may name none — even a type the tenant
+/// defines.
+#[tokio::test]
+async fn a_type_the_client_is_not_registered_for_is_refused() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.register_authorization_details_type(DETAIL_TYPE, &detail_schema())
+        .await;
+    flow.allow_client_detail_types(&[]).await;
+
+    let details =
+        json!([{"type": DETAIL_TYPE, "instructedAmount": {"currency": "EUR"}}]).to_string();
+    let key = ProofKey::generate();
+    let refused = flow
+        .push_with(&key, &[("authorization_details", &details)])
+        .await;
+
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "a client registered for no type was allowed one: {}",
+        refused.text()
+    );
+    assert_eq!(
+        refused.json()["error"],
+        json!("invalid_authorization_details")
+    );
+
+    flow.tear_down().await;
+}
+
+/// **RFC 9396 §6 and §8.1**: the granted details come back in the token
+/// response, and the JWT access token carries them as a top-level
+/// `authorization_details` claim.
+#[tokio::test]
+async fn granted_authorization_details_reach_the_token_response_and_the_access_token() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.register_authorization_details_type(DETAIL_TYPE, &detail_schema())
+        .await;
+    flow.allow_client_detail_types(&[DETAIL_TYPE]).await;
+    flow.allow_client_resources(&[RESOURCE]).await;
+
+    let element = json!({
+        "type": DETAIL_TYPE,
+        "instructedAmount": {"currency": "EUR", "amount": "30.00"},
+        "locations": [RESOURCE]
+    });
+    let details = json!([element]).to_string();
+
+    let issued = redeemed(
+        &mut flow,
+        &[("authorization_details", &details), ("resource", RESOURCE)],
+        &[],
+    )
+    .await;
+    assert_eq!(
+        issued.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        issued.text()
+    );
+
+    let body = issued.json();
+    // §6: the AS returns the granted details — the *grant's*, not the
+    // request's, because consent is what decides them.
+    assert_eq!(
+        body["authorization_details"],
+        json!([element]),
+        "the token response did not echo the granted details: {body}"
+    );
+
+    // §8.1: and the access token carries them.
+    let claims = claims_of(body["access_token"].as_str().expect("a token"));
+    assert_eq!(
+        claims["authorization_details"],
+        json!([element]),
+        "the access token did not carry the granted details: {claims}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **RFC 9396 §9.1**: `authorization_details_types_supported` is the tenant's
+/// registry, published where a client reads it — and absent for a tenant that
+/// has registered none, because a client seeing the member treats rich
+/// authorization requests as available.
+#[tokio::test]
+async fn the_metadata_document_publishes_the_registered_types() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+
+    let path = format!("{}/.well-known/openid-configuration", flow.prefix());
+    let before = flow.get(&path).await;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.text());
+    assert!(
+        before
+            .json()
+            .get("authorization_details_types_supported")
+            .is_none(),
+        "a tenant that registered no type advertised the member: {}",
+        before.text()
+    );
+
+    flow.register_authorization_details_type(DETAIL_TYPE, &detail_schema())
+        .await;
+
+    let after = flow.get(&path).await;
+    assert_eq!(after.status, StatusCode::OK, "{}", after.text());
+    assert_eq!(
+        after.json()["authorization_details_types_supported"],
+        json!([DETAIL_TYPE]),
+        "the document did not publish the registry: {}",
+        after.text()
     );
 
     flow.tear_down().await;

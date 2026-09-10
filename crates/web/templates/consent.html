@@ -39,6 +39,32 @@
 without you present.</p>
 {% endif %}
 
+{# RFC 9396 §2. Never the element's JSON: it is a document the client composed,
+   and a consent page that showed it would be asking a person to agree to
+   attacker-chosen text (§12). What is rendered is the operator's own sentence
+   for the type plus the §2.2 fields that have an agreed meaning — all of it
+   through Askama's autoescape, like every other value on this page. #}
+{% if !authorization_details.is_empty() %}
+<p class="muted">{{ client_name }} is also asking to:</p>
+<ul class="scopes">
+{% for detail in authorization_details %}
+  <li>
+    {% if let Some(description) = detail.description %}{{ description }}{% else %}Perform an action this server has no description for{% endif %}
+    <span class="muted">({{ detail.name }})</span>
+    {% if !detail.actions.is_empty() %}
+    <br><span class="muted">Operations: {% for action in detail.actions %}{{ action }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if !detail.datatypes.is_empty() %}
+    <br><span class="muted">Data: {% for datatype in detail.datatypes %}{{ datatype }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if !detail.locations.is_empty() %}
+    <br><span class="muted">At: {% for location in detail.locations %}{{ location }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
 {% if !resources.is_empty() %}
 <p class="muted">Access applies to:</p>
 <ul class="scopes">

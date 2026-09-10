@@ -10,6 +10,7 @@
 mod admin_seed;
 mod audit;
 mod auth_requests;
+mod authorization_details_types;
 mod clients;
 mod codes;
 mod error;
@@ -38,6 +39,7 @@ mod users;
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;
+pub use authorization_details_types::PgAuthorizationDetailsTypes;
 pub use clients::PgClientRepository;
 pub use codes::{PgCodeRepository, Redemption};
 pub use error::to_domain_error;

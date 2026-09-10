@@ -26,6 +26,7 @@
 //! so that narrowing — approving three of four scopes — is expressible rather
 //! than a special case bolted on later.
 
+use serde_json::Value;
 use std::collections::BTreeSet;
 
 /// What the client asked for, resolved into something a person can read.
@@ -55,6 +56,87 @@ pub struct ConsentRequest {
     pub offline_access: bool,
     /// RFC 8707 resource indicators, if any.
     pub resources: BTreeSet<String>,
+    /// RFC 9396 §2 `authorization_details`, one line per element, in the order
+    /// the client composed them.
+    pub authorization_details: Vec<DetailRequest>,
+}
+
+/// One `authorization_details` element, as offered to the user (RFC 9396 §2).
+///
+/// # Why this is not the element
+///
+/// The element is a JSON object a client composed, and a consent page that
+/// rendered it would be putting attacker-composed text in front of a person and
+/// asking them to agree to it. RFC 9396 §12 is explicit that the user has to
+/// understand what they are approving, and a JSON blob is a prompt nobody
+/// reads.
+///
+/// So what is rendered is the operator's own sentence for the type, plus the
+/// three §2.2 common fields that are *this server's* vocabulary rather than the
+/// client's: which APIs (`locations`), which operations (`actions`) and which
+/// kinds of data (`datatypes`). Everything else the element carries is
+/// authorised and stored, and is not shown — because there is nothing truthful
+/// to say about a member only the client and the resource server understand.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetailRequest {
+    /// The `type`, shown so that a technical user can check what was asked for,
+    /// as the scope name is.
+    pub name: String,
+    /// The operator's sentence for this type, from the registry.
+    ///
+    /// `None` is a type the operator registered without describing, and the
+    /// page says so. That is deliberately ugly, for the reason an undescribed
+    /// scope is: an unexplained authorization should look unexplained.
+    pub description: Option<String>,
+    /// RFC 9396 §2.2 `locations`: the resource servers this element is for.
+    pub locations: Vec<String>,
+    /// RFC 9396 §2.2 `actions`: the operations it authorises.
+    pub actions: Vec<String>,
+    /// RFC 9396 §2.2 `datatypes`: the kinds of data it reaches.
+    pub datatypes: Vec<String>,
+}
+
+impl DetailRequest {
+    /// The `authorization_details` a stored request carries, as offer lines.
+    ///
+    /// `describe` is the registry lookup: it answers with the operator's
+    /// sentence for a type, or `None` for a type registered without one.
+    ///
+    /// An element this server cannot read back is **skipped**, not rendered
+    /// raw. A stored request is not a trusted input, and the only two honest
+    /// answers to "I cannot parse this element" are to drop it or to fail; the
+    /// grant is built by the same parser from the same column, so dropping here
+    /// shows the user exactly the set that will be recorded.
+    #[must_use]
+    pub fn offer(
+        details: &asterius_domain::AuthorizationDetails,
+        describe: impl Fn(&str) -> Option<String>,
+    ) -> Vec<Self> {
+        let strings = |element: &asterius_domain::AuthorizationDetail, name: &str| -> Vec<String> {
+            element
+                .members()
+                .get(name)
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        details
+            .elements()
+            .iter()
+            .map(|element| Self {
+                name: element.detail_type().to_owned(),
+                description: describe(element.detail_type()),
+                locations: element.locations().map(ToOwned::to_owned).collect(),
+                actions: strings(element, "actions"),
+                datatypes: strings(element, "datatypes"),
+            })
+            .collect()
+    }
 }
 
 /// One scope, as offered to the user.
@@ -135,6 +217,7 @@ impl ConsentRequest {
         redirect_host: impl Into<String>,
         requested: &BTreeSet<String>,
         resources: BTreeSet<String>,
+        authorization_details: Vec<DetailRequest>,
         describe: impl Fn(&str) -> Option<String>,
     ) -> Self {
         let scopes = requested
@@ -153,6 +236,7 @@ impl ConsentRequest {
             // OIDC Core §11: `offline_access` is what asks for a refresh token.
             offline_access: requested.contains("offline_access"),
             resources,
+            authorization_details,
         }
     }
 
@@ -208,6 +292,7 @@ mod tests {
             "rp.example",
             &requested(scopes),
             BTreeSet::new(),
+            Vec::new(),
             |name| match name {
                 "openid" => Some("Confirm who you are".to_owned()),
                 "payments" => Some("See your payment history".to_owned()),
@@ -349,6 +434,7 @@ mod tests {
             "rp.attacker.example",
             &requested(&["openid"]),
             BTreeSet::new(),
+            Vec::new(),
             |_| None,
         );
         assert_eq!(offer.client_name, "Example Bank");

@@ -36,14 +36,14 @@ use crate::tenancy::MountPrefix;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::session::SessionId;
 use asterius_domain::{
-    AuthenticationMethod, ClientRequest, CodeBinding, CodeIssuer, CredentialVerifier,
-    FirstPartyDestination, Grant, GrantRepository, InteractionRecord, InteractionRepository,
-    Lifetimes, Secret, SectorIdentifier, SessionId as DomainSessionId, SessionRepository,
-    SubjectResolver, Tenant, TenantId, UserId,
+    AuthenticationMethod, AuthorizationDetailsTypeRepository, ClientRequest, CodeBinding,
+    CodeIssuer, CredentialVerifier, FirstPartyDestination, Grant, GrantRepository,
+    InteractionRecord, InteractionRepository, Lifetimes, Secret, SectorIdentifier,
+    SessionId as DomainSessionId, SessionRepository, SubjectResolver, Tenant, TenantId, UserId,
 };
 use asterius_oidc::authorize::ResponseMode;
 use asterius_oidc::code::{AuthorizationResponse, MintedCode};
-use asterius_oidc::consent::{ConsentRequest, Decision};
+use asterius_oidc::consent::{ConsentRequest, Decision, DetailRequest};
 use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
 use asterius_oidc::decision::Requirements;
 use asterius_web::interaction::{
@@ -84,6 +84,15 @@ pub struct InteractionContext<'a> {
     /// Where a completed authorization is recorded, and where the consent
     /// memory is read from (`ast-uwv.3`): a grant is both.
     pub grants: &'a dyn GrantRepository,
+    /// This tenant's registered authorization details types (RFC 9396 §2.1),
+    /// for the sentence the consent screen shows for each element.
+    ///
+    /// `None` is a deployment with no registry wired, and then a rich
+    /// authorization is shown by type name alone. It is never a reason to fall
+    /// back to rendering the element's JSON: a consent page must not put
+    /// attacker-composed text in front of the person it is asking (RFC 9396
+    /// §12).
+    pub authorization_details_types: Option<&'a dyn AuthorizationDetailsTypeRepository>,
     /// Whether this tenant remembers a consent it already has, and for how long
     /// it remembers an `offline_access` one.
     pub memory: MemoryPolicy,
@@ -319,12 +328,47 @@ async fn describe(
         })
         .unwrap_or_default();
 
+    // RFC 9396 §2: read back through the same parser the push used, then
+    // described from the tenant's registry. The element's own JSON never
+    // reaches the page — see `DetailRequest`.
+    let details = request
+        .parameters
+        .get("authorization_details")
+        .and_then(|value| asterius_domain::AuthorizationDetails::from_value(value).ok())
+        .unwrap_or_default();
+    let registry = if details.is_empty() {
+        // Not read when there is nothing to describe, so a tenant whose clients
+        // do not use rich authorization pays nothing for the feature.
+        asterius_domain::AuthorizationDetailsRegistry::default()
+    } else {
+        match context.authorization_details_types {
+            None => asterius_domain::AuthorizationDetailsRegistry::default(),
+            Some(types) => match types.list().await {
+                Ok(types) => asterius_domain::AuthorizationDetailsRegistry::new(types),
+                // A registry that cannot be read shows the type names alone,
+                // which is the same answer an undescribed type gets. Refusing
+                // the page instead would mean an outage in a description table
+                // stopped people from consenting at all.
+                Err(error) => {
+                    tracing::error!(%error, tenant = %context.tenant.id, "cannot read the authorization details type registry");
+                    asterius_domain::AuthorizationDetailsRegistry::default()
+                }
+            },
+        }
+    };
+    let authorization_details = DetailRequest::offer(&details, |name| {
+        registry
+            .get(name)
+            .and_then(|kind| kind.consent_template.clone())
+    });
+
     Some(ConsentOffer {
         request: ConsentRequest::new(
             client.registration.client_name.clone(),
             redirect_host,
             &scopes,
             resources,
+            authorization_details,
             // Per-tenant scope wording is `ast-ndk.2`. Until then a scope is
             // shown by name, which is honest: an unexplained scope should look
             // unexplained.
@@ -1128,6 +1172,18 @@ async fn mint(
                 .collect()
         })
         .unwrap_or_default();
+    // RFC 9396 §3: what the user approved, recorded on the authorization it was
+    // approved in. Read back through the same parser the push used rather than
+    // copied as raw JSON — a stored request is not a trusted input, and a grant
+    // that carried an element this server can no longer read would be an
+    // authorization it could not describe or filter. What cannot be read back
+    // is dropped rather than guessed at, which can only ever narrow the grant.
+    grant.authorization_details = request
+        .parameters
+        .get("authorization_details")
+        .and_then(|value| asterius_domain::AuthorizationDetails::from_value(value).ok())
+        .map(|details| details.to_json())
+        .unwrap_or_default();
     // The consent boundary (`ast-1sk.6`): the claims request the user approved
     // and the language they asked to be answered in are copied onto the grant
     // here, and `claims::resolve_for_grant` reads them from nowhere else.
@@ -1586,6 +1642,17 @@ fn render(
                         .collect(),
                     offline_access: request.offline_access,
                     resources: request.resources.iter().cloned().collect(),
+                    authorization_details: request
+                        .authorization_details
+                        .iter()
+                        .map(|detail| pages::DetailLine {
+                            name: detail.name.clone(),
+                            description: detail.description.clone(),
+                            locations: detail.locations.clone(),
+                            actions: detail.actions.clone(),
+                            datatypes: detail.datatypes.clone(),
+                        })
+                        .collect(),
                     action: &action,
                     csrf: csrf.expose(),
                     nonce_attribute: nonce_attribute(nonce),

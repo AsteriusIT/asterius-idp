@@ -6,8 +6,9 @@
 //! those rules are applied.
 
 use asterius_domain::{
-    AuthRequestRepository, Capabilities, Client, ClientId, ClientRegistration, ClientRepository,
-    ClientStatus, Consumed, DomainError, Issuer, KeyStore, Kid, PublicKeyRecord, PushedRequest,
+    AuthRequestRepository, AuthorizationDetailsType, AuthorizationDetailsTypeRepository,
+    Capabilities, Client, ClientId, ClientRegistration, ClientRepository, ClientStatus, Consumed,
+    DomainError, Issuer, JsonSchema, KeyStore, Kid, PublicKeyRecord, PushedRequest,
     ResourceIdentifier, ResourceServer, ResourceServerRepository, Tenant, TenantId, TenantStatus,
 };
 use asterius_oidc::authorize::AuthorizationPolicy;
@@ -67,7 +68,39 @@ fn registry() -> FakeResourceServers {
     }])
 }
 
+/// A tenant's registered authorization details types (RFC 9396 §2.1), in
+/// memory.
+#[derive(Debug, Default)]
+struct FakeDetailTypes(Vec<AuthorizationDetailsType>);
+
+#[async_trait::async_trait]
+impl AuthorizationDetailsTypeRepository for FakeDetailTypes {
+    async fn list(&self) -> Result<Vec<AuthorizationDetailsType>, DomainError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// The authorization details type registry every test here pushes against.
+///
+/// One type, whose schema requires the RFC 9396 §2 `type` and a
+/// type-specific `instructedAmount` object — the shape §2's own payment example
+/// uses, so that "fails its schema" is a case the tests can actually reach.
+fn detail_types() -> FakeDetailTypes {
+    FakeDetailTypes(vec![AuthorizationDetailsType {
+        name: DETAIL_TYPE.to_owned(),
+        schema: JsonSchema::parse(&serde_json::json!({
+            "type": "object",
+            "required": ["type", "instructedAmount"],
+            "properties": {"instructedAmount": {"type": "object"}}
+        }))
+        .expect("a supported schema"),
+        consent_template: Some("Initiate a payment".to_owned()),
+    }])
+}
+
 const ISSUER: &str = "https://as.example/t/demo";
+/// The one authorization details type the fixture tenant registers.
+const DETAIL_TYPE: &str = "payment_initiation";
 /// The one resource server the fixture tenant registers.
 const RESOURCE: &str = "https://api.example/v1";
 const CLIENT: &str = "billing";
@@ -230,6 +263,7 @@ async fn run(
         clients: &clients,
         requests,
         resource_servers: &registry(),
+        authorization_details_types: &detail_types(),
         keys: &NoKeys,
         policy: AuthorizationPolicy::default(),
         lifetime: Duration::seconds(90),
@@ -588,6 +622,7 @@ async fn a_body_that_is_not_a_form_is_refused() {
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -623,6 +658,7 @@ async fn a_form_content_type_with_a_charset_is_accepted() {
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -651,6 +687,7 @@ async fn an_oversized_body_is_refused_before_it_is_parsed() {
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -694,6 +731,7 @@ async fn a_proof_on_the_push_pins_the_code_to_its_key() {
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -735,6 +773,7 @@ async fn a_proof_on_the_push_pins_the_key_the_code_issuer_reads() {
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -777,6 +816,7 @@ async fn a_proof_and_a_dpop_jkt_that_disagree_are_refused() {
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -814,6 +854,7 @@ async fn a_proof_and_a_matching_dpop_jkt_are_accepted() {
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -974,6 +1015,7 @@ async fn pushed_as(client: Client, pairs: &[(&str, &str)]) -> (StatusCode, Value
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -1036,6 +1078,7 @@ async fn a_registered_resource_is_stored_with_the_request() {
             clients: &clients,
             requests: &requests,
             resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -1052,5 +1095,148 @@ async fn a_registered_resource_is_stored_with_the_request() {
     assert_eq!(
         requests.0.lock().expect("lock")[0].parameters["resources"],
         json!([RESOURCE])
+    );
+}
+
+// ---- rich authorization requests (RFC 9396) ------------------------------
+
+/// A client registered for [`DETAIL_TYPE`] and allowed to name [`RESOURCE`].
+fn client_allowed_details(types: &[&str]) -> Client {
+    let mut client = client_allowed_resources(&[RESOURCE]);
+    client.registration.authorization_details_types =
+        types.iter().map(|t| (*t).to_owned()).collect();
+    client
+}
+
+/// RFC 9396 §2 and §5, with the acceptance criteria's limits: anything that is
+/// not a bounded JSON array of objects each carrying a registered, permitted
+/// `type` is `invalid_authorization_details` at the pushed authorization
+/// request endpoint, where the client is still on the connection to be told.
+#[tokio::test]
+async fn a_malformed_authorization_details_is_refused_at_the_push() {
+    let over_sixteen = serde_json::to_string(&vec![
+        json!({"type": DETAIL_TYPE, "instructedAmount": {}});
+        17
+    ])
+    .expect("serialise");
+    let too_deep = format!(
+        r#"[{{"type":"{DETAIL_TYPE}","instructedAmount":{{}},"d":{}{}}}]"#,
+        "[".repeat(16),
+        "]".repeat(16)
+    );
+    let too_long = json!([{
+        "type": DETAIL_TYPE,
+        "instructedAmount": {},
+        "note": "a".repeat(9 * 1024)
+    }])
+    .to_string();
+    let schema_failure = format!(r#"[{{"type":"{DETAIL_TYPE}"}}]"#);
+
+    for wrong in [
+        // §2: a JSON array of objects.
+        "{}",
+        "[7]",
+        "[{}]",
+        // §2: `type` is REQUIRED and a string.
+        r#"[{"instructedAmount":{}}]"#,
+        // §2.1: a type this tenant has not registered.
+        r#"[{"type":"account_information"}]"#,
+        // The element does not satisfy its type's schema.
+        &schema_failure,
+        // The limits, applied before any schema is consulted.
+        &over_sixteen,
+        &too_deep,
+        &too_long,
+    ] {
+        let mut pairs = valid_pairs();
+        pairs.push(("authorization_details", wrong));
+        let (status, body) = pushed_as(client_allowed_details(&[DETAIL_TYPE]), &pairs).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "accepted {wrong:?}");
+        assert_eq!(
+            body["error"], "invalid_authorization_details",
+            "for {wrong:?}: {body}"
+        );
+    }
+}
+
+/// RFC 9396 §9.2: `authorization_details_types` is the client's list, and a
+/// client that registered none may name none — even a type this tenant defines.
+#[tokio::test]
+async fn a_type_the_client_did_not_register_is_refused_at_the_push() {
+    let details = json!([{"type": DETAIL_TYPE, "instructedAmount": {}}]).to_string();
+    let mut pairs = valid_pairs();
+    pairs.push(("authorization_details", &details));
+    let (status, body) = pushed_as(client_allowed_details(&[]), &pairs).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_authorization_details", "{body}");
+}
+
+/// The acceptance criterion: §2.2 `locations` must be a subset of the resources
+/// this client may be issued a token for — the client's RFC 8707 allow-list
+/// intersected with this tenant's resource server registry.
+#[tokio::test]
+async fn a_location_outside_the_clients_resources_is_refused_at_the_push() {
+    for location in [
+        // Not on this client's allow-list.
+        "https://elsewhere.example/",
+        // On no allow-list and in no registry.
+        "https://api.example/v2",
+    ] {
+        let details =
+            json!([{"type": DETAIL_TYPE, "instructedAmount": {}, "locations": [location]}])
+                .to_string();
+        let mut pairs = valid_pairs();
+        pairs.push(("authorization_details", &details));
+        let (status, body) = pushed_as(client_allowed_details(&[DETAIL_TYPE]), &pairs).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "accepted {location}");
+        assert_eq!(
+            body["error"], "invalid_authorization_details",
+            "for {location}: {body}"
+        );
+    }
+}
+
+/// RFC 9396 §3: a well-formed, registered, permitted `authorization_details` is
+/// carried onto the stored request whole — the consent page renders it and the
+/// grant records it, and neither can do so from something this endpoint
+/// trimmed.
+#[tokio::test]
+async fn an_accepted_authorization_details_is_stored_with_the_request() {
+    let tenant = tenant();
+    let client = client_allowed_details(&[DETAIL_TYPE]);
+    let clients = FakeClients(Some(client.clone()));
+    let requests = FakeRequests::default();
+    let element = json!({
+        "type": DETAIL_TYPE,
+        "instructedAmount": {"currency": "EUR", "amount": "30"},
+        "locations": [RESOURCE]
+    });
+    let details = json!([element]).to_string();
+    let mut pairs = valid_pairs();
+    pairs.push(("authorization_details", &details));
+
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
+            lifetime: Duration::seconds(90),
+        },
+        &form_headers(),
+        &form(&pairs),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client.clone()),
+        None,
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        requests.0.lock().expect("lock")[0].parameters["authorization_details"],
+        json!([element])
     );
 }

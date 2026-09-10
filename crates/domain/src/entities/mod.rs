@@ -2,6 +2,7 @@
 
 pub mod acr_policy;
 pub mod auth_request;
+pub mod authorization_details;
 pub mod client;
 pub mod grant;
 pub mod passkey;
@@ -14,6 +15,11 @@ pub mod tenant_settings;
 pub mod user;
 
 pub use acr_policy::{AcrLevel, AcrPolicy, AcrPolicyError};
+pub use authorization_details::{
+    AuthorizationDetail, AuthorizationDetails, AuthorizationDetailsRegistry,
+    AuthorizationDetailsType, InvalidAuthorizationDetails, Schema as JsonSchema,
+    SchemaError as JsonSchemaError,
+};
 pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
     GrantType, JwksSource, RedirectUri, RedirectUriError, SubjectType, TokenBinding,
