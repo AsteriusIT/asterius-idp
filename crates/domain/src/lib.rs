@@ -15,6 +15,7 @@ pub mod ids;
 pub mod issuer;
 pub mod json_sentinel;
 pub mod keys;
+pub mod limits;
 pub mod ports;
 pub mod rate_limit;
 pub mod secret;
@@ -55,6 +56,7 @@ pub use entities::{
     UserRole, UserStatus,
 };
 pub use error::DomainError;
+pub use limits::MAX_JWT_BYTES;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
 pub use issuer::{Issuer, IssuerError};
 pub use json_sentinel::{

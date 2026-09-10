@@ -38,12 +38,14 @@ use serde_json::Value;
 
 /// The longest `id_token_hint` accepted.
 ///
-/// The same ceiling `asterius_jose::verify::DEFAULT_MAX_BYTES` applies to a
-/// token that crate is about to verify. This crate is pure protocol logic and
-/// takes no dependency on the JOSE crate, so the two constants are kept equal
-/// by hand rather than shared. Beyond the ceiling the value is not a hint, it
-/// is a way to make the server allocate.
-pub const MAX_ID_TOKEN_HINT_BYTES: usize = 8 * 1024;
+/// The same ceiling applies to the token the JOSE crate is about to verify
+/// (`asterius_jose::verify::DEFAULT_MAX_BYTES`), and both now read it from
+/// [`asterius_domain::MAX_JWT_BYTES`]: this crate is pure protocol logic and
+/// takes no dependency on the JOSE crate, so a shared definition in the crate
+/// they both depend on is what keeps the two ends of the path agreeing on
+/// where oversized starts. Beyond the ceiling the value is not a hint, it is
+/// a way to make the server allocate.
+pub const MAX_ID_TOKEN_HINT_BYTES: usize = asterius_domain::MAX_JWT_BYTES;
 
 /// The longest `post_logout_redirect_uri` accepted.
 ///

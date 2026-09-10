@@ -35,10 +35,11 @@ use time::{Duration, OffsetDateTime};
 
 /// Largest JWT accepted, unless a policy says otherwise.
 ///
-/// A client assertion with a long `aud` array and a request object with rich
-/// `authorization_details` are the big ones, and both fit comfortably. Beyond
-/// this it is not a token, it is a way to make the server do work.
-pub const DEFAULT_MAX_BYTES: usize = 8 * 1024;
+/// One definition, in the crate both this one and `asterius-oidc` depend on:
+/// a token-shaped parameter refused as oversized upstream and a token
+/// verified here have to agree on where oversized starts, and
+/// [`asterius_domain::MAX_JWT_BYTES`] is where that is decided.
+pub const DEFAULT_MAX_BYTES: usize = asterius_domain::MAX_JWT_BYTES;
 
 /// How far into the future an `iat` or `nbf` may be, by default.
 ///
