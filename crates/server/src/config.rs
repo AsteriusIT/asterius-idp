@@ -68,6 +68,8 @@ pub struct Config {
     pub login: LoginLimits,
     /// What each protocol endpoint permits per window (`ast-p2l.3`).
     pub limits: EndpointLimits,
+    /// DPoP settings that are not capability flags (`ast-a05.11`).
+    pub dpop: DpopConfig,
 }
 
 /// Listener and transport settings.
@@ -328,6 +330,8 @@ struct RawConfig {
     login: RawLogin,
     #[serde(default)]
     limits: RawLimits,
+    #[serde(default)]
+    dpop: RawDpop,
 }
 
 /// The `[login]` table.
@@ -665,12 +669,16 @@ impl Config {
                 }
             })?;
 
-        raw.validate()
+        raw.validate(env)
     }
 }
 
 impl RawConfig {
-    fn validate(self) -> Result<Config, ConfigError> {
+    /// `env` is the process environment, not the override map: `[dpop]
+    /// nonce_secret_env` names a variable the operator's orchestrator injects,
+    /// and reading it here is what lets a malformed one be reported alongside
+    /// every other problem in the file.
+    fn validate(self, env: &BTreeMap<String, String>) -> Result<Config, ConfigError> {
         let mut errors = Collector::default();
 
         let server = self.server.validate(&mut errors);
@@ -723,6 +731,7 @@ impl RawConfig {
         let admin = validate_admin(self.admin, &tenants, &mut errors);
         let login = validate_login(&self.login, &mut errors);
         let limits = validate_limits(&self.limits, &mut errors);
+        let dpop = validate_dpop(self.dpop, env, &mut errors);
 
         errors.finish(Config {
             server,
@@ -735,6 +744,7 @@ impl RawConfig {
             admin,
             login,
             limits,
+            dpop,
         })
     }
 }
@@ -1472,6 +1482,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("admin", accepted_keys::<RawAdmin>()),
         ("login", accepted_keys::<RawLogin>()),
         ("limits", accepted_keys::<RawLimits>()),
+        ("dpop", accepted_keys::<RawDpop>()),
     ]
     .into_iter()
     .collect()
@@ -1511,6 +1522,103 @@ fn expected_keys(message: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// `[dpop]`: the shared nonce secret (`ast-a05.11`)
+// ---------------------------------------------------------------------------
+
+/// DPoP settings that are not capability flags.
+///
+/// Only read when [`asterius_domain::Feature::DpopNonce`] is on. A deployment
+/// that issues no nonces holds no key for them.
+#[derive(Debug, Default)]
+pub struct DpopConfig {
+    /// The HMAC key every nonce is derived from, shared between replicas.
+    ///
+    /// `None` means each process generates its own at boot. That is correct for
+    /// one replica and merely wasteful for several: RFC 9449 §8 makes the
+    /// handshake self-correcting, so a client that presents replica A's nonce
+    /// to replica B is told `use_dpop_nonce` and retries. What it costs is the
+    /// retry becoming a per-request coin flip rather than a once-per-client
+    /// event, which is the very thing the one-window lookback exists to avoid.
+    ///
+    /// A [`Secret`], so a `Debug` of the configuration — which is what reaches
+    /// a log line and `/admin` — prints `[REDACTED]` rather than the key.
+    pub nonce_secret: Option<Secret<Vec<u8>>>,
+}
+
+/// The `[dpop]` table.
+///
+/// The same two spellings as `[keys]`, deliberately and with the same parser
+/// ([`asterius_jose::kek::decode_secret`]): this is 32 bytes of base64 supplied
+/// by an orchestrator, exactly like the KEK, and a second way of writing a
+/// secret into the configuration is a second way to get it wrong. There is no
+/// key that takes the secret inline, for the reason `[admin]` has none.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDpop {
+    nonce_secret_file: Option<PathBuf>,
+    nonce_secret_env: Option<String>,
+}
+
+/// Resolves `[dpop] nonce_secret_*` to the bytes the nonce issuer keys on.
+///
+/// Read here rather than at the composition root, unlike the KEK: a malformed
+/// KEK stops the server at the first thing that needs it, whereas a malformed
+/// nonce secret would otherwise be indistinguishable from an absent one — and
+/// "absent" is a supported deployment. Resolving it during validation is what
+/// makes the difference visible, and the message names the key that is wrong.
+///
+/// Absent is not an error and never will be: it is the single-replica default,
+/// announced in the log at startup.
+fn validate_dpop(
+    raw: RawDpop,
+    env: &BTreeMap<String, String>,
+    errors: &mut Collector,
+) -> DpopConfig {
+    let material = match (raw.nonce_secret_file, raw.nonce_secret_env) {
+        (None, None) => None,
+        (Some(path), None) => asterius_jose::kek::read_secret_file(&path)
+            .map_err(|reason| {
+                errors.problem(
+                    "dpop.nonce_secret_file",
+                    format!(
+                        "cannot read the DPoP nonce secret from {}: {reason}. \
+                             It is 32 bytes, base64: `head -c 32 /dev/urandom | base64`",
+                        path.display()
+                    ),
+                );
+            })
+            .ok(),
+        (None, Some(variable)) => env
+            .get(&variable)
+            .ok_or("environment variable is unset")
+            .and_then(|value| asterius_jose::kek::decode_secret(value))
+            .map_err(|reason| {
+                errors.problem(
+                    "dpop.nonce_secret_env",
+                    format!(
+                        "cannot read the DPoP nonce secret from {variable}: {reason}. \
+                             It is 32 bytes, base64: `head -c 32 /dev/urandom | base64`"
+                    ),
+                );
+            })
+            .ok(),
+        (Some(_), Some(_)) => {
+            errors.problem(
+                "dpop",
+                "set exactly one of dpop.nonce_secret_file and dpop.nonce_secret_env, not both",
+            );
+            None
+        }
+    };
+
+    DpopConfig {
+        // `Zeroizing<Vec<u8>>` out, `Secret<Vec<u8>>` in: both zero on drop, and
+        // only the second refuses to print itself.
+        nonce_secret: material.map(|bytes| Secret::new(bytes.to_vec())),
+    }
 }
 
 #[cfg(test)]
@@ -2547,6 +2655,112 @@ mod tests {
             problems.paths().any(|p| p == "admin.tenant"),
             "{problems:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // `[dpop]` — the shared nonce secret (`ast-a05.11`)
+    // -----------------------------------------------------------------------
+
+    /// 32 bytes, base64, as an operator's `head -c 32 /dev/urandom | base64`
+    /// would print them.
+    const A_NONCE_SECRET: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+
+    #[test]
+    fn a_deployment_that_says_nothing_about_dpop_has_no_shared_nonce_secret() {
+        let config = parse(MINIMAL).expect("minimal config should be valid");
+
+        assert!(config.dpop.nonce_secret.is_none());
+    }
+
+    #[test]
+    fn the_nonce_secret_is_read_from_the_variable_it_names() {
+        let text = format!("{MINIMAL}\n[dpop]\nnonce_secret_env = \"ASTERIUS_DPOP_NONCE\"\n");
+
+        let config = parse_with_env(&text, &[("ASTERIUS_DPOP_NONCE", A_NONCE_SECRET)])
+            .expect("a well-formed secret is accepted");
+
+        let expected = Secret::new((0..32_u8).collect::<Vec<u8>>());
+        assert!(
+            config
+                .dpop
+                .nonce_secret
+                .expect("the key was set")
+                .ct_eq(&expected)
+        );
+    }
+
+    /// The refusal the KEK gets, for the same reason: a secret that does not
+    /// decode is a mistake, and starting anyway would hide it behind a
+    /// per-process key that mostly works.
+    #[test]
+    fn a_nonce_secret_that_is_not_base64_names_the_key_it_came_from() {
+        let text = format!("{MINIMAL}\n[dpop]\nnonce_secret_env = \"ASTERIUS_DPOP_NONCE\"\n");
+
+        let problems = problems(parse_with_env(
+            &text,
+            &[("ASTERIUS_DPOP_NONCE", "not base64 at all!")],
+        ));
+
+        assert!(
+            problems.paths().any(|p| p == "dpop.nonce_secret_env"),
+            "{problems:?}"
+        );
+    }
+
+    /// Well-formed base64 of the wrong length is the other half of the same
+    /// refusal: 32 bytes, not "whatever decoded".
+    #[test]
+    fn a_nonce_secret_of_the_wrong_length_is_refused() {
+        let text = format!("{MINIMAL}\n[dpop]\nnonce_secret_env = \"ASTERIUS_DPOP_NONCE\"\n");
+
+        let problems = problems(parse_with_env(&text, &[("ASTERIUS_DPOP_NONCE", "AAEC")]));
+
+        assert!(
+            problems.paths().any(|p| p == "dpop.nonce_secret_env"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_nonce_secret_file_that_cannot_be_read_names_the_key_it_came_from() {
+        let text = format!(
+            "{MINIMAL}\n[dpop]\nnonce_secret_file = \"/nonexistent/asterius/dpop.nonce\"\n"
+        );
+
+        let problems = problems(parse(&text));
+
+        assert!(
+            problems.paths().any(|p| p == "dpop.nonce_secret_file"),
+            "{problems:?}"
+        );
+    }
+
+    /// The `[keys]` rule, for the `[keys]` reason: the server would otherwise
+    /// choose between the two silently.
+    #[test]
+    fn a_nonce_secret_given_twice_is_refused() {
+        let text = format!(
+            "{MINIMAL}\n[dpop]\nnonce_secret_file = \"/etc/asterius/dpop.nonce\"\n\
+             nonce_secret_env = \"ASTERIUS_DPOP_NONCE\"\n"
+        );
+
+        let problems = problems(parse(&text));
+
+        assert!(problems.paths().any(|p| p == "dpop"), "{problems:?}");
+    }
+
+    /// The one property that matters as much as the key working: a `Debug` of
+    /// the configuration is what reaches a log line and the admin console.
+    #[test]
+    fn the_nonce_secret_does_not_print_itself() {
+        let text = format!("{MINIMAL}\n[dpop]\nnonce_secret_env = \"ASTERIUS_DPOP_NONCE\"\n");
+        let config = parse_with_env(&text, &[("ASTERIUS_DPOP_NONCE", A_NONCE_SECRET)])
+            .expect("a well-formed secret is accepted");
+
+        let rendered = format!("{:?}", config.dpop);
+
+        assert!(rendered.contains("[REDACTED]"), "{rendered}");
+        assert!(!rendered.contains(A_NONCE_SECRET), "{rendered}");
     }
 
     #[test]

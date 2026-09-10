@@ -139,7 +139,47 @@ pub fn sections() -> Vec<Section> {
         tenant(),
         tenant_refresh(),
         admin(),
+        dpop(),
     ]
+}
+
+/// `[dpop]`: the nonce secret shared between replicas (`ast-a05.11`).
+fn dpop() -> Section {
+    Section {
+        table: "dpop",
+        heading: "`[dpop]` — the shared nonce secret",
+        blurb: "Only read when the `dpop_nonce` feature is on. **Per process if absent**: \
+                each replica then derives nonces from a key it generated at boot, so a \
+                nonce issued by one is refused by another and by the same one after a \
+                restart. That is safe — RFC 9449 §8's handshake tells the client to retry \
+                with the nonce it was just handed — but it turns `use_dpop_nonce` from a \
+                once-per-client event into a per-request one, which is the round trip the \
+                one-window lookback exists to avoid. Set one secret across every replica \
+                and the retry goes back to being rare. Set exactly one of the two keys \
+                below; the value is 32 bytes, base64: `head -c 32 /dev/urandom | base64`. \
+                It is held redacted in the process and prints as `[REDACTED]` wherever \
+                the configuration is logged.",
+        keys: vec![
+            key(
+                "nonce_secret_file",
+                "path (**points at a secret**)",
+                "per-process secret".to_owned(),
+                "The production shape, spelt like `keys.kek_file` and read by the same \
+                 parser: the orchestrator mounts the file read-only and it is never in \
+                 the image. A file that cannot be read, or that does not hold 32 base64 \
+                 bytes, stops the server — an unreadable secret and an absent one would \
+                 otherwise look the same, and one of them is a supported deployment.",
+            ),
+            key(
+                "nonce_secret_env",
+                "variable name (**names a secret**)",
+                "per-process secret".to_owned(),
+                "The named variable, injected by the orchestrator. Readable through \
+                 `/proc/self/environ`, so the file is preferred. There is no key that \
+                 takes the secret itself, for the reason `[admin]` has none.",
+            ),
+        ],
+    }
 }
 
 /// Keys that belong to the process rather than to any one table.
@@ -780,7 +820,7 @@ makes an unquoted connection URL work.
 const SECRETS: &str = "\n\
 ## Secret sources\n\
 \n\
-Five values in this file are credentials, and each has a supported production\n\
+Six values in this file are credentials, and each has a supported production\n\
 shape. Nothing here belongs in an image layer, in a `docker-compose.yml` or in\n\
 version control; the example stack under `deploy/compose/` uses obvious\n\
 development values and says so in every file.\n\
@@ -805,6 +845,10 @@ process holds nothing replayable. |\n\
 read-only mount, or a variable from the same secret store. Hashed with Argon2id \
 at startup, so the database holds no plaintext; the source is read on every boot, \
 which is what makes rotating it an edit to the secret and a restart. |\n\
+| DPoP nonce secret | `dpop.nonce_secret_file`, `dpop.nonce_secret_env` | Only \
+meaningful under `features.dpop_nonce`. The same shapes and the same parser as \
+the key-encryption key, and the same 32 bytes of base64. Absent means per-process \
+nonces, which is a round trip rather than a failure. |\n\
 \n\
 Rotating the key-encryption key is not a restart with a new value: the old key\n\
 must still be able to open existing rows while they are re-wrapped. Until the\n\

@@ -196,6 +196,11 @@ mod tests {
             "client_secret",
             "code_verifier",
             "user_password",
+            // The DPoP nonce key (`ast-a05.11`) is covered by the `secret`
+            // suffix rather than by a listing of its own. Asserted here so that
+            // narrowing the suffix rule to whole names cannot quietly start
+            // printing an HMAC key.
+            "nonce_secret",
         ] {
             let rendered = redact_field(name, "hunter2");
             assert!(!rendered.contains("hunter2"), "{name} leaked: {rendered}");

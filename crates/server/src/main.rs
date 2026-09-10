@@ -142,18 +142,10 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 .map_err(|e| format!("cannot build the client authenticator: {e}"))?,
         );
 
-        // DPoP. The nonce secret is per process for now: with more than one
-        // replica each mints its own, so a client that gets a nonce from one
-        // and presents it to another is told to retry. That costs a round trip
-        // rather than correctness, and `ast-a05.11` adds the config key.
-        let dpop = Arc::new(
-            DpopEndpoint::for_capabilities(
-                Arc::clone(&replay) as Arc<dyn ReplayGuard>,
-                &config.features,
-                None,
-            )
-            .map_err(|e| format!("cannot build the DPoP endpoint: {e}"))?,
-        );
+        let dpop = Arc::new(dpop_endpoint(
+            Arc::clone(&replay) as Arc<dyn ReplayGuard>,
+            &config,
+        )?);
 
         let routes = protocol::routes(ProtocolState {
             keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
@@ -561,6 +553,36 @@ fn rewrap_kek(path: &std::path::Path, new_kek: &KekSource) -> Result<(), String>
             ))
         }
     })
+}
+
+/// The DPoP checker, over the nonce secret the operator configured.
+///
+/// `[dpop] nonce_secret` is what makes a nonce minted by one replica good at
+/// another (`ast-a05.11`). Without it each process mints its own, so a client
+/// that gets a nonce from one and presents it to another is told to retry: a
+/// round trip rather than a failure, but one per request instead of one per
+/// client. That is worth a line in the log rather than silence, because it is
+/// invisible from anywhere else — the deployment works, slightly worse.
+///
+/// # Errors
+///
+/// Returns a message to print if the endpoint cannot be built.
+fn dpop_endpoint(replay: Arc<dyn ReplayGuard>, config: &Config) -> Result<DpopEndpoint, String> {
+    let secret = config.dpop.nonce_secret.as_ref();
+    if config.features.is_enabled(Feature::DpopNonce) && secret.is_none() {
+        tracing::info!(
+            "DPoP nonces are per process: no dpop.nonce_secret is configured, so a nonce issued \
+             by this replica is not accepted by another"
+        );
+    }
+    DpopEndpoint::for_capabilities(
+        replay,
+        &config.features,
+        // The one place the secret is exposed: it exists to key the HMAC the
+        // nonces are derived from, and nothing else reads it.
+        secret.map(|secret| secret.expose().as_slice()),
+    )
+    .map_err(|e| format!("cannot build the DPoP endpoint: {e}"))
 }
 
 /// Loads a KEK from wherever the operator put it.

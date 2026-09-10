@@ -575,6 +575,17 @@ mod tests {
         }
     }
 
+    /// The audience a nonce is bound to: a tenant's issuer.
+    const AUDIENCE: &str = "https://as.example/t/demo";
+
+    /// A deployment with `Feature::DpopNonce` on and nothing else.
+    fn nonce_capabilities() -> Capabilities {
+        Capabilities {
+            dpop_nonce: true,
+            ..Capabilities::default()
+        }
+    }
+
     fn headers(values: &[&str]) -> HeaderMap {
         let mut map = HeaderMap::new();
         for value in values {
@@ -715,5 +726,77 @@ mod tests {
             )
             .await;
         assert!(matches!(outcome, Ok(None)));
+    }
+
+    /// Two replicas, one configured secret (`ast-a05.11`). This is the whole
+    /// reason the key is configurable: a client handed a nonce by one replica
+    /// must be able to spend it at the other, or `use_dpop_nonce` stops being
+    /// a once-per-client event and becomes a per-request coin flip.
+    #[test]
+    fn two_endpoints_sharing_a_secret_accept_each_other_s_nonces() {
+        let capabilities = nonce_capabilities();
+        let secret = [0x11_u8; 32];
+
+        let one = DpopEndpoint::for_capabilities(
+            Arc::new(NeverAsked),
+            &capabilities,
+            Some(secret.as_slice()),
+        )
+        .expect("an endpoint over a supplied secret");
+        let other = DpopEndpoint::for_capabilities(
+            Arc::new(NeverAsked),
+            &capabilities,
+            Some(secret.as_slice()),
+        )
+        .expect("an endpoint over the same secret");
+
+        let nonce = one
+            .fresh_nonce(AUDIENCE, OffsetDateTime::UNIX_EPOCH)
+            .expect("the flag is on, so a nonce is issued");
+        assert!(
+            other
+                .nonces
+                .as_ref()
+                .expect("the flag is on, so nonces exist")
+                .accepts(&nonce, AUDIENCE, OffsetDateTime::UNIX_EPOCH)
+        );
+    }
+
+    /// The default, documented rather than desired: with no secret configured
+    /// each process mints its own, so a second replica rejects the first's
+    /// nonces. Harmless per RFC 9449 §8 — the client is told to retry — but a
+    /// round trip on every request that lands on the wrong replica.
+    #[test]
+    fn two_endpoints_without_a_secret_reject_each_other_s_nonces() {
+        let capabilities = nonce_capabilities();
+
+        let one = DpopEndpoint::for_capabilities(Arc::new(NeverAsked), &capabilities, None)
+            .expect("an endpoint over a generated secret");
+        let other = DpopEndpoint::for_capabilities(Arc::new(NeverAsked), &capabilities, None)
+            .expect("an endpoint over its own generated secret");
+
+        let nonce = one
+            .fresh_nonce(AUDIENCE, OffsetDateTime::UNIX_EPOCH)
+            .expect("the flag is on, so a nonce is issued");
+        assert!(
+            !other
+                .nonces
+                .as_ref()
+                .expect("the flag is on, so nonces exist")
+                .accepts(&nonce, AUDIENCE, OffsetDateTime::UNIX_EPOCH)
+        );
+    }
+
+    /// A secret is material for a flag that is off, so none is held.
+    #[test]
+    fn a_supplied_secret_is_not_held_when_the_flag_is_off() {
+        let endpoint = DpopEndpoint::for_capabilities(
+            Arc::new(NeverAsked),
+            &Capabilities::default(),
+            Some([0x11_u8; 32].as_slice()),
+        )
+        .expect("an endpoint with no nonces");
+
+        assert!(endpoint.nonces.is_none());
     }
 }

@@ -439,15 +439,10 @@ impl LocalKek {
     /// Returns [`JoseError::KekUnavailable`] if the text is not base64 or does
     /// not decode to [`KEK_LEN`] bytes.
     pub fn from_base64(origin: &str, encoded: &str) -> Result<Self, JoseError> {
-        let trimmed = encoded.trim();
-        let material = B64
-            .decode(trimmed)
-            .or_else(|_| B64_STANDARD.decode(trimmed))
-            .map(Zeroizing::new)
-            .map_err(|_| JoseError::KekUnavailable {
-                origin: origin.to_owned(),
-                reason: "not valid base64",
-            })?;
+        let material = decode_secret(encoded).map_err(|reason| JoseError::KekUnavailable {
+            origin: origin.to_owned(),
+            reason,
+        })?;
         Self::from_bytes(&material).map_err(|_| JoseError::KekUnavailable {
             origin: origin.to_owned(),
             reason: "did not decode to 32 bytes",
@@ -463,11 +458,11 @@ impl LocalKek {
     /// a reason to invent a key: a generated-on-boot KEK makes every key
     /// already in the database unreadable, which looks exactly like data loss.
     pub fn from_env(variable: &str) -> Result<Self, JoseError> {
-        let value = std::env::var(variable).map_err(|_| JoseError::KekUnavailable {
+        let material = read_secret_env(variable).map_err(|reason| JoseError::KekUnavailable {
             origin: variable.to_owned(),
-            reason: "environment variable is unset or not UTF-8",
+            reason,
         })?;
-        Self::from_base64(variable, &value)
+        Self::from_bytes(&material)
     }
 
     /// Reads a base64 KEK out of a file.
@@ -478,14 +473,11 @@ impl LocalKek {
     /// not hold a 32-byte base64 value.
     pub fn from_file(path: impl AsRef<std::path::Path>) -> Result<Self, JoseError> {
         let path = path.as_ref();
-        let origin = path.display().to_string();
-        let contents = std::fs::read_to_string(path)
-            .map(Zeroizing::new)
-            .map_err(|_| JoseError::KekUnavailable {
-                origin: origin.clone(),
-                reason: "cannot be read",
-            })?;
-        Self::from_base64(&origin, &contents)
+        let material = read_secret_file(path).map_err(|reason| JoseError::KekUnavailable {
+            origin: path.display().to_string(),
+            reason,
+        })?;
+        Self::from_bytes(&material)
     }
 
     /// Seals private key material.
@@ -614,6 +606,68 @@ impl Kek for LocalKek {
     ) -> Result<Zeroizing<Vec<u8>>, JoseError> {
         self.open(binding, wrapped)
     }
+}
+
+// ---------------------------------------------------------------------------
+// The secret parser, shared with the other secrets an operator supplies
+// ---------------------------------------------------------------------------
+
+/// Decodes a base64 32-byte secret, as `head -c 32 /dev/urandom | base64`
+/// prints it.
+///
+/// The KEK's own parser, factored out so that a second secret an operator
+/// supplies the same way — the shared DPoP nonce key, `ast-a05.11` — is read by
+/// this code rather than by a second decoder with its own idea of what may be
+/// pasted. Both alphabets, padded or not, surrounding whitespace trimmed: the
+/// value comes out of a secret manager and which one produced it is not
+/// something the operator should have to know.
+///
+/// The length is exact for the reason [`LocalKek::from_bytes`] is exact:
+/// stretching short material would turn a four-character password into
+/// something that looks like a key.
+///
+/// # Errors
+///
+/// Returns the reason, for the caller to attach to whatever names the origin —
+/// a configuration key, a path, a variable. Only the caller knows what to call
+/// it, and the origin is the half of the message that makes it actionable.
+pub fn decode_secret(encoded: &str) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    let trimmed = encoded.trim();
+    let material = B64
+        .decode(trimmed)
+        .or_else(|_| B64_STANDARD.decode(trimmed))
+        .map(Zeroizing::new)
+        .map_err(|_| "not valid base64")?;
+    if material.len() != KEK_LEN {
+        return Err("did not decode to 32 bytes");
+    }
+    Ok(material)
+}
+
+/// Reads a base64 32-byte secret out of an environment variable.
+///
+/// # Errors
+///
+/// Returns the reason. See [`decode_secret`] for why it is not an error type.
+pub fn read_secret_env(variable: &str) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    let value = std::env::var(variable)
+        .map(Zeroizing::new)
+        .map_err(|_| "environment variable is unset or not UTF-8")?;
+    decode_secret(&value)
+}
+
+/// Reads a base64 32-byte secret out of a file.
+///
+/// # Errors
+///
+/// Returns the reason. See [`decode_secret`] for why it is not an error type.
+pub fn read_secret_file(
+    path: impl AsRef<std::path::Path>,
+) -> Result<Zeroizing<Vec<u8>>, &'static str> {
+    let contents = std::fs::read_to_string(path)
+        .map(Zeroizing::new)
+        .map_err(|_| "cannot be read")?;
+    decode_secret(&contents)
 }
 
 #[cfg(test)]
