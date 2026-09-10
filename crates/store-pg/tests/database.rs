@@ -3945,7 +3945,6 @@ mod auth_requests {
                 "redirect_uri": "https://rp.example/cb",
                 "scopes": ["openid"],
             }),
-            dpop_jkt: None,
             pushed_at: OffsetDateTime::now_utc(),
             expires_at,
         }

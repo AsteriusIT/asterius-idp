@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into auth_requests\n                 (tenant_id, request_uri_hash, client_id, parameters,\n                  pushed_at, expires_at)\n             values ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Text",
+        "Jsonb",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3737f611f26ceb29fb24b08e3285ee07b95dfb0bf56c441c4ce956a7fcff0038"
+}

@@ -574,6 +574,31 @@ impl Flow {
         extra: &[(&str, &str)],
     ) -> Reply {
         let url = Endpoint::PushedAuthorizationRequest.url(&self.tenant.issuer);
+        let proof = key.proof("POST", &url, &self.next_jti());
+        self.push_proved(client_id, signing_key, scope, Some(&proof), extra)
+            .await
+    }
+
+    /// This flow's own push with **no** `DPoP` header at all.
+    ///
+    /// RFC 9449 §10.1's other spelling: a client that cannot attach a proof to
+    /// the push names the key it will redeem under in `dpop_jkt`, and that
+    /// parameter is then the whole pin. A test that always sent a proof would
+    /// never find out whether the parameter alone reaches the code.
+    async fn push_unproved(&mut self, extra: &[(&str, &str)]) -> Reply {
+        self.push_proved(CLIENT, None, "openid offline_access", None, extra)
+            .await
+    }
+
+    /// The form every push sends, with whatever proof the caller has.
+    async fn push_proved(
+        &mut self,
+        client_id: &str,
+        signing_key: Option<&SigningKey>,
+        scope: &str,
+        proof: Option<&str>,
+        extra: &[(&str, &str)],
+    ) -> Reply {
         let path = format!(
             "{}{}",
             self.prefix(),
@@ -587,7 +612,6 @@ impl Flow {
             signing_key,
             &format!("assertion-par-{}", self.next_jti()),
         );
-        let proof = key.proof("POST", &url, &self.next_jti());
         let mut pairs = vec![
             ("client_id", client_id),
             ("client_assertion_type", CLIENT_ASSERTION_TYPE),
@@ -601,7 +625,7 @@ impl Flow {
             ("nonce", NONCE),
         ];
         pairs.extend_from_slice(extra);
-        self.post_form(&path, &pairs, Some(&proof)).await
+        self.post_form(&path, &pairs, proof).await
     }
 
     /// Registers a resource server for this tenant (RFC 8707).
@@ -2804,6 +2828,165 @@ async fn the_metadata_document_publishes_the_registered_types() {
         "the document did not publish the registry: {}",
         after.text()
     );
+
+    flow.tear_down().await;
+}
+
+// ---- RFC 9449 §10: the key a pushed request pinned the code to -----------
+
+/// The redemption of `code` under `key`, whatever it answers.
+async fn redeem_under(flow: &mut Flow, key: &ProofKey, jti: &str, code: &str) -> Reply {
+    flow.token(
+        key,
+        jti,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+            ("code_verifier", VERIFIER),
+        ],
+    )
+    .await
+}
+
+/// Asserts that a redemption was refused *because of the key* (RFC 9449 §10).
+///
+/// The RFC says only "MUST reject" and both spellings are in use — this server
+/// answers `invalid_dpop_proof`, a conformance suite would also accept
+/// `invalid_grant` — so the assertion is about the refusal and its reason, not
+/// about which of the two words was chosen.
+fn assert_refused_for_the_wrong_key(reply: &Reply) {
+    assert_eq!(
+        reply.status,
+        StatusCode::BAD_REQUEST,
+        "a code pinned to another key was redeemed: {}",
+        reply.text()
+    );
+    let body = reply.json();
+    let error = body["error"].as_str().unwrap_or_default();
+    assert!(
+        matches!(error, "invalid_dpop_proof" | "invalid_grant"),
+        "RFC 9449 §10 requires a refusal about the key, got: {body}"
+    );
+}
+
+/// The code of a second authorization by a browser that has already decided.
+///
+/// A test that checks both the wrong key and the right one needs two codes:
+/// redemption consumes the code in the statement that reads it, before the key
+/// is looked at, so the refused attempt spends the first one.
+async fn second_code(flow: &mut Flow, request_uri: &str) -> String {
+    let started = flow.authorize_raw(request_uri).await;
+    assert_eq!(
+        started.status,
+        StatusCode::SEE_OTHER,
+        "the authorization request did not start: {}",
+        started.text()
+    );
+    let interaction = started.location();
+    let answered = flow.get(&interaction).await;
+    assert_eq!(
+        answered.status,
+        StatusCode::SEE_OTHER,
+        "a screen was served to a user who had already decided: {}",
+        answered.text()
+    );
+    parameter(&answered.location(), "code").expect("RFC 6749 §4.1.2 requires a code")
+}
+
+/// **RFC 9449 §10.2**: a `DPoP` header on the push pins the code to that key,
+/// and no other key redeems it.
+///
+/// This is `ast-36g`'s shape end to end, through the assembled application:
+/// the pin travels push → stored request → code → token endpoint, and the only
+/// thing that proves it travelled is a redemption under a *different* key
+/// being refused. Dropping `"dpop_jkt": dpop_jkt` from `par::serialise`, or the
+/// `dpop_jkt: string("dpop_jkt")` the code binding is built with, makes the
+/// first redemption below succeed.
+#[tokio::test]
+async fn a_push_proved_with_one_key_yields_a_code_no_other_key_redeems() {
+    // Arrange: a browser that has signed in and consented, holding a code from
+    // a push proved with `pinned`.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let pinned = ProofKey::generate();
+    let stranger = ProofKey::generate();
+    assert_ne!(pinned.thumbprint(), stranger.thumbprint());
+    let request_uri = flow.push(&pinned).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+
+    // Act: the code, presented with a well formed proof for the wrong key.
+    let stolen = redeem_under(&mut flow, &stranger, "assertion-header-pin-wrong", &code).await;
+
+    // Assert: refused, and about the key.
+    assert_refused_for_the_wrong_key(&stolen);
+
+    // Act & assert: the same flow under the pinned key is a token, so the
+    // refusal above was the pin and not some unrelated breakage.
+    let again = flow.push(&pinned).await;
+    let code = second_code(&mut flow, &again).await;
+    let issued = redeem_under(&mut flow, &pinned, "assertion-header-pin-right", &code).await;
+    assert_eq!(
+        issued.status,
+        StatusCode::OK,
+        "the pinned key was refused its own code: {}",
+        issued.text()
+    );
+    assert_eq!(issued.json()["token_type"], "DPoP", "{}", issued.text());
+
+    flow.tear_down().await;
+}
+
+/// **RFC 9449 §10.1**: `dpop_jkt` on the push pins the code just as a proof
+/// does, for a client that sends no `DPoP` header at the pushed request
+/// endpoint.
+///
+/// The parameter spelling is what a client uses when the push is made by a back
+/// end that does not hold the DPoP key. Nothing else in this suite redeems a
+/// code pinned that way, so this test is what says the parameter reaches the
+/// token endpoint at all.
+#[tokio::test]
+async fn a_push_naming_dpop_jkt_without_a_proof_pins_the_code_too() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let pinned = ProofKey::generate();
+    let stranger = ProofKey::generate();
+    let thumbprint = pinned.thumbprint();
+    let request_uri = flow
+        .push_unproved(&[("dpop_jkt", thumbprint.as_str())])
+        .await
+        .request_uri();
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+
+    // Act: another key's proof against a code pinned by parameter alone.
+    let stolen = redeem_under(&mut flow, &stranger, "assertion-parameter-pin-wrong", &code).await;
+
+    // Assert
+    assert_refused_for_the_wrong_key(&stolen);
+
+    // Act & assert: the named key redeems.
+    let again = flow
+        .push_unproved(&[("dpop_jkt", thumbprint.as_str())])
+        .await
+        .request_uri();
+    let code = second_code(&mut flow, &again).await;
+    let issued = redeem_under(&mut flow, &pinned, "assertion-parameter-pin-right", &code).await;
+    assert_eq!(
+        issued.status,
+        StatusCode::OK,
+        "the key named in dpop_jkt was refused its own code: {}",
+        issued.text()
+    );
+    assert_eq!(issued.json()["token_type"], "DPoP", "{}", issued.text());
 
     flow.tear_down().await;
 }

@@ -717,47 +717,12 @@ async fn a_failed_write_is_reported_rather_than_papered_over() {
 
 // ---- DPoP key pinning at PAR (RFC 9449 §10.1, ast-a05.10) ---------------
 
-/// A push carrying a proof pins the code to that key, with no `dpop_jkt`.
-#[tokio::test]
-async fn a_proof_on_the_push_pins_the_code_to_its_key() {
-    let requests = FakeRequests::default();
-    let key = asterius_domain::Kid::new("0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I");
-    let tenant = tenant();
-    let clients = FakeClients(Some(client()));
-
-    let response = push(
-        PushContext {
-            tenant: &tenant,
-            clients: &clients,
-            requests: &requests,
-            resource_servers: &registry(),
-            authorization_details_types: &detail_types(),
-            keys: &NoKeys,
-            policy: AuthorizationPolicy::default(),
-            lifetime: Duration::seconds(90),
-        },
-        &form_headers(),
-        &form(&valid_pairs()),
-        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client()),
-        Some(&key),
-        now(),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let stored = requests.0.lock().expect("lock");
-    assert_eq!(
-        stored[0].dpop_jkt.as_deref(),
-        Some("0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"),
-        "the proof's key was not pinned to the request"
-    );
-}
-
-/// The pin the code issuer actually reads is the one in the stored
-/// *parameters*: `interaction::authorize` builds the `CodeBinding` from
-/// `record.parameters["dpop_jkt"]` and never sees the column beside them. A
-/// push pinned by a proof alone must name its key there too — otherwise the
-/// code is issued unpinned, and the token endpoint has nothing to compare the
+/// The pin the code issuer reads is the one in the stored *parameters*:
+/// `interaction::authorize` builds the `CodeBinding` from
+/// `record.parameters["dpop_jkt"]`, and since `ast-rno` dropped the column
+/// that held a second copy, those parameters are the only place it lives. A
+/// push pinned by a proof alone must name its key there — otherwise the code
+/// is issued unpinned, and the token endpoint has nothing to compare the
 /// presented proof against (`ast-36g`, found by the OIDF suite).
 #[tokio::test]
 async fn a_proof_on_the_push_pins_the_key_the_code_issuer_reads() {
@@ -869,7 +834,7 @@ async fn a_proof_and_a_matching_dpop_jkt_are_accepted() {
 
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(
-        requests.0.lock().expect("lock")[0].dpop_jkt.as_deref(),
+        requests.0.lock().expect("lock")[0].parameters["dpop_jkt"].as_str(),
         Some(thumbprint)
     );
 }
@@ -884,7 +849,7 @@ async fn a_dpop_jkt_without_a_proof_still_pins_the_code() {
     let (status, _, store) = pushed(&pairs).await;
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(
-        store.0.lock().expect("lock")[0].dpop_jkt.as_deref(),
+        store.0.lock().expect("lock")[0].parameters["dpop_jkt"].as_str(),
         Some(thumbprint)
     );
 }

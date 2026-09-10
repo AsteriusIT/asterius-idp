@@ -1,0 +1,25 @@
+-- Drops `auth_requests.dpop_jkt`, which was written and never read (`ast-rno`,
+-- after `ast-36g`).
+--
+-- RFC 9449 §10.1 lets a client pin the authorization code to a DPoP key either
+-- by naming the thumbprint in `dpop_jkt` or by attaching a proof to the push.
+-- The endpoint reconciles the two and stores the answer in `parameters`, and
+-- that is what the code issuer reads to build the `CodeBinding` the token
+-- endpoint compares a proof against. This column held a second copy of the same
+-- value, adjacent to the one that decides, and nothing ever selected it.
+--
+-- A second copy of a security decision is worse than none: it is the thing a
+-- later reader trusts, and the first divergence between the two is a code
+-- pinned in the row and unpinned in the flow (`ast-36g` was that bug with the
+-- copies the other way round). "Audit only" is not an answer either — audit
+-- lives in `audit_events`, where it is read.
+--
+-- A migration of its own rather than an edit to the baseline, for the reason
+-- 0002 gives: editing a baseline changes a checksum sqlx refuses to run against
+-- a database that already applied it.
+--
+-- Irreversible by design, and safe: the pushed requests that carry the column
+-- live for minutes, and every one of them also carries the same value in
+-- `parameters ->> 'dpop_jkt'`.
+
+alter table auth_requests drop column dpop_jkt;
