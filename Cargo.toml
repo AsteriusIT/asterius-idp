@@ -7,6 +7,7 @@ members = [
     "crates/domain",
     "crates/oidc",
     "crates/jose",
+    "crates/ssf",
     "crates/store-pg",
     "crates/web",
     "crates/webauthn",
@@ -28,6 +29,7 @@ publish = false
 asterius-domain = { path = "crates/domain" }
 asterius-oidc = { path = "crates/oidc" }
 asterius-jose = { path = "crates/jose" }
+asterius-ssf = { path = "crates/ssf" }
 asterius-store-pg = { path = "crates/store-pg" }
 asterius-web = { path = "crates/web" }
 asterius-webauthn = { path = "crates/webauthn" }

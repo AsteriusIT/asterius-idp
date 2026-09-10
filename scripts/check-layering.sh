@@ -14,6 +14,10 @@ declare -A BANNED=(
   # WebAuthn is protocol logic too: parsing and comparison, no I/O.
   [asterius-webauthn]="sqlx axum tokio hyper reqwest tower tower-http askama"
   [asterius-jose]="sqlx axum hyper reqwest tower-http askama"
+  # SSF issuance is protocol logic that has to reach the signing port, and the
+  # port is async: its tests need a runtime, so `tokio` is not on this list.
+  # Everything else an adapter would bring in still is.
+  [asterius-ssf]="sqlx axum hyper reqwest tower-http askama"
   [asterius-store-pg]="axum askama"
   [asterius-web]="sqlx"
   [asterius-admin-api]="sqlx"
@@ -49,8 +53,8 @@ done
 # Acyclicity: cargo refuses cyclic path dependencies outright, but assert that
 # the workspace resolved at all and that every member was seen.
 members="$(jq -r '.workspace_members | length' <<<"$metadata")"
-if [[ "$members" -lt 7 ]]; then
-  echo "expected 7 workspace members, found $members" >&2
+if [[ "$members" -lt 9 ]]; then
+  echo "expected 9 workspace members, found $members" >&2
   status=1
 fi
 
