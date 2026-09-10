@@ -65,14 +65,24 @@ and its absence on every other page.
 
 ## Fixture notes
 
-- The tenant is given a `custom_host` by `fixtures/seed.sql`, after the server
-  has booted. `/authorize` redirects to `/interaction/{id}` and both pages post
-  to `/interaction/{id}` — root-relative, with no tenant prefix — so a tenant
-  reachable only at `/t/{id}/…` loses its tenant on the second hop.
-  `crates/server/src/tenancy.rs` resolves a prefix-less path by host, and
-  `by_host` is indexed on `custom_host` alone. There is no configuration key for
-  it yet, so the harness writes the column. The seed runs *after* boot because
-  the tenant upsert at startup writes `custom_host` back to NULL.
+- Both tenants are addressed by their path — `https://127.0.0.1:{port}/t/e2e`
+  and `https://localhost:{port}/t/e2e-webauthn`, which are their issuers. That
+  is the shape a deployment gets without extra DNS, and it is the shape the
+  sweep should walk.
+
+  It used to be impossible: `/authorize` named `/interaction/{id}` root-relative,
+  with no tenant prefix, so the browser lost its tenant on the second hop and met
+  a 404. The harness papered over it by writing `custom_host` on the tenant after
+  boot — the seed had to run after boot because the tenant upsert at startup
+  writes that column back to NULL — which made the tenant host-routed and left
+  the path-based flow untested. `ast-295` made every URL a handler renders to
+  the browser carry the mount prefix, and `ast-f0y` removed the fixture
+  statement: a workaround kept past its cause hides the next regression.
+  `crates/server/tests/authorize.rs::the_redirect_keeps_the_prefix_the_request_arrived_under`
+  is where that promise is asserted at the unit level.
+
+  `/healthz`, `/readyz` and `/metrics` stay at the origin: they describe the
+  process, not a tenant, and `scripts/browser-tests.sh` polls them there.
 - The client's callback is `https://rp.example.test:{port}/cb`: a name RFC 6761
   reserves, mapped to the loopback by `--host-resolver-rules` in
   `playwright.config.ts`. Cross-origin from the server on purpose — a

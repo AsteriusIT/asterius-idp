@@ -14,8 +14,19 @@ function fromEnv(name: string, fallback: string): string {
   return value === undefined || value === '' ? fallback : value;
 }
 
-/** Where the server under test is listening, as the browser addresses it. */
-export const BASE_URL = fromEnv('E2E_BASE_URL', 'https://127.0.0.1:9444');
+/**
+ * Where the tenant under test answers, as the browser addresses it.
+ *
+ * The tenant's own base, prefix included — the issuer in
+ * `e2e/fixtures/asterius.toml.in`. Path-based tenancy is the shape a
+ * deployment gets without extra DNS, and until `ast-f0y` this harness could not
+ * exercise it: `/authorize` named the interaction page without the prefix, so
+ * the browser lost its tenant on the second hop and the fixture papered over it
+ * by writing a `custom_host`. `ast-295` made every URL rendered to the browser
+ * carry the mount prefix, so the sweep now walks the flow the way a path-based
+ * deployment really serves it.
+ */
+export const BASE_URL = fromEnv('E2E_BASE_URL', 'https://127.0.0.1:9444/t/e2e');
 
 /** The username seeded by `e2e/fixtures/seed.sql`. */
 export const USERNAME = fromEnv('E2E_USERNAME', 'sweep@example.test');
@@ -74,7 +85,10 @@ export const INTERACTION_COOKIE = '__Host-asterius_ix';
  * precondition with a sentence attached rather than a mystery. See
  * `passkeys.ts` for why addressing the tenant at `127.0.0.1` is not an option.
  */
-export const WEBAUTHN_BASE_URL = fromEnv('E2E_WEBAUTHN_BASE_URL', 'https://localhost:9444');
+export const WEBAUTHN_BASE_URL = fromEnv(
+  'E2E_WEBAUTHN_BASE_URL',
+  'https://localhost:9444/t/e2e-webauthn',
+);
 
 /** The RP ID a credential registered on that tenant is scoped to. */
 export const WEBAUTHN_RP_ID = new URL(WEBAUTHN_BASE_URL).hostname;

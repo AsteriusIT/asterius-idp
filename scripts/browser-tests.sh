@@ -31,7 +31,10 @@ cd "$root"
 PORT="${E2E_PORT:-9444}"
 DATABASE_URL="${DATABASE_URL:-postgres://asterius:asterius@127.0.0.1:5433/asterius}"
 TIMEOUT="${TIMEOUT:-120}"
-BASE_URL="https://127.0.0.1:${PORT}"
+# The origin the server binds, and — separately — where each tenant answers.
+# `ast-f0y`: the tenants are reached by their path (`/t/{id}`) and nothing else.
+# `/readyz` is process-scoped and stays at the origin.
+ORIGIN="https://127.0.0.1:${PORT}"
 
 # The tenant, the user and the password. The suite defaults to the same values
 # in e2e/src/environment.ts; they are passed explicitly so that changing one
@@ -41,7 +44,9 @@ TENANT="e2e"
 # rather than an address: an IP literal is not a valid WebAuthn RP ID, so the
 # ceremony cannot run on the tenant above. See e2e/fixtures/asterius.toml.in.
 WEBAUTHN_TENANT="e2e-webauthn"
-WEBAUTHN_BASE_URL="https://localhost:${PORT}"
+WEBAUTHN_ORIGIN="https://localhost:${PORT}"
+BASE_URL="${ORIGIN}/t/${TENANT}"
+WEBAUTHN_BASE_URL="${WEBAUTHN_ORIGIN}/t/${WEBAUTHN_TENANT}"
 USERNAME="sweep@example.test"
 PASSWORD="correct horse battery staple"
 # Argon2id, m=19456 t=2 p=1, of the password above. See e2e/fixtures/seed.sql.
@@ -133,7 +138,7 @@ server_pid=$!
 
 deadline=$(($(date +%s) + TIMEOUT))
 until [ "$(curl --silent --insecure --output /dev/null --write-out '%{http_code}' \
-             --max-time 5 "${BASE_URL}/readyz" 2>/dev/null)" = "200" ]; do
+             --max-time 5 "${ORIGIN}/readyz" 2>/dev/null)" = "200" ]; do
   if ! kill -0 "$server_pid" 2>/dev/null; then
     printf 'the server exited before it was ready:\n' >&2
     cat "$run_dir/server.log" >&2
@@ -146,7 +151,7 @@ until [ "$(curl --silent --insecure --output /dev/null --write-out '%{http_code}
   fi
   sleep 1
 done
-printf '%s/readyz answers 200\n' "$BASE_URL"
+printf '%s/readyz answers 200\n' "$ORIGIN"
 
 # The WebAuthn tenant is reached by name, and the server bound one address. If
 # `localhost` resolves somewhere that is not the socket above, every ceremony
@@ -154,22 +159,21 @@ printf '%s/readyz answers 200\n' "$BASE_URL"
 # is precisely the hazard the note in the fixture warns about. Say so here,
 # once, instead of letting it surface as a browser timeout.
 if [ "$(curl --silent --insecure --output /dev/null --write-out '%{http_code}' \
-          --max-time 5 "${WEBAUTHN_BASE_URL}/readyz" 2>/dev/null)" != "200" ]; then
+          --max-time 5 "${WEBAUTHN_ORIGIN}/readyz" 2>/dev/null)" != "200" ]; then
   printf '%s/readyz does not answer, so `localhost` does not reach the server socket.\n' \
-    "$WEBAUTHN_BASE_URL" >&2
+    "$WEBAUTHN_ORIGIN" >&2
   printf 'The WebAuthn tenant needs a name for its RP ID; check what localhost resolves to.\n' >&2
   exit 1
 fi
-printf '%s/readyz answers 200 as well\n' "$WEBAUTHN_BASE_URL"
+printf '%s/readyz answers 200 as well\n' "$WEBAUTHN_ORIGIN"
 
 # --- 5. the fixture data ----------------------------------------------------
-# After the server, not before: booting upserts the configured tenants, and that
-# upsert writes `custom_host` back to NULL. See e2e/fixtures/seed.sql.
+# After the server, not before: the rows below reference tenants, and it is
+# booting that upserts them. See e2e/fixtures/seed.sql.
 step "fixtures"
 psql_run --quiet --no-psqlrc \
   -v ON_ERROR_STOP=1 \
   -v "tenant=${TENANT}" \
-  -v "host=127.0.0.1:${PORT}" \
   -v "username=${USERNAME}" \
   -v "hash=${PASSWORD_HASH}" \
   -f - < e2e/fixtures/seed.sql
@@ -181,7 +185,6 @@ printf 'seeded tenant %s and user %s\n' "$TENANT" "$USERNAME"
 psql_run --quiet --no-psqlrc \
   -v ON_ERROR_STOP=1 \
   -v "tenant=${WEBAUTHN_TENANT}" \
-  -v "host=localhost:${PORT}" \
   -v "username=${USERNAME}" \
   -v "hash=${PASSWORD_HASH}" \
   -f - < e2e/fixtures/seed.sql
