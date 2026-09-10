@@ -25,6 +25,8 @@ pub use capabilities::{Capabilities, Feature};
 pub use credentials::{OpaqueToken, sha256, sha256_hex};
 /// The authentication contexts a tenant can produce (`ast-2vk.7`).
 pub use entities::acr_policy as acr;
+/// Whether an administrative session proved enough to act (`ast-895`).
+pub use entities::admin_access as admin_access_policy;
 pub use entities::auth_request::{
     ClientRequest, CodeBinding, Consumed, Continuation, FirstPartyDestination, InteractionRecord,
     PushedRequest,
@@ -37,15 +39,15 @@ pub use entities::session::{
     AuthenticationMethod, Lifetimes, Participant, Session, SessionRevocation, SessionStatus,
 };
 pub use entities::{
-    AcrLevel, AcrPolicy, AcrPolicyError, ApplicationType, AuthorizationDetail,
+    AcrLevel, AcrPolicy, AcrPolicyError, AdminAdmission, ApplicationType, AuthorizationDetail,
     AuthorizationDetails, AuthorizationDetailsRegistry, AuthorizationDetailsType, Claim,
     ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client, ClientMetadata,
     ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantError, GrantRecord,
     GrantStatus, GrantType, InvalidAuthorizationDetails, InvalidTarget, JsonSchema,
-    JsonSchemaError, JwksSource, LiveAccessToken, PairwiseSalt, RedirectUri, RedirectUriError,
-    RefreshPolicy, RefreshPolicyError, ResourceIdentifier, ResourceRegistry, ResourceServer,
-    RevocationReason, Role, RoleScope, Rotation, SectorIdentifier, SubjectError, SubjectType,
-    Tenant, TenantSettings, TenantSettingsError, TenantStatus, TokenBinding,
+    JsonSchemaError, JwksSource, LiveAccessToken, PairwiseSalt, PasskeyEnrolment, RedirectUri,
+    RedirectUriError, RefreshPolicy, RefreshPolicyError, ResourceIdentifier, ResourceRegistry,
+    ResourceServer, RevocationReason, Role, RoleScope, Rotation, SectorIdentifier, SubjectError,
+    SubjectType, Tenant, TenantSettings, TenantSettingsError, TenantStatus, TokenBinding,
     TokenEndpointAuthMethod, TokenLifetimes, User, UserId, UserRole, UserStatus,
 };
 pub use error::DomainError;

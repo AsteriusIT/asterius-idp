@@ -26,10 +26,23 @@
 //! unauthenticated caller must not be able to make this server do a database
 //! read per request, and an authority check on a principal that does not exist
 //! is a check on nothing.
+//!
+//! # The authenticator a deployment admin must have used
+//!
+//! Resolving a console session is also where `ast-895`'s rule is applied: a
+//! user holding a deployment-scoped role (ADR-0010) does not get a
+//! [`Principal`] out of this module unless the session's `amr` records a
+//! user-verified passkey. It belongs here and not in a handler because this is
+//! the single place every console request passes through, and because the
+//! roles have just been read — the same read the rule needs. The policy itself
+//! is `asterius_domain::admin_access_policy`, including the bootstrap window
+//! that keeps a freshly seeded deployment administrable.
 
 use asterius_domain::entities::session::COOKIE_NAME;
 use asterius_domain::entities::session::SessionId;
-use asterius_domain::{SessionStatus, Tenant, TenantId, UserId};
+use asterius_domain::{
+    AdminAdmission, Role, SessionStatus, Tenant, TenantId, UserId, admin_access_policy,
+};
 use axum::http::{HeaderMap, header};
 
 use crate::backend::{AdminBackend, AdminTokens, PresentedToken, TokenPrincipal};
@@ -237,6 +250,8 @@ async fn console(
         .await
         .map_err(|error| AdminError::from_storage("admin.roles", &error))?;
 
+    admit(backend, tenant, user, &roles, &session).await?;
+
     Ok(Principal::Console {
         tenant: tenant.id.clone(),
         user,
@@ -246,6 +261,60 @@ async fn console(
             roles,
         },
     })
+}
+
+/// Applies the deployment-scope authenticator rule (`ast-895`).
+///
+/// The policy is `asterius_domain::admin_access_policy`; what is here is the
+/// one read it needs and the refusal it produces. It runs *after* the roles
+/// are known and *before* a [`Principal`] exists, which is the only place it
+/// can run once: a check inside each handler would be a check somebody adds a
+/// handler without.
+///
+/// It governs the console mode alone. Automation presents a DPoP-bound token,
+/// which is sender-constrained to a key rather than to a person, and "which
+/// authenticator did the human use" is not a question a client-credentials
+/// grant has an answer to — `ast-a05.8` is where that mode's assurance is
+/// decided, and answering it here with a passkey lookup on a user that does
+/// not exist would be a check on nothing.
+async fn admit(
+    backend: &dyn AdminBackend,
+    tenant: &Tenant,
+    user: UserId,
+    roles: &[Role],
+    session: &asterius_domain::Session,
+) -> Result<(), AdminError> {
+    if !admin_access_policy::enrolment_decides(roles, &session.amr) {
+        return Ok(());
+    }
+
+    // Reached only for a deployment-scoped role whose session is not
+    // phishing-resistant, so this read is not on the ordinary path. A storage
+    // failure is a refusal and never an admission: `from_storage` gives 503,
+    // which is the honest answer, and the alternative — treating "cannot tell"
+    // as "no passkey" — would make an unreachable database the way past this
+    // rule.
+    let enrolment = backend
+        .passkey_enrolment(&tenant.id, user)
+        .await
+        .map_err(|error| AdminError::from_storage("admin.passkey_enrolment", &error))?;
+
+    match admin_access_policy::admit(roles, &session.amr, enrolment) {
+        AdminAdmission::Admitted => Ok(()),
+        AdminAdmission::AdmittedPendingEnrolment => {
+            // The enrolment window of ADR-0010's bootstrap. Recorded at `warn`
+            // on every request rather than once, because the thing an operator
+            // needs to notice is that it is still open.
+            tracing::warn!(
+                tenant = %tenant.id,
+                user = %user.as_uuid(),
+                "a deployment admin is acting on a password: this account has no passkey, \
+                 and the admin surface stays open to a phishable credential until it enrols"
+            );
+            Ok(())
+        }
+        AdminAdmission::StepUpRequired => Err(AdminError::StepUpRequired),
+    }
 }
 
 async fn automation(

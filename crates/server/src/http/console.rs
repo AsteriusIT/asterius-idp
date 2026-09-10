@@ -29,6 +29,16 @@
 //! is no destination to validate and no allow-list to drift: the open redirect
 //! is impossible by construction rather than by vigilance.
 //!
+//! # What a deployment admin has to have proved
+//!
+//! A usable session is not the whole answer any more (`ast-895`). A visitor
+//! holding a deployment-scoped role whose session records only a password is
+//! sent back through the login flow rather than shown the console, because the
+//! passkey their account holds is what this surface requires and that flow is
+//! what knows how to ask for it. The policy is
+//! `asterius_domain::admin_access_policy`; `/admin/api` applies the same one,
+//! and has to, since this document is inert without it.
+//!
 //! # Why the console lives under a tenant
 //!
 //! ADR-0010 keeps `Session::tenant` non-optional, and the deployment
@@ -40,7 +50,8 @@
 use crate::http::redirect::SeeOther;
 use asterius_domain::entities::session;
 use asterius_domain::{
-    FirstPartyDestination, InteractionRepository, Session, SessionRepository, Tenant,
+    AdminAdmission, DomainError, FirstPartyDestination, InteractionRepository, PasskeyEnrolment,
+    Role, Session, SessionRepository, Tenant, UserId, admin_access_policy,
 };
 use asterius_web::csp::Nonce;
 use asterius_web::interaction::{self, InteractionId};
@@ -140,6 +151,42 @@ struct ConsoleState {
     bundle: asterius_admin_api::Bundle,
 }
 
+/// [`AdminStanding`] against this deployment's store.
+#[derive(Debug, Clone)]
+struct StoredStanding {
+    store: asterius_store_pg::Store,
+    tenant: asterius_domain::TenantId,
+}
+
+#[async_trait::async_trait]
+impl AdminStanding for StoredStanding {
+    async fn roles(&self, user: UserId) -> Result<Vec<Role>, DomainError> {
+        let granted = asterius_store_pg::PgRoleRepository::new(
+            self.store.pool().clone(),
+            self.tenant.clone(),
+        )
+        .roles_of(user)
+        .await?;
+        Ok(granted.into_iter().map(|role| role.role).collect())
+    }
+
+    async fn passkey_enrolment(&self, user: UserId) -> Result<PasskeyEnrolment, DomainError> {
+        use asterius_domain::ports::PasskeyRepository as _;
+
+        let credentials = self
+            .store
+            .scope(self.tenant.clone())
+            .passkeys()
+            .credential_ids(&user)
+            .await?;
+        Ok(if credentials.is_empty() {
+            PasskeyEnrolment::None
+        } else {
+            PasskeyEnrolment::Enrolled
+        })
+    }
+}
+
 /// `GET /admin/` as axum sees it.
 async fn index(
     State(state): State<ConsoleState>,
@@ -150,11 +197,16 @@ async fn index(
     let scope = state.store.scope(tenant.id.clone());
     let interactions = scope.auth_requests();
     let sessions = scope.sessions();
+    let standing = StoredStanding {
+        store: state.store.clone(),
+        tenant: tenant.id.clone(),
+    };
     enter(
         &ConsoleContext {
             tenant: &tenant,
             interactions: &interactions,
             sessions: &sessions,
+            standing: &standing,
             nonce: &nonce,
             bundle: state.bundle,
         },
@@ -162,6 +214,34 @@ async fn index(
         OffsetDateTime::now_utc(),
     )
     .await
+}
+
+/// What the console entry needs to know about the person behind a session.
+///
+/// A port rather than the store, for the reason every other handler in this
+/// module has one: `enter` is driven by `crates/server/tests/console.rs`
+/// without a database, and "a deployment admin on a password meets a login
+/// page" is a criterion that has to be testable there rather than only in an
+/// end-to-end run somebody may skip.
+///
+/// Two questions and not a repository, because those are the two the rule
+/// asks. Handing this layer a role repository would let a later edit grant one
+/// from here.
+#[async_trait::async_trait]
+pub trait AdminStanding: Send + Sync {
+    /// Every role the user holds in this tenant.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] if the store could not be read.
+    async fn roles(&self, user: UserId) -> Result<Vec<Role>, DomainError>;
+
+    /// Whether the user has a passkey that could have been asked for.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] if the store could not be read.
+    async fn passkey_enrolment(&self, user: UserId) -> Result<PasskeyEnrolment, DomainError>;
 }
 
 /// What the console entry needs.
@@ -173,6 +253,8 @@ pub struct ConsoleContext<'a> {
     pub interactions: &'a dyn InteractionRepository,
     /// Where the cookie's session is looked up.
     pub sessions: &'a dyn SessionRepository,
+    /// What the visitor holds, and what they could have proved (`ast-895`).
+    pub standing: &'a dyn AdminStanding,
     /// The CSP nonce this response was drawn with.
     pub nonce: &'a Nonce,
     /// The built console, or an empty bundle when this binary carries none.
@@ -196,10 +278,88 @@ pub async fn enter(
     headers: &HeaderMap,
     now: OffsetDateTime,
 ) -> Response {
-    if signed_in(context, headers, now).await.is_some() {
-        return asterius_admin_api::console::document(context.bundle, context.nonce);
+    if let Some(session) = signed_in(context, headers, now).await {
+        match admission(context, &session).await {
+            Ok(AdminAdmission::Admitted | AdminAdmission::AdmittedPendingEnrolment) => {
+                return asterius_admin_api::console::document(context.bundle, context.nonce);
+            }
+            // `ast-895`: a deployment admin whose session records only a
+            // password meets the login page again, which is where the passkey
+            // it holds can be presented. Not an error page — there is a
+            // credential this person has and can use, and the shortest route
+            // to it is the one flow that knows how to ask for it.
+            //
+            // The session is left alone. It is a perfectly good session for
+            // everything that is not the admin surface, and revoking it here
+            // would sign the user out of the tenant to enforce a rule about
+            // the console.
+            Ok(AdminAdmission::StepUpRequired) => return begin(context, now).await,
+            // "We could not tell what you hold" is not "then come in", and it
+            // is not "you have no session" either: sending an administrator
+            // round the login loop for a database that is down would look like
+            // a credential problem and hide an outage.
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    tenant = %context.tenant.id,
+                    "cannot decide what a console visitor is allowed to see"
+                );
+                return unavailable();
+            }
+        }
     }
     begin(context, now).await
+}
+
+/// Whether this session may see the console, or must authenticate again.
+///
+/// The policy is `asterius_domain::admin_access_policy`, the same one
+/// `asterius_admin_api::auth` applies to `/admin/api` — the two are the shell
+/// and the data behind it, and a rule enforced in one and not the other would
+/// be a console that draws itself and then fails every request.
+///
+/// A store that cannot be read is an error and never an admission: "we could
+/// not tell what roles you hold" must not resolve to "then come in".
+///
+/// # Errors
+///
+/// [`DomainError`] from either read. The caller turns it into a 503.
+async fn admission(
+    context: &ConsoleContext<'_>,
+    session: &Session,
+) -> Result<AdminAdmission, DomainError> {
+    let user = UserId::new(session.user);
+    let roles = context.standing.roles(user).await?;
+
+    if !admin_access_policy::enrolment_decides(&roles, &session.amr) {
+        return Ok(AdminAdmission::Admitted);
+    }
+
+    let enrolment = context.standing.passkey_enrolment(user).await?;
+
+    let admission = admin_access_policy::admit(&roles, &session.amr, enrolment);
+    if admission == AdminAdmission::AdmittedPendingEnrolment {
+        tracing::warn!(
+            tenant = %context.tenant.id,
+            user = %user.as_uuid(),
+            "the console admitted a deployment admin on a password: this account has no \
+             passkey, and the enrolment window stays open until it registers one"
+        );
+    }
+    Ok(admission)
+}
+
+/// The answer when this server cannot decide, which is not "come in".
+fn unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        )],
+        "the console is not available\n",
+    )
+        .into_response()
 }
 
 /// The session behind the cookie, when there is a usable one *of this tenant*.

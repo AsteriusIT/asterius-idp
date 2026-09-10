@@ -1,6 +1,7 @@
 //! Entities: the things Asterius stores and reasons about.
 
 pub mod acr_policy;
+pub mod admin_access;
 pub mod auth_request;
 pub mod authorization_details;
 pub mod client;
@@ -15,6 +16,7 @@ pub mod tenant_settings;
 pub mod user;
 
 pub use acr_policy::{AcrLevel, AcrPolicy, AcrPolicyError};
+pub use admin_access::{AdminAdmission, PasskeyEnrolment};
 pub use authorization_details::{
     AuthorizationDetail, AuthorizationDetails, AuthorizationDetailsRegistry,
     AuthorizationDetailsType, InvalidAuthorizationDetails, Schema as JsonSchema,
