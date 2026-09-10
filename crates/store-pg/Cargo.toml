@@ -34,3 +34,6 @@ uuid.workspace = true
 # party would: base64url is the only decoding that takes.
 base64.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# The previous-KEK tests implement `Kek` to count what the fallback asks for,
+# and the trait's `unwrap` hands back a `Zeroizing<Vec<u8>>`.
+zeroize.workspace = true

@@ -9927,3 +9927,192 @@ mod client_key_fetches {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// The previous key-encryption key, during a rotation
+// ---------------------------------------------------------------------------
+
+/// Steps 3 to 5 of the rotation runbook, from the database's side.
+///
+/// The rows move one tenant at a time while the replicas keep running, so
+/// between the first re-wrapped row and the last restarted replica the
+/// deployment holds rows under two keys. `CompositeKek` is what lets a process
+/// on the new key open a row still on the old one — reads only. These tests use
+/// a real repository against a real schema, because the failure they describe
+/// is a `select` returning a row this process cannot open, and a unit test over
+/// the KEK alone cannot show that.
+mod previous_kek {
+    use super::*;
+    use asterius_domain::keys::SigningAlgorithm;
+    use asterius_jose::CompositeKek;
+    use asterius_jose::kek::Kek;
+    use asterius_store_pg::{PgAuditSink, PgKeyRepository};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A repository for one tenant under whichever KEK the test is holding.
+    fn keys_under(pool: &PgPool, tenant: &str, kek: Arc<dyn Kek>) -> PgKeyRepository {
+        PgKeyRepository::new(
+            pool.clone(),
+            TenantId::new(tenant),
+            kek,
+            Arc::new(PgAuditSink::new(pool.clone())),
+        )
+    }
+
+    /// The current key with the old one behind it, as a booted replica holds it.
+    fn composite(current: Arc<dyn Kek>, previous: Arc<dyn Kek>) -> Arc<dyn Kek> {
+        Arc::new(CompositeKek::new(current, previous).expect("two distinct keys"))
+    }
+
+    /// A KEK that counts the unwraps it is asked for, over a real one.
+    #[derive(Debug)]
+    struct Spy {
+        inner: Arc<LocalKek>,
+        unwraps: AtomicUsize,
+    }
+
+    impl Spy {
+        fn over(inner: Arc<LocalKek>) -> Arc<Self> {
+            Arc::new(Self {
+                inner,
+                unwraps: AtomicUsize::new(0),
+            })
+        }
+
+        fn unwraps(&self) -> usize {
+            self.unwraps.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Kek for Spy {
+        fn id(&self) -> &str {
+            self.inner.id()
+        }
+
+        async fn wrap(
+            &self,
+            binding: asterius_jose::KeyBinding<'_>,
+            plaintext: &[u8],
+        ) -> Result<asterius_jose::WrappedKey, asterius_jose::JoseError> {
+            self.inner.wrap(binding, plaintext).await
+        }
+
+        async fn unwrap(
+            &self,
+            binding: asterius_jose::KeyBinding<'_>,
+            wrapped: &asterius_jose::WrappedKey,
+        ) -> Result<zeroize::Zeroizing<Vec<u8>>, asterius_jose::JoseError> {
+            self.unwraps.fetch_add(1, Ordering::Relaxed);
+            self.inner.unwrap(binding, wrapped).await
+        }
+    }
+
+    db_test! {
+        /// A replica restarted on the new key opens a signing key the re-wrap
+        /// has not reached yet. Without this, step 5 of the runbook is a window
+        /// in which a restart cannot boot.
+        async fn a_signing_key_under_the_previous_key_still_opens(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let old = keys_under(&db.pool, "demo", kek());
+            let created = old
+                .rotate(SigningAlgorithm::EdDsa, operator(), epoch())
+                .await
+                .expect("rotate")
+                .created
+                .expect("a key was created");
+
+            let replica = keys_under(&db.pool, "demo", composite(next_kek(), kek()));
+            let (kid, _) = replica
+                .active_signing_key(SigningAlgorithm::EdDsa)
+                .await
+                .expect("read")
+                .expect("an active key");
+
+            assert_eq!(kid, created);
+        }
+
+    }
+
+    db_test! {
+        /// The same row, on a replica holding only the new key: unreadable.
+        /// This is the behaviour today, and the reason the ticket exists.
+        async fn the_same_signing_key_does_not_open_without_the_previous_key(db) {
+            seed_tenant(&db.pool, "demo").await;
+            keys_under(&db.pool, "demo", kek())
+                .rotate(SigningAlgorithm::EdDsa, operator(), epoch())
+                .await
+                .expect("rotate");
+
+            let replica = keys_under(&db.pool, "demo", next_kek());
+            let read = replica.active_signing_key(SigningAlgorithm::EdDsa).await;
+
+            assert!(read.is_err(), "the new key alone opened the old row: {read:?}");
+        }
+
+    }
+
+    db_test! {
+        /// Once the re-wrap has moved a row, the previous key is not consulted
+        /// for it. A retired key asked on every read is a key whose retirement
+        /// has not happened.
+        async fn a_re_wrapped_row_is_never_offered_to_the_previous_key(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_salt(&db.pool, "demo").await;
+            keys_under(&db.pool, "demo", kek())
+                .rotate(SigningAlgorithm::EdDsa, operator(), epoch())
+                .await
+                .expect("rotate");
+            pass(
+                rewrap(&db.pool)
+                    .rewrap_tenant(&TenantId::new("demo"), kek().as_ref(), next_kek().as_ref())
+                    .await
+                    .expect("re-wrap"),
+            );
+            let spy = Spy::over(kek());
+
+            let replica = keys_under(
+                &db.pool,
+                "demo",
+                composite(next_kek(), Arc::clone(&spy) as Arc<dyn Kek>),
+            );
+            replica
+                .active_signing_key(SigningAlgorithm::EdDsa)
+                .await
+                .expect("read")
+                .expect("an active key");
+
+            assert_eq!(spy.unwraps(), 0, "the previous key was consulted");
+        }
+
+    }
+
+    db_test! {
+        /// Everything a replica writes during the rotation is written under the
+        /// current key, so the re-wrap's second pass has less to do rather than
+        /// more. `left_behind` counting zero is the assertion: it counts rows
+        /// still on the old key after a pass.
+        async fn a_key_staged_during_the_rotation_is_sealed_under_the_current_key(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_salt(&db.pool, "demo").await;
+            let replica = keys_under(&db.pool, "demo", composite(next_kek(), kek()));
+
+            let staged = replica
+                .rotate(SigningAlgorithm::EdDsa, operator(), epoch())
+                .await
+                .expect("rotate")
+                .created
+                .expect("a key was created");
+
+            let sealed_under: String = sqlx::query_scalar(
+                "select kek_id from signing_keys where tenant_id = $1 and kid = $2",
+            )
+            .bind("demo")
+            .bind(staged.as_str())
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row");
+            assert_eq!(sealed_under, next_kek().id());
+        }
+    }
+}

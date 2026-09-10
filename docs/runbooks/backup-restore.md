@@ -130,6 +130,14 @@ incident:
 > its report before destroying the old key material. Earlier versions of this
 > runbook said rotation for a pairwise deployment needed a program nobody had
 > written; that program is this subcommand.
+>
+> **Online as of `ast-7kw`.** `[keys] kek_previous_file` (or `kek_previous_env`)
+> names the key being rotated away from. A row that does not open under the
+> current key is retried under it — decryption only, never encryption — so the
+> replicas can be moved to the new key *before* the rows are, and no part of
+> this procedure has a window in which a replica cannot open a row. The price is
+> step 6: a key you have retired stays readable by the process until that line
+> is removed.
 
 ### What "rotating the KEK" actually means
 
@@ -171,58 +179,91 @@ told `busy` and moves on.
    ```sh
    openssl rand -base64 32 > /etc/asterius/kek.new    # mode 0400, owned by root
    ```
-3. Run the re-wrap. The configuration file still names the **old** key — that is
-   what the command rotates *from* — and the new one is named on the command
-   line, so no configuration is edited mid-rotation:
-   ```sh
-   asterius rewrap-kek --config /etc/asterius/asterius.toml \
-                       --new-kek-file /etc/asterius/kek.new
-   ```
-   It prints one line per tenant and exits non-zero if any tenant is not wholly
-   on the new key. Nothing in the output is secret: key ids, counts and tenant
-   ids only.
-4. Replicas still running are unaffected in the middle of this. A signer holds
-   its unwrapped key in memory (`CachedSigner`), so token issuance keeps
-   working; what fails, until step 5, is anything that has to *open* a row that
-   has already moved — a replica restarting, a rotation sweep staging a key, a
-   tenant being created, or the first `sub` minted in a sector for a tenant
-   whose salt has moved. Keep steps 3 to 5 close together, or run them in a
-   maintenance window if that set of failures is not acceptable.
-5. Point the configuration at the new key and restart the replicas:
+3. **Move the replicas first**, onto the new key with the old one behind it,
+   and restart them:
    ```toml
    [keys]
    kek_file = "/etc/asterius/kek.new"
+   kek_previous_file = "/etc/asterius/kek"      # the key being rotated away from
    ```
-6. Run the same command again, with the roles unchanged — the configuration now
-   names the new key, so pass the *old* one as `--new-kek-file` only if you mean
-   to roll back. The ordinary second pass is:
+   `kek_previous_file` is read on **decryption only**. Everything a replica
+   writes from now on — a staged signing key, a new tenant's salt — is sealed
+   under the new key, and a row that does not open under it is retried under
+   the previous one and logged at `warn` with the row's identifiers (tenant,
+   `kid`, purpose; never any material). That is what makes the rest of this
+   procedure online: no replica is ever unable to open a row, in either
+   direction, so there is no maintenance window.
+
+   Both keys must be readable by the process, and both are loaded at boot: a
+   `kek_previous_file` that is missing, unreadable or not a 32-byte base64 key
+   refuses the boot, exactly as the current key does. So does naming the same
+   key twice.
+4. Run the re-wrap. With `kek_previous_*` set, the configuration already
+   describes the direction — from the previous key to the current one — so no
+   flag is needed and no configuration is edited mid-rotation:
    ```sh
-   asterius rewrap-kek --config /etc/asterius/asterius.toml \
-                       --new-kek-file /etc/asterius/kek.new
+   asterius rewrap-kek --config /etc/asterius/asterius.toml
    ```
-   which now refuses with "the new key-encryption key is the one already in
-   use" — the deployment is on it. That refusal *is* the confirmation. To check
-   the database directly instead:
+   It prints one line per tenant and exits non-zero if any tenant is not wholly
+   on the new key. Nothing in the output is secret: key ids, counts and tenant
+   ids only. Run it again until it reports every tenant complete; each pass only
+   selects rows still under the old id, so repeating it is cheap and safe.
+5. Confirm nothing is left behind:
    ```sql
    select kek_id, count(*) from signing_keys group by 1;
    select kek_id, count(*) from tenant_pairwise_salts group by 1;
    ```
-   Both must show only the new id. A row still under the old id is one a replica
-   wrote during step 3 to 5; re-run step 3 with the configuration temporarily
-   pointed back at the old key, or move the row's tenant on its own.
+   Both must show only the new id. The server's logs are the other half of this
+   check: a `opened under the previous key-encryption key` line after step 4
+   finished names a row the re-wrap has not reached.
+6. **Remove `kek_previous_file` from the configuration and restart the
+   replicas.** This is the step that ends the rotation, and skipping it is the
+   one real risk this procedure takes on: while the line is there, a key you
+   have retired is still loaded by the process and still opens rows, so a stolen
+   configuration plus a stolen dump opens material sealed under *either* key.
+   The window is meant to be minutes, not weeks.
 7. Verify before destroying anything: mint a token per tenant and check it
    against the published JWKS, and confirm a known `sub` is unchanged for a
    relying party that had one before the rotation. Only then destroy the old key
    material — and only once a backup taken *after* the rotation has been proven
    restorable under the new key.
 
+### If you would rather not configure a previous key
+
+The older, offline shape still works and is what `--new-kek-file` /
+`--new-kek-env` are for: leave the configuration naming the **old** key, name
+the new one on the command line, and swap the configuration afterwards.
+
+```sh
+asterius rewrap-kek --config /etc/asterius/asterius.toml \
+                    --new-kek-file /etc/asterius/kek.new
+```
+
+The cost is a window between the first moved row and the last restarted
+replica. A signer holds its unwrapped key in memory (`CachedSigner`), so token
+issuance keeps working; what fails is anything that has to *open* a row that
+has already moved — a replica restarting, a rotation sweep staging a key, a
+tenant being created, or the first `sub` minted in a sector for a tenant whose
+salt has moved. Keep the steps close together, or run them in a maintenance
+window. Choose this only if keeping a retired key in the configuration for the
+duration is worse, for you, than that window.
+
 ### Rolling back
 
-Until step 7 the old key opens nothing that has moved, and the new key opens
-nothing that has not. To go back, run `rewrap-kek` with the two keys the other
-way round: the command is symmetric and the old key is a perfectly good
-destination as long as it still exists. That is the whole reason step 7 destroys
-the old material last rather than first.
+Until step 7 the old material still exists, and that is the whole reason step 7
+destroys it last rather than first. To go back, run `rewrap-kek` with the two
+keys the other way round — the command is symmetric and the old key is a
+perfectly good destination:
+
+```sh
+asterius rewrap-kek --config /etc/asterius/asterius.toml \
+                    --new-kek-file /etc/asterius/kek        # the old one
+```
+
+Then swap `kek_file` and `kek_previous_file` back and restart. Do not roll back
+by deleting `kek_file` and promoting `kek_previous_file`: the previous key is
+never written under, so rows moved by step 4 would be left with nothing that
+opens them until this command has moved them back.
 
 ### What the re-wrap does not cover
 

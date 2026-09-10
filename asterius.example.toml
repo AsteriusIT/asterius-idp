@@ -72,6 +72,17 @@ private_key = "/etc/asterius/tls/privkey.pem"
 [keys]
 kek_file = "/etc/asterius/kek"
 # kek_env = "ASTERIUS_KEK"   # visible in /proc/self/environ; prefer the file
+#
+# The key a rotation is moving AWAY from. Optional, and set only while
+# `asterius rewrap-kek` is running: a row that does not open under the key
+# above is retried under this one, which is what removes the window where a
+# replica cannot open a row that has already been moved. Nothing is ever
+# written under it, and every fallback is logged at warn with the row's id.
+# REMOVE IT once the re-wrap reports every tenant on the new key — while it is
+# here, a retired key stays readable by this process. Runbook:
+# docs/runbooks/backup-restore.md §4.
+# kek_previous_file = "/etc/asterius/kek.old"
+# kek_previous_env = "ASTERIUS_KEK_OLD"
 
 [database]
 # Required. Contains a password, so it is held in a Secret<String> and prints

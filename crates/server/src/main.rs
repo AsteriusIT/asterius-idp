@@ -4,9 +4,9 @@
 use asterius_domain::ports::TenantRepository as _;
 use asterius_domain::{Argon2Parameters, Lifetimes, ReplayGuard, Secret, TokenLifetimes};
 use asterius_domain::{Feature, Tenant, TenantStatus};
-use asterius_jose::LocalKek;
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::kek::Kek;
+use asterius_jose::{CompositeKek, LocalKek};
 use asterius_oidc::par;
 use asterius_server::client_auth::ClientAuthenticator;
 use asterius_server::config::{AdminConfig, KekSource, PasswordSource};
@@ -34,7 +34,7 @@ use time::OffsetDateTime;
 
 const DEFAULT_CONFIG_PATH: &str = "asterius.toml";
 const USAGE: &str = "usage: asterius [--config <path>] [--config-reference] [--admin-openapi]\n       \
-                     asterius rewrap-kek (--new-kek-file <path> | --new-kek-env <var>) \
+                     asterius rewrap-kek [--new-kek-file <path> | --new-kek-env <var>] \
                      [--config <path>]";
 
 fn main() -> ExitCode {
@@ -54,7 +54,7 @@ fn run() -> Result<(), String> {
     let invocation = Invocation::parse(std::env::args_os().skip(1))?;
     match invocation.command {
         Command::Serve => serve_forever(&invocation.config),
-        Command::RewrapKek(new_kek) => rewrap_kek(&invocation.config, &new_kek),
+        Command::RewrapKek(new_kek) => rewrap_kek(&invocation.config, new_kek.as_ref()),
     }
 }
 
@@ -94,13 +94,10 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // Loading it at startup is deliberate either way: a deployment that
         // cannot read its own key material should fail while someone is
         // watching.
-        let kek: Arc<dyn Kek> = Arc::new(match &config.kek {
-            KekSource::File(path) => LocalKek::from_file(path)
-                .map_err(|e| format!("cannot load the key-encryption key: {e}"))?,
-            KekSource::Env(variable) => LocalKek::from_env(variable)
-                .map_err(|e| format!("cannot load the key-encryption key: {e}"))?,
-        });
-        tracing::info!(kek = kek.id(), "key-encryption key loaded");
+        let current = load_kek(&config.kek, "the key-encryption key")?;
+        tracing::info!(kek = current.id(), "key-encryption key loaded");
+
+        let kek = with_previous_kek(current, config.kek_previous.as_ref())?;
 
         // The key store before the tenants, because creating a tenant now
         // provisions its signing keys.
@@ -473,11 +470,33 @@ async fn stopped(mut stopping: tokio::sync::watch::Receiver<bool>) {
 /// Running it twice is safe and is in fact the documented procedure — the
 /// second pass catches rows written by replicas that were still on the old key
 /// during the first.
-fn rewrap_kek(path: &std::path::Path, new_kek: &KekSource) -> Result<(), String> {
+fn rewrap_kek(path: &std::path::Path, new_kek: Option<&KekSource>) -> Result<(), String> {
     let config = Config::load(path).map_err(|e| e.to_string())?;
 
-    let from = load_kek(&config.kek)?;
-    let to = load_kek(new_kek)?;
+    // Two directions, one command. Without `--new-kek-*` the configuration
+    // already describes the rotation — `kek_previous_*` is the key the rows are
+    // still under and `kek_*` is the key they are going to — which is the
+    // online pass: the replicas are already running on the new key and opening
+    // the stragglers through `CompositeKek`, so this is only catching them up.
+    // With `--new-kek-*` it is the original offline shape, where the
+    // configuration names the old key and the new one has not been written into
+    // it yet.
+    let (from, to) = if let Some(source) = new_kek {
+        (
+            load_kek(&config.kek, "the key-encryption key")?,
+            load_kek(source, "the new key-encryption key")?,
+        )
+    } else {
+        let previous = config.kek_previous.as_ref().ok_or(
+            "rewrap-kek needs a destination: pass --new-kek-file or --new-kek-env, or \
+                 set keys.kek_previous_file (or keys.kek_previous_env) to the key the rows \
+                 are still under",
+        )?;
+        (
+            load_kek(previous, "the previous key-encryption key")?,
+            load_kek(&config.kek, "the key-encryption key")?,
+        )
+    };
     println!(
         "asterius {VERSION}: re-wrapping from {} to {}",
         from.id(),
@@ -585,13 +604,45 @@ fn dpop_endpoint(replay: Arc<dyn ReplayGuard>, config: &Config) -> Result<DpopEn
     .map_err(|e| format!("cannot build the DPoP endpoint: {e}"))
 }
 
+/// Wraps the current key in a [`CompositeKek`] when a rotation is in flight.
+///
+/// The previous key is loaded here, at boot, for the reason the current one is:
+/// a key that cannot be read is a configuration mistake, and finding that out
+/// on the first row that needs it means finding it out from a failed sign-in.
+/// It is used on reads only — see [`CompositeKek`] for the risk it takes on,
+/// and `docs/runbooks/backup-restore.md` §4 for when to take the line back out.
+fn with_previous_kek(
+    current: Arc<dyn Kek>,
+    previous: Option<&KekSource>,
+) -> Result<Arc<dyn Kek>, String> {
+    let Some(source) = previous else {
+        return Ok(current);
+    };
+    let previous = load_kek(source, "the previous key-encryption key")?;
+    tracing::warn!(
+        kek = current.id(),
+        previous = previous.id(),
+        "a previous key-encryption key is configured: rows that do not open under \
+         the current key are retried under it, and it stays readable by this \
+         process until the line is removed"
+    );
+    let composite = CompositeKek::new(current, previous)
+        .map_err(|e| format!("cannot use the previous key-encryption key: {e}"))?;
+    Ok(Arc::new(composite))
+}
+
 /// Loads a KEK from wherever the operator put it.
-fn load_kek(source: &KekSource) -> Result<Arc<dyn Kek>, String> {
+///
+/// `which` names the key in the failure message. There are up to three in play
+/// — the one in use, the one a rotation came from, the one it is going to — and
+/// "cannot load the key-encryption key" on its own leaves an operator guessing
+/// which line of the configuration to look at.
+fn load_kek(source: &KekSource, which: &str) -> Result<Arc<dyn Kek>, String> {
     let kek = match source {
         KekSource::File(path) => LocalKek::from_file(path),
         KekSource::Env(variable) => LocalKek::from_env(variable),
     }
-    .map_err(|e| format!("cannot load the key-encryption key: {e}"))?;
+    .map_err(|e| format!("cannot load {which}: {e}"))?;
     Ok(Arc::new(kek))
 }
 
@@ -608,7 +659,11 @@ enum Command {
     /// Run the server. What every deployment does.
     Serve,
     /// Re-seal everything under the KEK named on the command line, and exit.
-    RewrapKek(KekSource),
+    ///
+    /// `None` means "the destination is in the configuration": the deployment
+    /// is already running on `keys.kek_*` and `keys.kek_previous_*` names the
+    /// key the remaining rows are still under.
+    RewrapKek(Option<KekSource>),
 }
 
 impl Invocation {
@@ -656,7 +711,7 @@ impl Invocation {
                     print!("{}", asterius_admin_api::openapi::document());
                     std::process::exit(0);
                 }
-                Some("rewrap-kek") => command = Command::RewrapKek(KekSource::Env(String::new())),
+                Some("rewrap-kek") => command = Command::RewrapKek(None),
                 Some("--new-kek-file") => {
                     let value = arguments.next().ok_or("--new-kek-file needs a path")?;
                     new_kek_file = Some(PathBuf::from(value));
@@ -678,18 +733,24 @@ impl Invocation {
             }
         }
 
-        // Exactly one source, and only where it means something. Two sources
+        // At most one source, and only where it means something. Two sources
         // would leave "which key am I rotating to" to argument order, and a
         // key named for a run that is not a rotation is an operator who typed
-        // the wrong command and would otherwise be given a server.
+        // the wrong command and would otherwise be given a server. None is
+        // allowed now: `keys.kek_previous_*` in the configuration says which
+        // key the rows are still under, and `rewrap_kek` refuses if neither
+        // that nor a flag names a direction.
         let command = match (command, new_kek_file, new_kek_env) {
-            (Command::RewrapKek(_), Some(file), None) => Command::RewrapKek(KekSource::File(file)),
-            (Command::RewrapKek(_), None, Some(variable)) => {
-                Command::RewrapKek(KekSource::Env(variable))
+            (Command::RewrapKek(_), Some(file), None) => {
+                Command::RewrapKek(Some(KekSource::File(file)))
             }
+            (Command::RewrapKek(_), None, Some(variable)) => {
+                Command::RewrapKek(Some(KekSource::Env(variable)))
+            }
+            (Command::RewrapKek(_), None, None) => Command::RewrapKek(None),
             (Command::RewrapKek(_), _, _) => {
                 return Err(format!(
-                    "rewrap-kek needs exactly one of --new-kek-file and --new-kek-env\n{USAGE}"
+                    "rewrap-kek takes at most one of --new-kek-file and --new-kek-env\n{USAGE}"
                 ));
             }
             (Command::Serve, None, None) => Command::Serve,
@@ -872,7 +933,9 @@ mod tests {
 
         assert_eq!(
             invocation.command,
-            Command::RewrapKek(KekSource::File(PathBuf::from("/etc/asterius/kek.new")))
+            Command::RewrapKek(Some(KekSource::File(PathBuf::from(
+                "/etc/asterius/kek.new"
+            ))))
         );
     }
 
@@ -883,7 +946,7 @@ mod tests {
 
         assert_eq!(
             invocation.command,
-            Command::RewrapKek(KekSource::Env("ASTERIUS_KEK_NEXT".to_owned()))
+            Command::RewrapKek(Some(KekSource::Env("ASTERIUS_KEK_NEXT".to_owned())))
         );
     }
 
@@ -902,11 +965,15 @@ mod tests {
         assert!(refused.is_err(), "{refused:?}");
     }
 
+    /// A re-wrap with no flag is the online shape: the configuration already
+    /// names both keys, `kek_previous_*` being the one the rows are still
+    /// under. Whether it really does is `rewrap_kek`'s question — the parser's
+    /// job is only to stop inventing a destination that was never typed.
     #[test]
-    fn a_rewrap_with_no_new_key_is_refused() {
-        let refused = parse(&["rewrap-kek"]);
+    fn a_rewrap_with_no_new_key_takes_its_direction_from_the_configuration() {
+        let invocation = parse(&["rewrap-kek"]).expect("valid");
 
-        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(invocation.command, Command::RewrapKek(None));
     }
 
     /// An operator who meant to rotate and mistyped the subcommand gets an

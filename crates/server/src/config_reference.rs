@@ -341,6 +341,25 @@ fn keys_table() -> Section {
                 "Convenient in a container and readable through `/proc/self/environ`, so \
                  the file is preferred.",
             ),
+            key(
+                "kek_previous_file",
+                "path (**points at a secret**)",
+                "optional".to_owned(),
+                "The key a rotation is moving *away* from, during the rotation only. A \
+                 row that does not open under the current key is retried under this one, \
+                 which is what lets `asterius rewrap-kek` run without a window in which a \
+                 replica cannot open a row that has already moved. Nothing is ever \
+                 written under it. **Remove it once the re-wrap is complete**: while it \
+                 is set, a retired key stays readable by this process. See \
+                 `docs/runbooks/backup-restore.md` §4.",
+            ),
+            key(
+                "kek_previous_env",
+                "variable name (**names a secret**)",
+                "optional".to_owned(),
+                "The same, from the environment. Set at most one of \
+                 `kek_previous_file` and `kek_previous_env`.",
+            ),
         ],
     }
 }

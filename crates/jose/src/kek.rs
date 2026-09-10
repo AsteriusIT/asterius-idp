@@ -64,6 +64,10 @@
 //! storage, so it is sealed through the same port, with the same key binding
 //! discipline, rather than sitting in a settings column as configuration.
 
+mod composite;
+
+pub use composite::CompositeKek;
+
 use crate::JoseError;
 use asterius_domain::keys::{KeyPurpose, SigningAlgorithm};
 use asterius_domain::{Kid, TenantId};
@@ -204,6 +208,32 @@ impl<'a> KeyBinding<'a> {
         Self {
             tenant,
             material: Material::TenantSecret(secret),
+        }
+    }
+
+    /// Names the row this binding belongs to, for a log line.
+    ///
+    /// Identifiers only, and every one of them is already public or already in
+    /// a log: the tenant id is in the issuer URL, a `kid` is published in the
+    /// JWK Set, and the purpose, algorithm and secret name are compiled-in
+    /// constants. Nothing here is derived from the plaintext, which is what
+    /// makes this safe to hand to `tracing` — see [`CompositeKek`], the one
+    /// caller, which logs it when a row opens only under the previous KEK.
+    #[must_use]
+    pub fn row(&self) -> String {
+        let tenant = self.tenant.as_str();
+        match self.material {
+            Material::PrivateKey {
+                kid,
+                purpose,
+                algorithm,
+            } => format!(
+                "signing_keys[tenant={tenant}, kid={}, purpose={purpose}, alg={algorithm}]",
+                kid.as_str()
+            ),
+            Material::TenantSecret(secret) => {
+                format!("tenant_secret[tenant={tenant}, secret={secret}]")
+            }
         }
     }
 
