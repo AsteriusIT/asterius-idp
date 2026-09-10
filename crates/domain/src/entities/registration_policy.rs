@@ -977,6 +977,7 @@ mod tests {
             client_name: "test".to_owned(),
             application_type: ApplicationType::Web,
             token_endpoint_auth_method: TokenEndpointAuthMethod::PrivateKeyJwt,
+            tls_client_auth_subject: None,
             redirect_uris: vec![
                 RedirectUri::parse("https://app.example.com/cb", ApplicationType::Web)
                     .expect("a valid https callback"),

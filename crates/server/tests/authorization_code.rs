@@ -372,6 +372,7 @@ impl Fixture {
         let authenticated = client.clone();
         let response = token(
             TokenContext {
+                certificate: None,
                 tenant: &self.tenant,
                 clients: &clients,
                 capabilities: Capabilities::default(),

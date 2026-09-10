@@ -127,6 +127,9 @@ pub struct RevocationContext<'a> {
     pub audit: &'a dyn AuditSink,
     /// One clock reading for the whole request.
     pub now: OffsetDateTime,
+    /// The client certificate this request arrived with (RFC 8705 §2), if the
+    /// deployment saw one from a source it trusts.
+    pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
 }
 
 impl std::fmt::Debug for RevocationContext<'_> {
@@ -207,7 +210,7 @@ pub async fn revoke(
         assertion_type: find(&pairs, "client_assertion_type"),
         client_id: find(&pairs, "client_id"),
         authorization_header: headers.contains_key(header::AUTHORIZATION),
-        client_certificate: false,
+        certificate: context.certificate,
     };
     let rules = AssertionRules::for_issuer(context.tenant.issuer.as_str());
     let client = match authenticate(&attempt, &rules).await {

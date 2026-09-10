@@ -233,6 +233,12 @@ pub struct TenantState {
     pub directory: TenantDirectory,
     /// Peers whose forwarding headers are believed.
     pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
+    /// Where a client certificate comes from, when the `mtls` flag is on.
+    ///
+    /// `None` switches the whole of RFC 8705 §2 off at the door: no header is
+    /// read and no extension is inserted, so a deployment without the flag
+    /// cannot be talked into looking at a certificate.
+    pub mtls: Option<Arc<crate::mtls::MtlsConfig>>,
 }
 
 impl TenantState {
@@ -242,7 +248,19 @@ impl TenantState {
         Self {
             directory,
             trusted_proxies: Arc::new(config.trusted_proxies.clone()),
+            mtls: None,
         }
+    }
+
+    /// Switches on RFC 8705 §2 certificate collection.
+    ///
+    /// Called by the composition root only when `[features] mtls` is on, which
+    /// is what keeps "the deployment advertises the methods" and "the
+    /// deployment looks at certificates" the same question.
+    #[must_use]
+    pub fn with_mtls(mut self, mtls: Arc<crate::mtls::MtlsConfig>) -> Self {
+        self.mtls = Some(mtls);
+        self
     }
 }
 
@@ -319,6 +337,21 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
     // audit trail are the next.
     let client = forwarded::resolve(peer, request.headers(), &state.trusted_proxies);
     request.extensions_mut().insert(client);
+    // RFC 8705 §2's certificate, resolved here for the reason the address is:
+    // this layer holds the socket peer and the trusted-proxy set, and a handler
+    // that read the header itself would be a second place for "is this peer
+    // allowed to tell me who the client is" to be got wrong. Absent unless the
+    // `mtls` flag is on, so no extension exists for a handler to find.
+    if let Some(mtls) = &state.mtls
+        && let Some(presented) = crate::mtls::from_proxy_header(
+            peer,
+            request.headers(),
+            &state.trusted_proxies,
+            &mtls.certificate_header,
+        )
+    {
+        request.extensions_mut().insert(Arc::new(presented));
+    }
     request
         .extensions_mut()
         .insert(Arc::clone(&resolved.tenant));
@@ -502,6 +535,7 @@ mod tests {
         TenantState {
             directory: TenantDirectory::new(repository),
             trusted_proxies: Arc::new(Vec::new()),
+            mtls: None,
         }
     }
 

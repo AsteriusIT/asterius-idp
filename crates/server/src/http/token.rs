@@ -70,6 +70,9 @@ pub struct TokenContext<'a> {
     pub capabilities: Capabilities,
     /// The grant handlers this deployment has.
     pub grants: &'a [&'a dyn GrantHandler],
+    /// The client certificate this request arrived with (RFC 8705 §2), if the
+    /// deployment saw one from a source it trusts.
+    pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
 }
 
 impl std::fmt::Debug for TokenContext<'_> {
@@ -124,7 +127,7 @@ pub async fn token(
         assertion_type: find(&pairs, "client_assertion_type"),
         client_id: find(&pairs, "client_id"),
         authorization_header: headers.contains_key(header::AUTHORIZATION),
-        client_certificate: false,
+        certificate: context.certificate,
     };
     let rules = AssertionRules::for_issuer(context.tenant.issuer.as_str());
 

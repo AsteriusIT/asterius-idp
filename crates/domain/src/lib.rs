@@ -51,7 +51,8 @@ pub use entities::{
     ResourceIdentifier, ResourceRegistry, ResourceServer, RevocationReason, Role, RoleScope,
     Rotation, RuleId, SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule,
     SubjectError, SubjectType, Tenant, TenantSettings, TenantSettingsError, TenantStatus,
-    TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User, UserId, UserRole, UserStatus,
+    TlsClientAuthSubject, TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User, UserId,
+    UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};

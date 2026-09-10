@@ -283,6 +283,16 @@ fn attempt_with(token: &str) -> Attempt<'_> {
     }
 }
 
+/// The smallest DER `ClientCertificate::from_der` accepts: an empty subject,
+/// no extensions. These tests count credentials rather than read them.
+fn a_certificate() -> asterius_oidc::mtls::ClientCertificate {
+    asterius_oidc::mtls::ClientCertificate::from_der(vec![
+        0x30, 0x18, 0x30, 0x10, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00,
+        0x30, 0x02, 0x30, 0x00, 0x30, 0x00, 0x03, 0x00,
+    ])
+    .expect("a minimal certificate")
+}
+
 // ---- the happy path ------------------------------------------------------
 
 #[tokio::test]
@@ -524,8 +534,9 @@ async fn a_client_id_parameter_agreeing_with_the_subject_is_fine() {
 async fn presenting_a_certificate_and_an_assertion_is_a_malformed_request() {
     let world = World::new();
     let token = sign_with(&world.key, &assertion_claims(CLIENT, ISSUER));
+    let certificate = a_certificate();
     let attempt = Attempt {
-        client_certificate: true,
+        certificate: Some(&certificate),
         ..attempt_with(&token)
     };
 

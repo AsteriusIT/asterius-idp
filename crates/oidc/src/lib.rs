@@ -16,6 +16,7 @@ pub mod decision;
 pub mod form;
 pub mod logout;
 pub mod metadata;
+pub mod mtls;
 pub mod par;
 pub mod pkce;
 pub mod refresh;

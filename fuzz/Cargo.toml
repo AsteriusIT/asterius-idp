@@ -169,6 +169,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "client_certificate"
+path = "fuzz_targets/client_certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "client_metadata_json"
 path = "fuzz_targets/client_metadata_json.rs"
 test = false

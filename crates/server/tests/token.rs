@@ -133,6 +133,7 @@ async fn run_with(
     let clients = FakeClients;
     let response = token(
         TokenContext {
+            certificate: None,
             tenant: &tenant,
             clients: &clients,
             capabilities: Capabilities::default(),
@@ -359,6 +360,7 @@ async fn a_body_that_is_not_a_form_is_refused() {
 
     let response = token(
         TokenContext {
+            certificate: None,
             tenant: &tenant,
             clients: &clients,
             capabilities: Capabilities::default(),
@@ -379,6 +381,7 @@ async fn an_oversized_body_is_refused_before_authentication_runs() {
     let clients = FakeClients;
     let response = token(
         TokenContext {
+            certificate: None,
             tenant: &tenant,
             clients: &clients,
             capabilities: Capabilities::default(),

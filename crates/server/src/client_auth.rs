@@ -52,6 +52,7 @@ use asterius_jose::{SigningKey, VerifyingKey, jws, verify};
 use asterius_oidc::client_auth::{
     Assertion, AssertionRules, Attempt, ClientAuthError, Method, check_assertion,
 };
+use asterius_oidc::mtls::ClientCertificate;
 use std::sync::Arc;
 use time::OffsetDateTime;
 
@@ -90,6 +91,12 @@ pub struct ClientAuthenticator {
     /// generating per request would itself be a timing signal, and a slower
     /// one than the verification it is hiding.
     decoy: VerifyingKey,
+    /// The PKI-method trust anchors, per tenant (RFC 8705 §2.1).
+    ///
+    /// Empty unless the deployment loaded any, and empty means no tenant can
+    /// use `tls_client_auth`. That is the same posture as the feature flag:
+    /// nothing about mTLS happens because a default allowed it.
+    trust_anchors: crate::mtls::TenantTrustAnchors,
 }
 
 impl std::fmt::Debug for ClientAuthenticator {
@@ -118,6 +125,7 @@ impl ClientAuthenticator {
             replay,
             usage: None,
             decoy,
+            trust_anchors: crate::mtls::TenantTrustAnchors::default(),
         })
     }
 
@@ -129,6 +137,17 @@ impl ClientAuthenticator {
     #[must_use]
     pub fn recording_use(mut self, usage: Arc<dyn ClientUsageRecorder>) -> Self {
         self.usage = Some(usage);
+        self
+    }
+
+    /// Gives the authenticator the tenants' PKI-method trust anchors.
+    ///
+    /// Called by the composition root only when `[features] mtls` is on. An
+    /// authenticator without them refuses `tls_client_auth` outright, which is
+    /// what makes the flag and the behaviour one switch rather than two.
+    #[must_use]
+    pub fn with_trust_anchors(mut self, anchors: crate::mtls::TenantTrustAnchors) -> Self {
+        self.trust_anchors = anchors;
         self
     }
 
@@ -156,11 +175,14 @@ impl ClientAuthenticator {
     ) -> Result<Client, ClientAuthError> {
         match attempt.method()? {
             Method::PrivateKeyJwt => {}
-            // RFC 8705 is `ast-m9c.3`. Refusing it as an unregistered method is
-            // honest: a client that presents a certificate here has not
-            // authenticated, and saying so is better than a 501 that leaves it
-            // unclear whether the credential was even looked at.
-            Method::Mtls => return Err(ClientAuthError::WrongMethodForClient),
+            Method::Mtls => {
+                let certificate = attempt
+                    .certificate
+                    .ok_or(ClientAuthError::WrongMethodForClient)?;
+                return self
+                    .authenticate_mtls(tenant, clients, attempt, certificate, now)
+                    .await;
+            }
         }
 
         let assertion = attempt
@@ -277,6 +299,114 @@ impl ClientAuthenticator {
                 client = %client_id,
                 "could not record that a client authenticated"
             );
+        }
+    }
+
+    /// RFC 8705 §2: authenticates a client by the certificate it presented.
+    ///
+    /// The order mirrors the assertion path, and for the same reasons.
+    ///
+    /// 1. **Who does the request say it is?** RFC 8705 §2 is explicit: "the
+    ///    client MUST use the `client_id` request parameter". There is nothing
+    ///    inside a certificate that names a client of *this* server, so a
+    ///    request without it names nobody.
+    /// 2. **Does that client exist, and does it authenticate this way?**
+    /// 3. **Then, and only then, the certificate**, by whichever of §2.1 and
+    ///    §2.2 the client registered for. The two are not alternatives that get
+    ///    tried in turn: a `tls_client_auth` client is never authenticated by a
+    ///    self-signed certificate it happens to have published, and a
+    ///    `self_signed_tls_client_auth` client is never authenticated by a name
+    ///    in a certificate some CA issued.
+    ///
+    /// No `jti` is consumed, because there is no assertion: a certificate is
+    /// not a one-time credential. Replay of the *request* is what
+    /// sender-constrained tokens and PKCE address, not this.
+    async fn authenticate_mtls(
+        &self,
+        tenant: &Tenant,
+        clients: &dyn ClientRepository,
+        attempt: &Attempt<'_>,
+        certificate: &ClientCertificate,
+        now: OffsetDateTime,
+    ) -> Result<Client, ClientAuthError> {
+        let Some(client_id) = attempt.client_id else {
+            return Err(ClientAuthError::UnknownClient);
+        };
+        let client_id = ClientId::new(client_id);
+        let client = match clients.find(&client_id).await {
+            Ok(Some(client)) if client.is_active() => client,
+            // Unknown, or disabled. One answer for both, as on the assertion
+            // path — the difference is which `client_id` values exist.
+            Ok(_) => return Err(ClientAuthError::UnknownClient),
+            Err(_) => return Err(ClientAuthError::KeysUnavailable),
+        };
+
+        let authenticated = self
+            .check_certificate(tenant, &client_id, client, certificate, now)
+            .await?;
+        // The same fact the assertion path records, written in the same place:
+        // a client is used exactly when it authenticates, and mTLS is a second
+        // way to do that rather than a second definition of "used" (`ast-cu3`).
+        self.note_use(&tenant.id, &client_id, now).await;
+        Ok(authenticated)
+    }
+
+    /// Which of RFC 8705's two certificate checks applies, and its answer.
+    ///
+    /// Split from [`Self::authenticate_mtls`] so that "the client
+    /// authenticated" is decided in one expression and recorded in one place,
+    /// rather than at each of the three arms below.
+    async fn check_certificate(
+        &self,
+        tenant: &Tenant,
+        client_id: &ClientId,
+        client: Client,
+        certificate: &ClientCertificate,
+        now: OffsetDateTime,
+    ) -> Result<Client, ClientAuthError> {
+        match client.registration.token_endpoint_auth_method {
+            TokenEndpointAuthMethod::PrivateKeyJwt => Err(ClientAuthError::WrongMethodForClient),
+            TokenEndpointAuthMethod::TlsClientAuth => {
+                // RFC 8705 §2.1. The chain first: the name in a certificate
+                // nobody vouched for is a name its holder chose.
+                let Some(anchors) = self.trust_anchors.for_tenant(&tenant.id) else {
+                    // A tenant with no anchors configured cannot use the PKI
+                    // method. Falling back to any other root would let a CA
+                    // this tenant never named mint its clients.
+                    return Err(ClientAuthError::WrongMethodForClient);
+                };
+                if !anchors.accepts(certificate, &[], now) {
+                    return Err(ClientAuthError::AssertionNotVerified);
+                }
+                // Then the name, which `ClientMetadata::validate` guarantees
+                // exists for this method — but the guarantee is re-checked
+                // rather than assumed, because a row written before that rule
+                // existed would otherwise be a client any valid certificate
+                // authenticates.
+                let Some(expected) = &client.registration.tls_client_auth_subject else {
+                    return Err(ClientAuthError::WrongMethodForClient);
+                };
+                if certificate.matches(expected) {
+                    Ok(client)
+                } else {
+                    Err(ClientAuthError::AssertionNotVerified)
+                }
+            }
+            TokenEndpointAuthMethod::SelfSignedTlsClientAuth => {
+                // RFC 8705 §2.2. No chain, no anchors, no name: the whole of
+                // the check is that this is a certificate the client itself
+                // published.
+                let key_set = self
+                    .keys
+                    .resolve(&tenant.id, &client_id, &client.registration.jwks, None, now)
+                    .await
+                    .map_err(|_| ClientAuthError::KeysUnavailable)?;
+                if certificate.is_one_of(key_set.leaf_certificates().iter().map(String::as_str)) {
+                    Ok(client)
+                } else {
+                    Err(ClientAuthError::AssertionNotVerified)
+                }
+            }
         }
     }
 
