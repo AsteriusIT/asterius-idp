@@ -8,10 +8,10 @@
 use asterius_admin_api::{Asset, Bundle};
 use asterius_domain::{
     AuthenticationMethod, ClientId, Continuation, DomainError, FirstPartyDestination,
-    InteractionRecord, InteractionRepository, Issuer, Participant, Session, SessionRepository,
-    SessionRevocation, Tenant, TenantId, TenantStatus,
+    InteractionRecord, InteractionRepository, Issuer, Participant, PasskeyEnrolment, Role, Session,
+    SessionRepository, SessionRevocation, Tenant, TenantId, TenantStatus, UserId,
 };
-use asterius_server::http::console::{ConsoleContext, enter};
+use asterius_server::http::console::{AdminStanding, ConsoleContext, enter};
 use asterius_web::csp::Nonce;
 use asterius_web::interaction::COOKIE_NAME as INTERACTION_COOKIE;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -159,6 +159,49 @@ impl SessionRepository for FakeSessions {
     }
 }
 
+/// What the visitor holds, and whether they have a passkey (`ast-895`).
+///
+/// The default is the shape every test before this bead assumed: no role, so
+/// the deployment-scope rule does not apply and the entry decision is about
+/// the session alone.
+#[derive(Debug, Default)]
+struct FakeStanding {
+    roles: Vec<Role>,
+    enrolment: Option<PasskeyEnrolment>,
+    fail: bool,
+}
+
+impl FakeStanding {
+    fn holding(roles: &[Role], enrolment: PasskeyEnrolment) -> Self {
+        Self {
+            roles: roles.to_vec(),
+            enrolment: Some(enrolment),
+            fail: false,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AdminStanding for FakeStanding {
+    async fn roles(&self, _user: UserId) -> Result<Vec<Role>, DomainError> {
+        if self.fail {
+            return Err(DomainError::Storage("the store is down".into()));
+        }
+        Ok(self.roles.clone())
+    }
+
+    async fn passkey_enrolment(&self, _user: UserId) -> Result<PasskeyEnrolment, DomainError> {
+        if self.fail {
+            return Err(DomainError::Storage("the store is down".into()));
+        }
+        // Asked only when it decides something. A test that did not say which
+        // answer it wants has hit a path it did not mean to.
+        Ok(self
+            .enrolment
+            .expect("this test did not expect a passkey lookup"))
+    }
+}
+
 // ---- fixtures -----------------------------------------------------------
 
 const SCRIPT: &str = "assets/main-abc123.js";
@@ -234,12 +277,31 @@ async fn visit(
     sessions: &FakeSessions,
     headers: &HeaderMap,
 ) -> axum::response::Response {
+    visit_as(
+        tenant,
+        interactions,
+        sessions,
+        &FakeStanding::default(),
+        headers,
+    )
+    .await
+}
+
+/// [`visit`], for a visitor whose roles and credentials matter (`ast-895`).
+async fn visit_as(
+    tenant: &Tenant,
+    interactions: &FakeInteractions,
+    sessions: &FakeSessions,
+    standing: &FakeStanding,
+    headers: &HeaderMap,
+) -> axum::response::Response {
     let nonce = Nonce::generate();
     enter(
         &ConsoleContext {
             tenant,
             interactions,
             sessions,
+            standing,
             nonce: &nonce,
             bundle: bundle(),
         },
@@ -424,5 +486,146 @@ fn a_first_party_continuation_has_no_client() {
     assert_eq!(
         continuation.first_party(),
         Some(FirstPartyDestination::AdminConsole)
+    );
+}
+// ---- the authenticator a deployment admin must have used (`ast-895`) ------
+
+/// A live session is not the whole answer. The account that reaches every
+/// tenant needs a phishing-resistant authenticator (NIST SP 800-63B §5.2.5),
+/// so a password-only session meets the login page that can ask for the
+/// passkey instead of the console shell.
+#[tokio::test]
+async fn a_deployment_admin_on_a_password_meets_a_login_rather_than_the_console() {
+    // Arrange
+    let tenant = tenant("demo");
+    let interactions = FakeInteractions::default();
+    let sessions = FakeSessions::default();
+    let now = OffsetDateTime::now_utc();
+    let (session, value) = session_of("demo", now);
+    sessions.begin(&session).await.expect("a session");
+    let standing = FakeStanding::holding(&[Role::DeploymentAdmin], PasskeyEnrolment::Enrolled);
+
+    // Act
+    let response = visit_as(
+        &tenant,
+        &interactions,
+        &sessions,
+        &standing,
+        &cookie(&value),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(
+        response.status().as_u16(),
+        SEE_OTHER,
+        "the console shell was drawn for a password-only deployment admin"
+    );
+    assert_eq!(
+        interactions.opened.lock().expect("lock").len(),
+        1,
+        "no login was opened for them to present the passkey at"
+    );
+}
+
+/// The same visitor, having presented the passkey.
+#[tokio::test]
+async fn a_deployment_admin_who_used_a_user_verified_passkey_sees_the_console() {
+    // Arrange
+    let tenant = tenant("demo");
+    let interactions = FakeInteractions::default();
+    let sessions = FakeSessions::default();
+    let now = OffsetDateTime::now_utc();
+    let (mut session, value) = session_of("demo", now);
+    session.amr = vec![
+        AuthenticationMethod::Passkey,
+        AuthenticationMethod::UserVerified,
+    ];
+    sessions.begin(&session).await.expect("a session");
+    let standing = FakeStanding::holding(&[Role::DeploymentAdmin], PasskeyEnrolment::Enrolled);
+
+    // Act
+    let response = visit_as(
+        &tenant,
+        &interactions,
+        &sessions,
+        &standing,
+        &cookie(&value),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        body_of(response).await.contains(SCRIPT),
+        "the console shell was not served"
+    );
+}
+
+/// The bootstrap window: the seeded admin has a password and no passkey, and
+/// it is the account that would have to enrol one. Written down here and in
+/// `docs/threat-model.md` rather than left as an emergent property.
+#[tokio::test]
+async fn the_seeded_admin_reaches_the_console_before_it_has_enrolled_a_passkey() {
+    // Arrange
+    let tenant = tenant("demo");
+    let interactions = FakeInteractions::default();
+    let sessions = FakeSessions::default();
+    let now = OffsetDateTime::now_utc();
+    let (session, value) = session_of("demo", now);
+    sessions.begin(&session).await.expect("a session");
+    let standing = FakeStanding::holding(&[Role::DeploymentAdmin], PasskeyEnrolment::None);
+
+    // Act
+    let response = visit_as(
+        &tenant,
+        &interactions,
+        &sessions,
+        &standing,
+        &cookie(&value),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a fresh deployment would have nobody able to enrol the passkey it demands"
+    );
+}
+
+/// "We cannot tell what you hold" is not "come in". A store that cannot be
+/// read fails closed, and it fails closed *loudly* rather than by quietly
+/// sending an admin round the login loop.
+#[tokio::test]
+async fn a_standing_lookup_that_fails_does_not_admit_anybody() {
+    // Arrange
+    let tenant = tenant("demo");
+    let interactions = FakeInteractions::default();
+    let sessions = FakeSessions::default();
+    let now = OffsetDateTime::now_utc();
+    let (session, value) = session_of("demo", now);
+    sessions.begin(&session).await.expect("a session");
+    let standing = FakeStanding {
+        roles: vec![Role::DeploymentAdmin],
+        enrolment: None,
+        fail: true,
+    };
+
+    // Act
+    let response = visit_as(
+        &tenant,
+        &interactions,
+        &sessions,
+        &standing,
+        &cookie(&value),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        interactions.opened.lock().expect("lock").is_empty(),
+        "an unreadable store should not look like a missing session"
     );
 }

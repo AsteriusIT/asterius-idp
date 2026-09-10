@@ -244,6 +244,21 @@ impl AcceptedPassword {
         Ok(Self(crate::Secret::new(normalised)))
     }
 
+    /// Applies policy with the deny list this binary carries ([`is_common`]).
+    ///
+    /// The form every caller inside this deployment should use until a breach
+    /// check exists. [`AcceptedPassword::accept`] takes the predicate as an
+    /// argument so that a corpus can be loaded once and shared, and the
+    /// argument that was actually being passed was `|_| false` — a policy with
+    /// a deny-list check written down and nothing behind it.
+    ///
+    /// # Errors
+    ///
+    /// [`PasswordError`], as [`AcceptedPassword::accept`].
+    pub fn accept_locally(candidate: &str) -> Result<Self, PasswordError> {
+        Self::accept(candidate, is_common)
+    }
+
     /// The bytes to hash.
     #[must_use]
     pub fn expose(&self) -> &str {
@@ -266,6 +281,198 @@ impl AcceptedPassword {
 pub fn normalise(candidate: &str) -> String {
     use unicode_normalization::UnicodeNormalization as _;
     candidate.nfkc().collect()
+}
+
+/// The deny list compiled into this binary.
+///
+/// **Hand-written here, not imported.** NIST SP 800-63B §5.1.1.2 asks a
+/// verifier to compare a chosen password against "a list containing values
+/// known to be commonly-used, expected, or compromised", and the honest way to
+/// meet that is a breach corpus behind a port — which is `ast-2vk.10`, and
+/// does not exist yet. What exists is this: the shapes that appear at the top
+/// of every published ranking of leaked passwords, written out by hand so that
+/// no third-party corpus and no third-party licence is vendored into the
+/// binary to get them (`deny.toml` governs what may be, and a wordlist is a
+/// dependency like any other).
+///
+/// So it is small, it is not a substitute for a breach check, and its entries
+/// are the guesses an attacker makes in the first hundred attempts against an
+/// administrative account: `password123`, `admin123`, `changeme`, the keyboard
+/// walks, and this project's own name. It closes the case where the deployment
+/// admin's password is the first thing anybody would try. It closes nothing
+/// else.
+///
+/// Sorted, and asserted sorted by a test, because the lookup is a binary
+/// search: an out-of-order entry would be an entry that is silently allowed.
+/// Every entry is at least [`MIN_LENGTH`] characters, also asserted, since a
+/// shorter one could never reach the deny-list check and would be a line
+/// pretending to do work.
+const COMMON: &[&str] = &[
+    "000000000",
+    "111111111",
+    "123123123",
+    "12345678",
+    "123456789",
+    "1234567890",
+    "1q2w3e4r",
+    "1q2w3e4r5t",
+    "1qaz2wsx",
+    "1qaz@wsx",
+    "987654321",
+    "a1b2c3d4",
+    "abc12345",
+    "abcd1234",
+    "admin123",
+    "admin1234",
+    "admin12345",
+    "admin@123",
+    "adminadmin",
+    "administrator",
+    "alexander",
+    "anthony1",
+    "anything",
+    "arsenal1",
+    "asdfghjk",
+    "asdfghjkl",
+    "asterius",
+    "asterius123",
+    "asteriusadmin",
+    "autumn2024",
+    "babygirl",
+    "barcelona",
+    "baseball",
+    "basketball",
+    "batman123",
+    "benjamin",
+    "blink182",
+    "butterfly",
+    "changeme",
+    "changeme1",
+    "changeme123",
+    "charlie1",
+    "cheese123",
+    "chelsea1",
+    "chocolate",
+    "computer",
+    "corvette",
+    "cowboys1",
+    "danielle",
+    "default123",
+    "defaultpassword",
+    "dragon123",
+    "elizabeth",
+    "ferrari1",
+    "football",
+    "football1",
+    "forever1",
+    "freedom1",
+    "greenday",
+    "harley123",
+    "harleydavidson",
+    "hockey123",
+    "hunter123",
+    "iloveyou",
+    "iloveyou1",
+    "iloveyou2",
+    "internet",
+    "jennifer",
+    "jessica1",
+    "juventus",
+    "killer123",
+    "letmein1",
+    "letmein123",
+    "letmein2024",
+    "liverpool",
+    "lovely12",
+    "master123",
+    "matrix123",
+    "metallica",
+    "michael1",
+    "michelle",
+    "monkey123",
+    "mustang1",
+    "nicholas",
+    "nirvana1",
+    "orange12",
+    "p@ssw0rd",
+    "p@ssword",
+    "pa55word",
+    "passw0rd",
+    "password",
+    "password1",
+    "password12",
+    "password123",
+    "password1234",
+    "password2024",
+    "password2025",
+    "passwords",
+    "porsche911",
+    "princess",
+    "princess1",
+    "purple12",
+    "q1w2e3r4",
+    "qazwsxedc",
+    "qwerty123",
+    "qwerty12345",
+    "qwerty2024",
+    "qwertyui",
+    "qwertyuiop",
+    "ranger123",
+    "root1234",
+    "root12345",
+    "samantha",
+    "secret123",
+    "shadow123",
+    "slipknot",
+    "snowball",
+    "soccer12",
+    "spiderman",
+    "spring2024",
+    "stardust",
+    "starwars",
+    "steelers",
+    "summer2024",
+    "summer2025",
+    "sunflower",
+    "sunshine",
+    "sunshine1",
+    "superman",
+    "superman1",
+    "sweetie1",
+    "tinkerbell",
+    "toor1234",
+    "trustno1",
+    "trustno11",
+    "welcome1",
+    "welcome12",
+    "welcome123",
+    "welcome2024",
+    "welcome2025",
+    "whatever",
+    "whatever1",
+    "william1",
+    "winter2024",
+    "yankees1",
+    "yellow12",
+    "zaq12wsx",
+    "zxcvbnm1",
+];
+
+/// Whether a candidate is on the deny list compiled into this binary.
+///
+/// Compared after case folding and after trimming surrounding whitespace, so
+/// `Password123` and ` password123 ` are refused too. That is *not* a
+/// composition rule and not an entropy estimate: it is the observation that
+/// capitalising the first letter is the most common decoration there is, and
+/// that an attacker's list has the decorations on it.
+///
+/// The password itself keeps its case and its whitespace
+/// ([`AcceptedPassword`] holds the normalised form, untrimmed): folding here
+/// decides only what is *refused*.
+#[must_use]
+pub fn is_common(candidate: &str) -> bool {
+    let folded = candidate.trim().to_lowercase();
+    COMMON.binary_search(&folded.as_str()).is_ok()
 }
 
 #[cfg(test)]
@@ -448,6 +655,84 @@ mod tests {
         let rendered = format!("{accepted:?}");
         assert!(!rendered.contains("correct horse"), "{rendered}");
         assert!(rendered.contains("REDACTED"), "{rendered}");
+    }
+
+    // ---- the embedded deny list -----------------------------------------
+
+    /// The acceptance criterion of `ast-895`: `password` is refused and a long
+    /// passphrase is not. Before this list existed, the deny-list argument was
+    /// `|_| false` everywhere, so the first line of this test passed nothing.
+    #[test]
+    fn the_embedded_list_refuses_the_password_everybody_tries() {
+        // Arrange / Act / Assert
+        assert_eq!(
+            AcceptedPassword::accept_locally("password").err(),
+            Some(PasswordError::TooCommon)
+        );
+        assert_eq!(
+            AcceptedPassword::accept_locally("password123").err(),
+            Some(PasswordError::TooCommon)
+        );
+        assert_eq!(
+            AcceptedPassword::accept_locally("changeme").err(),
+            Some(PasswordError::TooCommon)
+        );
+        assert!(
+            AcceptedPassword::accept_locally("correct horse battery staple").is_ok(),
+            "a long passphrase was refused"
+        );
+    }
+
+    /// Capitalising the first letter is the most common decoration there is.
+    #[test]
+    fn the_embedded_list_is_case_folded_and_trimmed_before_the_comparison() {
+        // Arrange / Act / Assert
+        assert!(is_common("Password123"), "a capital first letter evaded it");
+        assert!(is_common("PASSWORD123"));
+        assert!(is_common("  password123  "), "padding evaded it");
+        assert!(!is_common("correct horse battery staple"));
+    }
+
+    /// The lookup is a binary search, so an out-of-order entry is an entry
+    /// that is quietly allowed, and an entry below the length floor is a line
+    /// that can never be reached.
+    #[test]
+    fn every_entry_is_sorted_lower_case_and_long_enough_to_be_reachable() {
+        for pair in COMMON.windows(2) {
+            assert!(pair[0] < pair[1], "{pair:?} is out of order");
+        }
+        for entry in COMMON {
+            assert_eq!(*entry, entry.to_lowercase(), "{entry} is not folded");
+            assert_eq!(entry.trim(), *entry, "{entry} carries whitespace");
+            assert!(
+                entry.chars().count() >= MIN_LENGTH,
+                "{entry} is shorter than the length floor, so it is unreachable"
+            );
+        }
+        assert!(
+            COMMON.len() >= 20,
+            "a deny list this short is not a deny list"
+        );
+    }
+
+    /// The deny list is consulted after the length bounds, so the message a
+    /// caller gets for a short common password is about its length. Asserted
+    /// so that the ordering is a decision rather than an accident: a verifier
+    /// that answered `TooCommon` first would confirm list membership for a
+    /// value it was never going to accept anyway.
+    #[test]
+    fn length_is_judged_before_commonness() {
+        assert_eq!(
+            AcceptedPassword::accept_locally("123456").err(),
+            Some(PasswordError::TooShort)
+        );
+    }
+
+    /// A password only just over the floor is accepted if nobody has it on a
+    /// list — NIST SP 800-63B §5.1.1.2 has no composition rules to add on top.
+    #[test]
+    fn an_uncommon_eight_character_password_still_passes() {
+        assert!(AcceptedPassword::accept_locally("vlurgent").is_ok());
     }
 
     #[test]

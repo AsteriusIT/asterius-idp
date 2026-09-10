@@ -20,8 +20,8 @@ use asterius_domain::entities::session::SessionRevocation;
 use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::{ClientAdministration, TenantRepository, TenantSettingsRepository};
 use asterius_domain::{
-    AuditSink, Capabilities, DomainError, RateLimitStore, ReplayGuard, Role, Session, TenantId,
-    UserId,
+    AuditSink, Capabilities, DomainError, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role,
+    Session, TenantId, UserId,
 };
 use std::sync::Arc;
 
@@ -72,6 +72,29 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// which must never be read as a weaker authority than it is — or a
     /// storage failure.
     async fn roles(&self, tenant: &TenantId, user: UserId) -> Result<Vec<Role>, DomainError>;
+
+    /// Whether `user` has a passkey it could have signed in with (`ast-895`).
+    ///
+    /// Asked only when the answer decides something — a deployment-scoped role
+    /// on a session that is not phishing-resistant
+    /// (`asterius_domain::admin_access_policy::enrolment_decides`) — because
+    /// it is a credential read on the authentication path, and the common case
+    /// must not pay for it.
+    ///
+    /// Disabled credentials do not count: a passkey blocked for a signature
+    /// counter regression cannot be presented, so demanding it would lock the
+    /// account out rather than raise its assurance.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. A caller
+    /// must not read a failure here as "no passkey": that would turn an
+    /// unreachable database into a way in on a password.
+    async fn passkey_enrolment(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<PasskeyEnrolment, DomainError>;
 
     /// The deployment's tenant repository: `ProvisionedTenants`, never the
     /// bare adapter. See the module documentation.

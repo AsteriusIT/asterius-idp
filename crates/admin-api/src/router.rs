@@ -1440,6 +1440,11 @@ mod tests {
         tenants: Mutex<Vec<Tenant>>,
         sessions: Mutex<BTreeMap<String, Session>>,
         roles: Mutex<BTreeMap<String, Vec<Role>>>,
+        /// The users this fake says hold an enabled passkey, keyed
+        /// `tenant|uuid` as `roles` is. Empty by default, which is a fresh
+        /// deployment: the seeded admin has a password and nothing else
+        /// (`ast-895`).
+        passkeys: Mutex<std::collections::BTreeSet<String>>,
         events: Mutex<Vec<AuditEvent>>,
         counters: Mutex<BTreeMap<String, u32>>,
         claimed: Mutex<std::collections::BTreeSet<String>>,
@@ -1938,6 +1943,26 @@ mod tests {
                 .unwrap_or_default())
         }
 
+        async fn passkey_enrolment(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+        ) -> Result<asterius_domain::PasskeyEnrolment, DomainError> {
+            Ok(
+                if self
+                    .0
+                    .passkeys
+                    .lock()
+                    .expect("an uncontended lock")
+                    .contains(&format!("{tenant}|{}", user.as_uuid()))
+                {
+                    asterius_domain::PasskeyEnrolment::Enrolled
+                } else {
+                    asterius_domain::PasskeyEnrolment::None
+                },
+            )
+        }
+
         fn tenants(&self) -> Arc<dyn TenantRepository> {
             Arc::new(self.clone())
         }
@@ -2127,7 +2152,32 @@ mod tests {
 
         /// Mints a usable session in `tenant` for a user holding `roles`, and
         /// returns the cookie value.
+        ///
+        /// The session records a **user-verified passkey**, which is what a
+        /// console login has to be for a deployment-scoped role (`ast-895`).
+        /// A test about the rule itself uses [`World::sign_in_with`].
         fn sign_in(&self, tenant: &str, roles: &[Role]) -> String {
+            self.sign_in_with(
+                tenant,
+                roles,
+                &[
+                    AuthenticationMethod::Passkey,
+                    AuthenticationMethod::UserVerified,
+                ],
+                asterius_domain::PasskeyEnrolment::Enrolled,
+            )
+        }
+
+        /// [`World::sign_in`], with the two things `ast-895` decides on: how
+        /// the user authenticated, and whether the account has a passkey that
+        /// could have been asked for.
+        fn sign_in_with(
+            &self,
+            tenant: &str,
+            roles: &[Role],
+            amr: &[AuthenticationMethod],
+            enrolment: asterius_domain::PasskeyEnrolment,
+        ) -> String {
             let id = SessionId::generate();
             let tenant = TenantId::parse(tenant).expect("a valid tenant id");
             let user = UserId::generate();
@@ -2135,7 +2185,7 @@ mod tests {
                 tenant.clone(),
                 &id,
                 *user.as_uuid(),
-                vec![AuthenticationMethod::Passkey],
+                amr.to_vec(),
                 OffsetDateTime::now_utc(),
                 Lifetimes::default(),
             );
@@ -2145,13 +2195,40 @@ mod tests {
                 .lock()
                 .expect("an uncontended lock")
                 .insert(id.digest(), session);
+            let key = format!("{tenant}|{}", user.as_uuid());
             self.handle
                 .0
                 .roles
                 .lock()
                 .expect("an uncontended lock")
-                .insert(format!("{tenant}|{}", user.as_uuid()), roles.to_vec());
+                .insert(key.clone(), roles.to_vec());
+            if enrolment == asterius_domain::PasskeyEnrolment::Enrolled {
+                self.handle
+                    .0
+                    .passkeys
+                    .lock()
+                    .expect("an uncontended lock")
+                    .insert(key);
+            }
             id.expose().to_owned()
+        }
+
+        /// A `GET` of `operation` carrying `cookie`, which is every request
+        /// the `ast-895` tests make.
+        async fn get(&self, operation: &Operation, cookie: &str) -> Response {
+            self.send(
+                request_for(operation)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await
         }
 
         fn api(&self) -> AdminApi {
@@ -2404,6 +2481,124 @@ mod tests {
                 response.status()
             );
         }
+    }
+
+    // ---- the authenticator a deployment admin must have used (`ast-895`) ---
+
+    /// The rule. A deployment admin holding a passkey does not administer the
+    /// deployment on a password, whatever the password is: NIST SP 800-63B
+    /// §5.2.5 wants verifier impersonation resistance on the account that
+    /// reaches every tenant.
+    #[tokio::test]
+    async fn a_deployment_admin_on_a_password_is_sent_to_a_passkey_step_up() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in_with(
+            "asterius-admin",
+            &[Role::DeploymentAdmin],
+            &[AuthenticationMethod::Password],
+            asterius_domain::PasskeyEnrolment::Enrolled,
+        );
+
+        // Act
+        let response = world.get(&crate::TENANTS_LIST, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body_of(response).await["error"]["code"],
+            "step_up_required",
+            "the console cannot tell this from an expired session"
+        );
+    }
+
+    /// The same session, with the passkey presented.
+    #[tokio::test]
+    async fn a_deployment_admin_who_used_a_user_verified_passkey_is_admitted() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in_with(
+            "asterius-admin",
+            &[Role::DeploymentAdmin],
+            &[
+                AuthenticationMethod::Password,
+                AuthenticationMethod::Passkey,
+                AuthenticationMethod::UserVerified,
+            ],
+            asterius_domain::PasskeyEnrolment::Enrolled,
+        );
+
+        // Act
+        let response = world.get(&crate::TENANTS_LIST, &cookie).await;
+
+        // Assert
+        assert!(response.status().is_success(), "{}", response.status());
+    }
+
+    /// A passkey with no UV proved possession and nothing about who was
+    /// holding the authenticator.
+    #[tokio::test]
+    async fn a_passkey_without_user_verification_does_not_open_the_admin_surface() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in_with(
+            "asterius-admin",
+            &[Role::DeploymentAdmin],
+            &[AuthenticationMethod::Passkey],
+            asterius_domain::PasskeyEnrolment::Enrolled,
+        );
+
+        // Act
+        let response = world.get(&crate::TENANTS_LIST, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body_of(response).await["error"]["code"], "step_up_required");
+    }
+
+    /// The bootstrap window, written down: the seeded admin has a password and
+    /// no passkey, and it is the account that would have to enrol one. See
+    /// `asterius_domain::admin_access_policy` and `docs/threat-model.md`.
+    #[tokio::test]
+    async fn the_seeded_admin_may_still_sign_in_before_it_has_enrolled_a_passkey() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in_with(
+            "asterius-admin",
+            &[Role::DeploymentAdmin],
+            &[AuthenticationMethod::Password],
+            asterius_domain::PasskeyEnrolment::None,
+        );
+
+        // Act
+        let response = world.get(&crate::TENANTS_LIST, &cookie).await;
+
+        // Assert
+        assert!(
+            response.status().is_success(),
+            "a fresh deployment would have nobody able to enrol a passkey: {}",
+            response.status()
+        );
+    }
+
+    /// The rule is about deployment scope. A tenant admin's assurance is the
+    /// tenant's own `acr` policy, decided elsewhere.
+    #[tokio::test]
+    async fn a_tenant_admin_on_a_password_is_not_touched_by_this_rule() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in_with(
+            "acme",
+            &[Role::TenantAdmin],
+            &[AuthenticationMethod::Password],
+            asterius_domain::PasskeyEnrolment::Enrolled,
+        );
+
+        // Act
+        let response = world.get(&crate::CLIENTS_LIST, &cookie).await;
+
+        // Assert
+        assert!(response.status().is_success(), "{}", response.status());
     }
 
     // ---- CSRF --------------------------------------------------------------

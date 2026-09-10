@@ -28,7 +28,10 @@
 //! as the key-encryption key, and for the same reason: a credential baked into
 //! an image or a compose file is a credential every copy of that image shares.
 //! It is checked against the same policy a user's password is
-//! ([`AcceptedPassword`], NIST SP 800-63B §5.1.1.2) before it is hashed.
+//! ([`AcceptedPassword`], NIST SP 800-63B §5.1.1.2) before it is hashed —
+//! including the deny list, which is not optional for this account: it is the
+//! one credential that administers every tenant, so `admin`/`changeme` is a
+//! boot failure rather than a warning.
 
 use crate::audit::PgAuditSink;
 use crate::error::to_domain_error;
@@ -132,9 +135,17 @@ impl PgAdminSeed {
     pub async fn ensure(&self, admin: &DeploymentAdmin) -> Result<Seeded, DomainError> {
         // Policy before anything is written. A password the login form would
         // refuse must not become the one credential that administers the
-        // deployment. The deny-list argument is a closure the breach-check port
-        // (`ast-2vk.10`) fills in; until then nothing is denied by name.
-        let password = AcceptedPassword::accept(admin.password.expose(), |_| false)
+        // deployment — and this is the account an attacker guesses at first,
+        // so `admin`/`changeme` must fail here rather than at somebody's
+        // retrospective. `accept_locally` is the length floor of NIST SP
+        // 800-63B §5.1.1.2 plus the deny list compiled into this binary
+        // (`ast-895`); the breach-check port (`ast-2vk.10`) will replace the
+        // second half without changing this call.
+        //
+        // It fails the boot. A deployment whose declared admin password is
+        // `password123` should stop while somebody is watching, which is the
+        // same argument the Argon2 parameter floor makes one module over.
+        let password = AcceptedPassword::accept_locally(admin.password.expose())
             .map_err(|e| DomainError::invalid("admin.password", e.to_string()))?;
 
         self.reserve_tenant(admin).await?;

@@ -49,6 +49,22 @@ pub enum AdminError {
     #[error("the session presented is not usable")]
     SessionUnusable,
 
+    /// A session resolved, and its user holds deployment authority, but the
+    /// authentication it records is not phishing-resistant (`ast-895`).
+    ///
+    /// 401 rather than 403, and the distinction is deliberate: 403 means "not
+    /// you", and this is "not like that". The remedy is another
+    /// authentication — present the passkey the account already has — so the
+    /// status is the one that means *authenticate*, and the code is its own so
+    /// the console can say which credential is wanted instead of showing the
+    /// "your session expired" it shows for every other 401. RFC 9470 makes the
+    /// same choice for the resource-server case.
+    #[error(
+        "administering this deployment requires a passkey; sign in again with the one \
+         registered on this account"
+    )]
+    StepUpRequired,
+
     /// An `Authorization` header was presented and the token behind it is not
     /// one this server will act on.
     #[error("the access token presented is not usable")]
@@ -119,6 +135,7 @@ impl AdminError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Unauthenticated | Self::SessionUnusable => "unauthenticated",
+            Self::StepUpRequired => "step_up_required",
             Self::InvalidToken => "invalid_token",
             Self::Forbidden => "forbidden",
             Self::CsrfMissing | Self::CsrfMismatch | Self::CrossSite => "csrf_failed",
@@ -140,9 +157,10 @@ impl AdminError {
     #[must_use]
     pub const fn status(&self) -> StatusCode {
         match self {
-            Self::Unauthenticated | Self::SessionUnusable | Self::InvalidToken => {
-                StatusCode::UNAUTHORIZED
-            }
+            Self::Unauthenticated
+            | Self::SessionUnusable
+            | Self::InvalidToken
+            | Self::StepUpRequired => StatusCode::UNAUTHORIZED,
             Self::Forbidden
             | Self::CsrfMissing
             | Self::CsrfMismatch

@@ -20,13 +20,14 @@
 use asterius_admin_api::clients::RegistrationGate;
 use asterius_admin_api::{AdminBackend, ClientAddress};
 use asterius_domain::keys::KeyAdministration;
+use asterius_domain::ports::PasskeyRepository as _;
 use asterius_domain::ports::{
     ClientAdministration, JwksFetcher, TenantRepository, TenantSettingsRepository,
 };
 use asterius_domain::{
     AuditSink, Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration,
-    DomainError, RateLimitStore, ReplayGuard, Role, Session, SessionRepository as _, TenantId,
-    UserId,
+    DomainError, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role, Session,
+    SessionRepository as _, TenantId, UserId,
 };
 
 use crate::http::register::RegistrationPolicy;
@@ -245,6 +246,32 @@ impl AdminBackend for Deployment {
             .roles_of(user)
             .await?;
         Ok(roles.into_iter().map(|granted| granted.role).collect())
+    }
+
+    /// Whether this user has an enabled passkey (`ast-895`).
+    ///
+    /// `credential_ids` is the read `excludeCredentials` already uses, and it
+    /// filters `disabled_at is null` — which is the behaviour this rule wants
+    /// and not a coincidence to be relied on quietly: a passkey blocked for a
+    /// counter regression cannot be presented, so counting it would leave the
+    /// admin holding a credential the server refuses.
+    async fn passkey_enrolment(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<PasskeyEnrolment, DomainError> {
+        let credentials = self
+            .store
+            .scope(tenant.clone())
+            .passkeys()
+            .credential_ids(&user)
+            .await?;
+
+        Ok(if credentials.is_empty() {
+            PasskeyEnrolment::None
+        } else {
+            PasskeyEnrolment::Enrolled
+        })
     }
 
     fn tenants(&self) -> Arc<dyn TenantRepository> {
