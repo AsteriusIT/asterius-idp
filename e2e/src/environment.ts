@@ -28,6 +28,15 @@ function fromEnv(name: string, fallback: string): string {
  */
 export const BASE_URL = fromEnv('E2E_BASE_URL', 'https://127.0.0.1:9444/t/e2e');
 
+/**
+ * The sweep tenant's id, as the tables record it.
+ *
+ * Read off the base URL rather than named again, for the reason
+ * `WEBAUTHN_TENANT` gives below: a second spelling is how a query starts
+ * reading an empty table and calling it "nothing was recorded".
+ */
+export const TENANT = new URL(BASE_URL).pathname.split('/').filter(Boolean).pop() ?? '';
+
 /** The username seeded by `e2e/fixtures/seed.sql`. */
 export const USERNAME = fromEnv('E2E_USERNAME', 'sweep@example.test');
 

@@ -4,7 +4,7 @@
 # and @DATABASE_URL@ and writes the result into a run directory it deletes
 # afterwards. Every key is described in docs/configuration.md.
 #
-# Three differences from deploy/compose/asterius.toml, and each is the point.
+# Four differences from deploy/compose/asterius.toml, and each is the point.
 #
 # `mode = "terminate_tls"` with a certificate generated for the run, rather than
 # `behind_proxy` on plain HTTP. The sweep has to prove that a real browser keeps
@@ -39,6 +39,17 @@ kek_env = "ASTERIUS_KEK"
 
 [registration]
 mode = "open"
+
+# The device grant, because the sweep walks its browser half (`ast-ndk.4`).
+#
+# RFC 8628 §3.3 is a person on a *second* device typing a code into whatever
+# browser they have, which is the least likely browser in this server to be
+# running script — so the no-JS suite has to be able to reach those pages.
+# Everything under `[features]` is off by default and the endpoint is not
+# mounted without this, so a sweep that assumed it would meet a 404 and blame
+# the flow.
+[features]
+device_flow = true
 
 # The whole sweep is one address, running flows in parallel as fast as a
 # browser can: every test registers its own client and then pushes, redeems and

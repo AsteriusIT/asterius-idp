@@ -87,8 +87,10 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], javaScriptEnabled: true },
       // The flow itself is the no-JS suite's subject. Running it again with
       // script enabled would assert the same server behaviour twice and double
-      // the slowest job in the sweep.
-      testIgnore: ['**/no-js-flow.spec.ts'],
+      // the slowest job in the sweep. The same goes for every `no-js-*` spec
+      // `ast-ndk.4` added: each one asserts what a browser that will not run
+      // script can still do, which is a claim script enabled cannot make.
+      testIgnore: ['**/no-js-*.spec.ts'],
     },
   ],
 });

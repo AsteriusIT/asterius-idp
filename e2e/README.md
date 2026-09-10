@@ -40,8 +40,16 @@ Nothing is left behind except rows in the development database.
 - **Every page a route really renders passes axe** at WCAG 2.1 AA —
   `tests/accessibility.spec.ts` for the server-rendered ones, `console.spec.ts`
   and `key-rotation.spec.ts` for the console's screens. The templates that are
-  wired to no handler yet (device flow, registration, password recovery) are
-  deliberately absent: a test of an unreachable page is a test of nothing.
+  wired to no handler yet (registration, email verification) are deliberately
+  absent: a test of an unreachable page is a test of nothing. The device and
+  recovery pages left that list when `ast-lh3.3` and `ast-2vk.10` routed them,
+  and `ast-ndk.4` walks both in the no-JS suite.
+- **A device is connected, and a password is recovered, by a browser that runs
+  no script.** `tests/no-js-device.spec.ts` and `tests/no-js-account.spec.ts`
+  (`ast-ndk.4`). Both are journeys whose *whole point* is the browser somebody
+  happens to have — a television's companion phone, a mail client's embedded
+  view — so "we assume script" is not an available answer, and the Rust tests
+  that drive those handlers never had script to disable in the first place.
 
 ## The suites
 
@@ -51,11 +59,47 @@ repository cares most about and is where the flow runs. **js** is not redundant:
 will not run script, so only a scripted browser can tell a correct nonce from a
 missing one.
 
-The pages that carry script — `passkey.html` and, since `ast-2vk.4`, the passkey
-block on `login.html` — are exempted by name in `SCRIPTED_TEMPLATES`, and both
-are swept with script enabled: `tests/csp-sweep.spec.ts` runs their nonced
-bootstraps, and `tests/passkey-ceremony.spec.ts` runs a whole WebAuthn ceremony
-through them.
+What each project covers today:
+
+| no-js (`javaScriptEnabled: false`) | js |
+| --- | --- |
+| login → consent → the client's callback (`no-js-flow`) | the passkey ceremony on a virtual authenticator (`passkey-ceremony`), including conditional mediation — the browser offering a passkey from its own autofill — and the cloned-authenticator refusal (`passkey-clone`) |
+| `response_mode=form_post` pressed by hand (`form-post`) | the same `form_post` page auto-submitting (`form-post`) |
+| the device flow's browser half: code entry, §3.3.1's confirmation, the outcome page, and the device's poll answering with a token (`no-js-device`) | the admin console and a key rotation an operator performs (`console`, `key-rotation`) |
+| password recovery end to end, and RP-initiated logout (`no-js-account`) | axe over every page a route really renders (`accessibility`) |
+| the script allowlist, swept and gated (`no-js-allowlist`) | — |
+| the CSP sweep and the negative proof | the CSP sweep and the negative proof |
+
+Every `no-js-*.spec.ts` is ignored by the js project: each asserts what a
+browser that will not run script can still do, which is not a claim a scripted
+browser can make, and running the slowest specs twice would double the slowest
+job in the sweep.
+
+## The allowlist: pages that may need JavaScript
+
+Three, and the list is closed. `e2e/src/no-script.ts` holds it for the browser,
+`SCRIPTED_TEMPLATES` in `crates/web/src/source_audit.rs` holds it for the build,
+and neither is allowed to grow without the other.
+
+| Page | Why it cannot be markup | What a browser without script gets |
+| --- | --- | --- |
+| `login.html` | `navigator.credentials.get()` is a call, and conditional mediation exists only as one | the username and password form, whose submit button is real and never disabled. The passkey button starts hidden and the script reveals it, so nobody is shown a control that could not work |
+| `passkey.html` | `navigator.credentials.create()` is a call: a WebAuthn *enrolment* cannot be run from markup at all | no button, a sentence saying why, and a link back to the password path |
+| `form_post.html` | a form cannot submit itself — no attribute does it and `<noscript>` renders rather than acts | the same submit button the script would have pressed, labelled "Continue" |
+
+The gate is `expectWithinScriptAllowlist`, and the budget for a page that is not
+on the list is zero. Every page the no-JS project reaches calls it —
+`tests/no-js-allowlist.spec.ts` for the ones a URL reaches, and the flow specs
+for the ones a flow reaches — so a template that grows a `<script>` fails the
+no-JS suite whoever added it and wherever it is rendered from. The last test in
+that file is the negative proof: it runs the gate over a page that really does
+carry a script under a name nobody allowlisted, and fails unless the gate
+refuses it. A gate that never fires would let every other assertion pass over a
+page that had quietly stopped working without JavaScript.
+
+Adding a fourth page is a decision, not a detail: it needs an entry here, an
+entry in `no-script.ts` naming the control that still works, and an entry in
+`SCRIPTED_TEMPLATES` with the reason.
 
 ## The negative proof
 
@@ -81,15 +125,16 @@ authorization was validated against, one origin and that page only.
 `tests/csp-sweep.spec.ts` asserts both halves: the widening on the consent page,
 and its absence on every other page.
 
-The signed-out page in `tests/accessibility.spec.ts` is a documented
-`test.fail()` for the same kind of reason (`ast-rna`). The logout confirmation
-posts to the bare `/logout`, root-relative and with no mount prefix, so on a
-path-routed tenant the answer lands on a 404 and pressing "Log out" ends
-nothing. `ast-295` gave the rendered URLs their prefix and
-`crates/server/src/http/logout.rs::confirmation_page` was missed; `ast-f0y`
-then removed the `custom_host` fixture that had been hiding it. The day the
-action carries its prefix, the test passes unexpectedly and the annotation
-comes off.
+The signed-out page was found the same way (`ast-rna`) and is fixed. The logout
+confirmation posted to the bare `/logout`, root-relative and with no mount
+prefix, so on a path-routed tenant the answer landed on a 404 and pressing "Log
+out" ended nothing: `ast-295` gave the rendered URLs their prefix and
+`crates/server/src/http/logout.rs::confirmation_page` was missed, and `ast-f0y`
+then removed the `custom_host` fixture that had been hiding it. `ast-j3v`
+carried the prefix through, the `test.fail()` came off, and
+`tests/no-js-account.spec.ts` now presses that button with script disabled and
+checks that the session is really gone — a page that says "you are signed out"
+being the one thing a broken logout is still perfectly able to do.
 
 ## Fixture notes
 
@@ -142,6 +187,22 @@ comes off.
   to be one the tenant answers to, which is what stops
   `https://anything/t/x/token` minting tokens for an issuer the request never
   reached.
+- `[features] device_flow = true` in the fixture configuration, because
+  everything under `[features]` is off by default and RFC 8628's pages are not
+  mounted without it. The sweep walks them: §3.3 is a person typing a code into
+  whatever browser they have, which is the least likely browser in this server
+  to be running script.
+- The recovery sweep reads the **outbox**. `PgOutboxMailSender` is the only
+  sender this repository ships — it writes every message to a table and
+  delivers nothing — so the link a person would have clicked exists there and
+  nowhere else, the token itself being stored as a digest. `src/outbox.ts`
+  reads it through the same `psql` path `src/audit.ts` uses. Treat what comes
+  back as a credential, because it is one.
+- The recovery sweep also *changes the fixture user's password* and changes it
+  back through a second reset, in the same test. A reset that wrote the same
+  password would prove nothing — the page looks identical whether the
+  credential was written or dropped — and a run leaves the seed's own password
+  behind for the specs that follow it.
 - `E2E_RESET_DB=1` drops and recreates the public schema first, for a
   development database that predates a change to the baseline migration.
 
