@@ -18,7 +18,9 @@
 //! * **Never empty.** An empty key would mean "resume after nothing", which is
 //!   the first page — so accepting one would make a malformed cursor look like
 //!   a successful reset rather than an error.
-//! * **Bounded.** A megabyte of base64 is refused before it is decoded.
+//! * **Bounded.** A megabyte of base64 is refused before it is decoded, and a
+//!   key over `MAX_KEY_LEN` is refused after — while every key within it round
+//!   trips, cap included.
 #![no_main]
 
 use asterius_admin_api::pagination::{Cursor, PageRequest};
@@ -52,8 +54,11 @@ fuzz_target!(|data: &[u8]| {
         );
     }
 
-    // Anything this server mints, it reads back as exactly what went in.
-    if !raw.is_empty() {
+    // Anything this server mints out of a key within the documented cap, it
+    // reads back as exactly what went in. Beyond the cap the refusal is the
+    // point: `after` is infallible, so an over-long key can be minted, and
+    // `decode` is where it is refused.
+    if !raw.is_empty() && raw.len() <= asterius_admin_api::pagination::MAX_KEY_LEN {
         let read_back = Cursor::decode(&minted).expect("a cursor this server minted");
         assert_eq!(read_back.key(), raw, "a minted cursor lost its key");
     }
