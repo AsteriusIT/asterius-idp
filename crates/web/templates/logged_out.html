@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{% if signed_out %}{{ text.logged_out_title() }}{% else %}{{ text.still_signed_in_title() }}{% endif %} — {{ tenant_name }}{% endblock %}
+{% block card_class %} centered{% endblock %}
 {% block content %}
 {# The neutral end of a logout. It is what a user sees when there is no
    post-logout redirect to perform — because the relying party was not
@@ -9,6 +10,7 @@
    Neutral is the requirement rather than the fallback: this page is reached by
    requests this server could not attribute, so it names no client and offers
    no link that anybody else chose. #}
+<div class="stack tight">
 {% if signed_out %}
 <h2>{{ text.logged_out_heading() }}</h2>
 <p class="muted">{{ text.logged_out_body(tenant_name) }}</p>
@@ -16,4 +18,5 @@
 <h2>{{ text.still_signed_in_heading() }}</h2>
 <p class="muted">{{ text.still_signed_in_body(tenant_name) }}</p>
 {% endif %}
+</div>
 {% endblock %}

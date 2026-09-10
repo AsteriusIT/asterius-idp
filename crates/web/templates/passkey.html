@@ -22,12 +22,14 @@
    cannot work, and the password link below is in the markup either way. #}
 {% include "error_summary.html" %}
 
+<div class="stack tight">
 <h2>Set up a passkey</h2>
 <p class="muted">Signed in as {{ username }}. A passkey signs you in with your
 device's screen lock instead of a password, and cannot be phished: it only
 works on this site.</p>
+</div>
 
-<div id="passkey"
+<div class="stack" id="passkey"
      data-options-url="{{ options_action }}"
      data-finish-url="{{ finish_action }}"
      data-next-url="{{ next_href }}"

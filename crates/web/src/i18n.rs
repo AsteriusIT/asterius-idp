@@ -174,6 +174,12 @@ catalogue! {
         LoginPasskeyFailed => login_passkey_failed, "login.passkey-failed",
             en: "That did not work. Sign in with your password instead.",
             fr: "Cela n'a pas fonctionné. Connectez-vous plutôt avec votre mot de passe.";
+        // The word between the passkey button and the password form. One
+        // word, in the catalogue rather than in the template, because a
+        // template literal is a word a tenant cannot translate.
+        LoginOr => login_or, "login.or",
+            en: "or",
+            fr: "ou";
         LoginNoScript => login_no_script, "login.no-script",
             en: "Signing in with a passkey needs JavaScript, because it is a browser API that a \
                  page has to call. JavaScript is switched off here, so use your username and \
@@ -191,6 +197,18 @@ catalogue! {
         ConsentReturnedTo => consent_returned_to, "consent.returned-to",
             en: "You will be returned to",
             fr: "Vous serez redirigé vers";
+        // ast-9li: the question, and it names nobody. The heading used to be
+        // "{client} would like access", which put a name the client chose for
+        // itself at the top of the page in the largest type on it — the
+        // misidentification FAPI 2.0 SP §7 warns about, rendered as a title.
+        // The name is still here, under the host, as a claim rather than an
+        // identity (`consent.calls-itself`).
+        ConsentAccessHeading => consent_access_heading, "consent.access-heading",
+            en: "Allow access?",
+            fr: "Autoriser l'accès ?";
+        ConsentAskingFor => consent_asking_for, "consent.asking-for",
+            en: "It is asking for:",
+            fr: "Voici ce qui est demandé :";
         ConsentRequired => consent_required, "consent.required",
             en: "(required)",
             fr: "(obligatoire)";
@@ -260,9 +278,9 @@ catalogue! {
         ConsentTitle => consent_title, "consent.title",
             en: "Authorise {0}",
             fr: "Autoriser {0}";
-        ConsentHeading => consent_heading, "consent.heading",
-            en: "{0} would like access",
-            fr: "{0} demande un accès";
+        ConsentCallsItself => consent_calls_itself, "consent.calls-itself",
+            en: "The application calls itself {0}",
+            fr: "L'application se présente comme {0}";
         ConsentSignedInAs => consent_signed_in_as, "consent.signed-in-as",
             en: "Signed in as {0}.",
             fr: "Connecté en tant que {0}.";
@@ -541,7 +559,7 @@ mod tests {
     #[test]
     fn an_override_that_drops_the_placeholder_is_refused() {
         // Arrange
-        let overrides = MessageOverrides::from_pairs([("consent.heading", "Accès demandé")])
+        let overrides = MessageOverrides::from_pairs([("consent.calls-itself", "Application")])
             .expect("plain text");
 
         // Act
@@ -558,7 +576,7 @@ mod tests {
         let overrides = MessageOverrides::from_pairs([
             ("consent.allow", "Continuer"),
             ("consent.renamed-away", "x"),
-            ("consent.heading", "Accès demandé"),
+            ("consent.calls-itself", "Application"),
         ])
         .expect("plain text");
 
@@ -568,8 +586,8 @@ mod tests {
         // Assert
         assert_eq!(catalog.consent_allow(), "Continuer");
         assert_eq!(
-            catalog.consent_heading("Example App"),
-            "Example App would like access"
+            catalog.consent_calls_itself("Example App"),
+            "The application calls itself Example App"
         );
     }
 

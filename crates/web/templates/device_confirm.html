@@ -16,11 +16,14 @@
    The client's name is here for the reason it is on the consent screen, with
    the same caveat: it is a name chosen at registration, so it is a hint and not
    an identity. #}
-<h2>Is this the code on your device?</h2>
 {% include "error_summary.html" %}
-<p class="code-display">{{ user_code }}</p>
+
+<div class="stack tight">
+<h2>Is this the code on your device?</h2>
 <p class="muted">{{ client_name }} is asking to connect. Continue only if this
 code matches the one your device is showing.</p>
+</div>
+<p class="code-display">{{ user_code }}</p>
 
 {# RFC 8628 §5.3, "Remote Phishing": the whole flow can be run by an attacker
    who never touches the victim's network — they start it, then send the code

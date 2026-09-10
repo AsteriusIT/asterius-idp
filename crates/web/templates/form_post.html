@@ -23,8 +23,10 @@
    the client chose and this server echoes byte for byte, so it reaches the
    page as data and can never be markup. The script interpolates nothing at
    all: it names one element by id and submits it. #}
+<div class="stack tight">
 <h2>Returning you to the application</h2>
 <p class="muted">Your answer is being sent back to {{ redirect_host }}.</p>
+</div>
 
 <form method="post" action="{{ action }}" id="form-post">
 {% for field in fields %}

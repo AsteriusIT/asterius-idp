@@ -1,41 +1,76 @@
 {% extends "base.html" %}
 {% block title %}{{ text.consent_title(client_name) }} — {{ tenant_name }}{% endblock %}
 {% block content %}
-<h2>{{ text.consent_heading(client_name) }}</h2>
+<div class="stack tight">
+<h2>{{ text.consent_access_heading() }}</h2>
 
 {# FAPI 2.0 SP §7 names client misidentification as a privacy risk: the name is
    chosen by whoever registered the client, and "Example Bank" is a name anyone
    can pick. The host is the part a user can check against where they expected
-   to be, so it is shown next to the name rather than buried. #}
-<p class="muted">{{ text.consent_returned_to() }} <strong>{{ redirect_host }}</strong>.</p>
-<p class="muted">{{ text.consent_signed_in_as(username) }}</p>
+   to be, so it is what this block leads with, in the largest type on the page;
+   the name follows it as a claim the application makes about itself. #}
+<div class="host">
+  <span class="host-label">{{ text.consent_returned_to() }}</span>
+  <span class="host-value">{{ redirect_host }}</span>
+  <span class="host-client">{{ text.consent_calls_itself(client_name) }}</span>
+</div>
+
+<p class="muted">{{ text.consent_signed_in_as(username) }} {{ text.consent_asking_for() }}</p>
+</div>
 
 <form method="post" action="{{ action }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">
 
-<ul class="scopes">
+{# One row per permission, and the row is the target: a checkbox 18px across
+   is a 18px target, so the label around it is 44px tall and the whole row is
+   what a thumb presses (WCAG 2.2 SC 2.5.8). The scope name stays on the row,
+   under the sentence, because `profile` is what an operator asks about and
+   "See your name and picture" is what a person reads. #}
+<ul class="permissions">
 {% for scope in scopes %}
+  {% if scope.required %}
   <li>
-    {% if scope.required %}
-      {# Not a disabled checkbox: a disabled input submits nothing, so the
-         value has to travel anyway. A hidden field plus plain text says the
-         same thing to a person and cannot be unticked. #}
+    {# Not a disabled checkbox: a disabled input submits nothing, so the
+       value has to travel anyway. A hidden field plus a tick that is drawn
+       rather than offered says the same thing to a person and cannot be
+       unticked. #}
+    <div class="permission">
+      <span class="permission-mark"></span>
       <input type="hidden" name="scope" value="{{ scope.name }}">
-      {% if let Some(description) = scope.description %}{{ description }}{% else %}{{ scope.name }}{% endif %}
-      <span class="muted">{{ text.consent_required() }}</span>
-    {% else %}
-      <label class="inline">
-        <input type="checkbox" name="scope" value="{{ scope.name }}" checked>
-        {% if let Some(description) = scope.description %}{{ description }}{% else %}{{ scope.name }}{% endif %}
-      </label>
-    {% endif %}
-    <span class="muted">({{ scope.name }})</span>
+      {# The scope name is the second line only when the first is a sentence
+         about it: a scope this server has no description for would otherwise
+         be printed twice. #}
+      <span class="permission-text">
+        {% if let Some(description) = scope.description %}
+        <span class="permission-name">{{ description }}</span>
+        <span class="permission-scope">{{ scope.name }} {{ text.consent_required() }}</span>
+        {% else %}
+        <span class="permission-name">{{ scope.name }}</span>
+        <span class="permission-scope">{{ text.consent_required() }}</span>
+        {% endif %}
+      </span>
+    </div>
   </li>
+  {% else %}
+  <li>
+    <label class="permission">
+      <input type="checkbox" name="scope" value="{{ scope.name }}" checked>
+      <span class="permission-text">
+        {% if let Some(description) = scope.description %}
+        <span class="permission-name">{{ description }}</span>
+        <span class="permission-scope">{{ scope.name }}</span>
+        {% else %}
+        <span class="permission-name">{{ scope.name }}</span>
+        {% endif %}
+      </span>
+    </label>
+  </li>
+  {% endif %}
 {% endfor %}
 </ul>
 
 {% if offline_access %}
-<p class="muted">{{ text.consent_offline_access(client_name) }}</p>
+<p class="notice">{{ text.consent_offline_access(client_name) }}</p>
 {% endif %}
 
 {# RFC 9396 §2. Never the element's JSON: it is a document the client composed,
@@ -77,8 +112,8 @@
    an approval: a forged "deny" is a denial of service and a forged "allow" is
    a granted authorization, so both need the same protection. #}
 <div class="actions">
-  <button type="submit" name="decision" value="allow">{{ text.consent_allow() }}</button>
   <button type="submit" name="decision" value="deny" class="secondary">{{ text.consent_deny() }}</button>
+  <button type="submit" name="decision" value="allow">{{ text.consent_allow() }}</button>
 </div>
 </form>
 {% endblock %}

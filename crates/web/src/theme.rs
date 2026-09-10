@@ -183,38 +183,109 @@ mod tests {
         assert!(!css.contains("url("), "{css}");
     }
 
+    /// A tenant that saved the default theme sees the page a tenant with no
+    /// theme sees.
+    ///
+    /// Both are reachable — a theme row is optional — and they must not be two
+    /// designs. So this compares the values rather than spot-checking three of
+    /// them: `style.css`'s own `:root` against the rule this module appends.
+    ///
+    /// `--line` is the one exception, and it is `ast-ndk.1`'s derivation
+    /// rather than a drift: a theme has no border token, so the border becomes
+    /// the muted text colour, while the stylesheet's default is the hairline
+    /// this design is drawn with. A tenant theme therefore paints heavier
+    /// borders than the shipped default until a border token exists.
     #[test]
     fn the_default_theme_renders_the_stylesheets_own_colours() {
-        let css = custom_properties(&Theme::default());
-
-        assert!(css.contains("--fg:#111111;"), "{css}");
-        assert!(css.contains("--bg:#ffffff;"), "{css}");
-        assert!(css.contains("--accent:#2f6fdb;"), "{css}");
-    }
-
-    /// Every custom property the stylesheet reads has to be declared here, or
-    /// a `var()` falls back to nothing and the page loses a colour.
-    #[test]
-    fn every_property_the_stylesheet_reads_is_declared() {
         const STYLESHEET: &str = include_str!("../templates/style.css");
 
-        let declared: Vec<String> = declarations(&Theme::default())
-            .into_iter()
-            .map(|(property, _)| property)
+        let root = STYLESHEET
+            .split_once(":root {")
+            .expect("style.css opens with its defaults")
+            .1;
+        let root = &root[..root.find('}').expect("the :root block is closed")];
+        let defaults: std::collections::BTreeMap<&str, &str> = root
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("--"))
+            .filter_map(|line| line.trim_end_matches(';').split_once(':'))
+            .map(|(property, value)| (property.trim(), value.trim()))
             .collect();
 
-        let mut used = std::collections::BTreeSet::new();
+        for (property, value) in declarations(&Theme::default()) {
+            if property == "--line" {
+                continue;
+            }
+            assert_eq!(
+                defaults.get(property.as_str()),
+                Some(&value.as_str()),
+                "{property} differs between style.css and the default theme"
+            );
+        }
+    }
+
+    /// The stylesheet, as the pair of sets that matter: what it reads and
+    /// what it declares.
+    fn stylesheet_properties() -> (
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    ) {
+        const STYLESHEET: &str = include_str!("../templates/style.css");
+
+        let mut read = std::collections::BTreeSet::new();
         let mut rest = STYLESHEET;
         while let Some(start) = rest.find("var(") {
             rest = &rest[start + "var(".len()..];
-            let end = rest.find(')').expect("a var() is closed");
-            used.insert(rest[..end].trim().to_owned());
+            let end = rest.find([')', ',']).expect("a var() is closed");
+            read.insert(rest[..end].trim().to_owned());
         }
 
-        for property in used {
+        let declared = STYLESHEET
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("--"))
+            .filter_map(|line| line.split_once(':'))
+            .map(|(property, _)| format!("--{}", property.trim()))
+            .collect();
+
+        (read, declared)
+    }
+
+    /// Every custom property the stylesheet reads is one the stylesheet also
+    /// declares, or a `var()` falls back to nothing and the page loses a
+    /// colour.
+    ///
+    /// `style.css` reads more than a theme declares, deliberately: `--card`
+    /// and `--backdrop` are *derived* from the tenant's `--bg` at use time, so
+    /// a tenant that sets only a palette still gets a coherent page. The
+    /// invariant is therefore about the stylesheet's own defaults, and the
+    /// test below holds the other half.
+    #[test]
+    fn every_property_the_stylesheet_reads_is_declared() {
+        let (read, declared) = stylesheet_properties();
+
+        for property in read {
             assert!(
                 declared.contains(&property),
-                "{property} is read by style.css and declared by no theme"
+                "{property} is read by style.css and declared nowhere in it"
+            );
+        }
+    }
+
+    /// Every property a theme declares is one the stylesheet has a default
+    /// for.
+    ///
+    /// A tenant token nothing reads would be an administrator setting a
+    /// colour and seeing no change, and the appended rule wins on document
+    /// order only for a property the defaults also declare — so this is the
+    /// half that keeps `theme` and `style.css` naming the same things.
+    #[test]
+    fn every_theme_property_has_a_default_in_the_stylesheet() {
+        let (_, declared) = stylesheet_properties();
+
+        for (property, _) in declarations(&Theme::default()) {
+            assert!(
+                declared.contains(&property),
+                "{property} is a theme token that style.css declares no default for"
             );
         }
     }

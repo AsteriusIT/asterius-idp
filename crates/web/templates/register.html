@@ -10,8 +10,9 @@
    Every field is labelled and the browser is told what each one is for
    (`autocomplete`), which is WCAG 2.2 SC 1.3.5 and also the difference between
    a password manager offering to generate a passphrase and not. #}
-<h2>Create an account</h2>
 {% include "error_summary.html" %}
+
+<h2>Create an account</h2>
 
 <form method="post" action="{{ action }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">
@@ -49,5 +50,5 @@
 <div class="actions"><button type="submit">Create account</button></div>
 </form>
 
-<p class="muted"><a href="{{ sign_in_href }}">Already have an account?</a></p>
+<p class="link-row"><a href="{{ sign_in_href }}">Already have an account?</a></p>
 {% endblock %}
