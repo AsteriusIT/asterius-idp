@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update signing_keys\n             set state = 'purged',\n                 private_key_ciphertext = null,\n                 private_key_nonce = null,\n                 kek_id = null,\n                 retired_at = coalesce(retired_at, $3),\n                 purged_at = $3\n             where tenant_id = $1 and kid = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a92fc28e0a4dd8a116d124dcd786a2438940971c14ed32f1241c75e29a29b11a"
+}

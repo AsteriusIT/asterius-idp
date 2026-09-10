@@ -34,8 +34,16 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 
-/** Where a key is in its life, mirroring `asterius_domain::keys::KeyState`. */
-export type KeyState = 'pending' | 'active' | 'retiring' | 'retired';
+/**
+ * Where a key is in its life, mirroring `asterius_domain::keys::KeyState`.
+ *
+ * `purged` is a key whose private material was destroyed after a compromise
+ * (`POST /keys/{kid}/purge`). This screen has no button for it yet — the
+ * operation is API-only, because it takes a written reason and is irreversible
+ * — but the state arrives in `GET /keys` and a union that did not name it would
+ * be a lie about what the server answers.
+ */
+export type KeyState = 'pending' | 'active' | 'retiring' | 'retired' | 'purged';
 
 /** One key, as `GET /keys` describes it. */
 export interface KeyRow {
@@ -303,7 +311,7 @@ function KeyTable({
                 two agree because they are two statements of one rule, not
                 because this file is trusted.
               */}
-              {key.state === 'active' || key.state === 'retired' ? null : (
+              {key.state === 'active' || key.state === 'retired' || key.state === 'purged' ? null : (
                 <button type="button" disabled={busy} onClick={() => onRetire(key.kid)}>
                   Retire
                 </button>

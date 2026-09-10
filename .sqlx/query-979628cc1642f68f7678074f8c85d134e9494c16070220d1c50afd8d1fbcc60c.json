@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select kid,\n                    private_key_ciphertext as \"private_key_ciphertext!\",\n                    private_key_nonce as \"private_key_nonce!\",\n                    kek_id as \"kek_id!\"\n             from signing_keys\n             where tenant_id = $1 and purpose = $2 and alg = $3 and state = 'active'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kid",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "private_key_ciphertext!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "private_key_nonce!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "kek_id!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "979628cc1642f68f7678074f8c85d134e9494c16070220d1c50afd8d1fbcc60c"
+}

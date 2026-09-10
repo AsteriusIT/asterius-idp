@@ -22,6 +22,15 @@
 //! * **`retired`** — out of the JWKS. The row stays so the `kid` is never
 //!   reused, and so an incident review can still see the key existed.
 //!
+//! And one state off that path, reached only by an operator responding to a
+//! compromise (`ast-7rq`):
+//!
+//! * **`purged`** — out of the JWKS *and* the private material destroyed: the
+//!   ciphertext, nonce and `kek_id` columns are emptied in place. Terminal. Its
+//!   signatures also stop verifying, which the four states above never do —
+//!   [`PgKeyRepository::public_key`] refuses to resolve it — because the
+//!   reason to destroy a key is that somebody else may hold it.
+//!
 //! # Concurrency
 //!
 //! Rotation is a read-then-write over several rows, so two callers — an
@@ -58,7 +67,7 @@
 use crate::error::to_domain_error;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::keys::{
-    KeyPurpose, KeyState, KeyStore, Kid, PublicKeyRecord, SigningAlgorithm,
+    KeyPurge, KeyPurpose, KeyState, KeyStore, Kid, PublicKeyRecord, PurgeReason, SigningAlgorithm,
 };
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{DomainError, TenantId};
@@ -371,7 +380,7 @@ impl PgKeyRepository {
         match state {
             KeyState::Active => return Ok(Rotation::default()),
             KeyState::Pending => {}
-            KeyState::Retiring | KeyState::Retired => {
+            KeyState::Retiring | KeyState::Retired | KeyState::Purged => {
                 return Err(DomainError::Conflict(format!(
                     "key {kid} is {}, and a key that has stopped signing is not \
                      brought back",
@@ -476,8 +485,10 @@ impl PgKeyRepository {
             // Already out of the JWKS. Reported as a pass that changed nothing
             // rather than as a failure: retiring a retired key is what a retried
             // request looks like, and a 409 there would be a lie about the
-            // state the caller asked for.
-            KeyState::Retired => {
+            // state the caller asked for. A purged key is retired and then
+            // some — [`Self::purge`] leaves it out of the published set — so
+            // asking to retire it is the same non-event.
+            KeyState::Retired | KeyState::Purged => {
                 transaction.commit().await.map_err(to_domain_error)?;
                 return Ok(Rotation::default());
             }
@@ -511,6 +522,137 @@ impl PgKeyRepository {
         Ok(rotation)
     }
 
+    /// Destroys one key's private material: the response to a compromise.
+    ///
+    /// [`Self::retire`] stops a key being used; this stops it being *usable*.
+    /// The row survives — the `kid` is an RFC 7638 thumbprint and must never be
+    /// handed out twice, and an incident review has to see that the key existed
+    /// — but the three envelope columns are emptied, the key leaves the
+    /// published set, and the state becomes `purged`, which
+    /// [`KeyState::is_trusted`] refuses and [`Self::public_key`] therefore
+    /// stops resolving.
+    ///
+    /// **The active key is refused**, for the reason [`Self::retire`] refuses
+    /// it and more so: this one cannot be undone by anybody, including the
+    /// operator who did it. The compromise path is [`Self::rotate`] followed by
+    /// [`Self::activate`] — which is what `Activation::Immediate` does — and
+    /// then this.
+    ///
+    /// Every other state is purgeable, including `pending`: a key staged an
+    /// hour ago and leaked since is exactly as compromised as one that signed
+    /// for a year.
+    ///
+    /// # What it does not reach
+    ///
+    /// A token some resource server has already accepted. This server stops
+    /// signing with the key, stops publishing it and stops accepting its
+    /// signatures; it cannot reach into a third party that cached the JWK Set
+    /// before the purge and is still inside the token's `exp`. That is why FAPI
+    /// 2.0 SP §6.8 item 1 asks for short rotation periods as well as for a
+    /// response to compromise — see `docs/threat-model.md`.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the tenant holds no such key,
+    /// [`DomainError::Conflict`] if it is the active one, or a storage failure.
+    pub async fn purge(
+        &self,
+        kid: &Kid,
+        reason: &PurgeReason,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<KeyPurge, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let connection = transaction.acquire().await.map_err(to_domain_error)?;
+        sqlx::query("select pg_advisory_xact_lock(hashtext($1), hashtext('key-rotation'))")
+            .bind(self.tenant.as_str())
+            .execute(&mut *connection)
+            .await
+            .map_err(to_domain_error)?;
+
+        let row = sqlx::query!(
+            "select alg, state from signing_keys
+             where tenant_id = $1 and kid = $2 and purpose = $3",
+            self.tenant.as_str(),
+            kid.as_str(),
+            PURPOSE.as_str()
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?
+        .ok_or(DomainError::NotFound)?;
+
+        let state = KeyState::parse(&row.state)
+            .ok_or_else(|| DomainError::invalid("state", format!("unknown: {}", row.state)))?;
+        let algorithm = SigningAlgorithm::parse(&row.alg)
+            .ok_or_else(|| DomainError::invalid("alg", format!("unknown: {}", row.alg)))?;
+
+        match state {
+            KeyState::Active => {
+                return Err(DomainError::Conflict(format!(
+                    "key {kid} is the active {algorithm} key; rotate with immediate \
+                     activation to replace it, then purge it"
+                )));
+            }
+            // Already destroyed. Reported as a purge that destroyed nothing
+            // rather than as a failure: that is what a retried request looks
+            // like, and there is no second destruction to perform.
+            KeyState::Purged => {
+                transaction.commit().await.map_err(to_domain_error)?;
+                return Ok(KeyPurge {
+                    kid: kid.clone(),
+                    previous_state: state,
+                    destroyed: false,
+                });
+            }
+            KeyState::Pending | KeyState::Retiring | KeyState::Retired => {}
+        }
+
+        // `retired_at` is set here too, and coalesced so that a key that had
+        // already left the JWK Set keeps the moment it left: a purge out of
+        // `retiring` cuts the grace period short, and the schema's
+        // `signing_keys_timestamps_follow_the_state` requires the final stamp
+        // on any key that is out of the published set.
+        //
+        // The three envelope columns go to NULL in the same statement, which is
+        // the destruction itself — there is no KMS handle to revoke instead.
+        // The key-encryption key is one key held outside the database and
+        // shared by every row, so it cannot be destroyed per key; erasing the
+        // ciphertext is what makes a backup taken afterwards carry nothing.
+        sqlx::query!(
+            "update signing_keys
+             set state = 'purged',
+                 private_key_ciphertext = null,
+                 private_key_nonce = null,
+                 kek_id = null,
+                 retired_at = coalesce(retired_at, $3),
+                 purged_at = $3
+             where tenant_id = $1 and kid = $2",
+            self.tenant.as_str(),
+            kid.as_str(),
+            now
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        transaction.commit().await.map_err(to_domain_error)?;
+
+        // After the commit, like every other audit write here: the sink owns
+        // its own transaction and takes a lock this one conflicts with. A crash
+        // in between leaves a destroyed key with no `key.purged` line — the
+        // emptied columns and `purged_at` are still the evidence — and a failed
+        // audit write fails this call, so the omission is reported.
+        self.record_purge(kid, algorithm, state, reason, actor, now)
+            .await?;
+
+        Ok(KeyPurge {
+            kid: kid.clone(),
+            previous_state: state,
+            destroyed: true,
+        })
+    }
+
     /// The active signing key for an algorithm, decrypted.
     ///
     /// Returns `None` when the tenant has no active key of that algorithm,
@@ -527,8 +669,17 @@ impl PgKeyRepository {
         &self,
         algorithm: SigningAlgorithm,
     ) -> Result<Option<(Kid, SigningKey)>, DomainError> {
+        // The three envelope columns became nullable when `purged` was added to
+        // the state machine (migration `0003_key_purge`), and the `!` forces
+        // them back to non-null here. That is sound rather than convenient: the
+        // schema's `signing_keys_material_is_absent_only_when_purged`
+        // constraint makes material absent *exactly* when the state is
+        // `purged`, and `state = 'active'` is in the `where` clause.
         let Some(row) = sqlx::query!(
-            "select kid, private_key_ciphertext, private_key_nonce, kek_id
+            "select kid,
+                    private_key_ciphertext as \"private_key_ciphertext!\",
+                    private_key_nonce as \"private_key_nonce!\",
+                    kek_id as \"kek_id!\"
              from signing_keys
              where tenant_id = $1 and purpose = $2 and alg = $3 and state = 'active'",
             self.tenant.as_str(),
@@ -868,6 +1019,49 @@ impl PgKeyRepository {
             )
             .await
     }
+
+    /// Records a destruction, and why it happened.
+    ///
+    /// Its own event type rather than a `key.rotated` with a flag: a rotation
+    /// is routine and a trail full of them is background noise, while a purge
+    /// is somebody deciding a key can no longer be trusted. An incident review
+    /// starts from this line, so it carries the state the key was in, the
+    /// algorithm it signed with, and the operator's reason.
+    ///
+    /// The `kid` is a fingerprint, like every other key event's — it is public,
+    /// but it is a long high-entropy string, which is the shape [`Detail::text`]
+    /// redacts. The *reason* is free text an operator typed and is recorded as
+    /// such, which is why [`PurgeReason`] refuses control characters: a
+    /// newline in it would be a second line in whatever reads the trail back.
+    async fn record_purge(
+        &self,
+        kid: &Kid,
+        algorithm: SigningAlgorithm,
+        previous_state: KeyState,
+        reason: &PurgeReason,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let detail = Detail::new()
+            .text("alg", algorithm.as_str())
+            .text("purpose", PURPOSE.as_str())
+            .text("previous_state", previous_state.as_str())
+            .text("reason", reason.as_str())
+            .credential("kid", kid.as_str());
+
+        self.audit
+            .record(
+                AuditEvent::new(
+                    self.tenant.clone(),
+                    EventType::KEY_PURGED,
+                    Outcome::Success,
+                    actor,
+                    now,
+                )
+                .detail(detail),
+            )
+            .await
+    }
 }
 
 #[async_trait::async_trait]
@@ -902,10 +1096,19 @@ impl KeyStore for PgKeyRepository {
         .collect()
     }
 
-    /// The key a `kid` names, in whatever state it is.
+    /// The key a `kid` names, in whatever state it is — except a purged one.
     ///
-    /// Retiring and retired keys resolve too: a token signed yesterday is
-    /// verified today, and an incident review asks about keys that are gone.
+    /// Retiring and retired keys resolve: a token signed yesterday is verified
+    /// today, and refusing an `id_token_hint` because the key that signed it
+    /// has since been rotated out would break a logout for no security gain.
+    ///
+    /// A **purged** key does not resolve, and that is the whole point of
+    /// purging one. It was destroyed because it was believed compromised, so
+    /// its signatures — including the ones an attacker holding the leaked
+    /// material made — must stop being accepted. The filter is here, on the
+    /// port every verification path goes through, rather than at each call
+    /// site: a caller that forgot to ask would otherwise trust it.
+    /// [`Self::inventory`] is where an incident review sees the row.
     async fn public_key(
         &self,
         tenant: &TenantId,
@@ -931,6 +1134,10 @@ impl KeyStore for PgKeyRepository {
         .map_err(to_domain_error)?
         .map(|row| row.into_record(&self.tenant))
         .transpose()
+        // Filtered in Rust and not in the `where` clause, so that the one
+        // definition of "a signature from this key may still be accepted"
+        // lives on `KeyState` and every reader shares it.
+        .map(|record| record.filter(|record| record.state.is_trusted()))
     }
 }
 

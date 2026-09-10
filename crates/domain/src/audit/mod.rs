@@ -134,6 +134,14 @@ impl EventType {
     pub const CLIENT_DELETED: Self = Self("client.deleted");
     /// A signing key was rotated.
     pub const KEY_ROTATED: Self = Self("key.rotated");
+    /// A signing key's private material was destroyed after a compromise.
+    ///
+    /// Deliberately not [`Self::KEY_ROTATED`]. A rotation is routine and a
+    /// trail full of them is background noise; a purge is somebody deciding a
+    /// key can no longer be trusted, and it is the event an incident review
+    /// starts from. Its detail carries the reason, which is required at the
+    /// call — see [`crate::keys::PurgeReason`].
+    pub const KEY_PURGED: Self = Self("key.purged");
     /// An administrator changed configuration.
     pub const ADMIN_CHANGED: Self = Self("admin.changed");
     /// Audit records were removed by the retention policy.
@@ -141,7 +149,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -168,6 +176,7 @@ impl EventType {
         Self::CLIENT_UPDATED,
         Self::CLIENT_DELETED,
         Self::KEY_ROTATED,
+        Self::KEY_PURGED,
         Self::ADMIN_CHANGED,
         Self::AUDIT_PURGED,
     ];

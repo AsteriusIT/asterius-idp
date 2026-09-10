@@ -1604,7 +1604,7 @@ db_test! {
 // Signing keys: lifecycle, rotation and encryption at rest
 // ---------------------------------------------------------------------------
 
-use asterius_domain::keys::{KeyPurpose, KeyState, KeyStore, Kid, SigningAlgorithm};
+use asterius_domain::keys::{KeyPurpose, KeyState, KeyStore, Kid, PurgeReason, SigningAlgorithm};
 use asterius_jose::{LocalKek, SigningKey, VerifyingKey, jws};
 use asterius_store_pg::{PgKeyRepository, RotationSchedule};
 use base64::Engine as _;
@@ -2212,6 +2212,279 @@ db_test! {
         assert!(
             inventory.contains(&(staged, KeyState::Retired)),
             "the retired key left the inventory: {inventory:?}"
+        );
+    }
+}
+
+db_test! {
+    /// The whole compromise path, end to end, and the property that makes a
+    /// purge different from a retirement: the private half stops existing.
+    ///
+    /// FAPI 2.0 SP §6.8 is about shrinking "the time window in which a
+    /// compromised key can be used". Retiring shuts the window on this
+    /// deployment; only destroying the material shuts it on a backup taken
+    /// afterwards. So the operator's sequence is: rotate with immediate
+    /// activation, which installs a successor and pushes the suspect key into
+    /// `retiring` — and then purge it.
+    async fn the_compromise_path_destroys_the_key_it_replaces(db) {
+        // Arrange: a tenant signing with a key that is about to be believed
+        // compromised, and a token it signed.
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        let leaked = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("first key")
+            .created
+            .expect("created");
+        let (_, key) = repo
+            .active_signing_key(SigningAlgorithm::EdDsa)
+            .await
+            .expect("read")
+            .expect("an active key");
+        let token = jws::sign(&key, &leaked, "at+jwt", &json!({"sub": "alice"})).expect("sign");
+
+        // Act: a successor signs from now on, then the leaked key is destroyed.
+        let successor = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("staged");
+        repo.activate(&successor, operator(), t0).await.expect("promote the successor");
+        let reason = PurgeReason::parse("private key found in a public bucket, INC-42")
+            .expect("a reason");
+        let purge = repo.purge(&leaked, &reason, operator(), t0).await.expect("purge");
+
+        // Assert: the call says what it did.
+        assert_eq!(purge.kid, leaked);
+        assert_eq!(purge.previous_state, KeyState::Retiring);
+        assert!(purge.destroyed, "the purge reported destroying nothing");
+
+        // The material is gone from the row — and the row is not.
+        let row = sqlx::query(
+            "select private_key_ciphertext, private_key_nonce, kek_id, state, purged_at
+             from signing_keys where tenant_id = 'demo' and kid = $1",
+        )
+        .bind(leaked.as_str())
+        .fetch_one(&db.pool)
+        .await
+        .expect("the row survives so the kid is never reused");
+        assert_eq!(row.get::<Option<Vec<u8>>, _>("private_key_ciphertext"), None);
+        assert_eq!(row.get::<Option<Vec<u8>>, _>("private_key_nonce"), None);
+        assert_eq!(row.get::<Option<String>, _>("kek_id"), None);
+        assert_eq!(row.get::<String, _>("state"), "purged");
+        assert!(row.get::<Option<OffsetDateTime>, _>("purged_at").is_some());
+
+        // Nothing publishes it, and nothing resolves it: a signature it made is
+        // no longer checkable against anything this server will hand out. That
+        // is the point of a purge rather than a side effect of it — the tokens
+        // an attacker minted with the leaked key are exactly what must stop
+        // being accepted.
+        let published = published(&repo, "demo").await;
+        assert!(
+            !published.iter().any(|(kid, _)| kid == &leaked),
+            "a purged key is still published: {published:?}"
+        );
+        assert_eq!(
+            repo.public_key(&TenantId::new("demo"), &leaked).await.expect("read"),
+            None,
+            "the key store still resolves a purged kid, so its signatures still verify"
+        );
+        assert_eq!(
+            jws::parse(token.as_str()).expect("parse").kid().as_ref(),
+            Some(&leaked),
+            "the token under test was signed by some other key"
+        );
+
+        // The successor is untouched: the tenant can still issue tokens.
+        assert_eq!(
+            repo.active_signing_key(SigningAlgorithm::EdDsa)
+                .await
+                .expect("read")
+                .expect("an active key")
+                .0,
+            successor
+        );
+
+        // And the inventory still shows the purged key, because an incident
+        // review asks about exactly the keys nothing publishes any more.
+        let inventory: Vec<(Kid, KeyState)> = repo
+            .inventory()
+            .await
+            .expect("inventory")
+            .into_iter()
+            .map(|key| (key.kid, key.state))
+            .collect();
+        assert!(
+            inventory.contains(&(leaked, KeyState::Purged)),
+            "the purged key left the inventory: {inventory:?}"
+        );
+    }
+}
+
+db_test! {
+    /// Destroying the key a tenant signs with leaves it unable to issue a
+    /// token — the same denial of service `retire` refuses, and worse, because
+    /// this one is not reversible even by an operator with `psql`. The
+    /// compromise path installs a successor first.
+    async fn the_active_key_is_not_purgeable(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        let active = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("first key")
+            .created
+            .expect("created");
+        let reason = PurgeReason::parse("suspected compromise").expect("a reason");
+
+        // Act
+        let refused = repo.purge(&active, &reason, operator(), t0).await;
+
+        // Assert
+        assert!(
+            matches!(refused, Err(DomainError::Conflict(_))),
+            "the active key was purgeable: {refused:?}"
+        );
+        assert_eq!(
+            published(&repo, "demo").await,
+            [(active.clone(), KeyState::Active)],
+            "a refused purge changed the key set"
+        );
+        let ciphertext: Option<Vec<u8>> = sqlx::query_scalar(
+            "select private_key_ciphertext from signing_keys where tenant_id = 'demo' and kid = $1",
+        )
+        .bind(active.as_str())
+        .fetch_one(&db.pool)
+        .await
+        .expect("read");
+        assert!(ciphertext.is_some(), "a refused purge destroyed the material anyway");
+    }
+}
+
+db_test! {
+    /// A purge is the event an incident review starts from, and a record of it
+    /// that does not say why is one nobody can review. The reason is required
+    /// by the type, and it reaches the trail.
+    async fn a_purge_is_recorded_with_its_reason(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let sink = PgAuditSink::new(db.pool.clone());
+        let t0 = epoch();
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("first key");
+        let staged = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("staged");
+        let reason = PurgeReason::parse("laptop with the KEK backup stolen, INC-7")
+            .expect("a reason");
+
+        // Act
+        repo.purge(&staged, &reason, operator(), t0).await.expect("purge");
+
+        // Assert
+        let recorded: Vec<String> = sqlx::query_scalar(
+            "select event_type from audit_events where tenant_id = 'demo' order by event_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the trail");
+        assert_eq!(
+            recorded,
+            ["key.rotated", "key.rotated", "key.purged"],
+            "a purge is not a rotation and must not be filed as one"
+        );
+
+        let row = sqlx::query(
+            "select actor, detail from audit_events
+             where tenant_id = 'demo' and event_type = 'key.purged'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("read the purge record");
+        assert_eq!(row.get::<serde_json::Value, _>("actor")["type"], "admin");
+        let detail: serde_json::Value = row.get("detail");
+        assert_eq!(detail["reason"], "laptop with the KEK backup stolen, INC-7");
+        assert_eq!(detail["alg"], "EdDSA");
+        assert_eq!(detail["previous_state"], "pending");
+        // The kid is recorded the way every other key event records it: a
+        // correlatable digest rather than free text the scanner would redact.
+        assert!(
+            detail["kid"].as_str().expect("kid").starts_with("sha256:"),
+            "{detail}"
+        );
+
+        sink.verify_chain(&TenantId::new("demo")).await.expect("the chain still verifies");
+    }
+}
+
+db_test! {
+    /// Purging a key somebody already purged is what a retried request looks
+    /// like, not a failure — but it is also not a second destruction, and the
+    /// answer says which of the two happened.
+    async fn purging_a_purged_key_destroys_nothing_and_is_not_an_error(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        let repo = keys(&db.pool, "demo");
+        let t0 = epoch();
+        repo.rotate(SigningAlgorithm::EdDsa, operator(), t0).await.expect("first key");
+        let staged = repo
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("staged");
+        let reason = PurgeReason::parse("INC-7").expect("a reason");
+        repo.purge(&staged, &reason, operator(), t0).await.expect("purge");
+
+        // Act
+        let again = repo.purge(&staged, &reason, operator(), t0).await.expect("purge again");
+
+        // Assert
+        assert!(!again.destroyed, "a repeat purge claimed to destroy material twice");
+        assert_eq!(again.previous_state, KeyState::Purged);
+        let purges: i64 = sqlx::query_scalar(
+            "select count(*) from audit_events
+             where tenant_id = 'demo' and event_type = 'key.purged'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+        assert_eq!(purges, 1, "a purge that destroyed nothing was recorded as an incident");
+    }
+}
+
+db_test! {
+    /// A `kid` this tenant does not hold is not a key it can destroy, whichever
+    /// tenant does hold it. Every statement binds the repository's tenant, so a
+    /// `kid` copied from a sibling's console finds nothing.
+    async fn a_kid_from_another_tenant_is_not_purgeable(db) {
+        // Arrange
+        seed_tenant(&db.pool, "alpha").await;
+        seed_tenant(&db.pool, "beta").await;
+        let t0 = epoch();
+        let alphas = keys(&db.pool, "alpha")
+            .rotate(SigningAlgorithm::EdDsa, operator(), t0)
+            .await
+            .expect("rotate")
+            .created
+            .expect("created");
+        let reason = PurgeReason::parse("INC-7").expect("a reason");
+
+        // Act
+        let refused = keys(&db.pool, "beta").purge(&alphas, &reason, operator(), t0).await;
+
+        // Assert
+        assert!(
+            matches!(refused, Err(DomainError::NotFound)),
+            "one tenant destroyed another's key: {refused:?}"
         );
     }
 }

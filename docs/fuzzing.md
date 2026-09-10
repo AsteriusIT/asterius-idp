@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 53 targets below cover 68 declared entry points. Generated from the
+The 53 targets below cover 70 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -83,6 +83,8 @@ The 53 targets below cover 68 declared entry points. Generated from the
 | `admin_cursor` | `Cursor::decode` | `crates/admin-api/src/pagination.rs` |
 | `admin_fetch_metadata` | `site` | `crates/admin-api/src/csrf.rs` |
 | `admin_idempotency_key` | `IdempotencyKey::parse` | `crates/admin-api/src/idempotency.rs` |
+| `admin_key_request` | `PurgeReason::parse` | `crates/domain/src/keys.rs` |
+| `admin_key_request` | `PurgeRequest::reason` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `RotationRequest::algorithm` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `ScheduleRequest::schedule` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `public_members` | `crates/admin-api/src/keys.rs` |

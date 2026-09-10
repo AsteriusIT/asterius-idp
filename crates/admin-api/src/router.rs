@@ -240,10 +240,23 @@ async fn handle(
         now,
     };
 
-    // The dispatch table. A `match` on the operation id rather than a closure
-    // per route, so that a registry entry with no handler is a non-exhaustive
-    // match the compiler refuses.
-    match operation.id() {
+    route(operation.id(), &context, body).await
+}
+
+/// The dispatch table. A `match` on the operation id rather than a closure per
+/// route, so that a registry entry with no handler is a non-exhaustive match the
+/// compiler refuses.
+///
+/// Its own function rather than the tail of [`handle`], because the gate above
+/// is a sequence of five checks that has to be read in order and the table is a
+/// list that grows by one line per route; keeping them in one body meant the
+/// nineteenth route made the function too long to read.
+async fn route(
+    id: &str,
+    context: &Handling<'_>,
+    body: axum::body::Body,
+) -> Result<Response, AdminError> {
+    match id {
         crate::SESSION_READ_ID => context.session_document(),
         crate::SESSION_END_ID => context.end_session().await,
         crate::OPENAPI_READ_ID => Ok(openapi_response()),
@@ -261,6 +274,7 @@ async fn handle(
         crate::KEYS_JWKS_ID => context.preview_jwks().await,
         crate::KEYS_ROTATE_ID => context.rotate_key(body).await,
         crate::KEYS_RETIRE_ID => context.retire_key().await,
+        crate::KEYS_PURGE_ID => context.purge_key(body).await,
         crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
         // Unreachable while `every_registered_operation_has_a_handler` passes,
         // which is why that test exists rather than a comment here.
@@ -996,20 +1010,7 @@ impl Handling<'_> {
     /// the request was routed to, so a `kid` belonging to another tenant is a
     /// 404 here rather than a key somebody else loses.
     async fn retire_key(&self) -> Result<Response, AdminError> {
-        let kid = self
-            .path
-            .trim_end_matches("/retire")
-            .rsplit('/')
-            .next()
-            .filter(|segment| !segment.is_empty())
-            .ok_or(AdminError::NotFound)?;
-        // Taken as it arrived, with no decoding step. A `kid` this server
-        // issues is an RFC 7638 thumbprint — base64url, so `[A-Za-z0-9_-]`,
-        // none of which a URL encodes — and a segment carrying anything else
-        // names no key here and gets a 404 from the lookup. Adding a decoder
-        // would add a parser to the attack surface to accept identifiers this
-        // server never mints.
-        let kid = Kid::new(kid);
+        let kid = self.key_in_path("/retire")?;
 
         let rotation = self
             .state
@@ -1043,6 +1044,80 @@ impl Handling<'_> {
             StatusCode::OK,
             &keys::rotation_document(&rotation),
         ))
+    }
+
+    /// The `kid` an action's path names, for `/keys/{kid}/{action}`.
+    ///
+    /// Taken as it arrived, with no decoding step. A `kid` this server issues
+    /// is an RFC 7638 thumbprint — base64url, so `[A-Za-z0-9_-]`, none of which
+    /// a URL encodes — and a segment carrying anything else names no key here
+    /// and gets a 404 from the lookup. Adding a decoder would add a parser to
+    /// the attack surface in order to accept identifiers this server never
+    /// mints.
+    ///
+    /// One reader for both actions, so that a `kid` cannot mean one thing to
+    /// retire and another to purge.
+    fn key_in_path(&self, action: &str) -> Result<Kid, AdminError> {
+        self.path
+            .trim_end_matches(action)
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .map(Kid::new)
+            .ok_or(AdminError::NotFound)
+    }
+
+    /// `POST /keys/{kid}/purge` — destroys one key's private material.
+    ///
+    /// The endpoint an operator reaches for when a key is believed to have
+    /// leaked. What it guarantees, and what it cannot, is in the module
+    /// documentation of `asterius_domain::keys` and in `docs/threat-model.md`;
+    /// the short version is that this server stops signing with the key, stops
+    /// publishing it, stops accepting its signatures and destroys the material,
+    /// and that a token some resource server already accepted is beyond its
+    /// reach.
+    ///
+    /// The reason is required — see [`keys::PurgeRequest`] — and the audit
+    /// record the repository writes carries it.
+    async fn purge_key(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let kid = self.key_in_path("/purge")?;
+        let request: keys::PurgeRequest = self.parse_body(body).await?;
+        let reason = request.reason()?;
+
+        let purge = self
+            .state
+            .backend
+            .keys()
+            .purge(
+                &self.tenant.id,
+                &kid,
+                &reason,
+                Actor::Admin(self.principal.audit_actor()),
+                self.now,
+            )
+            .await
+            .map_err(|error| match error {
+                // A key the tenant does not hold, and the active key, are both
+                // answers the console has to show a person — not storage
+                // failures. `from_storage` would flatten them into a 500.
+                DomainError::NotFound => AdminError::NotFound,
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                other => AdminError::from_storage(crate::KEYS_PURGE_ID, &other),
+            })?;
+
+        // The destruction itself is already in the trail as `key.purged`, with
+        // the reason, written by the repository — because a purge that reached
+        // storage must be recorded whatever called it. What is added here is
+        // the administrative fact: which console operation a person invoked.
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::KEYS_PURGE_ID)
+                .credential("kid", kid.as_str()),
+        )
+        .await;
+
+        Ok(json_no_store(StatusCode::OK, &keys::purge_document(&purge)))
     }
 
     /// `PUT /keys/schedule` — replaces one algorithm's rotation policy.
@@ -1341,8 +1416,8 @@ mod tests {
     use crate::rbac::Reach;
     use asterius_domain::entities::session::SessionId;
     use asterius_domain::keys::{
-        KeyAdministration, KeyPurpose, KeyRotation, KeyState, PublicKeyRecord, RotationSchedule,
-        SigningAlgorithm,
+        KeyAdministration, KeyPurge, KeyPurpose, KeyRotation, KeyState, PublicKeyRecord,
+        PurgeReason, RotationSchedule, SigningAlgorithm,
     };
     use asterius_domain::ports::TenantRepository;
     use asterius_domain::{
@@ -1660,7 +1735,7 @@ mod tests {
                 .ok_or(DomainError::NotFound)?;
 
             match record.state {
-                KeyState::Retired => Ok(KeyRotation::default()),
+                KeyState::Retired | KeyState::Purged => Ok(KeyRotation::default()),
                 KeyState::Active => Err(DomainError::Conflict(format!(
                     "key {kid} is the active {} key",
                     record.algorithm
@@ -1670,6 +1745,49 @@ mod tests {
                     Ok(KeyRotation {
                         retired: vec![kid.clone()],
                         ..KeyRotation::default()
+                    })
+                }
+            }
+        }
+
+        /// Destroys the private material — which this fake models the only way
+        /// it can: the record it holds carries a `public_jwk` with a `d` member
+        /// in it, standing in for the sealed column, and a purge takes that
+        /// member out. The property the tests read is the state.
+        async fn purge(
+            &self,
+            tenant: &TenantId,
+            kid: &Kid,
+            _reason: &PurgeReason,
+            _actor: Actor,
+            _now: OffsetDateTime,
+        ) -> Result<KeyPurge, DomainError> {
+            let mut records = self.0.keys.lock().expect("an uncontended lock");
+            let record = records
+                .iter_mut()
+                .find(|record| &record.kid == kid && &record.tenant == tenant)
+                .ok_or(DomainError::NotFound)?;
+
+            let previous_state = record.state;
+            match previous_state {
+                KeyState::Active => Err(DomainError::Conflict(format!(
+                    "key {kid} is the active {} key",
+                    record.algorithm
+                ))),
+                KeyState::Purged => Ok(KeyPurge {
+                    kid: kid.clone(),
+                    previous_state,
+                    destroyed: false,
+                }),
+                KeyState::Pending | KeyState::Retiring | KeyState::Retired => {
+                    record.state = KeyState::Purged;
+                    if let Some(object) = record.public_jwk.as_object_mut() {
+                        object.remove("d");
+                    }
+                    Ok(KeyPurge {
+                        kid: kid.clone(),
+                        previous_state,
+                        destroyed: true,
                     })
                 }
             }
@@ -2106,6 +2224,9 @@ mod tests {
                 "propagation_period_seconds": 900,
                 "grace_period_seconds": 604_800,
             }),
+            // Destroying key material is recorded, and the record has to say
+            // why — so this route is one of the two that will not accept `{}`.
+            crate::KEYS_PURGE_ID => serde_json::json!({"reason": "leaked in INC-1"}),
             // `keys.retire` names its subject in the path and takes no body.
             _ if operation.effect() == Effect::Mutates => serde_json::json!({}),
             _ => return Body::empty(),
@@ -3648,6 +3769,215 @@ mod tests {
                 .any(|key| key["kid"] == serde_json::json!(SEEDED_KID)),
             "a retired key is still published: {jwks}"
         );
+    }
+
+    /// The console's answer to a compromise: the key leaves the published set
+    /// and its private half stops existing. The response says which of the two
+    /// outcomes happened, because an operator retrying after a timeout has to
+    /// be able to tell "I destroyed it" from "it was already gone".
+    #[tokio::test]
+    async fn a_purged_key_leaves_the_published_set_and_reports_the_destruction() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::KEYS_PURGE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"reason": "leaked in INC-42"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["kid"], serde_json::json!(SEEDED_KID));
+        assert_eq!(document["state"], serde_json::json!("purged"));
+        assert_eq!(document["destroyed"], serde_json::json!(true));
+
+        let jwks = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_JWKS, &cookie)
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        assert!(
+            !jwks["keys"]
+                .as_array()
+                .expect("a JWK Set")
+                .iter()
+                .any(|key| key["kid"] == serde_json::json!(SEEDED_KID)),
+            "a purged key is still published: {jwks}"
+        );
+    }
+
+    /// A purge with no reason is not a purge. The record of a destruction is
+    /// where an incident review starts, and one that does not say why the key
+    /// was destroyed is a hole exactly there — so the body is refused before
+    /// the key store is reached.
+    #[tokio::test]
+    async fn a_purge_without_a_reason_destroys_nothing() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        for body in [
+            serde_json::json!({}),
+            serde_json::json!({"reason": "   "}),
+            serde_json::json!({"reason": ""}),
+        ] {
+            // Act
+            let response = world
+                .send(
+                    as_console(&crate::KEYS_PURGE, &cookie)
+                        .body(Body::from(body.to_string()))
+                        .expect("a request"),
+                )
+                .await;
+
+            // Assert
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+        }
+
+        let states: Vec<KeyState> = world
+            .handle
+            .0
+            .keys
+            .lock()
+            .expect("a lock")
+            .iter()
+            .map(|record| record.state)
+            .collect();
+        assert!(
+            !states.contains(&KeyState::Purged),
+            "a body with no reason destroyed a key anyway: {states:?}"
+        );
+    }
+
+    /// Destroying the key a tenant signs with would leave it unable to issue a
+    /// token, irreversibly. The compromise path is a rotation with immediate
+    /// activation first — which is the sequence this test walks — and only then
+    /// a purge.
+    #[tokio::test]
+    async fn the_active_key_cannot_be_purged_and_the_compromise_path_can() {
+        // Arrange: a tenant whose active key is believed compromised.
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let rotation = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_ROTATE, &cookie)
+                        .body(Body::from(serde_json::json!({"alg": "EdDSA"}).to_string()))
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        let leaked = rotation["activated_kid"]
+            .as_str()
+            .expect("an active kid")
+            .to_owned();
+
+        // Act / Assert: the active key is refused.
+        let refused = world
+            .send(
+                as_console(&crate::KEYS_PURGE, &cookie)
+                    .uri(format!("{}/keys/{leaked}/purge", crate::BASE_PATH))
+                    .body(Body::from(
+                        serde_json::json!({"reason": "leaked in INC-42"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+
+        // Act: rotate with immediate activation, which installs a successor and
+        // pushes the suspect key out of `active` in one call...
+        let promoted = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_ROTATE, &cookie)
+                        .body(Body::from(
+                            serde_json::json!({"alg": "EdDSA", "activate_immediately": true})
+                                .to_string(),
+                        ))
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        assert_eq!(promoted["superseded_kid"], serde_json::json!(leaked));
+
+        // ...and only then destroy it.
+        let purged = world
+            .send(
+                as_console(&crate::KEYS_PURGE, &cookie)
+                    .uri(format!("{}/keys/{leaked}/purge", crate::BASE_PATH))
+                    .body(Body::from(
+                        serde_json::json!({"reason": "leaked in INC-42"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(purged.status(), StatusCode::OK);
+        let jwks = body_of(
+            world
+                .send(
+                    as_console(&crate::KEYS_JWKS, &cookie)
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        let keys = jwks["keys"].as_array().expect("a JWK Set");
+        assert!(
+            !keys
+                .iter()
+                .any(|key| key["kid"] == serde_json::json!(leaked)),
+            "the compromised key is still published: {jwks}"
+        );
+        assert!(
+            !keys.is_empty(),
+            "the tenant was left with nothing to verify against: {jwks}"
+        );
+    }
+
+    /// A `kid` belonging to another tenant is not a key this console may
+    /// destroy either. A 404 and not a 403, for the reason retirement gives.
+    #[tokio::test]
+    async fn a_kid_this_tenant_does_not_hold_cannot_be_purged() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::KEYS_PURGE, &cookie)
+                    .uri(format!(
+                        "{}/keys/a-kid-nobody-holds/purge",
+                        crate::BASE_PATH
+                    ))
+                    .body(Body::from(
+                        serde_json::json!({"reason": "leaked in INC-42"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// A `kid` belonging to another tenant is not a key this console may

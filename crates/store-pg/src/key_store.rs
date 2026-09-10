@@ -17,7 +17,9 @@
 
 use crate::keys::PgKeyRepository;
 use asterius_domain::audit::{Actor, AuditSink};
-use asterius_domain::keys::{Activation, KeyAdministration, KeyRotation, RotationSchedule};
+use asterius_domain::keys::{
+    Activation, KeyAdministration, KeyPurge, KeyRotation, PurgeReason, RotationSchedule,
+};
 use asterius_domain::{DomainError, KeyStore, Kid, PublicKeyRecord, SigningAlgorithm, TenantId};
 use asterius_jose::kek::Kek;
 use sqlx::postgres::PgPool;
@@ -198,6 +200,17 @@ impl KeyAdministration for TenantKeyStore {
         now: OffsetDateTime,
     ) -> Result<KeyRotation, DomainError> {
         self.for_tenant(tenant).retire(kid, actor, now).await
+    }
+
+    async fn purge(
+        &self,
+        tenant: &TenantId,
+        kid: &Kid,
+        reason: &PurgeReason,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<KeyPurge, DomainError> {
+        self.for_tenant(tenant).purge(kid, reason, actor, now).await
     }
 }
 

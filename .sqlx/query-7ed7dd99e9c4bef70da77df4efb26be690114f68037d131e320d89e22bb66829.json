@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select kid, alg, purpose, private_key_ciphertext, private_key_nonce, kek_id\n               from signing_keys\n              where tenant_id = $1 and kek_id = $2\n              for update",
+  "query": "select kid, alg, purpose,\n                    private_key_ciphertext as \"private_key_ciphertext!\",\n                    private_key_nonce as \"private_key_nonce!\",\n                    kek_id as \"kek_id!\"\n               from signing_keys\n              where tenant_id = $1 and kek_id = $2\n              for update",
   "describe": {
     "columns": [
       {
@@ -20,17 +20,17 @@
       },
       {
         "ordinal": 3,
-        "name": "private_key_ciphertext",
+        "name": "private_key_ciphertext!",
         "type_info": "Bytea"
       },
       {
         "ordinal": 4,
-        "name": "private_key_nonce",
+        "name": "private_key_nonce!",
         "type_info": "Bytea"
       },
       {
         "ordinal": 5,
-        "name": "kek_id",
+        "name": "kek_id!",
         "type_info": "Text"
       }
     ],
@@ -44,10 +44,10 @@
       false,
       false,
       false,
-      false,
-      false,
-      false
+      true,
+      true,
+      true
     ]
   },
-  "hash": "b29058d99445f4ee79ab6a846402f274238ad88a81b698f526571e1bd172d742"
+  "hash": "7ed7dd99e9c4bef70da77df4efb26be690114f68037d131e320d89e22bb66829"
 }
