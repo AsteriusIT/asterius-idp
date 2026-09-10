@@ -148,6 +148,7 @@ impl PgClientRepository {
                     userinfo_signed_response_alg,
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
+                    is_agent, agent_owner_user_id, agent_policy,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1 and client_id = $2",
@@ -180,6 +181,7 @@ impl PgClientRepository {
                     userinfo_signed_response_alg,
                     backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                     backchannel_user_code_parameter,
+                    is_agent, agent_owner_user_id, agent_policy,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1
@@ -225,11 +227,9 @@ impl PgClientRepository {
         }
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
-        let (jwks, jwks_uri) = match &registration.jwks {
-            JwksSource::Inline(value) => (Some(value.clone()), None),
-            JwksSource::Uri(uri) => (None, Some(uri.clone())),
-        };
+        let (jwks, jwks_uri) = key_columns(registration);
         let (tls_field, tls_value) = subject_columns(registration);
+        let (agent, agent_policy) = agent_columns(registration);
 
         sqlx::query!(
             "insert into clients (tenant_id, client_id, client_name,
@@ -247,8 +247,10 @@ impl PgClientRepository {
                                   backchannel_token_delivery_mode,
                                   backchannel_client_notification_endpoint,
                                   backchannel_user_code_parameter)
+                                  is_agent, agent_owner_user_id, agent_policy)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+                     $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
+                     $32)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  token_endpoint_auth_method = excluded.token_endpoint_auth_method,
@@ -279,7 +281,10 @@ impl PgClientRepository {
                  backchannel_token_delivery_mode = excluded.backchannel_token_delivery_mode,
                  backchannel_client_notification_endpoint =
                      excluded.backchannel_client_notification_endpoint,
-                 backchannel_user_code_parameter = excluded.backchannel_user_code_parameter",
+                 backchannel_user_code_parameter = excluded.backchannel_user_code_parameter,
+                 is_agent = excluded.is_agent,
+                 agent_owner_user_id = excluded.agent_owner_user_id,
+                 agent_policy = excluded.agent_policy",
             self.tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
@@ -319,6 +324,9 @@ impl PgClientRepository {
                 .backchannel_client_notification_endpoint
                 .as_deref(),
             registration.backchannel_user_code_parameter,
+            agent.is_some(),
+            agent.map(|profile| *profile.owner().user_id().as_uuid()),
+            agent_policy,
         )
         .execute(&self.pool)
         .await
@@ -371,11 +379,9 @@ impl PgClientRepository {
         }
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
-        let (jwks, jwks_uri) = match &registration.jwks {
-            JwksSource::Inline(value) => (Some(value.clone()), None),
-            JwksSource::Uri(uri) => (None, Some(uri.clone())),
-        };
+        let (jwks, jwks_uri) = key_columns(registration);
         let (tls_field, tls_value) = subject_columns(registration);
+        let (agent, agent_policy) = agent_columns(registration);
 
         let row = sqlx::query_as!(
             Row,
@@ -394,8 +400,10 @@ impl PgClientRepository {
                                   backchannel_token_delivery_mode,
                                   backchannel_client_notification_endpoint,
                                   backchannel_user_code_parameter)
+                                  is_agent, agent_owner_user_id, agent_policy)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                     $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
+                     $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
+                     $32, $33)
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
@@ -407,6 +415,7 @@ impl PgClientRepository {
                        userinfo_signed_response_alg,
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
+                       is_agent, agent_owner_user_id, agent_policy,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -446,6 +455,9 @@ impl PgClientRepository {
                 .map(TokenDeliveryMode::as_str),
             registration.backchannel_client_notification_endpoint.as_deref(),
             registration.backchannel_user_code_parameter,
+            agent.is_some(),
+            agent.map(|profile| *profile.owner().user_id().as_uuid()),
+            agent_policy,
         )
         .fetch_one(&self.pool)
         .await
@@ -567,11 +579,16 @@ impl PgClientRepository {
         }
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
-        let (jwks, jwks_uri) = match &registration.jwks {
-            JwksSource::Inline(value) => (Some(value.clone()), None),
-            JwksSource::Uri(uri) => (None, Some(uri.clone())),
-        };
+        let (jwks, jwks_uri) = key_columns(registration);
         let (tls_field, tls_value) = subject_columns(registration);
+        // `ast-lh3.1`. This statement does not write the agent columns — an
+        // agent profile is policy the tenant attached, exactly like
+        // `resources`, and RFC 7592 §2.2 is the *client* rewriting its own
+        // metadata — so the replacement has to be something the stored profile
+        // still permits. Checked before the write and not after: the read-back
+        // below applies the same rule, and by then the change would already be
+        // committed.
+        self.check_agent_limits(&client.id, registration).await?;
 
         let row = sqlx::query_as!(
             Row,
@@ -613,6 +630,7 @@ impl PgClientRepository {
                        userinfo_signed_response_alg,
                        backchannel_token_delivery_mode, backchannel_client_notification_endpoint,
                        backchannel_user_code_parameter,
+                       is_agent, agent_owner_user_id, agent_policy,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -656,6 +674,39 @@ impl PgClientRepository {
         .ok_or(DomainError::NotFound)?;
 
         row.into_entity(&self.tenant, self.capabilities)
+    }
+
+    /// Whether `registration` is admissible under the agent profile the stored
+    /// row already carries (`ast-lh3.1`).
+    ///
+    /// `Ok(())` for every client that is not an agent, which is nearly all of
+    /// them, at the cost of one indexed read of two columns.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] when the row is an agent and the replacement
+    /// leaves its limits, or when the stored profile does not parse.
+    async fn check_agent_limits(
+        &self,
+        client_id: &ClientId,
+        registration: &ClientRegistration,
+    ) -> Result<(), DomainError> {
+        let row = sqlx::query!(
+            "select is_agent, agent_policy from clients
+             where tenant_id = $1 and client_id = $2",
+            self.tenant.as_str(),
+            client_id.as_str()
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let Some(row) = row.filter(|row| row.is_agent) else {
+            return Ok(());
+        };
+        asterius_domain::AgentLimits::from_json(&row.agent_policy)
+            .map_err(|error| DomainError::invalid("clients.agent_policy", error.to_string()))?
+            .check(registration)
+            .map_err(|error| DomainError::invalid("clients", error.to_string()))
     }
 
     /// Deletes a client and, by cascade, its keys, pushed requests, grants and
@@ -950,18 +1001,60 @@ fn subject_columns(registration: &ClientRegistration) -> (Option<&str>, Option<&
         })
 }
 
+/// The agent columns of a row, lifted out before the rest of it is consumed.
+///
+/// A struct rather than three locals because it travels from the top of
+/// [`Row::into_entity`] to its end, past the point where `self` is partially
+/// moved into the metadata document it rebuilds.
+struct StoredAgent {
+    is_agent: bool,
+    owner: Option<uuid::Uuid>,
+    policy: serde_json::Value,
+}
+
+/// The two key columns, of which the schema holds exactly one.
+///
+/// `clients_exactly_one_key_source` is a check constraint, and the domain's
+/// [`JwksSource`] is the same rule as a type, so this is a translation and not
+/// a decision: writing it once means the three statements that store a client
+/// cannot disagree about which column a key source lands in.
+fn key_columns(registration: &ClientRegistration) -> (Option<serde_json::Value>, Option<String>) {
+    match &registration.jwks {
+        JwksSource::Inline(value) => (Some(value.clone()), None),
+        JwksSource::Uri(uri) => (None, Some(uri.clone())),
+    }
+}
+
+/// The three columns an agent profile (`ast-lh3.1`) occupies.
+///
+/// The owner is written to its own column and *not* left only in the document:
+/// the foreign key and the disable-on-delete trigger of migration `0019` act on
+/// a column, and an owner that lived only in the JSON would be a reference the
+/// database cannot enforce. The document therefore stores the limits alone,
+/// which is what [`asterius_domain::AgentLimits::from_json`] reads back — a
+/// second copy of the owner is a second thing to disagree.
+fn agent_columns(
+    registration: &ClientRegistration,
+) -> (Option<&asterius_domain::AgentProfile>, serde_json::Value) {
+    match &registration.agent {
+        Some(profile) => (Some(profile), profile.limits().to_json()),
+        None => (None, serde_json::json!({})),
+    }
+}
+
 /// One `clients` row, column for column.
 ///
 /// The booleans are columns and not a state: `dpop_bound_access_tokens` and
 /// `tls_client_certificate_bound_access_tokens` are RFC 9449 §5.2 and
 /// RFC 8705 §3.4, `use_mtls_endpoint_aliases` is FAPI 2.0 SP §5.2.2.1.1, and
-/// `backchannel_user_code_parameter` is CIBA Core 1.0 §4. They are independent
+/// `backchannel_user_code_parameter` is CIBA Core 1.0 §4 and `is_agent` is
+/// `ast-lh3.1`. They are independent
 /// of each other, so the enum clippy suggests cannot express them, and the
 /// combinations that are *not* independent are refused by the schema's check
 /// constraints rather than by this type.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "a row mirrors its table, and four of these columns are booleans in it"
+    reason = "a row mirrors its table, and five of these columns are booleans in it"
 )]
 struct Row {
     client_id: String,
@@ -991,6 +1084,9 @@ struct Row {
     backchannel_token_delivery_mode: Option<String>,
     backchannel_client_notification_endpoint: Option<String>,
     backchannel_user_code_parameter: bool,
+    is_agent: bool,
+    agent_owner_user_id: Option<uuid::Uuid>,
+    agent_policy: serde_json::Value,
     status: String,
     created_at: OffsetDateTime,
     updated_at: OffsetDateTime,
@@ -1012,6 +1108,11 @@ impl Row {
     ) -> Result<Client, DomainError> {
         let status = ClientStatus::parse(&self.status)
             .ok_or_else(|| DomainError::invalid("status", format!("unknown: {}", self.status)))?;
+        let stored_agent = StoredAgent {
+            is_agent: self.is_agent,
+            owner: self.agent_owner_user_id,
+            policy: self.agent_policy,
+        };
 
         let mut metadata = ClientMetadata {
             client_name: Some(self.client_name),
@@ -1068,7 +1169,18 @@ impl Row {
         // Not part of the registration document: the per-client resource
         // allow-list is policy (`ast-m9c.6`), so it is restored from the column
         // rather than validated out of a document that never carried it.
-        registration.resources = self.resources.into_iter().collect();
+        registration.resources = self.resources.iter().cloned().collect();
+        // `ast-lh3.1`, restored the same way and for the same reason: an agent
+        // profile is policy the tenant attached, not metadata the client sent.
+        // After `resources`, because the profile's audience allow-list is
+        // checked against them.
+        //
+        // The owner is taken from `agent_owner_user_id` and *not* from the
+        // stored document, even though a document could carry one: the column
+        // is what the foreign key and the disable-on-delete trigger act on, so
+        // trusting the document instead would let a row whose owner had been
+        // deleted keep naming them.
+        registration.agent = Self::agent(&stored_agent, &registration)?;
 
         Ok(Client {
             tenant: tenant.clone(),
@@ -1078,5 +1190,42 @@ impl Row {
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
+    }
+
+    /// The stored agent profile (`ast-lh3.1`), or `None` for a client that is
+    /// not an agent.
+    ///
+    /// A row flagged `is_agent` with no owner is refused rather than loaded as
+    /// an ordinary client: the schema makes that row disabled and unusable, and
+    /// silently demoting it to a non-agent would hand back a client with an
+    /// agent's grants and none of an agent's limits.
+    fn agent(
+        stored: &StoredAgent,
+        registration: &ClientRegistration,
+    ) -> Result<Option<asterius_domain::AgentProfile>, DomainError> {
+        if !stored.is_agent {
+            return Ok(None);
+        }
+        let owner = stored.owner.ok_or_else(|| {
+            DomainError::invalid(
+                "clients.agent_owner_user_id",
+                "an agent whose owner has been deleted cannot be loaded",
+            )
+        })?;
+        let limits = asterius_domain::AgentLimits::from_json(&stored.policy)
+            .map_err(|error| DomainError::invalid("clients.agent_policy", error.to_string()))?;
+        let profile = asterius_domain::AgentProfile::new(
+            asterius_domain::AgentOwner::User(asterius_domain::UserId::new(owner)),
+            limits,
+        );
+        // The registration the row rebuilt has to be one these limits permit.
+        // A tenant that narrowed its agent profile after a client was
+        // registered leaves rows the policy would refuse today, and the honest
+        // answer for those is to refuse them now rather than at issuance.
+        profile
+            .limits()
+            .check(registration)
+            .map_err(|error| DomainError::invalid("clients", error.to_string()))?;
+        Ok(Some(profile))
     }
 }

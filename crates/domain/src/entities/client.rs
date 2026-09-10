@@ -17,6 +17,7 @@
 //! error. Each such deviation is marked at the point where it is taken.
 
 use crate::capabilities::{Capabilities, Feature};
+use crate::entities::agent::{AGENT_GRANT_TYPES, AgentLimits, AgentOwner, AgentProfile};
 use crate::keys::SigningAlgorithm;
 use crate::{ClientId, TenantId};
 use serde::Deserialize;
@@ -1065,6 +1066,13 @@ pub struct ClientMetadata {
     /// CIBA Core 1.0 §4. Whether the client will send a `user_code` with its
     /// backchannel authentication requests.
     pub backchannel_user_code_parameter: Option<bool>,
+    /// `ast-lh3.1`, an extension member in RFC 7591 §2's sense: `standard` (the
+    /// default) or `agent`. Absent is `standard`, because a client registered
+    /// before agents existed did not consent to being one.
+    pub client_kind: Option<String>,
+    /// `ast-lh3.1`. The UUID of the user an agent acts for. Meaningful only
+    /// with `client_kind` of `agent`, and required there.
+    pub agent_owner: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,6 +1163,16 @@ pub struct ClientRegistration {
     /// backchannel authentication requests. `false` for every client that is
     /// not a CIBA client.
     pub backchannel_user_code_parameter: bool,
+    /// `ast-lh3.1`. `Some` exactly when this client is an agent.
+    ///
+    /// The *owner* in it comes from the registration document; the *limits*
+    /// come from the tenant's registration policy and are attached by
+    /// `asterius_server::http::register` after this validation, in the same
+    /// place every other tenant rule is applied ([`crate::AgentLimits::check`]).
+    /// What [`ClientMetadata::validate`] settles here is only what is true of
+    /// an agent under any policy: it authenticates with a key, it names an
+    /// owner, and it uses no grant that needs a browser.
+    pub agent: Option<AgentProfile>,
 }
 
 impl ClientRegistration {
@@ -1474,6 +1492,7 @@ impl ClientMetadata {
 
         self.check_par()?;
         let use_mtls_endpoint_aliases = self.mtls_endpoint_aliases(capabilities)?;
+        let agent = self.agent(&grant_types, &redirect_uris)?;
 
         Ok(ClientRegistration {
             client_name: self.client_name()?,
@@ -1513,6 +1532,7 @@ impl ClientMetadata {
             backchannel_token_delivery_mode: backchannel.delivery_mode,
             backchannel_client_notification_endpoint: backchannel.notification_endpoint,
             backchannel_user_code_parameter: backchannel.user_code_parameter,
+            agent,
         })
     }
 
@@ -1620,6 +1640,80 @@ impl ClientMetadata {
             notification_endpoint,
             user_code_parameter: self.backchannel_user_code_parameter.unwrap_or(false),
         })
+    }
+
+    /// The agent half of the document (`ast-lh3.1`).
+    ///
+    /// `Ok(None)` is an ordinary client. `Ok(Some(_))` is an agent with its
+    /// owner and the narrowest limits there are; the tenant's policy widens or
+    /// narrows them afterwards, and never the client.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientMetadataError`], always with RFC 7591 §3.2.2's
+    /// `invalid_client_metadata`.
+    fn agent(
+        &self,
+        grant_types: &BTreeSet<GrantType>,
+        redirect_uris: &[RedirectUri],
+    ) -> Result<Option<AgentProfile>, ClientMetadataError> {
+        const FIELD: &str = "client_kind";
+        let kind = self.client_kind.as_deref().unwrap_or("standard");
+        if kind == "standard" {
+            if self.agent_owner.is_some() {
+                // An owner on a client that is not an agent is a delegation
+                // relationship nothing would ever read: refused rather than
+                // dropped, so that a caller which meant to register an agent
+                // finds out now instead of at its first token request.
+                return Err(ClientMetadataError::rejected(
+                    "agent_owner",
+                    "is only meaningful on a client whose client_kind is `agent`",
+                ));
+            }
+            return Ok(None);
+        }
+        if kind != "agent" {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                "must be `standard` or `agent`",
+            ));
+        }
+
+        // Everything below is true of an agent under any tenant's policy.
+        //
+        // The key is not checked here: `jwks` already refuses every client with
+        // neither `jwks` nor `jwks_uri`, and [`TokenEndpointAuthMethod`] has no
+        // shared-secret variant to exclude. That makes `private_key_jwt` or
+        // mTLS the only two shapes an agent can have — both are what FAPI 2.0
+        // SP §5.3.2.1 permits, and mTLS is accepted rather than excluded
+        // because a client certificate is no weaker a proof of possession than
+        // a client assertion and refusing it would only push an operator
+        // towards keeping a second key.
+        let owner = AgentOwner::parse(self.agent_owner.as_deref().ok_or(
+            ClientMetadataError::Missing {
+                field: "agent_owner",
+            },
+        )?)?;
+        if !grant_types
+            .iter()
+            .all(|grant| AGENT_GRANT_TYPES.contains(grant))
+        {
+            // RFC 8693 §5: a delegated credential is bounded by what its holder
+            // can do. An agent has no browser, so a redirecting grant is one it
+            // could only complete by borrowing a human's — which is exactly the
+            // confusion of principals FAPI 2.0 SP §6.7 warns about.
+            return Err(ClientMetadataError::rejected(
+                "grant_types",
+                "an agent may not use a grant that requires a browser",
+            ));
+        }
+        if !redirect_uris.is_empty() {
+            return Err(ClientMetadataError::rejected(
+                "redirect_uris",
+                "an agent reaches no endpoint that redirects, so it registers none",
+            ));
+        }
+        Ok(Some(AgentProfile::new(owner, AgentLimits::default())))
     }
 
     fn client_name(&self) -> Result<String, ClientMetadataError> {
@@ -2470,6 +2564,185 @@ mod tests {
 
     fn rejection(document: &serde_json::Value) -> ClientMetadataError {
         validate(document).expect_err("should have been rejected")
+    }
+
+    // -----------------------------------------------------------------------
+    // Agent clients (`ast-lh3.1`)
+    // -----------------------------------------------------------------------
+
+    const OWNER: &str = "6c9f1c4e-9a2e-4a8a-9f0a-0a1b2c3d4e5f";
+
+    /// The smallest document that registers an agent: a key, a non-redirecting
+    /// grant, no callback, and the account it acts for.
+    fn agent_document() -> serde_json::Value {
+        json!({
+            "client_name": "Nightly reconciler",
+            "jwks": {"keys": [{"kty": "OKP"}]},
+            "grant_types": ["client_credentials"],
+            "response_types": [],
+            "client_kind": "agent",
+            "agent_owner": OWNER,
+        })
+    }
+
+    fn agent_with(field: &str, value: serde_json::Value) -> serde_json::Value {
+        let mut document = agent_document();
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert(field.to_owned(), value);
+        document
+    }
+
+    #[test]
+    fn an_agent_registers_with_a_key_a_grant_and_an_owner() {
+        // Arrange & act.
+        let client = validate(&agent_document()).expect("the minimal agent document is valid");
+
+        // Assert.
+        let agent = client.agent.expect("the client is an agent");
+        assert_eq!(agent.owner().to_string(), OWNER);
+        assert_eq!(
+            agent.limits(),
+            &AgentLimits::default(),
+            "the document supplies the owner; the tenant supplies the limits"
+        );
+    }
+
+    /// RFC 7591 §2: no `jwks`, no `jwks_uri`, no client. An agent authenticates
+    /// with a key or not at all, and this is where "or not at all" dies.
+    #[test]
+    fn an_agent_with_no_key_source_is_refused() {
+        // Arrange.
+        let mut document = agent_document();
+        document.as_object_mut().expect("object").remove("jwks");
+
+        // Act.
+        let error = rejection(&document);
+
+        // Assert.
+        assert_eq!(error.code(), "invalid_client_metadata");
+        assert_eq!(error.field(), "jwks_uri");
+    }
+
+    /// FAPI 2.0 SP §6.7 and RFC 8693 §5: an agent has no browser, so a grant
+    /// that needs one could only be completed by borrowing a human's session.
+    #[test]
+    fn an_agent_asking_for_a_redirecting_grant_is_refused() {
+        // Arrange: a document that is otherwise a perfectly good code-flow
+        // client — response types and callback included — so what is refused is
+        // the grant itself and not the correspondence RFC 7591 §2.1 requires.
+        let mut document = agent_with("grant_types", json!(["authorization_code"]));
+        let object = document.as_object_mut().expect("object");
+        object.insert("response_types".to_owned(), json!(["code"]));
+        object.insert("redirect_uris".to_owned(), json!(["https://rp.example/cb"]));
+
+        // Act.
+        let error = rejection(&document);
+
+        // Assert.
+        assert_eq!(error.code(), "invalid_client_metadata");
+        assert_eq!(error.field(), "grant_types");
+    }
+
+    #[test]
+    fn an_agent_registering_a_callback_is_refused() {
+        // Arrange: a callback an agent could never be sent to.
+        let document = agent_with("redirect_uris", json!(["https://rp.example/cb"]));
+
+        // Act.
+        let error = rejection(&document);
+
+        // Assert.
+        assert_eq!(error.field(), "redirect_uris");
+    }
+
+    #[test]
+    fn an_agent_with_no_owner_is_refused() {
+        // Arrange.
+        let mut document = agent_document();
+        document
+            .as_object_mut()
+            .expect("object")
+            .remove("agent_owner");
+
+        // Act & assert.
+        assert_eq!(
+            rejection(&document),
+            ClientMetadataError::Missing {
+                field: "agent_owner"
+            }
+        );
+    }
+
+    /// The owner is an account, not a `sub`: a pairwise subject identifier
+    /// means something only to the client that received it.
+    #[test]
+    fn an_owner_that_is_not_a_user_uuid_is_refused() {
+        // Arrange.
+        let document = agent_with("agent_owner", json!("wD3wVQOR2b7WcZ9m0YkX8s0Zy6c1Q1s3n5r7"));
+
+        // Act.
+        let error = rejection(&document);
+
+        // Assert.
+        assert_eq!(error.field(), "agent_owner");
+        assert_eq!(error.code(), "invalid_client_metadata");
+    }
+
+    #[test]
+    fn an_ordinary_client_may_not_name_an_owner() {
+        // Arrange.
+        let document = with("agent_owner", json!(OWNER));
+
+        // Act & assert.
+        assert_eq!(rejection(&document).field(), "agent_owner");
+    }
+
+    #[test]
+    fn a_client_kind_this_build_does_not_know_is_refused() {
+        // Arrange: strict, like every other closed value set here — a kind that
+        // fell back to `standard` would be a client an operator believes is
+        // constrained and is not.
+        let document = with("client_kind", json!("daemon"));
+
+        // Act & assert.
+        assert_eq!(rejection(&document).field(), "client_kind");
+    }
+
+    #[test]
+    fn an_ordinary_client_is_not_an_agent() {
+        // Arrange & act.
+        let client = validate(&minimal()).expect("the minimal document is valid");
+
+        // Assert.
+        assert!(client.agent.is_none());
+    }
+
+    /// mTLS is accepted, not excluded: FAPI 2.0 SP §5.3.2.1 permits
+    /// `private_key_jwt` and mTLS and nothing else, and this build has no
+    /// shared-secret method to fall back to, so both agent shapes prove
+    /// possession of a key.
+    #[test]
+    fn an_agent_may_authenticate_with_mtls() {
+        // Arrange.
+        let mut document = agent_with(
+            "token_endpoint_auth_method",
+            json!("self_signed_tls_client_auth"),
+        );
+        let object = document.as_object_mut().expect("object");
+        object.insert(
+            "tls_client_certificate_bound_access_tokens".to_owned(),
+            json!(true),
+        );
+        // A client binds its tokens by one thing or the other, never both.
+        object.insert("dpop_bound_access_tokens".to_owned(), json!(false));
+
+        // Act.
+        let client = validate_with(&document, caps(true)).expect("an mTLS agent is an agent");
+
+        // Assert.
+        assert!(client.agent.is_some());
     }
 
     // -----------------------------------------------------------------------

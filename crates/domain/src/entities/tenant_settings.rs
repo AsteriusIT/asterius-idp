@@ -135,6 +135,23 @@ impl TokenLifetimes {
     pub const fn access_token(&self) -> Duration {
         self.access_token
     }
+
+    /// The same lifetimes with the access token no longer than `cap`.
+    ///
+    /// Clamped rather than refused, which is the opposite of
+    /// [`TokenLifetimes::validated`] and is deliberate: `validated` answers an
+    /// administrator who is watching and can be told "no", while this answers a
+    /// caller holding two ceilings that are both in force — the tenant's and an
+    /// agent profile's (`ast-lh3.1`) — where the only honest resolution is the
+    /// shorter one. Nothing here can lengthen a lifetime, so a caller cannot
+    /// use it to escape what `validated` already accepted.
+    #[must_use]
+    pub fn with_access_token_at_most(self, cap: Duration) -> Self {
+        Self {
+            access_token: self.access_token.min(cap),
+            ..self
+        }
+    }
 }
 
 /// Everything a tenant may set about itself that this story covers.

@@ -45,8 +45,13 @@
 //!   `ast-m9c.6` owns the per-tenant policy model. `authorization_details_types`
 //!   is rendered because the validator accepts it in a document, and
 //!   `resources` is rendered read-only because it is not settable at all.
-//! * **The agent profile.** `ast-lh3.1` has not landed; there is no column, no
-//!   type and nothing to edit.
+//! * **The agent profile.** `ast-lh3.1` has landed — the columns, the type and
+//!   the rules all exist — but no console screen edits it, and none is required
+//!   by that story. An agent is created by `POST /register` under a tenant
+//!   policy carrying the `agent` preset, and its limits come from that policy;
+//!   what is missing here is a *view* of an owner's fleet, which belongs with
+//!   the rest of the client screen (`ast-f7m`). Until it exists, an operator
+//!   reads `is_agent`, `agent_owner_user_id` and `agent_policy` from the row.
 //! * **Initial access token issuance.** Moved out, to
 //!   [`crate::initial_access_tokens`] (`ast-cu3`). What stays here is the
 //!   deployment's *gate* — whether `POST /register` answers anybody at all and
