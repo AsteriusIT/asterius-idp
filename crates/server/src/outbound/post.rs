@@ -136,7 +136,7 @@ impl HttpsPoster {
     /// Delivers `body` to `url` and returns the status it was accepted with.
     ///
     /// One timeout over the whole exchange, resolution included, for the
-    /// reason [`HttpsClientUrlFetcher::fetch`] gives: a per-step timeout lets
+    /// reason [`super::jwks::HttpsClientUrlFetcher`] gives: a per-step timeout lets
     /// a receiver that is slow at every step hold the worker for the sum of
     /// them, and the worker's claim lease is what that has to stay under.
     ///

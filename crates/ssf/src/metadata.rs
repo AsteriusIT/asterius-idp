@@ -55,7 +55,7 @@ pub const SPEC_VERSION: &str = "1_0";
 /// (`asterius_oidc::metadata::Endpoint::Jwks`), and computing it a second time
 /// in this crate would be a second opinion about where the keys live.
 ///
-/// The `issuer` is the tenant's, which is what [`crate::Set::issue`] puts in
+/// The `issuer` is the tenant's, which is what [`crate::ReadySet::issue`] puts in
 /// `iss`. SSF 1.0 §7.2.4 is that identity, and [`Issuer`] is what enforces the
 /// rest of §7.1's shape: https, no query, no fragment, canonical form.
 #[must_use]

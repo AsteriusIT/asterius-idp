@@ -7,10 +7,20 @@
 //!
 //! So these tests sign with the production path (`LocalKeyStore` is the
 //! tenant's `KeyStore` *and* its `Signer`, and `UnsignedSet::sign` goes
-//! through the same port an ID token does) and verify with `jsonwebtoken`
-//! built on `rust_crypto`: another JOSE implementation, on another crypto
-//! backend, reading the tenant's published JWKS. If the two disagree, one of
-//! them is wrong and it is worth knowing which.
+//! through the same port an ID token does) and verify with `jsonwebtoken`:
+//! another JOSE implementation, reading the tenant's published JWKS. If the
+//! two disagree, one of them is wrong and it is worth knowing which.
+//!
+//! The independence is at the JOSE layer, not below it. `jsonwebtoken` is
+//! built here on `aws_lc_rs`, the backend `asterius-jose` also uses, because
+//! its `rust_crypto` backend drags in the `rsa` crate and RUSTSEC-2023-0071
+//! with it (see this crate's `Cargo.toml`). So these tests do not cross-check
+//! the Ed25519 and P-256 primitives — they cross-check everything this
+//! workspace built on top of them: the signing input, the base64url, `typ`,
+//! `kid`, the shape of the published JWK and the claim validation a receiver
+//! runs. A bug in one of those is what would actually break interoperability;
+//! a bug in aws-lc-rs would not be caught here, and is not this test's to
+//! catch.
 
 use asterius_domain::{Issuer, KeyStore, SigningAlgorithm, TenantId};
 use asterius_jose::LocalKeyStore;

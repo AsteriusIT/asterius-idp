@@ -330,7 +330,7 @@ const CONTRAST_PAIRS: &[(&str, &str)] = &[
 impl Default for Palette {
     /// The palette `crates/web/templates/style.css` has always shipped.
     ///
-    /// It clears AA on every pair in [`CONTRAST_PAIRS`], which
+    /// It clears AA on every pair in `CONTRAST_PAIRS`, which
     /// `the_default_palette_clears_the_bar_it_imposes` asserts rather than
     /// assumes.
     fn default() -> Self {
@@ -771,7 +771,7 @@ impl Theme {
     ///
     /// # Panics
     ///
-    /// Never: [`SCHEMA`] is a literal in this file and
+    /// Never: `SCHEMA` is a literal in this file and
     /// `the_schema_literal_is_in_the_supported_subset` fails the build if it
     /// stops parsing.
     #[must_use]

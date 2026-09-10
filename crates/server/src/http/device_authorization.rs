@@ -7,7 +7,7 @@
 //! # This endpoint authenticates its client, which is a deviation worth naming
 //!
 //! RFC 8628 §3.1 says the request is made "as described in Section 3.2.1 of
-//! [RFC6749]", which for the public clients the device flow was written for
+//! [RFC 6749]", which for the public clients the device flow was written for
 //! means a bare `client_id` and no credential at all. FAPI 2.0 SP §5.3.2.1
 //! item 3 withdraws that: an authorization server conforming to the profile
 //! "shall only support confidential clients". This deployment follows the
@@ -30,6 +30,8 @@
 //! code verifier to and no browser round trip for a `state` to detect. What
 //! replaces them is the pairing of two independently drawn codes plus the
 //! confirmation step in the browser (§3.3.1, §5.4).
+//!
+//! [RFC 6749]: https://www.rfc-editor.org/rfc/rfc6749#section-3.2.1
 
 use asterius_domain::entities::client::GrantType;
 use asterius_domain::{Client, ClientRepository, Tenant};

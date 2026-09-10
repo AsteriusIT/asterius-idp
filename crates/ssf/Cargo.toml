@@ -34,6 +34,19 @@ asterius-jose.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 proptest.workspace = true
 # An independent JOSE implementation, so "the SET verifies" is not this
-# workspace agreeing with itself. `rust_crypto` selects ed25519-dalek and
-# p256: another library, another backend, and no aws-lc-rs anywhere in it.
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+# workspace agreeing with itself: jsonwebtoken parses the JOSE header, reads
+# the published JWK and applies `iss`/`aud` itself, none of it our code.
+#
+# The backend is `aws_lc_rs` and not `rust_crypto` because `rust_crypto` pulls
+# the `rsa` crate unconditionally — RUSTSEC-2023-0071, the Marvin timing
+# attack, with no fixed version — even though a SET is only ever EdDSA or
+# ES256 (ADR-0003) and no RSA code would run. cargo-deny does not distinguish
+# a dev-dependency, and an advisory exception on a FAPI server is a worse
+# trade than the one made here (ast-l4n, docs/threat-model.md).
+#
+# What that costs: the verifier now shares aws-lc-rs with `asterius-jose`, so
+# this test no longer covers the signature primitives themselves. It still
+# covers everything above them — signing input, base64url, `typ`, `kid`, JWKS
+# publication, claim validation — which is where an interop bug in a SET
+# profile actually lives.
+jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }

@@ -8,7 +8,7 @@
 //!
 //! `ast-ndk.5` says "Fluent (or ICU) bundles". What is here is neither: it is a
 //! `MessageKey` enum with one arm per string and a table per locale, generated
-//! by the [`catalogue!`] macro below. The reasons are the ones this crate keeps
+//! by the `catalogue!` macro below. The reasons are the ones this crate keeps
 //! making:
 //!
 //! * **A missing translation is a build failure, not a page.** The macro
