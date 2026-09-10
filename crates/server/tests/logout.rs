@@ -25,6 +25,7 @@ use asterius_domain::{
 use asterius_jose::SigningKey;
 use asterius_oidc::logout::confirmation_token;
 use asterius_server::http::logout::{LogoutContext, show, submit};
+use asterius_server::tenancy::MountPrefix;
 use asterius_web::csp::Nonce;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -365,10 +366,17 @@ struct Harness {
     audit: FakeAudit,
     tenant: Tenant,
     nonce: Nonce,
+    /// The prefix the tenancy layer removed from the request path. Root for
+    /// every test but the two that exercise a path-based tenant (`ast-j3v`).
+    mount: MountPrefix,
 }
 
 impl Harness {
     fn new(sessions: FakeSessions, keys: FakeKeys) -> Self {
+        Self::mounted(sessions, keys, MountPrefix::root())
+    }
+
+    fn mounted(sessions: FakeSessions, keys: FakeKeys, mount: MountPrefix) -> Self {
         Self {
             sessions,
             clients: FakeClients,
@@ -376,6 +384,7 @@ impl Harness {
             audit: FakeAudit::default(),
             tenant: tenant(),
             nonce: Nonce::generate(),
+            mount,
         }
     }
 
@@ -388,6 +397,7 @@ impl Harness {
             audit: &self.audit,
             nonce: &self.nonce,
             request_id: Some("test-request"),
+            mount: self.mount.clone(),
         }
     }
 
@@ -805,4 +815,61 @@ async fn a_state_carrying_a_newline_is_refused() {
 
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(!body.contains("evil.example"), "{body}");
+}
+
+// ---------------------------------------------------------------------------
+// The URL the confirmation page hands back to the browser (ast-j3v)
+// ---------------------------------------------------------------------------
+
+/// The value of the first `action="…"` in a page.
+fn action_of(html: &str) -> String {
+    html.split("action=\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("no form action in the page: {html}"))
+        .to_owned()
+}
+
+/// A tenant named by the path gets a form action that is actually served.
+///
+/// Every other test in this file builds the context by hand and so sees the
+/// root mount, which is the shape of a host-resolved tenant — that is why they
+/// all passed while the button was a 404 for every path-based tenant.
+/// `/logout` is mounted under `/t/{tenant}` and nowhere else, so an action
+/// without the prefix ends nothing: the user is told nothing and their session
+/// stays open (`ast-rna`, the class `ast-295` fixed elsewhere).
+#[tokio::test]
+async fn the_confirmation_form_posts_back_under_the_tenant_prefix() {
+    // Arrange
+    let fixture = Fixture::new();
+    let harness = Harness::mounted(
+        FakeSessions::holding(&digest(), now()),
+        fixture.published(),
+        MountPrefix::for_tenant(&TenantId::new("demo")),
+    );
+
+    // Act
+    let (status, _, body) = harness.get(&cookie(), &[]).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(action_of(&body), "/t/demo/logout");
+}
+
+/// A tenant resolved by host has no prefix, and the action keeps its bare path.
+///
+/// The root form is not a special case: the prefix put back is the one the
+/// tenancy layer removed, and for a host-resolved tenant that is nothing.
+#[tokio::test]
+async fn a_host_resolved_tenant_keeps_the_bare_end_session_path() {
+    // Arrange
+    let fixture = Fixture::new();
+    let harness = Harness::new(FakeSessions::holding(&digest(), now()), fixture.published());
+
+    // Act
+    let (status, _, body) = harness.get(&cookie(), &[]).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(action_of(&body), "/logout");
 }

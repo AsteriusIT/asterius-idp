@@ -1437,6 +1437,7 @@ fn logout_context<'a>(
     clients: &'a asterius_store_pg::PgClientRepository,
     nonce: &'a asterius_web::csp::Nonce,
     request_id: &'a crate::http::request_id::RequestId,
+    mount: Option<Extension<MountPrefix>>,
 ) -> logout::LogoutContext<'a> {
     logout::LogoutContext {
         tenant,
@@ -1446,6 +1447,7 @@ fn logout_context<'a>(
         audit: endpoints.audit.as_ref(),
         nonce,
         request_id: Some(request_id.as_str()),
+        mount: mount_of(mount),
     }
 }
 
@@ -1455,6 +1457,7 @@ async fn end_session(
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
     Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Response {
@@ -1473,6 +1476,7 @@ async fn end_session(
             &clients,
             &nonce,
             &request_id,
+            mount,
         ),
         &headers,
         &pairs,
@@ -1488,6 +1492,7 @@ async fn end_session_form(
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
     Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
@@ -1505,6 +1510,7 @@ async fn end_session_form(
             &clients,
             &nonce,
             &request_id,
+            mount,
         ),
         &headers,
         &pairs,
