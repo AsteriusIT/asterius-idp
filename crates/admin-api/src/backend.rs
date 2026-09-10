@@ -18,11 +18,14 @@
 
 use asterius_domain::entities::session::SessionRevocation;
 use asterius_domain::keys::KeyAdministration;
-use asterius_domain::ports::{TenantRepository, TenantSettingsRepository};
+use asterius_domain::ports::{ClientAdministration, TenantRepository, TenantSettingsRepository};
 use asterius_domain::{
-    AuditSink, DomainError, RateLimitStore, ReplayGuard, Role, Session, TenantId, UserId,
+    AuditSink, Capabilities, DomainError, RateLimitStore, ReplayGuard, Role, Session, TenantId,
+    UserId,
 };
 use std::sync::Arc;
+
+use crate::clients::RegistrationGate;
 
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
@@ -94,6 +97,33 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// which is what stops a handler from reaching a signing key: there is no
     /// method on it that returns one.
     fn keys(&self) -> Arc<dyn KeyAdministration>;
+
+    /// The deployment's clients, for the console's client screen.
+    ///
+    /// A handle for the same reason [`Self::tenants`] is one, and with the same
+    /// consequence: the object behind it is the composition root's, so the
+    /// `sector_identifier_uri` check on this port goes through the process's
+    /// one outbound adapter (ADR-0006) rather than through a second HTTP client
+    /// built for the console.
+    fn clients(&self) -> Arc<dyn ClientAdministration>;
+
+    /// What this deployment offers, for validating a registration document.
+    ///
+    /// The same value `POST /register` validates against
+    /// (`asterius_server::http::protocol`'s `capabilities`), and it has to be:
+    /// a console validating against a wider set could create a client for a
+    /// grant this build does not implement, and one validating against a
+    /// narrower set would refuse a client dynamic registration accepts. Not
+    /// `async`, because it is configuration read at startup and not a row.
+    fn capabilities(&self) -> Capabilities;
+
+    /// Who dynamic client registration admits, as the console reports it.
+    ///
+    /// A summary rather than the policy itself: the policy holds the digests of
+    /// the initial access tokens, and this crate has no business being able to
+    /// name one. See [`crate::clients::RegistrationGate`] for why the console
+    /// reports this gate rather than offering to mint a credential for it.
+    fn registration_gate(&self) -> RegistrationGate;
 
     /// Where an administrative change is recorded.
     fn audit(&self) -> Arc<dyn AuditSink>;

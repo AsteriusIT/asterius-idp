@@ -312,6 +312,159 @@ test('the tenant settings screen has no accessibility violation', async ({ page 
 });
 
 /**
+ * Walks the navigation to the clients screen (`ast-f7m.5`).
+ *
+ * By its link, like the settings screen above and for the same reason: the
+ * criterion is that the screen is reachable through the navigation.
+ */
+async function openClients(page: Page): Promise<void> {
+  await page.getByRole('link', { name: 'Clients' }).click();
+  await expect(page.getByRole('heading', { name: 'Clients', exact: true })).toBeVisible();
+  // Drawn from the document the API answered with, so a visible search box and
+  // a settled table mean the read succeeded rather than that a skeleton
+  // rendered.
+  await expect(page.getByLabel('Search clients')).toBeVisible();
+}
+
+/** Opens the registration form and fills the fields every client needs. */
+async function fillNewClient(page: Page, name: string, callback: string): Promise<void> {
+  await page.getByRole('button', { name: 'Register a client' }).click();
+  await expect(page.getByRole('heading', { name: 'New client' })).toBeVisible();
+  await page.getByLabel('Client name').fill(name);
+  await page.getByLabel('Redirect URIs (one per line)', { exact: true }).fill(callback);
+  await page.getByLabel('JWK Set URL').fill('https://app.example.test/jwks.json');
+}
+
+test('the clients screen is reachable and reads the admin API', async ({ context, page }) => {
+  // Arrange
+  const watcher = await CspWatcher.attach(context, true);
+  const offOrigin: string[] = [];
+  context.on('request', (request) => {
+    if (!request.url().startsWith(ORIGIN)) {
+      offOrigin.push(`${request.method()} ${request.url()}`);
+    }
+  });
+  await signIn(page);
+
+  // Act
+  await openClients(page);
+
+  // Assert
+  expect(offOrigin, 'the clients screen reached a third party').toEqual([]);
+  watcher.assertClean('the clients screen');
+});
+
+/**
+ * **The acceptance criterion of `ast-f7m.5`, in a browser.**
+ *
+ * The console must not be able to create a client dynamic client registration
+ * would refuse. Both documents below are refused by
+ * `asterius_domain::ClientMetadata::validate` — one for a plaintext callback
+ * (ADR-0005, OAuth Security BCP §2.1), one for a signing algorithm outside the
+ * profile's three (ADR-0003, FAPI 2.0 SP §5.4.1) — and the console reaches that
+ * validator through the same call `POST /register` makes.
+ *
+ * What is asserted is the pair: the server's own sentence is shown, and no
+ * client appears in the inventory. A screen that showed the refusal and created
+ * the client anyway would pass half of this.
+ */
+test('the console cannot register a client dynamic registration would refuse', async ({
+  page,
+}) => {
+  // Arrange
+  await signIn(page);
+  await openClients(page);
+
+  // Act: a plaintext callback.
+  await fillNewClient(page, 'Refused by the validator', 'http://app.example.test/callback');
+  await page.getByRole('button', { name: 'Register client' }).click();
+
+  // Assert: the server's refusal, and no claim that anything was registered.
+  const refusal = page.getByRole('alert');
+  await expect(refusal).toBeVisible();
+  await expect(refusal).toContainText(/redirect_uri|https/i);
+  await expect(page.getByRole('status')).toHaveCount(0);
+
+  // Act: a client with no key source at all, which RFC 7591 §2 leaves this
+  // server nothing to verify a `private_key_jwt` assertion with.
+  await page.getByLabel('Redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/callback');
+  await page.getByLabel('JWK Set URL').fill('');
+  await page.getByRole('button', { name: 'Register client' }).click();
+
+  // Assert
+  await expect(page.getByRole('alert')).toBeVisible();
+  await expect(page.getByRole('status')).toHaveCount(0);
+
+  // And nothing was written under either attempt. The rest of the refusals —
+  // an algorithm off the list, a shared secret, both key sources at once — are
+  // asserted against the same validator in
+  // `crates/admin-api/src/router.rs`, where a table costs one test rather than
+  // one browser round trip each.
+  await page.getByRole('button', { name: 'Close' }).click();
+  await page.getByLabel('Search clients').fill('Refused by the validator');
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page.getByText('No client matches.')).toBeVisible();
+});
+
+/**
+ * The other half: a document this profile *does* accept is registered, appears
+ * in the inventory, and can be opened and saved again unchanged.
+ *
+ * The last step is the one that rots silently — a rendering that dropped a
+ * member would leave every visit to the edit screen one "Save" away from
+ * rewriting the client.
+ */
+test('a valid client can be registered, found and saved again unchanged', async ({ page }) => {
+  // Arrange
+  await signIn(page);
+  await openClients(page);
+  const name = `Sweep client ${Date.now()}`;
+
+  // Act
+  await fillNewClient(page, name, 'https://app.example.test/callback');
+  await page.getByRole('button', { name: 'Register client' }).click();
+
+  // Assert: the server's `client_id`, which the console did not choose.
+  const notice = page.getByRole('status');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText(/Registered as c\./);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+
+  // It is in the inventory, and it is what the search finds.
+  await page.getByRole('button', { name: 'Close' }).click();
+  await page.getByLabel('Search clients').fill(name);
+  await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await expect(page.getByRole('cell', { name, exact: true })).toBeVisible();
+
+  // And an unedited save is accepted.
+  await page.getByRole('button', { name: `Edit ${name}` }).click();
+  await expect(page.getByRole('heading', { name: /^Editing c\./ })).toBeVisible();
+  await page.getByRole('button', { name: 'Save client' }).click();
+  await expect(page.getByRole('status')).toContainText('Saved.');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('the clients screen has no accessibility violation', async ({ page }, testInfo) => {
+  // Arrange
+  await signIn(page);
+  await openClients(page);
+  await page.getByRole('button', { name: 'Register a client' }).click();
+  await expect(page.getByRole('heading', { name: 'New client' })).toBeVisible();
+
+  // Act
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze();
+
+  // Assert
+  await testInfo.attach('axe', {
+    body: JSON.stringify(results.violations, null, 2),
+    contentType: 'application/json',
+  });
+  expect(results.violations).toEqual([]);
+});
+
+/**
  * **The logout half of `ast-bfn`.**
  *
  * Before this bead the signed-out screen was reachable only by a session that

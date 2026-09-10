@@ -4,10 +4,11 @@
 //! Protocol crates depend on these traits and never on an implementation.
 
 use crate::{
-    AuthenticationMethod, Client, ClientId, ClientStatus, CodeBinding, Consumed, DomainError,
-    Enrolment, FirstPartyDestination, Grant, InteractionRecord, Issuer, NewPasskey, Participant,
-    PushedRequest, RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session,
-    SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
+    AuthenticationMethod, Client, ClientId, ClientMetadataError, ClientRegistration, ClientStatus,
+    CodeBinding, Consumed, DomainError, Enrolment, FirstPartyDestination, Grant, InteractionRecord,
+    Issuer, NewPasskey, Participant, PushedRequest, RegisteredPasskey, ResourceServer, Secret,
+    SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings,
+    User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -363,6 +364,108 @@ pub trait ClientConfiguration: Debug + Send + Sync {
     /// already decided to refuse by the time it gets here, so the failure is
     /// worth logging and must not change the answer.
     async fn revoke_registration_access_token(&self, digest: &[u8; 32]) -> Result<(), DomainError>;
+}
+
+/// The clients of a deployment, as an administrator manages them.
+///
+/// A fourth client port beside [`ClientRepository`], [`ClientRegistry`] and
+/// [`ClientConfiguration`], and the reason is readership again: those three are
+/// held by protocol endpoints acting on a *client's* say-so, and this one is
+/// held by the admin API acting on an administrator's. Folding "list every
+/// client in this tenant" onto the port the token endpoint holds would hand an
+/// enumeration capability to code that authenticates one client at a time.
+///
+/// # It takes the tenant as an argument
+///
+/// Unlike the other three, which are opened on a tenant scope. The admin API
+/// holds one handle for the process (`asterius_admin_api::AdminBackend`) and
+/// passes the tenant the request was routed to, exactly as
+/// [`crate::keys::KeyAdministration`] does. Opening the scope stays in the
+/// composition root, which is one place rather than one per handler.
+///
+/// # What it deliberately cannot do
+///
+/// There is no `delete`. RFC 7592 §2.3 deprovisioning is the client's own act
+/// and has its own port; an administrator taking a client out of service
+/// suspends it instead — [`ClientStatus::Suspended`] through [`Self::replace`]
+/// — which stops it authenticating while leaving the grants and the audit rows
+/// that name it attached to something that still exists.
+#[async_trait::async_trait]
+pub trait ClientAdministration: Debug + Send + Sync {
+    /// Every client in `tenant`, ordered by `client_id`.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] if a stored row no longer describes a client
+    /// this profile accepts — which an administrator has to be told about,
+    /// because the console is where it would be fixed — or a storage failure.
+    async fn list(&self, tenant: &TenantId) -> Result<Vec<Client>, DomainError>;
+
+    /// One client, or `None` if this tenant has no such client.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached, which a
+    /// caller must not treat as `None`.
+    async fn find(
+        &self,
+        tenant: &TenantId,
+        client_id: &ClientId,
+    ) -> Result<Option<Client>, DomainError>;
+
+    /// Stores a client an administrator created, and returns it **as stored**.
+    ///
+    /// No registration access token is issued and none is stored: OIDC
+    /// Registration §3.2 requires an implementation to "return both a Client
+    /// Configuration Endpoint and a Registration Access Token or neither of
+    /// them", and a client created here has neither — it is managed from the
+    /// console, and [`ManagedClient::registration_access_token`] being `None`
+    /// is what refuses every RFC 7592 request for it.
+    ///
+    /// Returned as stored, for the reason [`ClientRegistry::register`] gives:
+    /// this profile provisions several fields the caller did not send, and a
+    /// console that rendered its own request back would show an administrator a
+    /// client that does not exist.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the `client_id` is taken or the tenant does
+    /// not exist, [`DomainError::Invalid`] if the entity belongs to another
+    /// tenant, or a storage failure.
+    async fn create(&self, client: &Client) -> Result<Client, DomainError>;
+
+    /// Replaces a client's registration wholesale, and returns it as stored.
+    ///
+    /// A replacement and not a merge, for the reason RFC 7592 §2.2 makes its
+    /// update one: a form that filled in what an administrator deleted would
+    /// leave a client on redirect URIs somebody has just removed.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the client vanished between the read and
+    /// the write, [`DomainError::Invalid`] if the entity belongs to another
+    /// tenant, or a storage failure.
+    async fn replace(&self, client: &Client) -> Result<Client, DomainError>;
+
+    /// Verifies a `sector_identifier_uri` (OIDC Registration §5), through the
+    /// deployment's one outbound path.
+    ///
+    /// On this port rather than left to the caller, because the caller is the
+    /// admin API and it may not hold an HTTP client: ADR-0006 gives this
+    /// deployment exactly one place that dereferences a URL somebody else
+    /// wrote, and a second one built for the console would be a second SSRF
+    /// guard to keep in step. An implementation is expected to call the same
+    /// function `POST /register` calls, so that a document the console accepts
+    /// is a document dynamic registration would accept.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientMetadataError`] carrying the RFC 7591 §3.2.2 code the
+    /// registration endpoint would have answered with.
+    async fn verify_sector(
+        &self,
+        registration: &ClientRegistration,
+    ) -> Result<(), ClientMetadataError>;
 }
 
 /// Stores pushed authorization requests for one tenant.

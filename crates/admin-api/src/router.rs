@@ -21,8 +21,8 @@
 
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
-    Activation, Actor, AuditEvent, Detail, DomainError, EventType, Kid, Outcome, RefreshPolicy,
-    Tenant, TenantId, TenantSettings, TenantStatus,
+    Activation, Actor, AuditEvent, Client, ClientRegistration, ClientStatus, Detail, DomainError,
+    EventType, Kid, Outcome, RefreshPolicy, Tenant, TenantId, TenantSettings, TenantStatus,
 };
 use axum::Router;
 use axum::extract::Request;
@@ -38,7 +38,7 @@ use crate::error::AdminError;
 use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Effect, Method, Operation};
 use crate::pagination::{Page, PageRequest};
-use crate::{csrf, keys, openapi, throttle};
+use crate::{clients, csrf, keys, openapi, throttle};
 
 /// The client address, as this crate sees it.
 ///
@@ -252,6 +252,11 @@ async fn handle(
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
         crate::TENANT_SETTINGS_READ_ID => context.read_settings().await,
         crate::TENANT_SETTINGS_UPDATE_ID => context.update_settings(body).await,
+        crate::CLIENTS_LIST_ID => context.list_clients().await,
+        crate::CLIENT_READ_ID => context.read_client().await,
+        crate::CLIENT_CREATE_ID => context.create_client(body).await,
+        crate::CLIENT_UPDATE_ID => context.update_client(body).await,
+        crate::REGISTRATION_READ_ID => Ok(context.read_registration_gate()),
         crate::KEYS_LIST_ID => context.list_keys().await,
         crate::KEYS_JWKS_ID => context.preview_jwks().await,
         crate::KEYS_ROTATE_ID => context.rotate_key(body).await,
@@ -624,6 +629,269 @@ impl Handling<'_> {
             return Err(AdminError::Forbidden);
         }
         Ok(named)
+    }
+
+    /// `GET /clients` — this tenant's clients, one cursor page at a time.
+    ///
+    /// The `q` parameter filters *before* the page is cut, which is the only
+    /// order that makes a filtered page mean anything: filtering after the cut
+    /// would give an operator a page of three rows and a cursor promising more.
+    async fn list_clients(&self) -> Result<Response, AdminError> {
+        let request = PageRequest::parse(
+            query_value(&self.query, "cursor").as_deref(),
+            query_value(&self.query, "limit").as_deref(),
+        )?;
+        // Decoded, unlike the cursor and the limit beside it: a search box
+        // holds prose, and a browser sends prose percent-encoded. See
+        // [`clients::search_term`].
+        let query = clients::search_term(&query_value(&self.query, "q").unwrap_or_default());
+
+        let clients = self
+            .state
+            .backend
+            .clients()
+            .list(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::CLIENTS_LIST_ID, &error))?;
+
+        // Ordered by `client_id` below the port, and the cursor is that id, so
+        // the page is cut here for the reason `list_tenants` states: a tenant
+        // holds clients in the tens or hundreds, and a ranged `list_after` on
+        // the port is what a deployment with more would grow. The cursor is
+        // opaque so that it can grow without breaking a console.
+        let rows: Vec<serde_json::Value> = clients
+            .iter()
+            .filter(|client| clients::matches(client, &query))
+            .skip_while(|client| {
+                request
+                    .after
+                    .as_ref()
+                    .is_some_and(|cursor| client.id.as_str() <= cursor.key())
+            })
+            .take(request.limit + 1)
+            .map(clients::summarise)
+            .collect();
+
+        let page = Page::from_overfetched(rows, request.limit, |row| {
+            row["client_id"].as_str().unwrap_or_default().to_owned()
+        });
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::to_value(&page).unwrap_or_else(|_| serde_json::json!({})),
+        ))
+    }
+
+    /// `GET /clients/{client_id}` — one client's registration.
+    ///
+    /// The client is looked up in the tenant the request was routed to, so a
+    /// `client_id` belonging to another tenant is a 404 here rather than
+    /// somebody else's configuration.
+    async fn read_client(&self) -> Result<Response, AdminError> {
+        let id = self.client_in_path("")?;
+        let client = self.load_client(&id, crate::CLIENT_READ_ID).await?;
+
+        Ok(json_no_store(StatusCode::OK, &clients::document(&client)))
+    }
+
+    /// `POST /clients` — registers a client from the console.
+    ///
+    /// **The whole of the validation is `ClientRegistration::from_json`**, the
+    /// call `POST /register` makes, on the bytes as they arrived. Nothing here
+    /// decides what an acceptable client is; see [`crate::clients`]. The two
+    /// checks that follow are the two a document cannot answer: whether this
+    /// tenant can sign the ID tokens the client asked for, and whether a
+    /// pairwise client's sector is backed (OIDC Registration §5).
+    ///
+    /// No registration access token is minted, so none is shown once and none
+    /// is stored: a client created here is managed from the console, and OIDC
+    /// Registration §3.2 requires "both a Client Configuration Endpoint and a
+    /// Registration Access Token or neither of them".
+    async fn create_client(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = self.body_bytes(body).await?;
+        let status = clients::requested_status(&bytes)?.unwrap_or(ClientStatus::Active);
+        let registration = ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
+            .map_err(|failure| clients::refusal(&failure))?;
+
+        self.check_client_is_serviceable(&registration, crate::CLIENT_CREATE_ID)
+            .await?;
+
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            // Minted here and never taken from the body: FAPI 2.0 SP §6.7 says
+            // a client must not influence its own identifier, and an
+            // administrator is not an exception — the console has no more
+            // business choosing a `client_id` than a registering client does.
+            id: asterius_domain::ClientId::mint(),
+            registration,
+            status,
+            // Placeholders the store overwrites. The response is rendered from
+            // what comes back, so these never reach a screen.
+            created_at: self.now,
+            updated_at: self.now,
+        };
+
+        let stored =
+            self.state
+                .backend
+                .clients()
+                .create(&client)
+                .await
+                .map_err(|error| match error {
+                    DomainError::Conflict(message) => AdminError::Conflict(message),
+                    other => AdminError::from_storage(crate::CLIENT_CREATE_ID, &other),
+                })?;
+
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::CLIENT_CREATE_ID)
+                .text("client_id", stored.id.as_str())
+                .text("status", stored.status.as_str()),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &clients::document(&stored),
+        ))
+    }
+
+    /// `PUT /clients/{client_id}` — replaces one client's registration.
+    ///
+    /// A replacement and not a merge (RFC 7592 §2.2), through the same
+    /// validator as a creation: an edit that could pass a document a fresh
+    /// registration would refuse would make the shared validator a formality.
+    ///
+    /// The `client_id`, the creation time and everything the document does not
+    /// carry — the registration access token, the per-client resource
+    /// allow-list, the agent profile — survive untouched, because the entity
+    /// written is the stored one with a new registration on it rather than one
+    /// assembled from the request.
+    async fn update_client(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let id = self.client_in_path("")?;
+        let existing = self.load_client(&id, crate::CLIENT_UPDATE_ID).await?;
+
+        let bytes = self.body_bytes(body).await?;
+        // Absent means unchanged, which is what stops a console built against
+        // an older server from reactivating a client somebody suspended.
+        let status = clients::requested_status(&bytes)?.unwrap_or(existing.status);
+        let registration = ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
+            .map_err(|failure| clients::refusal(&failure))?;
+
+        self.check_client_is_serviceable(&registration, crate::CLIENT_UPDATE_ID)
+            .await?;
+
+        let updated = Client {
+            registration,
+            status,
+            updated_at: self.now,
+            ..existing.clone()
+        };
+
+        let stored = self
+            .state
+            .backend
+            .clients()
+            .replace(&updated)
+            .await
+            .map_err(|error| match error {
+                DomainError::NotFound => AdminError::NotFound,
+                other => AdminError::from_storage(crate::CLIENT_UPDATE_ID, &other),
+            })?;
+
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::CLIENT_UPDATE_ID)
+                .text("client_id", stored.id.as_str())
+                .text("status_before", existing.status.as_str())
+                .text("status_after", stored.status.as_str()),
+        )
+        .await;
+
+        Ok(json_no_store(StatusCode::OK, &clients::document(&stored)))
+    }
+
+    /// `GET /registration` — the dynamic registration gate, as configured.
+    ///
+    /// A read of configuration, so there is nothing to await. See
+    /// [`crate::clients::RegistrationGate`] for why this reports the gate
+    /// rather than offering to mint an initial access token.
+    fn read_registration_gate(&self) -> Response {
+        json_no_store(
+            StatusCode::OK,
+            &clients::registration_document(self.state.backend.registration_gate()),
+        )
+    }
+
+    /// The two things about a client that a registration document cannot say.
+    ///
+    /// Both are asked before anything is written, and in this order: the key
+    /// check is a local read and refusing on it spares an unreachable client an
+    /// outbound request, which is the same order `POST /register` uses.
+    async fn check_client_is_serviceable(
+        &self,
+        registration: &ClientRegistration,
+        operation: &'static str,
+    ) -> Result<(), AdminError> {
+        let records = self
+            .state
+            .backend
+            .keys()
+            .inventory(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?;
+        clients::check_signable(&records, registration.id_token_signed_response_alg)?;
+
+        self.state
+            .backend
+            .clients()
+            .verify_sector(registration)
+            .await
+            .map_err(|failure| clients::refusal(&failure))
+    }
+
+    /// The `client_id` named in the path.
+    ///
+    /// Taken as it arrived, with no decoding step, for the reason
+    /// [`Self::retire_key`] gives about a `kid`: a `client_id` this server
+    /// mints is `c.` and 22 `base64url` symbols, none of which a URL encodes,
+    /// and a segment carrying anything else names no client here and gets a 404
+    /// from the lookup. A decoder would be a parser added to the attack surface
+    /// in order to accept identifiers this server never issues.
+    fn client_in_path(&self, suffix: &str) -> Result<asterius_domain::ClientId, AdminError> {
+        let segment = self
+            .path
+            .trim_end_matches(suffix)
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .ok_or(AdminError::NotFound)?;
+        Ok(asterius_domain::ClientId::new(segment))
+    }
+
+    /// One client of the tenant this request was routed to, or a 404.
+    async fn load_client(
+        &self,
+        id: &asterius_domain::ClientId,
+        operation: &'static str,
+    ) -> Result<Client, AdminError> {
+        self.state
+            .backend
+            .clients()
+            .find(&self.tenant.id, id)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?
+            .ok_or(AdminError::NotFound)
+    }
+
+    /// The request body, under the shared size limit.
+    async fn body_bytes(&self, body: axum::body::Body) -> Result<Vec<u8>, AdminError> {
+        axum::body::to_bytes(body, MAX_BODY_BYTES)
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))
     }
 
     /// `GET /keys` — this tenant's keys and its rotation policies.
@@ -1105,6 +1373,12 @@ mod tests {
         keys: Mutex<Vec<PublicKeyRecord>>,
         key_schedules: Mutex<BTreeMap<String, RotationSchedule>>,
         minted: Mutex<u32>,
+        clients: Mutex<Vec<Client>>,
+        capabilities: Mutex<asterius_domain::Capabilities>,
+        /// Sectors this fake will confirm. A registration naming anything else
+        /// is refused, which is how a test reaches OIDC Registration §5's
+        /// refusal without a socket.
+        confirmed_sectors: Mutex<Vec<String>>,
     }
 
     #[derive(Debug, Clone)]
@@ -1312,9 +1586,15 @@ mod tests {
             *minted += 1;
             let kid = Kid::new(format!("kid-{minted}"));
 
-            let holds_active = records
-                .iter()
-                .any(|record| record.algorithm == algorithm && record.state == KeyState::Active);
+            // Scoped to the tenant, like the store is: a sibling's active key
+            // must not decide whether *this* tenant's staged key is promoted.
+            // The fake was tenant-blind here until `ast-f7m.5` seeded a key in
+            // one tenant and watched a rotation in another change behaviour.
+            let holds_active = records.iter().any(|record| {
+                &record.tenant == tenant
+                    && record.algorithm == algorithm
+                    && record.state == KeyState::Active
+            });
 
             // A tenant with no active key has published no JWK Set anyone could
             // have cached, so there is nothing for the propagation period to
@@ -1396,6 +1676,90 @@ mod tests {
         }
     }
 
+    /// The client store, and the sector check, as the composition root would
+    /// provide them.
+    ///
+    /// `create` refuses a `client_id` that is taken and `replace` refuses one
+    /// that is absent, because PostgreSQL does, and a fake that was gentler
+    /// than the store would let a handler's error mapping go untested.
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::ClientAdministration for Handle {
+        async fn list(&self, tenant: &TenantId) -> Result<Vec<Client>, DomainError> {
+            let mut clients: Vec<Client> = self
+                .0
+                .clients
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|client| &client.tenant == tenant)
+                .cloned()
+                .collect();
+            clients.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+            Ok(clients)
+        }
+
+        async fn find(
+            &self,
+            tenant: &TenantId,
+            client_id: &asterius_domain::ClientId,
+        ) -> Result<Option<Client>, DomainError> {
+            Ok(self
+                .0
+                .clients
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .find(|client| &client.tenant == tenant && &client.id == client_id)
+                .cloned())
+        }
+
+        async fn create(&self, client: &Client) -> Result<Client, DomainError> {
+            let mut clients = self.0.clients.lock().expect("an uncontended lock");
+            if clients
+                .iter()
+                .any(|held| held.tenant == client.tenant && held.id == client.id)
+            {
+                return Err(DomainError::Conflict("client_id is taken".to_owned()));
+            }
+            clients.push(client.clone());
+            Ok(client.clone())
+        }
+
+        async fn replace(&self, client: &Client) -> Result<Client, DomainError> {
+            let mut clients = self.0.clients.lock().expect("an uncontended lock");
+            let Some(held) = clients
+                .iter_mut()
+                .find(|held| held.tenant == client.tenant && held.id == client.id)
+            else {
+                return Err(DomainError::NotFound);
+            };
+            *held = client.clone();
+            Ok(held.clone())
+        }
+
+        async fn verify_sector(
+            &self,
+            registration: &ClientRegistration,
+        ) -> Result<(), asterius_domain::ClientMetadataError> {
+            let Some(uri) = registration.sector_identifier_uri_to_verify() else {
+                return Ok(());
+            };
+            if self
+                .0
+                .confirmed_sectors
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|confirmed| confirmed == uri)
+            {
+                return Ok(());
+            }
+            Err(asterius_domain::ClientMetadataError::unreachable(
+                "sector_identifier_uri",
+            ))
+        }
+    }
+
     fn default_schedule() -> RotationSchedule {
         RotationSchedule {
             rotation_period: time::Duration::days(90),
@@ -1468,6 +1832,21 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn clients(&self) -> Arc<dyn asterius_domain::ports::ClientAdministration> {
+            Arc::new(self.clone())
+        }
+
+        fn capabilities(&self) -> asterius_domain::Capabilities {
+            *self.0.capabilities.lock().expect("an uncontended lock")
+        }
+
+        fn registration_gate(&self) -> clients::RegistrationGate {
+            clients::RegistrationGate {
+                mode: "initial_access_token",
+                configured_tokens: 2,
+            }
+        }
+
         fn audit(&self) -> Arc<dyn AuditSink> {
             Arc::new(self.clone())
         }
@@ -1490,6 +1869,43 @@ mod tests {
     /// The `kid` every tenant in the fixture holds a staged key under, and the
     /// value `{kid}` is replaced with when a test walks the registry.
     const SEEDED_KID: &str = "seeded-pending-key";
+
+    /// The `client_id` the fixture's tenants hold a client under, and the value
+    /// `{client_id}` is replaced with when a test walks the registry.
+    ///
+    /// Shaped like one this server mints (`c.` and 22 `base64url` symbols) so
+    /// that the routes are exercised with the identifiers they will really see.
+    const SEEDED_CLIENT_ID: &str = "c.SeededClientSeededClien";
+
+    /// A registration document this profile accepts, as a fixture.
+    ///
+    /// Deliberately minimal: every other member has a default this server
+    /// provisions, and a fixture that set them all would stop noticing when a
+    /// default changed.
+    fn valid_registration() -> serde_json::Value {
+        serde_json::json!({
+            "client_name": "Seeded client",
+            "redirect_uris": ["https://app.example.test/callback"],
+            "grant_types": ["authorization_code"],
+            "scope": "openid",
+            "jwks_uri": "https://app.example.test/jwks.json",
+        })
+    }
+
+    fn seeded_client(tenant: &str, id: &str) -> Client {
+        Client {
+            tenant: TenantId::parse(tenant).expect("a valid tenant id"),
+            id: asterius_domain::ClientId::new(id),
+            registration: ClientRegistration::from_json(
+                valid_registration().to_string().as_bytes(),
+                asterius_domain::Capabilities::default(),
+            )
+            .expect("the fixture is a valid registration document"),
+            status: ClientStatus::Active,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
 
     /// One key, carrying a private member no response may ever contain.
     fn seeded_key(tenant: &str, kid: &str, state: KeyState) -> PublicKeyRecord {
@@ -1552,7 +1968,33 @@ mod tests {
                     .lock()
                     .expect("an uncontended lock")
                     .push(seeded_key(id, SEEDED_KID, KeyState::Pending));
+                // One client per tenant, so that the `{client_id}` in the
+                // client routes names something for every test that walks the
+                // registry — and so that a cross-tenant read has a real row in
+                // the other tenant to fail to find.
+                handle
+                    .0
+                    .clients
+                    .lock()
+                    .expect("an uncontended lock")
+                    .push(seeded_client(id, SEEDED_CLIENT_ID));
             }
+            // An *active* key, in the tenant the registry walk runs against
+            // only. Registering a client is refused when the tenant cannot sign
+            // the ID tokens it asks for (`clients::check_signable`), so the
+            // table-driven tests need one — and the key-rotation tests, which
+            // run in `acme`, need a tenant that has none, because their
+            // premise is a tenant whose first key is born signing.
+            handle
+                .0
+                .keys
+                .lock()
+                .expect("an uncontended lock")
+                .push(seeded_key(
+                    "asterius-admin",
+                    "seeded-active-key",
+                    KeyState::Active,
+                ));
             Self {
                 api_tenant: Arc::new(tenant_named("acme")),
                 handle,
@@ -1628,7 +2070,8 @@ mod tests {
         let path = operation
             .full_path()
             .replace("{tenant_id}", "acme")
-            .replace("{kid}", SEEDED_KID);
+            .replace("{kid}", SEEDED_KID)
+            .replace("{client_id}", SEEDED_CLIENT_ID);
         HttpRequest::builder()
             .method(operation.method().as_str())
             .uri(path)
@@ -1652,6 +2095,10 @@ mod tests {
             // than the empty one, or "every route answers a deployment admin"
             // would be asserting a 400.
             crate::TENANT_SETTINGS_UPDATE_ID => settings_body(60, 300),
+            // A registration document, because that is what these two take:
+            // the same document `POST /register` takes, validated by the same
+            // call.
+            crate::CLIENT_CREATE_ID | crate::CLIENT_UPDATE_ID => valid_registration(),
             crate::KEYS_ROTATE_ID => serde_json::json!({"alg": "EdDSA"}),
             crate::KEYS_SCHEDULE_ID => serde_json::json!({
                 "alg": "EdDSA",
@@ -2496,6 +2943,454 @@ mod tests {
             )
             .header(csrf::HEADER, csrf::token(cookie))
             .header(idempotency::HEADER, format!("key-{}", uuid::Uuid::new_v4()))
+    }
+
+    // ---- clients (`ast-f7m.5`) ---------------------------------------------
+
+    /// A console signed in to the tenant the registry walk seeds with an active
+    /// signing key, which is what a tenant needs before it can register a
+    /// client at all.
+    fn console_in_a_signing_tenant() -> (World, String) {
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::TenantAdmin]);
+        (world, cookie)
+    }
+
+    async fn post_client(world: &World, cookie: &str, document: &serde_json::Value) -> Response {
+        world
+            .send(
+                as_console(&crate::CLIENT_CREATE, cookie)
+                    .body(Body::from(document.to_string()))
+                    .expect("a request"),
+            )
+            .await
+    }
+
+    /// **The acceptance criterion of `ast-f7m.5`.** The console must not be
+    /// able to create a client dynamic client registration would refuse.
+    ///
+    /// Each document below is refused by `ClientMetadata::validate` for a
+    /// reason the specifications give, and the console reaches that validator
+    /// through the same call `POST /register` makes — so this test is really
+    /// asserting that no second, laxer definition of a valid client was written
+    /// for the admin API. The `client_name` on each one is what would be stored
+    /// if any of them were accepted, and the inventory is checked afterwards.
+    #[tokio::test]
+    async fn the_console_cannot_register_a_client_dynamic_registration_would_refuse() {
+        // Arrange
+        let (world, cookie) = console_in_a_signing_tenant();
+        let refused = [
+            // ADR-0005 / OAuth Security BCP §2.1: a web client's callback is
+            // https.
+            (
+                "plaintext callback",
+                serde_json::json!({
+                    "client_name": "Refused",
+                    "redirect_uris": ["http://app.example.test/callback"],
+                    "jwks_uri": "https://app.example.test/jwks.json",
+                }),
+            ),
+            // RFC 7591 §2: `jwks` and `jwks_uri` are mutually exclusive.
+            (
+                "both key sources",
+                serde_json::json!({
+                    "client_name": "Refused",
+                    "redirect_uris": ["https://app.example.test/callback"],
+                    "jwks_uri": "https://app.example.test/jwks.json",
+                    "jwks": {"keys": []},
+                }),
+            ),
+            // RFC 8725 §3.1 and ADR-0003: the algorithm list is closed.
+            (
+                "an algorithm off the list",
+                serde_json::json!({
+                    "client_name": "Refused",
+                    "redirect_uris": ["https://app.example.test/callback"],
+                    "jwks_uri": "https://app.example.test/jwks.json",
+                    "id_token_signed_response_alg": "RS256",
+                }),
+            ),
+            // FAPI 2.0 SP §5.3.2.1: no shared secret authentication.
+            (
+                "a shared secret",
+                serde_json::json!({
+                    "client_name": "Refused",
+                    "redirect_uris": ["https://app.example.test/callback"],
+                    "jwks_uri": "https://app.example.test/jwks.json",
+                    "token_endpoint_auth_method": "client_secret_basic",
+                }),
+            ),
+            // ADR-0002: the implicit and hybrid flows do not exist here.
+            (
+                "an implicit response type",
+                serde_json::json!({
+                    "client_name": "Refused",
+                    "redirect_uris": ["https://app.example.test/callback"],
+                    "jwks_uri": "https://app.example.test/jwks.json",
+                    "response_types": ["token"],
+                }),
+            ),
+            // RFC 7591 §2: a client needs keys this server can verify with.
+            (
+                "no key source at all",
+                serde_json::json!({
+                    "client_name": "Refused",
+                    "redirect_uris": ["https://app.example.test/callback"],
+                }),
+            ),
+        ];
+
+        for (what, document) in refused {
+            // Act
+            let response = post_client(&world, &cookie, &document).await;
+
+            // Assert
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "the console accepted {what}"
+            );
+            let body = body_of(response).await;
+            assert_eq!(body["error"]["code"], serde_json::json!("invalid_request"));
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("client_metadata")
+                        || message.contains("redirect_uri")),
+                "{what} was refused without the RFC 7591 §3.2.2 code: {body}"
+            );
+        }
+
+        // And nothing was written: a refusal that stored a row would be worse
+        // than an acceptance, because the console would not show it either.
+        let listed = body_of(
+            world
+                .send(
+                    as_console(&crate::CLIENTS_LIST, &cookie)
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        let names: Vec<&str> = listed["items"]
+            .as_array()
+            .expect("a page of clients")
+            .iter()
+            .filter_map(|row| row["client_name"].as_str())
+            .collect();
+        assert!(!names.contains(&"Refused"), "{listed}");
+    }
+
+    /// The client an administrator gets back is the one that was stored, and it
+    /// is a document the edit form can save again unchanged.
+    ///
+    /// The second half is the one that rots silently: a rendering that dropped
+    /// or renamed a member would leave every visit to the edit screen one
+    /// "Save" away from rewriting the client.
+    #[tokio::test]
+    async fn a_client_created_from_the_console_reads_back_and_saves_unchanged() {
+        // Arrange
+        let (world, cookie) = console_in_a_signing_tenant();
+
+        // Act
+        let created = post_client(&world, &cookie, &valid_registration()).await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created = body_of(created).await;
+        let id = created["client_id"]
+            .as_str()
+            .expect("a client_id")
+            .to_owned();
+
+        let read = body_of(
+            world
+                .send(
+                    as_console(&crate::CLIENT_READ, &cookie)
+                        .uri(crate::CLIENT_READ.full_path().replace("{client_id}", &id))
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+
+        let saved = world
+            .send(
+                as_console(&crate::CLIENT_UPDATE, &cookie)
+                    .uri(crate::CLIENT_UPDATE.full_path().replace("{client_id}", &id))
+                    .body(Body::from(read.to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(created, read, "the created client is not the one read back");
+        assert_eq!(
+            saved.status(),
+            StatusCode::OK,
+            "an unedited client could not be saved"
+        );
+        let saved = body_of(saved).await;
+        for member in [
+            "client_id",
+            "redirect_uris",
+            "grant_types",
+            "scope",
+            "jwks_uri",
+            "token_endpoint_auth_method",
+            "id_token_signed_response_alg",
+            "status",
+        ] {
+            assert_eq!(
+                saved[member], read[member],
+                "saving changed {member}: {saved}"
+            );
+        }
+    }
+
+    /// FAPI 2.0 SP §5.3.2.1 and OIDC Registration §3.2: this server issues no
+    /// `client_secret`, and a client created from the console has no
+    /// registration access token either — it is managed from the console, so it
+    /// gets neither a configuration endpoint nor a token for one.
+    ///
+    /// Asserted over the whole serialised response rather than member by
+    /// member, because the failure this guards against is a *new* member.
+    #[tokio::test]
+    async fn a_client_created_from_the_console_is_handed_no_credential() {
+        // Arrange
+        let (world, cookie) = console_in_a_signing_tenant();
+
+        // Act
+        let created = body_of(post_client(&world, &cookie, &valid_registration()).await).await;
+
+        // Assert
+        let rendered = created.to_string();
+        for credential in [
+            "client_secret",
+            "registration_access_token",
+            "registration_client_uri",
+        ] {
+            assert!(
+                !rendered.contains(credential),
+                "the console handed out a {credential}: {rendered}"
+            );
+        }
+    }
+
+    /// OIDC Registration §5: a pairwise client's `sector_identifier_uri` is a
+    /// claim it has to back. The console cannot skip the fetch — it goes
+    /// through the same port, whose one implementation calls the same function
+    /// `POST /register` calls.
+    #[tokio::test]
+    async fn a_pairwise_client_whose_sector_is_not_backed_is_refused() {
+        // Arrange
+        let (world, cookie) = console_in_a_signing_tenant();
+        let document = serde_json::json!({
+            "client_name": "Pairwise",
+            "redirect_uris": [
+                "https://one.example.test/callback",
+                "https://two.example.test/callback",
+            ],
+            "jwks_uri": "https://one.example.test/jwks.json",
+            "subject_type": "pairwise",
+            "sector_identifier_uri": "https://sector.example.test/uris.json",
+        });
+
+        // Act
+        let response = post_client(&world, &cookie, &document).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_of(response).await;
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("sector_identifier_uri")),
+            "{body}"
+        );
+
+        // And it is accepted once the sector is backed, so the refusal above is
+        // the check rather than the document being wrong in some other way.
+        world
+            .handle
+            .0
+            .confirmed_sectors
+            .lock()
+            .expect("an uncontended lock")
+            .push("https://sector.example.test/uris.json".to_owned());
+        let accepted = post_client(&world, &cookie, &document).await;
+        assert_eq!(accepted.status(), StatusCode::CREATED);
+    }
+
+    /// A client whose ID tokens this tenant could not sign is refused at the
+    /// form rather than at the token endpoint weeks later. `acme` holds a
+    /// staged key and no active one, which is exactly that situation.
+    #[tokio::test]
+    async fn a_client_this_tenant_cannot_sign_for_is_refused() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = post_client(&world, &cookie, &valid_registration()).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_of(response).await;
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("id_token_signed_response_alg")),
+            "{body}"
+        );
+    }
+
+    /// A body that says nothing about the status must not reactivate a client
+    /// somebody suspended — an edit made during an incident by a console built
+    /// against an older server would otherwise put it back in service.
+    #[tokio::test]
+    async fn an_edit_that_says_nothing_about_status_leaves_a_suspension_alone() {
+        // Arrange
+        let (world, cookie) = console_in_a_signing_tenant();
+        let created = body_of(post_client(&world, &cookie, &valid_registration()).await).await;
+        let id = created["client_id"]
+            .as_str()
+            .expect("a client_id")
+            .to_owned();
+        let path = crate::CLIENT_UPDATE.full_path().replace("{client_id}", &id);
+
+        let mut suspending = valid_registration();
+        suspending["status"] = serde_json::json!("disabled");
+        let suspended = world
+            .send(
+                as_console(&crate::CLIENT_UPDATE, &cookie)
+                    .uri(path.clone())
+                    .body(Body::from(suspending.to_string()))
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(
+            body_of(suspended).await["status"],
+            serde_json::json!("disabled")
+        );
+
+        // Act: an edit of the metadata that says nothing about the status.
+        let mut edited = valid_registration();
+        edited["client_name"] = serde_json::json!("Renamed while suspended");
+        let response = world
+            .send(
+                as_console(&crate::CLIENT_UPDATE, &cookie)
+                    .uri(path)
+                    .body(Body::from(edited.to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        let body = body_of(response).await;
+        assert_eq!(
+            body["client_name"],
+            serde_json::json!("Renamed while suspended")
+        );
+        assert_eq!(
+            body["status"],
+            serde_json::json!("disabled"),
+            "an edit put a suspended client back in service: {body}"
+        );
+    }
+
+    /// The search narrows the inventory, and it matches what an operator has to
+    /// hand — here the name they gave the client.
+    #[tokio::test]
+    async fn the_client_list_can_be_searched() {
+        // Arrange
+        let (world, cookie) = console_in_a_signing_tenant();
+        let mut payments = valid_registration();
+        payments["client_name"] = serde_json::json!("Payments");
+        post_client(&world, &cookie, &payments).await;
+
+        // Act
+        let page = body_of(
+            world
+                .send(
+                    as_console(&crate::CLIENTS_LIST, &cookie)
+                        .uri(format!("{}?q=payments", crate::CLIENTS_LIST.full_path()))
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+
+        // Assert
+        let names: Vec<&str> = page["items"]
+            .as_array()
+            .expect("a page of clients")
+            .iter()
+            .filter_map(|row| row["client_name"].as_str())
+            .collect();
+        assert_eq!(names, ["Payments"], "{page}");
+    }
+
+    /// A `client_id` belonging to another tenant is a 404 here, not somebody
+    /// else's configuration: the lookup is scoped to the tenant the request was
+    /// routed to.
+    #[tokio::test]
+    async fn a_client_of_another_tenant_is_not_found() {
+        // Arrange: `other` holds a client under an id `acme` also holds one
+        // under, so only the scoping can tell them apart.
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        world
+            .handle
+            .0
+            .clients
+            .lock()
+            .expect("an uncontended lock")
+            .push(seeded_client("other", "c.OnlyInTheOtherTenant1"));
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::CLIENT_READ, &cookie)
+                    .uri(
+                        crate::CLIENT_READ
+                            .full_path()
+                            .replace("{client_id}", "c.OnlyInTheOtherTenant1"),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// The registration gate is reported as a mode and a count, and the console
+    /// is told plainly that it cannot mint an initial access token — because
+    /// nothing below it can (`ast-m9c.6`).
+    #[tokio::test]
+    async fn the_registration_gate_is_reported_without_naming_a_token() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::REGISTRATION_READ, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert_eq!(body["mode"], serde_json::json!("initial_access_token"));
+        assert_eq!(body["configured_tokens"], serde_json::json!(2));
+        assert_eq!(body["console_issuance"], serde_json::json!(false));
     }
 
     /// **The first acceptance criterion of `ast-f7m.7`.**

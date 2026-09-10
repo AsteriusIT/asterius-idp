@@ -57,10 +57,11 @@ pub use keys::{
     PublicKeyRecord, RotationSchedule, Signer, SigningAlgorithm,
 };
 pub use ports::{
-    AuthRequestRepository, ClientConfiguration, ClientRegistry, ClientRepository, CodeIssuer,
-    CredentialVerifier, GrantRepository, InteractionRepository, ManagedClient, PasskeyRepository,
-    ReplayCheck, ReplayGuard, ReplayPurpose, ResourceServerRepository, SessionRepository,
-    SubjectResolver, TenantSettingsRepository, UserDirectory,
+    AuthRequestRepository, ClientAdministration, ClientConfiguration, ClientRegistry,
+    ClientRepository, CodeIssuer, CredentialVerifier, GrantRepository, InteractionRepository,
+    ManagedClient, PasskeyRepository, ReplayCheck, ReplayGuard, ReplayPurpose,
+    ResourceServerRepository, SessionRepository, SubjectResolver, TenantSettingsRepository,
+    UserDirectory,
 };
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,

@@ -54,7 +54,7 @@
 
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
-use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
+use asterius_domain::keys::SigningAlgorithm;
 use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration, ClientRegistry,
@@ -83,35 +83,12 @@ use time::OffsetDateTime;
 /// may raise later for an unrelated reason.
 pub const MAX_BODY_BYTES: usize = 16 * 1024;
 
-/// The prefix every `client_id` this endpoint mints begins with.
+/// The prefix and the entropy of a minted `client_id` live with the minter,
+/// [`asterius_domain::ClientId::mint`], because the admin API mints client
+/// identifiers too (`ast-f7m.5`) and a shape that depended on which door a
+/// client came through would be a coincidence rather than a rule. What stays
+/// this endpoint's business is that any `client_id` *in a request* is ignored.
 ///
-/// A full stop is not in the `base64url` alphabet (RFC 4648 §5) and not in the
-/// hexadecimal-and-hyphen shape of a UUID, so no identifier carrying it can
-/// collide with either spelling of a `sub` this server issues — a public one
-/// (a UUID) or a pairwise one (43 `base64url` symbols).
-///
-/// That is FAPI 2.0 SP §6.7 taken literally. It warns that a client able to
-/// influence its `client_id` may make it "mistaken for an end-user subject
-/// identifier", and points at §4.15 of the OAuth Security BCP. The primary
-/// mitigation is that a client cannot influence this value at all — any
-/// `client_id` in the request is ignored — and the prefix is what makes the
-/// separation visible to a human reading a log rather than merely true.
-const CLIENT_ID_PREFIX: &str = "c.";
-
-/// Entropy in a minted `client_id`.
-///
-/// A `client_id` is not a credential and RFC 7591 §3.2.1 does not ask for it to
-/// be unguessable. It is made unguessable anyway, because a sequential or
-/// derived identifier lets anyone who can reach `/register` enumerate the
-/// deployment's client list, and because `client_id` is what an authorization
-/// request names — a guessable one is the first half of impersonating a client
-/// at an endpoint that has not authenticated it yet.
-///
-/// 128 bits is FAPI 2.0 SP §5.4.1's floor for credentials. Borrowing it here is
-/// a ceiling argument, not a floor one: whatever an identifier needs, it needs
-/// no more than what the profile demands of a secret.
-const CLIENT_ID_BITS: usize = 128;
-
 /// Entropy in a registration access token.
 ///
 /// This one *is* a credential — a bearer credential authorising changes to the
@@ -482,7 +459,7 @@ pub async fn register(
 
     // Minted after validation, so a rejected document consumes no identifier
     // and no entropy.
-    let client_id = mint_client_id();
+    let client_id = ClientId::mint();
     let token = OpaqueToken::generate_bits::<REGISTRATION_TOKEN_BITS>();
 
     let client = Client {
@@ -563,19 +540,6 @@ pub async fn register(
 #[must_use]
 pub const fn path() -> &'static str {
     Endpoint::Registration.path()
-}
-
-/// Draws a fresh `client_id`.
-///
-/// [`OpaqueToken`] is the codebase's one CSPRNG path and its output is already
-/// unpadded `base64url` (RFC 4648 §5), which is what makes an identifier safe in
-/// a URL path, a form field and a JSON string without escaping. It is used here
-/// for the draw and the encoding only: the value is public by design, so it is
-/// taken out of the wrapper immediately rather than carried around as something
-/// that must not be printed.
-fn mint_client_id() -> ClientId {
-    let drawn = OpaqueToken::generate_bits::<CLIENT_ID_BITS>();
-    ClientId::new(format!("{CLIENT_ID_PREFIX}{}", drawn.expose()))
 }
 
 /// The RFC 7591 §3.2.1 / RFC 7592 §3 client information response.
@@ -1026,17 +990,19 @@ pub(crate) async fn unsignable(
             return Some(Unsignable::Unreadable);
         }
     };
-    let signs = published.iter().any(|key| {
-        key.algorithm == algorithm
-            && key.state == KeyState::Active
-            && key.purpose == KeyPurpose::Signing
-    });
-    (!signs).then_some(Unsignable::NoActiveKey(algorithm))
+    // The rule itself is [`asterius_domain::keys::signs_with`], and it is there
+    // rather than here because the admin API's client screen asks the same
+    // question about the same rows (`ast-f7m.5`). Two spellings of "can this
+    // tenant sign that" would let the console create a client this endpoint
+    // would have refused, which is exactly what sharing the validator is for.
+    (!asterius_domain::keys::signs_with(&published, algorithm))
+        .then_some(Unsignable::NoActiveKey(algorithm))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asterius_domain::keys::{KeyPurpose, KeyState};
     use asterius_domain::{Issuer, Kid, PublicKeyRecord, TenantId, TenantStatus};
 
     const TOKEN: &str = "0PIVxTz6ThDcJdxCoWnk8w";
@@ -1207,9 +1173,9 @@ mod tests {
     /// luck.
     #[test]
     fn a_minted_client_id_cannot_be_mistaken_for_a_subject() {
-        let id = mint_client_id();
-        assert!(id.as_str().starts_with(CLIENT_ID_PREFIX));
-        let drawn = &id.as_str()[CLIENT_ID_PREFIX.len()..];
+        let id = ClientId::mint();
+        assert!(id.as_str().starts_with(ClientId::MINTED_PREFIX));
+        let drawn = &id.as_str()[ClientId::MINTED_PREFIX.len()..];
         assert_eq!(drawn.len(), 22, "128 bits is 22 base64url symbols");
         assert!(
             drawn
@@ -1223,7 +1189,7 @@ mod tests {
         );
         // Unguessable, and never twice the same.
         let ids: std::collections::HashSet<String> = (0..256)
-            .map(|_| mint_client_id().as_str().to_owned())
+            .map(|_| ClientId::mint().as_str().to_owned())
             .collect();
         assert_eq!(ids.len(), 256, "the minter repeated itself");
     }
