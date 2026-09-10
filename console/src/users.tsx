@@ -124,12 +124,27 @@ export interface Reset extends Terminated {
   readonly recovery_sent: boolean;
 }
 
+/**
+ * What one account administers (`ast-3t8`).
+ *
+ * `grantable` comes from the server and is not a constant here: a
+ * deployment-scoped role may only be offered to a caller who already holds
+ * authority over the deployment, and a console keeping its own copy of that
+ * rule would draw a checkbox whose save is a 403.
+ */
+export interface RolesDocument {
+  readonly roles: readonly string[];
+  readonly grantable: readonly string[];
+}
+
 /** Everything one account's tabs need, read in one pass. */
 interface Detail {
   readonly user: UserDocument;
   readonly credentials: Credentials;
   readonly sessions: readonly SessionRow[];
   readonly grants: readonly GrantRow[];
+  /** `null` when the caller may not read who administers this tenant. */
+  readonly roles: RolesDocument | null;
 }
 
 /**
@@ -516,8 +531,13 @@ function Account({
       read(`${base}/credentials`),
       read(`${base}/sessions`),
       read(`${base}/grants`),
+      // Asked for only when the caller holds the scope. A read that would be
+      // refused is not made rather than made and swallowed: a 403 inside a
+      // `Promise.all` would fail the whole screen, and catching it would hide
+      // the refusals that do mean something.
+      session.scopes.includes('admin.roles:read') ? read(`${base}/roles`) : Promise.resolve(null),
     ]).then(
-      ([user, credentials, sessions, grants]) =>
+      ([user, credentials, sessions, grants, roles]) =>
         setLoad({
           kind: 'ready',
           value: {
@@ -525,12 +545,13 @@ function Account({
             credentials: credentials as Credentials,
             sessions: (sessions as { items: readonly SessionRow[] }).items,
             grants: (grants as { items: readonly GrantRow[] }).items,
+            roles: roles as RolesDocument | null,
           },
         }),
       (error: unknown) =>
         setLoad({ kind: 'failed', message: failure(error, 'the account could not be read') }),
     );
-  }, [base]);
+  }, [base, session.scopes]);
 
   useEffect(refresh, [refresh]);
 
@@ -578,7 +599,7 @@ function Account({
     );
   }
 
-  const { user, credentials, sessions, grants } = load.value;
+  const { user, credentials, sessions, grants, roles } = load.value;
   const disabled = user.status === 'disabled';
 
   return (
@@ -642,6 +663,20 @@ function Account({
           refresh();
         }}
       />
+
+      {roles !== null && (
+        <RoleEditor
+          session={session}
+          base={base}
+          held={roles}
+          isSelf={user.user_id === session.user}
+          busy={busy}
+          onSaved={(message) => {
+            setNotice(message);
+            refresh();
+          }}
+        />
+      )}
 
       <section aria-labelledby="credentials">
         <h3 id="credentials">Credentials</h3>
@@ -719,6 +754,100 @@ function Account({
         />
       </section>
     </>
+  );
+}
+
+/**
+ * What this account administers, as a set of checkboxes (`ast-3t8`).
+ *
+ * Three things this screen does *not* decide, and each is the server's answer
+ * arriving in the document or in the session:
+ *
+ * * which roles may be offered at all — `grantable`, which omits the
+ *   deployment-wide role unless the caller already holds authority over the
+ *   deployment;
+ * * whether they may be changed — `admin.roles:write`, which a support agent
+ *   does not hold, so the checkboxes are shown read-only rather than hidden:
+ *   "who administers this tenant" is worth reading even when it is not yours
+ *   to change;
+ * * whether this is the caller's own account, which the server refuses to let
+ *   anybody edit. Saying so here rather than letting the save 403 is the only
+ *   part of that rule this file is allowed to know, and it is a label and not
+ *   a control.
+ */
+function RoleEditor({
+  session,
+  base,
+  held,
+  isSelf,
+  busy,
+  onSaved,
+}: {
+  session: Session;
+  base: string;
+  held: RolesDocument;
+  isSelf: boolean;
+  busy: boolean;
+  onSaved: (message: string) => void;
+}): JSX.Element {
+  const [chosen, setChosen] = useState<readonly string[]>(held.roles);
+  const [saving, setSaving] = useState(false);
+  const mayWrite = session.scopes.includes('admin.roles:write') && !isSelf;
+
+  // The offered set is what the caller may grant, plus whatever this account
+  // already holds: a role the caller cannot grant is still shown, ticked and
+  // untouchable, because a screen that hid it would say this account holds
+  // less authority than it does.
+  const offered = [...new Set([...held.grantable, ...held.roles])];
+
+  const save = (): void => {
+    setSaving(true);
+    mutate(`${base}/roles`, 'PUT', session, { roles: chosen }).then(
+      () => {
+        setSaving(false);
+        onSaved('The roles this account holds have been replaced.');
+      },
+      (error: unknown) => {
+        setSaving(false);
+        onSaved(failure(error, 'the roles were not changed'));
+      },
+    );
+  };
+
+  return (
+    <section aria-labelledby="roles">
+      <h3 id="roles">Administrative roles</h3>
+      {isSelf && <p>Nobody may change their own roles. Ask another administrator.</p>}
+      {offered.length === 0 && <p>This account holds no administrative role.</p>}
+      <ul>
+        {offered.map((role) => (
+          <li key={role}>
+            <label>
+              <input
+                type="checkbox"
+                checked={chosen.includes(role)}
+                disabled={busy || saving || !mayWrite || !held.grantable.includes(role)}
+                onChange={(event) =>
+                  setChosen(
+                    event.target.checked
+                      ? [...chosen, role]
+                      : chosen.filter((candidate) => candidate !== role),
+                  )
+                }
+              />{' '}
+              {role}
+            </label>
+          </li>
+        ))}
+      </ul>
+      {mayWrite && (
+        <p>
+          <button type="button" disabled={busy || saving} onClick={save}>
+            Save roles
+          </button>
+        </p>
+      )}
+    </section>
   );
 }
 

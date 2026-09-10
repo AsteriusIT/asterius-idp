@@ -304,6 +304,8 @@ async fn route(
         crate::USER_SESSION_REVOKE_ID => context.revoke_session().await,
         crate::USER_GRANTS_LIST_ID => context.list_grants().await,
         crate::USER_GRANT_REVOKE_ID => context.revoke_grant().await,
+        crate::USER_ROLES_READ_ID => context.read_roles().await,
+        crate::USER_ROLES_UPDATE_ID => context.update_roles(body).await,
         // Unreachable while `every_registered_operation_has_a_handler` passes,
         // which is why that test exists rather than a comment here.
         other => {
@@ -356,15 +358,55 @@ impl Handling<'_> {
             crate::rbac::Held::Scopes { .. } => Vec::new(),
         };
 
+        // What this caller may actually do, so a console can hide a link
+        // rather than offer a 403. Derived by asking the *same* `satisfies`
+        // every request goes through, over the *same* registry the router was
+        // built from: a console cannot be told a role means something the
+        // server disagrees with, because nothing here re-states the mapping.
+        //
+        // Two lists rather than one, because a scope string does not say how
+        // far it reaches: `admin.tenants:read` is held by a tenant admin over
+        // its own tenant and by a deployment admin over every tenant, and a
+        // console that could not tell them apart would offer the tenant list
+        // to somebody who is about to be refused it.
+        let (scopes, deployment_scopes) = Self::held_scopes(held, tenant);
+
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({
                 "tenant": tenant.as_str(),
                 "user": user.as_uuid().to_string(),
                 "roles": roles,
+                "scopes": scopes,
+                "deployment_scopes": deployment_scopes,
                 "csrf_token": csrf::token(session_id),
             }),
         ))
+    }
+
+    /// The registry's scopes this caller holds, in this tenant and across the
+    /// deployment.
+    ///
+    /// Sorted and deduplicated: the document is read by a person as often as
+    /// by a program, and a set is what it means.
+    fn held_scopes(held: &crate::rbac::Held, tenant: &TenantId) -> (Vec<String>, Vec<String>) {
+        let mut here = std::collections::BTreeSet::new();
+        let mut everywhere = std::collections::BTreeSet::new();
+
+        for operation in crate::registry() {
+            let scope = operation.authority().scope();
+            let reach = operation.authority().reach();
+            if held.satisfies(crate::rbac::Authority::new(reach, scope), tenant) {
+                match reach {
+                    crate::rbac::Reach::Deployment => everywhere.insert(scope.to_owned()),
+                    crate::rbac::Reach::Tenant | crate::rbac::Reach::Authenticated => {
+                        here.insert(scope.to_owned())
+                    }
+                };
+            }
+        }
+
+        (here.into_iter().collect(), everywhere.into_iter().collect())
     }
 
     /// `DELETE /session` — ends the session this request was made with.
@@ -1330,6 +1372,160 @@ impl Handling<'_> {
             );
         }
         Ok(json_no_store(StatusCode::OK, &document))
+    }
+
+    /// `GET /users/{user_id}/roles` — who administers, and what they hold.
+    async fn read_roles(&self) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let held = self.load_user(id, crate::USER_ROLES_READ_ID).await?;
+        let roles = self
+            .state
+            .backend
+            .roles(&self.tenant.id, held.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_ROLES_READ_ID, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &users::roles_document(&roles, self.grantable()),
+        ))
+    }
+
+    /// `PUT /users/{user_id}/roles` — replaces what an account administers.
+    ///
+    /// Three refusals, and each one closes a way of ending up with authority
+    /// nobody granted.
+    ///
+    /// * **A role this build does not know is a 400**, never a silent drop: a
+    ///   console sending `admin` must not be answered "done" and left showing
+    ///   a role the account does not hold.
+    /// * **Nobody edits their own roles.** Otherwise the weakest way in — a
+    ///   session of somebody who may appoint administrators — is also a way to
+    ///   appoint *themselves* more, and the trail would show an account that
+    ///   granted itself its own authority. An administrator who needs their
+    ///   own roles changed asks another one, which is what makes the record
+    ///   evidence of a decision rather than of a click.
+    /// * **A deployment-scoped role may only be granted by somebody who
+    ///   already reaches the deployment.** The schema refuses it outside the
+    ///   reserved tenant, but inside the reserved tenant a tenant admin would
+    ///   otherwise be able to hand out authority over every tenant there is.
+    ///
+    /// Every added and every removed role is recorded separately
+    /// ([`EventType::ROLE_GRANTED`], [`EventType::ROLE_REVOKED`]), because the
+    /// question asked afterwards is "who was made an administrator, and by
+    /// whom", and one record saying "the set changed" does not answer it.
+    async fn update_roles(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let held_by = self.load_user(id, crate::USER_ROLES_UPDATE_ID).await?;
+        let requested: users::RequestedRoles = self.parse_body(body).await?;
+        let wanted = requested.parse()?;
+
+        if self.is_the_caller(held_by.id) {
+            return Err(AdminError::Forbidden);
+        }
+
+        let before = self
+            .state
+            .backend
+            .roles(&self.tenant.id, held_by.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_ROLES_UPDATE_ID, &error))?;
+
+        let granting: Vec<asterius_domain::Role> = wanted
+            .iter()
+            .filter(|role| !before.contains(role))
+            .copied()
+            .collect();
+        let revoking: Vec<asterius_domain::Role> = before
+            .iter()
+            .filter(|role| !wanted.contains(role))
+            .copied()
+            .collect();
+
+        // Either direction on a deployment-scoped role is a change to who
+        // administers every tenant, so both are gated on reaching the
+        // deployment — taking one away is as much a decision as giving it.
+        if granting
+            .iter()
+            .chain(revoking.iter())
+            .any(|role| role.needs_the_reserved_tenant())
+            && !self.grantable()
+        {
+            return Err(AdminError::Forbidden);
+        }
+
+        for role in &granting {
+            self.state
+                .backend
+                .grant_role(&self.tenant.id, held_by.id, *role)
+                .await
+                .map_err(|error| match error {
+                    DomainError::Conflict(message) => AdminError::Conflict(message),
+                    other => AdminError::from_storage(crate::USER_ROLES_UPDATE_ID, &other),
+                })?;
+            self.record_about(
+                EventType::ROLE_GRANTED,
+                &held_by.id,
+                Detail::new()
+                    .label("operation", crate::USER_ROLES_UPDATE_ID)
+                    .label("role", role.as_str()),
+            )
+            .await;
+        }
+
+        for role in &revoking {
+            self.state
+                .backend
+                .revoke_role(&self.tenant.id, held_by.id, *role)
+                .await
+                .map_err(|error| match error {
+                    // Somebody else took it away between the read and the
+                    // write. The end state is the one that was asked for, so
+                    // this is not a failure to report — but it is not recorded
+                    // either, because this request did not revoke anything.
+                    DomainError::NotFound => AdminError::NotFound,
+                    other => AdminError::from_storage(crate::USER_ROLES_UPDATE_ID, &other),
+                })?;
+            self.record_about(
+                EventType::ROLE_REVOKED,
+                &held_by.id,
+                Detail::new()
+                    .label("operation", crate::USER_ROLES_UPDATE_ID)
+                    .label("role", role.as_str()),
+            )
+            .await;
+        }
+
+        let after = self
+            .state
+            .backend
+            .roles(&self.tenant.id, held_by.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_ROLES_UPDATE_ID, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &users::roles_document(&after, self.grantable()),
+        ))
+    }
+
+    /// Whether the caller may hand out authority over the whole deployment.
+    ///
+    /// Asked through `satisfies` rather than by looking for a role name, so
+    /// that it is the same question `Reach::Deployment` routes ask.
+    fn grantable(&self) -> bool {
+        self.principal.held().satisfies(
+            crate::rbac::Authority::new(crate::rbac::Reach::Deployment, "admin.roles:write"),
+            &self.tenant.id,
+        )
+    }
+
+    /// Whether this account is the one making the request.
+    fn is_the_caller(&self, subject: asterius_domain::UserId) -> bool {
+        matches!(
+            self.principal,
+            Principal::Console { user, .. } if *user == subject
+        )
     }
 
     /// `GET /users/{user_id}/credentials` — what this account can sign in
@@ -3257,6 +3453,48 @@ mod tests {
                 .unwrap_or_default())
         }
 
+        async fn grant_role(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            role: Role,
+        ) -> Result<(), DomainError> {
+            // The schema's rule, kept here so the fake cannot be gentler than
+            // PostgreSQL: a deployment-scoped role only inside the reserved
+            // tenant.
+            if role.needs_the_reserved_tenant() && tenant.as_str() != "asterius-admin" {
+                return Err(DomainError::Conflict(format!(
+                    "{role} cannot be held in {tenant}"
+                )));
+            }
+            let mut held = self.0.roles.lock().expect("an uncontended lock");
+            let entry = held
+                .entry(format!("{tenant}|{}", user.as_uuid()))
+                .or_default();
+            if !entry.contains(&role) {
+                entry.push(role);
+            }
+            Ok(())
+        }
+
+        async fn revoke_role(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            role: Role,
+        ) -> Result<(), DomainError> {
+            let mut held = self.0.roles.lock().expect("an uncontended lock");
+            let Some(entry) = held.get_mut(&format!("{tenant}|{}", user.as_uuid())) else {
+                return Err(DomainError::NotFound);
+            };
+            let before = entry.len();
+            entry.retain(|candidate| *candidate != role);
+            if entry.len() == before {
+                return Err(DomainError::NotFound);
+            }
+            Ok(())
+        }
+
         async fn passkey_enrolment(
             &self,
             tenant: &TenantId,
@@ -3627,6 +3865,22 @@ mod tests {
         /// [`World::sign_in`], with the two things `ast-895` decides on: how
         /// the user authenticated, and whether the account has a passkey that
         /// could have been asked for.
+        /// [`World::sign_in`] for a *named* account, so that a test can make
+        /// the caller and the account it acts on the same person — which is
+        /// the one thing the roles route refuses.
+        fn sign_in_as(&self, tenant: &str, user: UserId, roles: &[Role]) -> String {
+            self.sign_in_as_with(
+                tenant,
+                user,
+                roles,
+                &[
+                    AuthenticationMethod::Passkey,
+                    AuthenticationMethod::UserVerified,
+                ],
+                asterius_domain::PasskeyEnrolment::Enrolled,
+            )
+        }
+
         fn sign_in_with(
             &self,
             tenant: &str,
@@ -3634,9 +3888,19 @@ mod tests {
             amr: &[AuthenticationMethod],
             enrolment: asterius_domain::PasskeyEnrolment,
         ) -> String {
+            self.sign_in_as_with(tenant, UserId::generate(), roles, amr, enrolment)
+        }
+
+        fn sign_in_as_with(
+            &self,
+            tenant: &str,
+            user: UserId,
+            roles: &[Role],
+            amr: &[AuthenticationMethod],
+            enrolment: asterius_domain::PasskeyEnrolment,
+        ) -> String {
             let id = SessionId::generate();
             let tenant = TenantId::parse(tenant).expect("a valid tenant id");
-            let user = UserId::generate();
             let session = Session::begin(
                 tenant.clone(),
                 &id,
@@ -3682,6 +3946,33 @@ mod tests {
                         ),
                     )
                     .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await
+        }
+
+        /// Calls `operation` in `acme` as a freshly signed-in holder of
+        /// `role`, with everything a mutation needs to get past CSRF and
+        /// idempotency — so that a 403 in the assertion is about authority and
+        /// not about a missing header.
+        ///
+        /// A session per call, because `session.end` is a route: a shared
+        /// cookie would make every later call a 401 that says nothing about
+        /// what the role holds.
+        async fn as_role(&self, operation: &Operation, role: Role) -> Response {
+            let cookie = self.sign_in("acme", &[role]);
+            self.send(
+                request_for(operation)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .header(idempotency::HEADER, "a-restricted-role-key")
+                    .body(body_for(operation))
                     .expect("a request"),
             )
             .await
@@ -3961,6 +4252,73 @@ mod tests {
                 response.status()
             );
         }
+    }
+
+    /// Walks the registry for one restricted role and asserts that a route is
+    /// refused exactly when the role's authority map says it should be.
+    ///
+    /// Written once and called twice, because the interesting part is the
+    /// predicate — reach *and* scope, from [`Role::grants`] — and not the
+    /// request plumbing around it. A per-route expected list would be a second
+    /// copy of the mapping, and the copy is what goes stale when a route is
+    /// added.
+    async fn each_route_agrees_with_the_authority_map(role: Role) {
+        // Arrange
+        let world = World::new();
+
+        for operation in world.api().operations() {
+            // Act
+            let response = world.as_role(operation, role).await;
+
+            // Assert
+            let authority = operation.authority();
+            let allowed = authority.reach() != Reach::Deployment && role.grants(authority.scope());
+            assert_eq!(
+                response.status() == StatusCode::FORBIDDEN,
+                !allowed,
+                "{} answered {} for a {role}, which {} `{}`",
+                operation.id(),
+                response.status(),
+                if allowed { "holds" } else { "does not hold" },
+                authority.scope()
+            );
+        }
+    }
+
+    /// The distinction `user_support` exists for, asserted over every route
+    /// there is: it may end a session (`admin.sessions:write`) and may not
+    /// edit the claims that describe somebody (`admin.users:write`).
+    #[tokio::test]
+    async fn a_support_agent_is_refused_exactly_what_it_does_not_hold() {
+        each_route_agrees_with_the_authority_map(Role::UserSupport).await;
+    }
+
+    /// And the auditor's one property: it is refused every mutation on the
+    /// admin surface, including the ones a support agent is allowed.
+    #[tokio::test]
+    async fn a_security_auditor_is_refused_exactly_what_it_does_not_hold() {
+        each_route_agrees_with_the_authority_map(Role::SecurityAuditor).await;
+    }
+
+    /// The two refusals spelled out on the routes the bead names, so that a
+    /// reader who does not want to unfold the predicate above can still see
+    /// what a support agent may and may not do.
+    #[tokio::test]
+    async fn a_support_agent_ends_a_session_and_cannot_edit_the_claims() {
+        // Arrange
+        let world = World::new();
+
+        // Act
+        let editing = world
+            .as_role(&crate::USER_CLAIMS_UPDATE, Role::UserSupport)
+            .await;
+        let revoking = world
+            .as_role(&crate::USER_SESSION_REVOKE, Role::UserSupport)
+            .await;
+
+        // Assert
+        assert_eq!(editing.status(), StatusCode::FORBIDDEN);
+        assert_ne!(revoking.status(), StatusCode::FORBIDDEN);
     }
 
     /// Every mounted route has a handler. Without this the `match` in
@@ -4248,6 +4606,63 @@ mod tests {
             serde_json::Value::String(csrf::token(&cookie))
         );
         assert_eq!(document["roles"], serde_json::json!(["tenant_admin"]));
+    }
+
+    /// The console navigates by what the caller may *do*, so the session
+    /// document reports it — computed from the same registry and the same
+    /// `satisfies` every request goes through (`ast-3t8`).
+    #[tokio::test]
+    async fn the_session_document_reports_the_scopes_the_caller_holds() {
+        // Arrange
+        let world = World::new();
+        let support = world.sign_in("acme", &[Role::UserSupport]);
+        let admin = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let held = body_of(world.get(&crate::SESSION_READ, &support).await).await;
+        let everything = body_of(world.get(&crate::SESSION_READ, &admin).await).await;
+
+        // Assert
+        let scopes = held["scopes"].as_array().expect("a list").clone();
+        assert!(scopes.contains(&serde_json::json!("admin.sessions:write")));
+        assert!(scopes.contains(&serde_json::json!("admin.users:read")));
+        assert!(!scopes.contains(&serde_json::json!("admin.users:write")));
+        // Tenant-scoped either way, so the deployment list is empty for both.
+        assert_eq!(held["deployment_scopes"], serde_json::json!([]));
+        assert_eq!(everything["deployment_scopes"], serde_json::json!([]));
+        assert!(
+            everything["scopes"]
+                .as_array()
+                .expect("a list")
+                .contains(&serde_json::json!("admin.users:write"))
+        );
+    }
+
+    /// A deployment admin's two lists differ, which is what lets the console
+    /// tell "may read this tenant" from "may read every tenant" without
+    /// knowing a role name.
+    #[tokio::test]
+    async fn a_deployment_admin_holds_scopes_in_both_lists() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        // Act
+        let document = body_of(world.get(&crate::SESSION_READ, &cookie).await).await;
+
+        // Assert
+        assert!(
+            document["deployment_scopes"]
+                .as_array()
+                .expect("a list")
+                .contains(&serde_json::json!("admin.tenants:read"))
+        );
+        assert!(
+            document["scopes"]
+                .as_array()
+                .expect("a list")
+                .contains(&serde_json::json!("admin.tenants:read"))
+        );
     }
 
     // ---- cross-tenant ------------------------------------------------------
@@ -6769,6 +7184,144 @@ mod tests {
             SEEDED_PARTICIPANTS,
             "the participating relying parties were not queued a logout token"
         );
+    }
+
+    // ---- roles (`ast-3t8`) -------------------------------------------------
+
+    /// Sends a role set for the seeded account, as `cookie`'s holder.
+    async fn put_roles(world: &World, cookie: &str, roles: &[&str]) -> Response {
+        world
+            .send(
+                as_console(&crate::USER_ROLES_UPDATE, cookie)
+                    .body(Body::from(serde_json::json!({"roles": roles}).to_string()))
+                    .expect("a request"),
+            )
+            .await
+    }
+
+    /// Appointing somebody is a decision, and the trail has to name all three
+    /// of it: who was appointed, to what, and by whom.
+    #[tokio::test]
+    async fn granting_a_role_is_recorded_against_the_account_and_the_administrator() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = put_roles(&world, &cookie, &["user_support"]).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert_eq!(body["roles"], serde_json::json!(["user_support"]));
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::ROLE_GRANTED)
+            .expect("a grant is recorded");
+        assert_eq!(recorded.subject.as_deref(), Some(SEEDED_USER_ID));
+        assert!(
+            matches!(recorded.actor, Actor::Admin(_)),
+            "the record does not name the administrator behind it"
+        );
+    }
+
+    /// The other direction is its own record: "who stopped being an
+    /// administrator, and when" is asked as often as the reverse.
+    #[tokio::test]
+    async fn revoking_a_role_is_recorded_separately_from_granting_one() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+        assert_eq!(
+            put_roles(&world, &cookie, &["user_support"]).await.status(),
+            StatusCode::OK
+        );
+
+        // Act
+        let response = put_roles(&world, &cookie, &[]).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert_eq!(body["roles"], serde_json::json!([]));
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::ROLE_REVOKED),
+            "the revocation left no record"
+        );
+    }
+
+    /// Otherwise the weakest way into an administrator's session is also a way
+    /// to widen it, and the trail would show an account granting itself its
+    /// own authority.
+    #[tokio::test]
+    async fn nobody_edits_their_own_roles() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in_as(
+            "acme",
+            asterius_domain::UserId::new(
+                uuid::Uuid::parse_str(SEEDED_USER_ID).expect("a seeded uuid"),
+            ),
+            &[Role::TenantAdmin],
+        );
+
+        // Act
+        let response = put_roles(&world, &cookie, &["user_support"]).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A tenant admin of the reserved tenant is still only a tenant admin: the
+    /// schema would refuse the row elsewhere, and here — where it would not —
+    /// the API refuses to let authority over every tenant be handed out by
+    /// somebody who does not hold it.
+    #[tokio::test]
+    async fn a_tenant_admin_cannot_appoint_a_deployment_admin() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::TenantAdmin]);
+
+        // Act
+        let response = put_roles(&world, &cookie, &["deployment_admin"]).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A role this build does not know is a 400 and never a silent drop: a
+    /// console answered "done" would show a role that was never granted.
+    #[tokio::test]
+    async fn a_role_this_server_does_not_know_is_refused() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = put_roles(&world, &cookie, &["superuser"]).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The console draws its checkboxes from `grantable`, so what it may
+    /// offer is the server's answer: a tenant admin is not offered the
+    /// deployment-wide role it could not grant.
+    #[tokio::test]
+    async fn a_tenant_admin_is_not_offered_the_deployment_wide_role() {
+        // Arrange
+        let (world, cookie) = console_over_the_seeded_account();
+
+        // Act
+        let response = world.get(&crate::USER_ROLES_READ, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let grantable = body["grantable"].as_array().expect("a list").clone();
+        assert!(!grantable.contains(&serde_json::json!("deployment_admin")));
+        assert!(grantable.contains(&serde_json::json!("user_support")));
     }
 
     /// The trail half of the RISC `account-disabled` signal. The transmitter

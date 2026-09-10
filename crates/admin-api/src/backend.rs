@@ -75,6 +75,38 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// storage failure.
     async fn roles(&self, tenant: &TenantId, user: UserId) -> Result<Vec<Role>, DomainError>;
 
+    /// Gives `role` to `user` in `tenant`, or does nothing if they hold it
+    /// already (`ast-3t8`).
+    ///
+    /// Idempotent, because the console sends the set it wants and not a diff:
+    /// a re-sent form must not be a failure.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] when the schema refuses the grant — no such
+    /// account or tenant, or a deployment-scoped role outside the reserved
+    /// tenant, which is a rule of the database and not of this API — or a
+    /// storage failure.
+    async fn grant_role(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        role: Role,
+    ) -> Result<(), DomainError>;
+
+    /// Takes `role` away from `user` in `tenant`.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if they did not hold it, or a storage
+    /// failure.
+    async fn revoke_role(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+        role: Role,
+    ) -> Result<(), DomainError>;
+
     /// Whether `user` has a passkey it could have signed in with (`ast-895`).
     ///
     /// Asked only when the answer decides something — a deployment-scoped role

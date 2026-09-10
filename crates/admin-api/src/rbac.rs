@@ -14,9 +14,10 @@
 //! string that names it.
 //!
 //! * The **console** presents a session cookie, and its roles come from
-//!   `user_roles`. A role satisfies a reach; the scope string is unused, since
-//!   a role is not a scope and pretending otherwise would invent authority
-//!   values nobody granted.
+//!   `user_roles`. A role satisfies a reach *and* a scope string: which scopes
+//!   a role holds is [`asterius_domain::Role::grants`], a closed mapping in
+//!   the domain, so that "what may a support agent do" has one answer and it
+//!   is not this crate's to invent.
 //! * **Automation** presents a DPoP-bound access token, and its scopes come
 //!   from the grant. A scope satisfies the scope string; the reach is
 //!   satisfied by the token's own tenant, or by a deployment-wide token.
@@ -30,13 +31,13 @@
 //!
 //! # Why the role set is the one the schema knows
 //!
-//! `security-auditor` and `user-support` are named in this bead's description
-//! and are **not** implemented here. [`asterius_domain::Role`] is a closed set
-//! of two, and `user_roles.role` carries a check constraint listing exactly
-//! those two: adding a role is a schema change and a decision about somebody's
-//! authority, not a string this crate may invent at runtime — which is what
-//! `role.rs` says in as many words. The shape below takes them without a
-//! signature change when that decision is made.
+//! [`asterius_domain::Role`] is a closed set of four — `tenant_admin`,
+//! `deployment_admin`, `user_support`, `security_auditor` — and
+//! `user_roles.role` carries a check constraint listing exactly those four
+//! (migration `0024`). Adding a role is a schema change and a decision about
+//! somebody's authority, not a string this crate may invent at runtime, which
+//! is what `role.rs` says in as many words. Per-tenant application roles are a
+//! different model entirely (`ast-095`) and do not administer anything here.
 
 use asterius_domain::{Role, RoleScope, TenantId};
 
@@ -121,7 +122,7 @@ impl Held {
             Self::Roles {
                 tenant: held_in,
                 roles,
-            } => Self::roles_satisfy(roles, held_in, required.reach(), tenant),
+            } => Self::roles_satisfy(roles, held_in, required, tenant),
             Self::Scopes {
                 tenant: held_in,
                 scopes,
@@ -129,23 +130,41 @@ impl Held {
         }
     }
 
-    fn roles_satisfy(roles: &[Role], held_in: &TenantId, reach: Reach, tenant: &TenantId) -> bool {
-        // Deployment scope reaches everywhere, and the schema guarantees it is
-        // only ever held inside the reserved tenant (ADR-0010), so it needs no
-        // tenant comparison here.
-        let deployment_wide = roles
-            .iter()
-            .any(|role| role.scope() == RoleScope::Deployment);
+    /// One role has to satisfy *both* halves of the requirement, and it has to
+    /// be the same role: reach, from [`Role::scope`], and the scope string,
+    /// from [`Role::grants`].
+    ///
+    /// Reading them off separate roles would be the bug this shape exists to
+    /// prevent — a user holding `security_auditor` in their own tenant and
+    /// nothing else must not have "may read" from the auditor and "may write"
+    /// from anywhere, and a caller holding a restricted role plus a
+    /// deployment-wide one legitimately gets the union, because the
+    /// deployment-wide role satisfies both halves by itself.
+    fn roles_satisfy(
+        roles: &[Role],
+        held_in: &TenantId,
+        required: Authority,
+        tenant: &TenantId,
+    ) -> bool {
+        roles.iter().any(|role| {
+            // Deployment scope reaches everywhere, and the schema guarantees it
+            // is only ever held inside the reserved tenant (ADR-0010), so it
+            // needs no tenant comparison here.
+            let deployment_wide = role.scope() == RoleScope::Deployment;
+            let in_reach = match required.reach() {
+                // "Some kind of administrator", wherever they administer: the
+                // two routes with this reach are about the caller themselves.
+                Reach::Authenticated => true,
+                Reach::Deployment => deployment_wide,
+                // A tenant-scoped role only reaches the tenant it was granted
+                // in. Comparing the *session's* tenant with the *request's* is
+                // the whole check, and it is why `held_in` is carried rather
+                // than assumed equal to the route's tenant.
+                Reach::Tenant => deployment_wide || held_in == tenant,
+            };
 
-        match reach {
-            Reach::Authenticated => !roles.is_empty(),
-            Reach::Deployment => deployment_wide,
-            // A tenant-scoped role only reaches the tenant it was granted in.
-            // Comparing the *session's* tenant with the *request's* is the
-            // whole check, and it is why `held_in` is carried rather than
-            // assumed equal to the route's tenant.
-            Reach::Tenant => deployment_wide || (held_in == tenant && !roles.is_empty()),
-        }
+            in_reach && role.grants(required.scope())
+        })
     }
 
     fn scopes_satisfy(
@@ -241,6 +260,65 @@ mod tests {
     #[test]
     fn an_administrator_of_any_kind_satisfies_authenticated() {
         assert!(console("acme", &[Role::TenantAdmin]).satisfies(ANY, &tenant("acme")));
+    }
+
+    const READ_USERS: Authority = Authority::new(Reach::Tenant, "admin.users:read");
+    const WRITE_USERS: Authority = Authority::new(Reach::Tenant, "admin.users:write");
+    const REVOKE_SESSION: Authority = Authority::new(Reach::Tenant, "admin.sessions:write");
+
+    /// The distinction the role exists for: ending somebody's session is
+    /// support work, editing the claims that describe them is not.
+    #[test]
+    fn a_support_agent_revokes_a_session_and_does_not_edit_the_claims() {
+        // Arrange
+        let held = console("acme", &[Role::UserSupport]);
+
+        // Act / Assert
+        assert!(held.satisfies(REVOKE_SESSION, &tenant("acme")));
+        assert!(held.satisfies(READ_USERS, &tenant("acme")));
+        assert!(!held.satisfies(WRITE_USERS, &tenant("acme")));
+    }
+
+    #[test]
+    fn a_security_auditor_reads_and_writes_nothing() {
+        // Arrange
+        let held = console("acme", &[Role::SecurityAuditor]);
+
+        // Act / Assert
+        assert!(held.satisfies(READ_USERS, &tenant("acme")));
+        assert!(held.satisfies(READ_TENANT, &tenant("acme")));
+        assert!(!held.satisfies(WRITE_USERS, &tenant("acme")));
+        assert!(!held.satisfies(REVOKE_SESSION, &tenant("acme")));
+    }
+
+    /// A restricted role is still tenant-scoped, and still reaches neither
+    /// another tenant nor the deployment.
+    #[test]
+    fn a_restricted_role_does_not_leave_its_tenant() {
+        for role in [Role::UserSupport, Role::SecurityAuditor] {
+            let held = console("acme", &[role]);
+            assert!(!held.satisfies(READ_USERS, &tenant("other")));
+            assert!(!held.satisfies(WRITE_DEPLOYMENT, &tenant("acme")));
+        }
+    }
+
+    /// Whatever else it may not do, a restricted role can read who it is:
+    /// otherwise it signs in to a console that cannot draw its own header.
+    #[test]
+    fn a_restricted_role_still_satisfies_authenticated() {
+        for role in [Role::UserSupport, Role::SecurityAuditor] {
+            assert!(console("acme", &[role]).satisfies(ANY, &tenant("acme")));
+        }
+    }
+
+    /// Roles add up: the weaker one does not cancel the stronger.
+    #[test]
+    fn a_second_role_widens_rather_than_narrows() {
+        // Arrange
+        let held = console("acme", &[Role::SecurityAuditor, Role::TenantAdmin]);
+
+        // Act / Assert
+        assert!(held.satisfies(WRITE_USERS, &tenant("acme")));
     }
 
     #[test]

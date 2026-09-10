@@ -78,7 +78,7 @@ export function App(): JSX.Element {
     return <Notice heading="The console could not start" body={shell.message} />;
   }
 
-  const destinations = visibleTo(shell.session.roles);
+  const destinations = visibleTo(shell.session);
   const current = destinations.some((destination) => destination.route === route)
     ? route
     : (destinations[0]?.route ?? route);
@@ -161,7 +161,7 @@ function Screen({ route, session }: { route: string; session: Session }): JSX.El
     );
   }
 
-  const destination = visibleTo(session.roles).find((candidate) => candidate.route === route);
+  const destination = visibleTo(session).find((candidate) => candidate.route === route);
   return (
     <>
       <h2>{destination?.label ?? 'Not found'}</h2>

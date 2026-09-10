@@ -38,11 +38,27 @@ function idempotencyKey(): string {
   return crypto.randomUUID();
 }
 
-/** Who the session belongs to, as `GET /session` describes it. */
+/**
+ * Who the session belongs to, as `GET /session` describes it.
+ *
+ * `scopes` and `deployment_scopes` are what this caller may *do*, computed by
+ * the server from the roles it holds and the authority each route declares
+ * (`crates/admin-api/src/rbac.rs`). The console navigates by those and not by
+ * `roles`: a role is a name, and a name would have to be mapped to permissions
+ * a second time here — a copy that goes stale the moment a role is added, and
+ * that would show a support agent screens they are about to be refused.
+ *
+ * `roles` stays because the session card names it: an administrator reading
+ * "why can I not see Clients?" is helped by seeing what they hold.
+ */
 export interface Session {
   readonly tenant: string;
   readonly user: string;
   readonly roles: readonly string[];
+  /** Scopes held over this session's own tenant. */
+  readonly scopes: readonly string[];
+  /** Scopes held over every tenant of the deployment. */
+  readonly deployment_scopes: readonly string[];
   readonly csrf_token: string;
 }
 
