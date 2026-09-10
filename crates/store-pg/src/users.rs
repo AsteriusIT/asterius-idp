@@ -310,7 +310,7 @@ impl PgUserRepository {
     /// outcome this table must never reach, so the unique index refuses the
     /// write rather than the application noticing later. The same answer covers
     /// a `sub` held by somebody who no longer exists: see
-    /// [`Self::refuse_a_retired_subject`].
+    /// the private `refuse_a_retired_subject`.
     pub async fn subject(
         &self,
         user: UserId,

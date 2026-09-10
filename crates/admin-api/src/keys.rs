@@ -59,7 +59,7 @@ const PUBLIC_JWK_MEMBERS: [&str; 13] = [
 ///
 /// `e` is handled beside the list because `n` and `e` are the RSA pair and
 /// keeping thirteen entries plus one readable beats a fourteen-entry array
-/// nobody scans. See [`PUBLIC_JWK_MEMBERS`].
+/// nobody scans. See `PUBLIC_JWK_MEMBERS`.
 // fuzz-target: admin_key_request
 #[must_use]
 pub fn public_members(jwk: &Value) -> Value {

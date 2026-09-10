@@ -305,7 +305,7 @@ impl PgKeyRepository {
     ///
     /// Returns a storage error, or [`DomainError::Invalid`] if a row's
     /// algorithm, purpose or state is not one this build knows — see
-    /// [`KeyRow::into_record`].
+    /// `KeyRow::into_record`.
     pub async fn inventory(&self) -> Result<Vec<PublicKeyRecord>, DomainError> {
         sqlx::query_as!(
             KeyRow,
@@ -328,7 +328,7 @@ impl PgKeyRepository {
 
     /// Promotes a staged key now, without waiting out the propagation period.
     ///
-    /// The other half of [`Activation::Immediate`]: [`Self::rotate`] stages the
+    /// The other half of `Activation::Immediate`: [`Self::rotate`] stages the
     /// key and publishes it, and this makes it sign. Split in two because the
     /// intermediate state — a `pending` key in the JWKS — is a state the
     /// machine already has, so a caller that fails between them has published a
@@ -337,7 +337,7 @@ impl PgKeyRepository {
     /// already have cached.
     ///
     /// A `kid` that is already active is not an error: the tenant's first key
-    /// is created active (see [`Self::stage`]), so an immediate rotation on a
+    /// is created active (see the private `stage`), so an immediate rotation on a
     /// tenant with no keys arrives here with the work already done.
     ///
     /// # Errors

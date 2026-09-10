@@ -104,7 +104,7 @@ pub struct ClientEndpoints {
     ///
     /// `None` is a deployment with no settings repository wired, which reads
     /// as "no tenant has an opinion" and never as a fallback for a *failed*
-    /// read: see [`crate::tenant_settings`] and [`lifetimes_for`].
+    /// read: see [`crate::tenant_settings`] and the private `lifetimes_for`.
     pub tenant_settings: Option<SettingsDirectory>,
     /// Opens the tenant's pairwise salt, which every `sub` derives from.
     pub kek: Arc<dyn asterius_jose::Kek>,
@@ -219,7 +219,7 @@ impl std::fmt::Debug for ProtocolState {
 ///
 /// The deployment's flags decide what is *mounted*; a tenant's flags decide
 /// what its requests reach, because the router is built once per process and a
-/// tenant is only known per request. [`tenant_feature_guard`] is that second
+/// tenant is only known per request. The private `tenant_feature_guard` is that second
 /// half, and it reads the same [`Endpoint`] registry and the same
 /// `effective_capabilities` the document is rendered from — so an endpoint a
 /// tenant switched off is absent from its metadata *and* answers 404, which is
