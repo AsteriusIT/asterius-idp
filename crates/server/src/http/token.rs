@@ -192,7 +192,7 @@ pub async fn token(
 const HEADER_NO_STORE: header::HeaderValue = header::HeaderValue::from_static("no-store");
 const HEADER_NO_CACHE: header::HeaderValue = header::HeaderValue::from_static("no-cache");
 
-fn no_store() -> [(header::HeaderName, header::HeaderValue); 2] {
+pub(crate) fn no_store() -> [(header::HeaderName, header::HeaderValue); 2] {
     [
         (header::CACHE_CONTROL, HEADER_NO_STORE),
         (header::PRAGMA, HEADER_NO_CACHE),
@@ -311,7 +311,7 @@ fn render(failure: &TokenError, description: &str) -> Response {
 /// specification also restricts it to a printable ASCII subset, so anything
 /// outside that is dropped rather than sent — a description is a courtesy, and
 /// not one worth breaking a client's parser for.
-fn error(status: StatusCode, code: &str, description: &str) -> Response {
+pub(crate) fn error(status: StatusCode, code: &str, description: &str) -> Response {
     let description: String = description
         .chars()
         .filter(|c| matches!(c, ' '..='~') && *c != '"' && *c != '\\')
@@ -334,7 +334,7 @@ fn find<'a>(pairs: &'a [(String, String)], name: &str) -> Option<&'a str> {
 }
 
 /// Whether the request is a form post, ignoring any charset parameter.
-fn is_form_encoded(headers: &HeaderMap) -> bool {
+pub(crate) fn is_form_encoded(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

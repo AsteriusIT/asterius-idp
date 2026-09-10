@@ -19,6 +19,7 @@ pub mod metadata;
 pub mod par;
 pub mod pkce;
 pub mod refresh;
+pub mod revocation;
 pub mod tenancy;
 pub mod token;
 pub mod tokens;

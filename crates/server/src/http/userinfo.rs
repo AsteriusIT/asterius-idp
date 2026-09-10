@@ -35,11 +35,12 @@
 //! (`ast-1sk.6`): there is no argument at this call site that could carry
 //! anything else.
 
+use crate::http::access_token;
 use crate::http::dpop::{self, DpopEndpoint, NONCE_HEADER, USE_NONCE};
 use asterius_domain::entities::grant::GrantStatus;
 use asterius_domain::keys::{KeyStore, Signer, SigningAlgorithm};
 use asterius_domain::{DomainError, Grant, GrantId, Tenant, User, UserId};
-use asterius_jose::verify::{Policy, TypRule, VerificationError, Verified};
+use asterius_jose::verify::{VerificationError, Verified};
 use asterius_oidc::metadata::Endpoint;
 use asterius_oidc::userinfo::{self, Presentation, UserInfoError};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -237,56 +238,29 @@ async fn answer(
 
 /// Verifies the access token (RFC 9068 §4).
 ///
-/// One verifier, the same one every other JWT this server receives goes
-/// through: `typ` before anything cryptographic, the algorithm from the
-/// caller's list and never the token's, and the key chosen by a resolver.
-///
-/// The `aud` is deliberately not constrained. RFC 9068 §3 puts a *resource* in
-/// it, and this endpoint is not one of the tenant's resources: OIDC Core §5.3
-/// makes the `openid` scope the authorization to read UserInfo, and that is
-/// checked as a scope. Requiring an audience here would mean inventing a
-/// resource identifier for this server's own claims, which is `ast-gxh.7`'s
-/// decision to make when resource indicators land.
+/// The verification itself is [`crate::http::access_token::verify`], shared
+/// with the revocation endpoint so that the two cannot hold different opinions
+/// about what a token of this tenant is. What is decided here is what a
+/// failure *means* at UserInfo: a token that did not verify is
+/// `invalid_token`, and a key set that could not be read is this deployment's
+/// fault and not the caller's.
 async fn verify_access_token(
     context: &UserInfoContext<'_>,
     token: &str,
 ) -> Result<Verified, Refused> {
-    let published = context.keys.published_keys(&context.tenant.id).await?;
-    let document = json!({
-        "keys": published
-            .into_iter()
-            .map(|key| key.public_jwk)
-            .collect::<Vec<Value>>(),
-    });
-    let resolver = asterius_jose::client_keys::keys_from_jwk_set(&document).map_err(|error| {
-        Refused::Server(DomainError::invalid(
-            "jwks",
-            format!("this tenant's own key set will not parse: {error}"),
-        ))
-    })?;
-    if resolver.is_empty() {
-        return Err(Refused::Server(DomainError::invalid(
-            "jwks",
-            "this tenant publishes no usable key",
-        )));
-    }
-
-    let policy = Policy::new(
-        // RFC 9068 §2.1: an access token says so in its `typ`. This is what
-        // stops an ID token — same issuer, same keys, and a `sub` — being
-        // presented here as a credential.
-        TypRule::Exactly(asterius_oidc::tokens::access::ACCESS_TOKEN_TYP),
-        SigningAlgorithm::ALL.to_vec(),
-    )
-    .issued_by(context.tenant.issuer.as_str());
-
-    asterius_jose::verify::verify(token, &policy, &resolver, context.now).map_err(|error| {
-        // Debug, not warn: a rejected token is routine at a resource server,
-        // and which check failed is a description of this server's state that
-        // an unauthenticated caller has not earned.
-        log_rejection(&error);
-        UserInfoError::InvalidToken.into()
-    })
+    access_token::verify(context.tenant, context.keys, token, context.now)
+        .await
+        .map_err(|rejected| match rejected {
+            access_token::Rejected::Unavailable(error) => Refused::Server(error),
+            access_token::Rejected::Token(error) => {
+                // Debug, not warn: a rejected token is routine at a resource
+                // server, and which check failed is a description of this
+                // server's state that an unauthenticated caller has not
+                // earned.
+                log_rejection(&error);
+                UserInfoError::InvalidToken.into()
+            }
+        })
 }
 
 /// Records why a token was rejected, for an operator and for nobody else.

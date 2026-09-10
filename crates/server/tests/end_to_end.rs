@@ -68,6 +68,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ciborium::value::Value as Cbor;
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -85,6 +86,9 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 const HOST: &str = "as.example";
 const ORIGIN: &str = "https://as.example";
 const CLIENT: &str = "billing";
+/// A second registered client, for RFC 7009 §2.2: a token issued to one
+/// client is not revocable by another.
+const OTHER_CLIENT: &str = "reporting";
 const REDIRECT: &str = "https://rp.example/cb";
 const RESOURCE: &str = "https://api.example/";
 const NONCE: &str = "n-0S6_WzA2Mj";
@@ -205,17 +209,26 @@ impl ProofKey {
     /// A proof for one request, signed by hand: there is no builder, and a
     /// client is exactly the thing that assembles these itself.
     fn proof(&self, method: &str, url: &str, jti: &str) -> String {
+        self.proof_over(method, url, jti, None)
+    }
+
+    /// The same proof, carrying `ath` over the access token it is presented
+    /// with (RFC 9449 §4.3 item 12, which a protected resource requires).
+    fn proof_over(&self, method: &str, url: &str, jti: &str, access_token: Option<&str>) -> String {
         let header = json!({
             "typ": "dpop+jwt",
             "alg": self.0.algorithm().as_str(),
             "jwk": self.jwk(),
         });
-        let claims = json!({
+        let mut claims = json!({
             "jti": jti,
             "htm": method,
             "htu": url,
             "iat": OffsetDateTime::now_utc().unix_timestamp(),
         });
+        if let Some(token) = access_token {
+            claims["ath"] = json!(B64.encode(Sha256::digest(token.as_bytes())));
+        }
         let signing_input = format!(
             "{}.{}",
             B64.encode(serde_json::to_vec(&header).expect("a header serialises")),
@@ -678,21 +691,120 @@ impl Flow {
         self.post_form(&path, &form, Some(&proof)).await
     }
 
+    /// One revocation request (RFC 7009 §2.1), authenticated as this client.
+    ///
+    /// No DPoP proof: nothing is issued here, so there is no key to bind, and
+    /// a client that had to prove one to hand a token back would be unable to
+    /// revoke a credential whose key it has already thrown away.
+    async fn revoke(&mut self, jti: &str, pairs: &[(&str, &str)]) -> Reply {
+        self.revoke_as(CLIENT, None, jti, pairs).await
+    }
+
+    /// The same request, made by whichever client `key` belongs to.
+    ///
+    /// `None` is this flow's own client. The parameter exists for RFC 7009
+    /// §2.2's rule — a client may not revoke another client's token — which
+    /// cannot be tested with one registration.
+    async fn revoke_as(
+        &mut self,
+        client_id: &str,
+        key: Option<&SigningKey>,
+        jti: &str,
+        pairs: &[(&str, &str)],
+    ) -> Reply {
+        let path = format!("{}{}", self.prefix(), Endpoint::Revocation.path());
+        let assertion = self.assertion_for(client_id, key, jti);
+        let mut form = pairs.to_vec();
+        form.push(("client_id", client_id));
+        form.push(("client_assertion_type", CLIENT_ASSERTION_TYPE));
+        form.push(("client_assertion", &assertion));
+        self.post_form(&path, &form, None).await
+    }
+
+    /// One UserInfo request, presenting `access_token` under the key it is
+    /// bound to.
+    ///
+    /// RFC 9449 §4.3 item 12: at a protected resource the proof carries `ath`
+    /// over the token that arrived, so this is the request a well-behaved
+    /// client makes and the one the revocation test needs to fail afterwards.
+    async fn userinfo(&mut self, key: &ProofKey, access_token: &str) -> Reply {
+        let url = Endpoint::UserInfo.url(&self.tenant.issuer);
+        let path = format!("{}{}", self.prefix(), Endpoint::UserInfo.path());
+        let proof = key.proof_over("GET", &url, &self.next_jti(), Some(access_token));
+        let request = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::AUTHORIZATION, format!("DPoP {access_token}"))
+            .header(asterius_server::http::dpop::HEADER, proof)
+            .body(Body::empty())
+            .expect("a request");
+        self.send(request).await
+    }
+
+    /// A second registered client, with a key of its own.
+    ///
+    /// It asks for nothing and is never authorized: its only job is to
+    /// authenticate at `/revoke` and be told, in the same words as everybody
+    /// else, that nothing happened.
+    async fn register_other_client(&self) -> SigningKey {
+        let (key, jwks) = client_credentials();
+        let now = OffsetDateTime::now_utc();
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(OTHER_CLIENT),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&json!({
+                    "client_name": "Reporting",
+                    "redirect_uris": [REDIRECT],
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "response_types": ["code"],
+                    "scope": "openid",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                    "jwks": jwks,
+                }))
+                .expect("serialise"),
+                Capabilities::default(),
+            )
+            .expect("a valid registration"),
+            status: ClientStatus::Active,
+            created_at: now,
+            updated_at: now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities::default())
+            .upsert(&client)
+            .await
+            .expect("store the second client");
+        key
+    }
+
     /// A `private_key_jwt` assertion for this client (OIDC Core §9).
     fn assertion(&self, jti: &str) -> String {
+        self.assertion_for(CLIENT, None, jti)
+    }
+
+    /// The same assertion, for whichever client holds `key`.
+    fn assertion_for(&self, client_id: &str, key: Option<&SigningKey>, jti: &str) -> String {
         let now = OffsetDateTime::now_utc().unix_timestamp();
         let claims = json!({
-            "iss": CLIENT,
-            "sub": CLIENT,
+            "iss": client_id,
+            "sub": client_id,
             "aud": self.tenant.issuer.as_str(),
             "jti": jti,
             "iat": now,
             "exp": now + 60,
         });
-        jws::sign(&self.client_key, &Kid::new(CLIENT_KID), "JWT", &claims)
-            .expect("a signed assertion")
-            .as_str()
-            .to_owned()
+        jws::sign(
+            key.unwrap_or(&self.client_key),
+            &Kid::new(CLIENT_KID),
+            "JWT",
+            &claims,
+        )
+        .expect("a signed assertion")
+        .as_str()
+        .to_owned()
     }
 
     /// Writes this tenant's lifetimes, the way the admin API writes them, and
@@ -1089,4 +1201,316 @@ fn claims_of(jwt: &str) -> Value {
     let payload = jwt.split('.').nth(1).expect("a JWS has three parts");
     serde_json::from_slice(&B64.decode(payload).expect("the payload is base64url"))
         .expect("the payload is JSON")
+}
+
+// ---- revocation (RFC 7009) -----------------------------------------------
+
+/// The tokens one full flow produces, so a revocation test starts from a real
+/// credential rather than a seeded row.
+struct Issued {
+    access_token: String,
+    refresh_token: String,
+    key: ProofKey,
+}
+
+/// Push, sign in, consent, redeem: the chain above, condensed, for the tests
+/// that are about what happens *after* a token exists.
+async fn issue_tokens(flow: &mut Flow) -> Issued {
+    let key = ProofKey::generate();
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+    let redeemed = flow
+        .token(
+            &key,
+            "assertion-code",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        redeemed.text()
+    );
+    let tokens = redeemed.json();
+    Issued {
+        access_token: tokens["access_token"]
+            .as_str()
+            .expect("an access token")
+            .to_owned(),
+        refresh_token: tokens["refresh_token"]
+            .as_str()
+            .expect("an offline_access grant earns a refresh token")
+            .to_owned(),
+        key,
+    }
+}
+
+/// RFC 7009 §2.1: a refresh token handed back is revoked, and §2.2's 200 says
+/// so. What proves it is the next refresh — RFC 6749 §5.2's `invalid_grant`,
+/// from the endpoint that would have minted a token a moment earlier.
+#[tokio::test]
+async fn a_revoked_refresh_token_can_no_longer_be_refreshed() {
+    // Arrange: a real refresh token, from a real authorization.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let issued = issue_tokens(&mut flow).await;
+
+    // Act
+    let revoked = flow
+        .revoke(
+            "assertion-revoke",
+            &[
+                ("token", &issued.refresh_token),
+                ("token_type_hint", "refresh_token"),
+            ],
+        )
+        .await;
+
+    // Assert: §2.2 — 200, and nothing in the body for a client to read.
+    assert_eq!(
+        revoked.status,
+        StatusCode::OK,
+        "the revocation was refused: {}",
+        revoked.text()
+    );
+    assert!(revoked.body.is_empty(), "{}", revoked.text());
+
+    let refreshed = flow
+        .token(
+            &ProofKey::generate(),
+            "assertion-refresh",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &issued.refresh_token),
+            ],
+        )
+        .await;
+    assert_eq!(
+        refreshed.status,
+        StatusCode::BAD_REQUEST,
+        "a revoked refresh token was still redeemable: {}",
+        refreshed.text()
+    );
+    assert_eq!(refreshed.json()["error"], "invalid_grant");
+
+    flow.tear_down().await;
+}
+
+/// The same request, made by a client the token was not issued to. RFC 7009
+/// §2.2: "the client MUST NOT be able to revoke a token issued to another
+/// client" — treated as an invalid token, which is a 200 and no action.
+#[tokio::test]
+async fn another_clients_refresh_token_is_not_revocable() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let other_key = flow.register_other_client().await;
+    let issued = issue_tokens(&mut flow).await;
+
+    // Act: the second client asks for the first client's token.
+    let answered = flow
+        .revoke_as(
+            OTHER_CLIENT,
+            Some(&other_key),
+            "assertion-revoke-other",
+            &[("token", &issued.refresh_token)],
+        )
+        .await;
+
+    // Assert: indistinguishable from a successful revocation — which is the
+    // point, since telling the two apart answers "is this a live token here?"
+    // — and the token still works.
+    assert_eq!(
+        answered.status,
+        StatusCode::OK,
+        "another client's request should look like every other one: {}",
+        answered.text()
+    );
+    let refreshed = flow
+        .token(
+            &ProofKey::generate(),
+            "assertion-refresh-after",
+            &[
+                ("grant_type", "refresh_token"),
+                ("refresh_token", &issued.refresh_token),
+            ],
+        )
+        .await;
+    assert_eq!(
+        refreshed.status,
+        StatusCode::OK,
+        "a client revoked a token it was not issued: {}",
+        refreshed.text()
+    );
+
+    flow.tear_down().await;
+}
+
+/// An access token's `jti` goes on the denylist until its own `exp`, and the
+/// one place this server verifies its own access tokens reads it: UserInfo
+/// (FAPI 2.0 SP §5.3.4 item 3). Introspection will read the same rows.
+#[tokio::test]
+async fn a_revoked_access_token_is_refused_at_userinfo() {
+    // Arrange: a token that works, so the assertion below is about the
+    // revocation rather than about the request.
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let issued = issue_tokens(&mut flow).await;
+    let before = flow.userinfo(&issued.key, &issued.access_token).await;
+    assert_eq!(
+        before.status,
+        StatusCode::OK,
+        "the access token did not work before it was revoked: {}",
+        before.text()
+    );
+
+    // Act
+    let revoked = flow
+        .revoke(
+            "assertion-revoke-at",
+            &[
+                ("token", &issued.access_token),
+                ("token_type_hint", "access_token"),
+            ],
+        )
+        .await;
+    assert_eq!(
+        revoked.status,
+        StatusCode::OK,
+        "the revocation was refused: {}",
+        revoked.text()
+    );
+
+    // Assert: RFC 6750 §3.1 — the credential is no longer good for anything.
+    let after = flow.userinfo(&issued.key, &issued.access_token).await;
+    assert_eq!(
+        after.status,
+        StatusCode::UNAUTHORIZED,
+        "a revoked access token still bought claims: {}",
+        after.text()
+    );
+
+    flow.tear_down().await;
+}
+
+/// §2.1: `token_type_hint` is a hint. A value this server has never heard of
+/// does not fail the request — the server "MUST extend its search across all
+/// of its supported token types" — and an unknown token is §2.2's 200.
+#[tokio::test]
+async fn an_unknown_hint_and_an_unknown_token_are_both_a_success() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+
+    // Act
+    let answered = flow
+        .revoke(
+            "assertion-revoke-unknown",
+            &[
+                ("token", "a-value-this-server-never-issued"),
+                ("token_type_hint", "device_code"),
+            ],
+        )
+        .await;
+
+    // Assert
+    assert_eq!(
+        answered.status,
+        StatusCode::OK,
+        "an unknown hint or token must not be an error: {}",
+        answered.text()
+    );
+
+    flow.tear_down().await;
+}
+
+/// §2.1 makes `token` REQUIRED, and a request without one is not a request
+/// about a token at all — so it is RFC 6749 §5.2's `invalid_request` rather
+/// than §2.2's 200.
+#[tokio::test]
+async fn a_revocation_without_a_token_is_invalid_request() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+
+    // Act
+    let answered = flow.revoke("assertion-revoke-empty", &[]).await;
+
+    // Assert
+    assert_eq!(
+        answered.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        answered.text()
+    );
+    assert_eq!(answered.json()["error"], "invalid_request");
+
+    flow.tear_down().await;
+}
+
+/// §2.2.1: `unsupported_token_type` when the presented token's type is one
+/// this server cannot revoke. An ID token is signed by this tenant and looks
+/// like a credential; it is not one this endpoint withdraws.
+#[tokio::test]
+async fn an_id_token_presented_for_revocation_is_an_unsupported_token_type() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+    let redeemed = flow
+        .token(
+            &key,
+            "assertion-code",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+    let id_token = redeemed.json()["id_token"]
+        .as_str()
+        .expect("an openid request earns an ID token")
+        .to_owned();
+
+    // Act
+    let answered = flow
+        .revoke("assertion-revoke-id", &[("token", &id_token)])
+        .await;
+
+    // Assert
+    assert_eq!(
+        answered.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        answered.text()
+    );
+    assert_eq!(answered.json()["error"], "unsupported_token_type");
+
+    flow.tear_down().await;
 }

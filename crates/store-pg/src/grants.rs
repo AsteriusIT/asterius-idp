@@ -231,6 +231,62 @@ impl PgGrantRepository {
         .map_err(to_domain_error)
     }
 
+    /// Puts one access token's `jti` on the denylist until its own `exp`.
+    ///
+    /// The single-token write side of the denylist [`Self::revoke`] fills in
+    /// bulk. RFC 7009 §2.1 lets a client present an access token at the
+    /// revocation endpoint, and this is the only thing that can withdraw one:
+    /// a JWT access token (RFC 9068) is verified from its signature and its
+    /// `exp`, and neither can be recalled.
+    ///
+    /// `expires_at` is the token's own `exp` and nothing else. A row that
+    /// outlived the token would be a denylist that grows without bound; one
+    /// that expired earlier would let a revoked token come back. A token
+    /// already past its `exp` is not written at all — it fails on `exp`
+    /// wherever it is presented — and that is what `false` reports.
+    ///
+    /// `grant` is recorded when the token names one, for the trail. It is
+    /// nullable in the schema because a token may be revoked without its grant
+    /// being read, and a revocation that failed for want of a foreign key
+    /// would be a token left live over a bookkeeping detail.
+    ///
+    /// Idempotent: a `jti` already denylisted stays denylisted, with the
+    /// instant of the first revocation, because that is when the withdrawal
+    /// happened.
+    ///
+    /// # Errors
+    ///
+    /// A storage error, in which case nothing was written and the caller must
+    /// not report success.
+    pub async fn denylist_access_token(
+        &self,
+        jti: &str,
+        grant: Option<&GrantId>,
+        revoked_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        if expires_at <= revoked_at {
+            return Ok(false);
+        }
+        let grant = grant.map(uuid).transpose()?;
+        let written = sqlx::query!(
+            "insert into access_token_denylist (tenant_id, jti, grant_id, revoked_at, expires_at)
+             values ($1, $2, $3, $4, $5)
+             on conflict (tenant_id, jti) do nothing",
+            self.tenant.as_str(),
+            jti,
+            grant,
+            revoked_at,
+            expires_at,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+
+        Ok(written > 0)
+    }
+
     /// Every grant a person has given, newest first.
     ///
     /// What the grants dashboard (`ast-uwv.6`) and Grant Management's query

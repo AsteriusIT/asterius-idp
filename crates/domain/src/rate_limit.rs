@@ -291,9 +291,17 @@ pub trait RateLimitStore: Debug + Send + Sync {
 /// already passed a limiter. `/authorize` and `/interaction` are absent
 /// deliberately: the sign-in they lead to is bounded by the login limiter
 /// (`ast-2vk.9`), and a second counter over the same requests would silently
-/// halve a number an operator configured once. `/introspect` and `/revoke` are
-/// absent because they are not built — they answer 501 — and limiting a
-/// constant answer limits nothing.
+/// halve a number an operator configured once. `/introspect` is absent because
+/// it is not built — it answers 501 — and limiting a constant answer limits
+/// nothing.
+///
+/// `/revoke` is built (`ast-1sk.2`) and is *not* limited yet, which is a gap
+/// rather than a decision: it authenticates its caller with a signature
+/// verification, so a flood of unauthenticated requests to it costs the same
+/// as one at `/token`. Adding it here means adding a field to
+/// [`EndpointLimits`], a key to the configuration surface and a default an
+/// operator can read, which is a change to that surface rather than to this
+/// endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum LimitedEndpoint {
     /// `POST /register` — RFC 7591 dynamic client registration.

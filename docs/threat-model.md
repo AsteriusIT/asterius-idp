@@ -205,6 +205,31 @@ what stops it; this bead builds the control and its test.*
 | A1, A5 | G1, G4 | Reads a credential or a person's identity out of a log written by a background worker — a sweep's `sqlx` error quotes the connection string that produced it, password and all, and no request handler was ever in scope to sanitise it | Redaction is a property of the log *formatter*, not of the call site, so a worker line is redacted like any other; the scanner also strips the `user:password@` of any URL while keeping the host, which is the half that made the line worth writing. A workspace-wide test fails on any subscriber built without `RedactingFields`, naming the file and line — which is what will cover the admin console the day it installs one | `ast-p2l.4`, `ast-83p.5` |
 | A1, A5 | G4 | Reads a user's email address, username or phone number out of the audit trail — the one artefact deliberately kept for years, copied into a SIEM and read by whoever is on call. The credential scanner does not help: `alice@example.com` is not credential-shaped | `Detail::pii` records personal data as the same deterministic fingerprint `Detail::credential` uses, so one person can still be followed across a trail without their identity being in it, and there is one hashing scheme to get right rather than two | `ast-p2l.4` |
 
+### Revocation endpoint (RFC 7009)
+
+`ast-1sk.2` adds `POST /revoke`, which moves a trust boundary twice. It is a
+new **authenticated** endpoint any registered client can reach, and it is the
+first writer of the access-token denylist — a table now read on the path of
+every access token this server verifies itself.
+
+| Attacker | Goal | Attack it enables | Control | Bead |
+|---|---|---|---|---|
+| A1 | G1, G3 | Turns `/revoke` into an oracle. Any registered client can reach it, so a client that has come by a value — a log line, a proxy trace, another tenant's leak — asks "was that a live credential here?" and reads the answer off the status code or the timing of the two branches | Every outcome that is about a *credential* is the same empty 200: unknown, expired, already revoked, and issued to another client. RFC 7009 §2.2 requires it, and it is implemented by putting `client_id` inside the `where` clause rather than comparing after a read, so another client's token matches no row and there is nothing to leak. The only two refusals — `invalid_request` and `unsupported_token_type` — are decided from the request and the token's own `typ` header, before any lookup, so neither depends on what the store holds | `ast-1sk.2` |
+| A1 | G1 | Revokes somebody else's credential: a client with a valid registration presents a refresh token or access token it was not issued, and the authorization behind an integration it does not own stops working | Two comparisons against signed or stored facts. The refresh token's row carries the `client_id` it was issued to and the update matches on it; the access token's `client_id` claim is read only *after* the signature, the `typ` and the issuer have been checked against this tenant's published keys, through the same verifier UserInfo uses. A client with no valid assertion never gets that far: RFC 7009 §2.1's client authentication is the token endpoint's authenticator, unchanged, with its replay check and its timing equalisation | `ast-1sk.2` |
+| A1 | G1 | Writes rows of an attacker's choosing into `access_token_denylist`: the primary key is a `jti`, and a `jti` read from an unverified token is a database key chosen by whoever sent the request — as is the `exp` that decides how long the row lives | Nothing is read out of a token before it verifies. The denylist write takes the `jti` and the `exp` of a `Verified` token only, so both are values this server signed; the row's lifetime is the token's own `exp` and the insert is `on conflict do nothing`, so a repeat neither grows the table nor moves an existing revocation's instant. The classifier in front of it is bounded (8 KiB of token, 4 KiB of header) and fuzzed | `ast-1sk.2` |
+| A1, A2 | G1 | Makes revocation look like it worked when it did not: a client hands a token back during a database outage, is told 200, discards it — and the token stays live for the rest of its lifetime | A storage failure is a 503 `temporarily_unavailable`, never the 200 that ends the client's attempt. The same rule the other way: UserInfo's denylist read refuses rather than serving a token it could not check | `ast-1sk.2`, `ast-1sk.5` |
+| A1 | G1 | Uses the endpoint as an amplifier: it verifies a `private_key_jwt` assertion — a public-key signature — before it decides anything, and unlike `/token` and `/par` it is not behind a per-endpoint limiter | **Known gap.** `/revoke` is not in `LimitedEndpoint` and is unlimited; a flood costs the same signature verification a `/token` flood would. The limiter's own module documentation now says so rather than claiming the endpoint is unbuilt. The blast radius is bounded by what the endpoint can do — it writes at most one row per authenticated request and issues nothing — but the CPU is real | `ast-1sk.2`, `ast-p2l.3` |
+| A5 | G4 | Reads which credential was revoked out of the audit trail | The event records the client, the tenant, the grant when one was reached, the hint the client sent and which *kind* of thing was revoked. The token is not recorded in any form. A revocation that revoked nothing is recorded too, so a run of them against one client is visible rather than invisible | `ast-1sk.2` |
+
+Two things this endpoint deliberately does **not** do. It does not revoke the
+grant: Grant Management ID1 §6.5's Note allows that, and it means a client that
+signs a user out can reconnect without a second consent screen for an
+authorization nobody withdrew. And it does not denylist the *other* access
+tokens minted from the same grant — there is no record of them, because RFC
+9068 access tokens are stateless, so "revoking the refresh token kills its
+access tokens" is not a policy this schema can carry today. Those tokens expire
+on their own `exp`, which the profile keeps short for exactly this reason.
+
 ### Admin console (first-party, same-origin)
 
 [ADR-0009](adr/0009-the-admin-console-is-a-first-party-same-origin-app.md)

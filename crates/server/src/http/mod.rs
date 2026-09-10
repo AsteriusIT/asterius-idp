@@ -3,6 +3,7 @@
 use asterius_web::FormActionOrigin;
 use axum::http::{HeaderMap, header};
 
+pub mod access_token;
 pub mod authorization_code;
 pub mod authorize;
 pub mod client_configuration;
@@ -22,6 +23,7 @@ pub mod redirect;
 pub mod refresh;
 pub mod register;
 pub mod request_id;
+pub mod revocation;
 pub mod security_headers;
 pub mod server;
 mod source_audit;

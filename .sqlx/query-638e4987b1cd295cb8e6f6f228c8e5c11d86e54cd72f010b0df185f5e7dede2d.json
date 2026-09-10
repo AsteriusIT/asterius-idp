@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update refresh_tokens\n                set revoked_at = coalesce(revoked_at, $4)\n              where tenant_id = $1 and token_hash = $2 and client_id = $3\n             returning grant_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "638e4987b1cd295cb8e6f6f228c8e5c11d86e54cd72f010b0df185f5e7dede2d"
+}
