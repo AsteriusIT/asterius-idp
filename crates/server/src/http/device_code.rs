@@ -221,6 +221,10 @@ impl DeviceCode<'_> {
         let claimed = self.grants.claim(&redeemed.grant_id, self.now).await?;
 
         let session = issuance::session_facts(self.sessions, &grant).await?;
+        // OIDC Back-Channel Logout 1.0 §2.3, as in `authorization_code`: a
+        // device that obtained an ID token in this person's session is a
+        // relying party that has to be told when it ends.
+        issuance::remember_participant(self.sessions, &grant, self.now).await;
         let targeting = self.targeting(tenant, client, &grant, params).await?;
         let confirmation = self
             .constraint

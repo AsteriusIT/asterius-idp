@@ -1140,8 +1140,30 @@ pub(crate) fn client_information(
         object.insert("client_kind".to_owned(), json!("agent"));
         object.insert("agent_owner".to_owned(), json!(agent.owner().to_string()));
     }
+    echo_backchannel_logout(object, registration);
 
     document
+}
+
+/// Echoes this client's back-channel logout registration (OIDC Back-Channel
+/// Logout 1.0 §2.2).
+///
+/// Both members travel together or not at all:
+/// `backchannel_logout_session_required` on a client with no endpoint
+/// describes a notification nobody receives, and echoing it alone would tell
+/// the client this server had registered something it had not.
+fn echo_backchannel_logout(
+    object: &mut serde_json::Map<String, Value>,
+    registration: &ClientRegistration,
+) {
+    let Some(uri) = &registration.backchannel_logout_uri else {
+        return;
+    };
+    object.insert("backchannel_logout_uri".to_owned(), json!(uri.as_str()));
+    object.insert(
+        "backchannel_logout_session_required".to_owned(),
+        json!(registration.backchannel_logout_session_required),
+    );
 }
 
 /// The `client_id_issued_at` value: seconds since the epoch, from the row.
@@ -1847,12 +1869,60 @@ mod tests {
             "backchannel_token_delivery_mode",
             "backchannel_client_notification_endpoint",
             "backchannel_user_code_parameter",
+            // OIDC Back-Channel Logout 1.0 §2.2. The `false` default of
+            // `backchannel_logout_session_required` is not echoed either: a
+            // client with no endpoint is not a participant, and a member
+            // saying "no session required" would suggest it had registered
+            // something.
+            "backchannel_logout_uri",
+            "backchannel_logout_session_required",
         ] {
             assert!(
                 body.get(absent).is_none(),
                 "{absent} was rendered for a client that did not register one"
             );
         }
+    }
+
+    /// RFC 7591 §3.2.1: the response holds "the client metadata as registered".
+    /// A relying party reads it back to confirm the endpoint this server will
+    /// POST its logout tokens to (OIDC Back-Channel Logout 1.0 §2.2).
+    #[test]
+    fn a_registered_backchannel_logout_endpoint_is_echoed() {
+        // Arrange
+        let mut document = minimal_document();
+        let object = document.as_object_mut().expect("object");
+        object.insert(
+            "backchannel_logout_uri".to_owned(),
+            json!("https://rp.example/backchannel"),
+        );
+        object.insert(
+            "backchannel_logout_session_required".to_owned(),
+            json!(true),
+        );
+        let stored = Client {
+            tenant: TenantId::new("demo"),
+            id: ClientId::new("c.abc"),
+            registration: registration(&document),
+            status: ClientStatus::Active,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+
+        // Act
+        let body = client_information(
+            &stored,
+            &tenant(),
+            Some(&OpaqueToken::generate()),
+            OffsetDateTime::UNIX_EPOCH,
+        );
+
+        // Assert
+        assert_eq!(
+            body["backchannel_logout_uri"],
+            json!("https://rp.example/backchannel")
+        );
+        assert_eq!(body["backchannel_logout_session_required"], json!(true));
     }
 
     /// The audit trail is only useful if the policy that was applied survives

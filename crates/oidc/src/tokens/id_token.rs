@@ -177,6 +177,17 @@ impl Session {
         }
         Ok(Self(raw.to_owned()))
     }
+
+    /// The identifier, as it appears in a `sid` claim.
+    ///
+    /// Read by [`super::logout_token`], which puts the same value in the
+    /// logout token that the ID token carried — OIDC Back-Channel Logout 1.0
+    /// §2.6 step 4 has the relying party match the two, so a second spelling
+    /// of the session identifier would be a logout the RP cannot attribute.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 // ---------------------------------------------------------------------------

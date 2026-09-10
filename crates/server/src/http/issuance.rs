@@ -275,6 +275,50 @@ pub async fn session_facts(
     })
 }
 
+/// Remembers that this client took part in the session (OIDC Back-Channel
+/// Logout 1.0 §2.3).
+///
+/// > OPs supporting back-channel logout need to keep track of the set of
+/// > logged-in RPs for the End-User's session at the OP.
+///
+/// That set is what the end-session endpoint reads to decide who is sent a
+/// logout token, so a client that is not recorded here is a client no logout
+/// ever reaches — the notification would be built correctly and delivered to
+/// nobody. This is the write that makes the list exist, and it belongs beside
+/// the ID token rather than at sign-in: an ID token is what makes a relying
+/// party a *participant* in the sense §2.3 means, and a client that only
+/// obtained an access token has no session with this person to end.
+///
+/// A grant with no session records nothing: `client_credentials` has no
+/// resource owner, and a grant whose session row is gone names a session no
+/// logout will ever read.
+///
+/// Never fatal. A failure here costs a future logout one notification, which
+/// is bad; refusing to issue a token the client is entitled to, because a
+/// bookkeeping row could not be written, is worse — and the operator gets the
+/// error either way.
+pub async fn remember_participant(
+    sessions: &dyn SessionRepository,
+    grant: &Grant,
+    now: time::OffsetDateTime,
+) {
+    let Some(session) = grant.session.as_ref() else {
+        return;
+    };
+    if let Err(error) = sessions
+        .record_participant(session.as_str(), &grant.client, now)
+        .await
+    {
+        tracing::error!(
+            %error,
+            tenant = %grant.tenant,
+            client = %grant.client,
+            "cannot record a client as a participant of a session; a back-channel \
+             logout will not reach it"
+        );
+    }
+}
+
 /// The claims this grant releases into its ID token.
 ///
 /// Read from the grant and from the user row, and from nothing else. The

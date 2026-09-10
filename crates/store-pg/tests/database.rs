@@ -966,6 +966,12 @@ fn registration_document() -> serde_json::Value {
         // it then rides through the round trip, the RFC 7592 update and the
         // "another tenant" tests without any of them having to remember it.
         "post_logout_redirect_uris": ["https://rp.example/after-logout"],
+        // OIDC Back-Channel Logout 1.0 §2.2, here for the same reason: the
+        // endpoint a logout token is POSTed to has to survive the round trip
+        // byte for byte, or a logout is delivered somewhere the operator did
+        // not register (`ast-o4u.2`).
+        "backchannel_logout_uri": "https://rp.example/backchannel-logout",
+        "backchannel_logout_session_required": true,
         "grant_types": ["authorization_code", "refresh_token"],
         "scope": "openid payments",
         "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
@@ -1016,6 +1022,18 @@ db_test! {
             .expect("present");
         assert_eq!(found.registration, registered.registration);
         assert_eq!(found.id, registered.id);
+        // Named rather than left to the equality above: this is the URL a
+        // logout token is POSTed to, and a column that silently stopped being
+        // read would be a logout delivered nowhere (`ast-o4u.2`).
+        assert_eq!(
+            found
+                .registration
+                .backchannel_logout_uri
+                .as_ref()
+                .map(asterius_domain::RedirectUri::as_str),
+            Some("https://rp.example/backchannel-logout")
+        );
+        assert!(found.registration.backchannel_logout_session_required);
         assert!(found.is_active());
         // Timestamps come from the database, not from the entity we passed in.
         assert!(found.created_at > OffsetDateTime::UNIX_EPOCH);
@@ -10415,6 +10433,106 @@ mod refresh_tokens {
             binding: RefreshBinding::Dpop("a-thumbprint".to_owned()),
             absolute_expires_at: absolute,
             idle_expires_at: idle,
+        }
+    }
+
+    /// A grant of the same tenant and client, bound to one session.
+    ///
+    /// `session` is the session's *lookup* identifier, which is the column
+    /// `grants.session_id` holds — not the `public_sid` a logout token
+    /// carries.
+    async fn seed_grant_in_session(pool: &PgPool, session: &str) -> GrantId {
+        let grants = PgGrantRepository::new(pool.clone(), TenantId::new("demo"));
+        let mut grant = Grant::new(
+            TenantId::new("demo"),
+            ClientId::new("billing"),
+            OffsetDateTime::now_utc(),
+        );
+        grant.subject = Some(SubjectId::new("alice"));
+        grant.user = Some(UserId::generate());
+        grant.session = Some(asterius_domain::SessionId::new(session));
+        grant.scopes = ["openid", "offline_access"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        grants.create(&grant).await.expect("seed grant");
+        grant.id
+    }
+
+    db_test! {
+        /// `revoke_refresh_on_logout` (`ast-o4u.2`): ending a session revokes
+        /// the refresh tokens issued under *that* session's grants, and
+        /// leaves another session's alone.
+        ///
+        /// This is the part only the database can answer — the join from a
+        /// token to its grant to the session — and getting it wrong in either
+        /// direction is a security bug: too wide logs a person out of an
+        /// application they are still using on another device, too narrow
+        /// leaves a live credential behind a logout that reported success.
+        async fn a_logout_revokes_only_its_own_sessions_refresh_tokens(db) {
+            // Arrange
+            seed(&db.pool).await;
+            let ended = seed_grant_in_session(&db.pool, "the-session-that-ended").await;
+            let other = seed_grant_in_session(&db.pool, "another-session").await;
+            let repo = PgRefreshTokenRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let now = fixed_instant();
+            let absolute = now + Duration::days(30);
+            repo.issue("aa".repeat(32).as_str(), &token(&ended, absolute, None), now)
+                .await
+                .expect("issue");
+            repo.issue("bb".repeat(32).as_str(), &token(&other, absolute, None), now)
+                .await
+                .expect("issue");
+
+            // Act
+            let revoked = repo
+                .revoke_for_session("the-session-that-ended", now)
+                .await
+                .expect("revoke");
+
+            // Assert
+            assert_eq!(revoked, 1);
+            assert!(
+                matches!(
+                    repo.redeem("aa".repeat(32).as_str(), now, Duration::ZERO, None).await,
+                    Ok(Presentation::Rejected)
+                ),
+                "the ended session's token is still redeemable"
+            );
+            assert!(
+                matches!(
+                    repo.redeem("bb".repeat(32).as_str(), now, Duration::ZERO, None).await,
+                    Ok(Presentation::Accepted(_))
+                ),
+                "another session's token was revoked"
+            );
+        }
+    }
+
+    db_test! {
+        /// A second logout of the same session revokes nothing more and does
+        /// not fail: a user pressing "log out" twice is not owed an error, and
+        /// a repeated withdrawal must not move a `revoked_at` forward.
+        async fn revoking_a_sessions_refresh_tokens_twice_is_idempotent(db) {
+            // Arrange
+            seed(&db.pool).await;
+            let grant = seed_grant_in_session(&db.pool, "the-session").await;
+            let repo = PgRefreshTokenRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let now = fixed_instant();
+            repo.issue("cc".repeat(32).as_str(), &token(&grant, now + Duration::days(30), None), now)
+                .await
+                .expect("issue");
+            let first = repo.revoke_for_session("the-session", now).await.expect("revoke");
+
+            // Act
+            let second = repo
+                .revoke_for_session("the-session", now + Duration::minutes(1))
+                .await
+                .expect("revoke again");
+
+            // Assert
+            assert_eq!(first, 1);
+            assert_eq!(second, 0);
         }
     }
 

@@ -1504,6 +1504,40 @@ pub trait CodeIssuer: Debug + Send + Sync {
     ) -> Result<(), DomainError>;
 }
 
+/// Withdrawing the long-lived credentials issued under one browser session.
+///
+/// A port of one method, held by the end-session endpoint, because the *policy*
+/// is the tenant's (`TenantSettings::revoke_refresh_on_logout`) and the
+/// *statement* is the adapter's. Keeping them apart is what lets the logout
+/// handler be tested without a database and the SQL be tested without a
+/// handler.
+///
+/// Not part of the session repository: ending a session and withdrawing a grant
+/// are two decisions, and a deployment that has not chosen the second must not
+/// be one edit away from making it.
+#[async_trait::async_trait]
+pub trait SessionCredentials: Debug + Send + Sync {
+    /// Revokes every refresh token issued under a grant of this session, and
+    /// withdraws the access tokens those grants minted (RFC 7009 §2.1).
+    ///
+    /// `session` is the session's lookup identifier — the one grants reference
+    /// — not the `public_sid` a logout token carries.
+    ///
+    /// Returns how many refresh tokens were revoked. Zero is an ordinary
+    /// answer, not a failure.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if nothing could be written. Nothing was: the
+    /// tokens stay live, which is visible, rather than being reported as a
+    /// withdrawal that did not happen.
+    async fn revoke_refresh_for_session(
+        &self,
+        session: &str,
+        now: OffsetDateTime,
+    ) -> Result<u64, DomainError>;
+}
+
 /// The `sub` one client sees for one user.
 ///
 /// A port rather than a function because the answer is *stored*: OIDC Core §8

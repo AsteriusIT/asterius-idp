@@ -259,8 +259,14 @@ pub struct Notified {
 impl Notified {
     /// Records that `participants` relying parties were notified.
     ///
-    /// Called by the adapter that did the notifying, and nowhere else.
-    pub const fn after_notifying(participants: usize) -> Self {
+    /// `pub(crate)`, and reachable from outside only through [`notifying`].
+    /// It used to be `pub`, which made §3's ordering a convention rather than
+    /// a guarantee: any caller in any crate could mint a receipt it had not
+    /// earned and hand it to [`RedirectTarget::location`], and the compiler
+    /// would agree. `ast-t9k` is that gap; the fix is that the one public way
+    /// to a receipt now *takes the notification* and returns the receipt only
+    /// after it has run.
+    pub(crate) const fn after_notifying(participants: usize) -> Self {
         Self { participants }
     }
 
@@ -269,6 +275,32 @@ impl Notified {
     pub const fn participants(self) -> usize {
         self.participants
     }
+}
+
+/// Runs the notification and returns the receipt it earns.
+///
+/// The one way to obtain a [`Notified`] from outside this crate, and the whole
+/// point of its shape: the receipt is produced *from the value the
+/// notification returned*, so it cannot exist before the notification has been
+/// awaited. Reordering a handler to redirect first no longer type-checks —
+/// there is nothing to pass [`RedirectTarget::location`] until `notify` has
+/// resolved.
+///
+/// `notify` reports how many relying parties it told. A back-channel logout
+/// that queued three logout tokens returns 3; one that found no participating
+/// client with a `backchannel_logout_uri` returns 0, which is honest and still
+/// earns the receipt — there was nobody to tell.
+///
+/// It takes a closure rather than a future so that the notifying work is not
+/// even *started* before this function is called: a `Future` argument would be
+/// built at the call site, which is where somebody could build it, redirect,
+/// and await it afterwards.
+pub async fn notifying<Notify, Fut>(notify: Notify) -> Notified
+where
+    Notify: FnOnce() -> Fut,
+    Fut: Future<Output = usize>,
+{
+    Notified::after_notifying(notify().await)
 }
 
 /// Why a redirect could not be built from a registered URI.

@@ -289,6 +289,11 @@ impl AuthorizationCode<'_> {
         let claimed = self.grants.claim(&binding.grant_id, self.now).await?;
 
         let session = issuance::session_facts(self.sessions, &grant).await?;
+        // OIDC Back-Channel Logout 1.0 §2.3: the set of logged-in RPs, which
+        // the end-session endpoint reads to decide who is sent a logout token.
+        // Recorded where the ID token is minted, because that is what makes a
+        // client a participant in this person's session.
+        issuance::remember_participant(self.sessions, &grant, self.now).await;
 
         let targeting = self.targeting(tenant, client, &grant, params).await?;
 

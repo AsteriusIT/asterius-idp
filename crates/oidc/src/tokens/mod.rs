@@ -64,6 +64,7 @@
 
 pub mod access;
 pub mod id_token;
+pub mod logout_token;
 
 use asterius_domain::SigningAlgorithm;
 use base64::Engine as _;
@@ -74,6 +75,7 @@ use time::Duration;
 
 pub use access::{AccessToken, Audience, Authentication, Confirmation};
 pub use id_token::{IdToken, Session, token_hash};
+pub use logout_token::{LOGOUT_TOKEN_TYP, LogoutSubject, LogoutToken};
 
 /// Why a token could not be built.
 ///

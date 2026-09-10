@@ -179,6 +179,21 @@ pub struct ClientEndpoints {
     /// which this endpoint should skip the check rather than run it and find
     /// nothing.
     pub dpop: Arc<DpopEndpoint>,
+    /// Where a back-channel logout token is queued (`ast-o4u.2`).
+    ///
+    /// The process's one outbox, as the port rather than the adapter, so the
+    /// end-session handler stays testable without a database and this crate
+    /// keeps one place where rows are written.
+    ///
+    /// `None` is a deployment with no outbox wired, which is every test that
+    /// exercises the pages rather than the notification. It is not a fallback:
+    /// with no queue there is nowhere to put a logout token, and
+    /// `logout::notify_participants` says so in the log and notifies nobody
+    /// rather than reporting a notification it did not make.
+    ///
+    /// Last in the struct, so a parallel change adding another member does not
+    /// have to be reconciled line by line.
+    pub outbox: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
 }
 
 impl ClientEndpoints {
@@ -2138,16 +2153,64 @@ async fn page_language(
 static ENGLISH: asterius_web::Catalog =
     asterius_web::Catalog::new(asterius_domain::locale::Locale::English);
 
+/// Whether this tenant's logout also withdraws the refresh tokens issued under
+/// the session (`ast-o4u.2`).
+///
+/// `false` whenever the answer is not certain — no settings repository, or a
+/// row that would not read — and that is the safe direction here rather than
+/// the strict one: the failure of a *read* must not withdraw a client's
+/// offline access, which no logout would then give back. A tenant that has
+/// asked for the revocation and whose settings cannot be read gets a logout
+/// that is incomplete and logged, not one that revokes more than it should.
+async fn revoke_refresh_on_logout(endpoints: &ClientEndpoints, tenant: &Tenant) -> bool {
+    let Some(directory) = &endpoints.tenant_settings else {
+        return false;
+    };
+    match directory.for_tenant(&tenant.id).await {
+        Ok(settings) => settings.revoke_refresh_on_logout(),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                tenant = %tenant.id,
+                "cannot read the settings that decide revoke_refresh_on_logout; \
+                 refresh tokens are left alone"
+            );
+            false
+        }
+    }
+}
+
+/// The tenant-scoped repositories an end-session request reads and writes
+/// through.
+///
+/// A struct rather than four parameters: they are built together at the two
+/// call sites, from one `scope`, and passing them one by one is how a handler
+/// ends up with a repository scoped to a different tenant than its neighbour.
+struct LogoutStores<'a> {
+    sessions: &'a asterius_store_pg::PgSessionRepository,
+    clients: &'a asterius_store_pg::PgClientRepository,
+    /// The `sub` each participating client knows this person by.
+    subjects: &'a asterius_store_pg::PgUserRepository,
+    /// The refresh tokens a tenant with `revoke_refresh_on_logout` withdraws.
+    credentials: &'a asterius_store_pg::PgRefreshTokenRepository,
+}
+
 /// Builds the context both end-session handlers share.
 fn logout_context<'a>(
     endpoints: &'a ClientEndpoints,
     tenant: &'a Tenant,
-    sessions: &'a asterius_store_pg::PgSessionRepository,
-    clients: &'a asterius_store_pg::PgClientRepository,
+    stores: &LogoutStores<'a>,
+    revoke_refresh: bool,
     nonce: &'a asterius_web::csp::Nonce,
     request_id: &'a crate::http::request_id::RequestId,
     mount: Option<Extension<MountPrefix>>,
 ) -> logout::LogoutContext<'a> {
+    let LogoutStores {
+        sessions,
+        clients,
+        subjects,
+        credentials,
+    } = *stores;
     logout::LogoutContext {
         // Replaced by the caller, which is the only thing that has the
         // request's `ui_locales` in front of it. A default here rather than an
@@ -2162,6 +2225,14 @@ fn logout_context<'a>(
         nonce,
         request_id: Some(request_id.as_str()),
         mount: mount_of(mount),
+        subjects,
+        credentials: Some(credentials),
+        revoke_refresh,
+        signer: endpoints.signer.as_ref(),
+        outbox: endpoints
+            .outbox
+            .as_deref()
+            .map(|queue| queue as &dyn asterius_domain::outbox::OutboxQueue),
     }
 }
 
@@ -2187,11 +2258,24 @@ async fn end_session(
     let scope = endpoints.store.scope(tenant.id.clone());
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
+    // The pairwise `sub` each participating client knows this person by, for
+    // the logout token (Back-Channel Logout 1.0 §2.4).
+    let subjects = scope.users(Arc::clone(&endpoints.kek));
+    // The tenant policy that decides whether this logout reaches the refresh
+    // tokens issued under the session (`ast-o4u.2`).
+    let credentials = scope.refresh_tokens();
+    let revoke_refresh = revoke_refresh_on_logout(&endpoints, &tenant).await;
+    let stores = LogoutStores {
+        sessions: &sessions,
+        clients: &clients,
+        subjects: &subjects,
+        credentials: &credentials,
+    };
     let mut context = logout_context(
         &endpoints,
         &tenant,
-        &sessions,
-        &clients,
+        &stores,
+        revoke_refresh,
         &nonce,
         &request_id,
         mount,
@@ -2222,11 +2306,24 @@ async fn end_session_form(
     let scope = endpoints.store.scope(tenant.id.clone());
     let sessions = scope.sessions();
     let clients = scope.clients(endpoints.capabilities);
+    // The pairwise `sub` each participating client knows this person by, for
+    // the logout token (Back-Channel Logout 1.0 §2.4).
+    let subjects = scope.users(Arc::clone(&endpoints.kek));
+    // The tenant policy that decides whether this logout reaches the refresh
+    // tokens issued under the session (`ast-o4u.2`).
+    let credentials = scope.refresh_tokens();
+    let revoke_refresh = revoke_refresh_on_logout(&endpoints, &tenant).await;
+    let stores = LogoutStores {
+        sessions: &sessions,
+        clients: &clients,
+        subjects: &subjects,
+        credentials: &credentials,
+    };
     let mut context = logout_context(
         &endpoints,
         &tenant,
-        &sessions,
-        &clients,
+        &stores,
+        revoke_refresh,
         &nonce,
         &request_id,
         mount,

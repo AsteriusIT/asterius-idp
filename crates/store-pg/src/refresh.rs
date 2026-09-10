@@ -190,6 +190,17 @@ pub struct PgRefreshTokenRepository {
     tenant: TenantId,
 }
 
+#[async_trait::async_trait]
+impl asterius_domain::ports::SessionCredentials for PgRefreshTokenRepository {
+    async fn revoke_refresh_for_session(
+        &self,
+        session: &str,
+        now: OffsetDateTime,
+    ) -> Result<u64, DomainError> {
+        Self::revoke_for_session(self, session, now).await
+    }
+}
+
 impl PgRefreshTokenRepository {
     /// Scopes a repository to `tenant`.
     #[must_use]
@@ -376,6 +387,77 @@ impl PgRefreshTokenRepository {
 
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(grant)
+    }
+
+    /// Revokes every refresh token issued under a grant of one session, and
+    /// withdraws the access tokens those grants minted.
+    ///
+    /// The tenant policy `revoke_refresh_on_logout` is what decides whether
+    /// this is called at all (`ast-o4u.2`); what it does when it is called is
+    /// RFC 7009 §2.1's rule applied grant by grant — "the authorization server
+    /// SHOULD invalidate all access tokens based on the same authorization
+    /// grant" — through the same `cutoffs::withdraw` mark [`Self::revoke`]
+    /// writes.
+    ///
+    /// `session` is the session's *lookup* identifier, the one `grants.
+    /// session_id` references, and not the `public_sid` a logout token
+    /// carries. The two are deliberately different columns: one is rewritten
+    /// on every rotation, the other survives one.
+    ///
+    /// Returns how many refresh tokens this revoked. Zero is an ordinary
+    /// answer — a session whose clients hold no refresh token, or one already
+    /// swept — and never an error.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the statement or the commit fails. Nothing
+    /// was revoked; the caller logs it and the tokens stay live, which is
+    /// visible, rather than being reported as a withdrawal that did not
+    /// happen.
+    pub async fn revoke_for_session(
+        &self,
+        session: &str,
+        now: OffsetDateTime,
+    ) -> Result<u64, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+
+        // One statement for the revocation, so a client refreshing at this
+        // instant either loses its token or does not — never half of a set.
+        let rows = sqlx::query!(
+            "update refresh_tokens r
+                set revoked_at = $3
+               from grants g
+              where r.tenant_id = $1
+                and g.tenant_id = r.tenant_id
+                and g.grant_id = r.grant_id
+                and g.session_id = $2
+                and r.revoked_at is null
+            returning r.grant_id",
+            self.tenant.as_str(),
+            session,
+            now,
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        let revoked = u64::try_from(rows.len()).unwrap_or(u64::MAX);
+        let grants: BTreeSet<String> = rows
+            .into_iter()
+            .map(|row| row.grant_id.to_string())
+            .collect();
+        for grant in &grants {
+            cutoffs::withdraw(
+                &mut *transaction,
+                &self.tenant,
+                cutoffs::Principal::Grant(grant),
+                now,
+            )
+            .await?;
+        }
+
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(revoked)
     }
 
     /// Issues a replacement and stamps the token it replaces, together.

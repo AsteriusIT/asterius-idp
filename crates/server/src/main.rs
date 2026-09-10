@@ -236,6 +236,13 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 endpoint_limits: config.limits,
                 signer: prepare_signer(&keys),
                 dpop,
+                // The same `PgOutbox` the delivery worker claims through, so a
+                // back-channel logout token queued at the end-session endpoint
+                // is picked up by the worker in this process under the
+                // schedule this deployment configured (`ast-o4u.2`).
+                outbox: Some(
+                    Arc::new(outbox.clone()) as Arc<dyn asterius_domain::outbox::OutboxQueue>
+                ),
             })),
         });
 

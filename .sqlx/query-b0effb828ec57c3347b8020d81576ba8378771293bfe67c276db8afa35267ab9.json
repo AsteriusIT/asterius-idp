@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update refresh_tokens r\n                set revoked_at = $3\n               from grants g\n              where r.tenant_id = $1\n                and g.tenant_id = r.tenant_id\n                and g.grant_id = r.grant_id\n                and g.session_id = $2\n                and r.revoked_at is null\n            returning r.grant_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b0effb828ec57c3347b8020d81576ba8378771293bfe67c276db8afa35267ab9"
+}

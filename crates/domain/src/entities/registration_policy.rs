@@ -1192,6 +1192,8 @@ mod tests {
             backchannel_client_notification_endpoint: None,
             backchannel_user_code_parameter: false,
             agent: None,
+            backchannel_logout_uri: None,
+            backchannel_logout_session_required: false,
         }
     }
 

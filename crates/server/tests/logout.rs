@@ -45,6 +45,11 @@ const SESSION_COOKIE_VALUE: &str = "a-session-id-that-only-the-browser-holds";
 /// The one post-logout redirect URI [`FakeClients`] registers (§3.1). Every
 /// other spelling in this file is deliberately *not* this string.
 const REGISTERED_POST_LOGOUT: &str = "https://rp.example/after-logout";
+/// The `backchannel_logout_uri` a participating client registers (§2.2).
+const BACKCHANNEL_LOGOUT_URI: &str = "https://rp.example/backchannel-logout";
+/// The `sub` [`FakeSubjects`] answers with: the identifier the relying party
+/// was issued in its ID token, not the local user id (OIDC Core §8.1).
+const SECTOR_SUBJECT: &str = "the-sub-this-client-knows";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -170,8 +175,40 @@ impl SessionRepository for FakeSessions {
 }
 
 /// One registered client, so an identified relying party resolves.
-#[derive(Debug)]
-struct FakeClients;
+///
+/// The extra members are back-channel logout's (§2.2): a test that wants a
+/// participant states the URL and, when it is about §2.4's `sub`/`sid` choice,
+/// the pairwise pair.
+#[derive(Debug, Default)]
+struct FakeClients {
+    /// `backchannel_logout_uri`, or `None` for a client that registered none
+    /// and is therefore not a participant.
+    backchannel_logout_uri: Option<&'static str>,
+    /// `backchannel_logout_session_required`.
+    session_required: bool,
+    /// Whether the client is pairwise, which with the flag above is what makes
+    /// a `sid`-only token.
+    pairwise: bool,
+}
+
+impl FakeClients {
+    /// A client that registered a back-channel logout endpoint.
+    fn notified() -> Self {
+        Self {
+            backchannel_logout_uri: Some(BACKCHANNEL_LOGOUT_URI),
+            ..Self::default()
+        }
+    }
+
+    /// A pairwise client that asked to be told which session ended.
+    fn pairwise_session_only() -> Self {
+        Self {
+            backchannel_logout_uri: Some(BACKCHANNEL_LOGOUT_URI),
+            session_required: true,
+            pairwise: true,
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl ClientRepository for FakeClients {
@@ -179,16 +216,27 @@ impl ClientRepository for FakeClients {
         if client_id.as_str() != CLIENT {
             return Ok(None);
         }
+        let mut document = json!({
+            "client_name": "Billing",
+            "redirect_uris": ["https://rp.example/cb"],
+            "post_logout_redirect_uris": [REGISTERED_POST_LOGOUT],
+            "grant_types": ["authorization_code"],
+            "scope": "openid",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        });
+        let object = document.as_object_mut().expect("object");
+        if let Some(uri) = self.backchannel_logout_uri {
+            object.insert("backchannel_logout_uri".to_owned(), json!(uri));
+            object.insert(
+                "backchannel_logout_session_required".to_owned(),
+                json!(self.session_required),
+            );
+        }
+        if self.pairwise {
+            object.insert("subject_type".to_owned(), json!("pairwise"));
+        }
         let registration = ClientRegistration::from_json(
-            &serde_json::to_vec(&json!({
-                "client_name": "Billing",
-                "redirect_uris": ["https://rp.example/cb"],
-                "post_logout_redirect_uris": [REGISTERED_POST_LOGOUT],
-                "grant_types": ["authorization_code"],
-                "scope": "openid",
-                "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
-            }))
-            .expect("serialise"),
+            &serde_json::to_vec(&document).expect("serialise"),
             Capabilities::default(),
         )
         .expect("a valid registration");
@@ -241,6 +289,121 @@ impl KeyStore for FakeKeys {
             .chain(self.retired.iter())
             .find(|record| &record.kid == kid)
             .cloned())
+    }
+}
+
+/// The `sub` a client sees for this person (OIDC Core §8.1).
+///
+/// One answer for every sector: what these tests assert is that the logout
+/// token carries *the resolver's* answer and never the local user id, so the
+/// value only has to be distinguishable from `session.user`.
+#[derive(Debug, Default)]
+struct FakeSubjects;
+
+#[async_trait::async_trait]
+impl asterius_domain::ports::SubjectResolver for FakeSubjects {
+    async fn subject(
+        &self,
+        _user: asterius_domain::UserId,
+        _sector: &asterius_domain::SectorIdentifier,
+    ) -> Result<asterius_domain::SubjectId, DomainError> {
+        Ok(asterius_domain::SubjectId::new(SECTOR_SUBJECT))
+    }
+}
+
+/// A signer that records what it was asked to sign.
+///
+/// It produces a real Ed25519 JWS through `asterius_jose`, so the `typ` header
+/// a test reads back is the one that would go on the wire — the point of §4.1
+/// is the header, and a fake that returned a fixed string would assert nothing
+/// about it.
+#[derive(Debug)]
+struct FakeSigner {
+    key: SigningKey,
+    signed: Mutex<Vec<(String, Value)>>,
+}
+
+impl Default for FakeSigner {
+    fn default() -> Self {
+        Self {
+            key: SigningKey::generate(SigningAlgorithm::EdDsa).expect("generate"),
+            signed: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl FakeSigner {
+    /// The `(typ, claims)` pairs handed to this signer, in order.
+    fn signed(&self) -> Vec<(String, Value)> {
+        self.signed.lock().expect("lock").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::keys::Signer for FakeSigner {
+    async fn sign(
+        &self,
+        _tenant: &TenantId,
+        _algorithm: Option<SigningAlgorithm>,
+        typ: &'static str,
+        claims: &Value,
+    ) -> Result<asterius_domain::CompactJws, DomainError> {
+        self.signed
+            .lock()
+            .expect("lock")
+            .push((typ.to_owned(), claims.clone()));
+        asterius_jose::jws::sign(&self.key, &Kid::new("k1"), typ, claims)
+            .map_err(|error| DomainError::invalid("signing", error.to_string()))
+    }
+}
+
+/// The outbox, as rows.
+#[derive(Debug, Default)]
+struct FakeQueue {
+    rows: Mutex<Vec<asterius_domain::outbox::QueuedEvent>>,
+}
+
+impl FakeQueue {
+    fn rows(&self) -> Vec<asterius_domain::outbox::QueuedEvent> {
+        self.rows.lock().expect("lock").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::outbox::OutboxQueue for FakeQueue {
+    async fn queue(
+        &self,
+        _tenant: &TenantId,
+        events: &[asterius_domain::outbox::QueuedEvent],
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.rows.lock().expect("lock").extend_from_slice(events);
+        Ok(())
+    }
+}
+
+/// The refresh tokens issued under a session, as revocations.
+#[derive(Debug, Default)]
+struct FakeCredentials {
+    revoked: Mutex<Vec<String>>,
+}
+
+impl FakeCredentials {
+    /// The session identifiers this was asked to withdraw credentials for.
+    fn revoked(&self) -> Vec<String> {
+        self.revoked.lock().expect("lock").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_domain::ports::SessionCredentials for FakeCredentials {
+    async fn revoke_refresh_for_session(
+        &self,
+        session: &str,
+        _now: OffsetDateTime,
+    ) -> Result<u64, DomainError> {
+        self.revoked.lock().expect("lock").push(session.to_owned());
+        Ok(1)
     }
 }
 
@@ -375,6 +538,14 @@ struct Harness {
     /// The prefix the tenancy layer removed from the request path. Root for
     /// every test but the two that exercise a path-based tenant (`ast-j3v`).
     mount: MountPrefix,
+    subjects: FakeSubjects,
+    signer: FakeSigner,
+    credentials: FakeCredentials,
+    /// This tenant's `revoke_refresh_on_logout`.
+    revoke_refresh: bool,
+    /// Where back-channel logout tokens are queued, or `None` for the
+    /// deployment that has no outbox wired.
+    outbox: Option<FakeQueue>,
 }
 
 impl Harness {
@@ -385,13 +556,37 @@ impl Harness {
     fn mounted(sessions: FakeSessions, keys: FakeKeys, mount: MountPrefix) -> Self {
         Self {
             sessions,
-            clients: FakeClients,
+            clients: FakeClients::default(),
             keys,
             audit: FakeAudit::default(),
             tenant: tenant(),
             nonce: Nonce::generate(),
             mount,
+            subjects: FakeSubjects,
+            signer: FakeSigner::default(),
+            outbox: Some(FakeQueue::default()),
+            credentials: FakeCredentials::default(),
+            // The tenant default: a logout ends the session and leaves offline
+            // access alone. One test turns it on.
+            revoke_refresh: false,
         }
+    }
+
+    /// The same harness with a relying party that takes part in back-channel
+    /// logout (§2.2).
+    fn notifying(clients: FakeClients, sessions: FakeSessions, keys: FakeKeys) -> Self {
+        Self {
+            clients,
+            ..Self::new(sessions, keys)
+        }
+    }
+
+    /// The rows the notification queued.
+    fn queued(&self) -> Vec<asterius_domain::outbox::QueuedEvent> {
+        self.outbox
+            .as_ref()
+            .map(FakeQueue::rows)
+            .unwrap_or_default()
     }
 
     fn context(&self) -> LogoutContext<'_> {
@@ -405,6 +600,14 @@ impl Harness {
             nonce: &self.nonce,
             request_id: Some("test-request"),
             mount: self.mount.clone(),
+            subjects: &self.subjects,
+            signer: &self.signer,
+            outbox: self
+                .outbox
+                .as_ref()
+                .map(|queue| queue as &dyn asterius_domain::outbox::OutboxQueue),
+            credentials: Some(&self.credentials),
+            revoke_refresh: self.revoke_refresh,
         }
     }
 
@@ -879,4 +1082,230 @@ async fn a_host_resolved_tenant_keeps_the_bare_end_session_path() {
     // Assert
     assert_eq!(status, StatusCode::OK);
     assert_eq!(action_of(&body), "/logout");
+}
+
+// ---------------------------------------------------------------------------
+// Back-channel logout (OIDC Back-Channel Logout 1.0 §2, `ast-o4u.2`)
+// ---------------------------------------------------------------------------
+
+/// The `(typ, claims)` of the one logout token this harness signed.
+fn only_logout_token(harness: &Harness) -> (String, Value) {
+    let signed = harness.signer.signed();
+    assert_eq!(signed.len(), 1, "expected one signed token: {signed:?}");
+    signed.into_iter().next().expect("one token")
+}
+
+/// Ends the session of a client that takes part, and returns the harness.
+async fn logged_out(clients: FakeClients) -> Harness {
+    let fixture = Fixture::new();
+    let harness = Harness::notifying(
+        clients,
+        FakeSessions::holding(&digest(), now()),
+        fixture.published(),
+    );
+    let hint = fixture.hint(&claims(&json!(CLIENT), now().unix_timestamp() + 600));
+    let (status, _, _) = harness.get(&cookie(), &[("id_token_hint", &hint)]).await;
+    assert_eq!(status, StatusCode::OK);
+    harness
+}
+
+/// §2.5: the Logout Token is sent to the RP's `backchannel_logout_uri` "using
+/// the HTTP POST method", with the `logout_token` parameter in an
+/// `application/x-www-form-urlencoded` body.
+///
+/// The POST itself is the outbox's HTTP deliverer; what this endpoint owes is
+/// a row that says exactly what to send and where.
+#[tokio::test]
+async fn a_participating_relying_party_is_queued_a_form_encoded_logout_token() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    let rows = harness.queued();
+    assert_eq!(rows.len(), 1, "one participant, one row: {rows:?}");
+    let row = &rows[0];
+    assert_eq!(row.destination, BACKCHANNEL_LOGOUT_URI);
+    assert_eq!(
+        row.payload["content_type"],
+        json!("application/x-www-form-urlencoded")
+    );
+    let body = row.payload["body"].as_str().expect("a body");
+    assert!(
+        body.starts_with("logout_token="),
+        "the form parameter is named by §2.5: {body}"
+    );
+    // The family before the first `.` chooses the deliverer, and `logout` is
+    // the one the process registers `HttpDeliverer` for.
+    assert_eq!(row.kind, "logout.backchannel");
+}
+
+/// §2.4 and §4.1: the token is explicitly typed `logout+jwt`, so no other
+/// verifier in the deployment will take it for an ID token.
+#[tokio::test]
+async fn the_queued_token_is_typed_logout_jwt() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    let (typ, _) = only_logout_token(&harness);
+    assert_eq!(typ, "logout+jwt");
+}
+
+/// §2.4's claim set, as a relying party validates it in §2.6 steps 4–7: the
+/// issuer, the client as the audience, the session, `events` — and, steps 10
+/// and §4.1, no `nonce`.
+#[tokio::test]
+async fn the_queued_token_carries_the_claims_a_relying_party_validates() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    let (_, claims) = only_logout_token(&harness);
+    assert_eq!(claims["iss"], json!(ISSUER));
+    assert_eq!(claims["aud"], json!(CLIENT));
+    assert_eq!(claims["sid"], json!("the-public-sid"));
+    assert_eq!(
+        claims["events"],
+        json!({"http://schemas.openid.net/event/backchannel-logout": {}})
+    );
+    assert!(claims.get("nonce").is_none(), "§2.4: MUST NOT be present");
+    assert!(claims["jti"].as_str().is_some_and(|jti| !jti.is_empty()));
+    // §2.4's `exp`, under this server's two-minute cap.
+    let iat = claims["iat"].as_i64().expect("iat");
+    let exp = claims["exp"].as_i64().expect("exp");
+    assert!(
+        (1..=120).contains(&(exp - iat)),
+        "exp - iat = {}",
+        exp - iat
+    );
+}
+
+/// The `sub` is the one the relying party was issued in its ID token — OIDC
+/// Core §8.1's sector identifier, resolved through the same port — and never
+/// the local user id, which no RP would recognise and which would correlate
+/// this person across every RP that received a token.
+#[tokio::test]
+async fn the_subject_is_the_one_this_client_knows_the_person_by() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    let (_, claims) = only_logout_token(&harness);
+    assert_eq!(claims["sub"], json!(SECTOR_SUBJECT));
+    assert!(
+        !claims
+            .to_string()
+            .contains(&uuid::Uuid::from_u128(1).to_string()),
+        "the local user id must not appear in a logout token: {claims}"
+    );
+}
+
+/// §2.4 permits `sid` alone. A pairwise client that registered
+/// `backchannel_logout_session_required` asked to be told which session ended;
+/// it is not sent a subject identifier it did not ask for.
+#[tokio::test]
+async fn a_pairwise_client_that_requires_a_session_is_sent_no_subject() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::pairwise_session_only()).await;
+
+    // Assert
+    let (_, claims) = only_logout_token(&harness);
+    assert_eq!(claims["sid"], json!("the-public-sid"));
+    assert!(claims.get("sub").is_none(), "{claims}");
+}
+
+/// §2.2: a client that registered no `backchannel_logout_uri` is not a
+/// participant of back-channel logout. Nothing is queued for it, nothing is
+/// signed, and — the part an auditor reads — the count in the record is zero
+/// rather than "one client we did not tell".
+#[tokio::test]
+async fn a_client_with_no_backchannel_logout_uri_is_not_notified() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::default()).await;
+
+    // Assert
+    assert!(harness.queued().is_empty());
+    assert!(harness.signer.signed().is_empty());
+    let events = harness.audit.events();
+    let detail = events
+        .iter()
+        .find(|event| event.event_type == EventType::SESSION_REVOKED)
+        .map(|event| format!("{:?}", event.detail))
+        .unwrap_or_default();
+    assert!(detail.contains("participants"), "{detail}");
+    assert!(!detail.contains('1'), "nobody was notified: {detail}");
+}
+
+/// One key per `(session, client)`: two statements about one session at one
+/// relying party delivered out of order say the opposite of what happened.
+#[tokio::test]
+async fn a_queued_row_is_ordered_by_session_and_client() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    let rows = harness.queued();
+    assert_eq!(
+        rows[0].ordering_key.as_deref(),
+        Some(format!("logout:the-public-sid:{CLIENT}").as_str())
+    );
+}
+
+/// The tenant default: a logout ends the session and leaves a client's offline
+/// access alone. RP-Initiated Logout §2 asks the OP to end the session, and a
+/// refresh token is a grant rather than a session — so a deployment that never
+/// opened the setting must not find its integrations broken by somebody
+/// signing out of a browser.
+#[tokio::test]
+async fn a_logout_leaves_refresh_tokens_alone_unless_the_tenant_asked() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    assert!(harness.sessions.was_revoked());
+    assert!(harness.credentials.revoked().is_empty());
+}
+
+/// `revoke_refresh_on_logout`: the tenant that means "log out everywhere" gets
+/// the refresh tokens of the session withdrawn — and with them, through the
+/// grant cutoff, the access tokens minted from those grants (RFC 7009 §2.1).
+///
+/// The session's *lookup* identifier is what is withdrawn against, because
+/// that is the column a grant references; the `public_sid` in the logout token
+/// is a different value on purpose.
+#[tokio::test]
+async fn a_tenant_may_have_a_logout_revoke_the_sessions_refresh_tokens() {
+    // Arrange
+    let fixture = Fixture::new();
+    let mut harness = Harness::notifying(
+        FakeClients::notified(),
+        FakeSessions::holding(&digest(), now()),
+        fixture.published(),
+    );
+    harness.revoke_refresh = true;
+    let hint = fixture.hint(&claims(&json!(CLIENT), now().unix_timestamp() + 600));
+
+    // Act
+    let (status, _, _) = harness.get(&cookie(), &[("id_token_hint", &hint)]).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(harness.credentials.revoked(), vec![digest()]);
+}
+
+/// §3 puts the notification before the redirect, and the revocation before
+/// both. A relying party is never told about a session this server has not
+/// actually ended.
+#[tokio::test]
+async fn the_session_is_revoked_before_a_logout_token_is_queued() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    assert!(harness.sessions.was_revoked());
+    let calls = harness.sessions.calls();
+    let revoked = calls.iter().position(|call| *call == "revoke");
+    let read = calls.iter().position(|call| *call == "participants");
+    assert!(revoked < read, "{calls:?}");
+    assert_eq!(harness.queued().len(), 1);
 }

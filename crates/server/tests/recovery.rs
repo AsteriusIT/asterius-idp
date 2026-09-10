@@ -456,6 +456,9 @@ fn assemble(
             endpoint_limits: generous_endpoint_limits(),
             signer,
             dpop,
+            // Account recovery does not queue outbox rows through this field;
+            // the back-channel logout path is `end_to_end.rs`'s.
+            outbox: None,
         })),
     });
 

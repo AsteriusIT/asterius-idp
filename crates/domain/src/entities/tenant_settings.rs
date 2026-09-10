@@ -199,6 +199,26 @@ pub struct TenantSettings {
     /// the end so that a parallel change adding another one does not have to
     /// be reconciled line by line.
     grant_id_in_access_token: bool,
+    /// Whether ending a browser session also revokes the refresh tokens issued
+    /// under it (`ast-o4u.2`).
+    ///
+    /// `false` unless this tenant says otherwise, and the default is a
+    /// decision rather than an oversight. A refresh token is not a session: it
+    /// is offline access a person granted a client, it survives the browser
+    /// being closed, and OIDC RP-Initiated Logout §2 asks the OP to end "the
+    /// session", not the grants. A tenant whose clients are all first-party
+    /// browser applications means the opposite by "log out" and turns this on;
+    /// one whose clients hold `offline_access` would find every integration
+    /// broken by a user signing out of the console.
+    ///
+    /// When it is on, the withdrawal reaches the access tokens too, through
+    /// the grant cutoff — RFC 7009 §2.1: revoking a refresh token SHOULD "also
+    /// invalidate all access tokens based on the same authorization grant".
+    ///
+    /// Last, for the reason the field above it is last: a new member goes at
+    /// the end so that a parallel change adding another one does not have to
+    /// be reconciled line by line.
+    revoke_refresh_on_logout: bool,
 }
 
 impl Default for TenantSettings {
@@ -217,6 +237,7 @@ impl Default for TenantSettings {
             default_locale: Locale::default(),
             messages: MessageOverrides::default(),
             grant_id_in_access_token: true,
+            revoke_refresh_on_logout: false,
         }
     }
 }
@@ -243,6 +264,7 @@ impl TenantSettings {
             default_locale: Locale::default(),
             messages: MessageOverrides::default(),
             grant_id_in_access_token: true,
+            revoke_refresh_on_logout: false,
         })
     }
 
@@ -324,6 +346,28 @@ impl TenantSettings {
     pub const fn with_grant_id_in_access_token(mut self, carried: bool) -> Self {
         self.grant_id_in_access_token = carried;
         self
+    }
+
+    /// The same settings with the logout's reach over refresh tokens decided.
+    ///
+    /// A builder rather than another argument to [`TenantSettings::validated`],
+    /// for the reason [`Self::with_registration`] gives.
+    #[must_use]
+    pub const fn with_revoke_refresh_on_logout(mut self, revoke: bool) -> Self {
+        self.revoke_refresh_on_logout = revoke;
+        self
+    }
+
+    /// Whether ending a session here also revokes the refresh tokens issued
+    /// under it (`ast-o4u.2`).
+    ///
+    /// See the field: `false` unless this tenant asked for it, because a
+    /// refresh token is offline access rather than a session, and a default
+    /// that revoked it would break every integration the moment somebody
+    /// signed out of a browser.
+    #[must_use]
+    pub const fn revoke_refresh_on_logout(&self) -> bool {
+        self.revoke_refresh_on_logout
     }
 
     /// Whether an access token minted here carries the `grant_id` claim.
@@ -413,6 +457,7 @@ impl TenantSettings {
             "default_locale": self.default_locale.as_tag(),
             "messages": self.messages.to_json(),
             "grant_id_in_access_token": self.grant_id_in_access_token,
+            "revoke_refresh_on_logout": self.revoke_refresh_on_logout,
         })
     }
 
@@ -505,13 +550,26 @@ impl TenantSettings {
             }
         };
 
+        // Absent *is* `false` here, unlike the setting above it: a row written
+        // before this existed belongs to a deployment whose logouts never
+        // touched a refresh token, and reading silence as "revoke" would
+        // withdraw offline access nobody asked to withdraw.
+        let revoke_refresh_on_logout = match object.get("revoke_refresh_on_logout") {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(revoke)) => *revoke,
+            Some(_) => {
+                return Err(TenantSettingsError::NotABoolean("revoke_refresh_on_logout"));
+            }
+        };
+
         Ok(
             Self::validated(disabled_features, authorization_code, access_token)?
                 .with_registration(registration)
                 .requiring_a_grant_management_action(grant_management_action_required)
                 .with_default_locale(default_locale)
                 .with_messages(messages)
-                .with_grant_id_in_access_token(grant_id_in_access_token),
+                .with_grant_id_in_access_token(grant_id_in_access_token)
+                .with_revoke_refresh_on_logout(revoke_refresh_on_logout),
         )
     }
 }
@@ -643,6 +701,39 @@ mod tests {
             ),
             "{error}"
         );
+    }
+
+    /// A tenant that has never opened this file keeps the behaviour it had:
+    /// signing out of a browser leaves a client's offline access alone
+    /// (`ast-o4u.2`). Silence here means `false`, unlike the setting above it,
+    /// because reading it as `true` would withdraw grants nobody asked to
+    /// withdraw.
+    #[test]
+    fn a_tenant_that_never_mentioned_it_does_not_revoke_refresh_at_logout() {
+        // Arrange
+        let stored = serde_json::json!({"disabled_features": []});
+
+        // Act
+        let settings = TenantSettings::from_json(Some(&stored)).expect("a readable row");
+
+        // Assert
+        assert!(!settings.revoke_refresh_on_logout());
+    }
+
+    /// A tenant that asked for it round-trips as asking for it: this is the
+    /// switch back-channel logout reads, and a setting that did not survive a
+    /// write would be a policy an operator believes is in force.
+    #[test]
+    fn revoking_refresh_tokens_at_logout_round_trips() {
+        // Arrange
+        let settings = TenantSettings::default().with_revoke_refresh_on_logout(true);
+
+        // Act
+        let read_back =
+            TenantSettings::from_json(Some(&settings.to_json())).expect("this server wrote it");
+
+        // Assert
+        assert!(read_back.revoke_refresh_on_logout());
     }
 
     /// The tenant default is the last layer of OIDC Core §3.1.2.1 negotiation,
