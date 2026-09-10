@@ -880,7 +880,7 @@ async fn a_submission_with_the_issued_token_is_accepted() {
     assert_eq!(state["stage"], "consent", "the stage did not advance");
 
     let html = body_of(response).await;
-    assert!(html.contains("would like access"), "{html}");
+    assert!(html.contains("Allow access?"), "{html}");
     assert!(
         html.contains("rp.example"),
         "the consent screen did not name the host: {html}"
