@@ -7832,7 +7832,52 @@ mod retention {
         .await
         .expect("seed retired subject");
 
+        seed_application_roles(pool, tenant, user).await;
+
         seed_theme(pool, tenant).await;
+    }
+
+    /// One row in each of the four application-role tables (`ast-095`).
+    ///
+    /// All four are kept by the policy — a role catalogue is configuration and
+    /// an assignment is authority somebody granted — so the kept-table
+    /// criterion cannot say anything about them without a row. The assignments
+    /// reference the catalogues by foreign key, so seeding them in this order
+    /// is also what proves the catalogue rows are the ones the schema expects.
+    async fn seed_application_roles(pool: &PgPool, tenant: &str, user: uuid::Uuid) {
+        sqlx::query("insert into tenant_roles (tenant_id, name) values ($1, 'auditor')")
+            .bind(tenant)
+            .execute(pool)
+            .await
+            .expect("seed tenant role");
+
+        sqlx::query(
+            "insert into client_roles (tenant_id, client_id, name)
+             values ($1, 'billing', 'refund')",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("seed client role");
+
+        sqlx::query(
+            "insert into user_tenant_roles (tenant_id, user_id, name) values ($1, $2, 'auditor')",
+        )
+        .bind(tenant)
+        .bind(user)
+        .execute(pool)
+        .await
+        .expect("seed tenant role assignment");
+
+        sqlx::query(
+            "insert into user_client_roles (tenant_id, client_id, user_id, name)
+             values ($1, 'billing', $2, 'refund')",
+        )
+        .bind(tenant)
+        .bind(user)
+        .execute(pool)
+        .await
+        .expect("seed client role assignment");
     }
 
     /// The tenant's theme and one image it could name (`ast-ndk.1`).
@@ -13224,6 +13269,219 @@ mod device_codes {
             assert!(
                 repo(&db.pool, "other").poll(&digest("mine"), SLOW_DOWN, now).await.expect("poll").is_none(),
                 "a device code resolved in another tenant"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Application roles (`ast-095`)
+// ---------------------------------------------------------------------------
+
+mod application_roles {
+    use super::*;
+    use asterius_domain::ports::ApplicationRoleDirectory;
+    use asterius_domain::{ApplicationRole, RoleName, RoleOwner};
+    use asterius_store_pg::PgApplicationRoles;
+
+    use super::grants::seed_client;
+
+    fn repo(pool: &PgPool) -> PgApplicationRoles {
+        PgApplicationRoles::new(pool.clone())
+    }
+
+    fn name(raw: &str) -> RoleName {
+        RoleName::parse(raw).expect("a role name the alphabet admits")
+    }
+
+    fn role(tenant: &str, owner: RoleOwner, raw: &str) -> ApplicationRole {
+        ApplicationRole::new(TenantId::new(tenant), owner, raw, Some("why"), epoch())
+            .expect("a role")
+    }
+
+    async fn an_account(pool: &PgPool, tenant: &str) -> UserId {
+        let user = UserId::generate();
+        sqlx::query("insert into users (tenant_id, user_id, username) values ($1, $2, $3)")
+            .bind(tenant)
+            .bind(user.as_uuid())
+            .bind(format!("user-{}", user.as_uuid()))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        user
+    }
+
+    db_test! {
+        /// A tenant role and a client role live in different catalogues, and
+        /// one account can hold both.
+        async fn an_account_holds_a_tenant_role_and_a_client_role_at_once(db) {
+            // Arrange.
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool);
+            let user = an_account(&db.pool, "demo").await;
+            let client = RoleOwner::Client(ClientId::new("billing"));
+            repo.define(&role("demo", RoleOwner::Tenant, "auditor")).await.expect("define");
+            repo.define(&role("demo", client.clone(), "refund")).await.expect("define");
+
+            // Act.
+            repo.assign(&TenantId::new("demo"), user, &RoleOwner::Tenant, &name("auditor"), epoch())
+                .await
+                .expect("assign");
+            repo.assign(&TenantId::new("demo"), user, &client, &name("refund"), epoch())
+                .await
+                .expect("assign");
+            let held = repo.held_by(&TenantId::new("demo"), user).await.expect("held");
+
+            // Assert.
+            assert!(held.tenant.contains(&name("auditor")));
+            assert_eq!(
+                held.clients.get(&ClientId::new("billing")),
+                Some(&[name("refund")].into_iter().collect())
+            );
+        }
+    }
+
+    db_test! {
+        /// Deleting a role somebody holds is refused by the schema, not
+        /// cascaded — the decision migration `0023` records.
+        async fn a_role_somebody_holds_cannot_be_deleted(db) {
+            // Arrange.
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool);
+            let user = an_account(&db.pool, "demo").await;
+            repo.define(&role("demo", RoleOwner::Tenant, "auditor")).await.expect("define");
+            repo.assign(&TenantId::new("demo"), user, &RoleOwner::Tenant, &name("auditor"), epoch())
+                .await
+                .expect("assign");
+
+            // Act.
+            let refused = repo
+                .remove(&TenantId::new("demo"), &RoleOwner::Tenant, &name("auditor"))
+                .await;
+
+            // Assert.
+            assert!(
+                matches!(refused, Err(DomainError::Conflict(_))),
+                "a held role was deleted: {refused:?}"
+            );
+            assert!(
+                repo.held_by(&TenantId::new("demo"), user)
+                    .await
+                    .expect("held")
+                    .tenant
+                    .contains(&name("auditor")),
+                "the assignment went with the refused delete"
+            );
+        }
+    }
+
+    db_test! {
+        /// Withdrawing the last assignment makes the role deletable, which is
+        /// the path the admin API sends a caller down after a 409.
+        async fn a_role_nobody_holds_can_be_deleted(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool);
+            let user = an_account(&db.pool, "demo").await;
+            repo.define(&role("demo", RoleOwner::Tenant, "auditor")).await.expect("define");
+            repo.assign(&TenantId::new("demo"), user, &RoleOwner::Tenant, &name("auditor"), epoch())
+                .await
+                .expect("assign");
+
+            assert!(
+                repo.withdraw(&TenantId::new("demo"), user, &RoleOwner::Tenant, &name("auditor"))
+                    .await
+                    .expect("withdraw")
+            );
+
+            assert!(
+                repo.remove(&TenantId::new("demo"), &RoleOwner::Tenant, &name("auditor"))
+                    .await
+                    .expect("remove")
+            );
+        }
+    }
+
+    db_test! {
+        /// Assignment is a foreign key onto the catalogue: a role nobody
+        /// created cannot be given to anybody, so assignment is never a way to
+        /// invent a name that ends up in a token.
+        async fn a_role_that_is_in_no_catalogue_cannot_be_assigned(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool);
+            let user = an_account(&db.pool, "demo").await;
+
+            let refused = repo
+                .assign(&TenantId::new("demo"), user, &RoleOwner::Tenant, &name("invented"), epoch())
+                .await;
+
+            assert!(
+                matches!(refused, Err(DomainError::Conflict(_))),
+                "an uncatalogued role was assigned: {refused:?}"
+            );
+        }
+    }
+
+    db_test! {
+        /// One tenant's catalogue is not another's, whatever the name.
+        async fn a_catalogue_does_not_cross_tenants(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_tenant(&db.pool, "other").await;
+            let repo = repo(&db.pool);
+            repo.define(&role("demo", RoleOwner::Tenant, "auditor")).await.expect("define");
+
+            let elsewhere = repo
+                .catalogue(&TenantId::new("other"), &RoleOwner::Tenant)
+                .await
+                .expect("catalogue");
+
+            assert!(elsewhere.is_empty(), "a role was visible in another tenant");
+        }
+    }
+
+    db_test! {
+        /// A repeated create leaves the description alone: the catalogue ends
+        /// in the state the caller asked for, and nothing somebody documented
+        /// is quietly rewritten.
+        async fn defining_a_role_twice_is_not_an_error_and_does_not_overwrite(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repo = repo(&db.pool);
+            repo.define(&role("demo", RoleOwner::Tenant, "auditor")).await.expect("define");
+
+            let mut again = role("demo", RoleOwner::Tenant, "auditor");
+            again.description = Some("something else".to_owned());
+            let created = repo.define(&again).await.expect("define again");
+
+            assert!(!created, "a repeated create reported a creation");
+            let catalogue = repo
+                .catalogue(&TenantId::new("demo"), &RoleOwner::Tenant)
+                .await
+                .expect("catalogue");
+            assert_eq!(catalogue.len(), 1);
+            assert_eq!(catalogue[0].description.as_deref(), Some("why"));
+        }
+    }
+
+    db_test! {
+        /// Deleting a client takes its catalogue with it: a role of a client
+        /// that no longer exists is a name no token could ever carry.
+        async fn a_clients_catalogue_goes_when_the_client_does(db) {
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool);
+            let client = RoleOwner::Client(ClientId::new("billing"));
+            repo.define(&role("demo", client.clone(), "refund")).await.expect("define");
+
+            sqlx::query("delete from clients where tenant_id = $1 and client_id = $2")
+                .bind("demo")
+                .bind("billing")
+                .execute(&db.pool)
+                .await
+                .expect("delete the client");
+
+            assert!(
+                repo.catalogue(&TenantId::new("demo"), &client)
+                    .await
+                    .expect("catalogue")
+                    .is_empty()
             );
         }
     }

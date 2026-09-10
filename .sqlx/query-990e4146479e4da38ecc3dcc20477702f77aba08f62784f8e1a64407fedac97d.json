@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select client_id, name from user_client_roles\n              where tenant_id = $1 and user_id = $2\n              order by client_id, name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "990e4146479e4da38ecc3dcc20477702f77aba08f62784f8e1a64407fedac97d"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from client_roles\n                  where tenant_id = $1 and client_id = $2 and name = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3548c78ff6cef5edd4670ae57b6c11c04ff7deee96a2c0a09e2f82844bdb71e8"
+}

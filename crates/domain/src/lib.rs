@@ -50,22 +50,24 @@ pub use entities::session::{
 };
 pub use entities::{
     AGENT_GRANT_TYPES, AcrLevel, AcrPolicy, AcrPolicyError, AdminAdmission, AgentLimits,
-    AgentOwner, AgentProfile, AgentProfileError, ApplicationType, AuthorizationDetail,
-    AuthorizationDetails, AuthorizationDetailsRegistry, AuthorizationDetailsType, Claim,
-    ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client, ClientMetadata,
-    ClientMetadataError, ClientRegistration, ClientStatus, DEFAULT_MAX_DELEGATION_DEPTH, Grant,
-    GrantAuthentication, GrantError, GrantRecord, GrantStatus, GrantType, InitialAccessToken,
-    InitialAccessTokenReservation, InvalidAuthorizationDetails, InvalidTarget, IssuedRecovery,
-    JsonSchema, JsonSchemaError, JwksRequirement, JwksSource, LiveAccessToken,
-    MAX_DELEGATION_DEPTH, MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, NewInitialAccessToken, PairwiseSalt,
-    PasskeyEnrolment, PolicyViolation, RECOVERY_LIFETIME, RECOVERY_TOKEN_BITS, RecoveryToken,
-    RecoveryTokenError, RedirectUri, RedirectUriError, RefreshPolicy, RefreshPolicyError,
-    RegistrationMode, RegistrationPolicy, RegistrationPolicyError, ResourceIdentifier,
-    ResourceRegistry, ResourceServer, RevocationReason, Role, RoleScope, Rotation, RuleId,
-    SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule, SubjectError, SubjectType,
-    Tenant, TenantIcon, TenantSettings, TenantSettingsError, TenantStatus, Theme, ThemeError,
-    TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod, TokenLifetimes,
-    User, UserId, UserRole, UserStatus,
+    AgentOwner, AgentProfile, AgentProfileError, ApplicationRole, ApplicationRoleError,
+    ApplicationType, AuthorizationDetail, AuthorizationDetails, AuthorizationDetailsRegistry,
+    AuthorizationDetailsType, Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant,
+    Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
+    DEFAULT_MAX_DELEGATION_DEPTH, Grant, GrantAuthentication, GrantError, GrantRecord, GrantStatus,
+    GrantType, HeldRoles, InitialAccessToken, InitialAccessTokenReservation,
+    InvalidAuthorizationDetails, InvalidTarget, IssuedRecovery, JsonSchema, JsonSchemaError,
+    JwksRequirement, JwksSource, LiveAccessToken, MAX_DELEGATION_DEPTH,
+    MAX_INITIAL_ACCESS_TOKEN_LABEL_LEN, MAX_ROLE_DESCRIPTION_LEN, NewInitialAccessToken,
+    PairwiseSalt, PasskeyEnrolment, PolicyViolation, RECOVERY_LIFETIME, RECOVERY_TOKEN_BITS,
+    RecoveryToken, RecoveryTokenError, RedirectUri, RedirectUriError, RefreshPolicy,
+    RefreshPolicyError, RegistrationMode, RegistrationPolicy, RegistrationPolicyError,
+    ResourceIdentifier, ResourceRegistry, ResourceServer, RevocationReason, Role, RoleAssignment,
+    RoleName, RoleNameError, RoleOwner, RoleScope, Rotation, RuleId, SectorIdentifier,
+    SoftwareStatementIssuer, SoftwareStatementRule, SubjectError, SubjectType, Tenant, TenantIcon,
+    TenantSettings, TenantSettingsError, TenantStatus, Theme, ThemeError, TlsClientAuthSubject,
+    TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod, TokenLifetimes, User, UserId,
+    UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
@@ -83,12 +85,13 @@ pub use messages::{MessageOverrideError, MessageOverrides};
 pub use notification::{MailSender, Notification, NotificationKind};
 pub use outbox::{DeadLetter, DeadLetterQuery, OutboxEvent};
 pub use ports::{
-    AuthRequestRepository, AuthorizationDetailsTypeRepository, ClientAdministration,
-    ClientConfiguration, ClientRegistry, ClientRepository, ClientUsageRecorder, CodeIssuer,
-    CredentialVerifier, GrantAmendments, GrantRepository, InitialAccessTokenStore,
-    InteractionRepository, ManagedClient, PasskeyRepository, PreviousRegistrationAccessToken,
-    RecoveryTokenStore, ReplayCheck, ReplayGuard, ReplayPurpose, ResourceServerRepository,
-    SessionRepository, SubjectResolver, TenantSettingsRepository, UserDirectory,
+    ApplicationRoleDirectory, AuthRequestRepository, AuthorizationDetailsTypeRepository,
+    ClientAdministration, ClientConfiguration, ClientRegistry, ClientRepository,
+    ClientUsageRecorder, CodeIssuer, CredentialVerifier, GrantAmendments, GrantRepository,
+    InitialAccessTokenStore, InteractionRepository, ManagedClient, PasskeyRepository,
+    PreviousRegistrationAccessToken, RecoveryTokenStore, ReplayCheck, ReplayGuard, ReplayPurpose,
+    ResourceServerRepository, SessionRepository, SubjectResolver, TenantSettingsRepository,
+    UserDirectory,
 };
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,

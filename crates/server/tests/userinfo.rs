@@ -107,6 +107,8 @@ struct FakeRows {
     denylisted: Option<String>,
     /// What the client registered as `userinfo_signed_response_alg`.
     signed_response_alg: Option<SigningAlgorithm>,
+    /// The application roles this account holds (`ast-095`).
+    held_roles: asterius_domain::HeldRoles,
 
     /// The bulk withdrawal a deprovisioning or a refresh-token revocation
     /// leaves behind, if there is one.
@@ -137,6 +139,11 @@ impl UserInfoSource for FakeRows {
     async fn user(&self, id: UserId) -> Result<Option<User>, DomainError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         Ok(self.user.clone().filter(|user| user.id == id))
+    }
+
+    async fn roles(&self, _user: UserId) -> Result<asterius_domain::HeldRoles, DomainError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(self.held_roles.clone())
     }
 
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
@@ -248,6 +255,7 @@ impl Fixture {
                 user: Some(user),
                 denylisted: None,
                 signed_response_alg: None,
+                held_roles: asterius_domain::HeldRoles::default(),
 
                 revoked_before: None,
                 reads: AtomicUsize::new(0),

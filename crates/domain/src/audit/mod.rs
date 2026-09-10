@@ -264,12 +264,35 @@ impl EventType {
     /// incident, and an answer that requires reading a boolean out of a detail
     /// map is one a query will get wrong.
     pub const ACCOUNT_ENABLED: Self = Self("account.enabled");
+    /// An application role was added to a catalogue (`ast-095`).
+    ///
+    /// Its own type rather than [`Self::ADMIN_CHANGED`], because a role is a
+    /// name that will appear in tokens third parties authorise against: "when
+    /// did `payments:approve` come into existence, and who created it" is a
+    /// question an incident asks, and an answer that requires reading a detail
+    /// map out of a general configuration event is one a query will get wrong.
+    pub const ROLE_DEFINED: Self = Self("role.defined");
+    /// An application role was deleted from a catalogue.
+    ///
+    /// Only ever recorded for a role nobody held: the schema refuses to delete
+    /// one that is still assigned, so this event can never stand for an
+    /// unbounded number of silent withdrawals.
+    pub const ROLE_REMOVED: Self = Self("role.removed");
+    /// An account was given an application role.
+    ///
+    /// This is a delegation of authority to an application, so it is recorded
+    /// with the account as its subject and the role as a detail — the two
+    /// questions afterwards are "what does this person hold" and "who holds
+    /// this role", and both are answerable from the trail.
+    pub const ROLE_ASSIGNED: Self = Self("role.assigned");
+    /// An application role was taken away from an account.
+    pub const ROLE_WITHDRAWN: Self = Self("role.withdrawn");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 45] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -310,6 +333,10 @@ impl EventType {
         Self::USER_CLAIMS_CHANGED,
         Self::ACCOUNT_DISABLED,
         Self::ACCOUNT_ENABLED,
+        Self::ROLE_DEFINED,
+        Self::ROLE_REMOVED,
+        Self::ROLE_ASSIGNED,
+        Self::ROLE_WITHDRAWN,
         Self::AUDIT_PURGED,
     ];
 

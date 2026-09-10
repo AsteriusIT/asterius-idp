@@ -22,8 +22,8 @@
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
     Activation, Actor, AuditEvent, Client, ClientRegistration, ClientStatus, Detail, DomainError,
-    EventType, Kid, NewInitialAccessToken, OpaqueToken, Outcome, RefreshPolicy, Tenant, TenantId,
-    TenantSettings, TenantStatus,
+    EventType, Kid, NewInitialAccessToken, OpaqueToken, Outcome, RefreshPolicy, RoleOwner, Tenant,
+    TenantId, TenantSettings, TenantStatus,
 };
 use axum::Router;
 use axum::extract::Request;
@@ -304,6 +304,28 @@ async fn route(
         crate::USER_SESSION_REVOKE_ID => context.revoke_session().await,
         crate::USER_GRANTS_LIST_ID => context.list_grants().await,
         crate::USER_GRANT_REVOKE_ID => context.revoke_grant().await,
+        crate::TENANT_ROLES_LIST_ID => context.list_roles(RoleOwner::Tenant).await,
+        crate::TENANT_ROLE_CREATE_ID => context.create_role(RoleOwner::Tenant, body).await,
+        crate::TENANT_ROLE_DELETE_ID => context.delete_role(RoleOwner::Tenant).await,
+        crate::CLIENT_ROLES_LIST_ID => {
+            let owner = context.client_owner_in_path()?;
+            context.list_roles(owner).await
+        }
+        crate::CLIENT_ROLE_CREATE_ID => {
+            let owner = context.client_owner_in_path()?;
+            context.create_role(owner, body).await
+        }
+        crate::CLIENT_ROLE_DELETE_ID => {
+            let owner = context.client_owner_in_path()?;
+            context.delete_role(owner).await
+        }
+        crate::USER_ROLES_LIST_ID => context.list_held_roles().await,
+        crate::USER_ROLE_ASSIGN_ID => context.assign_role(body).await,
+        crate::USER_TENANT_ROLE_WITHDRAW_ID => context.withdraw_role(RoleOwner::Tenant).await,
+        crate::USER_CLIENT_ROLE_WITHDRAW_ID => {
+            let owner = context.client_owner_in_path()?;
+            context.withdraw_role(owner).await
+        }
         // Unreachable while `every_registered_operation_has_a_handler` passes,
         // which is why that test exists rather than a comment here.
         other => {
@@ -1581,6 +1603,282 @@ impl Handling<'_> {
         ))
     }
 
+    // -- application roles (`ast-095`) ----------------------------------
+
+    /// The `{client_id}` in this request's path, as the catalogue it names.
+    ///
+    /// Read as *the segment after `clients`*, for the reason
+    /// [`Handling::user_in_path`] gives: the routes under `/clients/…` have
+    /// several tails and a rule that holds for all of them beats one
+    /// `trim_end_matches` per route.
+    fn client_owner_in_path(&self) -> Result<RoleOwner, AdminError> {
+        let mut segments = self.path.split('/');
+        segments
+            .find(|segment| *segment == "clients")
+            .and_then(|_| segments.next())
+            .filter(|segment| !segment.is_empty())
+            .map(|segment| RoleOwner::Client(asterius_domain::ClientId::new(segment.to_owned())))
+            .ok_or(AdminError::NotFound)
+    }
+
+    /// The `{role_name}` in this request's path: the last segment.
+    ///
+    /// Every route carrying one ends with it, and a name outside the alphabet
+    /// is a bad request rather than a 404 — see [`crate::roles::accept_name`].
+    fn role_in_path(&self) -> Result<asterius_domain::RoleName, AdminError> {
+        let last = self
+            .path
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .ok_or(AdminError::NotFound)?;
+        crate::roles::accept_name(last)
+    }
+
+    /// `GET /roles` and `GET /clients/{client_id}/roles` — one catalogue.
+    async fn list_roles(&self, owner: RoleOwner) -> Result<Response, AdminError> {
+        let operation = match owner {
+            RoleOwner::Tenant => crate::TENANT_ROLES_LIST_ID,
+            RoleOwner::Client(_) => crate::CLIENT_ROLES_LIST_ID,
+        };
+        let catalogue = self
+            .state
+            .backend
+            .application_roles()
+            .catalogue(&self.tenant.id, &owner)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "roles": catalogue
+                    .iter()
+                    .map(crate::roles::document)
+                    .collect::<Vec<_>>(),
+            }),
+        ))
+    }
+
+    /// `POST /roles` and `POST /clients/{client_id}/roles` — defines a role.
+    ///
+    /// A name already in the catalogue answers 200 rather than 201 and does
+    /// not overwrite the description: the catalogue ends in the state the
+    /// caller asked for, and a repeated create must not quietly rewrite what
+    /// somebody documented.
+    async fn create_role(
+        &self,
+        owner: RoleOwner,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let operation = match owner {
+            RoleOwner::Tenant => crate::TENANT_ROLE_CREATE_ID,
+            RoleOwner::Client(_) => crate::CLIENT_ROLE_CREATE_ID,
+        };
+        let requested: crate::roles::RequestedRole = self.parse_body(body).await?;
+        let role = crate::roles::accept_role(&requested, &self.tenant.id, owner, self.now)?;
+
+        let created = self
+            .state
+            .backend
+            .application_roles()
+            .define(&role)
+            .await
+            .map_err(|error| match error {
+                // A client that does not exist. Reported as a conflict rather
+                // than a 404 because the thing addressed — the catalogue — is
+                // exactly what is missing.
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                other => AdminError::from_storage(operation, &other),
+            })?;
+
+        if created {
+            self.record(
+                EventType::ROLE_DEFINED,
+                Detail::new()
+                    .label("operation", operation)
+                    .text("role", role.name.as_str())
+                    .text(
+                        "client_id",
+                        role.owner
+                            .client()
+                            .map_or("", asterius_domain::ClientId::as_str),
+                    ),
+            )
+            .await;
+        }
+
+        Ok(json_no_store(
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            &crate::roles::document(&role),
+        ))
+    }
+
+    /// `DELETE /roles/{role_name}` and its per-client twin.
+    ///
+    /// 409 while any account still holds it. The refusal comes from the
+    /// schema's `on delete restrict`, not from a read followed by a write:
+    /// the case that matters is an assignment made while the deletion was
+    /// being considered, and a check here would race with it.
+    async fn delete_role(&self, owner: RoleOwner) -> Result<Response, AdminError> {
+        let operation = match owner {
+            RoleOwner::Tenant => crate::TENANT_ROLE_DELETE_ID,
+            RoleOwner::Client(_) => crate::CLIENT_ROLE_DELETE_ID,
+        };
+        let name = self.role_in_path()?;
+
+        let removed = self
+            .state
+            .backend
+            .application_roles()
+            .remove(&self.tenant.id, &owner, &name)
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(_) => AdminError::Conflict(
+                    "this role is still held by at least one account; withdraw it \
+                     from them before deleting it"
+                        .to_owned(),
+                ),
+                other => AdminError::from_storage(operation, &other),
+            })?;
+
+        if !removed {
+            return Err(AdminError::NotFound);
+        }
+
+        self.record(
+            EventType::ROLE_REMOVED,
+            Detail::new()
+                .label("operation", operation)
+                .text("role", name.as_str())
+                .text(
+                    "client_id",
+                    owner.client().map_or("", asterius_domain::ClientId::as_str),
+                ),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"deleted": true}),
+        ))
+    }
+
+    /// `GET /users/{user_id}/roles` — what one account holds.
+    async fn list_held_roles(&self) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        // Through the user lookup first, so that an account of another tenant
+        // is a 404 here for the same reason it is everywhere else.
+        let user = self.load_user(id, crate::USER_ROLES_LIST_ID).await?;
+
+        let held = self
+            .state
+            .backend
+            .application_roles()
+            .held_by(&self.tenant.id, user.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::USER_ROLES_LIST_ID, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &crate::roles::held_document(&held),
+        ))
+    }
+
+    /// `POST /users/{user_id}/roles` — gives an account a role.
+    async fn assign_role(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, crate::USER_ROLE_ASSIGN_ID).await?;
+        let requested: crate::roles::RequestedAssignment = self.parse_body(body).await?;
+        let name = crate::roles::accept_name(&requested.name)?;
+        let owner = crate::roles::accept_owner(requested.client_id.as_deref())?;
+
+        let assigned = self
+            .state
+            .backend
+            .application_roles()
+            .assign(&self.tenant.id, user.id, &owner, &name, self.now)
+            .await
+            .map_err(|error| match error {
+                // The role is not in the catalogue, or the client is not this
+                // tenant's. Never a silent creation: assignment must not be a
+                // way to invent a name that ends up in a token.
+                DomainError::Conflict(_) => AdminError::Conflict(
+                    "no such role in that catalogue; create it before assigning it".to_owned(),
+                ),
+                other => AdminError::from_storage(crate::USER_ROLE_ASSIGN_ID, &other),
+            })?;
+
+        if assigned {
+            self.record_about(
+                EventType::ROLE_ASSIGNED,
+                &user.id,
+                Detail::new()
+                    .label("operation", crate::USER_ROLE_ASSIGN_ID)
+                    .text("role", name.as_str())
+                    .text(
+                        "client_id",
+                        owner.client().map_or("", asterius_domain::ClientId::as_str),
+                    ),
+            )
+            .await;
+        }
+
+        Ok(json_no_store(
+            if assigned {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+            &serde_json::json!({"assigned": true}),
+        ))
+    }
+
+    /// `DELETE /users/{user_id}/roles/{role_name}` and its per-client twin.
+    async fn withdraw_role(&self, owner: RoleOwner) -> Result<Response, AdminError> {
+        let operation = match owner {
+            RoleOwner::Tenant => crate::USER_TENANT_ROLE_WITHDRAW_ID,
+            RoleOwner::Client(_) => crate::USER_CLIENT_ROLE_WITHDRAW_ID,
+        };
+        let id = self.user_in_path()?;
+        let user = self.load_user(id, operation).await?;
+        let name = self.role_in_path()?;
+
+        let withdrawn = self
+            .state
+            .backend
+            .application_roles()
+            .withdraw(&self.tenant.id, user.id, &owner, &name)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?;
+
+        if !withdrawn {
+            return Err(AdminError::NotFound);
+        }
+
+        self.record_about(
+            EventType::ROLE_WITHDRAWN,
+            &user.id,
+            Detail::new()
+                .label("operation", operation)
+                .text("role", name.as_str())
+                .text(
+                    "client_id",
+                    owner.client().map_or("", asterius_domain::ClientId::as_str),
+                ),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"withdrawn": true}),
+        ))
+    }
+
     /// The `{user_id}` in this request's path, whatever follows it.
     ///
     /// Read as *the segment after `users`* rather than by trimming a known
@@ -2326,6 +2624,21 @@ mod tests {
         /// it here without opening a socket — `outbound::post` refuses the
         /// loopback on purpose (`ast-o4u.2`).
         logout_tokens: Mutex<usize>,
+        /// The application-role catalogues (`ast-095`).
+        role_catalogue: Mutex<Vec<asterius_domain::ApplicationRole>>,
+        /// Who holds what: the assignment rows, keyed by nothing — the tests
+        /// that read them are about a handful of rows and a scan is clearer
+        /// than an index that could be wrong.
+        role_assignments: Mutex<Vec<SeededAssignment>>,
+    }
+
+    /// One application-role assignment held by the fake.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SeededAssignment {
+        tenant: TenantId,
+        user: UserId,
+        owner: RoleOwner,
+        name: asterius_domain::RoleName,
     }
 
     /// One seeded session, and how many relying parties took part in it.
@@ -3206,6 +3519,150 @@ mod tests {
         }
     }
 
+    /// The catalogues and assignments, in memory.
+    ///
+    /// It reproduces the two refusals the schema is responsible for, because
+    /// they are the two the handlers translate: assigning a role that is not
+    /// in the catalogue, and deleting one that somebody still holds. A fake
+    /// that quietly allowed either would let a handler test pass while the
+    /// real adapter answered 409.
+    #[async_trait::async_trait]
+    impl asterius_domain::ApplicationRoleDirectory for Handle {
+        async fn define(
+            &self,
+            role: &asterius_domain::ApplicationRole,
+        ) -> Result<bool, DomainError> {
+            let mut catalogue = self.0.role_catalogue.lock().expect("an uncontended lock");
+            if catalogue.iter().any(|held| {
+                held.tenant == role.tenant && held.owner == role.owner && held.name == role.name
+            }) {
+                return Ok(false);
+            }
+            catalogue.push(role.clone());
+            Ok(true)
+        }
+
+        async fn catalogue(
+            &self,
+            tenant: &TenantId,
+            owner: &RoleOwner,
+        ) -> Result<Vec<asterius_domain::ApplicationRole>, DomainError> {
+            let catalogue = self.0.role_catalogue.lock().expect("an uncontended lock");
+            let mut rows: Vec<asterius_domain::ApplicationRole> = catalogue
+                .iter()
+                .filter(|held| &held.tenant == tenant && &held.owner == owner)
+                .cloned()
+                .collect();
+            rows.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(rows)
+        }
+
+        async fn remove(
+            &self,
+            tenant: &TenantId,
+            owner: &RoleOwner,
+            name: &asterius_domain::RoleName,
+        ) -> Result<bool, DomainError> {
+            let held = self
+                .0
+                .role_assignments
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|row| &row.tenant == tenant && &row.owner == owner && &row.name == name);
+            if held {
+                // What `on delete restrict` produces.
+                return Err(DomainError::Conflict("user_tenant_roles".to_owned()));
+            }
+            let mut catalogue = self.0.role_catalogue.lock().expect("an uncontended lock");
+            let before = catalogue.len();
+            catalogue.retain(|role| {
+                !(&role.tenant == tenant && &role.owner == owner && &role.name == name)
+            });
+            Ok(catalogue.len() < before)
+        }
+
+        async fn assign(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            owner: &RoleOwner,
+            name: &asterius_domain::RoleName,
+            _now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            let defined = self
+                .0
+                .role_catalogue
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|role| &role.tenant == tenant && &role.owner == owner && &role.name == name);
+            if !defined {
+                // What the foreign key produces.
+                return Err(DomainError::Conflict("user_tenant_roles".to_owned()));
+            }
+            let row = SeededAssignment {
+                tenant: tenant.clone(),
+                user,
+                owner: owner.clone(),
+                name: name.clone(),
+            };
+            let mut assignments = self.0.role_assignments.lock().expect("an uncontended lock");
+            if assignments.contains(&row) {
+                return Ok(false);
+            }
+            assignments.push(row);
+            Ok(true)
+        }
+
+        async fn withdraw(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+            owner: &RoleOwner,
+            name: &asterius_domain::RoleName,
+        ) -> Result<bool, DomainError> {
+            let mut assignments = self.0.role_assignments.lock().expect("an uncontended lock");
+            let before = assignments.len();
+            assignments.retain(|row| {
+                !(&row.tenant == tenant
+                    && row.user == user
+                    && &row.owner == owner
+                    && &row.name == name)
+            });
+            Ok(assignments.len() < before)
+        }
+
+        async fn held_by(
+            &self,
+            tenant: &TenantId,
+            user: UserId,
+        ) -> Result<asterius_domain::HeldRoles, DomainError> {
+            let mut held = asterius_domain::HeldRoles::default();
+            for row in self
+                .0
+                .role_assignments
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|row| &row.tenant == tenant && row.user == user)
+            {
+                match &row.owner {
+                    RoleOwner::Tenant => {
+                        held.tenant.insert(row.name.clone());
+                    }
+                    RoleOwner::Client(client) => {
+                        held.clients
+                            .entry(client.clone())
+                            .or_default()
+                            .insert(row.name.clone());
+                    }
+                }
+            }
+            Ok(held)
+        }
+    }
+
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
         async fn session(
@@ -3307,6 +3764,10 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {
+            Arc::new(self.clone())
+        }
+
         fn capabilities(&self) -> asterius_domain::Capabilities {
             *self.0.capabilities.lock().expect("an uncontended lock")
         }
@@ -3351,6 +3812,14 @@ mod tests {
     /// The account every tenant in the fixture holds, and the value
     /// `{user_id}` is replaced with when a test walks the registry.
     const SEEDED_USER_ID: &str = "3f1d5c2a-0000-4000-8000-000000000001";
+
+    /// An application role in both catalogues that nobody holds, so the two
+    /// delete routes have something they are allowed to remove (`ast-095`).
+    const SPARE_ROLE: &str = "spare";
+    /// An application role in both catalogues that the seeded account *does*
+    /// hold, so the two withdraw routes have something to withdraw — and so
+    /// that deleting it is the 409 the schema produces.
+    const HELD_ROLE: &str = "held";
 
     /// The `sid` of that account's seeded session, and the value `{sid}` is
     /// replaced with. Shaped like the opaque identifier `Session::begin`
@@ -3513,6 +3982,18 @@ mod tests {
         api_tenant: Arc<Tenant>,
     }
 
+    /// One catalogue entry for a tenant.
+    fn seeded_role(tenant: &str, owner: RoleOwner, name: &str) -> asterius_domain::ApplicationRole {
+        asterius_domain::ApplicationRole::new(
+            TenantId::new(tenant),
+            owner,
+            name,
+            None,
+            OffsetDateTime::UNIX_EPOCH,
+        )
+        .expect("a fixed role")
+    }
+
     impl World {
         fn new() -> Self {
             let handle = Handle(Arc::new(Fake::default()));
@@ -3577,6 +4058,37 @@ mod tests {
                     .lock()
                     .expect("an uncontended lock")
                     .push(seeded_grant(id));
+                // Two roles in each catalogue, one held and one not, so that
+                // every `{role_name}` in the registry names something *and*
+                // the delete routes have a role they are allowed to remove
+                // while the withdraw routes have one to withdraw (`ast-095`).
+                for name in [SPARE_ROLE, HELD_ROLE] {
+                    for owner in [
+                        RoleOwner::Tenant,
+                        RoleOwner::Client(asterius_domain::ClientId::new(SEEDED_CLIENT_ID)),
+                    ] {
+                        handle
+                            .0
+                            .role_catalogue
+                            .lock()
+                            .expect("an uncontended lock")
+                            .push(seeded_role(id, owner.clone(), name));
+                        if name == HELD_ROLE {
+                            handle
+                                .0
+                                .role_assignments
+                                .lock()
+                                .expect("an uncontended lock")
+                                .push(SeededAssignment {
+                                    tenant: TenantId::new(id),
+                                    user: seeded_user_id(),
+                                    owner,
+                                    name: asterius_domain::RoleName::parse(name)
+                                        .expect("a fixed role name"),
+                                });
+                        }
+                    }
+                }
             }
             // An *active* key, in the tenant the registry walk runs against
             // only. Registering a client is refused when the tenant cannot sign
@@ -3729,7 +4241,20 @@ mod tests {
             .replace("{user_id}", SEEDED_USER_ID)
             .replace("{sid}", SEEDED_SID)
             .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
-            .replace("{grant_id}", SEEDED_GRANT_ID);
+            .replace("{grant_id}", SEEDED_GRANT_ID)
+            // A delete must name a role nobody holds and a withdrawal must
+            // name one somebody does; one literal could not be both, and a
+            // table walk that used one would assert a 409 for the first or a
+            // 404 for the second (`ast-095`).
+            .replace(
+                "{role_name}",
+                match operation.id() {
+                    crate::USER_TENANT_ROLE_WITHDRAW_ID | crate::USER_CLIENT_ROLE_WITHDRAW_ID => {
+                        HELD_ROLE
+                    }
+                    _ => SPARE_ROLE,
+                },
+            );
         HttpRequest::builder()
             .method(operation.method().as_str())
             .uri(path)
@@ -3764,6 +4289,15 @@ mod tests {
             // is optional (a tenant may enrol a passkey instead) and every
             // claim is.
             crate::USER_CREATE_ID => serde_json::json!({"username": "new@example.test"}),
+            // A name and nothing else: the description is optional, and a
+            // role cannot be created already assigned to somebody (`ast-095`).
+            crate::TENANT_ROLE_CREATE_ID | crate::CLIENT_ROLE_CREATE_ID => {
+                serde_json::json!({"name": "auditor"})
+            }
+            // The role the table walk has just created, in the tenant's own
+            // catalogue: assignment is a foreign key onto it, so a name that
+            // was never created is a 409 rather than a silent creation.
+            crate::USER_ROLE_ASSIGN_ID => serde_json::json!({"name": "auditor"}),
             crate::KEYS_ROTATE_ID => serde_json::json!({"alg": "EdDSA"}),
             crate::KEYS_SCHEDULE_ID => serde_json::json!({
                 "alg": "EdDSA",
@@ -4391,6 +4925,163 @@ mod tests {
             .filter(|tenant| tenant.id.as_str() == "brand-new")
             .count();
         assert_eq!(created, 1);
+    }
+
+    // ---- application roles (`ast-095`) ------------------------------------
+
+    /// Deleting a role somebody still holds is refused, not cascaded.
+    ///
+    /// The decision `ast-095` asked to be made: a cascade would be one request
+    /// that withdraws authority from an unbounded number of people, recorded
+    /// as one audit event naming none of them. The refusal is the schema's
+    /// `on delete restrict`; what is asserted here is that the API renders it
+    /// as a 409 and that the role is still there afterwards.
+    #[tokio::test]
+    async fn deleting_a_role_somebody_holds_is_refused_with_409() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                HttpRequest::builder()
+                    .method("DELETE")
+                    .uri(format!("{}/roles/{HELD_ROLE}", crate::BASE_PATH))
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let still_there = world
+            .handle
+            .0
+            .role_catalogue
+            .lock()
+            .expect("an uncontended lock")
+            .iter()
+            .any(|role| role.name.as_str() == HELD_ROLE);
+        assert!(still_there, "a held role was deleted anyway");
+    }
+
+    /// Assigning a role that is in no catalogue is a conflict, never a silent
+    /// creation: assignment must not be a way to invent a name that ends up in
+    /// a token.
+    #[tokio::test]
+    async fn assigning_a_role_that_was_never_created_is_refused() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri(format!("{}/users/{SEEDED_USER_ID}/roles", crate::BASE_PATH))
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .header(idempotency::HEADER, "an-invented-role")
+                    .body(Body::from(
+                        serde_json::json!({"name": "invented"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    /// A name outside the alphabet is a 400 and not a 409 or a 404: it is a
+    /// statement about the request, and a caller told 404 would retry a
+    /// spelling that can never exist.
+    #[tokio::test]
+    async fn a_role_name_outside_the_alphabet_is_a_bad_request() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri(format!("{}/roles", crate::BASE_PATH))
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .header(idempotency::HEADER, "a-name-with-a-space")
+                    .body(Body::from(
+                        serde_json::json!({"name": "read write"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The account screen reports both catalogues in the shape a token uses,
+    /// so an administrator and a developer are reading one structure.
+    #[tokio::test]
+    async fn the_account_screen_reports_both_kinds_of_role() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri(format!("{}/users/{SEEDED_USER_ID}/roles", crate::BASE_PATH))
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert_eq!(body["roles"], serde_json::json!([HELD_ROLE]));
+        assert_eq!(
+            body["resource_access"][SEEDED_CLIENT_ID]["roles"],
+            serde_json::json!([HELD_ROLE])
+        );
     }
 
     /// ADR-0009 and ADR-0010: the actor is a user identifier, and it is

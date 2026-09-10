@@ -139,6 +139,18 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// rather than a rule about what handlers render.
     fn users(&self) -> Arc<dyn asterius_domain::UserAdministration>;
 
+    /// The application-role catalogues and their assignments (`ast-095`).
+    ///
+    /// A handle for the same reason [`Self::tenants`] is one: the object
+    /// behind it is the composition root's, over the same pool the token
+    /// endpoint reads roles from at issuance. A second one built here would be
+    /// a catalogue nothing mints tokens against.
+    ///
+    /// The port carries [`asterius_domain::RoleName`] and nothing else, which
+    /// is what stops this API from being a way to grant
+    /// [`asterius_domain::Role`]: there is no method on it that takes one.
+    fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory>;
+
     /// The deployment's clients, for the console's client screen.
     ///
     /// A handle for the same reason [`Self::tenants`] is one, and with the same
