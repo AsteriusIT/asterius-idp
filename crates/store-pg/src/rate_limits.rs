@@ -88,6 +88,23 @@ impl RateLimitStore for PgRateLimitStore {
         .map_err(to_domain_error)?;
         Ok(saturate(row.counter))
     }
+
+    async fn clear(&self, tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
+        // Every window of the bucket, not only the current one: the boundary is
+        // aligned to the epoch, so a proof made a second before a rollover would
+        // otherwise leave the next window a counter it never earned. The rows
+        // are keyed by `(tenant_id, bucket, window_start)` and a bucket holds at
+        // most a handful of live windows, so the delete is bounded by the index.
+        sqlx::query!(
+            "delete from rate_limits where tenant_id = $1 and bucket = $2",
+            tenant.as_str(),
+            bucket.as_str(),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

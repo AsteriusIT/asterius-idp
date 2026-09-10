@@ -135,6 +135,14 @@ mod tests {
             *counted += 1;
             Ok(*counted)
         }
+
+        async fn clear(&self, _tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
+            self.0
+                .lock()
+                .expect("an uncontended lock")
+                .remove(bucket.as_str());
+            Ok(())
+        }
     }
 
     #[derive(Debug)]
@@ -158,6 +166,10 @@ mod tests {
             _window_start: OffsetDateTime,
             _expires_at: OffsetDateTime,
         ) -> Result<u32, DomainError> {
+            Err(DomainError::Storage("no database".into()))
+        }
+
+        async fn clear(&self, _tenant: &TenantId, _bucket: &Bucket) -> Result<(), DomainError> {
             Err(DomainError::Storage("no database".into()))
         }
     }

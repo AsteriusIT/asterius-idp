@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from rate_limits where tenant_id = $1 and bucket = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c1f6d34ee0dc47ad1708159240fe732101c54ffa549123aeece95d42f3927633"
+}

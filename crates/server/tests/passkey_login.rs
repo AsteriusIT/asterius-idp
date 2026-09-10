@@ -486,6 +486,14 @@ impl RateLimitStore for FakeLimiter {
         *entry += 1;
         Ok(*entry)
     }
+
+    async fn clear(&self, _tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
+        self.0
+            .lock()
+            .expect("lock")
+            .retain(|(key, _), _| key != bucket.as_str());
+        Ok(())
+    }
 }
 
 /// Limits no ordinary ceremony test reaches.
@@ -974,6 +982,52 @@ async fn a_verified_assertion_records_who_signed_in() {
     // Assert
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     assert_eq!(fixture.requests.username().as_deref(), Some("ada"));
+}
+
+/// **A passkey is a proof, so it empties the account bucket too** (`ast-b3u`).
+///
+/// The two sign-in paths make the same reset through the same call. Without
+/// this, somebody whose mistyped passwords filled the bucket would still be
+/// held at the limit for the identifier they have just proved with a key — and
+/// the two methods would disagree about what the counter means.
+#[tokio::test]
+async fn a_verified_assertion_empties_the_account_bucket() {
+    // Arrange: failures already counted against ada's identifier.
+    let now = OffsetDateTime::now_utc();
+    let fixture = Fixture::at_login(now, 4);
+    let bucket = asterius_domain::account_bucket("ada");
+    let window = fixture.limits.per_account.window_start(now);
+    fixture
+        .limiter
+        .record(
+            &fixture.tenant.id,
+            &bucket,
+            window,
+            window + Duration::minutes(15),
+        )
+        .await
+        .expect("count a failure");
+    let (_, options) = fixture.options(now).await;
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(options["challenge"].as_str().expect("a challenge"))
+        .expect("base64url");
+
+    // Act
+    let response = fixture
+        .finish(&fixture.assertion(&challenge, UP | UV, 5), now)
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        fixture
+            .limiter
+            .count(&fixture.tenant.id, &bucket, window)
+            .await
+            .expect("read the counter"),
+        0,
+        "the bucket survived a verified assertion"
+    );
 }
 
 /// The step-up path rotates the session rather than starting one (`ast-2vk.7`),

@@ -9784,6 +9784,53 @@ db_test! {
     }
 }
 
+db_test! {
+    /// What a successful sign-in asks for (`ast-b3u`): every window of the
+    /// bucket forgotten, not just the current one. The boundary is aligned to
+    /// the epoch, so a proof made a second before a rollover would otherwise
+    /// hand the next window a counter it never earned. One tenant's reset must
+    /// also leave another tenant's counter for the same bucket alone.
+    async fn clearing_a_bucket_forgets_every_window_of_it(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        seed_tenant(&db.pool, "other").await;
+        let store = asterius_store_pg::PgRateLimitStore::new(db.pool.clone());
+        let tenant = TenantId::new("demo");
+        let bucket = asterius_domain::account_bucket("ada");
+        let first = OffsetDateTime::UNIX_EPOCH;
+        let next = first + time::Duration::minutes(15);
+        for (owner, window) in [(&tenant, first), (&tenant, next), (&TenantId::new("other"), first)] {
+            store
+                .record(owner, &bucket, window, window + time::Duration::minutes(15))
+                .await
+                .expect("count a failure");
+        }
+
+        // Act
+        store.clear(&tenant, &bucket).await.expect("clear the bucket");
+
+        // Assert
+        for window in [first, next] {
+            assert_eq!(
+                store
+                    .count(&tenant, &bucket, window)
+                    .await
+                    .expect("read the counter"),
+                0,
+                "a window survived the reset"
+            );
+        }
+        assert_eq!(
+            store
+                .count(&TenantId::new("other"), &bucket, first)
+                .await
+                .expect("read the other tenant's counter"),
+            1,
+            "another tenant's counter was cleared"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Refresh tokens (`ast-a05.5`)
 // ---------------------------------------------------------------------------

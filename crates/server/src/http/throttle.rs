@@ -12,6 +12,23 @@
 //! who signs in and out all day is never limited, and an attacker's budget is
 //! exactly the number of wrong guesses an operator agreed to.
 //!
+//! # A proof empties the account bucket
+//!
+//! A fixed window forgets on its own only when it rolls over, which for the
+//! default quarter hour means somebody who mistypes nine times and then signs
+//! in correctly spends the rest of that window one attempt from a lockout —
+//! having just proved they are the person the counter is about
+//! (`ast-b3u`). [`LoginThrottle::record_success`] empties the account bucket
+//! instead, so the number means "wrong guesses since the last proof".
+//!
+//! Only the *account* bucket, and only after a credential actually verified.
+//! The address bucket is left alone because one account an attacker owns is
+//! exactly what they would sign into to buy a fresh sweep budget, and proving
+//! one identity says nothing about the thousand identifiers tried alongside
+//! it. And the reset is unreachable without a proof, so it is not an
+//! enumeration oracle: "no such identifier" and "wrong password" both take
+//! the refusal path, where nothing is cleared, and remain the same observable.
+//!
 //! # What the two limits are for
 //!
 //! Per account, against somebody stuffing one known identifier. Per address,
@@ -187,6 +204,33 @@ impl<'a> LoginThrottle<'a> {
         Ok(None)
     }
 
+    /// Forgets the failures counted against the identifier that just signed in.
+    ///
+    /// Called only where a credential verified — a password the verifier
+    /// accepted, or an assertion that satisfied WebAuthn §7.2. Reaching it from
+    /// any refusal, including the one that means "no such identifier", would
+    /// make the reset observable and reopen the enumeration channel the account
+    /// bucket exists to close.
+    ///
+    /// The account bucket only. Emptying the address one would let an attacker
+    /// sweeping a thousand identifiers refill their budget by signing into the
+    /// single account they own, which is the attack that limit is for. An
+    /// attempt that names nobody — a discoverable-credential assertion — has no
+    /// account bucket and so clears nothing.
+    ///
+    /// A delete that fails is logged and swallowed: the sign-in succeeded, and
+    /// refusing it now because a counter could not be forgotten would punish
+    /// the person for a write this server could not do. The window still
+    /// expires on its own.
+    pub async fn record_success(&self, tenant: &TenantId, attempt: &Attempt) {
+        let Some(bucket) = attempt.account.as_ref() else {
+            return;
+        };
+        if let Err(error) = self.store.clear(tenant, bucket).await {
+            tracing::error!(%error, tenant = %tenant, "a successful sign-in did not clear its limit");
+        }
+    }
+
     /// Counts one refused sign-in against both of the attempt's buckets.
     ///
     /// Both, always. Counting only the bucket nearest its limit would leave
@@ -337,6 +381,12 @@ mod tests {
                 .or_default();
             *entry += 1;
             Ok(*entry)
+        }
+
+        async fn clear(&self, _tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
+            let mut counters = self.0.lock().expect("the test store is not poisoned");
+            counters.retain(|(key, _), _| key != bucket.as_str());
+            Ok(())
         }
     }
 
@@ -520,5 +570,112 @@ mod tests {
         assert!(rendered.contains("account"));
         assert!(!rendered.contains("alice"));
         assert_eq!(event.event_type, EventType::AUTH_THROTTLED);
+    }
+
+    /// The point of `ast-b3u`: nine wrong guesses and then the right password
+    /// leaves a full quota, not one attempt's worth. The person just proved who
+    /// they are; making them wait out the window is a lockout aimed at the
+    /// wrong party.
+    #[tokio::test]
+    async fn a_successful_sign_in_empties_the_account_bucket() {
+        // Arrange: at the limit, so the next attempt would be refused.
+        let store = Counters::default();
+        let throttle = LoginThrottle::new(&store, limits(), Some(address()));
+        let attempt = throttle.attempt(Some("alice"));
+        for _ in 0..2 {
+            throttle.record_failure(&tenant(), &attempt, now()).await;
+        }
+
+        // Act
+        throttle.record_success(&tenant(), &attempt).await;
+
+        // Assert
+        let refused = throttle
+            .check(&tenant(), &attempt, now())
+            .await
+            .expect("the test store counts");
+        assert_eq!(refused, None);
+    }
+
+    /// The window boundary is aligned to the epoch, so a proof made just before
+    /// a rollover must not leave a counter for the next window to inherit.
+    #[tokio::test]
+    async fn a_successful_sign_in_empties_every_window_of_the_bucket() {
+        // Arrange: failures in two different windows.
+        let store = Counters::default();
+        let throttle = LoginThrottle::new(&store, limits(), Some(address()));
+        let attempt = throttle.attempt(Some("alice"));
+        throttle.record_failure(&tenant(), &attempt, now()).await;
+        let later = now() + Duration::minutes(16);
+        for _ in 0..2 {
+            throttle.record_failure(&tenant(), &attempt, later).await;
+        }
+
+        // Act
+        throttle.record_success(&tenant(), &attempt).await;
+
+        // Assert
+        assert_eq!(
+            throttle
+                .check(&tenant(), &attempt, later)
+                .await
+                .expect("the test store counts"),
+            None
+        );
+    }
+
+    /// The address bucket bounds a sweep across many identifiers, and one
+    /// account the attacker owns is exactly what they would sign into to buy
+    /// themselves a fresh budget. Proving one identity says nothing about the
+    /// other identifiers tried from that address.
+    #[tokio::test]
+    async fn a_successful_sign_in_leaves_the_address_bucket_alone() {
+        // Arrange: a sweep that filled the address bucket.
+        let store = Counters::default();
+        let throttle = LoginThrottle::new(&store, limits(), Some(address()));
+        for who in ["a", "b", "c", "d", "e"] {
+            throttle
+                .record_failure(&tenant(), &throttle.attempt(Some(who)), now())
+                .await;
+        }
+
+        // Act
+        throttle
+            .record_success(&tenant(), &throttle.attempt(Some("mine")))
+            .await;
+
+        // Assert
+        let refused = throttle
+            .check(&tenant(), &throttle.attempt(Some("mine")), now())
+            .await
+            .expect("the test store counts");
+        assert_eq!(refused.map(|r| r.scope), Some(Scope::Address));
+    }
+
+    /// An attempt that named nobody — a discoverable-credential assertion —
+    /// has no account bucket to empty, and must not reach for the address one
+    /// instead.
+    #[tokio::test]
+    async fn a_success_that_names_nobody_empties_nothing() {
+        // Arrange
+        let store = Counters::default();
+        let throttle = LoginThrottle::new(&store, limits(), Some(address()));
+        for who in ["a", "b", "c", "d", "e"] {
+            throttle
+                .record_failure(&tenant(), &throttle.attempt(Some(who)), now())
+                .await;
+        }
+
+        // Act
+        throttle
+            .record_success(&tenant(), &throttle.attempt(None))
+            .await;
+
+        // Assert
+        let refused = throttle
+            .check(&tenant(), &throttle.attempt(Some("f")), now())
+            .await
+            .expect("the test store counts");
+        assert_eq!(refused.map(|r| r.scope), Some(Scope::Address));
     }
 }

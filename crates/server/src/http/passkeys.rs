@@ -803,6 +803,18 @@ async fn session_from_assertion(
     // passkey sign-in says what a screen after a password one says.
     state.signed_in_as(&account.username);
 
+    // And the same reset the password path makes (`ast-b3u`): an assertion that
+    // satisfied §7.2 is a proof, so the wrong guesses counted against this
+    // identifier stop counting. The name comes from the account the credential
+    // named, not from anything typed, so this cannot be driven by a stranger.
+    context
+        .throttle
+        .record_success(
+            &context.tenant.id,
+            &context.throttle.attempt(Some(&account.username)),
+        )
+        .await;
+
     // §6.1.1: only a counter that advanced is written. An authenticator that
     // does not count leaves the stored zero alone, so a later assertion is
     // still compared against zero rather than against a number this server

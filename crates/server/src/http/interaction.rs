@@ -488,6 +488,15 @@ async fn sign_in(
             // (`ast-bo5`). The passkey path fills the same field through the
             // same function, so neither can drift from the other.
             state.signed_in_as(username);
+            // The credential verified, so the failures counted against this
+            // identifier are stale: the person proved they are who the counter
+            // was about (`ast-b3u`). Only reachable from here, where something
+            // actually matched — a refusal below clears nothing, which is what
+            // keeps the reset from being an enumeration oracle.
+            context
+                .throttle
+                .record_success(&context.tenant.id, &attempt)
+                .await;
             authenticated(context, presented, state, id, record, user, now).await
         }
         // One message for "no such user" and "wrong password". The
