@@ -1256,6 +1256,24 @@ impl ClientRegistration {
 }
 
 impl ClientMetadata {
+    /// Writes a registered subject back into the document it came from.
+    ///
+    /// The storage adapter's inverse of [`Self::tls_client_auth_subject`]: a
+    /// row holds the field name and the value in two columns, and this puts
+    /// them back under the one member of the five they name, so the reloaded
+    /// document goes through the same "exactly one" check as a document that
+    /// arrived over the wire.
+    pub fn set_tls_client_auth_subject(&mut self, subject: &TlsClientAuthSubject) {
+        let value = Some(subject.value().to_owned());
+        match subject {
+            TlsClientAuthSubject::SubjectDn(_) => self.tls_client_auth_subject_dn = value,
+            TlsClientAuthSubject::SanDns(_) => self.tls_client_auth_san_dns = value,
+            TlsClientAuthSubject::SanUri(_) => self.tls_client_auth_san_uri = value,
+            TlsClientAuthSubject::SanIp(_) => self.tls_client_auth_san_ip = value,
+            TlsClientAuthSubject::SanEmail(_) => self.tls_client_auth_san_email = value,
+        }
+    }
+
     /// Validates the document against the FAPI 2.0 profile and this
     /// deployment's capabilities.
     ///
@@ -2169,7 +2187,17 @@ mod tests {
     #[test]
     fn the_mtls_authentication_methods_are_refused_unless_the_flag_is_on() {
         for method in ["tls_client_auth", "self_signed_tls_client_auth"] {
-            let document = with("token_endpoint_auth_method", json!(method));
+            let mut document = with("token_endpoint_auth_method", json!(method));
+            // RFC 8705 §2.1.2: the PKI method needs a subject to match. Added
+            // here so that what this test measures is the *flag* — a document
+            // refused for a missing subject would pass the assertion below for
+            // the wrong reason.
+            if method == "tls_client_auth" {
+                document
+                    .as_object_mut()
+                    .expect("object")
+                    .insert("tls_client_auth_subject_dn".to_owned(), json!("CN=billing"));
+            }
             let error = validate_with(&document, caps(false)).expect_err("mtls is off");
             assert_eq!(error.code(), "invalid_client_metadata");
             assert!(error.to_string().contains("mtls"), "{error}");

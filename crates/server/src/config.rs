@@ -79,6 +79,14 @@ pub struct Config {
     pub limits: EndpointLimits,
     /// DPoP settings that are not capability flags (`ast-a05.11`).
     pub dpop: DpopConfig,
+    /// Where client certificates come from, and whose CAs vouch for them
+    /// (RFC 8705 §2, `ast-m9c.3`).
+    ///
+    /// Present whether or not the `mtls` flag is on — the flag decides whether
+    /// anything reads it. An operator who writes `[mtls]` and forgets
+    /// `[features] mtls` gets a deployment that does not look at certificates,
+    /// which is the same posture every other flag has.
+    pub mtls: crate::mtls::MtlsConfig,
 }
 
 /// Listener and transport settings.
@@ -341,6 +349,32 @@ struct RawConfig {
     limits: RawLimits,
     #[serde(default)]
     dpop: RawDpop,
+    #[serde(default)]
+    mtls: RawMtls,
+}
+
+/// The `[mtls]` table: where client certificates come from (RFC 8705 §2).
+///
+/// A `#[serde(default)]` struct rather than an `Option`, unlike `[registration]`
+/// and `[admin]`: the posture an operator opts into is `[features] mtls`, and
+/// this table only says *how*. A deployment with the flag on and no `[mtls]`
+/// table gets the default header name and no trust anchors, which means the
+/// self-signed method works and the PKI method refuses every client until a
+/// CA is named — the safe half of each.
+///
+/// There is deliberately no `mode` key here. Whether the certificate arrives
+/// from this process's own TLS or from a proxy is `[server] mode`, already
+/// written once; and which peers may tell us is `[server.proxy]
+/// trusted_cidrs`, the same set that decides whether `X-Forwarded-For` is
+/// believed. A second spelling of either would be a second answer to "who is
+/// this server behind".
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMtls {
+    certificate_header: Option<String>,
+    /// Tenant id to PEM file. `[mtls.trust_anchors]` in the file.
+    #[serde(default)]
+    trust_anchors: std::collections::BTreeMap<String, PathBuf>,
 }
 
 /// The `[login]` table.
@@ -756,6 +790,7 @@ impl RawConfig {
         let login = validate_login(&self.login, &mut errors);
         let limits = validate_limits(&self.limits, &mut errors);
         let dpop = validate_dpop(self.dpop, env, &mut errors);
+        let mtls = validate_mtls(self.mtls, &tenants, &mut errors);
 
         errors.finish(Config {
             server,
@@ -770,7 +805,64 @@ impl RawConfig {
             login,
             limits,
             dpop,
+            mtls,
         })
+    }
+}
+
+/// Turns the `[mtls]` table into what the certificate paths read.
+///
+/// Two things are checked, and both are the kind of mistake that produces a
+/// working server that authenticates nobody:
+///
+/// * the header name must be one HTTP can carry, because a name with a space
+///   in it matches no header and would silently mean "never read a
+///   certificate";
+/// * each `trust_anchors` key must name a tenant this deployment serves. An
+///   anchors file listed under a typo'd tenant id is a CA that vouches for
+///   nothing, and the tenant it was meant for refuses every PKI-mode client.
+///
+/// The files themselves are not read here. `crate::mtls::TenantTrustAnchors`
+/// loads them at boot and fails the process if one is unreadable — a separate
+/// step because it is I/O, and because configuration validation collects
+/// problems rather than performing side effects.
+fn validate_mtls(
+    raw: RawMtls,
+    tenants: &[TenantConfig],
+    errors: &mut Collector,
+) -> crate::mtls::MtlsConfig {
+    let certificate_header = raw.certificate_header.map_or_else(
+        || crate::mtls::DEFAULT_CERTIFICATE_HEADER.to_owned(),
+        |name| {
+            if axum::http::HeaderName::try_from(name.as_str()).is_err() {
+                errors.problem(
+                    "mtls.certificate_header",
+                    "must be a valid HTTP header name: lowercase letters, digits and \
+                     `-`. A name no header can carry means no certificate is ever read",
+                );
+            }
+            name.to_ascii_lowercase()
+        },
+    );
+
+    let mut trust_anchors = std::collections::BTreeMap::new();
+    for (tenant, path) in raw.trust_anchors {
+        if !tenants.iter().any(|known| known.id.as_str() == tenant) {
+            errors.problem(
+                "mtls.trust_anchors",
+                format!(
+                    "`{tenant}` is not a tenant this deployment serves; its trust anchors \
+                     would vouch for nobody"
+                ),
+            );
+            continue;
+        }
+        trust_anchors.insert(TenantId::new(tenant), path);
+    }
+
+    crate::mtls::MtlsConfig {
+        certificate_header,
+        trust_anchors,
     }
 }
 
@@ -1537,6 +1629,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("login", accepted_keys::<RawLogin>()),
         ("limits", accepted_keys::<RawLimits>()),
         ("dpop", accepted_keys::<RawDpop>()),
+        ("mtls", accepted_keys::<RawMtls>()),
     ]
     .into_iter()
     .collect()

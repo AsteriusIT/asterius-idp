@@ -114,14 +114,25 @@ fn tenant(id: &str, issuer: &str) -> Tenant {
 }
 
 fn registration(jwks: &Value, auth_method: &str) -> Value {
-    json!({
+    let mut document = json!({
         "client_name": "Billing",
         "redirect_uris": ["https://rp.example/cb"],
         "grant_types": ["authorization_code"],
         "scope": "openid",
         "token_endpoint_auth_method": auth_method,
         "jwks": jwks,
-    })
+    });
+    // RFC 8705 §2.1.2: a `tls_client_auth` client registers exactly one
+    // certificate subject, and a document without one is not a registration.
+    // Added here rather than at each call site so a fixture cannot ask for the
+    // method and get a client no certificate could ever match.
+    if auth_method == "tls_client_auth" {
+        document
+            .as_object_mut()
+            .expect("object")
+            .insert("tls_client_auth_subject_dn".to_owned(), json!("CN=billing"));
+    }
+    document
 }
 
 fn client_from(tenant_id: &str, id: &str, document: &Value, status: ClientStatus) -> Client {
@@ -287,7 +298,7 @@ fn attempt_with(token: &str) -> Attempt<'_> {
 /// no extensions. These tests count credentials rather than read them.
 fn a_certificate() -> asterius_oidc::mtls::ClientCertificate {
     asterius_oidc::mtls::ClientCertificate::from_der(vec![
-        0x30, 0x18, 0x30, 0x10, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00,
+        0x30, 0x15, 0x30, 0x0f, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00,
         0x30, 0x02, 0x30, 0x00, 0x30, 0x00, 0x03, 0x00,
     ])
     .expect("a minimal certificate")

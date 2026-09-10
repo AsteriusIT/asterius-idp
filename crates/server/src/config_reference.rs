@@ -156,6 +156,7 @@ pub fn sections() -> Vec<Section> {
         tenant_refresh(),
         admin(),
         dpop(),
+        mtls(),
     ]
 }
 
@@ -194,6 +195,59 @@ fn dpop() -> Section {
                 "The named variable, injected by the orchestrator. Readable through \
                  `/proc/self/environ`, so the file is preferred. There is no key that \
                  takes the secret itself, for the reason `[admin]` has none.",
+            ),
+        ],
+    }
+}
+
+/// `[mtls]`: where client certificates come from (RFC 8705 §2).
+fn mtls() -> Section {
+    Section {
+        table: "mtls",
+        heading: "`[mtls]` — client certificates (RFC 8705 §2)",
+        blurb: "Read only when `[features] mtls` is on. This table says *how* a \
+                certificate reaches the server and whose CAs vouch for it; whether \
+                any of it happens is the flag. There is deliberately no `mode` key: \
+                whether TLS is terminated here or by a proxy is `[server] mode`, and \
+                which peers may speak for a client is `[server.proxy] trusted_cidrs` \
+                — the same set that decides whether `X-Forwarded-For` is believed. A \
+                second spelling of either would be a second answer to \"who is this \
+                server behind\", and behind a proxy the proxy chooses which \
+                certificate this server sees, so it can authenticate any client it \
+                likes. That is the trust root this table adds; the other is each \
+                tenant's CAs, which can mint a certificate for any of that tenant's \
+                clients that registered a matching name.",
+        after: "",
+        keys: vec![
+            key(
+                "certificate_header",
+                "string",
+                crate::mtls::DEFAULT_CERTIFICATE_HEADER.to_owned(),
+                "The header a reverse proxy forwards the client certificate in — \
+                 nginx's `ssl_client_escaped_cert`, HAProxy's `ssl_c_der,base64`. \
+                 Percent-encoded PEM, PEM whose newlines the proxy escaped, and \
+                 bare base64 DER are all accepted, because they are one certificate \
+                 in three transport encodings. **The header is read only from a peer inside \
+                 `[server.proxy] trusted_cidrs`**; from anywhere else it is dropped \
+                 without being parsed, which is what stops a caller from choosing its \
+                 own identity. A proxy that forwards this header must also strip an \
+                 inbound one.",
+            ),
+            key(
+                "trust_anchors",
+                "table of tenant id to PEM path",
+                "none".to_owned(),
+                "The CAs each tenant's `tls_client_auth` clients are validated \
+                 against (§2.1), one PEM file per tenant. Per tenant and never \
+                 global: one process serves several, and a CA one tenant trusts must \
+                 not be able to mint clients for another. A tenant with no entry \
+                 cannot use the PKI method at all — it fails closed rather than \
+                 falling back to the outbound roots, which are for *server* \
+                 certificates and would let the public web CAs mint clients. The \
+                 `self_signed_tls_client_auth` method (§2.2) needs nothing here: it \
+                 matches the certificate against the client's own JWKS. A file named \
+                 and unreadable stops the process rather than starting a server that \
+                 refuses every client of that tenant.",
             ),
         ],
     }

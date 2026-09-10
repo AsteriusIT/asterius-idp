@@ -727,8 +727,8 @@ mod tests {
     /// them.
     fn a_certificate() -> crate::mtls::ClientCertificate {
         crate::mtls::ClientCertificate::from_der(vec![
-            0x30, 0x18, // Certificate
-            0x30, 0x10, // tbsCertificate
+            0x30, 0x15, // Certificate
+            0x30, 0x0f, // tbsCertificate
             0x02, 0x01, 0x01, // serialNumber
             0x30, 0x00, // signature
             0x30, 0x00, // issuer

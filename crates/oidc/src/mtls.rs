@@ -373,11 +373,15 @@ mod der {
         tbs_names(tbs.value)
     }
 
+    /// RFC 5280 §4.1:
+    ///
+    /// ```text
     /// TBSCertificate ::= SEQUENCE {
     ///   version [0] EXPLICIT Version DEFAULT v1, serialNumber INTEGER,
     ///   signature AlgorithmIdentifier, issuer Name, validity Validity,
     ///   subject Name, subjectPublicKeyInfo SubjectPublicKeyInfo,
     ///   ... , extensions [3] EXPLICIT Extensions OPTIONAL }
+    /// ```
     fn tbs_names(tbs: &[u8]) -> Option<CertificateNames> {
         let (first, rest) = read(tbs)?;
         // `version` is `[0]`, and absent on a v1 certificate.
@@ -431,9 +435,13 @@ mod der {
         Some(names)
     }
 
+    /// RFC 5280 §4.1:
+    ///
+    /// ```text
     /// Extensions ::= SEQUENCE SIZE (1..MAX) OF Extension
     /// Extension ::= SEQUENCE { extnID OID, critical BOOLEAN DEFAULT FALSE,
     ///                          extnValue OCTET STRING }
+    /// ```
     fn read_subject_alt_name(mut extensions: &[u8], names: &mut CertificateNames) -> Option<()> {
         let mut seen = 0usize;
         while !extensions.is_empty() {
@@ -463,7 +471,11 @@ mod der {
         Some(())
     }
 
+    /// RFC 5280 §4.2.1.6:
+    ///
+    /// ```text
     /// GeneralNames ::= SEQUENCE SIZE (1..MAX) OF GeneralName
+    /// ```
     ///
     /// Only the four forms RFC 8705 §2.1.2 registers a metadata field for are
     /// read. `otherName`, `directoryName` and the rest are skipped: a name this
@@ -500,7 +512,7 @@ mod der {
         Some(())
     }
 
-    /// IA5String is ASCII by definition. A byte outside it means the
+    /// `IA5String` is ASCII by definition. A byte outside it means the
     /// certificate does not say what it appears to say.
     fn ascii(bytes: &[u8]) -> Option<String> {
         bytes
@@ -530,11 +542,15 @@ mod der {
         }
     }
 
+    /// RFC 5280 §4.1.2.4:
+    ///
+    /// ```text
     /// Name ::= RDNSequence ::= SEQUENCE OF RelativeDistinguishedName
+    /// ```
     ///
     /// Rendered per RFC 4514 §2: the RDNs are joined with `,` **in reverse
     /// order** ("the output consists of the string encodings of each
-    /// RelativeDistinguishedName … in reverse order"), and the attributes
+    /// `RelativeDistinguishedName` … in reverse order"), and the attributes
     /// within one RDN with `+`.
     fn distinguished_name(mut rdns: &[u8]) -> Option<String> {
         let mut rendered: Vec<String> = Vec::new();
@@ -555,7 +571,11 @@ mod der {
         Some(rendered.join(","))
     }
 
+    /// RFC 5280 §4.1.2.4:
+    ///
+    /// ```text
     /// RelativeDistinguishedName ::= SET SIZE (1..MAX) OF AttributeTypeAndValue
+    /// ```
     fn relative_name(mut attributes: &[u8]) -> Option<String> {
         let mut rendered: Vec<String> = Vec::new();
         let mut seen = 0usize;
@@ -676,7 +696,12 @@ mod der {
         let mut header = vec![tag];
         encode_length(value.len(), &mut header);
         for byte in header.iter().chain(value) {
-            out.push_str(&format!("{byte:02X}"));
+            // Written out rather than through `format!`: this runs once per
+            // byte of every hex-form attribute value, and the two-character
+            // rendering of a byte is not something a formatter is needed for.
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
         out
     }

@@ -260,12 +260,22 @@ fn check_method_selection(input: &Input) {
         input.assertion_type_text.as_str()
     };
 
+    // The smallest DER `ClientCertificate::from_der` accepts. `method` counts
+    // credentials rather than reading them, so what is in it is irrelevant —
+    // what matters is that "a certificate arrived" is now expressed by holding
+    // one rather than by a boolean beside it.
+    let certificate = asterius_oidc::mtls::ClientCertificate::from_der(vec![
+        0x30, 0x15, 0x30, 0x0f, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00,
+        0x30, 0x02, 0x30, 0x00, 0x30, 0x00, 0x03, 0x00,
+    ])
+    .expect("a minimal certificate");
+
     let attempt = Attempt {
         assertion: input.has_assertion.then_some(token),
         assertion_type: input.has_assertion_type.then_some(assertion_type),
         client_id: input.has_client_id.then_some(input.client_id_text.as_str()),
         authorization_header: input.has_authorization_header,
-        client_certificate: input.has_certificate,
+        certificate: input.has_certificate.then_some(&certificate),
     };
 
     let Ok(method) = attempt.method() else {

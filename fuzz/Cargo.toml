@@ -41,6 +41,9 @@ uuid = "1"
 # accepted, so that "absolute URI, no fragment" is checked by something other
 # than the code under test.
 url = "2"
+# `client_certificate_header` states its property in terms of a trusted-proxy
+# set, which is the whole point of that target.
+ipnet = "2"
 
 [[bin]]
 name = "access_token_claims"
@@ -171,6 +174,13 @@ bench = false
 [[bin]]
 name = "client_certificate"
 path = "fuzz_targets/client_certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_certificate_header"
+path = "fuzz_targets/client_certificate_header.rs"
 test = false
 doc = false
 bench = false

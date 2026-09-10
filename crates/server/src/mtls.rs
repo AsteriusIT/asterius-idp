@@ -55,7 +55,7 @@ use std::sync::Arc;
 
 /// The header a reverse proxy puts the client certificate in, by default.
 ///
-/// nginx's `ssl_client_escaped_cert` and HAProxy's
+/// nginx's `ssl_client_escaped_cert` and `HAProxy`'s
 /// `ssl_c_der,base64` are both commonly forwarded under this name. It is
 /// configurable because the name is a deployment fact, not a protocol one.
 pub const DEFAULT_CERTIFICATE_HEADER: &str = "x-client-cert";
@@ -296,8 +296,9 @@ pub fn from_proxy_header(
 /// Three spellings are in the field, and all three are the same certificate:
 ///
 /// * percent-encoded PEM (nginx `ssl_client_escaped_cert`),
-/// * literal PEM, whose newlines a proxy may have turned into `\n` or spaces,
-/// * bare base64 DER (HAProxy `ssl_c_der,base64`).
+/// * PEM whose newlines the proxy replaced with `\n` or with spaces, because
+///   RFC 9110 §5.5 does not let a field value carry a bare newline,
+/// * bare base64 DER (`HAProxy` `ssl_c_der,base64`).
 ///
 /// Accepting all three is not laxity: they differ only in transport encoding,
 /// and each decodes to exactly one byte string or to nothing. What is *not*
@@ -306,11 +307,10 @@ pub fn from_proxy_header(
 /// yields the one the proxy put first.
 fn decode_certificate(value: &str) -> Option<ClientCertificate> {
     use base64::Engine as _;
-
-    let decoded = percent_decode(value)?;
     const BEGIN: &str = "-----BEGIN CERTIFICATE-----";
     const END: &str = "-----END CERTIFICATE-----";
 
+    let decoded = percent_decode(value)?;
     let body = if let Some(start) = decoded.find(BEGIN) {
         let after = &decoded[start + BEGIN.len()..];
         let end = after.find(END)?;
@@ -408,7 +408,7 @@ mod tests {
     /// header tests are about the header and not about X.509.
     fn certificate_der() -> Vec<u8> {
         vec![
-            0x30, 0x18, 0x30, 0x10, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
+            0x30, 0x15, 0x30, 0x0f, 0x02, 0x01, 0x01, 0x30, 0x00, 0x30, 0x00, 0x30, 0x00, 0x30,
             0x00, 0x30, 0x02, 0x30, 0x00, 0x30, 0x00, 0x03, 0x00,
         ]
     }
@@ -483,12 +483,17 @@ mod tests {
         }
     }
 
-    /// The three spellings a proxy sends, all decoding to the same bytes.
+    /// The spellings a proxy sends, all decoding to the same bytes.
+    ///
+    /// A raw PEM block is not among them and cannot be: RFC 9110 §5.5 forbids
+    /// a bare newline in a field value, which is exactly why nginx escapes the
+    /// certificate and `HAProxy` sends the base64 alone.
     #[test]
     fn every_forwarded_encoding_decodes_to_the_same_certificate() {
         let base64 = encoded();
         let pem = format!("-----BEGIN CERTIFICATE-----\n{base64}\n-----END CERTIFICATE-----\n");
         let escaped_newlines = pem.replace('\n', "\\n");
+        let spaces = pem.replace('\n', " ");
         let percent: String = pem
             .chars()
             .map(|c| match c {
@@ -498,7 +503,7 @@ mod tests {
             })
             .collect();
 
-        for value in [base64, pem.clone(), escaped_newlines, percent] {
+        for value in [base64, escaped_newlines, spaces, percent] {
             // Act
             let presented = from_proxy_header(
                 "10.1.2.3".parse().expect("literal"),

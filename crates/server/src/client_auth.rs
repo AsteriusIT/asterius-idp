@@ -398,7 +398,7 @@ impl ClientAuthenticator {
                 // published.
                 let key_set = self
                     .keys
-                    .resolve(&tenant.id, &client_id, &client.registration.jwks, None, now)
+                    .resolve(&tenant.id, client_id, &client.registration.jwks, None, now)
                     .await
                     .map_err(|_| ClientAuthError::KeysUnavailable)?;
                 if certificate.is_one_of(key_set.leaf_certificates().iter().map(String::as_str)) {
