@@ -240,6 +240,53 @@ impl std::fmt::Debug for DpopEndpoint {
     }
 }
 
+/// What a proof's `htu` is compared against (RFC 9449 §4.3 item 8).
+///
+/// An endpoint of the registry, and optionally one path segment under it: the
+/// Grant Management API addresses a *resource* rather than an endpoint (Grant
+/// Management ID1 §6.3), so its URL is the endpoint plus a `grant_id`.
+///
+/// A type rather than two parameters because the pair is one fact — "the URL
+/// this request was made to, as this server derives it" — and because the
+/// derivation must stay in this module: [`DpopEndpoint::check`] explains at
+/// length why the URL is never taken from the request.
+#[derive(Debug, Clone, Copy)]
+pub struct ProofTarget<'a> {
+    /// The endpoint, from the registry the metadata is rendered from.
+    endpoint: Endpoint,
+    /// One path segment under it, when the request addresses a resource.
+    segment: Option<&'a str>,
+}
+
+impl<'a> ProofTarget<'a> {
+    /// The endpoint's own URL, which is what every endpoint but one is
+    /// addressed at.
+    #[must_use]
+    pub const fn at(endpoint: Endpoint) -> Self {
+        Self {
+            endpoint,
+            segment: None,
+        }
+    }
+
+    /// A resource under the endpoint, at `endpoint.url()` + `/` + `segment`.
+    #[must_use]
+    pub const fn under(endpoint: Endpoint, segment: &'a str) -> Self {
+        Self {
+            endpoint,
+            segment: Some(segment),
+        }
+    }
+
+    /// The URL, built from the tenant's issuer and nothing the caller sent.
+    fn url(self, issuer: &asterius_domain::Issuer) -> String {
+        match self.segment {
+            None => self.endpoint.url(issuer),
+            Some(segment) => format!("{}/{segment}", self.endpoint.url(issuer)),
+        }
+    }
+}
+
 impl DpopEndpoint {
     /// A checker over a replay store, with or without server nonces.
     ///
@@ -347,8 +394,15 @@ impl DpopEndpoint {
         headers: &HeaderMap,
         now: OffsetDateTime,
     ) -> Result<Option<Binding>, Refusal> {
-        self.check_for(tenant, endpoint, method, headers, None, now)
-            .await
+        self.check_for(
+            tenant,
+            ProofTarget::at(endpoint),
+            method,
+            headers,
+            None,
+            now,
+        )
+        .await
     }
 
     /// The same check, for a proof that accompanies an access token.
@@ -382,14 +436,60 @@ impl DpopEndpoint {
         bound_to: &str,
         now: OffsetDateTime,
     ) -> Result<Option<Binding>, Refusal> {
-        self.check_for(tenant, endpoint, method, headers, Some(bound_to), now)
+        self.check_for(
+            tenant,
+            ProofTarget::at(endpoint),
+            method,
+            headers,
+            Some(bound_to),
+            now,
+        )
+        .await
+    }
+
+    /// The same check, for a resource *under* an endpoint.
+    ///
+    /// Grant Management ID1 §6.3 builds the resource URL by appending a
+    /// `grant_id` to the grant management endpoint, so the URL a client makes
+    /// its proof over is not the endpoint's own — and RFC 9449 §4.3 item 8
+    /// compares `htu` against "the HTTP URI used for the request, without
+    /// query and fragment parts", which includes that path segment.
+    ///
+    /// `target` names the segment the *router* matched, not a header: this is
+    /// still not built from `Host` or from the request target, for the reason
+    /// [`check`] gives. What it buys is that a proof captured for one grant
+    /// cannot be replayed against another — with the endpoint's bare URL it
+    /// could, because every grant under it would share one `htu`.
+    ///
+    /// The segment is appended as the router decoded it. A client that
+    /// percent-encoded something in it made its proof over the encoded form
+    /// and will find the two disagree; a `grant_id` is a UUID, so there is
+    /// nothing there to encode.
+    ///
+    /// [`check`]: DpopEndpoint::check
+    ///
+    /// # Errors
+    ///
+    /// A [`Refusal`], as [`check_with_access_token`].
+    ///
+    /// [`check_with_access_token`]: DpopEndpoint::check_with_access_token
+    pub async fn check_with_access_token_under(
+        &self,
+        tenant: &Tenant,
+        target: ProofTarget<'_>,
+        method: &Method,
+        headers: &HeaderMap,
+        bound_to: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<Binding>, Refusal> {
+        self.check_for(tenant, target, method, headers, Some(bound_to), now)
             .await
     }
 
     async fn check_for(
         &self,
         tenant: &Tenant,
-        endpoint: Endpoint,
+        target: ProofTarget<'_>,
         method: &Method,
         headers: &HeaderMap,
         bound_to: Option<&str>,
@@ -400,7 +500,7 @@ impl DpopEndpoint {
         };
 
         // Built here, from the issuer. See the note above.
-        let url = endpoint.url(&tenant.issuer);
+        let url = target.url(&tenant.issuer);
         let Ok(uri) = NormalisedUri::parse(&url) else {
             // Unreachable with a valid issuer, and a configuration fault rather
             // than the client's if it ever happens. Refusing is the only safe

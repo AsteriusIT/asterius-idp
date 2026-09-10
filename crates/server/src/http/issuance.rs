@@ -394,8 +394,13 @@ pub async fn targeting(
     client: &Client,
     grant: &Grant,
     requested: &std::collections::BTreeSet<String>,
+    grant_management: bool,
 ) -> Result<Targeting, TargetingError> {
-    let registry = asterius_domain::ResourceRegistry::new(resource_servers.list().await?);
+    let registry = asterius_domain::ResourceRegistry::new(
+        grant_management_resource(tenant, grant_management)
+            .into_iter()
+            .chain(resource_servers.list().await?),
+    );
 
     let defaults: std::collections::BTreeSet<String> = if client.registration.resources.is_empty() {
         [tenant.default_resource.clone()].into_iter().collect()
@@ -410,6 +415,63 @@ pub async fn targeting(
     let audience = Audience::new(&targets).map_err(|_| TargetingError::InvalidTarget)?;
 
     Ok(Targeting { audience, scopes })
+}
+
+/// The Grant Management API as a resource server of this tenant (§6.2).
+///
+/// `None` where the deployment does not offer the feature, which is what keeps
+/// this in step with the router and the metadata: a resource nobody can call
+/// is an audience no token should carry.
+///
+/// # Why it is implicit
+///
+/// §6.3 makes the resource URL the grant management endpoint plus the grant
+/// id, and §6.2 makes that endpoint a property of the tenant's issuer. So the
+/// identifier is already decided — there is nothing for an operator to choose
+/// — and the `resource_servers` registry exists for the APIs this server knows
+/// nothing about. Requiring a row would mean a deployment that switched Grant
+/// Management on, advertised `grant_management_endpoint`, mounted the route,
+/// and then answered `invalid_target` to every client that asked for a token
+/// to call it, until somebody ran one more command.
+///
+/// It is placed *before* the stored list, so an operator who registers the
+/// same identifier — to give it a lifetime of its own, say — overrides this
+/// rather than fighting it: `ResourceRegistry::new` keeps the last entry for a
+/// duplicate identifier.
+///
+/// The scopes are exactly §6.1's two. That is what makes the `scope` claim of
+/// a token audienced here carry those and nothing else (RFC 8707 §2): a client
+/// registered for `payments` and `grant_management_revoke` gets a grant
+/// management token that cannot touch payments, and a payments token that
+/// cannot revoke a grant.
+///
+/// An identifier that will not parse is `None` rather than an error. It is
+/// built from the tenant's own issuer, so that cannot happen for a tenant this
+/// server would serve at all — and a token endpoint that refused every request
+/// because of it would be a worse failure than a missing audience.
+fn grant_management_resource(
+    tenant: &Tenant,
+    offered: bool,
+) -> Option<asterius_domain::ResourceServer> {
+    if !offered {
+        return None;
+    }
+    let url = asterius_oidc::metadata::Endpoint::GrantManagement.url(&tenant.issuer);
+    let identifier = asterius_domain::ResourceIdentifier::parse(&url).ok()?;
+    Some(asterius_domain::ResourceServer {
+        identifier,
+        scopes: Some(
+            [
+                asterius_oidc::grant_management::SCOPE_QUERY.to_owned(),
+                asterius_oidc::grant_management::SCOPE_REVOKE.to_owned(),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        // No opinion: the tenant's own access-token lifetime applies, which is
+        // the one an operator has already set.
+        default_token_lifetime: None,
+    })
 }
 
 /// What one issuance contributes to its ID token.

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into authorization_codes\n                 (tenant_id, code_hash, client_id, grant_id, code_challenge,\n                  redirect_uri, nonce, dpop_jkt, issued_at, expires_at,\n                  grant_management_action)\n             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0779b5b475defc14855369156afa0a104c45dcd77f6d3dc811ddc2dbcc66e8d2"
+}

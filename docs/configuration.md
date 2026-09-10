@@ -98,13 +98,16 @@ Everything is off unless switched on here, and what is switched on is exactly wh
 
 ### Per-tenant Grant Management settings
 
-`features.grant_management` is the ceiling. A tenant may switch the feature off in its own settings like any other, and it carries one setting of its own:
+`features.grant_management` is the ceiling. A tenant may switch the feature off in its own settings like any other, and two settings of its own sit beside it:
 
 | Setting | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `grant_management_action_required` | boolean | `false` | Grant Management ID1 §7.1. When true, an authorization request that names no `grant_management_action` is refused with `invalid_request`, and the discovery document publishes `grant_management_action_required: true`. Ignored — and never published — for a tenant that does not offer Grant Management, because a tenant cannot require a parameter it also ignores. |
+| `grant_id_in_access_token` | boolean | `true` | RFC 9068 §2.2.3.1's private claim. On by default, because it is what every token this server has ever issued carried and what its own UserInfo endpoint resolves a grant through. Switch it off where the resource servers are all third parties: §6 calls the claim a correlator, and two tokens carrying the same one tell a resource server they came from a single authorization. With it off, UserInfo falls back to the token's `client_id` and `sub` — which cannot tell two live grants of one person to one client apart, and refuses rather than guessing. Independent of `features.grant_management`. |
 
 With `features.grant_management` off, `grant_id` and `grant_management_action` are ignored rather than refused, and the discovery document carries neither `grant_management_actions_supported` nor `grant_management_action_required`. A client that sends the parameters to such a deployment gets the ordinary authorization a server built before the draft would have given it.
+
+With `features.grant_management` on, `GET` and `DELETE` are served at `grant_management_endpoint` + `/` + the grant id (§6.3). The endpoint is its own resource server: a client asks for a token with `resource` set to `grant_management_endpoint` and one of §6.1's two scopes, `grant_management_query` or `grant_management_revoke`, and nothing needs registering for that audience to exist. The client's own resource allow-list still applies, so a client that has one must have the grant management endpoint on it.
 
 ## `[registration]` — dynamic client registration
 

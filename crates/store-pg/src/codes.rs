@@ -74,8 +74,9 @@ impl PgCodeRepository {
         sqlx::query!(
             "insert into authorization_codes
                  (tenant_id, code_hash, client_id, grant_id, code_challenge,
-                  redirect_uri, nonce, dpop_jkt, issued_at, expires_at)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                  redirect_uri, nonce, dpop_jkt, issued_at, expires_at,
+                  grant_management_action)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
             self.tenant.as_str(),
             digest,
             binding.client_id,
@@ -86,6 +87,7 @@ impl PgCodeRepository {
             binding.dpop_jkt.as_deref(),
             now,
             binding.expires_at,
+            binding.grant_management_action.as_deref(),
         )
         .execute(&self.pool)
         .await
@@ -127,7 +129,7 @@ impl PgCodeRepository {
                 and consumed_at is null
                 and expires_at > $3
              returning client_id, grant_id, code_challenge, redirect_uri,
-                       nonce, dpop_jkt, expires_at",
+                       nonce, dpop_jkt, expires_at, grant_management_action",
             self.tenant.as_str(),
             digest,
             now,
@@ -144,6 +146,7 @@ impl PgCodeRepository {
                 redirect_uri: row.redirect_uri,
                 nonce: row.nonce,
                 dpop_jkt: row.dpop_jkt,
+                grant_management_action: row.grant_management_action,
                 expires_at: row.expires_at,
             })));
         }

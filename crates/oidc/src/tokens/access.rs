@@ -452,6 +452,16 @@ impl<'a> AccessToken<'a> {
         self
     }
 
+    /// The same, decided by the tenant's own setting.
+    ///
+    /// Exists so that a call site reads as "this tenant's answer" rather than
+    /// as an `if` around a builder chain: every issuance path asks the same
+    /// question of the same setting, and one of them quietly not asking it
+    /// would be a token whose claim depends on which grant type minted it.
+    pub const fn with_grant_id_when(self, carried: bool) -> Self {
+        if carried { self.with_grant_id() } else { self }
+    }
+
     /// Assembles the claims set.
     ///
     /// # Errors

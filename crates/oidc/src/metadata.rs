@@ -459,15 +459,20 @@ pub fn provider_metadata(
     }
     if capabilities.grant_management {
         // Grant Management §7.1: advertising the actions is what tells a client
-        // it may send `grant_management_action`. Rendered from the enum the
-        // validator parses rather than written out, for the reason
+        // it may send `grant_management_action`, and — for §6.1's `query` and
+        // `revoke` — that it may address a grant over HTTP at all. Rendered
+        // from `ADVERTISED_ACTIONS`, which splices in the enum the validator
+        // parses rather than respelling it, for the reason
         // `response_modes_supported` gives: a document that advertised an
         // action `/par` refuses would send clients to an `invalid_request`.
+        //
+        // The two API actions are advertised alongside
+        // `grant_management_endpoint`, which the endpoint registry above puts
+        // in this document under the same flag — so a client that reads
+        // `query` here has a URL to send it to.
         object.insert(
             "grant_management_actions_supported".to_owned(),
-            json!(
-                crate::grant_management::Action::ALL.map(crate::grant_management::Action::as_str)
-            ),
+            json!(crate::grant_management::ADVERTISED_ACTIONS),
         );
         // §7.1: "`grant_management_action_required`: BOOLEAN. Indicates the
         // AS requires the `grant_management_action` parameter." Present
@@ -568,8 +573,8 @@ mod tests {
         let optional = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
         assert_eq!(
             optional["grant_management_actions_supported"],
-            json!(["create", "merge", "replace"]),
-            "the advertised actions are the ones the validator parses"
+            json!(["query", "revoke", "create", "merge", "replace"]),
+            "§6.1's two API actions, then the three the validator parses"
         );
         assert_eq!(optional["grant_management_action_required"], json!(false));
 

@@ -312,6 +312,146 @@ impl GrantManagementError {
 /// The error code §5.4 registers for a `grant_id` the AS will not act on.
 pub const INVALID_GRANT_ID: &str = "invalid_grant_id";
 
+/// The scope a client must hold to read a grant (§6.1).
+pub const SCOPE_QUERY: &str = "grant_management_query";
+
+/// The scope a client must hold to revoke a grant (§6.1).
+pub const SCOPE_REVOKE: &str = "grant_management_revoke";
+
+/// Every value `grant_management_actions_supported` advertises (§7.1).
+///
+/// Five, not three. §6.1 registers `query` and `revoke` as actions of the
+/// *API* — they are never `grant_management_action` values at the
+/// authorization endpoint, and [`Action::parse`] refuses them there — but §7.1
+/// says the member "indicates the actions supported by the AS", and a client
+/// deciding whether it may address a grant over HTTP has nowhere else to look.
+///
+/// [`Action::ALL`] is spliced in rather than respelled, so the three the
+/// validator accepts cannot drift out of the list that advertises them.
+pub const ADVERTISED_ACTIONS: [&str; 5] = [
+    "query",
+    "revoke",
+    Action::Create.as_str(),
+    Action::Merge.as_str(),
+    Action::Replace.as_str(),
+];
+
+/// The §6.4 response body for one grant.
+///
+/// > The response […] contains the scopes, claims and authorization details
+/// > the grant is comprised of.
+///
+/// **No credential of any kind appears here.** §6.4's list is what the grant
+/// *authorises*, and the tokens minted from it are neither in this function's
+/// argument nor derivable from it — which is the point: a query endpoint that
+/// could hand back a token would be a second token endpoint with a weaker
+/// authorization rule.
+///
+/// # What each member is read from
+///
+/// * `scopes` is §6.4's array of `{scope, resource}` objects. This server does
+///   not record which scope was granted *for* which resource — a grant carries
+///   one scope set and one resource set (RFC 8707 §2 narrows at issuance, not
+///   at consent) — so the honest rendering is a single element carrying the
+///   whole granted set, with `resource` present exactly when the
+///   authorization was bound to resource indicators. Splitting it per resource
+///   would assert an association nothing recorded.
+/// * `claims` is the flat list of claim names the OIDC Core §5.5 request on
+///   the grant asks for, in either delivery point, deduplicated. §6.4's
+///   example is a flat array of names, and the delivery point is not part of
+///   what the person approved.
+/// * `authorization_details` is RFC 9396 §2's array, exactly as the grant
+///   holds it.
+/// * `created_at`, `last_updated_at` and `expires_at` are seconds since the
+///   epoch, the spelling every other timestamp this server renders uses.
+///   `expires_at` is present only for a grant that lapses.
+///
+/// `updated_by` is deliberately absent: nothing recorded says which action
+/// last touched a grant, and rendering the owning client there would be a
+/// tautology dressed as a fact.
+#[must_use]
+pub fn query_response(grant: &Grant) -> serde_json::Value {
+    let mut entry = serde_json::Map::new();
+    entry.insert(
+        "scope".to_owned(),
+        serde_json::Value::String(
+            grant
+                .scopes
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+    );
+    if !grant.resources.is_empty() {
+        entry.insert(
+            "resource".to_owned(),
+            serde_json::Value::Array(
+                grant
+                    .resources
+                    .iter()
+                    .map(|resource| serde_json::Value::String(resource.clone()))
+                    .collect(),
+            ),
+        );
+    }
+    // An empty scope set still produces one element with an empty `scope`
+    // rather than an empty array: the grant exists and covers nothing, which
+    // is a different answer from "this response says nothing about scopes".
+
+    let mut body = serde_json::Map::new();
+    body.insert(
+        "scopes".to_owned(),
+        serde_json::Value::Array(vec![serde_json::Value::Object(entry)]),
+    );
+    body.insert(
+        "claims".to_owned(),
+        serde_json::Value::Array(
+            requested_claim_names(&grant.claims)
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    body.insert(
+        "authorization_details".to_owned(),
+        serde_json::Value::Array(grant.authorization_details.clone()),
+    );
+    body.insert(
+        "created_at".to_owned(),
+        serde_json::Value::from(grant.created_at.unix_timestamp()),
+    );
+    body.insert(
+        "last_updated_at".to_owned(),
+        serde_json::Value::from(grant.updated_at.unix_timestamp()),
+    );
+    if let Some(expires_at) = grant.expires_at {
+        body.insert(
+            "expires_at".to_owned(),
+            serde_json::Value::from(expires_at.unix_timestamp()),
+        );
+    }
+    serde_json::Value::Object(body)
+}
+
+/// Every claim name an OIDC Core §5.5 request asks for, in either delivery
+/// point, sorted and deduplicated.
+///
+/// A `BTreeSet` so the order is the same on every call: this is rendered into
+/// a response body, and a member whose order depended on a hash seed would
+/// make two reads of one unchanged grant differ.
+fn requested_claim_names(claims: &serde_json::Value) -> BTreeSet<String> {
+    let Some(object) = claims.as_object() else {
+        return BTreeSet::new();
+    };
+    object
+        .values()
+        .filter_map(serde_json::Value::as_object)
+        .flat_map(serde_json::Map::keys)
+        .cloned()
+        .collect()
+}
+
 /// What a request asked for, once §5.4 is satisfied.
 ///
 /// An `Option<GrantManagement>` is the whole return of [`parse`]: `None` is an
@@ -403,6 +543,10 @@ pub fn parse(
 
 /// Whether a `grant_id` is one this server could have minted.
 ///
+/// Public because §6.3 puts a grant id in a *URL path* as well as in a request
+/// parameter, and the endpoint that reads it there wants the same cheap filter
+/// in front of the same database.
+///
 /// Shape only, and checked before the database is touched. [`Grant::new`] mints
 /// a v4 UUID, so the alphabet is hexadecimal and hyphens; anything else is an
 /// id this tenant does not hold, and saying so without a query is what keeps a
@@ -413,7 +557,7 @@ pub fn parse(
 /// a grant id is — its job is to be a cheap and *conservative* filter in front
 /// of that one.
 #[must_use]
-fn is_plausible_grant_id(id: &str) -> bool {
+pub fn is_plausible_grant_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_GRANT_ID_LEN
         && id
@@ -563,6 +707,109 @@ mod tests {
     /// A grant id shaped the way `Grant::new` mints them.
     fn id_of(grant: &Grant) -> String {
         grant.id.as_str().to_owned()
+    }
+
+    /// §6.4: the response is what the grant *authorises*, and never a token.
+    ///
+    /// The assertion is over the whole document rather than over one member,
+    /// because "no tokens are exposed" is a statement about everything that is
+    /// there and not about anything in particular.
+    #[test]
+    fn a_query_response_describes_the_grant_and_carries_no_credential() {
+        // Arrange
+        let mut grant = grant();
+        grant.scopes = ["openid".to_owned(), "profile".to_owned()]
+            .into_iter()
+            .collect();
+        grant.resources = ["https://api.example/".to_owned()].into_iter().collect();
+        grant.claims = json!({
+            "userinfo": {"email": serde_json::Value::Null},
+            "id_token": {"email": serde_json::Value::Null, "given_name": serde_json::Value::Null},
+        });
+        grant.authorization_details = vec![json!({"type": "payment"})];
+        grant.expires_at = Some(now() + time::Duration::days(30));
+
+        // Act
+        let body = query_response(&grant);
+
+        // Assert
+        assert_eq!(
+            body,
+            json!({
+                "scopes": [{
+                    "scope": "openid profile",
+                    "resource": ["https://api.example/"],
+                }],
+                "claims": ["email", "given_name"],
+                "authorization_details": [{"type": "payment"}],
+                "created_at": now().unix_timestamp(),
+                "last_updated_at": now().unix_timestamp(),
+                "expires_at": (now() + time::Duration::days(30)).unix_timestamp(),
+            })
+        );
+    }
+
+    /// A grant with no resource indicators renders `scope` and no `resource`.
+    ///
+    /// §6.4's element carries `resource` only where the authorization was
+    /// bound to one (RFC 8707 §2); an empty array would tell a client the
+    /// grant is audienced at nothing.
+    #[test]
+    fn a_query_response_omits_resource_when_the_grant_is_bound_to_none() {
+        // Arrange
+        let mut grant = grant();
+        grant.scopes = ["openid".to_owned()].into_iter().collect();
+
+        // Act
+        let body = query_response(&grant);
+
+        // Assert
+        assert_eq!(body["scopes"], json!([{"scope": "openid"}]));
+    }
+
+    /// A grant that never lapses carries no `expires_at`.
+    #[test]
+    fn a_query_response_omits_expires_at_for_a_grant_that_does_not_lapse() {
+        // Arrange
+        let grant = grant();
+
+        // Act
+        let body = query_response(&grant);
+
+        // Assert
+        assert!(body.get("expires_at").is_none(), "{body}");
+    }
+
+    /// §7.1's advertised actions include §6.1's two, and every one the
+    /// authorization-endpoint validator accepts.
+    #[test]
+    fn the_advertised_actions_cover_the_api_and_the_authorization_request() {
+        // Arrange
+        let advertised: BTreeSet<&str> = ADVERTISED_ACTIONS.into_iter().collect();
+
+        // Act, Assert
+        assert!(advertised.contains("query"));
+        assert!(advertised.contains("revoke"));
+        for action in Action::ALL {
+            assert!(
+                advertised.contains(action.as_str()),
+                "{action} is parsed but not advertised"
+            );
+        }
+    }
+
+    /// §6.1's API actions are not `grant_management_action` values.
+    ///
+    /// The same string means two different things in two places, and the one
+    /// place it must *not* mean anything is the authorization request: a
+    /// client sending `grant_management_action=revoke` is asking for something
+    /// §5.2 does not define.
+    #[test]
+    fn query_and_revoke_are_not_authorization_request_actions() {
+        // Act, Assert
+        assert_eq!(Action::parse(SCOPE_QUERY), None);
+        assert_eq!(Action::parse("query"), None);
+        assert_eq!(Action::parse("revoke"), None);
     }
 
     /// §5.4: "`grant_management_action` is set to `create` and a `grant_id` is

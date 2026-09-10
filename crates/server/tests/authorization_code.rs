@@ -352,6 +352,7 @@ impl Fixture {
             redirect_uri: REDIRECT.to_owned(),
             nonce: Some("n-0S6_WzA2Mj".to_owned()),
             dpop_jkt: dpop_jkt.map(ToOwned::to_owned),
+            grant_management_action: None,
             expires_at: self.now + time::Duration::seconds(60),
         };
         self.codes()
@@ -402,6 +403,8 @@ impl Fixture {
             signer: self.signer.as_ref(),
             // The deployment fallback: these tests write the tenant no
             // settings of its own (`ast-5c6`).
+            grant_id_claim: true,
+            grant_management: false,
             lifetimes: asterius_domain::TokenLifetimes::default(),
             constraint: SenderConstraint {
                 proof_key,
@@ -898,6 +901,7 @@ db_test! {
                     redirect_uri: REDIRECT.to_owned(),
                     nonce: None,
                     dpop_jkt: Some(jkt.as_str().to_owned()),
+                    grant_management_action: None,
                     expires_at: fixture.now + time::Duration::seconds(60),
                 },
                 fixture.now,

@@ -138,7 +138,7 @@ impl TokenLifetimes {
 }
 
 /// Everything a tenant may set about itself that this story covers.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantSettings {
     disabled_features: BTreeSet<Feature>,
     lifetimes: TokenLifetimes,
@@ -163,6 +163,45 @@ pub struct TenantSettings {
     /// key space by `asterius_web::i18n`: this crate knows what a safe string
     /// is, the crate that renders the pages knows what a key is.
     messages: MessageOverrides,
+    /// Whether an access token issued here carries the `grant_id` private
+    /// claim (RFC 9068 §2.2.3.1, Grant Management ID1 §6).
+    ///
+    /// `true` unless this tenant says otherwise, which is what every
+    /// deployment did before this setting existed and what this server's own
+    /// UserInfo endpoint resolves a grant through. It is the one field here
+    /// whose default is not [`Default::default`] for its type, which is why
+    /// this struct's `Default` is written out.
+    ///
+    /// It is an option rather than a constant because the claim is a
+    /// *correlator*: two tokens carrying the same `grant_id` tell a resource
+    /// server they came from one authorization (RFC 9068 §6). A deployment
+    /// whose resource servers are all third parties has no use for that and
+    /// every reason to withhold it.
+    ///
+    /// Last, for the reason the field above it is last: a new member goes at
+    /// the end so that a parallel change adding another one does not have to
+    /// be reconciled line by line.
+    grant_id_in_access_token: bool,
+}
+
+impl Default for TenantSettings {
+    /// A tenant that has expressed no opinion about anything.
+    ///
+    /// Written out rather than derived because of the last field: `false` is
+    /// what `bool::default` would give and it is the wrong answer, since it
+    /// would take the `grant_id` claim away from every tenant that has never
+    /// heard of the setting — and with it UserInfo's way of resolving a grant.
+    fn default() -> Self {
+        Self {
+            disabled_features: BTreeSet::new(),
+            lifetimes: TokenLifetimes::default(),
+            registration: RegistrationPolicy::default(),
+            grant_management_action_required: false,
+            default_locale: Locale::default(),
+            messages: MessageOverrides::default(),
+            grant_id_in_access_token: true,
+        }
+    }
 }
 
 impl TenantSettings {
@@ -186,6 +225,7 @@ impl TenantSettings {
             grant_management_action_required: false,
             default_locale: Locale::default(),
             messages: MessageOverrides::default(),
+            grant_id_in_access_token: true,
         })
     }
 
@@ -259,6 +299,33 @@ impl TenantSettings {
         &self.messages
     }
 
+    /// The same settings with the `grant_id` access-token claim decided.
+    ///
+    /// A builder rather than another argument to [`TenantSettings::validated`],
+    /// for the reason [`Self::with_registration`] gives.
+    #[must_use]
+    pub const fn with_grant_id_in_access_token(mut self, carried: bool) -> Self {
+        self.grant_id_in_access_token = carried;
+        self
+    }
+
+    /// Whether an access token minted here carries the `grant_id` claim.
+    ///
+    /// `true` unless this tenant has said otherwise, because that is what
+    /// every token this server has ever issued carried and a default that
+    /// changed the shape of a live token would break the resource servers
+    /// reading it — including this server's own UserInfo endpoint.
+    ///
+    /// Deliberately *not* narrowed by [`Feature::GrantManagement`], unlike
+    /// [`Self::grant_management_action_required`]: the claim predates Grant
+    /// Management here and is what `/revoke` and UserInfo reach a token's
+    /// authorization through, so a tenant that offers no Grant Management
+    /// still has an opinion worth honouring.
+    #[must_use]
+    pub const fn grant_id_in_access_token(&self) -> bool {
+        self.grant_id_in_access_token
+    }
+
     /// This tenant's registration policy.
     #[must_use]
     pub const fn registration(&self) -> &RegistrationPolicy {
@@ -328,6 +395,7 @@ impl TenantSettings {
             // tenant's language.
             "default_locale": self.default_locale.as_tag(),
             "messages": self.messages.to_json(),
+            "grant_id_in_access_token": self.grant_id_in_access_token,
         })
     }
 
@@ -407,12 +475,26 @@ impl TenantSettings {
 
         let messages = MessageOverrides::from_json(object.get("messages"))?;
 
+        // RFC 9068 §2.2.3.1's private claim. Absent is *not* `false` here: a
+        // row written before this setting existed belongs to a deployment
+        // whose tokens carried the claim, and reading silence as "withhold it"
+        // would take UserInfo's only way of resolving a grant away from every
+        // tenant that has never opened this file.
+        let grant_id_in_access_token = match object.get("grant_id_in_access_token") {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::Bool(carried)) => *carried,
+            Some(_) => {
+                return Err(TenantSettingsError::NotABoolean("grant_id_in_access_token"));
+            }
+        };
+
         Ok(
             Self::validated(disabled_features, authorization_code, access_token)?
                 .with_registration(registration)
                 .requiring_a_grant_management_action(grant_management_action_required)
                 .with_default_locale(default_locale)
-                .with_messages(messages),
+                .with_messages(messages)
+                .with_grant_id_in_access_token(grant_id_in_access_token),
         )
     }
 }
@@ -496,6 +578,55 @@ pub enum TenantSettingsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A row written before the setting existed still carries `grant_id`.
+    ///
+    /// The one default that cannot flip: UserInfo resolves a grant through the
+    /// claim, so silence has to keep meaning what it has always meant.
+    #[test]
+    fn a_tenant_that_never_mentioned_the_grant_id_claim_still_carries_it() {
+        // Arrange
+        let stored = serde_json::json!({"disabled_features": []});
+
+        // Act
+        let settings = TenantSettings::from_json(Some(&stored)).expect("a readable row");
+
+        // Assert
+        assert!(settings.grant_id_in_access_token());
+    }
+
+    /// A tenant that withholds the claim round-trips as withholding it.
+    #[test]
+    fn withholding_the_grant_id_claim_round_trips() {
+        // Arrange
+        let settings = TenantSettings::default().with_grant_id_in_access_token(false);
+
+        // Act
+        let read_back =
+            TenantSettings::from_json(Some(&settings.to_json())).expect("this server wrote it");
+
+        // Assert
+        assert!(!read_back.grant_id_in_access_token());
+    }
+
+    /// A `grant_id_in_access_token` that is not a boolean is refused.
+    #[test]
+    fn a_grant_id_claim_setting_that_is_not_a_boolean_is_refused() {
+        // Arrange
+        let stored = serde_json::json!({"grant_id_in_access_token": "yes"});
+
+        // Act
+        let error = TenantSettings::from_json(Some(&stored)).expect_err("not a boolean");
+
+        // Assert
+        assert!(
+            matches!(
+                error,
+                TenantSettingsError::NotABoolean("grant_id_in_access_token")
+            ),
+            "{error}"
+        );
+    }
 
     /// The tenant default is the last layer of OIDC Core §3.1.2.1 negotiation,
     /// so it has to survive a write and a read.

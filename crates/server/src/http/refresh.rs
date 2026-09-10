@@ -111,6 +111,13 @@ pub struct RefreshToken<'a> {
     pub signer: &'a dyn Signer,
     /// The trail. Every refresh is recorded, successful or not.
     pub audit: &'a dyn AuditSink,
+    /// Whether this tenant offers Grant Management, which is what makes the
+    /// grant management endpoint an audience a token may be minted for
+    /// (Grant Management ID1 §6.2).
+    pub grant_management: bool,
+    /// Whether this tenant's access tokens carry the `grant_id` claim
+    /// (`TenantSettings::grant_id_in_access_token`).
+    pub grant_id_claim: bool,
     /// How long this tenant's access tokens live (`ast-5c6`).
     ///
     /// The same value the code grant mints under: a refresh that renewed a
@@ -345,15 +352,21 @@ impl RefreshToken<'_> {
         // is what this request named, or what the authorization authorized, and
         // the scopes are narrowed again by what those resource servers
         // understand.
-        let targeting =
-            issuance::targeting(self.resource_servers, tenant, client, &narrowed, targets)
-                .await
-                .map_err(|error| match error {
-                    issuance::TargetingError::InvalidTarget => {
-                        Failure::Client(INVALID_TARGET, TARGET_REFUSED)
-                    }
-                    issuance::TargetingError::Storage(error) => Failure::Server(error),
-                })?;
+        let targeting = issuance::targeting(
+            self.resource_servers,
+            tenant,
+            client,
+            &narrowed,
+            targets,
+            self.grant_management,
+        )
+        .await
+        .map_err(|error| match error {
+            issuance::TargetingError::InvalidTarget => {
+                Failure::Client(INVALID_TARGET, TARGET_REFUSED)
+            }
+            issuance::TargetingError::Storage(error) => Failure::Server(error),
+        })?;
 
         let access = AccessToken::new(
             &tenant.issuer,
@@ -366,7 +379,7 @@ impl RefreshToken<'_> {
         )
         .authenticated_by(session.authentication.clone())
         .for_lifetime(self.lifetimes.access_token())
-        .with_grant_id()
+        .with_grant_id_when(self.grant_id_claim)
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
 

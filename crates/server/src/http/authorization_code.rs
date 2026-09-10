@@ -87,6 +87,13 @@ pub struct AuthorizationCode<'a> {
     pub users: &'a PgUserRepository,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
+    /// Whether this tenant offers Grant Management, which is what makes the
+    /// grant management endpoint an audience a token may be minted for
+    /// (Grant Management ID1 §6.2).
+    pub grant_management: bool,
+    /// Whether this tenant's access tokens carry the `grant_id` claim
+    /// (`TenantSettings::grant_id_in_access_token`).
+    pub grant_id_claim: bool,
     /// How long this tenant's access tokens live (`ast-5c6`).
     ///
     /// Resolved once per request by [`crate::http::protocol`] and handed down,
@@ -176,14 +183,21 @@ impl AuthorizationCode<'_> {
     ) -> Result<issuance::Targeting, Failure> {
         let requested = asterius_oidc::token::requested_resources(params)
             .map_err(|_| Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
-        issuance::targeting(self.resource_servers, tenant, client, grant, &requested)
-            .await
-            .map_err(|error| match error {
-                issuance::TargetingError::InvalidTarget => {
-                    Failure::Client(INVALID_TARGET, TARGET_REFUSED)
-                }
-                issuance::TargetingError::Storage(error) => Failure::Server(error),
-            })
+        issuance::targeting(
+            self.resource_servers,
+            tenant,
+            client,
+            grant,
+            &requested,
+            self.grant_management,
+        )
+        .await
+        .map_err(|error| match error {
+            issuance::TargetingError::InvalidTarget => {
+                Failure::Client(INVALID_TARGET, TARGET_REFUSED)
+            }
+            issuance::TargetingError::Storage(error) => Failure::Server(error),
+        })
     }
 
     /// The redemption itself, with failures as `Err` so the checks read in
@@ -301,15 +315,15 @@ impl AuthorizationCode<'_> {
         // deployment's own resource servers find the authorization a token was
         // minted under: UserInfo (`ast-1sk.3`) resolves claims from the grant
         // and nothing else, and introspection (`ast-1sk.1`) reports
-        // `grant_id`. Without it, both would have to guess among the grants a
-        // person holds for one client, and a wrong guess releases the claims
-        // of an authorization this token was not minted from.
+        // `grant_id`.
         //
-        // It is a correlator — RFC 9068 §6 — and the builder keeps it off by
-        // default for that reason. Turning it on here is a deployment-wide
-        // decision, and making it a tenant option is follow-up work — which a
-        // deployment whose resource servers are all third parties will want.
-        .with_grant_id()
+        // It is a correlator — RFC 9068 §6 — so it is the tenant's call
+        // (`TenantSettings::grant_id_in_access_token`), on by default because
+        // that is what every token this server has issued carried. A tenant
+        // whose resource servers are all third parties switches it off and
+        // UserInfo falls back to resolving the grant from the token's
+        // `client_id` and `sub`.
+        .with_grant_id_when(self.grant_id_claim)
         .for_lifetime(self.lifetimes.access_token())
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
@@ -360,6 +374,11 @@ impl AuthorizationCode<'_> {
             id_token.as_deref(),
             refresh_token.as_deref(),
             self.lifetimes.access_token(),
+            // Grant Management ID1 §5.5, from the code and not from the grant:
+            // the question is whether *this* request asked for an action, and
+            // a fact stored on the grant would answer for every later refresh
+            // too.
+            binding.grant_management_action.is_some(),
         ))
     }
 
@@ -502,6 +521,7 @@ impl AuthorizationCode<'_> {
         id_token: Option<&str>,
         refresh_token: Option<&str>,
         access_token_lifetime: time::Duration,
+        grant_management_action_requested: bool,
     ) -> Response {
         let mut body = json!({
             "access_token": access_token,
@@ -546,6 +566,19 @@ impl AuthorizationCode<'_> {
             && let Some(object) = body.as_object_mut()
         {
             object.insert("refresh_token".to_owned(), json!(refresh_token));
+        }
+        // Grant Management ID1 §5.5: "grant_id … The AS MUST return this
+        // parameter if a valid grant management action was requested." Only
+        // then: a client that asked for nothing gets the response it has
+        // always got, and the identifier of the authorization behind its
+        // token stays a fact it was never told.
+        //
+        // The *authorization* response carries nothing of the sort. §5.3
+        // leaves it unchanged, and a `grant_id` in a redirect would be a
+        // correlator in the browser's history, in a `Referer`, and in every
+        // proxy log between here and the client.
+        if grant_management_action_requested && let Some(object) = body.as_object_mut() {
+            object.insert("grant_id".to_owned(), json!(grant.id.as_str()));
         }
         (axum::http::StatusCode::OK, Json(body)).into_response()
     }

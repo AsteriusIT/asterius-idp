@@ -469,6 +469,9 @@ impl PgGrantRepository {
     ///    its own `exp`;
     /// 4. stamp the grant.
     ///
+    /// Between 3 and 4 it writes the grant's access-token cutoff, which is what
+    /// reaches the tokens step 3 could not name.
+    ///
     /// The grant is stamped last on purpose. It is the row every other reader
     /// consults, so it becomes revoked only once the credentials it covers
     /// already are — and if step 3 fails, nothing at all is written.
@@ -478,8 +481,10 @@ impl PgGrantRepository {
     /// because the baseline schema has no record of issued access tokens: they
     /// are stateless JWTs (RFC 9068), and FAPI 2.0 SP §6.8 item 3 is exactly
     /// the trade-off that buys. What catches the ones the caller does not know
-    /// about is the grant's own `revoked_at`, which introspection resolves
-    /// through the token's `grant_id` claim.
+    /// about is the grant's access-token cutoff, written here in the same
+    /// transaction: a mark saying nothing minted from this grant before `now`
+    /// is good any more, read on the resource path against the token's own
+    /// `iat` (`ast-m9c.13`).
     ///
     /// A second revocation of the same grant is [`DomainError::NotFound`],
     /// which is also what an unknown grant returns. That is deliberate and
@@ -554,6 +559,25 @@ impl PgGrantRepository {
         .await
         .map_err(to_domain_error)?
         .rows_affected();
+
+        // Step 3b. The denylist above only reaches the tokens the caller could
+        // name. Everything else minted from this grant is withdrawn by a mark
+        // — the same `cutoffs::withdraw` `amend` writes and the only mechanism
+        // there is (`ast-m9c.13`), so a revoked grant and an amended one are
+        // withdrawn by one rule rather than two.
+        //
+        // Without it a revoked grant is reachable only through the `grant_id`
+        // claim, which is now a tenant option: a deployment that withholds the
+        // correlator would otherwise have `DELETE /grants/{id}` leave live
+        // access tokens behind, which is exactly what Grant Management ID1
+        // §6.5 asks a server to avoid.
+        crate::cutoffs::withdraw(
+            &mut *transaction,
+            &self.tenant,
+            crate::cutoffs::Principal::Grant(id.to_string().as_str()),
+            now,
+        )
+        .await?;
 
         // Step 4.
         sqlx::query!(

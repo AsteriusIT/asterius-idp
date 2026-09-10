@@ -16,6 +16,7 @@ use crate::http::authorize::{self, AuthorizeContext};
 use crate::http::client_configuration::{self, ConfigurationContext};
 use crate::http::client_credentials::ClientCredentials;
 use crate::http::dpop::DpopEndpoint;
+use crate::http::grant_management;
 use crate::http::interaction::{self, InteractionContext};
 use crate::http::logout;
 use crate::http::par::{self, PushContext};
@@ -368,8 +369,10 @@ pub fn routes(state: ProtocolState) -> Router {
                 recovery::NEW_PASSWORD_PATH,
                 get(recovery_new_password_page)
                     .post(recovery_new_password_submit)
-                    .with_state(endpoints),
+                    .with_state(Arc::clone(&endpoints)),
             );
+
+        router = mount_grant_management(router, capabilities, &endpoints);
     }
 
     router = mount_the_unbuilt(router, capabilities, built_clients);
@@ -380,6 +383,35 @@ pub fn routes(state: ProtocolState) -> Router {
         guard,
         tenant_feature_guard,
     ))
+}
+
+/// Mounts the Grant Management API (ID1 §6.3), where the deployment has it.
+///
+/// §6.3: "the resource URL is constructed by appending the `grant_id` to the
+/// `grant_management_endpoint`". The base path is the registry's — the same
+/// one `/grants` is advertised under — so the URL a client builds from the
+/// metadata is the URL this matches.
+///
+/// The *deployment's* flag decides whether the route exists at all. The
+/// per-tenant half is [`tenant_feature_guard`], which recognises this path as
+/// [`Endpoint::GrantManagement`] because it recognises every path under it;
+/// but that guard is inert on a deployment with no settings repository, and a
+/// route that existed there would answer for a feature this deployment does
+/// not advertise.
+fn mount_grant_management(
+    router: Router,
+    capabilities: Capabilities,
+    endpoints: &Arc<ClientEndpoints>,
+) -> Router {
+    if !capabilities.grant_management {
+        return router;
+    }
+    router.route(
+        &format!("{}/{{grant_id}}", Endpoint::GrantManagement.path()),
+        get(grant_query)
+            .delete(grant_revoke)
+            .with_state(Arc::clone(endpoints)),
+    )
 }
 
 /// Mounts a 501 at every enabled endpoint that has no handler yet.
@@ -838,6 +870,143 @@ async fn userinfo_endpoint_inner(
     .await
 }
 
+/// `GET /grants/{grant_id}` — Grant Management ID1 §6.4.
+///
+/// Wiring only: everything that decides anything is in
+/// [`crate::http::grant_management`], which is where the tests are.
+async fn grant_query(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    Path(grant_id): Path<String>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let store = StoredGrants {
+        grants: scope.grants(),
+    };
+    grant_management::query(
+        grant_management_context(
+            &endpoints,
+            &tenant,
+            &store,
+            certificate.as_deref().map(|c| &**c),
+        ),
+        &method,
+        &headers,
+        &grant_id,
+    )
+    .await
+}
+
+/// `DELETE /grants/{grant_id}` — Grant Management ID1 §6.5.
+async fn grant_revoke(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    Path(grant_id): Path<String>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let store = StoredGrants {
+        grants: scope.grants(),
+    };
+    grant_management::revoke(
+        grant_management_context(
+            &endpoints,
+            &tenant,
+            &store,
+            certificate.as_deref().map(|c| &**c),
+        ),
+        &method,
+        &headers,
+        &grant_id,
+    )
+    .await
+}
+
+/// The context both verbs take, assembled once so they cannot differ.
+fn grant_management_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    store: &'a StoredGrants,
+    certificate: Option<&'a crate::mtls::PresentedCertificate>,
+) -> grant_management::GrantManagementContext<'a> {
+    grant_management::GrantManagementContext {
+        tenant,
+        store,
+        keys: endpoints.keys.as_ref(),
+        dpop: endpoints.dpop.as_ref(),
+        audit: endpoints.audit.as_ref(),
+        certificate: certificate.map(|presented| &presented.leaf),
+        now: time::OffsetDateTime::now_utc(),
+    }
+}
+
+/// The rows behind the Grant Management API.
+///
+/// One repository, and the endpoint reaches exactly four of its methods
+/// through the port — `amend` and `claim` are not among them.
+#[derive(Debug)]
+struct StoredGrants {
+    grants: asterius_store_pg::PgGrantRepository,
+}
+
+#[async_trait::async_trait]
+impl grant_management::GrantManagementStore for StoredGrants {
+    async fn grant(
+        &self,
+        id: &asterius_domain::GrantId,
+    ) -> Result<Option<asterius_domain::Grant>, asterius_domain::DomainError> {
+        self.grants.find(id).await
+    }
+
+    async fn is_denylisted(&self, jti: &str) -> Result<bool, asterius_domain::DomainError> {
+        self.grants.is_denylisted(jti).await
+    }
+
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &asterius_domain::ClientId,
+        grant: Option<&asterius_domain::GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, asterius_domain::DomainError> {
+        self.grants.revoked_before(client, grant).await
+    }
+
+    /// Grant Management ID1 §6.5, in one transaction.
+    ///
+    /// [`asterius_domain::RevocationReason::UserRevoked`] because that is what
+    /// the reason means here: §6.5's `DELETE` is the client acting on the
+    /// person's behalf to withdraw *the authorization*, which is a different
+    /// fact from RFC 7009's `ClientRevoked` — that one hands a credential back
+    /// and leaves the grant standing.
+    ///
+    /// No live access tokens are named: this caller holds one token and it is
+    /// its own, not the grant's. What withdraws the grant's is the cutoff
+    /// `revoke` writes.
+    ///
+    /// [`asterius_domain::DomainError::NotFound`] is `false` and not an error:
+    /// it is what a second `DELETE` finds, and it is also what an id this
+    /// tenant never held would find.
+    async fn revoke(
+        &self,
+        id: &asterius_domain::GrantId,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, asterius_domain::DomainError> {
+        match self
+            .grants
+            .revoke(id, asterius_domain::RevocationReason::UserRevoked, &[], now)
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(asterius_domain::DomainError::NotFound) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// `POST /revoke` — RFC 7009 §2.
 ///
 /// Wiring only, like the token endpoint: everything that decides anything is
@@ -949,6 +1118,16 @@ impl userinfo::UserInfoSource for StoredClaims {
         self.grants.find(id).await
     }
 
+    /// The same query the grants dashboard and the consent memory read
+    /// (`PgGrantRepository::list_for_subject`), so "which grants does this
+    /// person hold" has one answer here too.
+    async fn grants_for_subject(
+        &self,
+        subject: &asterius_domain::SubjectId,
+    ) -> Result<Vec<asterius_domain::Grant>, asterius_domain::DomainError> {
+        self.grants.list_for_subject(subject).await
+    }
+
     async fn user(
         &self,
         id: asterius_domain::UserId,
@@ -1035,19 +1214,9 @@ async fn token_endpoint_inner(
     let clients = scope.clients(endpoints.capabilities);
 
     let now = time::OffsetDateTime::now_utc();
-    let binding = match endpoints
-        .dpop
-        .check(
-            tenant,
-            Endpoint::Token,
-            &axum::http::Method::POST,
-            headers,
-            now,
-        )
-        .await
-    {
+    let binding = match token_endpoint_proof(endpoints, tenant, headers, now).await {
         Ok(binding) => binding,
-        Err(refusal) => return refusal.into_response(),
+        Err(refusal) => return *refusal,
     };
 
     let authenticator = Arc::clone(&endpoints.authenticator);
@@ -1067,11 +1236,15 @@ async fn token_endpoint_inner(
     // (OIDC Core §5.4, §5.5). The KEK is the same one every other user read
     // takes, because the claim bag is encrypted at rest.
     let users = scope.users(Arc::clone(&endpoints.kek));
-    // One read for both grants, so that whichever this request turns out to be
-    // it mints under the same numbers — the same argument `now` and the proof
-    // key are resolved once, just above.
-    let lifetimes = match lifetimes_for(endpoints, tenant).await {
-        Ok(lifetimes) => lifetimes,
+    // One read for all three grants, so that whichever this request turns out
+    // to be it mints under the same settings — the same argument `now` and the
+    // proof key are resolved once, just above.
+    let Issuing {
+        lifetimes,
+        grant_id_claim,
+        grant_management,
+    } = match issuing_policy(endpoints, tenant).await {
+        Ok(policy) => policy,
         Err(error) => {
             tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
             return unavailable();
@@ -1095,6 +1268,8 @@ async fn token_endpoint_inner(
         users: &users,
         resource_servers: &resource_servers,
         signer: endpoints.signer.as_ref(),
+        grant_id_claim,
+        grant_management,
         lifetimes,
         constraint,
         now,
@@ -1110,6 +1285,8 @@ async fn token_endpoint_inner(
         resource_servers: &resource_servers,
         signer: endpoints.signer.as_ref(),
         audit: endpoints.audit.as_ref(),
+        grant_id_claim,
+        grant_management,
         lifetimes,
         constraint,
         now,
@@ -1122,6 +1299,8 @@ async fn token_endpoint_inner(
         resource_servers: &resource_servers,
         signer: endpoints.signer.as_ref(),
         audit: endpoints.audit.as_ref(),
+        grant_id_claim,
+        grant_management,
         lifetimes,
         constraint,
         now,
@@ -1635,6 +1814,87 @@ async fn lifetimes_for(
         None => Ok(endpoints.lifetimes),
         Some(directory) => Ok(directory.for_tenant(&tenant.id).await?.lifetimes()),
     }
+}
+
+/// The DPoP proof this token request arrived with, if it arrived with one.
+///
+/// RFC 9449 §5: a proof is checked against the method and the URL of the
+/// request it was made for, which is why this is resolved once at the edge and
+/// handed down rather than re-derived by each grant handler.
+///
+/// # Errors
+///
+/// The refusal, already rendered: [`dpop::Refusal`] knows the authorization
+/// server's shape for one (RFC 9449 §5.2), and re-deciding it here would be a
+/// second opinion.
+async fn token_endpoint_proof(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+    headers: &axum::http::HeaderMap,
+    now: time::OffsetDateTime,
+) -> Result<Option<crate::http::dpop::Binding>, Box<Response>> {
+    endpoints
+        .dpop
+        .check(
+            tenant,
+            Endpoint::Token,
+            &axum::http::Method::POST,
+            headers,
+            now,
+        )
+        .await
+        .map_err(|refusal| Box::new(refusal.into_response()))
+}
+
+/// Everything about a tenant that shapes a token, read together.
+///
+/// A struct rather than three reads at three points in
+/// [`token_endpoint_inner`], because all three must describe the *same*
+/// tenant at the same moment: a token whose lifetime came from one reading and
+/// whose claims came from another is a token no setting explains.
+#[derive(Debug, Clone, Copy)]
+struct Issuing {
+    /// How long the access token lives (`ast-5c6`).
+    lifetimes: TokenLifetimes,
+    /// Whether it carries `grant_id` (RFC 9068 §2.2.3.1).
+    grant_id_claim: bool,
+    /// Whether the grant management endpoint is an audience it may be minted
+    /// for (Grant Management ID1 §6.2).
+    ///
+    /// The tenant's own narrowing, not the deployment's flags: a tenant that
+    /// has switched Grant Management off has no grant management endpoint —
+    /// [`tenant_feature_guard`] answers 404 there — so a token audienced at it
+    /// would be a token for a URL that does not exist here.
+    grant_management: bool,
+}
+
+/// Reads the three, from one settings lookup.
+///
+/// # Errors
+///
+/// Whatever the settings read failed with. Never a default: falling back would
+/// mint tokens under a policy this tenant has just replaced.
+async fn issuing_policy(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+) -> Result<Issuing, DomainError> {
+    let Some(directory) = &endpoints.tenant_settings else {
+        return Ok(Issuing {
+            lifetimes: endpoints.lifetimes,
+            grant_id_claim: asterius_domain::TenantSettings::default().grant_id_in_access_token(),
+            grant_management: endpoints
+                .capabilities
+                .is_enabled(asterius_domain::Feature::GrantManagement),
+        });
+    };
+    let settings = directory.for_tenant(&tenant.id).await?;
+    Ok(Issuing {
+        lifetimes: settings.lifetimes(),
+        grant_id_claim: settings.grant_id_in_access_token(),
+        grant_management: settings
+            .effective_capabilities(endpoints.capabilities)
+            .is_enabled(asterius_domain::Feature::GrantManagement),
+    })
 }
 
 /// What this tenant can do, given what the deployment can do.

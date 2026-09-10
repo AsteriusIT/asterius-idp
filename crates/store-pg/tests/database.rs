@@ -5355,6 +5355,53 @@ mod grants {
     }
 
     db_test! {
+        /// Revoking a grant writes its access-token cutoff, so the tokens the
+        /// caller could not name go too.
+        ///
+        /// Grant Management ID1 §6.5: `DELETE` "MUST revoke the respective
+        /// grant and all refresh tokens issued based on that grant […] It
+        /// SHOULD also revoke all access tokens". Those cannot be listed —
+        /// they are stateless JWTs (RFC 9068) and nothing wrote their `jti`
+        /// down — and the denylist above only ever reaches the ones somebody
+        /// presented. The cutoff is what withdraws the rest (`ast-m9c.13`),
+        /// and it is the mark the resource path reads whether or not the token
+        /// carries a `grant_id` claim.
+        async fn revoking_a_grant_withdraws_the_access_tokens_nobody_can_name(db) {
+            // Arrange
+            seed_client(&db.pool, "demo", "billing").await;
+            let repo = repo(&db.pool, "demo");
+            let grant = a_grant("demo", "billing", "sub-1");
+            repo.create(&grant).await.expect("create");
+            let now = epoch();
+
+            // Act: no live token named at all, which is what the Grant
+            // Management endpoint passes — it holds its own token and not the
+            // grant's.
+            let outcome = repo
+                .revoke(&grant.id, RevocationReason::UserRevoked, &[], now)
+                .await
+                .expect("revoke");
+            assert_eq!(outcome.access_tokens_denylisted, 0, "nothing was named");
+
+            // Assert
+            assert_eq!(
+                repo.revoked_before(&ClientId::new("billing"), Some(&grant.id))
+                    .await
+                    .expect("read the cutoff"),
+                Some(now),
+                "a revoked grant left its access tokens verifying"
+            );
+            assert_eq!(
+                repo.revoked_before(&ClientId::new("billing"), None)
+                    .await
+                    .expect("read the cutoff"),
+                None,
+                "revoking one grant withdrew the whole client's tokens"
+            );
+        }
+    }
+
+    db_test! {
         /// The failure mode a revocation exists to prevent: the refresh token
         /// revoked, the access token still live, and the caller told it worked.
         ///
@@ -5645,6 +5692,11 @@ mod codes {
             redirect_uri: "https://client.example/cb".to_owned(),
             nonce: Some("n-0S6_WzA2Mj".to_owned()),
             dpop_jkt: Some("a-thumbprint".to_owned()),
+            // Grant Management ID1 §5.5: the fact the token response needs,
+            // and the only field here that is not compared at redemption — so
+            // the round-trip test is the only thing that would notice it being
+            // dropped.
+            grant_management_action: Some("merge".to_owned()),
             expires_at: micros(now + time::Duration::seconds(60)),
         }
     }

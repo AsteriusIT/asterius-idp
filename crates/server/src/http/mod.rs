@@ -12,6 +12,7 @@ pub mod console;
 pub mod deliver;
 pub mod dpop;
 pub mod forwarded;
+pub mod grant_management;
 pub mod i18n;
 pub mod id_token_hint;
 pub mod interaction;
