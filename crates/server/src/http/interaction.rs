@@ -74,9 +74,6 @@ pub struct InteractionContext<'a> {
     /// session it produces carries — and, for an essential request, to make
     /// that value one of the ones the client asked for (OIDC Core §5.5.1.1).
     pub acr: &'a asterius_domain::AcrPolicy,
-    /// Who is signed in, shown on the consent screen so a user on a shared
-    /// machine can see whose account is about to be granted.
-    pub username: Option<&'a str>,
     /// This tenant's clients, for the name and metadata the consent screen
     /// shows.
     ///
@@ -246,7 +243,15 @@ pub async fn show(
     }
 
     let offer = describe(&context, &record).await;
-    render(&context, state.stage, &token, id, None, offer.as_ref())
+    render(
+        &context,
+        state.stage,
+        &token,
+        id,
+        None,
+        offer.as_ref(),
+        state.username.as_deref(),
+    )
 }
 
 /// The consent screen's contents, and the one origin its form may reach.
@@ -425,7 +430,7 @@ async fn sign_in(
     };
 
     let attempt = context.throttle.attempt(Some(username));
-    let state = match gate(context, presented, state, id, &attempt, now).await {
+    let mut state = match gate(context, presented, state, id, &attempt, now).await {
         Ok(state) => state,
         Err(response) => return *response,
     };
@@ -434,7 +439,13 @@ async fn sign_in(
         .verify(username, Secret::new(password.to_owned()))
         .await
     {
-        Ok(Some(user)) => authenticated(context, presented, state, id, record, user, now).await,
+        Ok(Some(user)) => {
+            // The name that was just proved, kept for the screens that follow
+            // (`ast-bo5`). The passkey path fills the same field through the
+            // same function, so neither can drift from the other.
+            state.signed_in_as(username);
+            authenticated(context, presented, state, id, record, user, now).await
+        }
         // One message for "no such user" and "wrong password". The
         // verifier already equalises the *timing*; this equalises what
         // is said. Both halves are needed — identical text with a
@@ -580,7 +591,15 @@ async fn authenticated(
     // Signed in, so the next screen is consent — which needs the
     // offer.
     let offer = describe(context, &record).await;
-    let mut response = render(context, state.stage, &token, id, None, offer.as_ref());
+    let mut response = render(
+        context,
+        state.stage,
+        &token,
+        id,
+        None,
+        offer.as_ref(),
+        state.username.as_deref(),
+    );
     set_session_cookie(&mut response, &id_value);
     response
 }
@@ -1298,7 +1317,15 @@ async fn retry(
     if let Err(error) = save(context, presented, &state, None, now).await {
         return *error;
     }
-    render(context, state.stage, &token, id, Some(message), None)
+    render(
+        context,
+        state.stage,
+        &token,
+        id,
+        Some(message),
+        None,
+        state.username.as_deref(),
+    )
 }
 
 /// The limiter, before the credential is looked at.
@@ -1366,6 +1393,7 @@ async fn no_method(
         id,
         Some("Signing in is not available on this server."),
         None,
+        state.username.as_deref(),
     )
 }
 
@@ -1500,6 +1528,7 @@ fn render(
     id: &str,
     message: Option<&str>,
     offer: Option<&ConsentOffer>,
+    signed_in: Option<&str>,
 ) -> Response {
     // Under the prefix the tenancy layer removed: this page is served at
     // `/t/{tenant}/interaction/{id}` and posts back to itself (`ast-295`).
@@ -1544,7 +1573,7 @@ fn render(
                     locale: "en",
                     tenant_name: &context.tenant.display_name,
                     client_name: &request.client_name,
-                    username: context.username.unwrap_or_default(),
+                    username: signed_in.unwrap_or_default(),
                     redirect_host: &request.redirect_host,
                     scopes: request
                         .scopes

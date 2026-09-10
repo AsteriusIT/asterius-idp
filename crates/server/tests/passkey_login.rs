@@ -167,7 +167,7 @@ impl FakeInteractions {
         let progress = StoredState {
             stage,
             csrf_digest: Some(sha256_hex(csrf.as_bytes())),
-            decision: None,
+            ..StoredState::default()
         };
         Self {
             digest: digest.to_owned(),
@@ -190,6 +190,13 @@ impl FakeInteractions {
         let held = self.record.lock().expect("lock");
         held.as_ref()
             .map(|record| StoredState::from_stored(&record.state).stage)
+    }
+
+    /// Who the stored state says signed in, if anybody.
+    fn username(&self) -> Option<String> {
+        let held = self.record.lock().expect("lock");
+        held.as_ref()
+            .and_then(|record| StoredState::from_stored(&record.state).username)
     }
 
     /// The session digest the interaction was advanced with, if any.
@@ -596,7 +603,7 @@ impl Fixture {
         record.state = serde_json::to_value(StoredState {
             stage: Stage::StepUp,
             csrf_digest: Some(sha256_hex(CSRF.as_bytes())),
-            decision: None,
+            ..StoredState::default()
         })
         .expect("a state serialises");
         drop(held);
@@ -942,6 +949,53 @@ async fn a_step_up_rotates_the_session_and_records_the_class_it_reached() {
     );
     assert_eq!(fixture.requests.stage(), Some(Stage::Consent));
     assert_eq!(fixture.requests.session(), Some(after.id_digest.clone()));
+}
+
+/// **The screens after a passkey sign-in can name who signed in** (`ast-bo5`).
+///
+/// The credential identifies the account, so nobody typed a name — and without
+/// this the consent screen that follows renders "Signed in as ." A person on a
+/// shared machine has to be able to see whose account is about to be granted.
+#[tokio::test]
+async fn a_verified_assertion_records_who_signed_in() {
+    // Arrange
+    let now = OffsetDateTime::now_utc();
+    let fixture = Fixture::at_login(now, 4);
+    let (_, options) = fixture.options(now).await;
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(options["challenge"].as_str().expect("a challenge"))
+        .expect("base64url");
+
+    // Act
+    let response = fixture
+        .finish(&fixture.assertion(&challenge, UP | UV, 5), now)
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(fixture.requests.username().as_deref(), Some("ada"));
+}
+
+/// The step-up path rotates the session rather than starting one (`ast-2vk.7`),
+/// and it reaches the same screens — so it records the name by the same route.
+#[tokio::test]
+async fn a_step_up_records_who_signed_in() {
+    // Arrange
+    let now = OffsetDateTime::now_utc();
+    let fixture = Fixture::at_step_up(now, asterius_domain::acr::PASSKEY_USER_VERIFIED);
+    let (_, options) = fixture.options(now).await;
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(options["challenge"].as_str().expect("a challenge"))
+        .expect("base64url");
+
+    // Act
+    let response = fixture
+        .finish(&fixture.assertion(&challenge, UP | UV, 5), now)
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(fixture.requests.username().as_deref(), Some("ada"));
 }
 
 /// A step-up is not a way to write one person's authentication onto another

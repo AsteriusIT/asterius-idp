@@ -1502,10 +1502,6 @@ async fn interaction_show(
             sessions: &sessions,
             lifetimes: endpoints.session_lifetimes,
             acr: acr_policy(),
-            // `ast-2vk.8` resolves a display name; until then the consent
-            // screen names the signed-in user only when the session carries
-            // one.
-            username: None,
             clients: &clients,
             grants: &grants,
             memory: memory_policy(),
@@ -1572,10 +1568,6 @@ async fn interaction_submit(
             sessions: &sessions,
             lifetimes: endpoints.session_lifetimes,
             acr: acr_policy(),
-            // `ast-2vk.8` resolves a display name; until then the consent
-            // screen names the signed-in user only when the session carries
-            // one.
-            username: None,
             clients: &clients,
             grants: &grants,
             memory: memory_policy(),

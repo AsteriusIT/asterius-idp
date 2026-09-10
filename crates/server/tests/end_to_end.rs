@@ -714,6 +714,13 @@ impl Flow {
             html.contains("offline_access") || html.contains("when you are not"),
             "the consent screen did not mention offline access:\n{html}"
         );
+        // `ast-bo5`: the sign-in above was a passkey ceremony, where nobody
+        // typed a name. The screen still has to say whose account is about to
+        // be granted, or a person on a shared machine reads "Signed in as ."
+        assert!(
+            html.contains(&format!("Signed in as {}.", self.user.as_uuid())),
+            "the consent screen did not name who signed in:\n{html}"
+        );
         let csrf = csrf_from(&html);
         let decided = self
             .post_form(
