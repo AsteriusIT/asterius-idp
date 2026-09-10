@@ -28,15 +28,46 @@
    characters the escaper leaves alone, so a token that ever carried markup
    would come out broken rather than injected. That is why there is still
    exactly one `|safe` in this tree. -#}
-<style {{ nonce_attribute|safe }}>{% include "style.css" %}{{ theme_css }}</style>
+{# The face this deployment serves itself, declared here rather than in
+   style.css because its URL is the only thing in the stylesheet that is not a
+   constant: it carries a hash of the bytes (`asterius_web::brand::font_path`)
+   and this request's mount prefix, so `/t/{tenant}/…` resolves (`ast-295`).
+
+   The URL is rendered *escaped*, like everything else: a path built from a
+   digest and a tenant id — `a-z`, `0-9`, `-` and `_` — contains none of the
+   five characters the escaper rewrites, so the bytes are the same either way.
+   `format("woff2")` keeps a browser that cannot read WOFF2 from downloading
+   93 KB to find out, and `swap` means the page is readable in the system
+   stack from the first paint and never blank. -#}
+<style {{ nonce_attribute|safe }}>@font-face{font-family:Geist;src:url("{{ brand.font_url() }}") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+{% include "style.css" %}{{ theme_css }}</style>
 </head>
 <body>
 {# The layout of ast-9li's direction A: a centred card on a neutral backdrop,
-   with the tenant's wordmark above it. The wordmark is the page's `h1` because
-   it is who is asking; each page's own subject is the `h2` inside the card. #}
+   with the tenant's mark and name above it. The name is the page's `h1`
+   because it is who is asking; each page's own subject is the `h2` inside the
+   card.
+
+   The mark is the tenant's uploaded logo when it has one, and otherwise one of
+   the twenty-four icons `asterius_web::brand` compiles in. The icon is inline
+   SVG and therefore rendered *unescaped* — the second and last `|safe` in this
+   tree, exempted by its exact spelling in `crates/web/src/source_audit.rs`.
+   That is only sound because `Brand::icon_svg` has no string input: it takes
+   an `asterius_domain::TenantIcon`, an enumeration, and returns one of
+   twenty-four reviewed drawings. A tenant supplies the *name* of a mark, never
+   the mark. `no_free_string_can_reach_the_rendered_mark` is the proof.
+
+   Both marks are decorative: the tenant's name is beside them in text, and a
+   screen reader that announced the logo too would say it twice. Hence
+   `alt=""` and `aria-hidden`. #}
 <div class="page">
 <div class="shell">
+<div class="brand">
+{% if brand.logo_url().is_empty() %}<span class="brand-mark">{{ brand.icon_svg()|safe }}</span>
+{% else %}<span class="brand-mark brand-logo"><img src="{{ brand.logo_url() }}" alt=""></span>
+{% endif %}
 <h1 class="wordmark">{{ tenant_name }}</h1>
+</div>
 <main class="card{% block card_class %}{% endblock %}">
 {% block content %}{% endblock %}
 </main>

@@ -3,7 +3,21 @@
 use asterius_web::FormActionOrigin;
 use axum::http::{HeaderMap, header};
 
+/// Where a page fetches the typeface, under the prefix routing removed.
+///
+/// One helper rather than the expression repeated at each of the nineteen
+/// places a page is rendered: `asterius_web::brand::font_path` is what the
+/// route in [`assets`] is mounted at, and `MountPrefix::absolute` is what puts
+/// a page under `/t/{tenant}` back on it (`ast-295`). A site that wrote one
+/// without the other would serve a page whose `@font-face` 404s — visibly
+/// wrong only on a path-based tenant, which is the kind of bug that ships.
+#[must_use]
+pub fn font_url(mount: &crate::tenancy::MountPrefix) -> String {
+    mount.absolute(asterius_web::brand::font_path())
+}
+
 pub mod access_token;
+pub mod assets;
 pub mod authorization_code;
 pub mod authorize;
 pub mod client_configuration;

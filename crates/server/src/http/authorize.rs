@@ -41,6 +41,7 @@ use asterius_oidc::decision::{
     Consent, DecisionPolicy, Interaction, Requirements, SessionState, Unmet, decide,
 };
 use asterius_oidc::par;
+use asterius_web::Brand;
 use asterius_web::interaction::{self, InteractionId, Stage, StoredState};
 use asterius_web::pages::{ErrorPage, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
@@ -522,6 +523,7 @@ fn refuse(context: &AuthorizeContext<'_>, stored: &PushedRequest, unmet: Unmet) 
     match crate::http::deliver::build(
         context.tenant,
         context.nonce,
+        &context.mount,
         mode,
         &response,
         &redirect_uri,
@@ -551,6 +553,9 @@ fn error_page(context: &AuthorizeContext<'_>, status: StatusCode) -> Response {
     let text = &context
         .language
         .for_request(&asterius_domain::locale::UiLocales::default());
+    // Where this page fetches its face, under the prefix routing removed
+    // (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let document = Document::render(context.nonce, |nonce| {
         asterius_web::pages::render(&ErrorPage {
             text,
@@ -559,6 +564,7 @@ fn error_page(context: &AuthorizeContext<'_>, status: StatusCode) -> Response {
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (status, document).into_response()

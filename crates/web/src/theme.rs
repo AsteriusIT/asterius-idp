@@ -29,11 +29,14 @@
 //!
 //! # Order matters: the tenant's rule comes last
 //!
-//! `style.css` declares the defaults in `:root` and a dark variant in a
-//! `prefers-color-scheme` media query. CSS resolves same-specificity
-//! declarations by document order, so the tenant's rule is appended *after*
-//! both and wins in either scheme. See the note in
-//! [`asterius_domain::entities::theme`] on what that costs.
+//! `style.css` declares the defaults in one `:root` rule. CSS resolves
+//! same-specificity declarations by document order, so the tenant's rule is
+//! appended after it and wins.
+//!
+//! There is no second rule to lose to any more: `ast-vn7` removed the
+//! `prefers-color-scheme` block, and `style.css` is `color-scheme: light`. See
+//! the note in [`asterius_domain::entities::theme`] for why a dark page is a
+//! tenant's palette rather than a visitor's browser setting.
 
 use asterius_domain::Theme;
 
@@ -222,6 +225,49 @@ mod tests {
                 "{property} differs between style.css and the default theme"
             );
         }
+    }
+
+    /// `ast-vn7`: one scheme, and the browser does not choose it.
+    ///
+    /// An absence, so it is asserted mechanically. A `prefers-color-scheme`
+    /// block would substitute colours the tenant's own contrast check never
+    /// saw — the tenant's rule is appended *after* it and wins on document
+    /// order, so a themed tenant would get its own `--bg` under this file's
+    /// `--fg`, a pair nobody measured. `color-scheme` is checked in the same
+    /// test because the two have to agree: `light dark` without the media
+    /// query would still let a browser repaint the form controls.
+    #[test]
+    fn the_stylesheet_offers_one_colour_scheme_and_it_is_light() {
+        const STYLESHEET: &str = include_str!("../templates/style.css");
+
+        // Comments removed first, and the whole `/* … */` span rather than the
+        // lines that open one: this file explains *why* it no longer has a
+        // `prefers-color-scheme` block, and the explanation must not be what
+        // makes the check fire.
+        let mut declarations = String::with_capacity(STYLESHEET.len());
+        let mut rest = STYLESHEET;
+        while let Some(start) = rest.find("/*") {
+            declarations.push_str(&rest[..start]);
+            match rest[start..].find("*/") {
+                Some(end) => rest = &rest[start + end + 2..],
+                None => break,
+            }
+        }
+        declarations.push_str(rest);
+
+        assert!(
+            !declarations.contains("prefers-color-scheme"),
+            "the stylesheet still lets the browser choose a palette"
+        );
+        assert!(
+            declarations.contains("color-scheme: light;"),
+            "the stylesheet does not declare the one scheme it supports"
+        );
+        assert!(
+            !declarations.contains("color-scheme: light dark"),
+            "`light dark` invites a browser to repaint controls in a scheme \
+             no palette was validated for"
+        );
     }
 
     /// The stylesheet, as the pair of sets that matter: what it reads and

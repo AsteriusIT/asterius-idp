@@ -12,6 +12,7 @@
 //! set that belongs on every response, document or not.
 #![forbid(unsafe_code)]
 
+pub mod brand;
 pub mod csp;
 pub mod document;
 pub mod i18n;
@@ -23,6 +24,7 @@ mod snapshots;
 mod source_audit;
 pub mod theme;
 
+pub use brand::Brand;
 pub use csp::{FormActionOrigin, InvalidOrigin, Nonce, Policy};
 pub use document::Document;
 pub use i18n::{Catalog, MessageKey, OverrideError, validate_overrides};
