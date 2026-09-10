@@ -24,6 +24,16 @@ Nothing is left behind except rows in the development database.
   attributes in `asterius_web::interaction` earn the prefix.
 - **No page provokes a CSP violation**, in either the no-JS or the JS suite, and
   a page that does fails the run — see the negative proof below.
+- **A rotation an operator performs really rotates.** `tests/key-rotation.spec.ts`
+  presses the console's button and then fetches the published JWK Set the way a
+  relying party would: the new `kid` is signing and the previous one is still
+  published (OIDC Core §10.1.1). The API-level proof (`ast-f7m.7`) cannot say
+  what the button does.
+- **Every page a route really renders passes axe** at WCAG 2.1 AA —
+  `tests/accessibility.spec.ts` for the server-rendered ones, `console.spec.ts`
+  and `key-rotation.spec.ts` for the console's screens. The templates that are
+  wired to no handler yet (device flow, registration, password recovery) are
+  deliberately absent: a test of an unreachable page is a test of nothing.
 
 ## The suites
 
@@ -62,6 +72,16 @@ uses `Policy::with_form_post_to` and names the origin of the `redirect_uri` this
 authorization was validated against, one origin and that page only.
 `tests/csp-sweep.spec.ts` asserts both halves: the widening on the consent page,
 and its absence on every other page.
+
+The signed-out page in `tests/accessibility.spec.ts` is a documented
+`test.fail()` for the same kind of reason (`ast-rna`). The logout confirmation
+posts to the bare `/logout`, root-relative and with no mount prefix, so on a
+path-routed tenant the answer lands on a 404 and pressing "Log out" ends
+nothing. `ast-295` gave the rendered URLs their prefix and
+`crates/server/src/http/logout.rs::confirmation_page` was missed; `ast-f0y`
+then removed the `custom_host` fixture that had been hiding it. The day the
+action carries its prefix, the test passes unexpectedly and the annotation
+comes off.
 
 ## Fixture notes
 
