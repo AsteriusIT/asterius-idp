@@ -473,6 +473,12 @@ mod tests {
             *entry += 1;
             Ok(*entry)
         }
+
+        async fn clear(&self, _tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
+            let mut counters = self.0.lock().expect("the test store is not poisoned");
+            counters.retain(|(key, _), _| key != bucket.as_str());
+            Ok(())
+        }
     }
 
     /// Records what was appended, so "once per window" can be asserted.

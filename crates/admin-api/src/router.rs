@@ -1732,6 +1732,19 @@ mod tests {
             *counted += 1;
             Ok(*counted)
         }
+
+        async fn clear(
+            &self,
+            _tenant: &TenantId,
+            bucket: &asterius_domain::Bucket,
+        ) -> Result<(), DomainError> {
+            self.0
+                .counters
+                .lock()
+                .expect("an uncontended lock")
+                .remove(bucket.as_str());
+            Ok(())
+        }
     }
 
     #[async_trait::async_trait]

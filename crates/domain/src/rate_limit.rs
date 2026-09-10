@@ -290,6 +290,30 @@ pub trait RateLimitStore: Debug + Send + Sync {
         window_start: OffsetDateTime,
         expires_at: OffsetDateTime,
     ) -> Result<u32, DomainError>;
+
+    /// Forgets every window of `bucket`, so the next read counts zero.
+    ///
+    /// The operation a *successful* authentication needs (`ast-b3u`). A fixed
+    /// window does not forget on its own: somebody who mistypes nine times and
+    /// then signs in correctly would otherwise spend the rest of the window one
+    /// attempt away from being locked out, having just proved they are who the
+    /// counter is about. Clearing is what makes the counter measure "attempts
+    /// since the last proof" rather than "attempts this quarter hour".
+    ///
+    /// Every window, not just the current one, because the boundary is aligned
+    /// to the epoch: a proof a second before a rollover must not leave a
+    /// counter that the next request inherits.
+    ///
+    /// A caller must only reach this after a credential actually verified.
+    /// Clearing on a refusal — including the refusal that means "no such
+    /// identifier" — would make the reset observable, and a limiter whose state
+    /// differs between a real account and an invented one is the enumeration
+    /// oracle the account bucket exists to close.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the delete fails.
+    async fn clear(&self, tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError>;
 }
 
 // ---------------------------------------------------------------------------

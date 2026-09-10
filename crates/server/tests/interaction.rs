@@ -467,7 +467,26 @@ fn client() -> IpAddr {
 /// `asterius_domain::rate_limit` gives at length; what a handler test needs is
 /// only that the counters move.
 #[derive(Debug, Default)]
-struct FakeLimiter(Mutex<BTreeMap<(String, i64), u32>>);
+struct FakeLimiter {
+    counters: Mutex<BTreeMap<(String, i64), u32>>,
+    /// Which operations the handler asked for, in order — not which buckets,
+    /// which differ by construction between two identifiers. It is the *shape*
+    /// of the work that has to match between a wrong password and an unknown
+    /// identifier, because a clear that happened on one and not the other is an
+    /// enumeration oracle and a difference in database round trips besides
+    /// (`ast-b3u`).
+    operations: Mutex<Vec<&'static str>>,
+}
+
+impl FakeLimiter {
+    fn operations(&self) -> Vec<&'static str> {
+        self.operations.lock().expect("lock").clone()
+    }
+
+    fn note(&self, operation: &'static str) {
+        self.operations.lock().expect("lock").push(operation);
+    }
+}
 
 #[async_trait::async_trait]
 impl RateLimitStore for FakeLimiter {
@@ -477,8 +496,9 @@ impl RateLimitStore for FakeLimiter {
         bucket: &Bucket,
         window_start: OffsetDateTime,
     ) -> Result<u32, DomainError> {
+        self.note("count");
         Ok(*self
-            .0
+            .counters
             .lock()
             .expect("lock")
             .get(&(bucket.as_str().to_owned(), window_start.unix_timestamp()))
@@ -492,12 +512,22 @@ impl RateLimitStore for FakeLimiter {
         window_start: OffsetDateTime,
         _expires_at: OffsetDateTime,
     ) -> Result<u32, DomainError> {
-        let mut counters = self.0.lock().expect("lock");
+        self.note("record");
+        let mut counters = self.counters.lock().expect("lock");
         let entry = counters
             .entry((bucket.as_str().to_owned(), window_start.unix_timestamp()))
             .or_default();
         *entry += 1;
         Ok(*entry)
+    }
+
+    async fn clear(&self, _tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
+        self.note("clear");
+        self.counters
+            .lock()
+            .expect("lock")
+            .retain(|(key, _), _| key != bucket.as_str());
+        Ok(())
     }
 }
 
@@ -1550,6 +1580,160 @@ async fn the_limit_lifts_once_the_window_has_passed() {
     let (status, _) = guess("ada", 1, &issued, now + Duration::minutes(16)).await;
 
     assert_eq!(status, StatusCode::OK);
+}
+
+// ---- a proof empties the bucket (ast-b3u) --------------------------------
+
+/// One account with one password. Unlike `AlwaysSucceeds` and `AlwaysRefuses`
+/// it can tell "no such identifier" from "wrong password" — which is exactly
+/// the difference that must not be observable outside it.
+#[derive(Debug)]
+struct SmallDirectory;
+
+#[async_trait::async_trait]
+impl CredentialVerifier for SmallDirectory {
+    async fn verify(
+        &self,
+        username: &str,
+        password: Secret<String>,
+    ) -> Result<Option<uuid::Uuid>, DomainError> {
+        // The password leaves the wrapper only to be compared, which is what a
+        // verifier is for.
+        if username == "ada" && password.expose() == "hunter2" {
+            Ok(Some(uuid::Uuid::from_u128(1)))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+/// Ten failures per identifier, and an address limit no test here reaches: the
+/// property under test is the account bucket, and a shared address limit would
+/// refuse the attempts before it was consulted.
+fn per_account_limits() -> LoginLimits {
+    LoginLimits {
+        per_address: RateLimit {
+            max: 1_000,
+            window: Duration::minutes(15),
+        },
+        per_account: RateLimit {
+            max: 10,
+            window: Duration::minutes(15),
+        },
+    }
+}
+
+/// Submits one sign-in against [`SmallDirectory`], sharing `issued` — and so
+/// sharing the counters — with every other call.
+async fn sign_in_attempt(
+    username: &str,
+    password: &str,
+    issued: &Issued,
+    now: OffsetDateTime,
+) -> (StatusCode, String) {
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let auth = SmallDirectory;
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+
+    let response = submit(
+        context_with(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&auth),
+            &sessions,
+            issued,
+            per_account_limits(),
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username={username}&password={password}",
+            token.expose()
+        )),
+        now,
+    )
+    .await;
+    (response.status(), body_of(response).await)
+}
+
+/// Nine mistypes and then the right password: the quota is whole again, so the
+/// next slip is an ordinary refusal rather than a lockout. Without the reset
+/// the tenth failure would carry the bucket to its limit and the eleventh
+/// attempt would be throttled, for somebody who has just proved who they are.
+#[tokio::test]
+async fn a_successful_sign_in_gives_the_identifier_its_quota_back() {
+    // Arrange: nine failures, one short of the limit, then a real sign-in.
+    let issued = Issued::default();
+    let now = OffsetDateTime::now_utc();
+    for _ in 0..9 {
+        sign_in_attempt("ada", "wrong", &issued, now).await;
+    }
+    let (accepted, _) = sign_in_attempt("ada", "hunter2", &issued, now).await;
+    assert_ne!(accepted, StatusCode::TOO_MANY_REQUESTS);
+
+    // Act: two more slips, which a full bucket would have refused.
+    sign_in_attempt("ada", "wrong", &issued, now).await;
+    let (status, body) = sign_in_attempt("ada", "wrong", &issued, now).await;
+
+    // Assert
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the quota was not given back: {body}"
+    );
+    assert!(!body.contains("Try again in"), "throttled: {body}");
+}
+
+/// The reset must not become the oracle the account bucket exists to close: a
+/// wrong password against an account that exists and a guess at an identifier
+/// nobody owns must answer the same thing and do the same work — same page,
+/// same counter operations, no clear on either.
+#[tokio::test]
+async fn a_wrong_password_and_an_unknown_identifier_answer_and_cost_the_same() {
+    // Arrange
+    let now = OffsetDateTime::now_utc();
+    let real = Issued::default();
+    let invented = Issued::default();
+
+    // Act
+    let mut real_answer = None;
+    let mut invented_answer = None;
+    for _ in 0..3 {
+        real_answer = Some(sign_in_attempt("ada", "wrong", &real, now).await);
+        invented_answer =
+            Some(sign_in_attempt("nobody@example.test", "wrong", &invented, now).await);
+    }
+
+    // Assert: the same answer, and the same work behind it — in particular
+    // neither sequence contains a `clear`, which only a proof may cause. The
+    // pages are compared through what they *say*, for the reason
+    // `a_locked_identifier_and_an_unknown_one_answer_the_same_thing` gives: the
+    // rest differs only in the per-render values — the interaction id, the CSP
+    // nonce, the synchroniser token — none of which is derived from what was
+    // typed.
+    let said = |answer: &Option<(StatusCode, String)>| {
+        let (status, html) = answer.clone().expect("an answer");
+        let message = html
+            .split(r#"<div class="error""#)
+            .nth(1)
+            .and_then(|rest| rest.split("</div>").next())
+            .map(ToOwned::to_owned)
+            .expect("a message on the page");
+        (status, message)
+    };
+    assert_eq!(said(&real_answer), said(&invented_answer));
+    assert_eq!(real.limiter.operations(), invented.limiter.operations());
+    assert!(
+        !real.limiter.operations().contains(&"clear"),
+        "a refused sign-in emptied a bucket: {:?}",
+        real.limiter.operations()
+    );
 }
 
 // ---- the consent decision (ast-uwv.1) -----------------------------------
