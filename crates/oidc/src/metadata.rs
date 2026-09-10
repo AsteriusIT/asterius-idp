@@ -160,18 +160,21 @@ impl Endpoint {
 
 /// The grant types this deployment supports.
 ///
-/// `authorization_code` and `refresh_token` are always present; the rest follow
-/// their flags.
+/// `authorization_code`, `refresh_token` and `client_credentials` are always
+/// present; the rest follow their flags.
 ///
-/// `client_credentials` is deliberately absent. A client may register for it,
-/// but no handler serves it at the token endpoint yet (`ast-a05.8`), so a
-/// request for it answers 501. Advertising it would promise a capability this
-/// deployment does not have to the one reader who cannot check — a client
-/// reading discovery once, at registration time. It goes back in with the
-/// grant, and the guard test in `crates/server/tests/token.rs` says so.
+/// The three unconditional ones are the three [`GrantType`]s with no
+/// `required_feature`, and each has a handler at the token endpoint. That
+/// parity is the property this list exists to keep: `client_credentials` was
+/// removed from it while the endpoint answered 501 for the grant, because a
+/// discovery document is read once, at registration time, by a client that
+/// cannot check. It went back in with the handler (`ast-a05.8`), and
+/// `crates/server/tests/client_credentials.rs` asserts both halves.
+///
+/// [`GrantType`]: asterius_domain::entities::client::GrantType
 #[must_use]
 pub fn grant_types(capabilities: &Capabilities) -> Vec<&'static str> {
-    let mut grants = vec!["authorization_code", "refresh_token"];
+    let mut grants = vec!["authorization_code", "refresh_token", "client_credentials"];
     if capabilities.token_exchange {
         grants.push("urn:ietf:params:oauth:grant-type:token-exchange");
     }
@@ -732,7 +735,7 @@ mod tests {
     fn grant_types_follow_their_flags() {
         assert_eq!(
             grant_types(&Capabilities::default()),
-            ["authorization_code", "refresh_token"]
+            ["authorization_code", "refresh_token", "client_credentials"]
         );
         let all = grant_types(&all_features());
         assert!(all.contains(&"urn:ietf:params:oauth:grant-type:token-exchange"));

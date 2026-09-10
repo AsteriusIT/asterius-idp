@@ -89,6 +89,9 @@ const CLIENT: &str = "billing";
 /// A second registered client, for RFC 7009 §2.2: a token issued to one
 /// client is not revocable by another.
 const OTHER_CLIENT: &str = "reporting";
+/// A machine client, for RFC 6749 §4.4: it acts for itself, and there is no
+/// person anywhere in its story.
+const SERVICE_CLIENT: &str = "ledger";
 const REDIRECT: &str = "https://rp.example/cb";
 const RESOURCE: &str = "https://api.example/";
 const NONCE: &str = "n-0S6_WzA2Mj";
@@ -764,15 +767,66 @@ impl Flow {
 
     /// One token request, authenticated as this client and proved under `key`.
     async fn token(&mut self, key: &ProofKey, jti: &str, pairs: &[(&str, &str)]) -> Reply {
+        self.token_as(CLIENT, None, key, jti, pairs).await
+    }
+
+    /// The same request, made by whichever client holds `signing_key`.
+    ///
+    /// `None` is this flow's own client. The parameter exists for the
+    /// `client_credentials` grant, which is asked for by a client that reaches
+    /// no authorization endpoint at all and so cannot be this one.
+    async fn token_as(
+        &mut self,
+        client_id: &str,
+        signing_key: Option<&SigningKey>,
+        key: &ProofKey,
+        jti: &str,
+        pairs: &[(&str, &str)],
+    ) -> Reply {
         let url = Endpoint::Token.url(&self.tenant.issuer);
         let path = format!("{}{}", self.prefix(), Endpoint::Token.path());
-        let assertion = self.assertion(jti);
+        let assertion = self.assertion_for(client_id, signing_key, jti);
         let proof = key.proof("POST", &url, &self.next_jti());
         let mut form = pairs.to_vec();
-        form.push(("client_id", CLIENT));
+        form.push(("client_id", client_id));
         form.push(("client_assertion_type", CLIENT_ASSERTION_TYPE));
         form.push(("client_assertion", &assertion));
         self.post_form(&path, &form, Some(&proof)).await
+    }
+
+    /// A machine client: `client_credentials` and nothing else, no redirect
+    /// URI, no response type (RFC 7591 §2.1's table). It never reaches the
+    /// authorization endpoint, because there is no user for it to send there.
+    async fn register_service_client(&self) -> SigningKey {
+        let (key, jwks) = client_credentials();
+        let now = OffsetDateTime::now_utc();
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(SERVICE_CLIENT),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&json!({
+                    "client_name": "Ledger",
+                    "grant_types": ["client_credentials"],
+                    "response_types": [],
+                    "scope": "ledger.read openid",
+                    "token_endpoint_auth_method": "private_key_jwt",
+                    "jwks": jwks,
+                }))
+                .expect("serialise"),
+                Capabilities::default(),
+            )
+            .expect("a valid machine registration"),
+            status: ClientStatus::Active,
+            created_at: now,
+            updated_at: now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities::default())
+            .upsert(&client)
+            .await
+            .expect("store the service client");
+        key
     }
 
     /// One revocation request (RFC 7009 §2.1), authenticated as this client.
@@ -1180,6 +1234,86 @@ async fn a_push_becomes_a_code_becomes_a_token_becomes_a_refresh() {
     // RFC 9449 §5: the response is still a DPoP one, bound to the key that
     // proved *this* request rather than the one that redeemed the code.
     assert_eq!(refreshed["token_type"], "DPoP", "{refreshed}");
+
+    flow.tear_down().await;
+}
+
+/// **A client with no user gets a token for itself, and it is not a user's**
+/// (`ast-a05.8`).
+///
+/// The whole `client_credentials` story against the assembled application: a
+/// machine client authenticates with `private_key_jwt`, proves a DPoP key, and
+/// is handed an access token — with no refresh token (RFC 6749 §4.4.3), no ID
+/// token, and `sub` equal to its own `client_id` (RFC 9068 §2.2).
+///
+/// Then it presents that token at UserInfo and is **refused**, which is the
+/// decision this test exists to pin. OIDC Core §5.3.2 requires UserInfo to
+/// answer with the `sub` of an end user, and a client-only token has none: the
+/// grant behind it names no person. So the token does not carry `openid` —
+/// this grant excludes it — and the refusal is the ordinary insufficient-scope
+/// one a client can read, rather than a server-side inconsistency discovered
+/// halfway through resolving claims about nobody.
+#[tokio::test]
+async fn a_machine_client_gets_a_token_for_itself_and_is_refused_at_userinfo() {
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+
+    // Arrange
+    let service_key = flow.register_service_client().await;
+    let key = ProofKey::generate();
+
+    // Act
+    let issued = flow
+        .token_as(
+            SERVICE_CLIENT,
+            Some(&service_key),
+            &key,
+            "assertion-client-credentials",
+            &[("grant_type", "client_credentials")],
+        )
+        .await;
+
+    // Assert: the response
+    assert_eq!(
+        issued.status,
+        StatusCode::OK,
+        "the client credentials request was refused: {}",
+        issued.text()
+    );
+    let body = issued.json();
+    assert_eq!(body["token_type"], "DPoP", "{body}");
+    assert!(
+        body.get("refresh_token").is_none(),
+        "RFC 6749 §4.4.3: no refresh token: {body}"
+    );
+    assert!(
+        body.get("id_token").is_none(),
+        "there is no user to assert an authentication about: {body}"
+    );
+    assert_eq!(body["scope"], "ledger.read", "{body}");
+
+    // Assert: the token
+    let access_token = body["access_token"].as_str().expect("an access token");
+    let claims = claims_of(access_token);
+    assert_eq!(claims["sub"], SERVICE_CLIENT, "RFC 9068 §2.2: {claims}");
+    assert_eq!(claims["client_id"], SERVICE_CLIENT, "{claims}");
+    assert_eq!(claims["aud"], RESOURCE, "{claims}");
+    assert_eq!(
+        claims["cnf"]["jkt"],
+        json!(key.thumbprint().as_str()),
+        "RFC 9449 §6.1: the token is bound to the key that proved this request"
+    );
+
+    // Assert: it is not a credential for a person
+    let userinfo = flow.userinfo(&key, access_token).await;
+    assert_eq!(
+        userinfo.status,
+        StatusCode::FORBIDDEN,
+        "a client-only token was accepted at UserInfo: {}",
+        userinfo.text()
+    );
 
     flow.tear_down().await;
 }

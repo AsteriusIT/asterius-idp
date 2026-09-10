@@ -7,6 +7,7 @@ pub mod access_token;
 pub mod authorization_code;
 pub mod authorize;
 pub mod client_configuration;
+pub mod client_credentials;
 pub mod console;
 pub mod deliver;
 pub mod dpop;
