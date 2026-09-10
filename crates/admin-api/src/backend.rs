@@ -132,6 +132,19 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// built for the console.
     fn clients(&self) -> Arc<dyn ClientAdministration>;
 
+    /// The deployment's outbox, for the dead-letter screen (`ast-0ju.9`).
+    ///
+    /// A handle for the same reason [`Self::tenants`] is one: the object
+    /// behind it is the composition root's `PgOutbox`, over the pool the
+    /// delivery worker claims from. A second one built here would read a
+    /// different schedule and report a backlog nothing is working through.
+    ///
+    /// The port is the read-only
+    /// [`asterius_domain::outbox::DeadLetterQuery`] and not the adapter: there
+    /// is no method on it that queues a delivery, so no admin route can be
+    /// written that makes this server post to a URL of the caller's choosing.
+    fn outbox(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterQuery>;
+
     /// This tenant's initial access tokens (`ast-cu3`).
     ///
     /// A handle for the same reason [`Self::tenants`] is one: the object

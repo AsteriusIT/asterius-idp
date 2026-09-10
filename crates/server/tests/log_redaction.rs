@@ -266,6 +266,42 @@ fn log_a_worker_pass() {
         email = "alice@example.com",
         "skipping an expired row"
     );
+
+    // The outbox delivery worker (`ast-0ju.9`). The two lines it writes about
+    // a particular row name the tenant, the row id and the family, and the
+    // deliverer's own failure names a host and a status. None of the three
+    // things the row holds — the payload, the destination, the ordering key —
+    // appears, because the payload of an abandoned
+    // `notification.account_recovery` row is a live password-reset link.
+    tracing::info!(
+        tenant = "demo",
+        row = 4_120_i64,
+        kind = "notification.account_recovery",
+        "journalled a notification; no mail sender is wired, nothing was delivered"
+    );
+    tracing::warn!(
+        tenant = "demo",
+        row = 4_121_i64,
+        family = "logout",
+        attempts = 10_u32,
+        "an outbox row was abandoned"
+    );
+    tracing::debug!(
+        tenant = "demo",
+        row = 4_121_i64,
+        family = "logout",
+        permanent = false,
+        error = %"rp.example answered 503",
+        "an outbox HTTP delivery failed"
+    );
+
+    // The mistake this shape exists to rule out: a delivery failure that
+    // quoted the row it choked on. If somebody ever writes it, the redaction
+    // layer is the last thing between it and a log aggregator.
+    tracing::error!(
+        destination = "alice@example.com",
+        "could not deliver an outbox row"
+    );
 }
 
 /// The worker half of the criterion: a sweep runs with no request in scope, so
@@ -300,6 +336,11 @@ fn a_worker_log_still_says_what_happened_and_where() {
         "pool timed out",
         "tenant=demo",
         "could not apply the retention policy",
+        // The outbox worker has to stay diagnosable too: which row, which
+        // family, and what the receiver said.
+        "an outbox row was abandoned",
+        "family=logout",
+        "rp.example answered 503",
     ] {
         assert!(logs.contains(expected), "lost {expected:?}:\n{logs}");
     }

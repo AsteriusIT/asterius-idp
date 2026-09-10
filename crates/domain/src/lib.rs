@@ -19,6 +19,7 @@ pub mod limits;
 pub mod locale;
 pub mod messages;
 pub mod notification;
+pub mod outbox;
 pub mod ports;
 pub mod rate_limit;
 pub mod secret;
@@ -73,6 +74,7 @@ pub use limits::MAX_JWT_BYTES;
 pub use locale::{Locale, UiLocales, negotiate};
 pub use messages::{MessageOverrideError, MessageOverrides};
 pub use notification::{MailSender, Notification, NotificationKind};
+pub use outbox::{DeadLetter, DeadLetterQuery, OutboxEvent};
 pub use ports::{
     AuthRequestRepository, AuthorizationDetailsTypeRepository, ClientAdministration,
     ClientConfiguration, ClientRegistry, ClientRepository, ClientUsageRecorder, CodeIssuer,

@@ -16,6 +16,7 @@ use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, sh
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::outbound::HttpsClientUrlFetcher;
+use asterius_server::outbox::{HttpDeliverer, JournalDeliverer, OutboxWorker};
 use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
 use asterius_server::signing::CachedSigner;
@@ -180,7 +181,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             HttpsClientUrlFetcher::new()
                 .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?,
         );
-        let admin_clients = AdminClientContext::of(&config, &outbound);
+        // One `PgOutbox` for the process: the delivery worker claims through it
+        // and the admin API's dead-letter screen reads through it, so the
+        // screen reports the schedule the worker is enforcing (`ast-0ju.9`).
+        let outbox = outbox_handle(&store, config.outbox);
+        let admin_clients = AdminClientContext::of(&config, &outbound, &outbox);
         let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = client_authenticator(client_keys, &replay, &store, trust_anchors)?;
@@ -244,6 +249,8 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             PgRetention::new(store.pool().clone()),
             &store,
             &kek,
+            outbox,
+            config.outbox,
         );
 
         let served = serve(&config.server, app, shutdown_signal())
@@ -287,6 +294,11 @@ struct AdminClientContext {
     capabilities: asterius_domain::Capabilities,
     registration: asterius_server::http::register::RegistrationPolicy,
     outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
+    /// The process's `PgOutbox`, read-only, for the dead-letter screen
+    /// (`ast-0ju.9`). Carried here for the reason `outbound` is: it is the
+    /// deployment's one handle, and a second one built for the console would
+    /// report a backlog nothing is working through.
+    outbox: Arc<dyn asterius_domain::DeadLetterQuery>,
 }
 
 impl AdminClientContext {
@@ -296,11 +308,16 @@ impl AdminClientContext {
     /// it is the third caller of ADR-0006's one outbound path, beside the key
     /// cache and `POST /register`, and a second HTTP client built for the
     /// console would be a second SSRF guard to keep in step.
-    fn of(config: &Config, outbound: &Arc<dyn asterius_domain::ports::ClientUrlFetcher>) -> Self {
+    fn of(
+        config: &Config,
+        outbound: &Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
+        outbox: &asterius_store_pg::PgOutbox,
+    ) -> Self {
         Self {
             capabilities: config.features,
             registration: config.registration.clone(),
             outbound: Arc::clone(outbound),
+            outbox: Arc::new(outbox.clone()),
         }
     }
 }
@@ -341,6 +358,7 @@ fn admin_routes(
                 capabilities: clients.capabilities,
                 registration: clients.registration,
                 outbound: clients.outbound,
+                outbox: clients.outbox,
             },
         )),
         // `ast-a05.8` mints the tokens an automation caller would present.
@@ -480,8 +498,11 @@ fn spawn_workers(
     retention: PgRetention,
     store: &Store,
     kek: &Arc<dyn Kek>,
+    outbox: asterius_store_pg::PgOutbox,
+    schedule: asterius_server::config::OutboxConfig,
 ) -> Workers {
-    let clock = Arc::new(asterius_domain::ports::SystemClock);
+    let clock: Arc<dyn asterius_domain::ports::Clock> =
+        Arc::new(asterius_domain::ports::SystemClock);
     let tenants_for_rotation = Arc::new(PgTenantRepository::new(
         store.pool().clone(),
         Arc::clone(kek),
@@ -491,15 +512,80 @@ fn spawn_workers(
         Arc::clone(kek),
     ));
 
-    let rotation = RotationSweep::new(keys, tenants_for_rotation, Arc::clone(&clock) as Arc<_>);
-    let retention = RetentionSweep::new(retention, tenants_for_retention, clock);
+    let rotation = RotationSweep::new(keys, tenants_for_rotation, Arc::clone(&clock));
+    let retention = RetentionSweep::new(retention, tenants_for_retention, Arc::clone(&clock));
+    let delivery = outbox_worker(outbox, schedule, clock);
 
     let (stop, stopping) = tokio::sync::watch::channel(false);
     let handles = vec![
         tokio::spawn(rotation.run(stopped(stopping.clone()))),
-        tokio::spawn(retention.run(stopped(stopping))),
+        tokio::spawn(retention.run(stopped(stopping.clone()))),
+        tokio::spawn(delivery.run(stopped(stopping))),
     ];
     Workers { stop, handles }
+}
+
+/// The one `PgOutbox` this process holds (`ast-0ju.9`).
+///
+/// One, and not two. The delivery worker claims through it and the admin API's
+/// dead-letter screen reads through it, so the screen reports the schedule the
+/// worker is actually enforcing rather than a second copy of the configuration
+/// that happens to agree today.
+fn outbox_handle(
+    store: &Store,
+    schedule: asterius_server::config::OutboxConfig,
+) -> asterius_store_pg::PgOutbox {
+    asterius_store_pg::PgOutbox::with_schedule(
+        store.pool().clone(),
+        asterius_store_pg::Backoff {
+            base: schedule.retry,
+            cap: schedule.max_retry,
+        },
+        schedule.lease,
+    )
+    .with_max_attempts(schedule.max_attempts)
+}
+
+/// The outbox delivery worker, with the deliverers this build registers.
+///
+/// Two, and neither is speculative: the journal, which is `ast-2vk.10`'s mail
+/// table becoming a consumer of this worker rather than a table nothing reads;
+/// and a generic HTTP `POST` through ADR-0006's outbound path, registered for
+/// the `logout` family that back-channel logout will queue into. SSF and CIBA
+/// register their own when they land — the machinery is what this ticket
+/// owed them, not an implementation of a payload format nobody has written.
+///
+/// A worker name per process, so two replicas' claims are distinguishable in a
+/// log. Random rather than the hostname: a hostname is an operational detail
+/// that ends up in a `claimed_by` column and then in a support ticket.
+fn outbox_worker(
+    outbox: asterius_store_pg::PgOutbox,
+    schedule: asterius_server::config::OutboxConfig,
+    clock: Arc<dyn asterius_domain::ports::Clock>,
+) -> OutboxWorker {
+    let name = format!("worker-{}", uuid::Uuid::new_v4());
+    let mut worker = OutboxWorker::new(outbox, clock, name)
+        .with_pace(schedule.poll, schedule.batch)
+        .with(Arc::new(JournalDeliverer));
+
+    match asterius_server::outbound::HttpsPoster::new() {
+        Ok(poster) => {
+            worker = worker.with(Arc::new(HttpDeliverer::new("logout", poster)));
+        }
+        Err(error) => {
+            // Not fatal, and not silent. A build whose TLS provider will not
+            // accept the outbound cipher suites cannot deliver anything over
+            // HTTP, and the rows dead-letter with "no deliverer is registered
+            // for the logout family" — which is the correct outcome and an
+            // impossible one to diagnose without this line.
+            tracing::error!(
+                %error,
+                "could not build the outbound TLS configuration; HTTP outbox \
+                 deliveries are disabled in this process"
+            );
+        }
+    }
+    worker
 }
 
 /// Resolves when the stop channel says so.

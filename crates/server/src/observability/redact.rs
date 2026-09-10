@@ -74,6 +74,13 @@ const IDENTITY_BY_NAME: &[&str] = &[
     "user",
     "on_behalf_of",
     "phone_number",
+    // The outbox's vocabulary (`ast-0ju.9`). A row's `destination` is an
+    // e-mail address for a `notification.*` row and a client-registered URL
+    // for everything else; the first is personal data and the second is a
+    // string somebody outside chose. The worker is written not to log it at
+    // all, and this is what holds if a future deliverer does.
+    "destination",
+    "recipient",
 ];
 
 /// Decides what a single field's rendered value should be.
