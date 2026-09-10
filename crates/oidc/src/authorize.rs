@@ -429,6 +429,14 @@ pub enum ResponseMode {
 }
 
 impl ResponseMode {
+    /// Every value this server can parse, in the order the enum declares them.
+    ///
+    /// The discovery document's `response_modes_supported` is rendered from
+    /// this rather than written out a second time (`ast-iko`): what the server
+    /// advertises and what [`Self::parse`] accepts are then the same list by
+    /// construction.
+    pub const ALL: [Self; 2] = [Self::Query, Self::FormPost];
+
     /// The wire spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

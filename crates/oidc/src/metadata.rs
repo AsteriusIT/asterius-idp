@@ -238,6 +238,19 @@ pub fn token_endpoint_auth_methods(capabilities: &Capabilities) -> Vec<&'static 
     methods
 }
 
+/// The response modes this server delivers, from the one enum that decides.
+///
+/// RFC 8414 §2 asks the document to reflect actual behaviour;
+/// [`crate::authorize::ResponseMode`] is that behaviour, since it is what the
+/// pushed authorization request endpoint parses and what the delivery site
+/// matches on. Adding a variant there adds it here, in the declaration order.
+fn response_modes() -> Vec<&'static str> {
+    crate::authorize::ResponseMode::ALL
+        .into_iter()
+        .map(crate::authorize::ResponseMode::as_str)
+        .collect()
+}
+
 fn algorithms() -> Vec<&'static str> {
     SigningAlgorithm::ALL
         .iter()
@@ -327,7 +340,14 @@ pub fn provider_metadata(
         // ADR-0002: code is the only response type, because there is no
         // implicit and no hybrid flow.
         "response_types_supported": ["code"],
-        "response_modes_supported": ["query", "form_post"],
+        // OAuth 2.0 Multiple Response Type Encoding Practices §2.1, rendered
+        // from the enum the pushed-request validator parses, never written out
+        // here: a document that advertised a mode `/authorize` refuses would
+        // send clients to an `invalid_request`, and one that omitted a mode it
+        // accepts would hide it (`ast-iko`). `fragment` is absent because
+        // `ResponseMode` has no such variant — there is no implicit and no
+        // hybrid flow (ADR-0002).
+        "response_modes_supported": response_modes(),
         "grant_types_supported": grant_types(capabilities),
         "subject_types_supported": ["public", "pairwise"],
 
@@ -477,6 +497,42 @@ mod tests {
     use super::*;
     use asterius_domain::{AcrPolicy, ClaimSet, TenantId, User, UserId, UserStatus};
     use time::OffsetDateTime;
+
+    /// RFC 8414 §2 and OIDC Discovery §3: the document must reflect actual
+    /// behaviour. `response_modes_supported` is the set
+    /// [`crate::authorize::ResponseMode::parse`] accepts, and nothing else —
+    /// advertising a mode the pushed-request validator refuses tells a client
+    /// to send a value it will be rejected for, and omitting one it accepts
+    /// hides a mode the client is entitled to use (`ast-iko`).
+    #[test]
+    fn response_modes_supported_is_what_authorize_accepts() {
+        let document = provider_metadata(
+            &issuer(),
+            &Capabilities::default(),
+            &AcrPolicy::default(),
+            &[],
+        );
+
+        let advertised = document["response_modes_supported"]
+            .as_array()
+            .expect("the member is an array")
+            .iter()
+            .map(|value| value.as_str().expect("a string").to_owned())
+            .collect::<Vec<_>>();
+
+        for mode in &advertised {
+            crate::authorize::ResponseMode::parse(mode).unwrap_or_else(|_| {
+                panic!("the document advertises `{mode}`, which /authorize refuses")
+            });
+        }
+        for mode in crate::authorize::ResponseMode::ALL {
+            assert!(
+                advertised.iter().any(|value| value == mode.as_str()),
+                "/authorize accepts `{}`, which the document does not advertise",
+                mode.as_str()
+            );
+        }
+    }
 
     /// RFC 8414 §2: metadata reflects actual behaviour. `acr_values_supported`
     /// is the tenant's ladder and nothing else — a value in this member that
