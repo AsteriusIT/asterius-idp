@@ -419,6 +419,22 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "access_token_cutoffs",
+        rule: Rule::Sweep {
+            // A cutoff refuses tokens by their `iat`, and its `expires_at` is
+            // the cutoff plus the cap on an access token's lifetime — so past
+            // it there is no unexpired token left that the row could refuse,
+            // and the row is refusing nothing. Same argument as the denylist
+            // above, arrived at from the other end: that table is keyed by the
+            // token, this one by the principal.
+            statement: "delete from access_token_cutoffs where ctid = any (array(
+                            select ctid from access_token_cutoffs
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "jti_replay",
         rule: Rule::Sweep {
             // The single-use marker for client assertions and DPoP proofs, and

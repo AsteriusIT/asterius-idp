@@ -152,7 +152,11 @@ impl ClientConfiguration for FakeClients {
         Ok(row.client.clone())
     }
 
-    async fn deprovision(&self, client_id: &ClientId) -> Result<(), DomainError> {
+    async fn deprovision(
+        &self,
+        client_id: &ClientId,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
         if self.broken {
             return Err(Self::storage_failure());
         }

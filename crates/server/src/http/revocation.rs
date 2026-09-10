@@ -39,16 +39,21 @@
 //! is the only thing that can withdraw a stateless JWT (RFC 9068 §6) and is
 //! consulted wherever this server verifies one itself — today, UserInfo.
 //!
-//! # The one thing this endpoint does not yet do
+//! # The other access tokens minted from the same grant
 //!
-//! Denylisting the *other* access tokens minted from the same grant. There is
-//! no record of them: RFC 9068 access tokens are stateless by design, and the
-//! only inventory this deployment keeps is the `jti` a caller presents.
+//! RFC 7009 §2.1's second SHOULD — "also invalidate all access tokens based on
+//! the same authorization grant" — cannot be a list. There is no record of
+//! those tokens: RFC 9068 access tokens are stateless by design, and the only
+//! `jti` this deployment ever holds is the one a caller presents.
 //! `PgGrantRepository::revoke` takes the live set as a parameter for the same
-//! reason. So a tenant policy of "revoking the refresh token also kills its
-//! access tokens" cannot be honoured from a `grant_id` alone, and this file
-//! does not pretend otherwise; the access tokens it does not know about expire
-//! on their own short `exp`.
+//! reason.
+//!
+//! So the refresh token's revocation writes a *cutoff* on its grant instead,
+//! in the transaction that stamps the row (`ast-m9c.13`): every access token
+//! that grant minted at or before that instant stops verifying, wherever this
+//! server checks one. It is one row per revocation rather than one per token,
+//! it does not grow with traffic, and it leaves the grant itself standing —
+//! which is the point above.
 
 use crate::http::access_token;
 use crate::http::token::{error as oauth_error, is_form_encoded, no_store};

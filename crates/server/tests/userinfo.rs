@@ -30,7 +30,7 @@ use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 const ISSUER: &str = "https://as.example/t/demo";
 const USERINFO: &str = "https://as.example/t/demo/userinfo";
@@ -104,6 +104,10 @@ struct FakeRows {
     denylisted: Option<String>,
     /// What the client registered as `userinfo_signed_response_alg`.
     signed_response_alg: Option<SigningAlgorithm>,
+
+    /// The bulk withdrawal a deprovisioning or a refresh-token revocation
+    /// leaves behind, if there is one.
+    revoked_before: Option<OffsetDateTime>,
     /// How often anything was read. A request refused before processing must
     /// leave this at zero.
     reads: AtomicUsize,
@@ -136,6 +140,15 @@ impl UserInfoSource for FakeRows {
         Ok(self
             .signed_response_alg
             .filter(|_| client.as_str() == CLIENT))
+    }
+
+    async fn access_tokens_revoked_before(
+        &self,
+        _client: &ClientId,
+        _grant: Option<&GrantId>,
+    ) -> Result<Option<OffsetDateTime>, DomainError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        Ok(self.revoked_before)
     }
 }
 
@@ -220,6 +233,8 @@ impl Fixture {
                 user: Some(user),
                 denylisted: None,
                 signed_response_alg: None,
+
+                revoked_before: None,
                 reads: AtomicUsize::new(0),
             },
             access_token,
@@ -906,4 +921,68 @@ async fn a_dpop_bound_token_is_not_answered_because_a_certificate_was_presented(
 
     // Assert
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// RFC 7592 §2.3: deprovisioning a client "SHOULD immediately invalidate ...
+/// currently active access tokens". Nothing on the token says so — it is a
+/// signed JWT inside its `exp`, and the client row it names is gone — so the
+/// only thing that can refuse it is the cutoff the deprovisioning left behind
+/// (`ast-m9c.13`).
+#[tokio::test]
+async fn a_token_of_a_deprovisioned_client_is_invalid() {
+    // Arrange: the client was deprovisioned one second after this token was
+    // minted, which is the interesting instant — the token is still inside its
+    // own `exp`.
+    let mut fixture = Fixture::new(&["openid"]).await;
+    fixture.rows.revoked_before = Some(now() + Duration::seconds(1));
+
+    // Act
+    let response = fixture.get().await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        challenges(&response)[0].contains(r#"error="invalid_token""#),
+        "{:?}",
+        challenges(&response)
+    );
+}
+
+/// The cutoff is a line in time and not a ban: a token minted after it is a
+/// token the withdrawal was not about. Without this the mark would be
+/// permanent, and a `client_id` registered again would inherit the refusal.
+#[tokio::test]
+async fn a_token_minted_after_the_cutoff_still_buys_claims() {
+    // Arrange
+    let mut fixture = Fixture::new(&["openid"]).await;
+    fixture.rows.revoked_before = Some(now() - Duration::hours(1));
+
+    // Act
+    let response = fixture.get().await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// The cutoff is read before the grant is, so that it can refuse a token whose
+/// grant is perfectly live — which is the whole of RFC 7009 §2.1's case, where
+/// revoking a refresh token deliberately leaves the grant standing (Grant
+/// Management ID1 §6.5 Note) and must still withdraw the access tokens minted
+/// from it.
+#[tokio::test]
+async fn a_withdrawn_token_is_refused_without_the_grant_being_read() {
+    // Arrange
+    let mut fixture = Fixture::new(&["openid"]).await;
+    fixture.rows.revoked_before = Some(now() + Duration::seconds(1));
+
+    // Act
+    let response = fixture.get().await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        fixture.rows.reads.load(Ordering::SeqCst),
+        2,
+        "a withdrawn token was carried past the cutoff into the grant and the user"
+    );
 }

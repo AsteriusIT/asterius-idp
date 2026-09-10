@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into access_token_cutoffs\n             (tenant_id, principal_kind, principal_id, revoked_before, expires_at)\n         values ($1, $2, $3, $4, $5)\n         on conflict (tenant_id, principal_kind, principal_id) do update\n             set revoked_before = greatest(access_token_cutoffs.revoked_before,\n                                           excluded.revoked_before),\n                 expires_at     = greatest(access_token_cutoffs.expires_at,\n                                           excluded.expires_at)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "48804d569d9f570e16c6ac6a3759c67afae7a4b36700df0b06f3bb2d282dfee6"
+}

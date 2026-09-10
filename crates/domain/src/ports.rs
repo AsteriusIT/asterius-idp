@@ -575,11 +575,23 @@ pub trait ClientConfiguration: Debug + Send + Sync {
     /// same time." Removing the row does all of that at once, and leaves no
     /// state in which authentication succeeds but the action cannot.
     ///
+    /// `now` is what makes §2.3's SHOULD about "currently active access
+    /// tokens" answerable. Those are signed JWTs this server does not hold, so
+    /// no cascade can reach them; what the implementation writes instead is a
+    /// cutoff at `now`, and the resource path refuses any access token of this
+    /// client issued before it (`ast-m9c.13`). It is the caller's clock
+    /// reading rather than the database's so that the audit event and the
+    /// cutoff cannot disagree about when the client was deprovisioned.
+    ///
     /// # Errors
     ///
     /// [`DomainError::NotFound`] if no such client exists in this tenant, or a
     /// storage error.
-    async fn deprovision(&self, client_id: &ClientId) -> Result<(), DomainError>;
+    async fn deprovision(
+        &self,
+        client_id: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
 
     /// Burns a registration access token wherever in this tenant it is held.
     ///

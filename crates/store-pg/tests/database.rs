@@ -1010,11 +1010,13 @@ db_test! {
 
         assert_eq!(repo.list().await.expect("list").len(), 1);
         assert!(repo.find(&ClientId::new("absent")).await.expect("find").is_none());
-        repo.delete(&ClientId::new("billing")).await.expect("delete");
+        repo.delete(&ClientId::new("billing"), OffsetDateTime::now_utc())
+            .await
+            .expect("delete");
         assert!(repo.find(&ClientId::new("billing")).await.expect("find").is_none());
         assert!(
             matches!(
-                repo.delete(&ClientId::new("billing")).await,
+                repo.delete(&ClientId::new("billing"), OffsetDateTime::now_utc()).await,
                 Err(asterius_domain::DomainError::NotFound)
             ),
             "deleting twice should report the second as missing"
@@ -6477,7 +6479,9 @@ mod passwords {
 /// through the schema's cascades.
 mod client_configuration {
     use super::*;
+    use asterius_domain::entities::tenant_settings::MAX_ACCESS_TOKEN_LIFETIME;
     use asterius_domain::{ClientConfiguration, DomainError, ManagedClient, sha256};
+    use asterius_store_pg::PgGrantRepository;
 
     /// Registers a client with a known registration access token and returns
     /// the digest that was stored, so a test can assert against the value the
@@ -6625,7 +6629,7 @@ mod client_configuration {
             // A delete is scoped the same way.
             assert!(
                 matches!(
-                    alpha.deprovision(&ClientId::new("c.beta-only")).await,
+                    alpha.deprovision(&ClientId::new("c.beta-only"), OffsetDateTime::now_utc()).await,
                     Err(DomainError::NotFound)
                 )
             );
@@ -6905,7 +6909,9 @@ mod client_configuration {
                 .await
                 .expect("record");
 
-            repo.deprovision(&ClientId::new("c.abc")).await.expect("deprovision");
+            repo.deprovision(&ClientId::new("c.abc"), OffsetDateTime::now_utc())
+                .await
+                .expect("deprovision");
 
             // The client, and with it the only copy of its registration access
             // token: RFC 7592 §5's MUST, satisfied by the row being gone.
@@ -6951,7 +6957,7 @@ mod client_configuration {
             // A second delete is `NotFound`, not a silent success: two racing
             // DELETEs must not both report having done it.
             assert!(matches!(
-                repo.deprovision(&ClientId::new("c.abc")).await,
+                repo.deprovision(&ClientId::new("c.abc"), OffsetDateTime::now_utc()).await,
                 Err(DomainError::NotFound)
             ));
         }
@@ -7009,7 +7015,9 @@ mod client_configuration {
             assert!(off.find(&ClientId::new("c.abc")).await.expect("find").is_some());
 
             // Or, had it chosen to, remove it.
-            off.deprovision(&ClientId::new("c.abc")).await.expect("deprovision");
+            off.deprovision(&ClientId::new("c.abc"), OffsetDateTime::now_utc())
+                .await
+                .expect("deprovision");
             assert!(off.managed(&ClientId::new("c.abc")).await.expect("read").is_none());
         }
     }
@@ -7184,6 +7192,47 @@ mod client_configuration {
     }
 
     db_test! {
+        /// RFC 7592 §2.3: a deprovisioning "SHOULD immediately invalidate all
+        /// existing authorization grants and currently active access tokens".
+        /// The cascade covers everything with a row; an access token already
+        /// issued has none — it is a signed JWT this server does not hold, and
+        /// this schema has never inventoried the `jti` values it signed.
+        ///
+        /// So the delete leaves a cutoff behind, keyed by `client_id` and not
+        /// by token, and the resource path refuses anything issued before it
+        /// (`ast-m9c.13`). The mark cannot be a column on `clients`: this is a
+        /// real delete, so it would be erased by the act it records.
+        async fn deprovisioning_a_client_withdraws_the_access_tokens_it_had_issued(db) {
+            // Arrange: two clients, so "everything is withdrawn" can be told
+            // apart from "everything of this client is withdrawn".
+            seed_tenant(&db.pool, "demo").await;
+            register(&db.pool, "demo", "c.abc", "the-token").await;
+            register(&db.pool, "demo", "c.other", "another-token").await;
+            let deprovisioned_at =
+                OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("a fixed instant");
+
+            // Act
+            repo(&db.pool, "demo")
+                .deprovision(&ClientId::new("c.abc"), deprovisioned_at)
+                .await
+                .expect("deprovision");
+
+            // Assert
+            let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("demo"));
+            assert_eq!(
+                grants.revoked_before(&ClientId::new("c.abc"), None).await.expect("read"),
+                Some(deprovisioned_at),
+                "a deprovisioned client left no cutoff, so its access tokens still verify"
+            );
+            assert_eq!(
+                grants.revoked_before(&ClientId::new("c.other"), None).await.expect("read"),
+                None,
+                "deprovisioning one client withdrew another's access tokens"
+            );
+        }
+    }
+
+    db_test! {
         /// A client that was never issued a registration access token is not
         /// given one by a rotation, and a rotation aimed at another tenant's
         /// client writes nothing.
@@ -7245,6 +7294,45 @@ mod client_configuration {
                     .expect("present").registration_access_token,
                 Some(theirs),
                 "a rotation crossed a tenant boundary"
+            );
+        }
+    }
+
+    db_test! {
+        /// The mark stops existing when the last token it could refuse has
+        /// expired on its own `exp`. An access token's lifetime is capped at
+        /// fifteen minutes whatever a tenant asks for
+        /// (`MAX_ACCESS_TOKEN_LIFETIME`), so that is how long past the cutoff a
+        /// row can still be refusing something — and after it, retention takes
+        /// it. Without the bound the table would grow with every
+        /// deprovisioning, forever, which is what an inventory of every issued
+        /// `jti` was rejected for.
+        async fn a_client_cutoff_expires_with_the_last_token_it_could_refuse(db) {
+            // Arrange
+            seed_tenant(&db.pool, "demo").await;
+            register(&db.pool, "demo", "c.abc", "the-token").await;
+            let deprovisioned_at =
+                OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("a fixed instant");
+
+            // Act
+            repo(&db.pool, "demo")
+                .deprovision(&ClientId::new("c.abc"), deprovisioned_at)
+                .await
+                .expect("deprovision");
+
+            // Assert
+            let expires_at: OffsetDateTime = sqlx::query_scalar(
+                "select expires_at from access_token_cutoffs
+                  where tenant_id = 'demo' and principal_kind = 'client'
+                    and principal_id = 'c.abc'",
+            )
+            .fetch_one(&db.pool)
+            .await
+            .expect("the cutoff row");
+            assert_eq!(
+                expires_at,
+                deprovisioned_at + MAX_ACCESS_TOKEN_LIFETIME,
+                "a cutoff outliving the tokens it refuses is a table that grows forever"
             );
         }
     }
@@ -7509,17 +7597,9 @@ mod retention {
             .await
             .expect("seed refresh token");
 
-            sqlx::query(
-                "insert into access_token_denylist (tenant_id, jti, grant_id, expires_at)
-                 values ($1, $2, $3, $4)",
-            )
-            .bind(tenant)
-            .bind(label)
-            .bind(grant)
-            .bind(expires)
-            .execute(pool)
-            .await
-            .expect("seed denylist entry");
+            seed_denylist_entry(pool, tenant, label, grant, expires).await;
+
+            seed_access_token_cutoff(pool, tenant, label, expires).await;
 
             sqlx::query(
                 "insert into jti_replay (tenant_id, purpose, subject, jti_hash, expires_at)
@@ -7759,6 +7839,53 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed idle client");
+    }
+
+    /// One access token withdrawn by its own `jti`, until its own `exp`.
+    async fn seed_denylist_entry(
+        pool: &PgPool,
+        tenant: &str,
+        label: &str,
+        grant: uuid::Uuid,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into access_token_denylist (tenant_id, jti, grant_id, expires_at)
+             values ($1, $2, $3, $4)",
+        )
+        .bind(tenant)
+        .bind(label)
+        .bind(grant)
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed denylist entry");
+    }
+
+    /// The bulk withdrawal a deprovisioning or a refresh-token revocation
+    /// leaves behind (`ast-m9c.13`).
+    ///
+    /// Its `expires_at` is the cutoff plus the cap on an access token's
+    /// lifetime, which is how the writer computes it — so the row seeded here
+    /// is shaped like the ones the repositories write.
+    async fn seed_access_token_cutoff(
+        pool: &PgPool,
+        tenant: &str,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into access_token_cutoffs
+                 (tenant_id, principal_kind, principal_id, revoked_before, expires_at)
+             values ($1, 'client', $2, $3, $4)",
+        )
+        .bind(tenant)
+        .bind(label)
+        .bind(expires - Duration::minutes(15))
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed access token cutoff");
     }
 
     /// The outbox is aged rather than expiring, and only a terminal row is ever
@@ -9960,6 +10087,80 @@ mod refresh_tokens {
             );
         }
     }
+
+    db_test! {
+        /// RFC 7009 §2.1: revoking a refresh token SHOULD "also invalidate all
+        /// access tokens based on the same authorization grant". Those tokens
+        /// cannot be listed — they are stateless JWTs and nothing wrote their
+        /// `jti` down — and the grant is deliberately left standing (Grant
+        /// Management ID1 §6.5 Note), so its own `revoked_at` will not refuse
+        /// them either. The cutoff on the grant is what does.
+        async fn revoking_a_refresh_token_withdraws_the_access_tokens_of_its_grant(db) {
+            // Arrange
+            let grant = seed(&db.pool).await;
+            let repo = PgRefreshTokenRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let digest = "aa".repeat(32);
+            repo.issue(
+                &digest,
+                &token(&grant, fixed_instant() + Duration::days(30), None),
+                fixed_instant(),
+            )
+            .await
+            .expect("issue");
+
+            // Act
+            let revoked_at = fixed_instant() + Duration::hours(1);
+            repo.revoke(&digest, &ClientId::new("billing"), revoked_at)
+                .await
+                .expect("revoke")
+                .expect("the token was this client's");
+
+            // Assert
+            let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("demo"));
+            assert_eq!(
+                grants
+                    .revoked_before(&ClientId::new("billing"), Some(&grant))
+                    .await
+                    .expect("read"),
+                Some(revoked_at),
+                "the access tokens the revoked refresh token paid for still verify"
+            );
+        }
+    }
+
+    db_test! {
+        /// And it is §2.1's rule rather than a client-wide logout: another
+        /// grant of the same client keeps its access tokens, because the
+        /// authorization behind them was never withdrawn.
+        async fn revoking_a_refresh_token_leaves_the_clients_other_grants_alone(db) {
+            // Arrange
+            let grant = seed(&db.pool).await;
+            let repo = PgRefreshTokenRepository::new(db.pool.clone(), TenantId::new("demo"));
+            let digest = "bb".repeat(32);
+            repo.issue(
+                &digest,
+                &token(&grant, fixed_instant() + Duration::days(30), None),
+                fixed_instant(),
+            )
+            .await
+            .expect("issue");
+
+            // Act
+            repo.revoke(&digest, &ClientId::new("billing"), fixed_instant())
+                .await
+                .expect("revoke")
+                .expect("the token was this client's");
+
+            // Assert: the same client, no grant named — which is what a
+            // `client_credentials` token looks like on the read path.
+            let grants = PgGrantRepository::new(db.pool.clone(), TenantId::new("demo"));
+            assert_eq!(
+                grants.revoked_before(&ClientId::new("billing"), None).await.expect("read"),
+                None,
+                "revoking one grant's refresh token withdrew the whole client's tokens"
+            );
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -10081,6 +10282,7 @@ db_test! {
             assert!(refused.is_err(), "the schema stored {wrong:?} as an audience");
         }
     }
+
 }
 
 // ---------------------------------------------------------------------------

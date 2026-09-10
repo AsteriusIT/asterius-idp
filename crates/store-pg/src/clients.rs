@@ -26,6 +26,7 @@
 //! both places is the point, because the validator protects the API and the
 //! constraint protects the table.
 
+use crate::cutoffs;
 use crate::error::to_domain_error;
 use asterius_domain::SigningAlgorithm;
 use asterius_domain::ports::TenantScoped;
@@ -77,8 +78,12 @@ impl asterius_domain::ClientConfiguration for PgClientRepository {
         Self::replace(self, client).await
     }
 
-    async fn deprovision(&self, client_id: &ClientId) -> Result<(), DomainError> {
-        Self::delete(self, client_id).await
+    async fn deprovision(
+        &self,
+        client_id: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Self::delete(self, client_id, now).await
     }
 
     async fn revoke_registration_access_token(&self, digest: &[u8; 32]) -> Result<(), DomainError> {
@@ -624,22 +629,61 @@ impl PgClientRepository {
     /// `clients`, so deprovisioning a client does not erase the record of what
     /// it did. That is the property an append-only trail exists for.
     ///
+    /// ## The one thing no cascade can reach
+    ///
+    /// An access token already issued. It is a signed JWT this server does not
+    /// hold (RFC 9068), so there is no row to delete and no `jti` to put on
+    /// `access_token_denylist` — the schema has never inventoried the ones it
+    /// signed. What is written instead, in the same transaction as the delete,
+    /// is a mark: [`crate::cutoffs::withdraw`] records that nothing issued to
+    /// this `client_id` before `now` is good any more, and the resource path
+    /// compares it against the token's own `iat` (`ast-m9c.13`).
+    ///
+    /// The mark is deliberately not a column on `clients`: this is a real
+    /// delete, so a mark living on the row would be erased by the very act it
+    /// records.
+    ///
+    /// `now` is the caller's clock reading, the same one the audit event
+    /// carries, so the trail and the cutoff cannot disagree about when the
+    /// client was deprovisioned.
+    ///
     /// # Errors
     ///
     /// Returns [`DomainError::NotFound`] if no such client exists in this
-    /// tenant, or a storage error.
-    pub async fn delete(&self, client_id: &ClientId) -> Result<(), DomainError> {
+    /// tenant, or a storage error — in which case neither the delete nor the
+    /// mark was written.
+    pub async fn delete(
+        &self,
+        client_id: &ClientId,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+
         let result = sqlx::query!(
             "delete from clients where tenant_id = $1 and client_id = $2",
             self.tenant.as_str(),
             client_id.as_str()
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(to_domain_error)?;
         if result.rows_affected() == 0 {
             return Err(DomainError::NotFound);
         }
+
+        // After the delete and inside its transaction: a client that was not
+        // there is not a client whose tokens were withdrawn, and a mark
+        // committed without the delete would refuse the tokens of a client
+        // that still works.
+        cutoffs::withdraw(
+            &mut *transaction,
+            &self.tenant,
+            cutoffs::Principal::Client(client_id.as_str()),
+            now,
+        )
+        .await?;
+
+        transaction.commit().await.map_err(to_domain_error)?;
         Ok(())
     }
 
