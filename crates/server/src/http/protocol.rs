@@ -586,6 +586,7 @@ async fn pushed_authorization_request_inner(
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
     let requests = scope.auth_requests();
+    let resource_servers = scope.resource_servers();
 
     // RFC 9449 §10.1: a pushed request may carry a proof as well as the
     // `dpop_jkt` parameter. Checked before the body is looked at, because a
@@ -615,6 +616,7 @@ async fn pushed_authorization_request_inner(
             tenant,
             clients: &clients,
             requests: &requests,
+            resource_servers: &resource_servers,
             keys: endpoints.keys.as_ref(),
             policy: authorization_policy(),
             lifetime: endpoints.par_lifetime,
@@ -908,12 +910,16 @@ async fn token_endpoint_inner(
             return unavailable();
         }
     };
+    // RFC 8707: what this tenant has registered, which is what a `resource` may
+    // name and what an `aud` may hold.
+    let resource_servers = scope.resource_servers();
     let authorization_code = AuthorizationCode {
         codes: &codes,
         grants: &grants,
         refresh_tokens: &refresh_tokens,
         sessions: &sessions,
         users: &users,
+        resource_servers: &resource_servers,
         signer: endpoints.signer.as_ref(),
         lifetimes,
         proof_key: binding.as_ref().map(|binding| &binding.jkt),
@@ -927,6 +933,7 @@ async fn token_endpoint_inner(
         grants: &grants,
         sessions: &sessions,
         users: &users,
+        resource_servers: &resource_servers,
         signer: endpoints.signer.as_ref(),
         audit: endpoints.audit.as_ref(),
         lifetimes,

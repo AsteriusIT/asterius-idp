@@ -39,11 +39,12 @@ pub use entities::session::{
 pub use entities::{
     AcrLevel, AcrPolicy, AcrPolicyError, ApplicationType, Claim, ClaimError, ClaimName, ClaimSet,
     ClaimSource, ClaimedGrant, Client, ClientMetadata, ClientMetadataError, ClientRegistration,
-    ClientStatus, Grant, GrantError, GrantRecord, GrantStatus, GrantType, JwksSource,
-    LiveAccessToken, PairwiseSalt, RedirectUri, RedirectUriError, RefreshPolicy,
-    RefreshPolicyError, RevocationReason, Role, RoleScope, Rotation, SectorIdentifier,
-    SubjectError, SubjectType, Tenant, TenantSettings, TenantSettingsError, TenantStatus,
-    TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User, UserId, UserRole, UserStatus,
+    ClientStatus, Grant, GrantError, GrantRecord, GrantStatus, GrantType, InvalidTarget,
+    JwksSource, LiveAccessToken, PairwiseSalt, RedirectUri, RedirectUriError, RefreshPolicy,
+    RefreshPolicyError, ResourceIdentifier, ResourceRegistry, ResourceServer, RevocationReason,
+    Role, RoleScope, Rotation, SectorIdentifier, SubjectError, SubjectType, Tenant, TenantSettings,
+    TenantSettingsError, TenantStatus, TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User,
+    UserId, UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
@@ -58,8 +59,8 @@ pub use keys::{
 pub use ports::{
     AuthRequestRepository, ClientConfiguration, ClientRegistry, ClientRepository, CodeIssuer,
     CredentialVerifier, GrantRepository, InteractionRepository, ManagedClient, PasskeyRepository,
-    ReplayCheck, ReplayGuard, ReplayPurpose, SessionRepository, SubjectResolver,
-    TenantSettingsRepository, UserDirectory,
+    ReplayCheck, ReplayGuard, ReplayPurpose, ResourceServerRepository, SessionRepository,
+    SubjectResolver, TenantSettingsRepository, UserDirectory,
 };
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,

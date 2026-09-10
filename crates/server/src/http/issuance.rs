@@ -121,28 +121,106 @@ pub async fn released_claims(
     Ok(resolved.id_token)
 }
 
-/// The `aud` an access token minted from this grant carries.
+/// RFC 8707 §2.2's error code, for whichever grant is refusing a `resource`.
+pub const INVALID_TARGET: &str = asterius_domain::InvalidTarget::CODE;
+
+/// What a client is told when [`INVALID_TARGET`] applies.
 ///
-/// RFC 9068 §3: an access token must name a resource. `Audience::of_grant` is
-/// `None` until resource indicators land (`ast-gxh.7`), and the tenant's
-/// configured default is what fills it — chosen by an operator rather than
-/// invented at signing time.
+/// One description for four facts — the value is not a resource indicator, this
+/// tenant does not register it, the authorization request did not authorize it,
+/// or there is no default audience to fall back on. Telling them apart would
+/// let a client enumerate a tenant's resource servers one token request at a
+/// time, and none of the four is actionable in a different way: register the
+/// resource, or ask for one you were granted.
+pub const TARGET_REFUSED: &str =
+    "the resource parameter does not name a resource this token may be issued for";
+
+/// What the `resource` parameters of a request decided about a token.
+///
+/// The two travel together because one decides the other: `audience` is the
+/// `aud` claim (RFC 9068 §3), and `scopes` is what those resource servers
+/// understand, which is what the `scope` claim may say (RFC 8707 §2).
+#[derive(Debug)]
+pub struct Targeting {
+    /// The `aud` of the access token.
+    pub audience: Audience,
+    /// The grant's scopes, narrowed to what every named resource server
+    /// understands.
+    pub scopes: std::collections::BTreeSet<String>,
+}
+
+/// Why a request could not be turned into an audience.
+#[derive(Debug)]
+pub enum TargetingError {
+    /// RFC 8707 §2.2: the `resource` values are not ones this client may be
+    /// issued a token for — unregistered, outside what the authorization
+    /// request authorized, or absent when the client has no default audience
+    /// at all.
+    InvalidTarget,
+    /// The registry could not be read. Not the same answer as "you named
+    /// something unregistered": an outage must not look like a configuration
+    /// change.
+    Storage(DomainError),
+}
+
+impl From<DomainError> for TargetingError {
+    fn from(error: DomainError) -> Self {
+        Self::Storage(error)
+    }
+}
+
+/// Decides the `aud` and the `scope` of an access token (RFC 8707, RFC 9068
+/// §3).
+///
+/// `requested` is the `resource` parameters of the *token* request, and the
+/// grant carries what the *authorization* request settled on. The registry
+/// decides what exists; [`asterius_domain::ResourceRegistry::targets`] holds
+/// the rules and this function holds the two inputs it cannot know: what this
+/// tenant registered, and what this client's default audiences are.
+///
+/// # The default audience, and why it is the client's before it is the
+/// tenant's
+///
+/// A client that names no `resource` still gets an audience-bound token,
+/// because RFC 9068 §2.2 makes `aud` REQUIRED and §3 asks the AS for "a default
+/// resource indicator". This server takes the narrowest default available: the
+/// client's own registered allow-list when it has one — a client allowed one
+/// API gets tokens for that API and nothing else — and the tenant's
+/// `default_resource` only for a client with no allow-list at all, which is the
+/// audience such a client's tokens have always carried.
+///
+/// Either way the default is filtered through the registry, so a resource
+/// server an operator has withdrawn stops being a default audience rather than
+/// quietly continuing to receive tokens. A client with no allow-list under a
+/// tenant whose default resource is not registered has no audience at all, and
+/// gets `invalid_target` instead of a token nobody can safely accept.
 ///
 /// # Errors
 ///
-/// [`DomainError::Invalid`] when the tenant's `default_resource` is not a
-/// usable audience, which the schema's own `CHECK` should already have
-/// prevented.
-pub fn audience(tenant: &Tenant, grant: &Grant) -> Result<Audience, DomainError> {
-    match Audience::of_grant(grant) {
-        Some(audience) => Ok(audience),
-        None => Audience::new([tenant.default_resource.as_str()]).map_err(|_| {
-            DomainError::invalid(
-                "default_resource",
-                "this tenant's default resource is not a usable audience",
-            )
-        }),
-    }
+/// [`TargetingError::InvalidTarget`] for a request no audience can be derived
+/// from, and [`TargetingError::Storage`] if the registry cannot be read.
+pub async fn targeting(
+    resource_servers: &dyn asterius_domain::ResourceServerRepository,
+    tenant: &Tenant,
+    client: &Client,
+    grant: &Grant,
+    requested: &std::collections::BTreeSet<String>,
+) -> Result<Targeting, TargetingError> {
+    let registry = asterius_domain::ResourceRegistry::new(resource_servers.list().await?);
+
+    let defaults: std::collections::BTreeSet<String> = if client.registration.resources.is_empty() {
+        [tenant.default_resource.clone()].into_iter().collect()
+    } else {
+        client.registration.resources.clone()
+    };
+
+    let targets = registry
+        .targets(requested, &grant.resources, &defaults)
+        .map_err(|_| TargetingError::InvalidTarget)?;
+    let scopes = registry.permitted_scopes(&targets, &grant.scopes);
+    let audience = Audience::new(&targets).map_err(|_| TargetingError::InvalidTarget)?;
+
+    Ok(Targeting { audience, scopes })
 }
 
 /// What one issuance contributes to its ID token.

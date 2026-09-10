@@ -8,7 +8,7 @@
 use asterius_domain::{
     AuthRequestRepository, Capabilities, Client, ClientId, ClientRegistration, ClientRepository,
     ClientStatus, Consumed, DomainError, Issuer, KeyStore, Kid, PublicKeyRecord, PushedRequest,
-    Tenant, TenantId, TenantStatus,
+    ResourceIdentifier, ResourceServer, ResourceServerRepository, Tenant, TenantId, TenantStatus,
 };
 use asterius_oidc::authorize::AuthorizationPolicy;
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
@@ -43,7 +43,33 @@ impl KeyStore for NoKeys {
     }
 }
 
+/// A tenant's registered resource servers (RFC 8707), in memory.
+///
+/// Default is a tenant that has registered exactly [`RESOURCE`], which is what
+/// a deployment looks like the moment it is created: the tenant's own default
+/// audience is registered with it.
+#[derive(Debug, Default)]
+struct FakeResourceServers(Vec<ResourceServer>);
+
+#[async_trait::async_trait]
+impl ResourceServerRepository for FakeResourceServers {
+    async fn list(&self) -> Result<Vec<ResourceServer>, DomainError> {
+        Ok(self.0.clone())
+    }
+}
+
+/// The registry every test here pushes against.
+fn registry() -> FakeResourceServers {
+    FakeResourceServers(vec![ResourceServer {
+        identifier: ResourceIdentifier::parse(RESOURCE).expect("a resource indicator"),
+        scopes: None,
+        default_token_lifetime: None,
+    }])
+}
+
 const ISSUER: &str = "https://as.example/t/demo";
+/// The one resource server the fixture tenant registers.
+const RESOURCE: &str = "https://api.example/v1";
 const CLIENT: &str = "billing";
 const REDIRECT: &str = "https://rp.example/cb";
 const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
@@ -203,6 +229,7 @@ async fn run(
         tenant: &tenant,
         clients: &clients,
         requests,
+        resource_servers: &registry(),
         keys: &NoKeys,
         policy: AuthorizationPolicy::default(),
         lifetime: Duration::seconds(90),
@@ -560,6 +587,7 @@ async fn a_body_that_is_not_a_form_is_refused() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            resource_servers: &registry(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -594,6 +622,7 @@ async fn a_form_content_type_with_a_charset_is_accepted() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            resource_servers: &registry(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -621,6 +650,7 @@ async fn an_oversized_body_is_refused_before_it_is_parsed() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            resource_servers: &registry(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -663,6 +693,7 @@ async fn a_proof_on_the_push_pins_the_code_to_its_key() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            resource_servers: &registry(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -703,6 +734,7 @@ async fn a_proof_on_the_push_pins_the_key_the_code_issuer_reads() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            resource_servers: &registry(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -744,6 +776,7 @@ async fn a_proof_and_a_dpop_jkt_that_disagree_are_refused() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            resource_servers: &registry(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -780,6 +813,7 @@ async fn a_proof_and_a_matching_dpop_jkt_are_accepted() {
             tenant: &tenant,
             clients: &clients,
             requests: &requests,
+            resource_servers: &registry(),
             keys: &NoKeys,
             policy: AuthorizationPolicy::default(),
             lifetime: Duration::seconds(90),
@@ -917,4 +951,106 @@ async fn max_age_is_stored_as_a_number_including_zero() {
     pairs.push(("max_age", "+60"));
     let (status, _, _) = pushed(&pairs).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+// ---- RFC 8707: resource indicators ---------------------------------------
+
+/// A client allowed to name the tenant's registered resource server.
+fn client_allowed_resources(allowed: &[&str]) -> Client {
+    let mut client = client();
+    client.registration.resources = allowed.iter().map(|r| (*r).to_owned()).collect();
+    client
+}
+
+/// Runs a push as a client with its own resource allow-list, against the
+/// fixture registry.
+async fn pushed_as(client: Client, pairs: &[(&str, &str)]) -> (StatusCode, Value) {
+    let tenant = tenant();
+    let clients = FakeClients(Some(client.clone()));
+    let requests = FakeRequests::default();
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            resource_servers: &registry(),
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
+            lifetime: Duration::seconds(90),
+        },
+        &form_headers(),
+        &form(pairs),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client.clone()),
+        None,
+        now(),
+    )
+    .await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+/// RFC 8707 §2.1 with §2's shape rules: a fragment, a relative URI or a value
+/// this deployment does not register is `invalid_target` at the pushed
+/// authorization request endpoint, where the client is still on the connection
+/// to be told.
+#[tokio::test]
+async fn a_resource_that_is_malformed_or_unregistered_is_invalid_target_at_the_push() {
+    for wrong in [
+        // §2: "MUST NOT include a fragment component".
+        "https://api.example/v1#section",
+        // §2: an *absolute* URI.
+        "/v1/accounts",
+        "not-a-uri",
+        // §3: well formed, and not a resource server this tenant serves.
+        "https://elsewhere.example/",
+    ] {
+        // Allowed by the client's own registration, so the only thing left to
+        // refuse it is the rule under test.
+        let client = client_allowed_resources(&[wrong, RESOURCE]);
+        let mut pairs = valid_pairs();
+        pairs.push(("resource", wrong));
+        let (status, body) = pushed_as(client, &pairs).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "accepted {wrong:?}");
+        assert_eq!(body["error"], "invalid_target", "for {wrong:?}: {body}");
+    }
+}
+
+/// RFC 8707 §2.1: a registered resource the client may name is carried onto the
+/// stored request, because §2.2's subset check at the token endpoint has
+/// nothing to compare against otherwise.
+#[tokio::test]
+async fn a_registered_resource_is_stored_with_the_request() {
+    let tenant = tenant();
+    let client = client_allowed_resources(&[RESOURCE]);
+    let clients = FakeClients(Some(client.clone()));
+    let requests = FakeRequests::default();
+    let mut pairs = valid_pairs();
+    pairs.push(("resource", RESOURCE));
+
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            resource_servers: &registry(),
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
+            lifetime: Duration::seconds(90),
+        },
+        &form_headers(),
+        &form(&pairs),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client.clone()),
+        None,
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        requests.0.lock().expect("lock")[0].parameters["resources"],
+        json!([RESOURCE])
+    );
 }

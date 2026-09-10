@@ -147,6 +147,12 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
         "a row identifier, not the credential",
     ),
     (
+        "resource_servers",
+        "token_lifetime_seconds",
+        "how long a token for this resource server lives, in seconds — a number an \
+         operator configures, not a token",
+    ),
+    (
         "credentials",
         "passkey_credential_id",
         "the WebAuthn credential id is handed to the browser on every authentication",
@@ -6446,6 +6452,19 @@ mod retention {
             .await
             .expect("seed user");
 
+        // The tenant's registered API (RFC 8707). Configuration, like the
+        // client beside it: the sweep must leave it alone, or every token
+        // request naming it would answer `invalid_target` the next morning.
+        sqlx::query(
+            "insert into resource_servers (tenant_id, identifier)
+             values ($1, 'https://api.example/')
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("seed resource server");
+
         sqlx::query(
             "insert into grants (tenant_id, grant_id, client_id, user_id)
              values ($1, $2, 'billing', $3)",
@@ -8543,6 +8562,127 @@ mod refresh_tokens {
                 !plan.contains("Seq Scan"),
                 "the redemption fell back to a scan of the tenant:\n{plan}"
             );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Resource servers (RFC 8707)
+// ---------------------------------------------------------------------------
+
+db_test! {
+    /// RFC 8707 §3: the registry is what a `resource` is validated against, so
+    /// what is written has to be what is read — including the difference
+    /// between "no scope opinion" and "no scopes at all", which is what makes
+    /// the column nullable rather than defaulted.
+    async fn the_resource_server_registry_round_trips(db) {
+        use asterius_domain::ports::ResourceServerRepository as _;
+        use asterius_domain::{ResourceIdentifier, ResourceServer};
+        use asterius_store_pg::PgResourceServers;
+
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
+        let demo = tenant("demo", "https://as.example/t/demo");
+        repo.upsert(&demo).await.expect("insert the tenant");
+
+        let registry = PgResourceServers::new(db.pool.clone(), demo.id.clone());
+
+        // Creating a tenant registers its own default audience, or the first
+        // token request after it would find no audience at all.
+        let seeded = registry.list().await.expect("list");
+        assert_eq!(seeded.len(), 1, "{seeded:?}");
+        assert_eq!(seeded[0].identifier.as_str(), demo.default_resource);
+        assert_eq!(seeded[0].scopes, None, "an unconfigured registry restricts nothing");
+
+        let scoped = ResourceServer {
+            identifier: ResourceIdentifier::parse("https://reports.example/").expect("an identifier"),
+            scopes: Some(["read".to_owned()].into_iter().collect()),
+            default_token_lifetime: Some(time::Duration::seconds(120)),
+        };
+        registry.register(&scoped).await.expect("register");
+
+        let listed = registry.list().await.expect("list");
+        assert_eq!(listed.len(), 2, "{listed:?}");
+        let found = listed
+            .iter()
+            .find(|s| s.identifier.as_str() == "https://reports.example/")
+            .expect("the registered resource server");
+        assert_eq!(found.scopes, scoped.scopes);
+        assert_eq!(found.default_token_lifetime, Some(time::Duration::seconds(120)));
+
+        // A resource server that understands no scopes at all is a
+        // configuration, not an absence.
+        let none = ResourceServer { scopes: Some(std::collections::BTreeSet::new()), ..scoped };
+        registry.register(&none).await.expect("re-register");
+        let listed = registry.list().await.expect("list");
+        assert_eq!(listed.len(), 2, "a re-registration inserted a second row: {listed:?}");
+        assert_eq!(
+            listed
+                .iter()
+                .find(|s| s.identifier.as_str() == "https://reports.example/")
+                .expect("still registered")
+                .scopes,
+            Some(std::collections::BTreeSet::new())
+        );
+
+        assert!(registry.withdraw("https://reports.example/").await.expect("withdraw"));
+        assert!(!registry.withdraw("https://reports.example/").await.expect("withdraw again"));
+        assert_eq!(registry.list().await.expect("list").len(), 1);
+    }
+}
+
+db_test! {
+    /// A resource identifier is meaningful only inside the tenant that
+    /// registered it: two tenants may front the same API, and neither may name
+    /// the other's audiences.
+    async fn a_registry_never_returns_another_tenants_resource_server(db) {
+        use asterius_domain::ports::ResourceServerRepository as _;
+        use asterius_domain::{ResourceIdentifier, ResourceServer};
+        use asterius_store_pg::PgResourceServers;
+
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
+        let a = tenant("alpha", "https://as.example/t/alpha");
+        let b = tenant("beta", "https://as.example/t/beta");
+        repo.upsert(&a).await.expect("insert alpha");
+        repo.upsert(&b).await.expect("insert beta");
+
+        PgResourceServers::new(db.pool.clone(), a.id.clone())
+            .register(&ResourceServer {
+                identifier: ResourceIdentifier::parse("https://only-alpha.example/")
+                    .expect("an identifier"),
+                scopes: None,
+                default_token_lifetime: None,
+            })
+            .await
+            .expect("register");
+
+        let beta = PgResourceServers::new(db.pool.clone(), b.id.clone())
+            .list()
+            .await
+            .expect("list");
+        assert!(
+            beta.iter().all(|s| s.identifier.as_str() != "https://only-alpha.example/"),
+            "a tenant saw another tenant's resource server: {beta:?}"
+        );
+    }
+}
+
+db_test! {
+    /// The schema refuses an audience nothing could ever match, so a row
+    /// inserted by hand during an incident cannot become an `aud` (RFC 8707 §2).
+    async fn the_schema_refuses_a_resource_identifier_with_a_fragment(db) {
+        let repo = PgTenantRepository::new(db.pool.clone(), kek());
+        let demo = tenant("demo", "https://as.example/t/demo");
+        repo.upsert(&demo).await.expect("insert the tenant");
+
+        for wrong in ["https://api.example/v1#section", "/v1/accounts", "urn:example:api"] {
+            let refused = sqlx::query(
+                "insert into resource_servers (tenant_id, identifier) values ($1, $2)",
+            )
+            .bind(demo.id.as_str())
+            .bind(wrong)
+            .execute(&db.pool)
+            .await;
+            assert!(refused.is_err(), "the schema stored {wrong:?} as an audience");
         }
     }
 }

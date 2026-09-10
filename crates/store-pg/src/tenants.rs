@@ -201,6 +201,28 @@ impl TenantRepository for PgTenantRepository {
         .await
         .map_err(to_domain_error)?;
 
+        // The tenant's own default audience is a registered resource server
+        // (RFC 8707 §3, `ast-gxh.7`). Written here, in the same transaction,
+        // because the two are one fact: `default_resource` is what a token
+        // carries in `aud` when the client named no resource, and an audience
+        // this server issues but does not register is one the token endpoint
+        // would refuse `invalid_target` the moment the registry became the
+        // authority. An operator who wants that audience withdrawn deletes the
+        // row; nothing here re-creates it until the tenant is written again.
+        //
+        // `on conflict do nothing`, so a tenant update never resurrects a
+        // withdrawn identifier's scope list or lifetime.
+        sqlx::query(
+            "insert into resource_servers (tenant_id, identifier, description)
+             values ($1, $2, 'the tenant default audience')
+             on conflict (tenant_id, identifier) do nothing",
+        )
+        .bind(tenant.id.as_str())
+        .bind(&tenant.default_resource)
+        .execute(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+
         salts::ensure(&mut *transaction, &tenant.id, self.kek.as_ref()).await?;
 
         transaction.commit().await.map_err(to_domain_error)

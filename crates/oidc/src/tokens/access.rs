@@ -344,6 +344,7 @@ pub struct AccessToken<'a> {
     lifetime: Duration,
     authentication: Option<Authentication>,
     grant_id_claim: bool,
+    scopes: Option<BTreeSet<String>>,
 }
 
 impl<'a> AccessToken<'a> {
@@ -404,7 +405,29 @@ impl<'a> AccessToken<'a> {
             lifetime: Self::DEFAULT_LIFETIME,
             authentication: None,
             grant_id_claim: false,
+            scopes: None,
         }
+    }
+
+    /// Narrows the `scope` claim to what the audience's resource servers
+    /// understand (RFC 8707 §2).
+    ///
+    /// The grant remains the ceiling: anything here that the grant does not
+    /// carry is dropped, so a caller cannot widen a token by calling this. What
+    /// it can do is *narrow* — which is what a resource server's scope list is
+    /// for, and why a token audienced at two of them carries only what both
+    /// accept.
+    ///
+    /// Left unset, the grant's own scopes are the claim, which is what every
+    /// grant with no resource-server scope list gets.
+    pub fn restricted_to_scopes(mut self, scopes: BTreeSet<String>) -> Self {
+        self.scopes = Some(
+            scopes
+                .into_iter()
+                .filter(|scope| self.grant.scopes.contains(scope))
+                .collect(),
+        );
+        self
     }
 
     /// Overrides the lifetime, up to [`AccessToken::MAX_LIFETIME`].
@@ -455,27 +478,32 @@ impl<'a> AccessToken<'a> {
         Ok(subject)
     }
 
-    /// The `scope` claim, or `None` when the grant carries no scopes.
+    /// The `scope` claim, or `None` when nothing is left to put in it.
+    ///
+    /// The grant's scopes, unless [`AccessToken::restricted_to_scopes`] has
+    /// narrowed them to what the audience's resource servers understand — which
+    /// can legitimately leave nothing, and a token with no `scope` is a token
+    /// that authorises nothing rather than one that authorises everything (RFC
+    /// 9068 §2.2.3 makes the claim optional; RFC 6749 §3.3 makes an absent
+    /// scope the AS's own choice).
     ///
     /// Every scope is checked against the domain's own `scope-token` function
     /// rather than a copy of its rule. `GrantRecord::validate` refuses a
     /// splitting scope on the way in; this is the join that would do the
     /// damage, and a row edited by hand never met that check.
     fn scope_claim(&self) -> Result<Option<String>, IssuanceError> {
-        if self.grant.scopes.is_empty() {
+        let scopes = self.scopes.as_ref().unwrap_or(&self.grant.scopes);
+        if scopes.is_empty() {
             return Ok(None);
         }
-        if !self
-            .grant
-            .scopes
+        if !scopes
             .iter()
             .all(|scope| asterius_domain::entities::grant::is_scope_token(scope))
         {
             return Err(IssuanceError::Scope);
         }
         Ok(Some(
-            self.grant
-                .scopes
+            scopes
                 .iter()
                 .map(String::as_str)
                 .collect::<Vec<_>>()
@@ -746,6 +774,78 @@ mod tests {
                 "accepted a scope that would split: {bad:?}"
             );
         }
+    }
+
+    /// RFC 8707 §2: the authorization server may narrow what a token for a
+    /// resource carries. The `scope` claim is then what that resource
+    /// understands, not what the grant holds.
+    #[test]
+    fn a_scope_restriction_narrows_the_claim_to_what_the_resource_allows() {
+        let grant = grant();
+        let claimed = grant.claim(now()).expect("a live grant");
+        let claims = AccessToken::new(
+            &issuer(),
+            &grant,
+            &claimed,
+            Audience::of_grant(&grant).expect("a resource"),
+            dpop(),
+            JwtId::from_bytes([7; 16]),
+            now(),
+        )
+        .restricted_to_scopes(["accounts".to_owned()].into_iter().collect())
+        .build()
+        .expect("a buildable token")
+        .into_claims();
+        assert_eq!(claims["scope"], "accounts");
+    }
+
+    /// A restriction narrows and never widens: the grant is the ceiling, so a
+    /// resource server's scope list cannot mint authority nobody consented to.
+    #[test]
+    fn a_scope_restriction_cannot_add_a_scope_the_grant_does_not_carry() {
+        let grant = grant();
+        let claimed = grant.claim(now()).expect("a live grant");
+        let claims = AccessToken::new(
+            &issuer(),
+            &grant,
+            &claimed,
+            Audience::of_grant(&grant).expect("a resource"),
+            dpop(),
+            JwtId::from_bytes([7; 16]),
+            now(),
+        )
+        .restricted_to_scopes(
+            ["accounts".to_owned(), "payments".to_owned()]
+                .into_iter()
+                .collect(),
+        )
+        .build()
+        .expect("a buildable token")
+        .into_claims();
+        assert_eq!(claims["scope"], "accounts");
+    }
+
+    /// A resource server that understands none of the grant's scopes gets a
+    /// token with no `scope` at all — which authorises nothing, and is not the
+    /// same as a token that omits the claim to mean "everything".
+    #[test]
+    fn a_restriction_that_leaves_nothing_omits_the_scope_claim() {
+        let grant = grant();
+        let claimed = grant.claim(now()).expect("a live grant");
+        let claims = AccessToken::new(
+            &issuer(),
+            &grant,
+            &claimed,
+            Audience::of_grant(&grant).expect("a resource"),
+            dpop(),
+            JwtId::from_bytes([7; 16]),
+            now(),
+        )
+        .restricted_to_scopes(BTreeSet::new())
+        .build()
+        .expect("a buildable token")
+        .into_claims();
+        assert!(claims.get("scope").is_none(), "{claims}");
     }
 
     // --- RFC 9068 §2.1 and §2.2: the shape -------------------------------

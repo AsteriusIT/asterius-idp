@@ -36,6 +36,7 @@ const TENANT_SCOPED_TABLES: &[&str] = &[
     "audit_events",
     "outbox",
     "rate_limits",
+    "resource_servers",
 ];
 
 /// Extracts the SQL string literals passed to `sqlx` macros in one file.

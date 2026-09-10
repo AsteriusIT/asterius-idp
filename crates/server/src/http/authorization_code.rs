@@ -50,6 +50,7 @@ use time::OffsetDateTime;
 
 use crate::http::dpop;
 use crate::http::issuance;
+use crate::http::issuance::{INVALID_TARGET, TARGET_REFUSED};
 use crate::http::token::{GrantHandler, not_issued, refused};
 
 /// What every refusal in this file says.
@@ -78,6 +79,9 @@ pub struct AuthorizationCode<'a> {
     pub refresh_tokens: &'a PgRefreshTokenRepository,
     /// Sessions for this tenant, for `auth_time`, `acr` and `amr`.
     pub sessions: &'a dyn SessionRepository,
+    /// This tenant's registered resource servers (RFC 8707), which decide what
+    /// the issued token may be audienced at.
+    pub resource_servers: &'a dyn asterius_domain::ResourceServerRepository,
     /// Users for this tenant, read only to resolve the claims the grant
     /// covers (OIDC Core §5.4, §5.5). Nothing here writes a user.
     pub users: &'a PgUserRepository,
@@ -151,6 +155,33 @@ impl GrantHandler for AuthorizationCode<'_> {
 }
 
 impl AuthorizationCode<'_> {
+    /// What this request's `resource` parameters decide about the token
+    /// (RFC 8707 §2.2, RFC 9068 §3).
+    ///
+    /// The subset rule and the registry live in [`issuance::targeting`]; what
+    /// is decided here is only that a refusal is `invalid_target` and not
+    /// `invalid_grant` — a client that named an audience this server will not
+    /// honour has not presented a bad code, and telling it `invalid_grant`
+    /// would send it to re-run an authorization that was never the problem.
+    async fn targeting(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+        params: &Parameters,
+    ) -> Result<issuance::Targeting, Failure> {
+        let requested = asterius_oidc::token::requested_resources(params)
+            .map_err(|_| Failure::Client(INVALID_TARGET, TARGET_REFUSED))?;
+        issuance::targeting(self.resource_servers, tenant, client, grant, &requested)
+            .await
+            .map_err(|error| match error {
+                issuance::TargetingError::InvalidTarget => {
+                    Failure::Client(INVALID_TARGET, TARGET_REFUSED)
+                }
+                issuance::TargetingError::Storage(error) => Failure::Server(error),
+            })
+    }
+
     /// The redemption itself, with failures as `Err` so the checks read in
     /// order rather than as a staircase of early returns.
     async fn redeem(
@@ -236,7 +267,7 @@ impl AuthorizationCode<'_> {
 
         let session = issuance::session_facts(self.sessions, &grant).await?;
 
-        let audience = issuance::audience(tenant, &grant)?;
+        let targeting = self.targeting(tenant, client, &grant, params).await?;
 
         let confirmation = Confirmation::dpop(jkt).map_err(|_| {
             Failure::Server(DomainError::invalid(
@@ -249,12 +280,16 @@ impl AuthorizationCode<'_> {
             &tenant.issuer,
             &grant,
             &claimed,
-            audience,
+            targeting.audience,
             confirmation,
             JwtId::generate(),
             self.now,
         )
         .authenticated_by(session.authentication.clone())
+        // RFC 8707 §2: the token says what the resources it is audienced at
+        // understand, which is the grant's scopes unless a resource server
+        // narrows them.
+        .restricted_to_scopes(targeting.scopes)
         // RFC 9068 §2.2.3.1's private claim, and the one thing that lets this
         // deployment's own resource servers find the authorization a token was
         // minted under: UserInfo (`ast-1sk.3`) resolves claims from the grant

@@ -6,8 +6,8 @@
 use crate::{
     AuthenticationMethod, Client, ClientId, ClientStatus, CodeBinding, Consumed, DomainError,
     Enrolment, FirstPartyDestination, Grant, InteractionRecord, Issuer, NewPasskey, Participant,
-    PushedRequest, RegisteredPasskey, Secret, SectorIdentifier, Session, SessionRevocation,
-    SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
+    PushedRequest, RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session,
+    SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -88,6 +88,29 @@ pub trait TenantSettingsRepository: Debug + Send + Sync {
     /// A storage failure, or [`DomainError::NotFound`] if no such tenant
     /// exists.
     async fn save(&self, tenant: &TenantId, settings: &TenantSettings) -> Result<(), DomainError>;
+}
+
+/// One tenant's registered resource servers (RFC 8707).
+///
+/// Read on the request path — a pushed authorization request, and every token
+/// request that names a `resource` — so the whole registry comes back in one
+/// call and is matched in memory: a client may name several resources, and a
+/// query each would make the number of round trips a property of the request
+/// body.
+#[async_trait::async_trait]
+pub trait ResourceServerRepository: Debug + Send + Sync {
+    /// Every resource server this tenant has registered, ordered by
+    /// identifier.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store cannot be reached, or
+    /// [`DomainError::Invalid`] if a stored row is not a resource indicator —
+    /// which is a row edited by hand, since the schema refuses one on the way
+    /// in. A caller must not read either as "this tenant has registered
+    /// nothing": that would refuse every token request during an outage while
+    /// looking like a configuration change rather than a failure.
+    async fn list(&self) -> Result<Vec<ResourceServer>, DomainError>;
 }
 
 /// Something that can only be reached through a tenant.

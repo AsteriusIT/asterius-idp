@@ -351,6 +351,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "resource_indicator"
+path = "fuzz_targets/resource_indicator.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "response_mode"
 path = "fuzz_targets/response_mode.rs"
 test = false

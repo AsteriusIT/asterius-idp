@@ -47,6 +47,14 @@ pub struct PushContext<'a> {
     pub clients: &'a dyn ClientRepository,
     /// This tenant's pushed requests.
     pub requests: &'a dyn AuthRequestRepository,
+    /// This tenant's registered resource servers (RFC 8707 §2.1).
+    ///
+    /// Consulted here rather than at the token endpoint alone, because this is
+    /// where an authenticated client is on the connection: a `resource` this
+    /// deployment does not serve is a mistake the client can fix now, and
+    /// storing the request instead would mean the flow runs, the person signs
+    /// in and consents, and the redemption then fails with `invalid_target`.
+    pub resource_servers: &'a dyn asterius_domain::ResourceServerRepository,
     /// This tenant's published and retired keys, for the `id_token_hint`.
     ///
     /// OIDC Core §3.1.2.1 says the hint "MUST be validated", and this is the
@@ -165,6 +173,13 @@ pub async fn push(
     };
 
     if let Some(refusal) = refuse_an_unservable_form_post(&request) {
+        return refusal;
+    }
+
+    // RFC 8707 §3: "the authorization server MUST validate the resource
+    // parameter". `authorize::validate` has checked its shape and the client's
+    // own allow-list; what is left needs the registry, and so needs I/O.
+    if let Some(refusal) = refuse_an_unregistered_resource(&context, &request).await {
         return refusal;
     }
 
@@ -331,6 +346,49 @@ fn refuse_an_unservable_form_post(request: &authorize::AuthorizationRequest) -> 
              content security policy can name",
         )
     })
+}
+
+/// Refuses a `resource` this tenant has not registered (RFC 8707 §2.1, §3).
+///
+/// The registry is read only when the request named a resource, so a tenant
+/// that has registered none pays nothing for a feature its clients do not use.
+///
+/// A registry that cannot be read is `temporarily_unavailable` and not
+/// `invalid_target`: "we cannot tell" must not be spelled like "you asked for
+/// something that does not exist", or an outage looks to every client like the
+/// operator withdrew their API.
+///
+/// `None` when the request may be stored, which is every request that named no
+/// resource.
+async fn refuse_an_unregistered_resource(
+    context: &PushContext<'_>,
+    request: &authorize::AuthorizationRequest,
+) -> Option<Response> {
+    if request.resources.is_empty() {
+        return None;
+    }
+    let registered = match context.resource_servers.list().await {
+        Ok(servers) => asterius_domain::ResourceRegistry::new(servers),
+        Err(failure) => {
+            tracing::error!(%failure, tenant = %context.tenant.id, "cannot read the resource server registry");
+            return Some(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                "the request could not be validated",
+            ));
+        }
+    };
+    request
+        .resources
+        .iter()
+        .any(|resource| !registered.registers(resource))
+        .then(|| {
+            error(
+                StatusCode::BAD_REQUEST,
+                asterius_domain::InvalidTarget::CODE,
+                "the resource parameter does not name a resource server this tenant serves",
+            )
+        })
 }
 
 /// The path this endpoint is mounted at, from the one registry.

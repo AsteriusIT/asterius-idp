@@ -132,6 +132,14 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "resource_servers",
+        rule: Rule::Kept(
+            "a registered API is configuration: it is withdrawn by an operator, \
+             and a sweep that removed one would refuse every token request \
+             naming it (RFC 8707 §3)",
+        ),
+    },
+    Retention {
         table: "users",
         rule: Rule::Kept("an account is deleted by a person, not by a sweep"),
     },
