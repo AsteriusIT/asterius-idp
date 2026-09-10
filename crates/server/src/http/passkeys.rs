@@ -88,6 +88,7 @@ use asterius_domain::{
     SessionRepository, Tenant, UserDirectory, UserId, UserStatus, sha256, sha256_hex,
 };
 use asterius_oidc::decision::Requirements;
+use asterius_web::Brand;
 use asterius_web::interaction::{self, CsrfToken, InteractionId, Stage, StoredState};
 use asterius_web::pages::{self, ErrorPage, PasskeyPage, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
@@ -246,6 +247,8 @@ pub async fn page(
     let options_action = context.mount.absolute(OPTIONS_PATH);
     let finish_action = context.mount.absolute(FINISH_PATH);
     let page_href = context.mount.absolute(PAGE_PATH);
+    // Where this page fetches its face, under the same prefix (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&PasskeyPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -263,6 +266,7 @@ pub async fn page(
             message: None,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (StatusCode::OK, no_store(), document).into_response()
@@ -1377,6 +1381,8 @@ fn unauthenticated(context: &PasskeyContext<'_>) -> Response {
 
 /// The generic error page, with a correlation id and nothing else.
 fn error_page(context: &PasskeyContext<'_>, status: StatusCode) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let correlation = interaction::correlation_id();
     tracing::info!(
         correlation_id = %correlation,
@@ -1391,6 +1397,7 @@ fn error_page(context: &PasskeyContext<'_>, status: StatusCode) -> Response {
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (status, no_store(), document).into_response()

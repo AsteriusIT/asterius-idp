@@ -63,7 +63,7 @@ pub use entities::{
     RegistrationMode, RegistrationPolicy, RegistrationPolicyError, ResourceIdentifier,
     ResourceRegistry, ResourceServer, RevocationReason, Role, RoleScope, Rotation, RuleId,
     SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule, SubjectError, SubjectType,
-    Tenant, TenantSettings, TenantSettingsError, TenantStatus, Theme, ThemeError,
+    Tenant, TenantIcon, TenantSettings, TenantSettingsError, TenantStatus, Theme, ThemeError,
     TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod, TokenLifetimes,
     User, UserId, UserRole, UserStatus,
 };

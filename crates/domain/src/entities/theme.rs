@@ -53,15 +53,20 @@
 //! (not tenant) setting, and it should arrive with the audit event and the
 //! screen that shows the measured ratio. Nothing here anticipates it.
 //!
-//! # What a stored theme does to `prefers-color-scheme`
+//! # There is one scheme, and it is light
 //!
-//! The base stylesheet ships a light and a dark palette. A tenant theme
-//! declares the same custom properties *after* both, so a themed tenant looks
-//! the same in either scheme. That is a real loss and it is the honest one:
-//! validating one palette for AA and then letting a media query substitute six
-//! other colours would be a check that does not hold in the case it was
-//! written for. A dark palette per tenant is a second token set and a second
-//! contrast check, and it is not this bead.
+//! The base stylesheet used to ship a light palette and a dark one behind
+//! `prefers-color-scheme`. It no longer does (`ast-vn7`): `color-scheme: light`
+//! and nothing else. The reason is the contrast check above. A tenant sets six
+//! colours, they are validated as a set, and a media query that substituted
+//! three of them for values chosen here would be a check that does not hold in
+//! the case it was written for — a tenant that sets `--bg` dark and keeps the
+//! shipped `--fg` gets a page nobody measured.
+//!
+//! So a dark page is a decision about a *tenant's palette*, made by an
+//! administrator who can be shown the measured ratio, and not one the visitor's
+//! browser makes on their behalf. A second, dark token set with its own
+//! contrast check is `ast-ndk.1`.
 
 use std::collections::BTreeMap;
 
@@ -453,19 +458,28 @@ impl Palette {
 /// The font stacks this deployment offers.
 ///
 /// A closed set, and the reason is ADR-0009's: a page may not reach an origin
-/// nobody reviewed, and "self-hosted" for a typeface means either a font file
-/// this server serves or the fonts the operating system already has. This
-/// deployment ships no font file, so the set is three system stacks — no
-/// request leaves the page, and there is no `@font-face` for a tenant to point
-/// at a URL of its choosing.
+/// nobody reviewed, so "self-hosted" for a typeface means either a font file
+/// *this server* serves or the fonts the operating system already has. Both
+/// are here now: [`FontStack::Geist`] names the face `asterius_web::brand`
+/// compiles into the binary and serves from this origin under
+/// `font-src 'self'`, and the three system stacks name nothing at all. There
+/// is no variant a tenant can point at a URL of its choosing, which is the
+/// property the enumeration exists for.
 ///
 /// Every stack below is quote-free and ASCII by construction, which is what
 /// lets `asterius_web::theme` print it into a `<style>` block: see
-/// [`FontStack::css`].
+/// [`FontStack::css`]. `Geist` needs no quotes because it is one identifier of
+/// ASCII letters — a family name that needed quoting would be a family this
+/// server does not host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FontStack {
-    /// The platform's UI sans-serif. The stylesheet's historical default.
+    /// Geist, served by this deployment, over the platform's UI sans-serif.
+    ///
+    /// The default since `ast-vn7`: the shipped design is drawn in it, and a
+    /// tenant that saves no theme must get the page the stylesheet draws.
     #[default]
+    Geist,
+    /// The platform's UI sans-serif, fetching nothing.
     SystemSans,
     /// The platform's serif.
     SystemSerif,
@@ -475,12 +489,18 @@ pub enum FontStack {
 
 impl FontStack {
     /// Every stack, for a console that renders a picker.
-    pub const ALL: &'static [Self] = &[Self::SystemSans, Self::SystemSerif, Self::SystemMono];
+    pub const ALL: &'static [Self] = &[
+        Self::Geist,
+        Self::SystemSans,
+        Self::SystemSerif,
+        Self::SystemMono,
+    ];
 
     /// The token as it appears in the theme document.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Geist => "geist",
             Self::SystemSans => "system-sans",
             Self::SystemSerif => "system-serif",
             Self::SystemMono => "system-mono",
@@ -501,10 +521,166 @@ impl FontStack {
     #[must_use]
     pub const fn css(self) -> &'static str {
         match self {
+            // The served face first, the system stack behind it: `font-display:
+            // swap` means a browser draws the fallback while the file arrives,
+            // and a browser that never gets the file still gets this design.
+            Self::Geist => "Geist, system-ui, -apple-system, Segoe UI, sans-serif",
             Self::SystemSans => "system-ui, -apple-system, Segoe UI, sans-serif",
             Self::SystemSerif => "Iowan Old Style, Palatino, Georgia, serif",
             Self::SystemMono => "ui-monospace, SFMono-Regular, Menlo, monospace",
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The brand mark
+// ---------------------------------------------------------------------------
+
+/// The mark shown beside a tenant's name, when the tenant has uploaded no logo.
+///
+/// # Why this is an enumeration and not a string
+///
+/// The mark is drawn as **inline SVG**, in the same document as the password
+/// field, and inline SVG is the one thing on these pages that is rendered
+/// unescaped (`asterius_web::brand`, and the second and last `|safe` in the
+/// template tree). An SVG is an XML document: it can carry `<script>`, a
+/// `<foreignObject>` full of HTML, an `xlink:href` to another origin. There is
+/// no sanitiser here that could make a tenant-supplied one safe — which is
+/// exactly why [`ImageFormat`] refuses an SVG *upload* with a 415.
+///
+/// So a tenant does not supply the drawing; it supplies a **name**, and this
+/// type is the whole list of names. The markup those names resolve to is
+/// twenty-four files in `crates/web/assets/icons`, compiled into the binary,
+/// reviewed once. A tenant that invents a name gets [`ThemeError::Schema`] at
+/// `/icon` and no mark at all.
+///
+/// `asterius_web::brand`'s `no_free_string_can_reach_the_rendered_mark` is the
+/// test that says a string never becomes markup; this enumeration is what
+/// makes it possible to write.
+///
+/// The set is curated rather than exhaustive: Lucide ships thousands, an
+/// identity product's tenants are companies, schools, clinics and shops, and
+/// every icon added here is a file somebody has to have read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TenantIcon {
+    /// The default, and the mark of the shipped design.
+    #[default]
+    Shield,
+    /// A shield with a tick.
+    ShieldCheck,
+    /// A padlock.
+    Lock,
+    /// A key.
+    KeyRound,
+    /// An identity card.
+    IdCard,
+    /// One person.
+    User,
+    /// Several people.
+    Users,
+    /// An office building.
+    Building,
+    /// A briefcase.
+    Briefcase,
+    /// A classical facade: a bank, a public institution.
+    Landmark,
+    /// A mortarboard: a school or a university.
+    GraduationCap,
+    /// A stethoscope: a clinic or a hospital.
+    Stethoscope,
+    /// A shopfront.
+    Store,
+    /// A wallet.
+    Wallet,
+    /// A globe.
+    Globe,
+    /// A cloud.
+    Cloud,
+    /// A rack server.
+    Server,
+    /// A database.
+    Database,
+    /// A processor.
+    Cpu,
+    /// A terminal prompt.
+    Terminal,
+    /// A rocket.
+    Rocket,
+    /// A lightning bolt.
+    Zap,
+    /// Sparkles.
+    Sparkles,
+    /// A leaf.
+    Leaf,
+}
+
+impl TenantIcon {
+    /// Every mark, for a console that renders a picker and for the schema.
+    pub const ALL: &'static [Self] = &[
+        Self::Shield,
+        Self::ShieldCheck,
+        Self::Lock,
+        Self::KeyRound,
+        Self::IdCard,
+        Self::User,
+        Self::Users,
+        Self::Building,
+        Self::Briefcase,
+        Self::Landmark,
+        Self::GraduationCap,
+        Self::Stethoscope,
+        Self::Store,
+        Self::Wallet,
+        Self::Globe,
+        Self::Cloud,
+        Self::Server,
+        Self::Database,
+        Self::Cpu,
+        Self::Terminal,
+        Self::Rocket,
+        Self::Zap,
+        Self::Sparkles,
+        Self::Leaf,
+    ];
+
+    /// The token as it appears in the theme document.
+    ///
+    /// Upstream's own file name, so that the document, the enumeration and the
+    /// file in `crates/web/assets/icons` are one name and not three.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Shield => "shield",
+            Self::ShieldCheck => "shield-check",
+            Self::Lock => "lock",
+            Self::KeyRound => "key-round",
+            Self::IdCard => "id-card",
+            Self::User => "user",
+            Self::Users => "users",
+            Self::Building => "building-2",
+            Self::Briefcase => "briefcase",
+            Self::Landmark => "landmark",
+            Self::GraduationCap => "graduation-cap",
+            Self::Stethoscope => "stethoscope",
+            Self::Store => "store",
+            Self::Wallet => "wallet",
+            Self::Globe => "globe",
+            Self::Cloud => "cloud",
+            Self::Server => "server",
+            Self::Database => "database",
+            Self::Cpu => "cpu",
+            Self::Terminal => "terminal",
+            Self::Rocket => "rocket",
+            Self::Zap => "zap",
+            Self::Sparkles => "sparkles",
+            Self::Leaf => "leaf",
+        }
+    }
+
+    /// Reads the token.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|icon| icon.name() == name)
     }
 }
 
@@ -689,6 +865,7 @@ pub struct Theme {
     spacing_px: u32,
     product_name: Option<String>,
     support: SupportLinks,
+    icon: Option<TenantIcon>,
     logo: Option<AssetRef>,
     favicon: Option<AssetRef>,
 }
@@ -702,6 +879,7 @@ impl Default for Theme {
             spacing_px: 8,
             product_name: None,
             support: SupportLinks::default(),
+            icon: None,
             logo: None,
             favicon: None,
         }
@@ -734,7 +912,7 @@ const SCHEMA: &str = r#"{
         "danger": {"type": "string", "maxLength": 7}
       }
     },
-    "font": {"type": "string", "enum": ["system-sans", "system-serif", "system-mono"]},
+    "font": {"type": "string", "enum": ["geist", "system-sans", "system-serif", "system-mono"]},
     "radius_px": {"type": "integer"},
     "spacing_px": {"type": "integer"},
     "product_name": {"type": ["string", "null"], "maxLength": 64},
@@ -746,6 +924,13 @@ const SCHEMA: &str = r#"{
         "privacy_url": {"type": ["string", "null"], "maxLength": 256},
         "terms_url": {"type": ["string", "null"], "maxLength": 256}
       }
+    },
+    "icon": {
+      "type": ["string", "null"],
+      "enum": ["shield", "shield-check", "lock", "key-round", "id-card", "user", "users",
+               "building-2", "briefcase", "landmark", "graduation-cap", "stethoscope",
+               "store", "wallet", "globe", "cloud", "server", "database", "cpu",
+               "terminal", "rocket", "zap", "sparkles", "leaf", null]
     },
     "logo": {
       "type": ["object", "null"],
@@ -836,6 +1021,7 @@ impl Theme {
             spacing_px: read_scale(members, "spacing_px", &SPACING_RANGE)?,
             product_name: read_product_name(members)?,
             support: read_support(members)?,
+            icon: read_icon(members)?,
             logo: read_asset(members, "logo")?,
             favicon: read_asset(members, "favicon")?,
         })
@@ -874,6 +1060,14 @@ impl Theme {
         }
         if !support.is_empty() {
             document.insert("support".into(), Value::Object(support));
+        }
+
+        // Absent rather than `"shield"` when the tenant chose nothing: a round
+        // trip must return the document that was saved, and writing the
+        // default back would turn "no opinion" into an opinion that survives
+        // the next change of default.
+        if let Some(icon) = self.icon {
+            document.insert("icon".into(), Value::String(icon.name().to_owned()));
         }
 
         for (name, asset) in [
@@ -916,6 +1110,23 @@ impl Theme {
     #[must_use]
     pub const fn font(&self) -> FontStack {
         self.font
+    }
+
+    /// The mark shown beside the tenant's name.
+    ///
+    /// Total, and [`TenantIcon::Shield`] when the tenant chose nothing: a page
+    /// always draws a mark, so the caller has no "no icon" branch to get wrong.
+    /// Use [`Theme::chosen_icon`] for the question a console form asks, which
+    /// is a different one.
+    #[must_use]
+    pub fn icon(&self) -> TenantIcon {
+        self.icon.unwrap_or_default()
+    }
+
+    /// The mark the tenant actually chose, if it chose one.
+    #[must_use]
+    pub const fn chosen_icon(&self) -> Option<TenantIcon> {
+        self.icon
     }
 
     /// The corner radius, in CSS pixels.
@@ -1096,6 +1307,25 @@ fn read_asset(members: &Map<String, Value>, name: &str) -> Result<Option<AssetRe
     AssetRef::new(digest, format, &path).map(Some)
 }
 
+/// Reads `icon`, which is absent, `null` or one of [`TenantIcon::ALL`].
+///
+/// The schema has already refused every string that is not a token, so a
+/// `None` here means "the tenant said nothing" and never "the tenant said
+/// something this server did not recognise" — the distinction that keeps an
+/// unknown name from silently becoming the default mark.
+fn read_icon(members: &Map<String, Value>) -> Result<Option<TenantIcon>, ThemeError> {
+    match members.get("icon") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_str()
+            .and_then(TenantIcon::parse)
+            .map(Some)
+            .ok_or_else(|| ThemeError::Schema {
+                path: "/icon".to_owned(),
+            }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1174,6 +1404,129 @@ mod tests {
                 "{background} is not a palette member"
             );
         }
+    }
+
+    /// `ast-vn7`: the default font is the one this deployment serves itself.
+    ///
+    /// A tenant that saves no theme and the shipped stylesheet must draw the
+    /// same page, and the shipped design is drawn in Geist. The fallback is
+    /// asserted beside it, because a browser that never receives the file has
+    /// to land on the system stack rather than on a default serif.
+    #[test]
+    fn the_default_font_is_the_served_face_over_the_system_stack() {
+        assert_eq!(FontStack::default(), FontStack::Geist);
+        assert_eq!(FontStack::default().name(), "geist");
+        assert_eq!(
+            FontStack::Geist.css(),
+            "Geist, system-ui, -apple-system, Segoe UI, sans-serif"
+        );
+        assert!(
+            FontStack::Geist
+                .css()
+                .ends_with(FontStack::SystemSans.css()),
+            "the served face must fall back to the system stack"
+        );
+    }
+
+    /// Every stack the enumeration names is a stack the document may name.
+    ///
+    /// The schema's `enum` and [`FontStack::ALL`] are two lists of the same
+    /// set, which is exactly the kind of pair that drifts: a variant added to
+    /// one and not the other is a token the console offers and the server
+    /// refuses.
+    #[test]
+    fn every_font_stack_is_a_token_the_schema_accepts() {
+        for stack in FontStack::ALL {
+            let mut document = document();
+            document["font"] = json!(stack.name());
+
+            let theme = Theme::from_json(&document)
+                .unwrap_or_else(|error| panic!("{}: {error}", stack.name()));
+
+            assert_eq!(theme.font(), *stack);
+        }
+    }
+
+    /// `ast-vn7`: the mark is a name from a closed set, and the default is the
+    /// shield of the shipped design.
+    #[test]
+    fn a_theme_that_names_no_icon_still_has_the_default_mark() {
+        let theme = Theme::from_json(&document()).expect("a document without an icon is valid");
+
+        assert_eq!(theme.icon(), TenantIcon::Shield);
+        assert_eq!(
+            theme.chosen_icon(),
+            None,
+            "an unset icon must stay unset, so that the default may change"
+        );
+    }
+
+    #[test]
+    fn every_icon_the_enumeration_names_is_one_the_schema_accepts() {
+        for icon in TenantIcon::ALL {
+            let mut document = document();
+            document["icon"] = json!(icon.name());
+
+            let theme = Theme::from_json(&document)
+                .unwrap_or_else(|error| panic!("{}: {error}", icon.name()));
+
+            assert_eq!(theme.icon(), *icon);
+            assert_eq!(theme.chosen_icon(), Some(*icon));
+            // What the store writes is what the next read gets: an icon that
+            // survived `from_json` and not `to_json` would be an administrator
+            // choosing a mark and losing it on the next save.
+            assert_eq!(
+                Theme::from_json(&theme.to_json()).expect("what we wrote, we read"),
+                theme
+            );
+        }
+    }
+
+    /// The security boundary of `ast-vn7`, stated where the value is read.
+    ///
+    /// The mark is inlined into the document as unescaped SVG, so the only
+    /// thing standing between a tenant and markup in a page carrying a
+    /// password field is that `icon` is a token and never a drawing. Each of
+    /// these is refused with the pointer of the member at fault rather than
+    /// falling back to the shield, which would hide the mistake.
+    #[test]
+    fn an_icon_that_is_not_a_token_is_refused_with_its_path() {
+        for hostile in [
+            json!("<svg onload=alert(1)>"),
+            json!("</svg><script>alert(1)</script>"),
+            json!("shield-check-but-not-really"),
+            json!("SHIELD"),
+            json!(""),
+            json!(7),
+            json!(["shield"]),
+            json!({"name": "shield"}),
+        ] {
+            let mut document = document();
+            document["icon"] = hostile.clone();
+
+            let error =
+                Theme::from_json(&document).expect_err(&format!("{hostile} is not an icon token"));
+
+            assert_eq!(error.path(), "/icon", "{hostile}");
+        }
+    }
+
+    /// An icon token is one identifier, which is what lets the renderer look
+    /// it up in a table rather than parse it.
+    #[test]
+    fn every_icon_token_is_a_lower_case_ascii_identifier() {
+        for icon in TenantIcon::ALL {
+            let name = icon.name();
+            assert!(!name.is_empty());
+            assert!(
+                name.bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'),
+                "{name} is not a token"
+            );
+        }
+        let names: std::collections::BTreeSet<&str> =
+            TenantIcon::ALL.iter().map(|icon| icon.name()).collect();
+        assert_eq!(names.len(), TenantIcon::ALL.len(), "two icons share a name");
     }
 
     #[test]
@@ -1415,7 +1768,12 @@ mod tests {
             .keys()
             .collect();
 
+        // Every optional member set, because the claim is about what a *saved*
+        // setting does: an absent member is written back absent on purpose
+        // (`a_theme_that_names_no_icon_still_has_the_default_mark`), and a
+        // fixture that left one out would pass this test by not exercising it.
         let mut document = document();
+        document["icon"] = json!("landmark");
         document["logo"] = json!({"digest": "b".repeat(64), "content_type": "image/png"});
         document["favicon"] = json!({"digest": "c".repeat(64), "content_type": "image/jpeg"});
         let theme = Theme::from_json(&document).expect("valid");

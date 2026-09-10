@@ -27,6 +27,7 @@ use crate::http::redirect::SeeOther;
 use asterius_domain::Tenant;
 use asterius_oidc::authorize::ResponseMode;
 use asterius_oidc::code::AuthorizationResponse;
+use asterius_web::Brand;
 use asterius_web::pages::{FormPostPage, ResponseField, nonce_attribute};
 use asterius_web::{Document, csp::Nonce};
 use axum::http::{HeaderValue, header};
@@ -61,13 +62,14 @@ pub enum Undeliverable {
 pub fn build(
     tenant: &Tenant,
     nonce: &Nonce,
+    mount: &crate::tenancy::MountPrefix,
     mode: ResponseMode,
     response: &AuthorizationResponse,
     redirect_uri: &str,
 ) -> Result<Response, Undeliverable> {
     match mode {
         ResponseMode::Query => query(response, redirect_uri),
-        ResponseMode::FormPost => form_post(tenant, nonce, response, redirect_uri),
+        ResponseMode::FormPost => form_post(tenant, nonce, mount, response, redirect_uri),
     }
 }
 
@@ -109,9 +111,14 @@ fn query(response: &AuthorizationResponse, redirect_uri: &str) -> Result<Respons
 fn form_post(
     tenant: &Tenant,
     nonce: &Nonce,
+    mount: &crate::tenancy::MountPrefix,
     response: &AuthorizationResponse,
     redirect_uri: &str,
 ) -> Result<Response, Undeliverable> {
+    // Where this page fetches its face, under the prefix routing removed
+    // (`ast-vn7`). This one is a `form_post` response and posts to the client,
+    // but it is still a page of *this* server and draws itself in its face.
+    let font_url = crate::http::font_url(mount);
     let url = url::Url::parse(redirect_uri).map_err(|_| Undeliverable::Unusable)?;
     let origin = form_action_origin(&url).ok_or(Undeliverable::Unnameable)?;
     let action = response
@@ -135,6 +142,7 @@ fn form_post(
             fields,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     })
     .with_form_post_to(origin);

@@ -47,6 +47,7 @@ use asterius_oidc::code::{AuthorizationResponse, MintedCode};
 use asterius_oidc::consent::{ConsentRequest, Decision, DetailRequest};
 use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
 use asterius_oidc::decision::Requirements;
+use asterius_web::Brand;
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
 };
@@ -1555,7 +1556,14 @@ fn deliver(
     response: &AuthorizationResponse,
     redirect_uri: &str,
 ) -> Response {
-    match crate::http::deliver::build(context.tenant, context.nonce, mode, response, redirect_uri) {
+    match crate::http::deliver::build(
+        context.tenant,
+        context.nonce,
+        &context.mount,
+        mode,
+        response,
+        redirect_uri,
+    ) {
         Ok(mut response) => {
             clear(&mut response);
             response
@@ -1886,6 +1894,8 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
     // `http::passkeys`, so the page and the router cannot disagree about where
     // they are.
     let (passkey_options, passkey_finish) = crate::http::passkeys::login_paths(&context.mount, id);
+    // The face this page draws itself in, under the same prefix (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     // One catalogue per rendering, and the `lang` attribute comes out of it
     // too: a page cannot say `fr` over English words.
     let text = &context.language.catalog(locale);
@@ -1902,6 +1912,7 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
                 message,
                 nonce_attribute: nonce_attribute(nonce),
                 theme_css: "",
+                brand: Brand::new(&font_url),
             })
         })
         .into_response(),
@@ -1954,6 +1965,7 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
                     csrf: csrf.expose(),
                     nonce_attribute: nonce_attribute(nonce),
                     theme_css: "",
+                    brand: Brand::new(&font_url),
                 })
             });
             // This form posts back here, but its answer is a 303 to the
@@ -2001,6 +2013,7 @@ fn error_page(
     // is the two layers that are always available: this browser's field and the
     // tenant's default.
     let text = &context.language.for_request(&UiLocales::default());
+    let font_url = crate::http::font_url(&context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
             text,
@@ -2009,6 +2022,7 @@ fn error_page(
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (status, document).into_response()

@@ -59,6 +59,7 @@ use asterius_domain::{
 };
 use asterius_oidc::device::UserCode;
 use asterius_store_pg::PgDeviceCodeRepository;
+use asterius_web::Brand;
 use asterius_web::interaction::{self, InteractionId};
 use asterius_web::pages::{
     self, DeviceConfirmationPage, DeviceOutcomePage, DevicePage, ErrorPage, ScopeLine,
@@ -268,6 +269,8 @@ pub async fn submit(
         context.mount.absolute(CONFIRM_PATH),
         url::form_urlencoded::byte_serialize(code.formatted().as_bytes()).collect::<String>()
     );
+    // Where this page fetches its face, under the same prefix (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&DeviceConfirmationPage {
             // The device pages still hold their words in their templates:
@@ -303,6 +306,7 @@ pub async fn submit(
             message: None,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (StatusCode::OK, no_store(), document).into_response()
@@ -659,6 +663,8 @@ fn entry_page(
     message: Option<&str>,
     status: StatusCode,
 ) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let action = context.mount.absolute(PAGE_PATH);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&DevicePage {
@@ -670,6 +676,7 @@ fn entry_page(
             message,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (status, no_store(), document).into_response()
@@ -677,6 +684,8 @@ fn entry_page(
 
 /// Renders the terminal page (§3.3): the device is connected, or it is not.
 fn outcome(context: &DeviceContext<'_>, connected: bool, client_name: &str) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&DeviceOutcomePage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -685,6 +694,7 @@ fn outcome(context: &DeviceContext<'_>, connected: bool, client_name: &str) -> R
             client_name,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (StatusCode::OK, no_store(), document).into_response()
@@ -692,6 +702,8 @@ fn outcome(context: &DeviceContext<'_>, connected: bool, client_name: &str) -> R
 
 /// The page a failure of *this server* produces.
 fn error_page(context: &DeviceContext<'_>, status: StatusCode) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -702,6 +714,7 @@ fn error_page(context: &DeviceContext<'_>, status: StatusCode) -> Response {
             correlation_id: "",
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (status, no_store(), document).into_response()

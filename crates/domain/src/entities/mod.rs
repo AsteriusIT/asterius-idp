@@ -56,8 +56,8 @@ pub use role::{Role, RoleScope, UserRole};
 pub use tenant::{RefreshPolicy, RefreshPolicyError, Rotation, Tenant, TenantStatus};
 pub use tenant_settings::{TenantSettings, TenantSettingsError, TokenLifetimes};
 pub use theme::{
-    AssetRef, Colour, FontStack, ImageFormat, MIN_CONTRAST_RATIO, Palette, SupportLinks, Theme,
-    ThemeError,
+    AssetRef, Colour, FontStack, ImageFormat, MIN_CONTRAST_RATIO, Palette, SupportLinks,
+    TenantIcon, Theme, ThemeError,
 };
 pub use user::{
     Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier,

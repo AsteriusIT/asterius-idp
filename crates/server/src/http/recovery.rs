@@ -61,6 +61,7 @@ use asterius_domain::{
     AcceptedPassword, IssuedRecovery, MailSender, Notification, RECOVERY_LIFETIME, RecoveryToken,
     RecoveryTokenStore, SessionRepository, SessionRevocation, Tenant, User, UserId, UserStatus,
 };
+use asterius_web::Brand;
 use asterius_web::pages::{
     self, ErrorPage, NewPasswordPage, PasswordResetRequestPage, PasswordResetSentPage,
     nonce_attribute,
@@ -588,6 +589,8 @@ fn request_page(
     csrf_token: &asterius_web::CsrfToken,
     message: Option<&str>,
 ) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&PasswordResetRequestPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -598,6 +601,7 @@ fn request_page(
             message,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     })
     .into_response()
@@ -615,6 +619,8 @@ fn reissued_request_page(context: &RecoveryContext<'_>, message: Option<&str>) -
 /// tenant knows and one it does not — see
 /// [`asterius_web::pages::PasswordResetSentPage`].
 fn sent_page(context: &RecoveryContext<'_>) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let mut response = Document::render(context.nonce, |nonce| {
         pages::render(&PasswordResetSentPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -622,6 +628,7 @@ fn sent_page(context: &RecoveryContext<'_>) -> Response {
             sign_in_href: context.tenant.issuer.as_str(),
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     })
     .into_response();
@@ -639,6 +646,8 @@ fn new_password_page(
     username: &str,
     message: Option<&str>,
 ) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&NewPasswordPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -651,6 +660,7 @@ fn new_password_page(
             message,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     })
     .into_response()
@@ -689,6 +699,8 @@ async fn retry_new_password(
 /// under one type. `reason` goes to the log beside the correlation id, and the
 /// page carries none of it.
 async fn refused(context: &RecoveryContext<'_>, reason: &str, now: OffsetDateTime) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     tracing::info!(tenant = %context.tenant.id, reason, "a recovery token was refused");
     record(
         context,
@@ -709,6 +721,7 @@ async fn refused(context: &RecoveryContext<'_>, reason: &str, now: OffsetDateTim
             correlation_id: &asterius_web::interaction::correlation_id(),
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     })
     .into_response();
@@ -735,6 +748,8 @@ fn done(context: &RecoveryContext<'_>) -> Response {
 
 /// The generic failure page, for a store that cannot be reached.
 fn error_page(context: &RecoveryContext<'_>, status: StatusCode) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let mut response = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -743,6 +758,7 @@ fn error_page(context: &RecoveryContext<'_>, status: StatusCode) -> Response {
             correlation_id: &asterius_web::interaction::correlation_id(),
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     })
     .into_response();

@@ -184,6 +184,11 @@ pub struct LoginPage<'a> {
     /// value, and by construction unchanged by escaping; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The consent screen.
@@ -223,6 +228,11 @@ pub struct ConsentPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The logout confirmation question.
@@ -254,6 +264,11 @@ pub struct LogoutConfirmationPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The neutral end of a logout.
@@ -280,6 +295,11 @@ pub struct LoggedOutPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The passkey enrolment page: the one page in this tree that runs script.
@@ -334,6 +354,11 @@ pub struct PasskeyPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// One response parameter, as a hidden input on the `form_post` page.
@@ -406,6 +431,11 @@ pub struct FormPostPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The code-entry page of the device authorization grant.
@@ -454,6 +484,11 @@ pub struct DevicePage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The "is this the code your device is showing?" page.
@@ -504,6 +539,11 @@ pub struct DeviceConfirmationPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The end of the device flow, in the browser.
@@ -537,6 +577,11 @@ pub struct DeviceOutcomePage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The account creation page.
@@ -579,6 +624,11 @@ pub struct RegistrationPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The email confirmation page, in both of its states.
@@ -618,6 +668,11 @@ pub struct EmailVerificationPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The "email me a reset link" form.
@@ -651,6 +706,11 @@ pub struct PasswordResetRequestPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The neutral answer to a reset request.
@@ -681,6 +741,11 @@ pub struct PasswordResetSentPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The page a reset link leads to.
@@ -723,6 +788,11 @@ pub struct NewPasswordPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// The error page.
@@ -752,6 +822,11 @@ pub struct ErrorPage<'a> {
     /// value, and unchanged by escaping by construction; empty for a tenant
     /// that has set no theme.
     pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    ///
+    /// See [`crate::brand`]: the mark is inline SVG chosen from a closed
+    /// enumeration, and the font URL carries this request's mount prefix.
+    pub brand: crate::brand::Brand<'a>,
 }
 
 /// Renders a page, or an empty document if it somehow cannot.
@@ -810,6 +885,15 @@ mod tests {
         "\u{0}<script>",
     ];
 
+    /// The chrome these tests render with: the default mark, a fixed font URL.
+    ///
+    /// Neither is what the assertions here are about — they are about escaping
+    /// — so both are constants, and the real values are pinned in
+    /// [`crate::brand`] and [`crate::snapshots`].
+    fn brand() -> crate::brand::Brand<'static> {
+        crate::brand::Brand::new("/assets/font/geist-test.woff2")
+    }
+
     /// A fixed nonce for template tests.
     ///
     /// Not `Nonce::generate()`: `source_audit` requires that a nonce is drawn
@@ -841,6 +925,7 @@ mod tests {
                 message: Some(hostile),
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
+                brand: brand(),
             };
             let html = page.render().expect("render");
             // One script: the sign-in bootstrap the template carries. None of
@@ -880,6 +965,7 @@ mod tests {
                 csrf: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
+                brand: brand(),
             };
             let html = page.render().expect("render");
             assert_no_injection(&html, hostile);
@@ -897,6 +983,7 @@ mod tests {
                 correlation_id: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
+                brand: brand(),
             };
             let html = page.render().expect("render");
             assert_no_injection(&html, hostile);
@@ -917,6 +1004,7 @@ mod tests {
             message,
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         }
     }
 
@@ -943,6 +1031,7 @@ mod tests {
         let html = PasskeyPage {
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
             ..passkey("ada", None)
         }
         .render()
@@ -1024,6 +1113,7 @@ mod tests {
             message: None,
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render");
@@ -1065,6 +1155,7 @@ mod tests {
             message: None,
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render");
@@ -1114,6 +1205,7 @@ mod tests {
             message: None,
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render");
@@ -1171,6 +1263,7 @@ mod tests {
                 csrf: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
+                brand: brand(),
             }
             .render()
             .expect("render");
@@ -1183,6 +1276,7 @@ mod tests {
                     signed_out,
                     nonce_attribute: nonce_attribute(&nonce),
                     theme_css: "",
+                    brand: brand(),
                 }
                 .render()
                 .expect("render");
@@ -1204,6 +1298,7 @@ mod tests {
             csrf: "the-token",
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render");
@@ -1283,6 +1378,7 @@ mod tests {
             correlation_id: "abc123",
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         };
         let html = page.render().expect("render");
         assert!(
@@ -1321,6 +1417,7 @@ mod tests {
                 csrf: "t",
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
+                brand: brand(),
             }
             .render()
             .expect("render"),
@@ -1331,6 +1428,7 @@ mod tests {
                 correlation_id: "abc",
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
+                brand: brand(),
             }
             .render()
             .expect("render"),
@@ -1358,6 +1456,7 @@ mod tests {
                 message: None,
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
+                brand: brand(),
             }
             .render()
             .expect("render"),
@@ -1375,6 +1474,7 @@ mod tests {
                 csrf: "the-token",
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
+                brand: brand(),
             }
             .render()
             .expect("render"),
@@ -1405,6 +1505,7 @@ mod tests {
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render");
@@ -1433,6 +1534,7 @@ mod tests {
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render")
@@ -1573,6 +1675,7 @@ mod tests {
                 .collect(),
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render")
@@ -1660,6 +1763,7 @@ mod tests {
             }],
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render");
@@ -1703,6 +1807,7 @@ mod tests {
             message,
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         })
     }
 
@@ -1729,6 +1834,7 @@ mod tests {
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         })
     }
 
@@ -1769,6 +1875,7 @@ mod tests {
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         });
         assert!(html.contains("read your payment history"), "{html}");
         assert!(html.contains("payments"), "{html}");
@@ -1827,6 +1934,7 @@ mod tests {
             client_name: "Example App",
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         });
         assert!(!refused.contains("Example App"), "{refused}");
         for oracle in ["expired", "cancelled", "unknown", "already"] {
@@ -1843,6 +1951,7 @@ mod tests {
             client_name: "Example App",
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         });
         assert!(connected.contains("Example App"), "{connected}");
     }
@@ -1864,6 +1973,7 @@ mod tests {
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         })
     }
 
@@ -1879,6 +1989,7 @@ mod tests {
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         })
     }
 
@@ -1894,6 +2005,7 @@ mod tests {
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         })
     }
 
@@ -1923,6 +2035,7 @@ mod tests {
             sign_in_href: "/login",
             nonce_attribute: nonce_attribute(&nonce()),
             theme_css: "",
+            brand: brand(),
         });
         // The body only: the shared stylesheet in the head has an `@media`
         // rule in it, and a check that tripped on it would have to be relaxed
@@ -2007,6 +2120,7 @@ mod tests {
                 message: Some("That did not match."),
                 nonce_attribute: nonce_attribute(&nonce()),
                 theme_css: "",
+                brand: brand(),
             }),
         ] {
             assert_eq!(
@@ -2028,6 +2142,7 @@ mod tests {
             correlation_id: "y",
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
+            brand: brand(),
         }
         .render()
         .expect("render");

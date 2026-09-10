@@ -255,9 +255,23 @@ mod tests {
         files
     }
 
-    /// The one interpolation this crate is allowed to leave unescaped, in the
+    /// The interpolations this crate is allowed to leave unescaped, in the
     /// spelling `marks_a_value_safe` normalises to.
-    const PERMITTED_SAFE: &str = "{{ nonce_attribute|safe }}";
+    ///
+    /// Two, and each is exempted **by its exact expression** rather than by
+    /// file, so that a third `|safe` anywhere — including on the next line of
+    /// `base.html` — still fails the build.
+    ///
+    /// * the CSP nonce attribute, which `crate::csp` generates and which is
+    ///   `base64url` by construction;
+    /// * the tenant's mark, which `crate::brand::Brand::icon_svg` builds from
+    ///   an `asterius_domain::TenantIcon` — an enumeration — and twenty-four
+    ///   reviewed files. It has to be unescaped because it is SVG, and it is
+    ///   safe to be because it has no string input:
+    ///   `brand::tests::no_free_string_can_reach_the_rendered_mark` is that
+    ///   claim, and `no_rendered_mark_can_run_or_fetch_anything` is what the
+    ///   markup may contain.
+    const PERMITTED_SAFE: &[&str] = &["{{ nonce_attribute|safe }}", "{{ brand.icon_svg()|safe }}"];
 
     /// Whether a template line leaves an interpolation unescaped.
     ///
@@ -273,7 +287,10 @@ mod tests {
         while normalised.contains(" |") || normalised.contains("| ") {
             normalised = normalised.replace(" |", "|").replace("| ", "|");
         }
-        normalised.contains("|safe") && !normalised.contains(PERMITTED_SAFE)
+        normalised.contains("|safe")
+            && !PERMITTED_SAFE
+                .iter()
+                .any(|permitted| normalised.contains(permitted))
     }
 
     /// The only unescaped interpolation in the tree is the CSP nonce.
@@ -301,17 +318,24 @@ mod tests {
         );
     }
 
-    /// The exemption is real: the nonce attribute is still marked safe.
+    /// Both exemptions are real: each permitted expression is still in a
+    /// template.
     ///
     /// Without this, deleting the nonce from `base.html` would make the test
     /// above pass for the wrong reason — and every page would lose its inline
-    /// style block.
+    /// style block, or its mark. An exemption for an expression nobody writes
+    /// any more is an exemption that should be deleted, not carried.
     #[test]
-    fn the_nonce_attribute_is_still_the_one_permitted_interpolation() {
-        let found = templates()
-            .iter()
-            .any(|(_, source)| source.contains(PERMITTED_SAFE));
-        assert!(found, "no template renders the CSP nonce any more");
+    fn every_permitted_interpolation_is_still_rendered_somewhere() {
+        let templates = templates();
+        for permitted in PERMITTED_SAFE {
+            assert!(
+                templates
+                    .iter()
+                    .any(|(_, source)| source.contains(permitted)),
+                "no template renders {permitted} any more; delete the exemption"
+            );
+        }
     }
 
     /// The `|safe` rule fires on the lines it is there for (`ast-ndk.2`).
@@ -333,16 +357,29 @@ mod tests {
             "  {{ tenant_name | safe }}",
             "{{ tenant_name  |  safe }}",
             "{{ scope.description |safe }}",
+            // The mutation `ast-vn7` opens the door to: the mark is exempted,
+            // so the way to smuggle markup past this audit is to render
+            // something *else* off the same value. `brand.logo_url()` is a
+            // URL a tenant's upload named, and unescaped it is an attribute
+            // break.
+            "<img src={{ brand.logo_url()|safe }}>",
+            "{{ brand.font_url()|safe }}",
+            "{{ brand|safe }}",
         ] {
             assert!(
                 marks_a_value_safe(hostile),
                 "the audit would not catch {hostile}"
             );
         }
-        assert!(
-            !marks_a_value_safe("<style {{ nonce_attribute|safe }}>"),
-            "the one permitted interpolation is being reported"
-        );
+        for permitted in [
+            "<style {{ nonce_attribute|safe }}>",
+            "<span class=\"brand-mark\">{{ brand.icon_svg()|safe }}</span>",
+        ] {
+            assert!(
+                !marks_a_value_safe(permitted),
+                "a permitted interpolation is being reported: {permitted}"
+            );
+        }
     }
 
     /// Every control a user types into is named to a screen reader.
@@ -723,6 +760,67 @@ mod tests {
                  cross-origin and needs the token like every other form"
             );
         }
+    }
+
+    /// No page reaches an origin nobody reviewed (`ast-vn7`).
+    ///
+    /// RFC 9700 §4.2.4: the pages around an authorization response "SHOULD NOT
+    /// include third-party resources", because a third-party fetch is how a
+    /// `state` or a `request_uri` leaks through a `Referer`. `default-src
+    /// 'none'` is the browser-side half and `csp-sweep.spec.ts` watches it in
+    /// a real browser; this is the half that fails the build instead of a
+    /// pipeline, over the markup that is actually written.
+    ///
+    /// The face `ast-vn7` added is what makes this worth stating now: it is
+    /// the first `url(…)` in the tree, and a face is exactly the resource a
+    /// developer reaches for a CDN for.
+    #[test]
+    fn no_template_names_an_origin_off_this_server() {
+        let mut offenders = Vec::new();
+        for (name, source) in templates() {
+            for (number, line) in source.lines().enumerate() {
+                for needle in ["https://", "http://", "//fonts.", "url(//"] {
+                    if line.contains(needle) {
+                        offenders.push(format!("{name}:{}: {}", number + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a page may fetch nothing from another origin:\n  {}",
+            offenders.join("\n  ")
+        );
+    }
+
+    /// The face is declared, served from here, and never blocks the page.
+    ///
+    /// Three properties in one place because they are one decision. The `src`
+    /// is the interpolated path — a literal would be a path that 404s under a
+    /// path-based tenant (`ast-295`) — and `font-display: swap` is what keeps
+    /// a slow or failed font fetch from leaving a sign-in form invisible,
+    /// which is the accessibility cost of self-hosting a face.
+    #[test]
+    fn the_face_is_declared_once_from_this_origin_and_swaps() {
+        let base = templates()
+            .into_iter()
+            .find(|(name, _)| name == "base.html")
+            .map(|(_, source)| source)
+            .expect("base.html is the one layout");
+
+        assert_eq!(
+            base.matches("@font-face").count(),
+            1,
+            "the layout declares the face once, or a page fetches it twice"
+        );
+        assert!(
+            base.contains("src:url(\"{{ brand.font_url() }}\")"),
+            "the face is not fetched from the path this server serves it at"
+        );
+        assert!(
+            base.contains("font-display:swap"),
+            "a face without `swap` hides the sign-in form until it loads"
+        );
     }
 
     /// The stripper removes comments and nothing else.

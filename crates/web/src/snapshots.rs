@@ -71,6 +71,21 @@ fn theme() -> String {
     crate::theme::custom_properties(&asterius_domain::Theme::default())
 }
 
+/// The chrome every snapshot is pinned with.
+///
+/// A fixed font URL rather than [`crate::brand::font_path`], for the same
+/// reason the nonce is fixed: the real path carries a hash of the embedded
+/// face, so updating the font would rewrite all thirty of these files in a way
+/// that says nothing about the pages. The real path is pinned where it is
+/// computed, by `brand::tests::the_font_path_names_the_bytes_it_serves`, and
+/// the prefix it is served under by the tenancy tests.
+///
+/// The default mark, for the reason [`theme`] uses the default theme: these
+/// files exist to catch a page that changed by accident.
+fn brand() -> crate::brand::Brand<'static> {
+    crate::brand::Brand::new("/assets/font/geist-snapshot.woff2")
+}
+
 /// Where a page's pinned rendering lives.
 fn golden_path(name: &str, locale: Locale) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -135,6 +150,7 @@ fn login(text: &Catalog) -> String {
         message: Some("That username and password did not match."),
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -187,6 +203,7 @@ fn consent(text: &Catalog) -> String {
         csrf: CSRF,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -198,6 +215,7 @@ fn error(text: &Catalog) -> String {
         correlation_id: "01JQ0000000000000000000000",
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -209,6 +227,7 @@ fn logout_confirmation(text: &Catalog) -> String {
         csrf: CSRF,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -219,6 +238,7 @@ fn logged_out(text: &Catalog, signed_out: bool) -> String {
         signed_out,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -235,6 +255,7 @@ fn passkey(text: &Catalog) -> String {
         message: None,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -256,6 +277,7 @@ fn form_post(text: &Catalog) -> String {
         ],
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -269,6 +291,7 @@ fn device(text: &Catalog, user_code: Option<&str>) -> String {
         message: None,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -295,6 +318,7 @@ fn device_confirmation(text: &Catalog) -> String {
         message: None,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -306,6 +330,7 @@ fn device_outcome(text: &Catalog, connected: bool) -> String {
         client_name: CLIENT,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -322,6 +347,7 @@ fn registration(text: &Catalog) -> String {
         message: None,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -337,6 +363,7 @@ fn email_verification(text: &Catalog, verified: bool) -> String {
         message: None,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -350,6 +377,7 @@ fn password_reset_request(text: &Catalog) -> String {
         message: None,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -360,6 +388,7 @@ fn password_reset_sent(text: &Catalog) -> String {
         sign_in_href: "/login",
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 
@@ -375,6 +404,7 @@ fn new_password(text: &Catalog) -> String {
         message: None,
         nonce_attribute: nonce(),
         theme_css: &theme(),
+        brand: brand(),
     })
 }
 

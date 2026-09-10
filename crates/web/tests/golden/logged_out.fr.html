@@ -7,17 +7,30 @@
 
 <meta name="referrer" content="no-referrer">
 <title>Déconnecté — Example Tenant</title>
-<style nonce="snapshot-nonce">/* The defaults. A tenant's design tokens are appended to this same <style>
+<style nonce="snapshot-nonce">@font-face{font-family:Geist;src:url("/assets/font/geist-snapshot.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+/* The defaults. A tenant's design tokens are appended to this same <style>
    element as one more :root rule, so they win on document order.
 
    The design is ast-9li's direction A: one centred card on a warm neutral
-   backdrop, the tenant's wordmark above it, 44px controls, 8px on the card and
-   6px on the controls, an indigo accent. It is expressed in custom properties
-   and classes only — no font is fetched (the system stack is the font, because
-   base.html may not name an outside origin), and no template carries an
-   inline style attribute. */
+   backdrop, the tenant's mark and name above it, 44px controls, 8px on the
+   card and 6px on the controls, an indigo accent. It is expressed in custom
+   properties and classes only, and no template carries an inline style
+   attribute.
+
+   The face is Geist, served by this deployment from a hashed path
+   (`asterius_web::brand`): the `@font-face` lives in base.html rather than
+   here, because its URL carries the request's mount prefix and this file is a
+   constant. Nothing is fetched from an outside origin — `font-src 'self'`
+   would refuse it. */
 :root {
-  color-scheme: light dark;
+  /* Light, always, and not `light dark` (ast-vn7). A dark page is a decision
+     about a tenant's palette, not about the browser the visitor happens to
+     have: the six colours here are the ones `asterius_domain::Theme` checks
+     for contrast against each other, and a `prefers-color-scheme` block used
+     to substitute a *seventh set nobody validated* the moment a tenant set
+     `--bg` and the media query kept the shipped `--fg`. So there is one
+     scheme, and `ast-ndk.1` is where a dark one comes from. */
+  color-scheme: light;
 
   /* The tenant tokens. `asterius_web::theme` re-declares exactly these names,
      after this rule, so anything below that is derived from them follows a
@@ -31,10 +44,12 @@
   --danger: #b42318;
   --radius: 8px;
   --space: 8px;
-  /* The system stack, spelled exactly as `FontStack::SystemSans` spells it:
-     the two have to agree, and no page may fetch a face from an outside
-     origin. The mock-up's Geist is not shipped for that reason. */
-  --font: system-ui, -apple-system, Segoe UI, sans-serif;
+  /* Spelled exactly as `FontStack::Geist` spells it: the two have to agree,
+     and `the_default_theme_renders_the_stylesheets_own_colours` fails if they
+     drift. Geist is served from this origin; the system stack behind it is
+     what a browser draws while the file arrives (`font-display: swap`) and
+     what it keeps if the file never does. */
+  --font: Geist, system-ui, -apple-system, Segoe UI, sans-serif;
 
   /* Derived, and deliberately not tenant tokens.
 
@@ -54,25 +69,6 @@
   --tap: 44px;
   --shadow: 0 1px 2px rgba(24, 24, 27, .05), 0 8px 24px rgba(24, 24, 27, .06);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --fg: #ecedee;
-    --bg: #1a1c20;
-    --muted: #a1a1aa;
-    --line: #31343b;
-    /* A light accent on a dark card, with a dark accent text on top of it:
-       #3f3fbf under #ecedee text is 2.4:1, so the light scheme's indigo
-       cannot simply be reused. */
-    --accent: #a5a5f0;
-    --accent-fg: #14141c;
-    --danger: #ff9a92;
-    /* Dark surfaces go the other way: the backdrop is *below* the card. */
-    --backdrop: #0f1013;
-    --backdrop: color-mix(in srgb, var(--bg) 80%, #000000);
-    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
-  }
-}
-
 /* ---- the page -------------------------------------------------------- */
 
 body {
@@ -96,11 +92,48 @@ body {
   flex-direction: column;
   gap: 20px;
 }
-/* The tenant's name, above the card rather than inside it: it is who is
-   asking, not what is being asked. */
+/* The tenant's mark and name, above the card rather than inside it: it is who
+   is asking, not what is being asked. The mark is either the tenant's uploaded
+   logo or one of the embedded icons (`asterius_web::brand`). */
+.brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+/* The 28px square of the mock-up. The glyph is `--bg` on `--fg`, which is the
+   one colour pair `asterius_domain::Theme` checks for contrast — so a tenant
+   that changes its palette cannot make the mark disappear.
+
+   The corner is 7/8 of the card's radius rather than a literal 7px: a tenant
+   that asked for square corners gets a square mark instead of one rounded
+   shape in an otherwise sharp design. */
+.brand-mark {
+  flex: none;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border-radius: calc(var(--radius) * .875);
+  background: var(--fg);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* A logo is raster bytes the tenant uploaded, so it is fitted rather than
+   trusted to be square, and it replaces the tinted square entirely. */
+.brand-mark.brand-logo {
+  background: none;
+  padding: 0;
+}
+.brand-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 .wordmark {
   margin: 0;
-  text-align: center;
   font-size: .9375rem;
   font-weight: 600;
   letter-spacing: -.01em;
@@ -472,13 +505,17 @@ input.code {
   font-size: 1.5rem;
   letter-spacing: .15em;
   text-align: center;
-}:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:system-ui, -apple-system, Segoe UI, sans-serif;}</style>
+}:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
 </head>
 <body>
 
 <div class="page">
 <div class="shell">
+<div class="brand">
+<span class="brand-mark"><svg class="brand-glyph" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg></span>
+
 <h1 class="wordmark">Example Tenant</h1>
+</div>
 <main class="card centered">
 
 

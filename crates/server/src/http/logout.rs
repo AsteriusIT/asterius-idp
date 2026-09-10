@@ -60,6 +60,7 @@ use asterius_oidc::logout::{
     Disposition, LogoutRequest, LogoutRequestError, Notified, RedirectTarget, client_from_hint,
     confirmation_token, confirmation_token_matches, disposition, identify,
 };
+use asterius_web::Brand;
 use asterius_web::interaction::{self, InteractionError};
 use asterius_web::pages::{
     self, ErrorPage, LoggedOutPage, LogoutConfirmationPage, nonce_attribute,
@@ -607,6 +608,8 @@ fn redirect(context: &LogoutContext<'_>, target: &RedirectTarget, notified: Noti
 
 /// The confirmation question (§2), with a token derived from the session id.
 fn confirmation_page(context: &LogoutContext<'_>, session_id: &str) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&LogoutConfirmationPage {
             text: context.text,
@@ -621,6 +624,7 @@ fn confirmation_page(context: &LogoutContext<'_>, session_id: &str) -> Response 
             csrf: &confirmation_token(session_id),
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     })
     .into_response()
@@ -628,6 +632,8 @@ fn confirmation_page(context: &LogoutContext<'_>, session_id: &str) -> Response 
 
 /// The neutral page (§3): no client name, no link anybody else chose.
 fn logged_out_page(context: &LogoutContext<'_>, signed_out: bool) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&LoggedOutPage {
             text: context.text,
@@ -635,6 +641,7 @@ fn logged_out_page(context: &LogoutContext<'_>, signed_out: bool) -> Response {
             signed_out,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     })
     .into_response()
@@ -656,6 +663,8 @@ fn error_page(
     status: StatusCode,
     reason: InteractionError,
 ) -> Response {
+    // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
+    let font_url = crate::http::font_url(&context.mount);
     let correlation = interaction::correlation_id();
     tracing::info!(
         correlation_id = %correlation,
@@ -671,6 +680,7 @@ fn error_page(
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
+            brand: Brand::new(&font_url),
         })
     });
     (status, document).into_response()

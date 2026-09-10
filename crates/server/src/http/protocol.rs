@@ -263,7 +263,13 @@ pub fn routes(state: ProtocolState) -> Router {
         // say and gated inside the handler; see [`ssf_configuration`].
         .route(&ssf_configuration_path(), get(ssf_configuration))
         .route(Endpoint::Jwks.path(), get(jwks))
-        .with_state(state);
+        .with_state(state)
+        // The typeface the end-user pages are drawn in (`ast-vn7`). Here, with
+        // the browser-facing routes, so that it is reached under a tenant's
+        // prefix exactly like the pages that name it — and so that no
+        // deployment can be assembled without it, which would be pages whose
+        // `@font-face` 404s.
+        .merge(crate::http::assets::routes());
 
     // The endpoints that need an authenticated client, when the deployment has
     // the database wiring for them. `ast-gxh.1`, `ast-a05.1`.
