@@ -32,6 +32,9 @@ use std::collections::BTreeSet;
 
 use crate::claims::{ClaimsLocales, ClaimsRequest, ClaimsRequestError};
 use crate::form::{Duplicated, Parameters};
+use crate::grant_management::{
+    GrantManagement, GrantManagementError, Policy as GrantManagementPolicy,
+};
 use crate::pkce::{CodeChallenge, PkceError};
 
 /// The only `response_type` this server implements.
@@ -184,6 +187,16 @@ pub enum AuthorizationError {
     /// not have.
     #[error("authorization_details: {0}")]
     InvalidAuthorizationDetails(#[from] asterius_domain::InvalidAuthorizationDetails),
+    /// `grant_id` or `grant_management_action` was refused (Grant Management
+    /// ID1 §5.4, §7.1).
+    ///
+    /// Its own variant rather than [`Self::Invalid`] because the draft
+    /// registers `invalid_grant_id` for one of its cases, and because the
+    /// vocabulary is still moving: keeping the clauses in
+    /// [`crate::grant_management`] means a change to the draft does not
+    /// reach into this enum.
+    #[error("grant management: {0}")]
+    GrantManagement(#[from] GrantManagementError),
 }
 
 impl From<Duplicated> for AuthorizationError {
@@ -214,6 +227,10 @@ impl AuthorizationError {
             Self::InvalidAuthorizationDetails(_) => {
                 asterius_domain::InvalidAuthorizationDetails::CODE
             }
+            // Grant Management ID1 §5.4 registers `invalid_grant_id` and names
+            // `invalid_request` for the rest; the module that owns the clauses
+            // decides which, so the code and the clause cannot drift apart.
+            Self::GrantManagement(failure) => failure.code(),
             _ => "invalid_request",
         }
     }
@@ -343,6 +360,12 @@ pub struct AuthorizationPolicy {
     /// the OP responsible for what an unsupported `prompt=create` does, and a
     /// server with nowhere to send the user cannot honour it.
     pub prompt_create: bool,
+    /// What this tenant does with `grant_id` and `grant_management_action`
+    /// (Grant Management ID1 §5.2, §7.1).
+    ///
+    /// Off by default, which is a tenant that ignores both parameters — see
+    /// [`GrantManagementPolicy::supported`].
+    pub grant_management: GrantManagementPolicy,
 }
 
 impl AuthorizationPolicy {
@@ -355,7 +378,24 @@ impl AuthorizationPolicy {
     /// turn on.
     #[must_use]
     pub const fn new(prompt_create: bool) -> Self {
-        Self { prompt_create }
+        Self {
+            prompt_create,
+            grant_management: GrantManagementPolicy::new(false, false),
+        }
+    }
+
+    /// The same policy with a Grant Management posture attached.
+    ///
+    /// A builder rather than a second argument to [`Self::new`], for the reason
+    /// [`asterius_domain::TenantSettings::with_registration`] gives: the policy
+    /// has already been decided by the caller that read the tenant's flags, and
+    /// widening a signature every existing caller passes a default to would
+    /// make the two look equally consequential. The default stays "this tenant
+    /// does not offer it".
+    #[must_use]
+    pub const fn with_grant_management(mut self, grant_management: GrantManagementPolicy) -> Self {
+        self.grant_management = grant_management;
+        self
     }
 
     /// Whether this tenant offers a `prompt` value at all.
@@ -570,6 +610,18 @@ pub struct AuthorizationRequest {
     /// Whether `openid` was requested, which is what makes this OIDC rather
     /// than plain OAuth.
     pub openid: bool,
+    /// What Grant Management ID1 §5.2's two parameters asked for, if anything.
+    ///
+    /// `None` is an ordinary authorization — including every request that
+    /// reached a tenant with the feature off, whatever it carried, because
+    /// [`crate::grant_management::parse`] ignores both parameters there.
+    ///
+    /// What this does *not* say is whether the `grant_id` names a grant that
+    /// exists, belongs to this client, or belongs to the person who will sign
+    /// in. All three need a lookup, and the last one needs a person; the
+    /// pushed-request endpoint does the first two and the interaction that
+    /// completes the flow does the third.
+    pub grant_management: Option<GrantManagement>,
 }
 
 /// Validates a pushed authorization request.
@@ -705,6 +757,16 @@ pub fn validate(
         })
         .transpose()?;
 
+    // Grant Management ID1 §5.2 and §5.4. Parsed last of the request's own
+    // parameters because §7.1's "an action is required" is a statement about
+    // the whole request: a malformed one should be told what is malformed
+    // before it is told what is missing.
+    let grant_management = crate::grant_management::parse(
+        params.get("grant_management_action")?,
+        params.get("grant_id")?,
+        policy.grant_management,
+    )?;
+
     Ok(AuthorizationRequest {
         client_id: client_id.to_owned(),
         redirect_uri: redirect_uri.to_owned(),
@@ -724,6 +786,7 @@ pub fn validate(
         claims,
         claims_locales,
         openid,
+        grant_management,
     })
 }
 

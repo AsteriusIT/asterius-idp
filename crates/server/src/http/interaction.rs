@@ -84,6 +84,16 @@ pub struct InteractionContext<'a> {
     /// Where a completed authorization is recorded, and where the consent
     /// memory is read from (`ast-uwv.3`): a grant is both.
     pub grants: &'a dyn GrantRepository,
+    /// How a grant a client already holds is amended (Grant Management ID1
+    /// §5.2).
+    ///
+    /// `Some` exactly when [`asterius_domain::Feature::GrantManagement`] is on
+    /// for this tenant, and `None` otherwise. A stored request cannot name a
+    /// `grant_id` unless the pushed-request endpoint validated one, and that
+    /// endpoint only does so behind the same flag — so `None` here and a stored
+    /// `grant_management_action` together are a request that outlived the flag
+    /// being switched off, which is refused rather than honoured.
+    pub grant_amendments: Option<&'a dyn asterius_domain::GrantAmendments>,
     /// This tenant's registered authorization details types (RFC 9396 §2.1),
     /// for the sentence the consent screen shows for each element.
     ///
@@ -695,6 +705,119 @@ impl ConsentSource {
 /// on the grant, which this event names; repeating it here would put the same
 /// fact in two places, free to disagree, and would put a client's scope tokens
 /// into a trail that is kept longer than the grant is.
+/// Applies Grant Management ID1 §5.2 to the grant the request named, if it
+/// named one.
+///
+/// `Ok(None)` is "this request asked for no amendment", which is every request
+/// that asked for `create` or for nothing at all — and every request on a
+/// deployment that does not offer the feature, because the pushed-request
+/// endpoint would not have stored the parameters.
+///
+/// `grant` arrives as the grant this authorization *would have created*: the
+/// scopes the person just approved, the rich authorization, the claims request,
+/// and the session and authentication of the sign-in that just happened. On
+/// success it is rewritten in place to the amended grant, so the audit record
+/// and everything after it describe what was actually stored.
+///
+/// # The check that could not be made at the push
+///
+/// §5.4's third `invalid_grant_id` case is a grant "whose user is not the
+/// authenticated user", and at the push there is no authenticated user — the
+/// browser has not been redirected yet. It is checked here, and reported as a
+/// redirect to the client's `redirect_uri`, because by now that is the only
+/// channel left: the client is not on the connection and the person in front of
+/// the browser has nothing to do with the mistake.
+///
+/// A grant that has been revoked, or that has come to belong to another client,
+/// since the push is refused here for the same reason and with the same code.
+/// The window is short — a `request_uri` lives ninety seconds — but a
+/// revocation inside it must not be undone by a merge.
+///
+/// # Errors
+///
+/// The RFC 6749 §4.1.2.1 code to redirect with: `invalid_grant_id` (§5.4) for a
+/// grant this person and this client may not amend, `invalid_request` for a
+/// merge that would not fit in a row, and `server_error` when the store failed.
+async fn amended(
+    context: &InteractionContext<'_>,
+    parameters: &serde_json::Value,
+    grant: &mut Grant,
+    user: UserId,
+    now: OffsetDateTime,
+) -> Result<Option<asterius_domain::GrantId>, &'static str> {
+    let string = |name: &str| parameters.get(name).and_then(serde_json::Value::as_str);
+    let (Some(action), Some(grant_id)) = (string("grant_management_action"), string("grant_id"))
+    else {
+        return Ok(None);
+    };
+    let Some(action) = asterius_oidc::grant_management::Action::parse(action) else {
+        // Unreachable: the push refused every other spelling before this row
+        // existed. Refused rather than treated as `create`, because a request
+        // that asked to amend a grant and silently got a new one has been
+        // answered with something it did not ask for.
+        tracing::error!(
+            tenant = %context.tenant.id,
+            "a stored request names a grant_management_action this server does not have"
+        );
+        return Err("server_error");
+    };
+    if !action.needs_an_existing_grant() {
+        return Ok(None);
+    }
+
+    let Some(grants) = context.grant_amendments else {
+        // The flag was switched off between the push and the sign-in. The
+        // client asked for an amendment and there is nothing here to make one.
+        tracing::warn!(
+            tenant = %context.tenant.id,
+            "a stored request asks to amend a grant on a tenant that no longer offers it"
+        );
+        return Err("invalid_grant_id");
+    };
+
+    let id = asterius_domain::GrantId::new(grant_id.to_owned());
+    let held = match grants.find(&id).await {
+        Ok(held) => held,
+        Err(asterius_domain::DomainError::Invalid { .. }) => None,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot read the grant to amend");
+            return Err("server_error");
+        }
+    };
+    // One code for "no such grant", "not this client's" and "not this
+    // person's": telling them apart is an oracle for somebody else's
+    // authorizations (§5.4 registers one code, and that is why).
+    let Some(mut held) = held.filter(|held| {
+        asterius_oidc::grant_management::may_be_amended(held, &grant.client, now)
+            && asterius_oidc::grant_management::belongs_to(held, &user)
+    }) else {
+        tracing::info!(
+            tenant = %context.tenant.id,
+            "an authorization named a grant this person and client cannot amend"
+        );
+        return Err("invalid_grant_id");
+    };
+
+    if action.apply(&mut held, grant, now).is_err() {
+        tracing::info!(
+            tenant = %context.tenant.id,
+            "a merge would have produced a grant too large to store"
+        );
+        return Err("invalid_request");
+    }
+
+    // §5.2's "shall invalidate existing refresh tokens" happens inside this
+    // one call, in the transaction that writes the new permissions.
+    if let Err(error) = grants.amend(&held, now).await {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot amend a grant");
+        return Err("server_error");
+    }
+
+    let id = held.id.clone();
+    *grant = held;
+    Ok(Some(id))
+}
+
 async fn record_consent(
     context: &InteractionContext<'_>,
     grant: &Grant,
@@ -1215,11 +1338,21 @@ async fn mint(
     // `active` when a credential has been *claimed*, and nothing has been. The
     // token endpoint stamps it when the code is redeemed.
 
-    let grant_id = grant.id.clone();
-    if let Err(error) = context.grants.create(&grant).await {
-        tracing::error!(%error, tenant = %context.tenant.id, "cannot record a grant");
-        return Err("server_error");
-    }
+    // Grant Management ID1 §5.2: `merge` and `replace` amend the grant the
+    // request named instead of creating a new one, and the client keeps the
+    // `grant_id` it already had. `create`, and every request that asked for
+    // nothing, take the path this server has always taken.
+    let amendment = amended(context, &request.parameters, &mut grant, user, now).await?;
+    let grant_id = if let Some(existing) = amendment {
+        existing
+    } else {
+        let minted = grant.id.clone();
+        if let Err(error) = context.grants.create(&grant).await {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot record a grant");
+            return Err("server_error");
+        }
+        minted
+    };
     record_consent(context, &grant, source, now).await;
 
     let Some(code_challenge) = string("code_challenge") else {

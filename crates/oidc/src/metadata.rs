@@ -331,6 +331,7 @@ pub fn provider_metadata(
     capabilities: &Capabilities,
     acr: &asterius_domain::AcrPolicy,
     authorization_details_types: &[String],
+    grant_management: crate::grant_management::Policy,
 ) -> Value {
     let mut document = json!({
         // OIDC Discovery §4.3: a client checks that this is identical to the
@@ -452,11 +453,25 @@ pub fn provider_metadata(
         );
     }
     if capabilities.grant_management {
-        // Grant Management §3: advertising the actions is what tells a client
-        // it may send `grant_management_action`.
+        // Grant Management §7.1: advertising the actions is what tells a client
+        // it may send `grant_management_action`. Rendered from the enum the
+        // validator parses rather than written out, for the reason
+        // `response_modes_supported` gives: a document that advertised an
+        // action `/par` refuses would send clients to an `invalid_request`.
         object.insert(
             "grant_management_actions_supported".to_owned(),
-            json!(["create", "replace", "merge"]),
+            json!(
+                crate::grant_management::Action::ALL.map(crate::grant_management::Action::as_str)
+            ),
+        );
+        // §7.1: "`grant_management_action_required`: BOOLEAN. Indicates the
+        // AS requires the `grant_management_action` parameter." Present
+        // whenever the feature is, with its actual value: a client reading
+        // `false` learns the parameter is optional here, which is a different
+        // thing from a document that does not mention it.
+        object.insert(
+            "grant_management_action_required".to_owned(),
+            json!(grant_management.action_required),
         );
     }
     if capabilities.ciba {
@@ -505,6 +520,79 @@ mod tests {
     use asterius_domain::{AcrPolicy, ClaimSet, TenantId, User, UserId, UserStatus};
     use time::OffsetDateTime;
 
+    /// [`provider_metadata`] with the Grant Management posture every test but
+    /// the Grant Management ones is indifferent to.
+    ///
+    /// A helper rather than a fifth argument repeated twenty times: §7.1's
+    /// `grant_management_action_required` is a property of one feature, and a
+    /// test about `response_modes_supported` should not have to state an
+    /// opinion about it.
+    fn metadata_of(
+        issuer: &Issuer,
+        capabilities: &Capabilities,
+        acr: &asterius_domain::AcrPolicy,
+        authorization_details_types: &[String],
+    ) -> Value {
+        provider_metadata(
+            issuer,
+            capabilities,
+            acr,
+            authorization_details_types,
+            crate::grant_management::Policy::new(capabilities.grant_management, false),
+        )
+    }
+
+    /// Grant Management ID1 §7.1: `grant_management_actions_supported` and
+    /// `grant_management_action_required`, and neither of them when the
+    /// deployment does not offer the feature.
+    #[test]
+    fn the_grant_management_metadata_follows_the_flag_and_the_tenant() {
+        let off = metadata_of(
+            &issuer(),
+            &Capabilities::default(),
+            &AcrPolicy::default(),
+            &[],
+        );
+        assert!(off.get("grant_management_actions_supported").is_none());
+        assert!(off.get("grant_management_action_required").is_none());
+
+        let capabilities = Capabilities {
+            grant_management: true,
+            ..Capabilities::default()
+        };
+        let optional = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+        assert_eq!(
+            optional["grant_management_actions_supported"],
+            json!(["create", "merge", "replace"]),
+            "the advertised actions are the ones the validator parses"
+        );
+        assert_eq!(optional["grant_management_action_required"], json!(false));
+
+        let required = provider_metadata(
+            &issuer(),
+            &capabilities,
+            &AcrPolicy::default(),
+            &[],
+            crate::grant_management::Policy::new(true, true),
+        );
+        assert_eq!(required["grant_management_action_required"], json!(true));
+    }
+
+    /// A tenant cannot demand a parameter it also ignores: §7.1 is a statement
+    /// about Grant Management, so with the feature off the document says
+    /// nothing at all rather than saying "required".
+    #[test]
+    fn a_tenant_with_the_feature_off_cannot_advertise_a_required_action() {
+        let document = provider_metadata(
+            &issuer(),
+            &Capabilities::default(),
+            &AcrPolicy::default(),
+            &[],
+            crate::grant_management::Policy::new(false, true),
+        );
+        assert!(document.get("grant_management_action_required").is_none());
+    }
+
     /// RFC 8414 §2 and OIDC Discovery §3: the document must reflect actual
     /// behaviour. `response_modes_supported` is the set
     /// [`crate::authorize::ResponseMode::parse`] accepts, and nothing else —
@@ -513,7 +601,7 @@ mod tests {
     /// hides a mode the client is entitled to use (`ast-iko`).
     #[test]
     fn response_modes_supported_is_what_authorize_accepts() {
-        let document = provider_metadata(
+        let document = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -561,7 +649,7 @@ mod tests {
         ])
         .expect("a policy");
 
-        let document = provider_metadata(&issuer(), &Capabilities::default(), &policy, &[]);
+        let document = metadata_of(&issuer(), &Capabilities::default(), &policy, &[]);
 
         assert_eq!(
             document["acr_values_supported"],
@@ -580,7 +668,7 @@ mod tests {
             "payment_initiation".to_owned(),
             "account_information".to_owned(),
         ];
-        let document = provider_metadata(
+        let document = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -591,7 +679,7 @@ mod tests {
             json!(["payment_initiation", "account_information"])
         );
 
-        let none = provider_metadata(
+        let none = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -607,7 +695,7 @@ mod tests {
     /// is the honest answer; the specification's example value is not.
     #[test]
     fn a_tenant_with_no_ladder_advertises_no_acr_values() {
-        let document = provider_metadata(
+        let document = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::empty(),
@@ -670,7 +758,7 @@ mod tests {
     #[test]
     fn the_document_advertises_exactly_the_enabled_endpoints() {
         for capabilities in [Capabilities::default(), all_features()] {
-            let document = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+            let document = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
             let object = document.as_object().expect("object");
 
             for endpoint in Endpoint::ALL {
@@ -689,7 +777,7 @@ mod tests {
     #[test]
     fn an_endpoint_url_is_the_issuer_plus_the_path_it_is_mounted_at() {
         let issuer = issuer();
-        let document = provider_metadata(
+        let document = metadata_of(
             &issuer,
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -717,7 +805,7 @@ mod tests {
     /// a smaller document, it is an invalid one.
     #[test]
     fn every_required_openid_member_is_present() {
-        let document = provider_metadata(
+        let document = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -749,7 +837,7 @@ mod tests {
             "https://as.example:8443/t/x",
         ] {
             let issuer = Issuer::parse(raw).expect("issuer");
-            let document = provider_metadata(
+            let document = metadata_of(
                 &issuer,
                 &Capabilities::default(),
                 &AcrPolicy::default(),
@@ -762,7 +850,7 @@ mod tests {
     /// The profile's fixed answers. Each of these being wrong is a downgrade.
     #[test]
     fn the_profile_constants_are_what_the_profile_requires() {
-        let document = provider_metadata(
+        let document = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -792,7 +880,7 @@ mod tests {
     /// and RS256 and none in none of them.
     #[test]
     fn every_algorithm_list_is_the_allow_list() {
-        let document = provider_metadata(&issuer(), &all_features(), &AcrPolicy::default(), &[]);
+        let document = metadata_of(&issuer(), &all_features(), &AcrPolicy::default(), &[]);
         let object = document.as_object().expect("object");
         let lists: Vec<&String> = object
             .keys()
@@ -828,13 +916,13 @@ mod tests {
         };
 
         // Act
-        let without = provider_metadata(
+        let without = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
             &[],
         );
-        let with = provider_metadata(&issuer(), &on, &AcrPolicy::default(), &[]);
+        let with = metadata_of(&issuer(), &on, &AcrPolicy::default(), &[]);
 
         // Assert
         assert_eq!(without["request_parameter_supported"], json!(false));
@@ -860,7 +948,7 @@ mod tests {
     #[test]
     fn dpop_support_is_advertised_the_one_way_rfc_9449_defines() {
         for capabilities in [Capabilities::default(), all_features()] {
-            let document = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+            let document = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
             assert_eq!(
                 document["dpop_signing_alg_values_supported"],
                 json!(["EdDSA", "ES256", "PS256"]),
@@ -898,6 +986,10 @@ mod tests {
                 &[
                     "grant_management_endpoint",
                     "grant_management_actions_supported",
+                    // §7.1. Present with its actual value whenever the feature
+                    // is: a client reading `false` learns the parameter is
+                    // optional here, which is not what a missing member says.
+                    "grant_management_action_required",
                 ],
             ),
             (Feature::Authzen, &["access_evaluation_endpoint"]),
@@ -910,7 +1002,7 @@ mod tests {
             ),
         ];
 
-        let off = provider_metadata(
+        let off = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -930,7 +1022,7 @@ mod tests {
                 _ => unreachable!("the table above covers the endpoint-bearing flags"),
             }
 
-            let on = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+            let on = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
             let on_object = on.as_object().expect("object");
             let added: std::collections::BTreeSet<&String> = on_object
                 .keys()
@@ -962,7 +1054,7 @@ mod tests {
         };
 
         // Act
-        let document = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+        let document = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
         let aliases = document["mtls_endpoint_aliases"]
             .as_object()
             .expect("RFC 8705 §5 makes this an object");
@@ -998,7 +1090,7 @@ mod tests {
         };
 
         // Act
-        let document = provider_metadata(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+        let document = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
         let aliases = document["mtls_endpoint_aliases"]
             .as_object()
             .expect("object");
@@ -1016,7 +1108,7 @@ mod tests {
 
     #[test]
     fn a_disabled_feature_contributes_no_member_at_all() {
-        let document = provider_metadata(
+        let document = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -1200,7 +1292,7 @@ mod tests {
     #[test]
     fn the_claims_parameter_is_advertised() {
         // Arrange & Act.
-        let document = provider_metadata(
+        let document = metadata_of(
             &issuer(),
             &Capabilities::default(),
             &AcrPolicy::default(),
@@ -1219,7 +1311,7 @@ mod tests {
     #[test]
     fn claims_locales_supported_is_omitted_rather_than_advertised_empty() {
         // Arrange & Act.
-        let document = provider_metadata(&issuer(), &all_features(), &AcrPolicy::default(), &[]);
+        let document = metadata_of(&issuer(), &all_features(), &AcrPolicy::default(), &[]);
 
         // Assert.
         assert!(document.get("claims_locales_supported").is_none());

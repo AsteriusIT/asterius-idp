@@ -269,6 +269,7 @@ async fn run(
         lifetime: Duration::seconds(90),
         certificate: None,
         request_objects: None,
+        grants: None,
     };
 
     let response = push(
@@ -630,6 +631,7 @@ async fn a_body_that_is_not_a_form_is_refused() {
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &headers,
         &Bytes::from_static(br#"{"response_type":"code"}"#),
@@ -668,6 +670,7 @@ async fn a_form_content_type_with_a_charset_is_accepted() {
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &headers,
         &form(&valid_pairs()),
@@ -699,6 +702,7 @@ async fn an_oversized_body_is_refused_before_it_is_parsed() {
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &form_headers(),
         &Bytes::from(vec![b'a'; MAX_BODY_BYTES + 1]),
@@ -752,6 +756,7 @@ async fn a_proof_on_the_push_pins_the_key_the_code_issuer_reads() {
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &form_headers(),
         // No `dpop_jkt` in the body: the proof is the whole pin.
@@ -797,6 +802,7 @@ async fn a_proof_and_a_dpop_jkt_that_disagree_are_refused() {
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &form_headers(),
         &form(&pairs),
@@ -837,6 +843,7 @@ async fn a_proof_and_a_matching_dpop_jkt_are_accepted() {
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &form_headers(),
         &form(&pairs),
@@ -1000,6 +1007,7 @@ async fn pushed_as(client: Client, pairs: &[(&str, &str)]) -> (StatusCode, Value
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &form_headers(),
         &form(pairs),
@@ -1065,6 +1073,7 @@ async fn a_registered_resource_is_stored_with_the_request() {
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &form_headers(),
         &form(&pairs),
@@ -1210,6 +1219,7 @@ async fn an_accepted_authorization_details_is_stored_with_the_request() {
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: None,
+            grants: None,
         },
         &form_headers(),
         &form(&pairs),
@@ -1346,6 +1356,7 @@ async fn pushed_with_jar(
             lifetime: Duration::seconds(90),
             certificate: None,
             request_objects: Some(&keys),
+            grants: None,
         },
         &form_headers(),
         &form(pairs),
@@ -1632,4 +1643,391 @@ async fn a_request_object_is_refused_when_the_tenant_does_not_accept_them() {
     // Assert
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], json!("request_not_supported"));
+}
+
+// ---- Grant Management (ID1 §5.1, §5.2, §5.4, §7.1) ------------------------
+
+/// This tenant's grants, in memory, for the `grant_id` lookup §5.4 needs.
+///
+/// `amend` is never reached from this endpoint — the push validates and stores,
+/// and the amendment happens after a person consents — so it records what it
+/// was asked to do and asserts nothing more.
+#[derive(Debug, Default)]
+struct FakeGrants(Vec<asterius_domain::Grant>);
+
+#[async_trait::async_trait]
+impl asterius_domain::GrantAmendments for FakeGrants {
+    async fn find(
+        &self,
+        id: &asterius_domain::GrantId,
+    ) -> Result<Option<asterius_domain::Grant>, DomainError> {
+        Ok(self.0.iter().find(|grant| grant.id == *id).cloned())
+    }
+
+    async fn amend(
+        &self,
+        _grant: &asterius_domain::Grant,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        panic!("the pushed request endpoint must never amend a grant")
+    }
+}
+
+/// A store whose every read fails, so that "we cannot tell" can be told apart
+/// from "no such grant".
+#[derive(Debug)]
+struct UnreachableGrants;
+
+#[async_trait::async_trait]
+impl asterius_domain::GrantAmendments for UnreachableGrants {
+    async fn find(
+        &self,
+        _id: &asterius_domain::GrantId,
+    ) -> Result<Option<asterius_domain::Grant>, DomainError> {
+        Err(DomainError::Storage("the store is unreachable".into()))
+    }
+
+    async fn amend(
+        &self,
+        _grant: &asterius_domain::Grant,
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Err(DomainError::Storage("the store is unreachable".into()))
+    }
+}
+
+/// A live grant of the fixture client, held by somebody.
+fn held_grant() -> asterius_domain::Grant {
+    let mut grant = asterius_domain::Grant::new(
+        TenantId::parse("demo").expect("a tenant id"),
+        ClientId::new(CLIENT),
+        now(),
+    );
+    grant.user = Some(asterius_domain::UserId::generate());
+    grant.scopes = ["openid".to_owned()].into_iter().collect();
+    grant
+}
+
+/// The push a tenant with `Feature::GrantManagement` on would run.
+async fn pushed_with_grant_management(
+    pairs: &[(&str, &str)],
+    grants: &dyn asterius_domain::GrantAmendments,
+    action_required: bool,
+) -> (StatusCode, Value, FakeRequests) {
+    let tenant = tenant();
+    let clients = FakeClients(Some(client()));
+    let requests = FakeRequests::default();
+    let context = PushContext {
+        tenant: &tenant,
+        clients: &clients,
+        requests: &requests,
+        resource_servers: &registry(),
+        authorization_details_types: &detail_types(),
+        keys: &NoKeys,
+        policy: AuthorizationPolicy::default().with_grant_management(
+            asterius_oidc::grant_management::Policy::new(true, action_required),
+        ),
+        lifetime: Duration::seconds(90),
+        certificate: None,
+        request_objects: None,
+        grants: Some(grants),
+    };
+
+    let response = push(
+        context,
+        &form_headers(),
+        &form(pairs),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client()),
+        None,
+        now(),
+    )
+    .await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    (status, json, requests)
+}
+
+/// §5.4: "`grant_management_action` is set to `create` and a `grant_id` is
+/// present".
+#[tokio::test]
+async fn create_with_a_grant_id_is_refused_at_the_push() {
+    let held = held_grant();
+    let mut pairs = valid_pairs();
+    pairs.push(("grant_management_action", "create"));
+    let id = held.id.as_str().to_owned();
+    pairs.push(("grant_id", &id));
+
+    let (status, body, store) =
+        pushed_with_grant_management(&pairs, &FakeGrants(vec![held.clone()]), false).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+    assert!(store.0.lock().expect("lock").is_empty());
+}
+
+/// §5.4: "a `grant_id` is present but `grant_management_action` is missing".
+#[tokio::test]
+async fn a_grant_id_without_an_action_is_refused_at_the_push() {
+    let held = held_grant();
+    let mut pairs = valid_pairs();
+    let id = held.id.as_str().to_owned();
+    pairs.push(("grant_id", &id));
+
+    let (status, body, _) =
+        pushed_with_grant_management(&pairs, &FakeGrants(vec![held]), false).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+}
+
+/// §5.4: an action this server does not support.
+#[tokio::test]
+async fn an_unsupported_action_is_refused_at_the_push() {
+    let mut pairs = valid_pairs();
+    pairs.push(("grant_management_action", "revoke"));
+
+    let (status, body, _) =
+        pushed_with_grant_management(&pairs, &FakeGrants::default(), false).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+}
+
+/// §5.4's `invalid_grant_id`: a grant this tenant does not hold, and a grant
+/// held by another client, are told apart from nothing and get one code.
+#[tokio::test]
+async fn an_unknown_grant_or_another_clients_grant_is_invalid_grant_id() {
+    let mut theirs = held_grant();
+    theirs.client = ClientId::new("somebody-else");
+    let unknown = held_grant();
+
+    for (label, store) in [
+        ("unknown", FakeGrants::default()),
+        ("another client's", FakeGrants(vec![theirs.clone()])),
+    ] {
+        let target = if label == "unknown" {
+            &unknown
+        } else {
+            &theirs
+        };
+        let id = target.id.as_str().to_owned();
+        let mut pairs = valid_pairs();
+        pairs.push(("grant_management_action", "merge"));
+        pairs.push(("grant_id", &id));
+
+        let (status, body, requests) = pushed_with_grant_management(&pairs, &store, false).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}");
+        assert_eq!(body["error"], "invalid_grant_id", "{label}");
+        assert!(
+            requests.0.lock().expect("lock").is_empty(),
+            "{label}: a refused push stored a request"
+        );
+    }
+}
+
+/// §5.2 amends "an existing grant", and a revoked one is not that: merging into
+/// it would bring a withdrawn authorization back under an id the client holds.
+#[tokio::test]
+async fn a_revoked_grant_is_invalid_grant_id() {
+    let mut revoked = held_grant();
+    revoked.revoked_at = Some(now());
+    revoked.revocation_reason = Some(asterius_domain::RevocationReason::UserRevoked);
+    let id = revoked.id.as_str().to_owned();
+    let mut pairs = valid_pairs();
+    pairs.push(("grant_management_action", "replace"));
+    pairs.push(("grant_id", &id));
+
+    let (status, body, _) =
+        pushed_with_grant_management(&pairs, &FakeGrants(vec![revoked]), false).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_grant_id");
+}
+
+/// A store that cannot be read is an outage, not a withdrawn grant. Telling a
+/// client `invalid_grant_id` would make every client believe its authorizations
+/// were revoked.
+#[tokio::test]
+async fn a_grant_store_that_cannot_be_read_is_temporarily_unavailable() {
+    let id = held_grant().id.as_str().to_owned();
+    let mut pairs = valid_pairs();
+    pairs.push(("grant_management_action", "merge"));
+    pairs.push(("grant_id", &id));
+
+    let (status, body, _) = pushed_with_grant_management(&pairs, &UnreachableGrants, false).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(body["error"], "temporarily_unavailable");
+}
+
+/// The accepted pair reaches the stored request, because the handler that
+/// applies §5.2 runs an hour later and has no other way to learn what was
+/// asked for.
+#[tokio::test]
+async fn an_accepted_action_and_grant_id_are_stored_with_the_request() {
+    let held = held_grant();
+    let id = held.id.as_str().to_owned();
+    let mut pairs = valid_pairs();
+    pairs.push(("grant_management_action", "merge"));
+    pairs.push(("grant_id", &id));
+
+    let (status, _, store) =
+        pushed_with_grant_management(&pairs, &FakeGrants(vec![held]), false).await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let stored = store.0.lock().expect("lock");
+    assert_eq!(stored[0].parameters["grant_management_action"], "merge");
+    assert_eq!(stored[0].parameters["grant_id"], id);
+}
+
+/// §7.1: a tenant that requires the action refuses a request without one, and
+/// the metadata it publishes says so — `provider_metadata`'s own test.
+#[tokio::test]
+async fn a_tenant_that_requires_an_action_refuses_a_request_without_one() {
+    let (status, body, _) =
+        pushed_with_grant_management(&valid_pairs(), &FakeGrants::default(), true).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_request");
+
+    // And the same request naming an action is accepted.
+    let mut pairs = valid_pairs();
+    pairs.push(("grant_management_action", "create"));
+    let (status, _, store) =
+        pushed_with_grant_management(&pairs, &FakeGrants::default(), true).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        store.0.lock().expect("lock")[0].parameters["grant_management_action"],
+        "create"
+    );
+}
+
+/// With the flag off, both parameters are ignored: the push succeeds and the
+/// stored request carries neither. A refusal would be worse — a client that
+/// sends a parameter this deployment never advertised gets the ordinary
+/// authorization a server built before the draft would have given it.
+#[tokio::test]
+async fn with_the_flag_off_both_parameters_are_ignored() {
+    let mut pairs = valid_pairs();
+    pairs.push(("grant_management_action", "merge"));
+    pairs.push(("grant_id", "1e6f1b1a-0000-4000-8000-000000000000"));
+
+    // `pushed` builds the context with `grants: None` and the default policy,
+    // which is a deployment that does not offer Grant Management.
+    let (status, _, store) = pushed(&pairs).await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    let stored = store.0.lock().expect("lock");
+    assert_eq!(stored[0].parameters["grant_management_action"], Value::Null);
+    assert_eq!(stored[0].parameters["grant_id"], Value::Null);
+}
+
+/// §5.1: "Grant Management is only supported for confidential clients."
+///
+/// Nothing validates that here, and this test is why it does not need to: a
+/// push without client authentication never reaches the validator at all (ADR
+/// -0002 makes PAR the only way in, FAPI 2.0 SP §5.3.2.2 item 4 makes it
+/// authenticated), so a public client cannot express these parameters. Every
+/// client this server registers is confidential for the same reason.
+#[tokio::test]
+async fn a_public_client_cannot_reach_these_parameters_at_all() {
+    let mut pairs = valid_pairs();
+    pairs.push(("grant_management_action", "create"));
+    let requests = FakeRequests::default();
+
+    let (status, body, _) = run(&pairs, &requests, Err(ClientAuthError::NoMethod)).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "invalid_client");
+    assert!(requests.0.lock().expect("lock").is_empty());
+}
+
+/// The two parameters are read from a signed request object by the same
+/// validator that reads them from the form (RFC 9101 §6.1, `ast-gxh.9`).
+///
+/// Nothing in this feature knows about JAR, and that is the point: the pushed
+/// request endpoint unwraps the object *before* validation, so `grant_id` and
+/// `grant_management_action` are ordinary parameters by the time §5.4 sees
+/// them. This test is what keeps that true — a second reader for the signed
+/// spelling would be a second set of rules about the same request.
+#[tokio::test]
+async fn the_parameters_are_validated_the_same_way_inside_a_request_object() {
+    // Arrange: a signed object that breaks §5.4 by naming a grant with
+    // `create`, and one that asks for a merge of a grant this client holds.
+    let held = held_grant();
+    let id = held.id.as_str().to_owned();
+    let contradictory = request_object(&json!({
+        "grant_management_action": "create",
+        "grant_id": id,
+    }));
+    let mergeable = request_object(&json!({
+        "grant_management_action": "merge",
+        "grant_id": id,
+    }));
+
+    // Act
+    let refused = pushed_with_jar_and_grant_management(
+        &borrowed(&jar_form(&contradictory)),
+        &FakeGrants(vec![held.clone()]),
+    )
+    .await;
+    let accepted = pushed_with_jar_and_grant_management(
+        &borrowed(&jar_form(&mergeable)),
+        &FakeGrants(vec![held]),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(refused.0, StatusCode::BAD_REQUEST, "{:?}", refused.1);
+    assert_eq!(refused.1["error"], "invalid_request");
+    assert_eq!(accepted.0, StatusCode::CREATED, "{:?}", accepted.1);
+    let stored = accepted.2.0.lock().expect("lock");
+    assert_eq!(stored[0].parameters["grant_management_action"], "merge");
+    assert_eq!(stored[0].parameters["grant_id"], id);
+}
+
+/// A push with both request objects and Grant Management switched on.
+async fn pushed_with_jar_and_grant_management(
+    pairs: &[(&str, &str)],
+    grants: &dyn asterius_domain::GrantAmendments,
+) -> (StatusCode, Value, FakeRequests) {
+    let tenant = tenant();
+    let client = jar_client();
+    let clients = FakeClients(Some(client.clone()));
+    let requests = FakeRequests::default();
+    let keys = asterius_jose::client_keys::ClientKeyCache::new(std::sync::Arc::new(NoFetch));
+
+    let response = push(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            resource_servers: &registry(),
+            authorization_details_types: &detail_types(),
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default()
+                .with_grant_management(asterius_oidc::grant_management::Policy::new(true, false)),
+            lifetime: Duration::seconds(90),
+            certificate: None,
+            request_objects: Some(&keys),
+            grants: Some(grants),
+        },
+        &form_headers(),
+        &form(pairs),
+        async |_: &Attempt<'_>, _: &AssertionRules| Ok(client.clone()),
+        None,
+        now(),
+    )
+    .await;
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body");
+    let json: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+    (status, json, requests)
 }

@@ -89,6 +89,15 @@ pub struct PushContext<'a> {
     /// `request_not_supported`, which is the code OIDC Core §3.1.2.6 defines
     /// for exactly that.
     pub request_objects: Option<&'a asterius_jose::client_keys::ClientKeyCache>,
+    /// This tenant's grants, for the `grant_id` of Grant Management ID1 §5.2.
+    ///
+    /// `Some` exactly when [`asterius_domain::Feature::GrantManagement`] is on
+    /// for this tenant, and `None` otherwise — the same shape `request_objects`
+    /// has, and for the same reason: the flag that decides what the discovery
+    /// document advertises is the flag that decides whether this endpoint has
+    /// anything to look a `grant_id` up in. With `None` the two parameters
+    /// never survive [`authorize::validate`], so nothing here is reached.
+    pub grants: Option<&'a dyn asterius_domain::GrantAmendments>,
 }
 
 /// Handles a pushed authorization request.
@@ -222,6 +231,12 @@ pub async fn push(
     if let Some(refusal) =
         refuse_an_unusable_authorization_detail(&context, &client, &request).await
     {
+        return refusal;
+    }
+
+    // Grant Management ID1 §5.4, the half the validator could not do either:
+    // whether the `grant_id` names a live grant of *this* client.
+    if let Some(refusal) = refuse_an_unusable_grant(&context, &client, &request, now).await {
         return refusal;
     }
 
@@ -560,6 +575,96 @@ async fn refuse_an_unusable_authorization_detail(
         })
 }
 
+/// Refuses a `grant_id` this client cannot act on (Grant Management ID1 §5.4).
+///
+/// Two of the three `invalid_grant_id` cases are decided here, because both can
+/// be: the grant is unknown to this tenant, or it belongs to another client. A
+/// revoked or lapsed grant is refused with them — §5.2 amends "an existing
+/// grant", and merging into a withdrawn one would bring an authorization the
+/// user or an operator took away back to life under a `grant_id` the client
+/// still holds.
+///
+/// The third case — a grant belonging to a *different person* — cannot be
+/// decided here at all. Nobody has signed in yet: the browser has not even been
+/// redirected. It is checked where the flow completes
+/// ([`crate::http::interaction`]) and reported as a redirect to the client,
+/// which is the only channel left by then.
+///
+/// **One code for all of them.** A client that could tell "no such grant" from
+/// "not yours" from "revoked" would have an oracle for whether a grant id it
+/// guessed was ever real, and for what happened to somebody else's
+/// authorization. §5.4 registers exactly one code, and that is the reason.
+///
+/// A store that cannot be read is `temporarily_unavailable` and not
+/// `invalid_grant_id`, for the reason the resource registry check gives: "we
+/// cannot tell" must not be spelled like "your grant is gone", or an outage
+/// looks to every client like its authorizations were withdrawn.
+///
+/// `None` when the push may proceed, which is every request that named no
+/// grant — including every request on a tenant with the feature off, because
+/// [`authorize::validate`] has already dropped both parameters there.
+async fn refuse_an_unusable_grant(
+    context: &PushContext<'_>,
+    client: &Client,
+    request: &authorize::AuthorizationRequest,
+    now: OffsetDateTime,
+) -> Option<Response> {
+    let grant_id = request
+        .grant_management
+        .as_ref()
+        .and_then(asterius_oidc::grant_management::GrantManagement::grant_id)?;
+
+    let refused = || {
+        error(
+            StatusCode::BAD_REQUEST,
+            asterius_oidc::grant_management::INVALID_GRANT_ID,
+            "grant_id is invalid or unknown",
+        )
+    };
+
+    let Some(grants) = context.grants else {
+        // Unreachable: with the feature off the validator returns `None` for
+        // both parameters, so there is no `grant_id` to be here with. Refusing
+        // rather than proceeding is the only safe reading — continuing would
+        // honour a `merge` nobody could look up.
+        tracing::error!(
+            tenant = %context.tenant.id,
+            "a grant_id survived validation on a tenant with no grant store"
+        );
+        return Some(refused());
+    };
+
+    match grants
+        .find(&asterius_domain::GrantId::new(grant_id.to_owned()))
+        .await
+    {
+        Ok(Some(grant))
+            if asterius_oidc::grant_management::may_be_amended(&grant, &client.id, now) =>
+        {
+            None
+        }
+        Ok(_) => {
+            tracing::info!(
+                tenant = %context.tenant.id,
+                "a pushed request named a grant this client cannot amend"
+            );
+            Some(refused())
+        }
+        // A malformed id reaches here as `Invalid` rather than as a lookup
+        // miss, and gets the same answer: an id this store could not hold is an
+        // id this tenant does not have.
+        Err(asterius_domain::DomainError::Invalid { .. }) => Some(refused()),
+        Err(failure) => {
+            tracing::error!(%failure, tenant = %context.tenant.id, "cannot read the grant a grant_id names");
+            Some(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                "the request could not be validated",
+            ))
+        }
+    }
+}
+
 /// The path this endpoint is mounted at, from the one registry.
 #[must_use]
 pub const fn path() -> &'static str {
@@ -659,6 +764,20 @@ fn serialise(
         // by a standing grant is not put in front of the user again.
         "authorization_details": request.authorization_details.to_json(),
         "openid": request.openid,
+        // Grant Management ID1 §5.2's two parameters, as the *validated* pair
+        // and not as the strings the client sent. Stored because the semantics
+        // are applied where the grant is written — after the person signs in
+        // and consents — and that handler has no other way to learn what was
+        // asked for. A request that asked for nothing writes two nulls, which
+        // is what every request on a tenant with the feature off writes.
+        "grant_management_action": request
+            .grant_management
+            .as_ref()
+            .map(|asked| asked.action.as_str()),
+        "grant_id": request
+            .grant_management
+            .as_ref()
+            .and_then(asterius_oidc::grant_management::GrantManagement::grant_id),
     })
 }
 

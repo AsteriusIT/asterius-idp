@@ -249,6 +249,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "grant_management"
+path = "fuzz_targets/grant_management.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "grant_record"
 path = "fuzz_targets/grant_record.rs"
 test = false

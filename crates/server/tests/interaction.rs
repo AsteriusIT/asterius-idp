@@ -587,6 +587,9 @@ fn context_with<'a>(
         acr: acr_policy(),
         clients: &FakeClients,
         grants: &issued.grants,
+        // Grant Management is off for these tenants, which is what the flag
+        // defaults to: a stored request here never names a `grant_id`.
+        grant_amendments: None,
         // No registry: these tests push no `authorization_details`, and a
         // deployment without one shows a rich authorization by type name.
         authorization_details_types: None,
