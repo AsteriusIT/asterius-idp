@@ -1048,6 +1048,10 @@ async fn userinfo_endpoint_inner(
         // Read only for its `userinfo_signed_response_alg`, and only after the
         // access token verified — see `StoredClaims::signed_response_alg`.
         clients: scope.clients(endpoints.capabilities),
+        // `ast-095`: the application roles the response reports. The port is
+        // deployment-wide, so the tenant travels beside it.
+        tenant: tenant.id.clone(),
+        roles: scope.application_roles(),
     };
 
     userinfo::userinfo(
@@ -1431,6 +1435,8 @@ struct StoredClaims {
     grants: asterius_store_pg::PgGrantRepository,
     users: asterius_store_pg::PgUserRepository,
     clients: asterius_store_pg::PgClientRepository,
+    tenant: asterius_domain::TenantId,
+    roles: asterius_store_pg::PgApplicationRoles,
 }
 
 #[async_trait::async_trait]
@@ -1450,6 +1456,14 @@ impl userinfo::UserInfoSource for StoredClaims {
         subject: &asterius_domain::SubjectId,
     ) -> Result<Vec<asterius_domain::Grant>, asterius_domain::DomainError> {
         self.grants.list_for_subject(subject).await
+    }
+
+    async fn roles(
+        &self,
+        user: asterius_domain::UserId,
+    ) -> Result<asterius_domain::HeldRoles, asterius_domain::DomainError> {
+        use asterius_domain::ports::ApplicationRoleDirectory;
+        self.roles.held_by(&self.tenant, user).await
     }
 
     async fn user(
@@ -1627,6 +1641,7 @@ async fn dispatch_grants(
     let users = scope.users(Arc::clone(&endpoints.kek));
     // RFC 8707: what a `resource` may name and what an `aud` may hold.
     let resource_servers = scope.resource_servers();
+    let application_roles = scope.application_roles();
     // One value for every grant: what this request proved possession of. The
     // registration decides which half binds the token (RFC 9449 §6, RFC 8705
     // §3), so no grant handler chooses for itself.
@@ -1635,6 +1650,7 @@ async fn dispatch_grants(
         certificate,
     };
     let authorization_code = AuthorizationCode {
+        roles: &application_roles,
         codes: &codes,
         grants: &grants,
         refresh_tokens: &refresh_tokens,
@@ -1682,20 +1698,7 @@ async fn dispatch_grants(
         endpoints.keys.as_ref(),
         endpoints.audit.as_ref(),
     );
-    let refresh_token = RefreshToken {
-        tokens: &refresh_tokens,
-        grants: &grants,
-        sessions: &sessions,
-        users: &users,
-        resource_servers: &resource_servers,
-        signer: endpoints.signer.as_ref(),
-        audit: endpoints.audit.as_ref(),
-        grant_id_claim,
-        grant_management,
-        lifetimes,
-        constraint,
-        now,
-    };
+    let refresh_token = RefreshToken::sharing(&authorization_code, endpoints.audit.as_ref());
 
     let mut response = token::token(
         TokenContext {

@@ -112,6 +112,19 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     /// [`DomainError`] when the row cannot be read.
     async fn user(&self, id: UserId) -> Result<Option<User>, DomainError>;
 
+    /// The application roles one account holds (`ast-095`).
+    ///
+    /// A read of its own rather than part of [`Self::user`], because it is
+    /// authority and not a claim: it is not released by a scope, not narrowed
+    /// by the grant's `claims` request, and not stored on the user row.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] when the rows cannot be read. Never an empty set for an
+    /// unavailable store: a response asserting *fewer* roles than the person
+    /// holds is an authorization decision taken by an outage.
+    async fn roles(&self, user: UserId) -> Result<asterius_domain::HeldRoles, DomainError>;
+
     /// Whether this `jti` was revoked before its own expiry.
     ///
     /// # Errors
@@ -320,6 +333,17 @@ async fn answer(
     }
 
     let body = userinfo::body(subject.as_str(), released);
+    // `ast-095`. Read here rather than in `release`: roles are authority, not
+    // the claims the grant released, and mixing them would put them behind the
+    // `claims` request that governs personal data.
+    let user = grant.user.ok_or_else(|| {
+        Refused::Server(DomainError::invalid(
+            "grant",
+            "a UserInfo request reached a grant with no user",
+        ))
+    })?;
+    let held = context.source.roles(user).await?;
+    let body = userinfo::with_roles(body, grant.client.as_str(), &held);
     render(context, &grant, body).await
 }
 

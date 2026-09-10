@@ -338,6 +338,65 @@ pub fn body(subject: &str, released: Map<String, Value>) -> Map<String, Value> {
     claims
 }
 
+/// Adds the application roles a person holds to a UserInfo body (`ast-095`).
+///
+/// The same two claims an access token carries, in the same shape, so that a
+/// relying party reading `roles` out of a token and out of UserInfo does not
+/// need two mappers: `roles` for the tenant's shared catalogue and
+/// `resource_access.<client_id>.roles` for one client's.
+///
+/// **Narrowed to `client` here, as at the access token.** The caller passes
+/// what the *user* holds and this function decides what the response says, so
+/// there is no call site that could widen it. UserInfo is answered to a client
+/// holding a token, and a client learning the roles somebody holds in another
+/// application would be the same disclosure `AccessToken::with_roles` refuses.
+///
+/// Roles are authorization attributes, not the personal data a `claims`
+/// parameter releases (OIDC Core §5.5), so they are not gated on a scope and
+/// do not appear on a consent screen. That is a decision, recorded in
+/// `docs/threat-model.md`: the alternative — a scope somebody has to remember
+/// to request — would mean an application silently receiving *no* roles and
+/// authorising as if the person held none.
+#[must_use]
+pub fn with_roles(
+    mut body: Map<String, Value>,
+    client_id: &str,
+    held: &asterius_domain::HeldRoles,
+) -> Map<String, Value> {
+    let narrowed = held.for_client(&asterius_domain::ClientId::new(client_id.to_owned()));
+    if !narrowed.tenant.is_empty() {
+        body.insert(
+            "roles".to_owned(),
+            Value::Array(
+                narrowed
+                    .tenant
+                    .iter()
+                    .map(|role| Value::String(role.as_str().to_owned()))
+                    .collect(),
+            ),
+        );
+    }
+    for (client, roles) in &narrowed.clients {
+        if roles.is_empty() {
+            continue;
+        }
+        let mut entry = Map::new();
+        entry.insert(
+            "roles".to_owned(),
+            Value::Array(
+                roles
+                    .iter()
+                    .map(|role| Value::String(role.as_str().to_owned()))
+                    .collect(),
+            ),
+        );
+        let mut members = Map::new();
+        members.insert(client.as_str().to_owned(), Value::Object(entry));
+        body.insert("resource_access".to_owned(), Value::Object(members));
+    }
+    body
+}
+
 /// The claims of a signed UserInfo response (OIDC Core §5.3.2).
 ///
 /// > If the UserInfo Response is signed and/or encrypted, then the Claims are

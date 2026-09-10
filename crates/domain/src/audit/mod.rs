@@ -281,6 +281,34 @@ impl EventType {
     /// [`Self::ACCOUNT_ENABLED`] is separate from [`Self::ACCOUNT_DISABLED`]:
     /// the direction of the change is the thing being searched for.
     pub const ROLE_REVOKED: Self = Self("role.revoked");
+    /// An application role was added to a catalogue (`ast-095`).
+    ///
+    /// `app_role.*` and not `role.*`: [`Self::ROLE_GRANTED`] beside it is the
+    /// authority to administer *this server* (`ast-3t8`), and what this one
+    /// records is a name a tenant invented for its own applications. A reader
+    /// filtering the trail for "who was made an administrator" must not have
+    /// to tell the two apart by reading a detail map.
+    ///
+    /// Its own type rather than [`Self::ADMIN_CHANGED`], because a role is a
+    /// name that will appear in tokens third parties authorise against: "when
+    /// did `payments:approve` come into existence, and who created it" is a
+    /// question an incident asks.
+    pub const APP_ROLE_DEFINED: Self = Self("app_role.defined");
+    /// An application role was deleted from a catalogue.
+    ///
+    /// Only ever recorded for a role nobody held: the schema refuses to delete
+    /// one that is still assigned, so this event can never stand for an
+    /// unbounded number of silent withdrawals.
+    pub const APP_ROLE_REMOVED: Self = Self("app_role.removed");
+    /// An account was given an application role.
+    ///
+    /// A delegation of authority to an application, recorded with the account
+    /// as its subject and the role as a detail — the two questions afterwards
+    /// are "what does this person hold" and "who holds this role", and both
+    /// are answerable from the trail.
+    pub const APP_ROLE_ASSIGNED: Self = Self("app_role.assigned");
+    /// An application role was taken away from an account.
+    pub const APP_ROLE_WITHDRAWN: Self = Self("app_role.withdrawn");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
     /// A backchannel authentication request was accepted (CIBA Core 1.0 §7.3).
@@ -318,7 +346,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 52] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -361,6 +389,10 @@ impl EventType {
         Self::ACCOUNT_ENABLED,
         Self::ROLE_GRANTED,
         Self::ROLE_REVOKED,
+        Self::APP_ROLE_DEFINED,
+        Self::APP_ROLE_REMOVED,
+        Self::APP_ROLE_ASSIGNED,
+        Self::APP_ROLE_WITHDRAWN,
         Self::AUDIT_PURGED,
         Self::BACKCHANNEL_REQUESTED,
         Self::BACKCHANNEL_REFUSED,

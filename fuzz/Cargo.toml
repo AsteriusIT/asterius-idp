@@ -491,6 +491,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "role_name"
+path = "fuzz_targets/role_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ssf_event_uri"
 path = "fuzz_targets/ssf_event_uri.rs"
 test = false

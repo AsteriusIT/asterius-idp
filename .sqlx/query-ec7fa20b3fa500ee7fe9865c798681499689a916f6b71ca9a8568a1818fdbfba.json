@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, description, created_at\n                   from tenant_roles\n                  where tenant_id = $1\n                  order by name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "ec7fa20b3fa500ee7fe9865c798681499689a916f6b71ca9a8568a1818fdbfba"
+}

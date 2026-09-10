@@ -56,6 +56,7 @@ pub mod operations;
 pub mod outbox;
 pub mod pagination;
 pub mod rbac;
+pub mod roles;
 pub mod router;
 pub mod theme_image;
 pub mod throttle;
@@ -698,12 +699,163 @@ pub const USER_ROLES_UPDATE: Operation = Operation::mutation(
     "Replaces the administrative roles one account holds",
 );
 
+// ---------------------------------------------------------------------------
+// Application roles (`ast-095`)
+// ---------------------------------------------------------------------------
+
+/// The `operationId` of [`APP_ROLES_LIST`].
+pub const APP_ROLES_LIST_ID: &str = "app_roles.tenant.list";
+/// The `operationId` of [`APP_ROLE_CREATE`].
+pub const APP_ROLE_CREATE_ID: &str = "app_roles.tenant.create";
+/// The `operationId` of [`APP_ROLE_DELETE`].
+pub const APP_ROLE_DELETE_ID: &str = "app_roles.tenant.delete";
+/// The `operationId` of [`CLIENT_APP_ROLES_LIST`].
+pub const CLIENT_APP_ROLES_LIST_ID: &str = "app_roles.client.list";
+/// The `operationId` of [`CLIENT_APP_ROLE_CREATE`].
+pub const CLIENT_APP_ROLE_CREATE_ID: &str = "app_roles.client.create";
+/// The `operationId` of [`CLIENT_APP_ROLE_DELETE`].
+pub const CLIENT_APP_ROLE_DELETE_ID: &str = "app_roles.client.delete";
+/// The `operationId` of [`USER_APP_ROLES_LIST`].
+pub const USER_APP_ROLES_LIST_ID: &str = "users.app_roles.list";
+/// The `operationId` of [`USER_APP_ROLE_ASSIGN`].
+pub const USER_APP_ROLE_ASSIGN_ID: &str = "users.app_roles.assign";
+/// The `operationId` of [`USER_APP_ROLE_WITHDRAW`].
+pub const USER_APP_ROLE_WITHDRAW_ID: &str = "users.app_roles.tenant.withdraw";
+/// The `operationId` of [`USER_CLIENT_APP_ROLE_WITHDRAW`].
+pub const USER_CLIENT_APP_ROLE_WITHDRAW_ID: &str = "users.app_roles.client.withdraw";
+
+/// The tenant's shared role catalogue (`ast-095`).
+///
+/// These are the names that reach every application of the tenant, under the
+/// access token's `roles` claim. Its own scope — `admin.app_roles:read` — and
+/// deliberately not `admin.roles:read`, which `ast-3t8` gave to the
+/// *administrative* roles of this server: delegating the power to invent a
+/// role an application authorises against is not the power to appoint an
+/// administrator, and one scope covering both would make it so.
+pub const APP_ROLES_LIST: Operation = Operation::read(
+    APP_ROLES_LIST_ID,
+    "/app-roles",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Lists the tenant's shared application roles",
+);
+
+/// Adds a role to the tenant's catalogue.
+///
+/// The only way a role name enters this system. Dynamic client registration
+/// cannot declare one — there is no field for it in a registration document —
+/// so a client cannot arrive with authority it named for itself.
+pub const APP_ROLE_CREATE: Operation = Operation::mutation(
+    APP_ROLE_CREATE_ID,
+    "/app-roles",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Creates a tenant application role",
+);
+
+/// Removes a role from the tenant's catalogue.
+///
+/// **Refused with 409 while any account still holds it.** The alternative —
+/// cascading the deletion onto every assignment — would be one request that
+/// withdraws authority from an unbounded number of people, recorded as a
+/// single audit event naming none of them. See
+/// `0023_application_roles.sql`.
+pub const APP_ROLE_DELETE: Operation = Operation::mutation(
+    APP_ROLE_DELETE_ID,
+    "/app-roles/{role_name}",
+    M::Delete,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Deletes a tenant application role; 409 while any account still holds it",
+);
+
+/// One client's own role catalogue.
+///
+/// Issued under `resource_access.{client_id}.roles`, and visible only to
+/// tokens issued to that client.
+pub const CLIENT_APP_ROLES_LIST: Operation = Operation::read(
+    CLIENT_APP_ROLES_LIST_ID,
+    "/clients/{client_id}/app-roles",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Lists one client's application roles",
+);
+
+/// Adds a role to one client's catalogue.
+pub const CLIENT_APP_ROLE_CREATE: Operation = Operation::mutation(
+    CLIENT_APP_ROLE_CREATE_ID,
+    "/clients/{client_id}/app-roles",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Creates an application role belonging to one client",
+);
+
+/// Removes a role from one client's catalogue.
+///
+/// Refused with 409 while any account still holds it, for the reason
+/// [`APP_ROLE_DELETE`] gives.
+pub const CLIENT_APP_ROLE_DELETE: Operation = Operation::mutation(
+    CLIENT_APP_ROLE_DELETE_ID,
+    "/clients/{client_id}/app-roles/{role_name}",
+    M::Delete,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Deletes one client's application role; 409 while any account still holds it",
+);
+
+/// What one account holds, in both catalogues.
+pub const USER_APP_ROLES_LIST: Operation = Operation::read(
+    USER_APP_ROLES_LIST_ID,
+    "/users/{user_id}/app-roles",
+    S::Get,
+    A::new(R::Tenant, "admin.app_roles:read"),
+    "Lists the application roles one account holds",
+);
+
+/// Gives one account a role from either catalogue.
+///
+/// `POST` with a body naming the role and, for a client role, the client — one
+/// route rather than two, because the two differ only in which catalogue the
+/// name is looked up in and a caller assigning the wrong kind would otherwise
+/// get a 404 from the wrong path.
+///
+/// A role that is not in the catalogue is a 409 and never a silent creation:
+/// assignment must not be a way to invent a name that ends up in a token.
+pub const USER_APP_ROLE_ASSIGN: Operation = Operation::mutation(
+    USER_APP_ROLE_ASSIGN_ID,
+    "/users/{user_id}/app-roles",
+    M::Post,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Gives one account an application role",
+);
+
+/// Takes a tenant role away from one account.
+pub const USER_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
+    USER_APP_ROLE_WITHDRAW_ID,
+    "/users/{user_id}/app-roles/{role_name}",
+    M::Delete,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Takes a tenant application role away from one account",
+);
+
+/// Takes a client role away from one account.
+///
+/// A path of its own rather than a `client_id` query parameter on the route
+/// above: the thing being deleted is identified by the pair, and a deletion
+/// whose target depends on an optional parameter is one a proxy that drops
+/// query strings would aim at the wrong role.
+pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
+    USER_CLIENT_APP_ROLE_WITHDRAW_ID,
+    "/users/{user_id}/clients/{client_id}/app-roles/{role_name}",
+    M::Delete,
+    A::new(R::Tenant, "admin.app_roles:write"),
+    "Takes one client's application role away from one account",
+);
+
 /// Every route this API serves.
 ///
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 37] = [
+static REGISTRY: [Operation; 47] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -741,6 +893,16 @@ static REGISTRY: [Operation; 37] = [
     USER_GRANT_REVOKE,
     USER_ROLES_READ,
     USER_ROLES_UPDATE,
+    APP_ROLES_LIST,
+    APP_ROLE_CREATE,
+    APP_ROLE_DELETE,
+    CLIENT_APP_ROLES_LIST,
+    CLIENT_APP_ROLE_CREATE,
+    CLIENT_APP_ROLE_DELETE,
+    USER_APP_ROLES_LIST,
+    USER_APP_ROLE_ASSIGN,
+    USER_APP_ROLE_WITHDRAW,
+    USER_CLIENT_APP_ROLE_WITHDRAW,
 ];
 
 /// The registry.

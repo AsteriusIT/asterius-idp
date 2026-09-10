@@ -85,6 +85,12 @@ pub struct AuthorizationCode<'a> {
     /// Users for this tenant, read only to resolve the claims the grant
     /// covers (OIDC Core §5.4, §5.5). Nothing here writes a user.
     pub users: &'a PgUserRepository,
+    /// The application roles this token asserts (`ast-095`).
+    ///
+    /// Read at issuance rather than frozen onto the grant, so a role withdrawn
+    /// since the authorization is not asserted by the next token minted from
+    /// it.
+    pub roles: &'a asterius_store_pg::PgApplicationRoles,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// Whether this tenant offers Grant Management, which is what makes the
@@ -302,17 +308,14 @@ impl AuthorizationCode<'_> {
 
         let targeting = self.targeting(tenant, client, &grant, params).await?;
 
-        let confirmation = self
-            .constraint
-            .confirmation(client)
-            .map_err(Self::unbound)?;
-
         let access = AccessToken::new(
             &tenant.issuer,
             &grant,
             &claimed,
             targeting.audience,
-            confirmation,
+            self.constraint
+                .confirmation(client)
+                .map_err(Self::unbound)?,
             JwtId::generate(),
             self.now,
         )
@@ -334,6 +337,7 @@ impl AuthorizationCode<'_> {
         // UserInfo falls back to resolving the grant from the token's
         // `client_id` and `sub`.
         .with_grant_id_when(self.grant_id_claim)
+        .with_roles(&issuance::held_roles(self.roles, &grant).await?)
         .for_lifetime(self.lifetimes.access_token())
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;

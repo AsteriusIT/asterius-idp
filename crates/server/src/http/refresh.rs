@@ -107,6 +107,12 @@ pub struct RefreshToken<'a> {
     /// token request, so it may name a `resource` and is audienced by the same
     /// rules as the redemption before it.
     pub resource_servers: &'a dyn asterius_domain::ResourceServerRepository,
+    /// The application roles this token asserts (`ast-095`).
+    ///
+    /// Read at issuance rather than frozen onto the grant, so a role withdrawn
+    /// since the authorization is not asserted by the next token minted from
+    /// it.
+    pub roles: &'a asterius_store_pg::PgApplicationRoles,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// The trail. Every refresh is recorded, successful or not.
@@ -136,6 +142,40 @@ pub struct RefreshToken<'a> {
     /// tokens, so `iat`, `exp` and the two refresh-token expiries are judged
     /// against one clock reading rather than several.
     pub now: OffsetDateTime,
+}
+
+impl<'a> RefreshToken<'a> {
+    /// A refresh handler over the same repositories, clock reading and proven
+    /// key as the code grant beside it.
+    ///
+    /// The same construction — and the same argument — as
+    /// [`crate::http::device_code::DeviceCode::sharing`]: everything except
+    /// the audit sink is a value the token endpoint resolved once per request,
+    /// and two grants judging one request against two clock readings or two
+    /// proven keys is the class of bug `ast-5c6` was. Copying them here rather
+    /// than listing them again at the call site is what makes that identity
+    /// structural.
+    #[must_use]
+    pub fn sharing(
+        code: &super::authorization_code::AuthorizationCode<'a>,
+        audit: &'a dyn AuditSink,
+    ) -> Self {
+        Self {
+            tokens: code.refresh_tokens,
+            grants: code.grants,
+            sessions: code.sessions,
+            users: code.users,
+            resource_servers: code.resource_servers,
+            roles: code.roles,
+            signer: code.signer,
+            audit,
+            grant_management: code.grant_management,
+            grant_id_claim: code.grant_id_claim,
+            lifetimes: code.lifetimes,
+            constraint: code.constraint,
+            now: code.now,
+        }
+    }
 }
 
 impl std::fmt::Debug for RefreshToken<'_> {
@@ -385,6 +425,10 @@ impl RefreshToken<'_> {
         .authenticated_by(session.authentication.clone())
         .for_lifetime(self.lifetimes.access_token())
         .with_grant_id_when(self.grant_id_claim)
+        // `ast-095`: the tenant's shared roles under `roles`, this client's own
+        // under `resource_access.<client_id>.roles`. The builder narrows them
+        // to this client; see `AccessToken::with_roles`.
+        .with_roles(&issuance::held_roles(self.roles, &narrowed).await?)
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
 

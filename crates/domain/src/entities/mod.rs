@@ -3,6 +3,7 @@
 pub mod acr_policy;
 pub mod admin_access;
 pub mod agent;
+pub mod application_role;
 pub mod auth_request;
 pub mod authorization_details;
 pub mod client;
@@ -26,6 +27,10 @@ pub use admin_access::{AdminAdmission, PasskeyEnrolment};
 pub use agent::{
     AGENT_GRANT_TYPES, AgentLimits, AgentOwner, AgentProfile, AgentProfileError,
     DEFAULT_MAX_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH,
+};
+pub use application_role::{
+    ApplicationRole, ApplicationRoleError, HeldRoles, MAX_ROLE_DESCRIPTION_LEN, RoleAssignment,
+    RoleName, RoleNameError, RoleOwner,
 };
 pub use authorization_details::{
     AuthorizationDetail, AuthorizationDetails, AuthorizationDetailsRegistry,

@@ -30,13 +30,20 @@
 //!   scopes* at the resource server.
 //! * **The lifetime is bounded.** `exp - iat` is in `(0, 900]`, whatever a
 //!   caller asks for, so "short-lived" (FAPI 2.0 SP §6.1) is not a convention.
+//! * **A resource server learns about one client only.** `ast-095` puts
+//!   application roles in `roles` and `resource_access.<client_id>.roles`.
+//!   Whatever set of roles the fuzzer hands the builder, the object it renders
+//!   names exactly the token's own client and never another — the authority
+//!   somebody holds in an unrelated application is not this token's business.
 //! * **Building is a pure function.** The same grant gives the same claims. A
 //!   builder that depended on anything else would mint two different tokens for
 //!   one authorization on two replicas.
 #![no_main]
 
 use arbitrary::Arbitrary;
-use asterius_domain::{ClaimName, ClientId, Grant, GrantId, Issuer, Kid, SubjectId, TenantId};
+use asterius_domain::{
+    ClaimName, ClientId, Grant, GrantId, HeldRoles, Issuer, Kid, RoleName, SubjectId, TenantId,
+};
 use asterius_oidc::tokens::{
     AccessToken, Audience, Authentication, Confirmation, IssuanceError, JwtId, UnsignedToken,
 };
@@ -84,6 +91,19 @@ const THUMBPRINTS: [&str; 7] = [
     "d1970c0e4459358cbe0d6a6aab7d2367224461d33747761e0941577ba282e0aa",
 ];
 
+/// Role-name candidates: the ones the alphabet admits, and the ones it must
+/// refuse — a name with a space would become two roles at a resource server.
+const ROLES: [&str; 8] = [
+    "auditor",
+    "payments.settlement:approve",
+    "refund",
+    "a",
+    "read write",
+    "Admin",
+    "",
+    "-admin",
+];
+
 /// The JSON shapes an `act` chain element can hold.
 const ACTORS: [&str; 6] = [
     r#"{"sub":"admin@example.com"}"#,
@@ -114,6 +134,10 @@ struct Input {
     grant_id_claim: bool,
     client_id: String,
     at: i32,
+    tenant_roles: Vec<u8>,
+    own_client_roles: Vec<u8>,
+    other_client_roles: Vec<u8>,
+    role_free: String,
 }
 
 fn pick<'a>(table: &[&'a str], index: u8) -> &'a str {
@@ -204,6 +228,31 @@ fuzz_target!(|input: Input| {
         return;
     };
 
+    // What the user holds. Only names the parser accepts can ever reach a
+    // token — the catalogue is written through `RoleName::parse` — so the
+    // refused ones are dropped here rather than smuggled in as strings.
+    let names = |picks: &[u8]| -> std::collections::BTreeSet<RoleName> {
+        picks
+            .iter()
+            .take(16)
+            .filter_map(|index| RoleName::parse(pick(&ROLES, *index)).ok())
+            .chain(RoleName::parse(&input.role_free))
+            .collect()
+    };
+    let mut held = HeldRoles {
+        tenant: names(&input.tenant_roles),
+        ..HeldRoles::default()
+    };
+    let own = names(&input.own_client_roles);
+    if !own.is_empty() {
+        held.clients.insert(ClientId::new(client_id.clone()), own);
+    }
+    let other = names(&input.other_client_roles);
+    if !other.is_empty() {
+        held.clients
+            .insert(ClientId::new("an-unrelated-client"), other);
+    }
+
     let build = |confirmation: Confirmation| {
         let mut token = AccessToken::new(
             &issuer,
@@ -225,6 +274,7 @@ fuzz_target!(|input: Input| {
         if input.grant_id_claim {
             token = token.with_grant_id();
         }
+        token = token.with_roles(&held);
         token.build()
     };
 
@@ -342,6 +392,8 @@ fuzz_target!(|input: Input| {
                 "authorization_details",
                 "act",
                 "grant_id",
+                "roles",
+                "resource_access",
             ]
             .contains(&member.as_str()),
             "an access token carried an unexpected claim: {member}"
@@ -364,6 +416,75 @@ fuzz_target!(|input: Input| {
                 "a scope appeared from nowhere"
             );
         }
+    }
+
+    // --- application roles (`ast-095`) -------------------------------------
+
+    if let Some(roles) = object.get("roles") {
+        let roles = roles.as_array().expect("roles is an array");
+        assert!(!roles.is_empty(), "an empty roles claim was minted");
+        for role in roles {
+            let name = role.as_str().expect("a role is a string");
+            assert!(
+                held.tenant.iter().any(|held| held.as_str() == name),
+                "a tenant role appeared from nowhere: {name:?}"
+            );
+            assert!(
+                !name.contains(' '),
+                "a role that splits at a resource server: {name:?}"
+            );
+        }
+        assert_eq!(
+            roles.len(),
+            held.tenant.len(),
+            "a tenant role was dropped or duplicated"
+        );
+    } else {
+        assert!(
+            held.tenant.is_empty(),
+            "a user holding tenant roles got a token with no roles claim"
+        );
+    }
+
+    if let Some(resource_access) = object.get("resource_access") {
+        let members = resource_access
+            .as_object()
+            .expect("resource_access is an object");
+        assert!(!members.is_empty(), "an empty resource_access was minted");
+        // The whole point: one member, and it is this token's own client.
+        assert_eq!(
+            members.len(),
+            1,
+            "a token named more than one client in resource_access"
+        );
+        let (named, entry) = members.iter().next().expect("one member");
+        assert_eq!(
+            named, &client_id,
+            "a resource server was told about another client's roles"
+        );
+        let roles = entry["roles"]
+            .as_array()
+            .expect("a resource_access member carries a roles array");
+        assert!(!roles.is_empty(), "an empty roles array under a client");
+        let expected = held
+            .clients
+            .get(&ClientId::new(client_id.clone()))
+            .expect("the token's own client holds roles");
+        assert_eq!(roles.len(), expected.len());
+        for role in roles {
+            let name = role.as_str().expect("a role is a string");
+            assert!(
+                expected.iter().any(|held| held.as_str() == name),
+                "a client role appeared from nowhere: {name:?}"
+            );
+        }
+    } else {
+        assert!(
+            held.clients
+                .get(&ClientId::new(client_id.clone()))
+                .is_none_or(std::collections::BTreeSet::is_empty),
+            "a user holding roles in this client got no resource_access"
+        );
     }
 
     // --- lifetime (FAPI 2.0 SP §6.1) ---------------------------------------

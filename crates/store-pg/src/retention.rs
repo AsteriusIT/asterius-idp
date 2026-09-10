@@ -299,6 +299,28 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "tenant_roles",
+        rule: Rule::Kept("a role catalogue is configuration, edited by a person"),
+    },
+    Retention {
+        table: "client_roles",
+        rule: Rule::Kept(
+            "a client's role catalogue is configuration; it goes when the client does",
+        ),
+    },
+    Retention {
+        table: "user_tenant_roles",
+        rule: Rule::Kept(
+            "an application role is authority delegated to a tenant's own applications, \
+             granted and withdrawn by a person; one that expired on a timer would be an \
+             authorization change nobody made and nobody can explain",
+        ),
+    },
+    Retention {
+        table: "user_client_roles",
+        rule: Rule::Kept("the same, for a role that belongs to one client"),
+    },
+    Retention {
         table: "passkey_enrolments",
         rule: Rule::Sweep {
             // An outstanding registration challenge, five minutes wide. It

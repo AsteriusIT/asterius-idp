@@ -354,6 +354,34 @@ pub async fn released_claims(
     Ok(resolved.id_token)
 }
 
+/// The application roles this grant's user holds (`ast-095`).
+///
+/// Read from the assignment tables and from nothing else — not from the grant,
+/// not from the request. A role is authority an administrator granted, and it
+/// is current at the moment a token is minted: a token refreshed after a role
+/// was withdrawn must not still assert it, which is why this is read on every
+/// issuance rather than frozen onto the grant at consent.
+///
+/// A grant with no resource owner holds nothing. That is not a failure: a
+/// `client_credentials` token is about the client, and there is nobody whose
+/// roles it could carry.
+///
+/// # Errors
+///
+/// [`DomainError::Storage`] if the read fails, or [`DomainError::Invalid`] for
+/// a stored name this build refuses. Both are refusals rather than an empty
+/// set: a token minted with *fewer* roles than the person holds is an
+/// authorization decision taken by an outage.
+pub async fn held_roles(
+    roles: &dyn asterius_domain::ports::ApplicationRoleDirectory,
+    grant: &Grant,
+) -> Result<asterius_domain::HeldRoles, DomainError> {
+    let Some(user) = grant.user else {
+        return Ok(asterius_domain::HeldRoles::default());
+    };
+    roles.held_by(&grant.tenant, user).await
+}
+
 /// RFC 8707 §2.2's error code, for whichever grant is refusing a `resource`.
 pub const INVALID_TARGET: &str = asterius_domain::InvalidTarget::CODE;
 

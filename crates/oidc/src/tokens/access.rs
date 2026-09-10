@@ -69,7 +69,7 @@
 use super::{
     IssuanceError, JwtId, MAX_ACCESS_TOKEN_CLAIMS_BYTES, UnsignedToken, bounded, usable_lifetime,
 };
-use asterius_domain::{ClaimedGrant, Grant, Issuer, Kid, TokenBinding};
+use asterius_domain::{ClaimedGrant, Grant, HeldRoles, Issuer, Kid, TokenBinding};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use time::{Duration, OffsetDateTime};
@@ -342,6 +342,7 @@ pub struct AccessToken<'a> {
     authentication: Option<Authentication>,
     grant_id_claim: bool,
     scopes: Option<BTreeSet<String>>,
+    roles: HeldRoles,
 }
 
 impl<'a> AccessToken<'a> {
@@ -403,6 +404,7 @@ impl<'a> AccessToken<'a> {
             authentication: None,
             grant_id_claim: false,
             scopes: None,
+            roles: HeldRoles::empty(),
         }
     }
 
@@ -424,6 +426,41 @@ impl<'a> AccessToken<'a> {
                 .filter(|scope| self.grant.scopes.contains(scope))
                 .collect(),
         );
+        self
+    }
+
+    /// The application roles this token asserts (`ast-095`).
+    ///
+    /// Tenant roles become the `roles` claim; the client's own roles become
+    /// `resource_access.<client_id>.roles`. Both are the shape Keycloak
+    /// deployments publish, so the libraries a relying party already uses read
+    /// them without a mapper.
+    ///
+    /// # Only the token's own client appears in `resource_access`
+    ///
+    /// The caller passes what the *user* holds; this builder narrows it to the
+    /// client the token was issued to, and there is no way to widen it —
+    /// [`HeldRoles::for_client`] is applied here, not at the call site.
+    ///
+    /// `ast-gxh.7` asked for the roles a token carries to be filtered by the
+    /// resource server it is audienced at: a resource server must not learn
+    /// the authority somebody holds in an application it has nothing to do
+    /// with. The filter implemented here is the strongest one this model can
+    /// state, because nothing in the schema records *which clients a resource
+    /// server serves* — there is no `resource_servers.clients` column and no
+    /// registration field for it. Given that, the only client whose roles can
+    /// be disclosed without guessing is the one that authenticated at the
+    /// token endpoint: it is party to the request, and its own roles are
+    /// already visible to it (RFC 9068 §6 — a JWT access token is readable by
+    /// the client that holds it).
+    ///
+    /// The consequence, and it is the intended one: an API audienced by two
+    /// clients receives two tokens carrying two different `resource_access`
+    /// objects, and neither one tells it about the other client. A deployment
+    /// that wants a vocabulary shared across its applications has one — that
+    /// is what a *tenant* role is.
+    pub fn with_roles(mut self, held: &HeldRoles) -> Self {
+        self.roles = held.for_client(self.claimed.client());
         self
     }
 
@@ -626,6 +663,27 @@ impl<'a> AccessToken<'a> {
             claims.insert("act".to_owned(), act);
         }
 
+        // The application roles (`ast-095`). Absent rather than empty when the
+        // user holds none: an empty array is a statement a resource server may
+        // cache, and "no roles" is already what an absent claim means.
+        if !self.roles.tenant.is_empty() {
+            claims.insert(
+                "roles".to_owned(),
+                Value::Array(
+                    self.roles
+                        .tenant
+                        .iter()
+                        .map(|role| Value::String(role.as_str().to_owned()))
+                        .collect(),
+                ),
+            );
+        }
+        // Narrowed to this token's own client by `with_roles`; see there for
+        // why that is the filter, and why it is applied there rather than here.
+        if let Some(resource_access) = resource_access_claim(&self.roles) {
+            claims.insert("resource_access".to_owned(), resource_access);
+        }
+
         if self.grant_id_claim {
             claims.insert(
                 "grant_id".to_owned(),
@@ -641,6 +699,37 @@ impl<'a> AccessToken<'a> {
             claims: bounded(Value::Object(claims), MAX_ACCESS_TOKEN_CLAIMS_BYTES)?,
         })
     }
+}
+
+/// The `resource_access` claim, or `None` when there is nothing to say.
+///
+/// One member per client, each an object with a `roles` array — the shape a
+/// relying party's existing library expects. A client holding no roles is not
+/// rendered at all, so no token carries an empty `roles` array under a client
+/// name: that would read as "this person holds nothing in that application",
+/// which is a statement about a client the token is not even about.
+fn resource_access_claim(held: &HeldRoles) -> Option<Value> {
+    let mut members = Map::new();
+    for (client, roles) in &held.clients {
+        if roles.is_empty() {
+            continue;
+        }
+        let mut entry = Map::new();
+        entry.insert(
+            "roles".to_owned(),
+            Value::Array(
+                roles
+                    .iter()
+                    .map(|role| Value::String(role.as_str().to_owned()))
+                    .collect(),
+            ),
+        );
+        members.insert(client.as_str().to_owned(), Value::Object(entry));
+    }
+    if members.is_empty() {
+        return None;
+    }
+    Some(Value::Object(members))
 }
 
 /// Folds a grant's actor chain into the nested `act` claim (RFC 8693 §4.1).
@@ -735,6 +824,100 @@ mod tests {
         let grant = grant();
         let claimed = grant.claim(now()).expect("a live grant");
         token(&grant, &claimed).expect("a buildable token")
+    }
+
+    /// Everything one account holds, including a role of a client this token
+    /// was not issued to.
+    fn held() -> asterius_domain::HeldRoles {
+        use asterius_domain::RoleName;
+        let mut held = asterius_domain::HeldRoles::default();
+        held.tenant
+            .insert(RoleName::parse("auditor").expect("a name"));
+        held.clients.insert(
+            ClientId::new("billing"),
+            [RoleName::parse("refund").expect("a name")]
+                .into_iter()
+                .collect(),
+        );
+        held.clients.insert(
+            ClientId::new("reporting"),
+            [RoleName::parse("export").expect("a name")]
+                .into_iter()
+                .collect(),
+        );
+        held
+    }
+
+    fn token_with_roles(held: &asterius_domain::HeldRoles) -> Value {
+        let grant = grant();
+        let claimed = grant.claim(now()).expect("a live grant");
+        AccessToken::new(
+            &issuer(),
+            &grant,
+            &claimed,
+            Audience::of_grant(&grant).expect("the grant names a resource"),
+            dpop(),
+            JwtId::from_bytes([7; 16]),
+            now(),
+        )
+        .with_roles(held)
+        .build()
+        .map(UnsignedToken::into_claims)
+        .expect("a buildable token")
+    }
+
+    /// `ast-095`: the tenant's shared catalogue is a flat `roles` array, which
+    /// is the shape a relying party's existing library already reads.
+    #[test]
+    fn a_tenant_role_is_rendered_as_a_flat_roles_array() {
+        let claims = token_with_roles(&held());
+
+        assert_eq!(claims["roles"], json!(["auditor"]));
+    }
+
+    /// The narrowing this whole feature turns on: a resource server is told
+    /// about the client that authenticated at the token endpoint, and about no
+    /// other client of the tenant.
+    #[test]
+    fn resource_access_names_the_tokens_own_client_and_no_other() {
+        let claims = token_with_roles(&held());
+
+        assert_eq!(
+            claims["resource_access"]["billing"]["roles"],
+            json!(["refund"])
+        );
+        assert_eq!(
+            claims["resource_access"]
+                .as_object()
+                .expect("resource_access is an object")
+                .len(),
+            1,
+            "a token named more than one client"
+        );
+        assert!(
+            claims["resource_access"].get("reporting").is_none(),
+            "another client's roles reached a token"
+        );
+    }
+
+    /// An empty array is a statement a resource server may cache; absence is
+    /// the same fact in fewer bytes, and it is what every token issued before
+    /// `ast-095` looked like.
+    #[test]
+    fn an_account_holding_nothing_gets_neither_claim() {
+        let claims = token_with_roles(&asterius_domain::HeldRoles::default());
+
+        assert!(claims.get("roles").is_none());
+        assert!(claims.get("resource_access").is_none());
+    }
+
+    /// A caller that never asks for roles mints exactly the token it used to.
+    #[test]
+    fn a_token_built_without_roles_is_unchanged() {
+        let claims = built();
+
+        assert!(claims.get("roles").is_none());
+        assert!(claims.get("resource_access").is_none());
     }
 
     /// RFC 9068 §2.2 makes `sub` REQUIRED, and §2.2 also says an access token
