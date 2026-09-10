@@ -159,3 +159,45 @@ test('the passkey page runs its nonced script and violates nothing', async ({ pa
   }
   // The fixture asserts the absence of violations at teardown.
 });
+
+/**
+ * `ast-vn7`: the typeface comes from this server, under the tenant's prefix,
+ * and is cacheable for a year.
+ *
+ * Three claims, and no Rust test can make them together. The route's own answer
+ * is pinned in `crates/server/src/http/assets.rs`; what only a browser can say
+ * is that the URL the *page* names really resolves. The pages are mounted at
+ * `/t/{tenant}`, and a `@font-face` that forgot the prefix would 404 in
+ * silence — the design would still render, in the fallback stack, and nobody
+ * would be any the wiser.
+ *
+ * The sweep above says no page fetches from another origin, because that is
+ * what a violation of `font-src 'self'` would be. This says the fetch it does
+ * make succeeds, which a policy cannot.
+ */
+test('the typeface is served by this server, under the tenant prefix, immutably', async ({
+  page,
+}) => {
+  // Arrange: any page of the tree; they all carry the same `@font-face`.
+  const fetched = page.waitForResponse((response) => response.url().includes('/assets/font/'));
+
+  // Act
+  await page.goto(
+    `${BASE_URL}/authorize?client_id=nobody&request_uri=urn:ietf:params:oauth:request_uri:absent`,
+  );
+  const font = await fetched;
+
+  // Assert
+  expect(font.status(), 'the page named a font path that is not served').toBe(200);
+  expect(new URL(font.url()).origin, 'the face came from another origin').toBe(
+    new URL(BASE_URL).origin,
+  );
+  expect(font.url(), "the face is not under this tenant's mount prefix").toContain(
+    `${new URL(BASE_URL).pathname}/assets/font/`,
+  );
+  expect(font.headers()['content-type']).toBe('font/woff2');
+  expect(
+    font.headers()['cache-control'],
+    'a digest-named file must be immutable, or every sign-in refetches it',
+  ).toBe('public, max-age=31536000, immutable');
+});
