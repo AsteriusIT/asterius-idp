@@ -43,8 +43,10 @@ pub use entities::{
     AuthorizationDetails, AuthorizationDetailsRegistry, AuthorizationDetailsType, Claim,
     ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client, ClientMetadata,
     ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantAuthentication, GrantError,
-    GrantRecord, GrantStatus, GrantType, InvalidAuthorizationDetails, InvalidTarget, JsonSchema,
-    JsonSchemaError, JwksRequirement, JwksSource, LiveAccessToken, PairwiseSalt, PasskeyEnrolment,
+    GrantRecord, GrantStatus, GrantType, InitialAccessToken, InitialAccessTokenReservation,
+    InvalidAuthorizationDetails, InvalidTarget, JsonSchema,
+    JsonSchemaError, JwksRequirement, JwksSource, LiveAccessToken, NewInitialAccessToken,
+    PairwiseSalt, PasskeyEnrolment,
     PolicyViolation, RedirectUri, RedirectUriError, RefreshPolicy, RefreshPolicyError,
     RegistrationMode, RegistrationPolicy, RegistrationPolicyError, ResourceIdentifier,
     ResourceRegistry, ResourceServer, RevocationReason, Role, RoleScope, Rotation, RuleId,
@@ -65,7 +67,8 @@ pub use keys::{
 pub use ports::{
     AuthRequestRepository, AuthorizationDetailsTypeRepository, ClientAdministration,
     ClientConfiguration, ClientRegistry, ClientRepository, CodeIssuer, CredentialVerifier,
-    GrantRepository, InteractionRepository, ManagedClient, PasskeyRepository, ReplayCheck,
+    GrantRepository, InitialAccessTokenStore, InteractionRepository, ManagedClient,
+    PasskeyRepository, ReplayCheck,
     ReplayGuard, ReplayPurpose, ResourceServerRepository, SessionRepository, SubjectResolver,
     TenantSettingsRepository, UserDirectory,
 };

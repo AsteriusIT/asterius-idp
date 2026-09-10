@@ -24,7 +24,8 @@ use asterius_server::tenant_settings::SettingsDirectory;
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{
     DeploymentAdmin, PgAdminSeed, PgAuditSink, PgClientKeyFetches, PgKekRewrap, PgReplayGuard,
-    PgRetention, PgTenantRepository, PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store,
+    PgInitialAccessTokens, PgRetention, PgTenantRepository, PgTenantSettings,
+    ProvisionedTenants, RewrapOutcome, Store,
     TenantKeyStore,
 };
 use std::path::PathBuf;
@@ -161,6 +162,12 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 tenant_settings: Some(settings.clone()),
                 kek: Arc::clone(&kek),
                 registration: config.registration.clone(),
+                // What a tenant that gates itself registers on (`ast-cu3`).
+                // Always wired here: the deployment has a pool, so there is no
+                // reason for a tenant's own credentials to be unreadable.
+                initial_access_tokens: Some(Arc::new(PgInitialAccessTokens::new(
+                    store.pool().clone(),
+                ))),
                 outbound,
                 audit: Arc::new(PgAuditSink::new(store.pool().clone())),
                 session_lifetimes: Lifetimes::default().clamped(),

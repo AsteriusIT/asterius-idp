@@ -6,6 +6,7 @@ pub mod auth_request;
 pub mod authorization_details;
 pub mod client;
 pub mod grant;
+pub mod initial_access_token;
 pub mod passkey;
 pub mod password;
 pub mod registration_policy;
@@ -31,6 +32,9 @@ pub use client::{
 pub use grant::{
     ClaimedGrant, Grant, GrantAuthentication, GrantError, GrantRecord, GrantStatus,
     LiveAccessToken, RevocationReason,
+};
+pub use initial_access_token::{
+    InitialAccessToken, NewInitialAccessToken, Reservation as InitialAccessTokenReservation,
 };
 pub use registration_policy::{
     JwksRequirement, PolicyViolation, RegistrationMode, RegistrationPolicy,

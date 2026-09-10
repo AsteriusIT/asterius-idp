@@ -126,6 +126,15 @@ pub struct ClientEndpoints {
     pub keys: Arc<dyn KeyStore>,
     /// Who may register a client, and how.
     pub registration: RegistrationPolicy,
+    /// The per-tenant initial access tokens `POST /register` spends
+    /// (`ast-cu3`).
+    ///
+    /// `None` is a deployment with no store wired, which is every test that
+    /// only exercises the deployment's own gate. It is not a fallback: a
+    /// tenant that has narrowed itself to `initial_access_token` registers
+    /// nobody when this is absent, because the credentials it asked for cannot
+    /// be read. See `register::admit`.
+    pub initial_access_tokens: Option<Arc<dyn asterius_domain::ports::InitialAccessTokenStore>>,
     /// ADR-0006's one outbound path, for the URLs a registration document
     /// names. Shared with nothing else: the client key cache holds its own
     /// handle to the same adapter.
@@ -1070,6 +1079,10 @@ async fn client_registration_inner(
             capabilities: endpoints.capabilities,
             outbound: endpoints.outbound.as_ref(),
             policy: &endpoints.registration,
+            initial_access_tokens: endpoints
+                .initial_access_tokens
+                .as_ref()
+                .map(std::convert::AsRef::as_ref),
             audit: endpoints.audit.as_ref(),
             request_id: Some(request_id.as_str()),
         },

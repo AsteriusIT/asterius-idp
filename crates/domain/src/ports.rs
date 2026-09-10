@@ -6,13 +6,15 @@
 use crate::{
     AuthenticationMethod, AuthorizationDetailsType, Client, ClientId, ClientMetadataError,
     ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError, Enrolment,
-    FirstPartyDestination, Grant, InteractionRecord, Issuer, NewPasskey, Participant,
+    FirstPartyDestination, Grant, InitialAccessToken, InitialAccessTokenReservation,
+    InteractionRecord, Issuer, NewInitialAccessToken, NewPasskey, Participant,
     PushedRequest, RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session,
     SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
 use time::OffsetDateTime;
+use uuid::Uuid;
 
 /// Source of the current time.
 ///
@@ -329,6 +331,73 @@ pub trait ClientRegistry: Debug + Send + Sync {
         client: &Client,
         registration_access_token: &[u8; 32],
     ) -> Result<Client, DomainError>;
+}
+
+/// The initial access tokens of one tenant (`ast-cu3`).
+///
+/// Two readerships that must not be one method: the admin API issues and lists
+/// (`ast-f7m.5`'s console), and `POST /register` spends. Spending is
+/// [`Self::reserve`] followed by exactly one of [`Self::release`] or nothing,
+/// which is why there is no `redeem` that both checks and charges: a
+/// registration refused after admission — a malformed document, a policy
+/// violation, an unreachable `sector_identifier_uri` — must not consume a
+/// client's quota, and a quota checked before the write and charged after it
+/// is a quota two concurrent requests can both pass.
+///
+/// The digest is the SHA-256 of the presented token and never the token: see
+/// [`crate::credentials`].
+#[async_trait::async_trait]
+pub trait InitialAccessTokenStore: Debug + Send + Sync {
+    /// Stores a newly minted token and returns the row as stored.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the tenant does not exist or the digest is
+    /// already stored, [`DomainError::Storage`] otherwise.
+    async fn issue(
+        &self,
+        token: &NewInitialAccessToken,
+    ) -> Result<InitialAccessToken, DomainError>;
+
+    /// Charges one use against the token with this digest, atomically.
+    ///
+    /// Atomically is the whole contract: the check and the increment are one
+    /// statement, so two requests presenting the last use of a token cannot
+    /// both be admitted. A caller that does not go on to register a client
+    /// must call [`Self::release`].
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. "No such
+    /// token" is [`InitialAccessTokenReservation::Unknown`] and not an error:
+    /// it is the ordinary answer to a caller presenting a wrong credential.
+    async fn reserve(
+        &self,
+        tenant: &TenantId,
+        digest: &[u8; 32],
+        now: OffsetDateTime,
+    ) -> Result<InitialAccessTokenReservation, DomainError>;
+
+    /// Gives back a use charged by [`Self::reserve`].
+    ///
+    /// Saturating at zero, so that a release with no matching reservation
+    /// cannot mint quota. Takes the row id rather than the digest, because the
+    /// caller holding a reservation has one and holding the digest again would
+    /// mean holding the credential longer than the admission decision needs
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached. A row that
+    /// has since been deleted is not an error: there is nothing to give back.
+    async fn release(&self, tenant: &TenantId, id: Uuid) -> Result<(), DomainError>;
+
+    /// Every token of this tenant, newest first, without digests.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn list(&self, tenant: &TenantId) -> Result<Vec<InitialAccessToken>, DomainError>;
 }
 
 /// What the RFC 7592 client configuration endpoint needs before it acts.

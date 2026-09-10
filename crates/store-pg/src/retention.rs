@@ -436,6 +436,28 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "initial_access_tokens",
+        rule: Rule::Sweep {
+            statement: "delete from initial_access_tokens where ctid = any (array(
+                            select ctid from initial_access_tokens
+                             where tenant_id = $1
+                               and expires_at is not null
+                               and expires_at <= $2
+                             limit $3))",
+            // An expired initial access token admits nobody (`ast-cu3`), so
+            // the row is only a digest and a spent counter. It is swept and
+            // not kept because it is a *credential* record: keeping the
+            // digests of every token a tenant ever issued turns a database
+            // dump into a list of guesses worth checking against every other
+            // deployment the operator runs.
+            //
+            // A token with no expiry is not swept at any age. `null` there
+            // means "until it is deleted", and deleting one on a timer would
+            // stop registrations an operator believes are still arranged.
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "rate_limits",
         rule: Rule::Sweep {
             statement: "delete from rate_limits where ctid = any (array(

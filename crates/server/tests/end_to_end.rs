@@ -1141,6 +1141,7 @@ fn assemble(
         // gets what it asked for (`ast-f7m.4`, `ast-5c6`).
         tenant_settings: Some(settings.clone()),
         clients: Some(Arc::new(ClientEndpoints {
+            initial_access_tokens: None,
             authenticator,
             store: store.clone(),
             keys: key_store,
