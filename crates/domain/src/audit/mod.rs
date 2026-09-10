@@ -18,6 +18,7 @@
 //! [`redaction`].
 
 pub mod chain;
+pub mod record;
 pub mod redaction;
 
 use crate::{ClientId, GrantId, SessionId, TenantId};
@@ -25,6 +26,7 @@ use std::collections::BTreeMap;
 use time::OffsetDateTime;
 
 pub use chain::{ChainError, EventHash};
+pub use record::{AuditRecord, OpaqueReason, StoredEvent, read_event};
 pub use redaction::{Sensitive, fingerprint};
 
 /// What kind of thing happened.

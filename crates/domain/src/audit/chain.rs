@@ -192,11 +192,29 @@ pub fn hash(previous: EventHash, event: &AuditEvent) -> EventHash {
     EventHash(hasher.finalize().into())
 }
 
+/// What a link covers: the event, when the reader could read it.
+///
+/// A record the reader could not deserialise still belongs in the chain — its
+/// hash is stored, the records after it point at it, and skipping it would
+/// report the trail as broken at the row after an unreadable one. What cannot
+/// be done is recompute its hash: [`canonical_bytes`] needs the typed event,
+/// and there is not one. So an opaque link is checked for *linkage* only, and
+/// says so in its name rather than pretending to an integrity check it did not
+/// make.
+#[derive(Debug, Clone, Copy)]
+pub enum Content<'e> {
+    /// An event the reader read back, whose hash is recomputed and compared.
+    Event(&'e AuditEvent),
+    /// A record the reader could not read. Its stored hash is taken as the
+    /// link to the next record; its contents are not verified.
+    Opaque,
+}
+
 /// One stored record: what was written, and the two hashes stored with it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Link<'e> {
-    /// The event as stored.
-    pub event: &'e AuditEvent,
+    /// The record as stored.
+    pub content: Content<'e>,
     /// The predecessor hash recorded with it.
     pub previous: EventHash,
     /// The hash recorded with it.
@@ -215,6 +233,11 @@ pub struct Link<'e> {
 /// Returns [`ChainError::Altered`] if a record's contents no longer match its
 /// stored hash, or [`ChainError::Broken`] if a record does not follow its
 /// predecessor — which is what a deletion or an insertion looks like.
+///
+/// A [`Content::Opaque`] link contributes its stored hash to the chain without
+/// its contents being re-hashed: an unreadable record is authentic, and the
+/// links either side of it are exactly what a deletion or an insertion would
+/// break. See [`Content`].
 pub fn verify(links: &[Link<'_>], start: EventHash) -> Result<EventHash, ChainError> {
     let mut expected = start;
     for (position, link) in links.iter().enumerate() {
@@ -225,13 +248,15 @@ pub fn verify(links: &[Link<'_>], start: EventHash) -> Result<EventHash, ChainEr
                 expected,
             });
         }
-        let recomputed = hash(link.previous, link.event);
-        if recomputed != link.current {
-            return Err(ChainError::Altered {
-                position,
-                stored: link.current,
-                recomputed,
-            });
+        if let Content::Event(event) = link.content {
+            let recomputed = hash(link.previous, event);
+            if recomputed != link.current {
+                return Err(ChainError::Altered {
+                    position,
+                    stored: link.current,
+                    recomputed,
+                });
+            }
         }
         expected = link.current;
     }
@@ -305,7 +330,7 @@ mod tests {
             .iter()
             .zip(hashes)
             .map(|(event, (previous, current))| Link {
-                event,
+                content: Content::Event(event),
                 previous: *previous,
                 current: *current,
             })
@@ -462,6 +487,50 @@ mod tests {
         match error {
             ChainError::Altered { position, .. } => assert_eq!(position, 1),
             other => panic!("expected Altered, got {other}"),
+        }
+    }
+
+    /// A record nobody can deserialise is authentic: its hash is stored, the
+    /// record after it points at it, and the chain has to survive it. This is
+    /// the whole reason [`Content::Opaque`] exists.
+    #[test]
+    fn a_chain_verifies_through_a_record_that_cannot_be_read() {
+        let events = [
+            event(EventType::CODE_ISSUED),
+            event(EventType::TOKEN_ISSUED),
+            event(EventType::GRANT_REVOKED),
+        ];
+        let hashes = chain(&events);
+
+        // The middle record came back as bytes this build cannot read.
+        let mut links = links(&events, &hashes);
+        links[1].content = Content::Opaque;
+
+        let tip =
+            verify(&links, EventHash::GENESIS).expect("an unreadable record is not tampering");
+        assert_eq!(tip, hashes[2].1);
+    }
+
+    /// Unreadable is not the same fact as removed: an opaque record still has
+    /// to sit where its neighbours say it does.
+    #[test]
+    fn an_opaque_record_still_has_to_link_to_its_neighbours() {
+        let events = [
+            event(EventType::CODE_ISSUED),
+            event(EventType::TOKEN_ISSUED),
+            event(EventType::GRANT_REVOKED),
+        ];
+        let hashes = chain(&events);
+
+        let mut links = links(&events, &hashes);
+        links[1].content = Content::Opaque;
+        links[1].previous = EventHash::GENESIS;
+
+        let error = verify(&links, EventHash::GENESIS)
+            .expect_err("an opaque record with the wrong predecessor must not verify");
+        match error {
+            ChainError::Broken { position, .. } => assert_eq!(position, 1),
+            other => panic!("expected Broken, got {other}"),
         }
     }
 

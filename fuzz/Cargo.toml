@@ -106,6 +106,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "audit_record"
+path = "fuzz_targets/audit_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "authenticator_data"
 path = "fuzz_targets/authenticator_data.rs"
 test = false

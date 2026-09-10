@@ -512,7 +512,9 @@ impl TestDb {
 // ---------------------------------------------------------------------------
 
 use asterius_domain::audit::chain::EventHash;
-use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
+use asterius_domain::audit::{
+    Actor, AuditEvent, AuditRecord, AuditSink, Detail, EventType, Outcome,
+};
 use asterius_store_pg::PgAuditSink;
 
 /// The credential shapes an audit write is most likely to be handed by mistake.
@@ -806,6 +808,131 @@ db_test! {
         assert_eq!(stored[1]["on_behalf_of"], "alice");
 
         sink.verify_chain(&TenantId::new("demo")).await.expect("should still verify");
+    }
+}
+
+/// Seeds a record whose `detail` this build cannot read, linked to `previous`,
+/// and returns the hash it was stored with.
+///
+/// Raw SQL because the binary refuses to write one: `scripts/check-json-sentinels.sh`
+/// and the guard in `asterius_domain::json_sentinel` exist so that no code path
+/// produces a member named after a `serde_json` sentinel. A row like this can
+/// only have arrived from an import, a restored dump, or a build made before
+/// the guard — and once it is there the database refuses `UPDATE`, so it stays
+/// (`ast-1p1`).
+///
+/// The document is unreadable on two counts, deliberately: its first member is
+/// the sentinel, which is what stops `serde_json` parsing the document at all
+/// in a binary where `raw_value` or `arbitrary_precision` is unified in — as
+/// this one is, through `sqlx` — and its value is a nested object, which no
+/// detail value ever is. Either alone would do; both together mean the test
+/// still describes an unreadable row on the day a `cargo update` changes which
+/// of the two applies.
+async fn seed_unreadable_record(db: &TestDb, tenant: &str, previous: &[u8]) -> Vec<u8> {
+    let hash: Vec<u8> = sqlx::query_scalar(
+        "insert into audit_events
+             (tenant_id, occurred_at, event_type, outcome, actor, actor_chain, detail,
+              previous_hash, event_hash)
+         values ($1, now(), 'auth.login', 'success',
+                 '{\"type\": \"client\", \"id\": \"billing\"}'::jsonb, '[]'::jsonb,
+                 '{\"$serde_json::private::RawValue\": {\"value\": \"{}\"}}'::jsonb,
+                 $2, sha256($3))
+         returning event_hash",
+    )
+    .bind(tenant)
+    .bind(previous)
+    .bind(format!("opaque-{tenant}").into_bytes())
+    .fetch_one(&db.pool)
+    .await
+    .expect("seed unreadable record");
+    hash
+}
+
+/// The hash of `tenant`'s newest record.
+async fn chain_tip(db: &TestDb, tenant: &str) -> Vec<u8> {
+    sqlx::query_scalar(
+        "select event_hash from audit_events where tenant_id = $1 order by event_id desc limit 1",
+    )
+    .bind(tenant)
+    .fetch_one(&db.pool)
+    .await
+    .expect("read the tip")
+}
+
+db_test! {
+    /// A record nobody can deserialise is authentic, not tampered: it is
+    /// reported as opaque with its hash and its position, the records around it
+    /// are read normally, and the chain through it still verifies.
+    async fn an_unreadable_record_is_opaque_and_the_trail_around_it_survives(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        let tenant = TenantId::new("demo");
+
+        sink.record(audit_event("demo", EventType::CODE_ISSUED)).await.expect("first");
+        let tip = chain_tip(&db, "demo").await;
+        let opaque_hash = seed_unreadable_record(&db, "demo", &tip).await;
+        // Written through the sink, so it chains onto the unreadable record the
+        // way any later record would.
+        sink.record(audit_event("demo", EventType::TOKEN_ISSUED)).await.expect("third");
+
+        let trail = sink
+            .read_trail(&tenant)
+            .await
+            .expect("an unreadable row must not fail the read");
+
+        assert_eq!(trail.len(), 3);
+        assert_eq!(
+            trail[0].event().expect("the record before it stays readable").event_type,
+            EventType::CODE_ISSUED
+        );
+        assert_eq!(
+            trail[2].event().expect("the record after it stays readable").event_type,
+            EventType::TOKEN_ISSUED
+        );
+        match &trail[1] {
+            AuditRecord::Opaque { hash, position, reason } => {
+                assert_eq!(hash.as_bytes().as_slice(), opaque_hash.as_slice());
+                assert_eq!(*position, 1);
+                // The column, not the variant: whether such a document fails
+                // to parse or merely fails to be a shape the trail defines
+                // depends on which `serde_json` features the binary unifies,
+                // and neither answer changes what an operator is told.
+                assert_eq!(reason.column(), asterius_domain::audit::record::DETAIL);
+            }
+            AuditRecord::Event(event) => panic!("the seeded record read back as {event:?}"),
+        }
+
+        let verified = sink.verify_chain(&tenant).await.expect("the chain must verify through it");
+        assert_eq!(verified.records, 3);
+        assert_eq!(verified.opaque, 1);
+        assert_eq!(verified.start, EventHash::GENESIS);
+    }
+}
+
+db_test! {
+    /// Unreadable is not forged. The same unreadable record, inserted where its
+    /// predecessor hash does not follow the record before it — an insertion, or
+    /// a record moved — is still a chain error, and the reader must not launder
+    /// it into an opaque record that verifies.
+    async fn an_unreadable_record_in_the_wrong_place_is_still_a_chain_error(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        let tenant = TenantId::new("demo");
+
+        sink.record(audit_event("demo", EventType::CODE_ISSUED)).await.expect("first");
+        seed_unreadable_record(&db, "demo", &[0u8; 32]).await;
+
+        // It is read without failing...
+        let trail = sink.read_trail(&tenant).await.expect("read");
+        assert!(trail[1].is_opaque());
+
+        // ...and it still does not verify.
+        let error = sink
+            .verify_chain(&tenant)
+            .await
+            .expect_err("a record that does not follow its predecessor must not verify");
+        let message = error.to_string();
+        assert!(message.contains("record 1"), "{message}");
     }
 }
 
