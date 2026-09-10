@@ -16,7 +16,7 @@
 //! the failure would surface days later at somebody else's endpoint. The port
 //! type is what makes the right thing the only thing available.
 
-use asterius_domain::ports::TenantRepository;
+use asterius_domain::ports::{TenantRepository, TenantSettingsRepository};
 use asterius_domain::{
     AuditSink, DomainError, RateLimitStore, ReplayGuard, Role, Session, TenantId, UserId,
 };
@@ -53,6 +53,14 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// bare adapter. See the module documentation.
     fn tenants(&self) -> Arc<dyn TenantRepository>;
 
+    /// The per-tenant settings document: feature flags and lifetimes.
+    ///
+    /// A second handle rather than two methods on the tenant repository,
+    /// because the write side of it only accepts a
+    /// [`asterius_domain::TenantSettings`], which cannot be built without
+    /// having passed the profile's ceilings.
+    fn tenant_settings(&self) -> Arc<dyn TenantSettingsRepository>;
+
     /// Where an administrative change is recorded.
     fn audit(&self) -> Arc<dyn AuditSink>;
 
@@ -62,11 +70,17 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// The atomic single-use store the `Idempotency-Key` is claimed in.
     fn replay(&self) -> Arc<dyn ReplayGuard>;
 
-    /// Drops whatever caches the deployment keeps of the tenant directory.
+    /// Drops whatever caches the deployment keeps of the tenant directory and
+    /// of the tenants' settings.
     ///
     /// Called after a tenant is written, because the routing snapshot is
     /// otherwise up to thirty seconds stale and an operator who has just
-    /// created a tenant will try it immediately.
+    /// created a tenant will try it immediately — and after its settings are
+    /// written, because a feature flag is *published* in the discovery
+    /// document and an administrator who has just switched one off will look
+    /// at that document to check. One hook and not two: a caller who has to
+    /// remember which of two caches a change touches is a caller who will
+    /// eventually pick the wrong one, and dropping both costs one query.
     fn tenant_directory_changed(&self);
 }
 

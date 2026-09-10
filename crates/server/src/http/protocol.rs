@@ -24,6 +24,7 @@ use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::tenancy::MountPrefix;
+use crate::tenant_settings::SettingsDirectory;
 use asterius_domain::{Capabilities, KeyStore, Tenant};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
@@ -60,6 +61,13 @@ pub struct ProtocolState {
     /// What this deployment offers. The same value the router was built from,
     /// so the document cannot describe a different server than the one running.
     pub capabilities: Capabilities,
+    /// Each tenant's settings, cached, for the flags it has switched off.
+    ///
+    /// `None` is a deployment where no tenant has settings of its own — which
+    /// is every test that only cares about the deployment's capabilities — and
+    /// then the document describes exactly [`Self::capabilities`]. It is not a
+    /// fallback for a *failed* read: see [`crate::tenant_settings`].
+    pub tenant_settings: Option<SettingsDirectory>,
     /// How endpoints that require an authenticated client get one.
     ///
     /// `None` leaves those endpoints answering 501 rather than accepting
@@ -334,9 +342,30 @@ async fn discovery(
     State(state): State<ProtocolState>,
     Extension(tenant): Extension<Arc<Tenant>>,
 ) -> Response {
-    // Per-tenant flags are `ast-f7m.4`; until then a tenant has the
-    // deployment's capabilities, and this is the one line that will change.
-    let document = metadata::provider_metadata(&tenant.issuer, &state.capabilities);
+    // A tenant may switch a deployment feature *off*, never on
+    // (`asterius_domain::TenantSettings`), so this can only ever narrow what
+    // the document advertises — and it is read through a cache the admin API
+    // drops on write, which is what makes a flag change visible to the next
+    // request rather than to the one five minutes later (`ast-f7m.4`).
+    let capabilities = match &state.tenant_settings {
+        None => state.capabilities,
+        Some(directory) => match directory.for_tenant(&tenant.id).await {
+            Ok(settings) => settings.effective_capabilities(state.capabilities),
+            // Fails closed: advertising the deployment's capabilities here
+            // would republish exactly the features a tenant switched off.
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(header::CONTENT_TYPE, "application/json")],
+                    r#"{"error":"temporarily_unavailable"}"#,
+                )
+                    .into_response();
+            }
+        },
+    };
+
+    let document = metadata::provider_metadata(&tenant.issuer, &capabilities);
     cacheable_json(&document, METADATA_MAX_AGE)
 }
 

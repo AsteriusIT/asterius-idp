@@ -7,7 +7,7 @@ use crate::{
     AuthenticationMethod, Client, ClientId, ClientStatus, CodeBinding, Consumed, DomainError,
     Enrolment, FirstPartyDestination, Grant, InteractionRecord, Issuer, NewPasskey, Participant,
     PushedRequest, RegisteredPasskey, Secret, SectorIdentifier, Session, SessionRevocation,
-    SubjectId, Tenant, TenantId, User, UserId,
+    SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -58,6 +58,36 @@ pub trait TenantRepository: Debug + Send + Sync {
 
     /// Deletes a tenant and, by cascade, everything that belongs to it.
     async fn delete(&self, id: &TenantId) -> Result<(), DomainError>;
+}
+
+/// Reads and writes one tenant's settings.
+///
+/// Separate from [`TenantRepository`] rather than two more methods on it, and
+/// for a reason that is not tidiness: the settings document is where a
+/// FAPI-capped lifetime lives, so the write path has to be reachable *only*
+/// with a [`crate::TenantSettings`] — a value that cannot exist without having
+/// been through [`crate::TenantSettings::validated`]. A `settings: Value`
+/// parameter beside the tenant row would accept anything an admin handler
+/// happened to build.
+#[async_trait::async_trait]
+pub trait TenantSettingsRepository: Debug + Send + Sync {
+    /// The settings of one tenant, or the defaults if it has never expressed
+    /// an opinion.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] for a stored document this build refuses —
+    /// which is deliberate, see [`crate::TenantSettings::from_json`] — or a
+    /// storage failure.
+    async fn settings(&self, tenant: &TenantId) -> Result<TenantSettings, DomainError>;
+
+    /// Replaces one tenant's settings.
+    ///
+    /// # Errors
+    ///
+    /// A storage failure, or [`DomainError::NotFound`] if no such tenant
+    /// exists.
+    async fn save(&self, tenant: &TenantId, settings: &TenantSettings) -> Result<(), DomainError>;
 }
 
 /// Something that can only be reached through a tenant.

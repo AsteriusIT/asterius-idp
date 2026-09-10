@@ -20,7 +20,8 @@
 //! authorization to forget.
 
 use asterius_domain::{
-    Actor, AuditEvent, Detail, EventType, Outcome, RefreshPolicy, Tenant, TenantId, TenantStatus,
+    Actor, AuditEvent, Detail, EventType, Outcome, RefreshPolicy, Tenant, TenantId, TenantSettings,
+    TenantStatus,
 };
 use axum::Router;
 use axum::extract::Request;
@@ -247,6 +248,8 @@ async fn handle(
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
+        crate::TENANT_SETTINGS_READ_ID => context.read_settings().await,
+        crate::TENANT_SETTINGS_UPDATE_ID => context.update_settings(body).await,
         // Unreachable while `every_registered_operation_has_a_handler` passes,
         // which is why that test exists rather than a comment here.
         other => {
@@ -463,6 +466,108 @@ impl Handling<'_> {
         Ok(json_no_store(StatusCode::CREATED, &summarise(&tenant)))
     }
 
+    /// `GET /tenants/{tenant_id}/settings` — the flags and lifetimes in force.
+    async fn read_settings(&self) -> Result<Response, AdminError> {
+        let named = self.settings_subject(crate::TENANT_SETTINGS_READ.authority())?;
+
+        let settings = self
+            .state
+            .backend
+            .tenant_settings()
+            .settings(&named)
+            .await
+            .map_err(|error| AdminError::from_storage("tenants.settings.read", &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &render_settings(&named, &settings),
+        ))
+    }
+
+    /// `PUT /tenants/{tenant_id}/settings` — replaces them.
+    ///
+    /// The ceilings are applied here, in the server, and not in the console:
+    /// the console's own bounds checking is a courtesy to whoever is typing,
+    /// and an administrator holding a session and a CSRF token can send this
+    /// request with `curl`. A body asking for a code lifetime past FAPI 2.0
+    /// SP's sixty seconds is refused with the clause named, which is
+    /// `ast-f7m.4`'s acceptance criterion.
+    async fn update_settings(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let named = self.settings_subject(crate::TENANT_SETTINGS_UPDATE.authority())?;
+
+        let bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let requested: RequestedSettings = serde_json::from_slice(&bytes).map_err(|error| {
+            AdminError::Invalid(format!("the request body is not valid: {error}"))
+        })?;
+
+        let mut disabled = std::collections::BTreeSet::new();
+        for name in &requested.disabled_features {
+            let feature = asterius_domain::Feature::from_key(name).ok_or_else(|| {
+                AdminError::Invalid(format!("{name} is not a feature this server knows"))
+            })?;
+            disabled.insert(feature);
+        }
+
+        // The one line this whole operation exists for. `TenantSettings` has
+        // private fields and one constructor, so there is no way past it.
+        let settings = TenantSettings::validated(
+            disabled,
+            time::Duration::seconds(requested.authorization_code_lifetime_seconds),
+            time::Duration::seconds(requested.access_token_lifetime_seconds),
+        )
+        .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?;
+
+        let repository = self.state.backend.tenant_settings();
+        let previous = repository
+            .settings(&named)
+            .await
+            .map_err(|error| AdminError::from_storage("tenants.settings.read", &error))?;
+
+        repository
+            .save(&named, &settings)
+            .await
+            .map_err(|error| AdminError::from_storage("tenants.settings.update", &error))?;
+
+        // A flag is published in the discovery document, so a change that is
+        // not visible there is a change an administrator cannot verify. The
+        // deployment's snapshot is dropped here rather than left to expire.
+        self.state.backend.tenant_directory_changed();
+
+        self.record(
+            EventType::ADMIN_CHANGED,
+            settings_diff(&named, &previous, &settings),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &render_settings(&named, &settings),
+        ))
+    }
+
+    /// The tenant a settings route names, once the caller has been re-checked
+    /// against it.
+    ///
+    /// The same second check [`Self::read_tenant`] makes and for the same
+    /// reason: the gate checked the caller against the tenant the request was
+    /// *routed* to, and these operations name a different one in their path.
+    fn settings_subject(&self, authority: crate::Authority) -> Result<TenantId, AdminError> {
+        let named = self
+            .path
+            .strip_suffix("/settings")
+            .and_then(|prefix| prefix.rsplit('/').next())
+            .filter(|segment| !segment.is_empty())
+            .ok_or(AdminError::NotFound)?;
+        let named = TenantId::parse(named).map_err(|_| AdminError::NotFound)?;
+
+        if !self.principal.held().satisfies(authority, &named) {
+            return Err(AdminError::Forbidden);
+        }
+        Ok(named)
+    }
+
     /// Writes one record, naming the administrator behind it.
     ///
     /// ADR-0009: the string [`Actor::Admin`] carries is a *user* identifier.
@@ -514,6 +619,106 @@ struct NewTenant {
     default_resource: Option<String>,
     #[serde(default)]
     custom_host: Option<String>,
+}
+
+/// What `PUT /tenants/{tenant_id}/settings` takes.
+///
+/// `deny_unknown_fields`, so a console built against a newer server is told it
+/// is sending something this one does not understand rather than having half
+/// its form silently ignored.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestedSettings {
+    #[serde(default)]
+    disabled_features: Vec<String>,
+    authorization_code_lifetime_seconds: i64,
+    access_token_lifetime_seconds: i64,
+}
+
+/// A settings document as this API renders it.
+///
+/// The ceilings travel with it: a form that wants to grey out an impossible
+/// value should not have to hard-code a number that lives in
+/// [`asterius_domain::entities::tenant_settings`], and a console pinned to an
+/// older release then shows the server's limits rather than its own.
+fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::Value {
+    use asterius_domain::entities::tenant_settings::{
+        MAX_ACCESS_TOKEN_LIFETIME, MAX_AUTHORIZATION_CODE_LIFETIME,
+    };
+
+    serde_json::json!({
+        "tenant_id": tenant.as_str(),
+        "disabled_features": settings
+            .disabled_features()
+            .iter()
+            .map(|feature| feature.as_str())
+            .collect::<Vec<_>>(),
+        "authorization_code_lifetime_seconds":
+            settings.lifetimes().authorization_code().whole_seconds(),
+        "access_token_lifetime_seconds": settings.lifetimes().access_token().whole_seconds(),
+        "limits": {
+            "max_authorization_code_lifetime_seconds":
+                MAX_AUTHORIZATION_CODE_LIFETIME.whole_seconds(),
+            "max_access_token_lifetime_seconds": MAX_ACCESS_TOKEN_LIFETIME.whole_seconds(),
+        },
+    })
+}
+
+/// The before-and-after of a settings change, as the audit trail records it.
+///
+/// Only what changed, and nothing that is not a number or a flag name this
+/// server owns: a settings document holds no secret today, and building the
+/// record out of a closed vocabulary is what keeps that true when it holds
+/// something else tomorrow. The unchanged members are left out on purpose —
+/// a diff that repeats the whole document is one nobody reads.
+fn settings_diff(tenant: &TenantId, before: &TenantSettings, after: &TenantSettings) -> Detail {
+    let mut detail = Detail::new()
+        .label("operation", crate::TENANT_SETTINGS_UPDATE_ID)
+        .text("tenant", tenant.as_str());
+
+    if before.disabled_features() != after.disabled_features() {
+        detail = detail
+            .text("disabled_features.before", feature_list(before))
+            .text("disabled_features.after", feature_list(after));
+    }
+    if before.lifetimes().authorization_code() != after.lifetimes().authorization_code() {
+        detail = detail
+            .number(
+                "authorization_code_lifetime_seconds.before",
+                before.lifetimes().authorization_code().whole_seconds(),
+            )
+            .number(
+                "authorization_code_lifetime_seconds.after",
+                after.lifetimes().authorization_code().whole_seconds(),
+            );
+    }
+    if before.lifetimes().access_token() != after.lifetimes().access_token() {
+        detail = detail
+            .number(
+                "access_token_lifetime_seconds.before",
+                before.lifetimes().access_token().whole_seconds(),
+            )
+            .number(
+                "access_token_lifetime_seconds.after",
+                after.lifetimes().access_token().whole_seconds(),
+            );
+    }
+    detail
+}
+
+/// The disabled flags as one readable string; `none` rather than an empty
+/// string, which in a trail is indistinguishable from a member that failed to
+/// be written.
+fn feature_list(settings: &TenantSettings) -> String {
+    if settings.disabled_features().is_empty() {
+        return "none".to_owned();
+    }
+    settings
+        .disabled_features()
+        .iter()
+        .map(|feature| feature.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// A tenant as this API renders it.
@@ -605,8 +810,9 @@ mod tests {
     use asterius_domain::entities::session::SessionId;
     use asterius_domain::ports::TenantRepository;
     use asterius_domain::{
-        AuditSink, AuthenticationMethod, DomainError, Issuer, Lifetimes, RateLimit, RateLimitStore,
-        ReplayCheck, ReplayGuard, ReplayPurpose, Role, Session, UserId,
+        AuditSink, AuthenticationMethod, DomainError, Feature, Issuer, Lifetimes, RateLimit,
+        RateLimitStore, ReplayCheck, ReplayGuard, ReplayPurpose, Role, Session, TenantSettings,
+        UserId,
     };
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
@@ -627,6 +833,7 @@ mod tests {
         counters: Mutex<BTreeMap<String, u32>>,
         claimed: Mutex<std::collections::BTreeSet<String>>,
         invalidations: Mutex<usize>,
+        settings: Mutex<BTreeMap<String, TenantSettings>>,
     }
 
     #[derive(Debug, Clone)]
@@ -667,6 +874,33 @@ mod tests {
         }
 
         async fn delete(&self, _id: &TenantId) -> Result<(), DomainError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::TenantSettingsRepository for Handle {
+        async fn settings(&self, tenant: &TenantId) -> Result<TenantSettings, DomainError> {
+            Ok(self
+                .0
+                .settings
+                .lock()
+                .expect("an uncontended lock")
+                .get(tenant.as_str())
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        async fn save(
+            &self,
+            tenant: &TenantId,
+            settings: &TenantSettings,
+        ) -> Result<(), DomainError> {
+            self.0
+                .settings
+                .lock()
+                .expect("an uncontended lock")
+                .insert(tenant.as_str().to_owned(), settings.clone());
             Ok(())
         }
     }
@@ -764,6 +998,10 @@ mod tests {
         }
 
         fn tenants(&self) -> Arc<dyn TenantRepository> {
+            Arc::new(self.clone())
+        }
+
+        fn tenant_settings(&self) -> Arc<dyn asterius_domain::ports::TenantSettingsRepository> {
             Arc::new(self.clone())
         }
 
@@ -898,6 +1136,13 @@ mod tests {
     }
 
     fn body_for(operation: &Operation) -> Body {
+        if operation.id() == crate::TENANT_SETTINGS_UPDATE_ID {
+            // A whole-document PUT: the table-driven tests send it to every
+            // route, so this one has to be a body the handler accepts rather
+            // than the empty one, or "every route answers a deployment admin"
+            // would be asserting a 400.
+            return Body::from(settings_body(60, 300).to_string());
+        }
         if operation.method() == OperationMethod::Post {
             Body::from(
                 serde_json::json!({
@@ -1739,5 +1984,267 @@ mod tests {
     #[test]
     fn the_origin_comes_from_the_issuer() {
         assert_eq!(origin_of(&tenant_named("acme")), ORIGIN);
+    }
+
+    // ---- tenant settings (`ast-f7m.4`) -------------------------------------
+
+    /// Signs a tenant admin in and sends `body` to `acme`'s settings.
+    async fn put_settings(world: &World, body: serde_json::Value) -> Response {
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        world
+            .send(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri(
+                        crate::TENANT_SETTINGS_UPDATE
+                            .full_path()
+                            .replace("{tenant_id}", "acme"),
+                    )
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("a request"),
+            )
+            .await
+    }
+
+    fn settings_body(code_seconds: i64, access_token_seconds: i64) -> serde_json::Value {
+        serde_json::json!({
+            "disabled_features": [],
+            "authorization_code_lifetime_seconds": code_seconds,
+            "access_token_lifetime_seconds": access_token_seconds,
+        })
+    }
+
+    /// `ast-f7m.4`'s first acceptance criterion. The refusal is the *API's*,
+    /// reached with no form in the way, which is the whole point: the cap is a
+    /// server-side rule.
+    #[tokio::test]
+    async fn the_api_refuses_a_code_lifetime_over_sixty_seconds() {
+        // Arrange
+        let world = World::new();
+
+        // Act
+        let response = put_settings(&world, settings_body(300, 300)).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_of(response).await;
+        let message = body["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("FAPI 2.0 Security Profile §5.3.2.1 item 11"),
+            "the refusal does not name the clause: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_api_refuses_an_access_token_lifetime_over_the_cap() {
+        // Arrange
+        let world = World::new();
+
+        // Act
+        let response = put_settings(&world, settings_body(60, 3600)).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_of(response).await;
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("900 s"),
+            "{body}"
+        );
+    }
+
+    /// A refused change writes nothing: the stored settings are still the ones
+    /// that were in force before the attempt.
+    #[tokio::test]
+    async fn a_refused_change_leaves_the_stored_settings_alone() {
+        // Arrange
+        let world = World::new();
+
+        // Act
+        let _ = put_settings(&world, settings_body(3600, 300)).await;
+
+        // Assert
+        assert!(
+            world
+                .handle
+                .0
+                .settings
+                .lock()
+                .expect("an uncontended lock")
+                .is_empty(),
+            "a refused change was written anyway"
+        );
+    }
+
+    /// The second acceptance criterion, at this layer: a flag change drops the
+    /// deployment's cached view, so the next discovery request is served from
+    /// the new settings rather than from a snapshot up to thirty seconds old.
+    #[tokio::test]
+    async fn changing_a_flag_invalidates_the_deployments_cached_view() {
+        // Arrange
+        let world = World::new();
+        let body = serde_json::json!({
+            "disabled_features": ["dpop_nonce"],
+            "authorization_code_lifetime_seconds": 60,
+            "access_token_lifetime_seconds": 300,
+        });
+
+        // Act
+        let response = put_settings(&world, body).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            *world
+                .handle
+                .0
+                .invalidations
+                .lock()
+                .expect("an uncontended lock"),
+            1,
+            "the settings change did not invalidate the cache"
+        );
+    }
+
+    /// The third: a change is recorded with what it was and what it became.
+    #[tokio::test]
+    async fn a_settings_change_is_audited_with_a_before_and_after_diff() {
+        // Arrange
+        let world = World::new();
+
+        // Act
+        let response = put_settings(&world, settings_body(30, 300)).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        let recorded = events.last().expect("a recorded change");
+        let detail: BTreeMap<&String, &asterius_domain::audit::DetailValue> =
+            recorded.detail.iter().collect();
+        assert_eq!(
+            detail.get(&"authorization_code_lifetime_seconds.before".to_owned()),
+            Some(&&asterius_domain::audit::DetailValue::Number(60))
+        );
+        assert_eq!(
+            detail.get(&"authorization_code_lifetime_seconds.after".to_owned()),
+            Some(&&asterius_domain::audit::DetailValue::Number(30))
+        );
+        assert!(
+            !detail.contains_key(&"access_token_lifetime_seconds.before".to_owned()),
+            "an unchanged member is not part of the diff"
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_that_were_saved_are_the_settings_read_back() {
+        // Arrange
+        let world = World::new();
+        let body = serde_json::json!({
+            "disabled_features": ["mtls"],
+            "authorization_code_lifetime_seconds": 45,
+            "access_token_lifetime_seconds": 120,
+        });
+        let _ = put_settings(&world, body).await;
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri(
+                        crate::TENANT_SETTINGS_READ
+                            .full_path()
+                            .replace("{tenant_id}", "acme"),
+                    )
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let document = body_of(response).await;
+        assert_eq!(document["authorization_code_lifetime_seconds"], 45);
+        assert_eq!(document["disabled_features"][0], "mtls");
+        assert_eq!(
+            document["limits"]["max_authorization_code_lifetime_seconds"],
+            60
+        );
+    }
+
+    /// The cross-tenant read the second authority check exists to stop, on the
+    /// settings path this time: `acme`'s admin naming `other` in the path.
+    #[tokio::test]
+    async fn a_tenant_admin_cannot_reach_a_siblings_settings() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri(
+                        crate::TENANT_SETTINGS_UPDATE
+                            .full_path()
+                            .replace("{tenant_id}", "other"),
+                    )
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .header("content-type", "application/json")
+                    .body(Body::from(settings_body(60, 300).to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_feature_name_this_build_does_not_know_is_refused() {
+        // Arrange
+        let world = World::new();
+        let body = serde_json::json!({
+            "disabled_features": ["telepathy"],
+            "authorization_code_lifetime_seconds": 60,
+            "access_token_lifetime_seconds": 300,
+        });
+
+        // Act
+        let response = put_settings(&world, body).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(Feature::from_key("telepathy"), None);
     }
 }

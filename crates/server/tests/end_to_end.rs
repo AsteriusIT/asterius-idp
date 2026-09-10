@@ -749,6 +749,9 @@ fn assemble(
     let routes = protocol::routes(ProtocolState {
         keys: Arc::clone(&key_store),
         capabilities: Capabilities::default(),
+        // No tenant has settings of its own here, so the document describes
+        // exactly the deployment's capabilities (`ast-f7m.4`).
+        tenant_settings: None,
         clients: Some(Arc::new(ClientEndpoints {
             authenticator,
             store: store.clone(),

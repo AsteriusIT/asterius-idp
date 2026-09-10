@@ -83,6 +83,10 @@ pub const TENANTS_LIST_ID: &str = "tenants.list";
 pub const TENANT_READ_ID: &str = "tenants.read";
 /// The `operationId` of `POST /tenants`.
 pub const TENANT_CREATE_ID: &str = "tenants.create";
+/// The `operationId` of `GET /tenants/{tenant_id}/settings`.
+pub const TENANT_SETTINGS_READ_ID: &str = "tenants.settings.read";
+/// The `operationId` of `PUT /tenants/{tenant_id}/settings`.
+pub const TENANT_SETTINGS_UPDATE_ID: &str = "tenants.settings.update";
 
 /// Who the caller is, and the CSRF token the console must send back.
 ///
@@ -142,17 +146,49 @@ pub const TENANT_CREATE: Operation = Operation::mutation(
     "Creates a tenant",
 );
 
+/// One tenant's settings: its feature flags and its lifetimes.
+///
+/// Split from [`TENANT_READ`] rather than folded into the tenant document,
+/// because the two answer different questions and are read at different rates
+/// — a console lists tenants far more often than it opens one's settings — and
+/// because a settings screen that PUTs back what it GOT is the shape that does
+/// not lose a member somebody else added.
+pub const TENANT_SETTINGS_READ: Operation = Operation::read(
+    TENANT_SETTINGS_READ_ID,
+    "/tenants/{tenant_id}/settings",
+    S::Get,
+    A::new(R::Tenant, "admin.tenants:read"),
+    "Reads one tenant's feature flags and lifetimes",
+);
+
+/// Replaces one tenant's settings.
+///
+/// `PUT` and not `PATCH`: the document is small, the console holds all of it,
+/// and a whole-document replacement is the one shape where "what I saw is what
+/// I saved" is true. The lifetimes in the body are checked against the
+/// profile's ceilings *here*, below the console — see
+/// [`asterius_domain::TenantSettings`].
+pub const TENANT_SETTINGS_UPDATE: Operation = Operation::mutation(
+    TENANT_SETTINGS_UPDATE_ID,
+    "/tenants/{tenant_id}/settings",
+    M::Put,
+    A::new(R::Tenant, "admin.tenants:write"),
+    "Replaces one tenant's feature flags and lifetimes",
+);
+
 /// Every route this API serves.
 ///
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 5] = [
+static REGISTRY: [Operation; 7] = [
     SESSION_READ,
     OPENAPI_READ,
     TENANTS_LIST,
     TENANT_READ,
     TENANT_CREATE,
+    TENANT_SETTINGS_READ,
+    TENANT_SETTINGS_UPDATE,
 ];
 
 /// The registry.

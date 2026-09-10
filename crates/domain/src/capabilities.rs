@@ -58,6 +58,17 @@ impl Feature {
             Self::DpopNonce => "dpop_nonce",
         }
     }
+
+    /// The flag a configuration key names, or `None` for a key this build does
+    /// not know.
+    ///
+    /// The inverse of [`Feature::as_str`], and deliberately strict: a stored
+    /// setting naming `compat_rs256` is refused rather than ignored, because a
+    /// silently dropped flag is a setting an operator believes is in force.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|flag| flag.as_str() == key)
+    }
 }
 
 impl std::fmt::Display for Feature {
@@ -116,6 +127,25 @@ impl Capabilities {
             Feature::Ssf => self.ssf,
             Feature::Authzen => self.authzen,
             Feature::DpopNonce => self.dpop_nonce,
+        }
+    }
+
+    /// Switches one flag off.
+    ///
+    /// There is no `enable`, and that is the point: a tenant may narrow what
+    /// the deployment serves ([`crate::TenantSettings::effective_capabilities`])
+    /// and may not widen it, so the only mutation this type offers is the safe
+    /// direction.
+    pub const fn disable(&mut self, feature: Feature) {
+        match feature {
+            Feature::Mtls => self.mtls = false,
+            Feature::GrantManagement => self.grant_management = false,
+            Feature::Ciba => self.ciba = false,
+            Feature::DeviceFlow => self.device_flow = false,
+            Feature::TokenExchange => self.token_exchange = false,
+            Feature::Ssf => self.ssf = false,
+            Feature::Authzen => self.authzen = false,
+            Feature::DpopNonce => self.dpop_nonce = false,
         }
     }
 
