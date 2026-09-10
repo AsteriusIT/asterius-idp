@@ -194,12 +194,15 @@ pub async fn authorize(
 
     let decision = decide(&requirements, &state, context.policy, context.acr, now);
     match decision {
-        // Every one of these puts something in front of the user, so they all
-        // continue into the interaction. *Which* screen comes first is the
+        // All of these continue into the interaction — including `Silent`,
+        // which continues into it in order to come straight back out again: the
+        // interaction is where a code is minted and a grant is written, and a
+        // second implementation of that here would be a second implementation
+        // of the consent boundary. *Which* screen comes first is the
         // interaction's own stage machine, and it is not decided twice — except
-        // for the step-up, which is decided here because it is decided *here*:
-        // it is the one stage that depends on a session this handler resolved
-        // and on a policy the interaction does not hold.
+        // for the two stages that depend on a session this handler resolved and
+        // on a policy the interaction does not hold, which `begin_at` records
+        // below.
         Interaction::Silent
         | Interaction::Login
         | Interaction::SelectAccount
@@ -225,8 +228,31 @@ pub async fn authorize(
         return error_page(&context, StatusCode::BAD_REQUEST);
     }
 
-    if decision == Interaction::StepUp {
-        begin_at_step_up(&context, &digest, now).await;
+    // Where the interaction starts, when it does not start at the beginning.
+    //
+    // `Stage::Login` is the default and it is the right default: it asks for
+    // more than may be needed and never for less. The two decisions that may
+    // start later are the two this handler resolved a *session* to make — the
+    // step-up rotates that session (`ast-2vk.7`), and a silent request is
+    // answered from it (`ast-ovr`) — and neither of them is a question the
+    // interaction can re-decide, because the browser's cookie is not something
+    // it resolves.
+    match decision {
+        Interaction::StepUp => begin_at(&context, &id.digest(), Stage::StepUp, now).await,
+        // The user is signed in and has already agreed to what is being asked.
+        // Starting at `Stage::Consent` is what lets the interaction skip
+        // straight to the response: `http::interaction::show` reads the same
+        // memory back and advances `Consent -> Response` without drawing a
+        // screen. It is not a shortcut around the stage machine — the move is
+        // still made through `Stage::may_advance_to`, and a memory that no
+        // longer covers the request renders the consent screen to the person
+        // the session names rather than granting anything.
+        Interaction::Silent => begin_at(&context, &id.digest(), Stage::Consent, now).await,
+        Interaction::Login
+        | Interaction::SelectAccount
+        | Interaction::Consent
+        | Interaction::Register
+        | Interaction::Refuse(_) => {}
     }
 
     // Through `SeeOther`, never open-coded. `http::source_audit` enforces
@@ -256,34 +282,41 @@ pub async fn authorize(
     response
 }
 
-/// Records that an interaction begins at the step-up stage (`ast-2vk.7`).
+/// Records that an interaction begins somewhere other than the beginning.
 ///
 /// Written after `begin_interaction` because the row has to exist to be
-/// updated, and it carries the session the step-up is a step up *from* — the
-/// credential handler needs to know which session to rotate, and the browser's
-/// cookie is not something that handler re-resolves.
+/// updated, and it carries the session the stage is *about* — the step-up
+/// needs to know which session to rotate (`ast-2vk.7`) and a silent request
+/// needs to know whose consent to look up (`ast-ovr`), and the browser's
+/// cookie is not something the interaction handler re-resolves.
 ///
 /// A failure here is logged and not fatal. An interaction whose state was not
 /// written starts at [`Stage::Login`], which asks the user for more than was
-/// needed rather than for less, and the session that would have been rotated is
-/// replaced by a fresh one instead. Both are worse than the intended path and
-/// neither grants anything.
-async fn begin_at_step_up(context: &AuthorizeContext<'_>, digest: &str, now: OffsetDateTime) {
-    let state = serde_json::to_value(StoredState {
-        stage: Stage::StepUp,
+/// needed rather than for less: the session that would have been rotated is
+/// replaced by a fresh one, and the user who would have seen nothing signs in
+/// again. Both are worse than the intended path and neither grants anything.
+async fn begin_at(
+    context: &AuthorizeContext<'_>,
+    interaction: &str,
+    stage: Stage,
+    now: OffsetDateTime,
+) {
+    let beginning = serde_json::to_value(StoredState {
+        stage,
         ..StoredState::default()
     })
     .unwrap_or_default();
     let session = context.session.map(|session| session.id_digest.as_str());
     if let Err(error) = context
         .interactions
-        .save_interaction_state(digest, &state, session, now)
+        .save_interaction_state(interaction, &beginning, session, now)
         .await
     {
         tracing::error!(
             %error,
             tenant = %context.tenant.id,
-            "cannot record that an interaction begins at the step-up stage"
+            ?stage,
+            "cannot record the stage an interaction begins at"
         );
     }
 }
