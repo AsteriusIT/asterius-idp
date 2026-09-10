@@ -376,8 +376,15 @@ pub fn provider_metadata(
         // The `request_uri` values this server accepts come only from PAR, so
         // the client-supplied form is not supported (RFC 9126 §3).
         "request_uri_parameter_supported": false,
-        // JAR is tracked, not implemented (ast-s36.1).
-        "request_parameter_supported": false,
+        // RFC 9101 §4 and OIDC Core §6.1, and `false` unless the deployment
+        // switched `Feature::RequestObject` on. RFC 8414 §2 makes this
+        // document a description of actual behaviour: a `true` here from a
+        // deployment whose pushed request endpoint answers
+        // `request_not_supported` is an invitation to send a parameter that
+        // cannot work, and a `false` from one that accepts request objects
+        // hides a signature path from the clients that want it (`ast-gxh.9`).
+        "request_parameter_supported":
+            capabilities.is_enabled(Feature::RequestObject),
         // OIDC Discovery §3, and true because `authorize::validate` parses the
         // parameter into `AuthorizationRequest::claims` and `claims::resolve`
         // acts on what it parsed — the essential `acr` path is the one that
@@ -625,6 +632,7 @@ mod tests {
             dynamic_client_registration: true,
             authzen: true,
             dpop_nonce: true,
+            request_object: true,
         }
     }
 
@@ -801,6 +809,38 @@ mod tests {
             assert!(!rendered.contains("RS256"), "{key} advertises RS256");
             assert!(!rendered.contains("none"), "{key} advertises none");
         }
+    }
+
+    /// RFC 9101 and RFC 8414 §2: the document says whether the `request`
+    /// parameter works here, and it is the same flag the pushed request
+    /// endpoint reads (`ast-gxh.9`).
+    ///
+    /// The `request_uri` half is `false` in both postures and not a flag at
+    /// all: RFC 9126 §3 forbids `request_uri` *in* a pushed request, and PAR
+    /// is the only way in (ADR-0002), so there is no posture in which a
+    /// client-supplied `request_uri` is accepted.
+    #[test]
+    fn the_request_parameter_is_advertised_exactly_when_the_flag_is_on() {
+        // Arrange
+        let on = Capabilities {
+            request_object: true,
+            ..Capabilities::default()
+        };
+
+        // Act
+        let without = provider_metadata(
+            &issuer(),
+            &Capabilities::default(),
+            &AcrPolicy::default(),
+            &[],
+        );
+        let with = provider_metadata(&issuer(), &on, &AcrPolicy::default(), &[]);
+
+        // Assert
+        assert_eq!(without["request_parameter_supported"], json!(false));
+        assert_eq!(with["request_parameter_supported"], json!(true));
+        assert_eq!(without["request_uri_parameter_supported"], json!(false));
+        assert_eq!(with["request_uri_parameter_supported"], json!(false));
     }
 
     /// RFC 9449 §5.1 defines exactly one metadata parameter, and its presence

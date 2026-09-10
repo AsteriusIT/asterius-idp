@@ -105,6 +105,7 @@ token_exchange = false   # RFC 8693 with delegation chains
 ssf = false              # Shared Signals Framework transmitter, CAEP/RISC
 authzen = false          # AuthZEN Authorization API 1.0
 dpop_nonce = false       # server-issued DPoP nonces (RFC 9449 §8)
+request_object = false   # signed request objects in PAR (JAR, RFC 9101)
 
 # Dynamic client registration — POST /register (RFC 7591 §3).
 #

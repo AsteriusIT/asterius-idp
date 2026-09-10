@@ -1091,12 +1091,14 @@ impl ClientRegistration {
                 "userinfo_signed_response_alg",
                 self.userinfo_signed_response_alg,
             ),
-            // OIDC Registration §2. Today this names an algorithm the *client*
-            // signs its request objects with and this server only verifies, so
-            // there is no key of ours to hold and the entry contributes
-            // nothing. It is a row rather than a comment so that `ast-gxh.9`,
-            // which lands the JAR path, has one expression to change and no
-            // table to find.
+            // OIDC Registration §2, and still `None` now that `ast-gxh.9` has
+            // landed the JAR path. The direction is what decides the entry, not
+            // whether the feature exists: this names the algorithm the *client*
+            // signs its request objects with and this server verifies against
+            // the client's own published keys, so there is no key of ours whose
+            // absence could make the registration a promise this tenant cannot
+            // keep. The row stays rather than becoming a comment, so that the
+            // next reader sees the question was asked.
             ("request_object_signing_alg", None),
         ]
     }
@@ -2103,6 +2105,7 @@ mod tests {
             ssf: true,
             authzen: true,
             dpop_nonce: true,
+            request_object: true,
             dynamic_client_registration: true,
         }
     }

@@ -138,7 +138,12 @@ pub enum AuthorizationError {
     /// asks for — see [`ClaimsRequest::parse`].
     #[error("claims: {0}")]
     Claims(#[from] ClaimsRequestError),
-    /// A `request` or `request_uri` parameter was present.
+    /// A `request` parameter reached a tenant that does not accept one.
+    ///
+    /// Not "this server cannot do JAR": it can, behind
+    /// [`Feature::RequestObject`](asterius_domain::Feature::RequestObject),
+    /// and a tenant with the flag on never gets here because the object has
+    /// already become the parameters being validated.
     #[error("request objects are not supported")]
     RequestObjectNotSupported,
     /// `request_uri` in a *pushed* request (RFC 9126 §2.1).
@@ -590,9 +595,12 @@ pub fn validate(
     if params.present("request_uri") {
         return Err(AuthorizationError::RequestUriNotAllowed);
     }
-    // JAR (RFC 9101) is `ast-s36.1`. Until it exists, a `request` object is
-    // refused rather than ignored — ignoring it would mean honouring the query
-    // parameters the object was there to protect.
+    // A `request` object never reaches this validator: the pushed request
+    // endpoint unwraps it first, and what arrives here are the *object's*
+    // parameters (`asterius_oidc::request_object`). So one still being present
+    // means the tenant does not accept request objects — and it is refused
+    // rather than ignored, because ignoring it would honour exactly the
+    // parameters the object exists to protect (RFC 9101 §4).
     if params.present("request") {
         return Err(AuthorizationError::RequestObjectNotSupported);
     }
@@ -1197,7 +1205,9 @@ mod tests {
     }
 
     /// Ignoring a `request` object would honour the query parameters it exists
-    /// to protect.
+    /// to protect. A tenant that *accepts* request objects never reaches this:
+    /// the pushed request endpoint has already replaced the parameters with the
+    /// object's own (`ast-gxh.9`).
     #[test]
     fn a_request_object_is_refused_not_ignored() {
         let error = refuse(&[("request", "eyJhbGciOiJub25lIn0..")]).expect_err("must refuse");

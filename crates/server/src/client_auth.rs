@@ -129,6 +129,19 @@ impl ClientAuthenticator {
         })
     }
 
+    /// The client key cache this authenticator resolves keys through.
+    ///
+    /// Exposed for the one other caller that verifies a JWT a *client* signed:
+    /// the pushed request endpoint, unwrapping a signed request object
+    /// (`ast-gxh.9`). It is the same cache rather than a second one on
+    /// purpose — a second would keep its own copy of every `jwks_uri`, its own
+    /// backoff, and its own opinion about which of a client's keys are
+    /// current, and the two would disagree exactly during a rotation.
+    #[must_use]
+    pub fn client_keys(&self) -> &Arc<ClientKeyCache> {
+        &self.keys
+    }
+
     /// Records every successful authentication through `usage`.
     ///
     /// A builder rather than a fourth constructor argument, following

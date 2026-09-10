@@ -94,6 +94,7 @@ Everything is off unless switched on here, and what is switched on is exactly wh
 | `features.ssf` | boolean | `false` | Shared Signals Framework transmitter and CAEP/RISC events. |
 | `features.authzen` | boolean | `false` | AuthZEN Authorization API 1.0 policy decision point. |
 | `features.dpop_nonce` | boolean | `false` | Server-issued DPoP nonces (RFC 9449 §8). |
+| `features.request_object` | boolean | `false` | Signed request objects inside a pushed request (JAR, RFC 9101). |
 
 ## `[registration]` — dynamic client registration
 

@@ -78,6 +78,17 @@ pub struct PushContext<'a> {
     /// The client certificate this request arrived with (RFC 8705 §2), if the
     /// deployment saw one from a source it trusts.
     pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
+    /// Where a client's keys come from when it pushes a signed request object
+    /// (JAR, RFC 9101).
+    ///
+    /// `Some` exactly when [`asterius_domain::Feature::RequestObject`] is on
+    /// for this tenant, and `None` otherwise — which is what makes the
+    /// `request_parameter_supported` in the discovery document and the answer
+    /// this endpoint gives one decision rather than two. With `None` a
+    /// `request` parameter reaches [`authorize::validate`] and is refused as
+    /// `request_not_supported`, which is the code OIDC Core §3.1.2.6 defines
+    /// for exactly that.
+    pub request_objects: Option<&'a asterius_jose::client_keys::ClientKeyCache>,
 }
 
 /// Handles a pushed authorization request.
@@ -159,6 +170,16 @@ pub async fn push(
     // The request itself. Everything the client asked for is checked here,
     // once, while it is still a request and not yet a flow.
     let parameters = Parameters::from_pairs(pairs);
+
+    // JAR (RFC 9101), when the tenant accepts it: the object is unwrapped into
+    // the parameters *before* the validator runs, so that a signed request and
+    // a plain one are checked by the same code. The object is an envelope, not
+    // a second parser — `asterius_oidc::request_object`.
+    let parameters = match unwrapped(&context, &client, parameters, now).await {
+        Ok(parameters) => parameters,
+        Err(refusal) => return *refusal,
+    };
+
     let request = match authorize::validate(
         &parameters,
         client.id.as_str(),
@@ -215,6 +236,49 @@ pub async fn push(
         };
 
     stored(&context, &client, &request, hinted_subject, dpop_jkt, now).await
+}
+
+/// The parameters to validate: the request object's, if there is one.
+///
+/// Returns `parameters` unchanged for the ordinary push, which is every push
+/// on a deployment that has not switched `Feature::RequestObject` on.
+///
+/// RFC 9126 §3 is checked first and unconditionally: `request_uri` "MUST NOT
+/// be provided" in a pushed request, in either posture. It is refused here as
+/// well as in [`authorize::validate`] because the parameters the validator
+/// sees are the *object's* when there is one, and the outer form's
+/// `request_uri` would no longer be among them.
+async fn unwrapped(
+    context: &PushContext<'_>,
+    client: &Client,
+    parameters: Parameters,
+    now: OffsetDateTime,
+) -> Result<Parameters, Box<Response>> {
+    if parameters.present("request_uri") {
+        return Err(Box::new(error(
+            StatusCode::BAD_REQUEST,
+            authorize::AuthorizationError::RequestUriNotAllowed.code(),
+            "request_uri must not be present in a pushed authorization request",
+        )));
+    }
+    if !parameters.present("request") {
+        return Ok(parameters);
+    }
+    let Some(keys) = context.request_objects else {
+        // The tenant does not accept request objects. Left to the validator so
+        // that the refusal, its code and its test live in one place.
+        return Ok(parameters);
+    };
+
+    crate::http::request_object::parameters(keys, context.tenant, client, &parameters, now)
+        .await
+        .map_err(|refusal| {
+            Box::new(error(
+                StatusCode::BAD_REQUEST,
+                refusal.code(),
+                &refusal.to_string(),
+            ))
+        })
 }
 
 /// Stores the validated request and answers with its reference.

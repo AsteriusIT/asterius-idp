@@ -582,6 +582,7 @@ mod tests {
     fn nonce_capabilities() -> Capabilities {
         Capabilities {
             dpop_nonce: true,
+            request_object: true,
             ..Capabilities::default()
         }
     }

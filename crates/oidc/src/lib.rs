@@ -20,6 +20,7 @@ pub mod mtls;
 pub mod par;
 pub mod pkce;
 pub mod refresh;
+pub mod request_object;
 pub mod revocation;
 pub mod tenancy;
 pub mod token;
