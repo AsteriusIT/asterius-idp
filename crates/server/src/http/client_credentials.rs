@@ -47,7 +47,7 @@
 //!
 //! **A `sub` of its own.** RFC 9068 §2.2 puts the `client_id` in `sub` for a
 //! grant with no resource owner, and [`AccessToken`] does that on its own from
-//! a [`ClaimedGrant`] whose subject is `None`.
+//! a [`asterius_domain::ClaimedGrant`] whose subject is `None`.
 
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::client::GrantType;

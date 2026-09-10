@@ -103,7 +103,6 @@ struct Input {
     audience_free: String,
     jkt: u8,
     x5t: u8,
-    both: bool,
     certificate_only: bool,
     actors: Vec<u8>,
     details: bool,
@@ -196,9 +195,7 @@ fuzz_target!(|input: Input| {
     // alternative is a `cnf` nothing matches.
     let jkt = Kid::new(pick(&THUMBPRINTS, input.jkt));
     let x5t = pick(&THUMBPRINTS, input.x5t);
-    let confirmation = if input.both {
-        Confirmation::dpop_and_certificate(&jkt, x5t)
-    } else if input.certificate_only {
+    let confirmation = if input.certificate_only {
         Confirmation::certificate(x5t)
     } else {
         Confirmation::dpop(&jkt)

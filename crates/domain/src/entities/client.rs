@@ -1324,11 +1324,11 @@ impl ClientRegistration {
 impl ClientMetadata {
     /// Writes a registered subject back into the document it came from.
     ///
-    /// The storage adapter's inverse of [`Self::tls_client_auth_subject`]: a
-    /// row holds the field name and the value in two columns, and this puts
-    /// them back under the one member of the five they name, so the reloaded
-    /// document goes through the same "exactly one" check as a document that
-    /// arrived over the wire.
+    /// The storage adapter's inverse of the private `tls_client_auth_subject`
+    /// reader: a row holds the field name and the value in two columns, and
+    /// this puts them back under the one member of the five they name, so the
+    /// reloaded document goes through the same "exactly one" check as a
+    /// document that arrived over the wire.
     pub fn set_tls_client_auth_subject(&mut self, subject: &TlsClientAuthSubject) {
         let value = Some(subject.value().to_owned());
         match subject {

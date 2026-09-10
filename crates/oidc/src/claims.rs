@@ -189,7 +189,7 @@ impl UserAttribute {
 
     /// Every column-backed claim.
     ///
-    /// The list [`UserAttribute::parse`] searches and the list
+    /// The list `UserAttribute::parse` searches and the list
     /// [`claims_from_user_columns`] publishes are the same list, so a variant
     /// added here becomes resolvable and advertised in one edit rather than
     /// two.

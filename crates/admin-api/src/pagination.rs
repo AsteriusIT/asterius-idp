@@ -48,12 +48,20 @@ pub const DEFAULT_LIMIT: usize = 50;
 /// The scheme version this build mints and accepts.
 const VERSION: &str = "v1";
 
-/// The longest key a cursor may carry, before decoding.
+/// The longest key a cursor may carry.
 ///
 /// A tenant id is 64 characters and a UUID is 36; 512 is generous for the
 /// compound keys this will grow and still refuses a caller who sends a
 /// megabyte of base64 to see what happens.
-const MAX_KEY_LEN: usize = 512;
+pub const MAX_KEY_LEN: usize = 512;
+
+/// The longest wire form [`Cursor::decode`] will look at.
+///
+/// Derived from [`MAX_KEY_LEN`] rather than equal to it: base64url grows a key
+/// by four bytes for every three, and a bound applied to the *encoded* string
+/// would refuse keys well inside the documented cap — including cursors this
+/// server had just minted, which is a paging loop rather than a guard.
+const MAX_ENCODED_LEN: usize = 3 + 4 * MAX_KEY_LEN.div_ceil(3);
 
 /// An opaque position in a listing: the key of the last row already returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,7 +95,7 @@ impl Cursor {
     /// are not UTF-8, an empty key, or one over the maximum key length.
     // fuzz-target: admin_cursor
     pub fn decode(raw: &str) -> Result<Self, AdminError> {
-        if raw.len() > MAX_KEY_LEN {
+        if raw.len() > MAX_ENCODED_LEN {
             return Err(AdminError::CursorInvalid);
         }
         let (version, body) = raw.split_once('.').ok_or(AdminError::CursorInvalid)?;
@@ -98,7 +106,7 @@ impl Cursor {
             .decode(body)
             .map_err(|_| AdminError::CursorInvalid)?;
         let key = String::from_utf8(bytes).map_err(|_| AdminError::CursorInvalid)?;
-        if key.is_empty() {
+        if key.is_empty() || key.len() > MAX_KEY_LEN {
             return Err(AdminError::CursorInvalid);
         }
         Ok(Self(key))
@@ -262,6 +270,34 @@ mod tests {
         // Act / Assert
         assert!(matches!(
             Cursor::decode(&long),
+            Err(AdminError::CursorInvalid)
+        ));
+    }
+
+    /// The cap is on the key, so a key at the cap survives its own encoding.
+    /// Applying it to the base64 instead refused cursors this server had just
+    /// minted, and a caller who cannot read back the cursor it was handed
+    /// pages the same rows for ever.
+    #[test]
+    fn a_key_at_the_cap_round_trips_through_its_own_wire_form() {
+        // Arrange
+        let key = "k".repeat(MAX_KEY_LEN);
+
+        // Act
+        let read_back = Cursor::decode(&Cursor::after(&key).encode());
+
+        // Assert
+        assert_eq!(read_back.expect("a cursor this server minted").key(), key);
+    }
+
+    #[test]
+    fn a_key_over_the_cap_is_refused_after_decoding() {
+        // Arrange
+        let over = Cursor::after(&"k".repeat(MAX_KEY_LEN + 1)).encode();
+
+        // Act / Assert
+        assert!(matches!(
+            Cursor::decode(&over),
             Err(AdminError::CursorInvalid)
         ));
     }

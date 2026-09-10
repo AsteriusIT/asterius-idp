@@ -327,7 +327,7 @@ impl PgRefreshTokenRepository {
     /// §6.5 Note), so its `revoked_at` will not refuse them either.
     ///
     /// So a cutoff is written for the grant in the same transaction
-    /// ([`crate::cutoffs::withdraw`]): every access token minted from it
+    /// (the private `cutoffs::withdraw`): every access token minted from it
     /// before `now` stops verifying, and the ones minted afterwards — there
     /// are none, the refresh token that would mint them has just been
     /// revoked — would not be affected. Tokens of the *same client* under

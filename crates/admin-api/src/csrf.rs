@@ -114,17 +114,26 @@ pub fn site(headers: &HeaderMap, expected_origin: &str) -> Site {
         Some(_) | None => {}
     }
 
-    match headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-    {
+    let Some(origin) = headers.get(header::ORIGIN) else {
+        return Site::Unstated;
+    };
+
+    // Present but unreadable is *present*. `to_str` refuses the bytes outside
+    // visible ASCII that `HeaderValue` still carries, and folding that refusal
+    // into "no Origin at all" would make an unreadable byte a way onto the
+    // `Unstated` path — the weaker of the two, since it leaves the request to
+    // the synchroniser token alone. An origin this build cannot read is not
+    // this deployment's origin.
+    let Ok(origin) = origin.to_str() else {
+        return Site::Cross;
+    };
+
+    match origin.trim() {
         // `null` is an opaque origin — a sandboxed iframe, a `data:` document.
         // It is never this deployment.
-        Some("null") => Site::Cross,
-        Some(origin) if origin.eq_ignore_ascii_case(expected_origin) => Site::Same,
-        Some(_) => Site::Cross,
-        None => Site::Unstated,
+        "null" => Site::Cross,
+        origin if origin.eq_ignore_ascii_case(expected_origin) => Site::Same,
+        _ => Site::Cross,
     }
 }
 
@@ -253,6 +262,26 @@ mod tests {
 
         // Act / Assert
         assert_eq!(site(&sent, ORIGIN), Site::Cross);
+    }
+
+    /// `HeaderValue` carries bytes outside visible ASCII that `to_str` refuses.
+    /// Reading that refusal as "no Origin was sent" would put a request the
+    /// browser did label onto the `Unstated` path, where the synchroniser
+    /// token is the only remaining layer.
+    #[test]
+    fn an_origin_this_build_cannot_read_is_cross_site() {
+        // Arrange
+        let mut sent = HeaderMap::new();
+        sent.insert(
+            "origin",
+            HeaderValue::from_bytes(b"\xcf\x8c@~").expect("a header value"),
+        );
+
+        // Act
+        let verdict = site(&sent, ORIGIN);
+
+        // Assert
+        assert_eq!(verdict, Site::Cross);
     }
 
     #[test]

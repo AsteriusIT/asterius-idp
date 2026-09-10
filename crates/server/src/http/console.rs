@@ -11,7 +11,7 @@
 //! # Why not a second login path
 //!
 //! Because the session is produced by
-//! [`crate::http::interaction::sign_in`] and by nothing else. Everything that
+//! the private `interaction::sign_in` and by nothing else. Everything that
 //! flow has learned to do — rotating the session id at authentication,
 //! throttling before the verifier runs, saying the same sentence for "no such
 //! user" and "wrong password" with the timing equalised, recording `acr` and
@@ -94,7 +94,7 @@ pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
 /// document is mounted here, because deciding whether this visitor may see it
 /// needs a session repository and therefore a tenant — and the tenant is what
 /// the layer above has just resolved. The redirect from `/admin` to `/admin/`
-/// is mounted here too, for the reason [`slashless`] gives.
+/// is mounted here too, for the reason the private `slashless` gives.
 ///
 /// Only `GET` is mounted, on all three. Nothing under `/admin/` changes
 /// anything: the console's writes go to `/admin/api`, which has the

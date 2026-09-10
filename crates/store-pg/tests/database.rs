@@ -142,6 +142,12 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
         "a boolean saying whether tokens are certificate-bound (RFC 8705 §3.4), not a token",
     ),
     (
+        "clients",
+        "previous_registration_access_token_expires_at",
+        "when the outgoing registration access token stops being accepted — a deadline beside \
+         the digest in previous_registration_access_token_hash, not a token",
+    ),
+    (
         "credentials",
         "credential_id",
         "a row identifier, not the credential",
@@ -1256,10 +1262,9 @@ db_test! {
         let mtls_on = Capabilities { mtls: true, ..Capabilities::default() };
 
         let mut document = registration_document();
-        document
-            .as_object_mut()
-            .expect("object")
-            .insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+        let members = document.as_object_mut().expect("object");
+        members.insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+        members.insert("tls_client_auth_subject_dn".to_owned(), json!("CN=billing,O=Demo"));
 
         store
             .scope(TenantId::new("demo"))
@@ -6980,10 +6985,9 @@ mod client_configuration {
             let digest = sha256(b"the-token");
 
             let mut document = registration_document();
-            document
-                .as_object_mut()
-                .expect("object")
-                .insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+            let members = document.as_object_mut().expect("object");
+            members.insert("token_endpoint_auth_method".to_owned(), json!("tls_client_auth"));
+            members.insert("tls_client_auth_subject_dn".to_owned(), json!("CN=c.abc,O=Demo"));
             Store::from_pool(db.pool.clone())
                 .scope(TenantId::new("demo"))
                 .clients(mtls_on)

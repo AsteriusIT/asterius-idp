@@ -237,7 +237,7 @@ pub fn document(client: &Client) -> Value {
 /// `+` is a space, `%XX` is a byte. Anything else is passed through as itself.
 ///
 /// **It cannot fail.** A term is not a credential, an identifier or a path
-/// segment — it is fed to [`matches`], which does a case-insensitive substring
+/// segment — it is fed to [`matches()`], which does a case-insensitive substring
 /// comparison and nothing else — so a malformed escape is not worth a 400 that
 /// an operator would read as "your search is invalid". A stray `%` stays a `%`
 /// and matches a stored `%`; invalid UTF-8 becomes the replacement character,

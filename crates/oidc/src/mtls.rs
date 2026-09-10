@@ -20,7 +20,7 @@
 //! distinguished name in RFC 4514 string form, and the `subjectAltName`
 //! entries. Neither is exposed by rustls or by `rustls-webpki`, which parse
 //! certificates for chain building and hand back opaque handles; and ADR-0004
-//! puts OpenSSL out of reach. So [`der`] below reads the two fields this
+//! puts OpenSSL out of reach. So `der` below reads the two fields this
 //! server compares and nothing else.
 //!
 //! That parser takes bytes chosen by an unauthenticated caller, which sets its

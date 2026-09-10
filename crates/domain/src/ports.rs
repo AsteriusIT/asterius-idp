@@ -696,7 +696,7 @@ pub trait ClientConfiguration: Debug + Send + Sync {
 ///
 /// There is no `delete`. RFC 7592 §2.3 deprovisioning is the client's own act
 /// and has its own port; an administrator taking a client out of service
-/// suspends it instead — [`ClientStatus::Suspended`] through [`Self::replace`]
+/// suspends it instead — [`ClientStatus::Disabled`] through [`Self::replace`]
 /// — which stops it authenticating while leaving the grants and the audit rows
 /// that name it attached to something that still exists.
 #[async_trait::async_trait]

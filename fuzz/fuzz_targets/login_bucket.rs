@@ -100,10 +100,27 @@ fuzz_target!(|data: &[u8]| {
         "a normalised identifier kept its surrounding whitespace"
     );
     // Case folding is what stops `ALICE` from being a bucket of its own.
+    //
+    // Asserted over ASCII only, because Unicode case is not a round trip and
+    // asserting otherwise would be an oracle bug rather than a finding:
+    // `ß`.to_uppercase() is `SS`, which lowercases to `ss` and is a different
+    // identifier from `ß`. The normaliser lowercases (`to_lowercase`) and does
+    // not case-fold, deliberately — folding `ß` onto `ss` would put two
+    // distinct accounts in one bucket, which is the collision the injectivity
+    // assertion below exists to catch.
+    if left.is_ascii() {
+        assert_eq!(
+            account_bucket(&left.to_uppercase()),
+            account_bucket(&left.to_lowercase()),
+            "case decided which bucket an identifier fell into"
+        );
+    }
+    // What holds for every input: normalising first changes nothing, so a
+    // bucket does not depend on how many times the key was computed.
     assert_eq!(
-        account_bucket(&left.to_uppercase()),
-        account_bucket(&left.to_lowercase()),
-        "case decided which bucket an identifier fell into"
+        account_bucket(&normalised),
+        bucket,
+        "normalising first moved the identifier to another bucket"
     );
     assert_eq!(
         account_bucket(&format!("  {left}  ")),

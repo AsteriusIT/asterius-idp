@@ -635,7 +635,7 @@ impl PgClientRepository {
     /// hold (RFC 9068), so there is no row to delete and no `jti` to put on
     /// `access_token_denylist` — the schema has never inventoried the ones it
     /// signed. What is written instead, in the same transaction as the delete,
-    /// is a mark: [`crate::cutoffs::withdraw`] records that nothing issued to
+    /// is a mark: the private `cutoffs::withdraw` records that nothing issued to
     /// this `client_id` before `now` is good any more, and the resource path
     /// compares it against the token's own `iat` (`ast-m9c.13`).
     ///
