@@ -27,6 +27,7 @@
 //!   already watching. The field shapes it will use are exercised below
 //!   against the real formatter.
 
+use asterius_server::observability::json::{RedactingJson, RedactingJsonFields};
 use asterius_server::observability::redact::RedactingFields;
 use std::sync::{Arc, Mutex};
 use tracing::subscriber::with_default;
@@ -469,7 +470,9 @@ fn every_log_formatter_in_the_workspace_redacts() {
         if path.ends_with("tests/log_redaction.rs") {
             continue;
         }
-        let redacts = source.contains("RedactingFields");
+        // Either renderer counts: `RedactingJsonFields` (with `RedactingJson`)
+        // is the JSON half of the same guarantee, added by `ast-7f0`.
+        let redacts = source.contains("RedactingFields") || source.contains("RedactingJsonFields");
 
         for (number, line) in source.lines().enumerate() {
             let trimmed = line.trim_start();
@@ -506,6 +509,133 @@ fn every_log_formatter_in_the_workspace_redacts() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The JSON layer (`ast-7f0`)
+// ---------------------------------------------------------------------------
+
+/// The same capture as [`capture`], through the layer `LogFormat::Json`
+/// installs. It exists so the corpus above can be replayed against the other
+/// renderer: a redaction that only holds for the terminal is one that stops
+/// holding the day an operator sets `log_format = "json"` — which is the
+/// format a collector ingests and keeps.
+fn capture_json(body: impl FnOnce()) -> String {
+    let captured = Captured::default();
+    let subscriber = Registry::default().with(
+        fmt::layer()
+            .with_ansi(false)
+            .event_format(RedactingJson)
+            .fmt_fields(RedactingJsonFields)
+            .with_writer(captured.clone()),
+    );
+    with_default(subscriber, body);
+    captured.contents()
+}
+
+/// Every line the JSON layer writes has to parse as JSON, or the collector the
+/// format exists for drops the lot.
+#[test]
+fn every_json_line_parses_as_a_json_object() {
+    let logs = capture_json(log_a_code_flow);
+
+    assert!(!logs.is_empty(), "nothing was captured");
+    for line in logs.lines() {
+        let parsed: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("a log line was not JSON: {e}\n{line}"));
+        assert!(parsed.is_object(), "not a JSON object: {line}");
+    }
+}
+
+/// The point of the ticket: the corpus above is the acceptance criterion for
+/// the text layer, and it has to hold identically for the JSON one. A
+/// credential that survives only in the format an aggregator stores is the
+/// worst of the two outcomes.
+#[test]
+fn the_json_layer_redacts_the_same_corpus_as_the_text_layer() {
+    let logs = capture_json(|| {
+        log_a_code_flow();
+        log_a_worker_pass();
+        log_an_admin_request();
+    });
+
+    for (what, secret) in credentials::ALL {
+        assert!(
+            !logs.contains(secret),
+            "the {what} reached a JSON log line.\n--- logs ---\n{logs}"
+        );
+    }
+    for (what, secret) in [
+        ("a JWT header", "eyJhbGciOiJFZERTQSIs"),
+        ("a JWT payload", "eyJzdWIiOiJhbGljZSJ9"),
+        ("the DPoP proof payload", "eyJodG0iOiJQT1NUIn0"),
+        ("the database password", "s3cr3t-db-pw"),
+        ("a user's email", "alice@example.com"),
+        ("the admin's address", "root@example.com"),
+        (
+            "the console session cookie",
+            "Vt7Yb2NmQp9vX4wZ1cD8eF3gH6jK0aL5uV-eW_iO2nQ",
+        ),
+    ] {
+        assert!(!logs.contains(secret), "{what} leaked in JSON:\n{logs}");
+    }
+}
+
+/// Redaction that emptied the JSON out would be the same failure as redaction
+/// that emptied the text out: an operator who cannot read the line turns the
+/// logging off.
+#[test]
+fn a_json_line_still_says_what_happened_and_at_which_level() {
+    let logs = capture_json(|| {
+        let span = tracing::info_span!("token", request_id = "01JABCDEFGH");
+        let _entered = span.enter();
+        tracing::warn!(
+            tenant = "demo",
+            grant_type = "authorization_code",
+            status = 400_u64,
+            "token refused"
+        );
+    });
+
+    let line: serde_json::Value =
+        serde_json::from_str(logs.trim()).expect("the layer writes one JSON line");
+    assert_eq!(line["level"], "WARN");
+    assert_eq!(line["fields"]["message"], "token refused");
+    assert_eq!(line["fields"]["grant_type"], "authorization_code");
+    assert_eq!(line["fields"]["tenant"], "demo");
+    assert_eq!(line["fields"]["status"], 400);
+    // The correlation id lives on the span, and has to travel with the event.
+    assert_eq!(line["span"]["name"], "token");
+    assert_eq!(line["span"]["request_id"], "01JABCDEFGH");
+    assert!(line["timestamp"].is_string(), "{line}");
+    assert_eq!(line["target"], "log_redaction");
+}
+
+/// A subject stays correlatable in JSON too, under the field name it was
+/// logged with rather than in a flattened blob.
+#[test]
+fn a_subject_is_correlatable_in_json_without_being_identifiable() {
+    let logs = capture_json(|| {
+        tracing::info!(sub = "alice@example.com", "first");
+        tracing::info!(sub = "alice@example.com", "second");
+        tracing::info!(sub = "bob@example.com", "third");
+    });
+
+    let digests: Vec<String> = logs
+        .lines()
+        .map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).expect("a JSON line");
+            value["fields"]["sub"]
+                .as_str()
+                .expect("the subject is a string")
+                .to_owned()
+        })
+        .collect();
+
+    assert_eq!(digests.len(), 3, "{logs}");
+    assert!(digests.iter().all(|d| d.starts_with("sha256:")), "{logs}");
+    assert_eq!(digests[0], digests[1], "one user got two digests");
+    assert_ne!(digests[0], digests[2], "two users got the same digest");
+}
+
 /// A check that cannot fail is not a check. Both halves of the matcher are
 /// exercised on text rather than on the tree, so the proof does not depend on
 /// the tree currently being wrong.
@@ -517,4 +647,11 @@ fn the_formatter_audit_would_catch_a_violation() {
 
     let compliant = "    fmt::layer().fmt_fields(RedactingFields)\n";
     assert!(compliant.contains("RedactingFields"));
+
+    let compliant_json = "    fmt::layer().fmt_fields(RedactingJsonFields)\n";
+    assert!(
+        !compliant_json.contains("RedactingFields"),
+        "the JSON marker is not a superstring of the text one, so it needs its own arm"
+    );
+    assert!(compliant_json.contains("RedactingJsonFields"));
 }

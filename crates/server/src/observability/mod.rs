@@ -11,6 +11,7 @@
 //! written in a hurry produces a redacted line, not an incident.
 
 pub mod health;
+pub mod json;
 pub mod metrics;
 pub mod redact;
 
@@ -57,11 +58,16 @@ pub fn init(format: LogFormat) {
                 .init();
         }
         LogFormat::Json => {
+            // Not `fmt::layer().json()`: `tracing_subscriber`'s JSON event
+            // formatter serializes event fields itself and never consults
+            // `fmt_fields`, so redaction would apply to span fields only —
+            // see [`json`] for the whole story.
             registry
                 .with(
                     fmt::layer()
                         .with_ansi(false)
-                        .fmt_fields(redact::RedactingFields),
+                        .event_format(json::RedactingJson)
+                        .fmt_fields(json::RedactingJsonFields),
                 )
                 .init();
         }

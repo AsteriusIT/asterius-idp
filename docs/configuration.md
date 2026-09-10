@@ -30,7 +30,7 @@ Keys that belong to the process rather than to any one part of it.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `log_format` | `"text"` or `"json"` | `"text"` | `json` for a log pipeline, `text` for a terminal. Either way every field passes through the redaction formatter first, so a credential cannot reach an appender (RFC 9700 §4.2-4.3). |
+| `log_format` | `"text"` or `"json"` | `"text"` | `json` writes one object per line — `timestamp`, `level`, `target`, a `fields` object and the enclosing `span`, which carries the correlation id — for a log pipeline; `text` is for a terminal. Either way every field passes through the redaction formatter first, so a credential cannot reach an appender (RFC 9700 §4.2-4.3). |
 
 ## `[server]` — listener and transport
 
