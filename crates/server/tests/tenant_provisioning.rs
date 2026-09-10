@@ -19,7 +19,7 @@
 
 use asterius_domain::audit::{AuditEvent, AuditSink};
 use asterius_domain::keys::SigningAlgorithm;
-use asterius_domain::ports::{Clock, JwksFetcher, SystemClock, TenantRepository as _};
+use asterius_domain::ports::{Clock, ClientUrlFetcher, SystemClock, TenantRepository as _};
 use asterius_domain::{
     Capabilities, Client, ClientRegistry, DomainError, Issuer, Tenant, TenantId, TenantStatus,
 };
@@ -78,7 +78,7 @@ impl AuditSink for DiscardedAudit {
 struct NoOutbound;
 
 #[async_trait::async_trait]
-impl JwksFetcher for NoOutbound {
+impl ClientUrlFetcher for NoOutbound {
     async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
         Err(DomainError::Storage(
             "no outbound calls in this test".into(),

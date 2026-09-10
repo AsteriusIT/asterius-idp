@@ -9883,7 +9883,7 @@ db_test! {
 mod client_key_fetches {
     use super::*;
     use asterius_domain::ClientId;
-    use asterius_domain::ports::{ClientKeyFetchBackoff, JwksFetcher};
+    use asterius_domain::ports::{ClientKeyFetchBackoff, ClientUrlFetcher};
     use asterius_jose::ClientKeyCache;
     use asterius_store_pg::PgClientKeyFetches;
     use std::sync::atomic::AtomicU64;
@@ -10067,7 +10067,7 @@ mod client_key_fetches {
     }
 
     #[async_trait::async_trait]
-    impl JwksFetcher for CountingFetcher {
+    impl ClientUrlFetcher for CountingFetcher {
         async fn fetch(&self, _url: &str) -> Result<Vec<u8>, asterius_domain::DomainError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Err(asterius_domain::DomainError::Storage(
@@ -10087,7 +10087,7 @@ mod client_key_fetches {
             let store = Arc::new(PgClientKeyFetches::new(db.pool.clone()));
 
             let replica = || {
-                ClientKeyCache::new(fetcher.clone() as Arc<dyn JwksFetcher>)
+                ClientKeyCache::new(fetcher.clone() as Arc<dyn ClientUrlFetcher>)
                     .sharing_backoff(store.clone() as Arc<dyn ClientKeyFetchBackoff>)
             };
             let replicas = [replica(), replica(), replica()];

@@ -160,9 +160,10 @@ pub trait TenantScoped {
 
 /// Dereferences a URL that a *client* chose.
 ///
-/// The only port whose input is attacker-controlled end to end: a `jwks_uri` is
-/// a string a client wrote into its own registration, and an implementation of
-/// this trait is the server going and fetching it. RFC 7591 §5 raises the
+/// The only port whose input is attacker-controlled end to end: a `jwks_uri`, a
+/// `sector_identifier_uri` (OIDC Registration §5) or the JWKS of a software
+/// statement issuer is a string a client wrote into its own registration, and
+/// an implementation of this trait is the server going and fetching it. RFC 7591 §5 raises the
 /// general shape of the problem — an authorization server that dereferences a
 /// URL from a registration document is doing work an attacker asked for, at an
 /// address an attacker chose.
@@ -178,8 +179,8 @@ pub trait TenantScoped {
 /// protocol code above this line has no use for them, and a port that leaked
 /// them would invite a second implementation to interpret them differently.
 #[async_trait::async_trait]
-pub trait JwksFetcher: Debug + Send + Sync {
-    /// Fetches the JWK Set document at `url`.
+pub trait ClientUrlFetcher: Debug + Send + Sync {
+    /// Fetches the document at `url`.
     ///
     /// # Errors
     ///

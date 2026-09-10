@@ -12,7 +12,7 @@
 use asterius_domain::RegistrationPolicy as TenantRegistrationPolicy;
 use asterius_domain::audit::{AuditEvent, AuditSink, DetailValue, EventType, Outcome};
 use asterius_domain::keys::{KeyPurpose, KeyState, SigningAlgorithm};
-use asterius_domain::ports::{InitialAccessTokenStore, JwksFetcher};
+use asterius_domain::ports::{InitialAccessTokenStore, ClientUrlFetcher};
 use asterius_domain::{
     Capabilities, Client, ClientRegistry, DomainError, InitialAccessToken,
     InitialAccessTokenReservation, Issuer, KeyStore, Kid, NewInitialAccessToken, PublicKeyRecord,
@@ -213,7 +213,7 @@ impl FakeOutbound {
 }
 
 #[async_trait::async_trait]
-impl JwksFetcher for FakeOutbound {
+impl ClientUrlFetcher for FakeOutbound {
     async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
         self.document
             .clone()
@@ -244,7 +244,7 @@ async fn post(
 /// [`post`], with the outbound path spelt out for the registrations that use
 /// it.
 async fn post_with(
-    outbound: &dyn JwksFetcher,
+    outbound: &dyn ClientUrlFetcher,
     policy: &RegistrationPolicy,
     registry: &FakeRegistry,
     audit: &FakeAudit,
@@ -267,7 +267,7 @@ async fn post_with(
 /// (`ast-m9c.6`).
 async fn post_under(
     tenant_policy: &TenantRegistrationPolicy,
-    outbound: &dyn JwksFetcher,
+    outbound: &dyn ClientUrlFetcher,
     policy: &RegistrationPolicy,
     registry: &FakeRegistry,
     audit: &FakeAudit,
@@ -444,7 +444,7 @@ fn tenant_gate(quota: u32) -> TenantRegistrationPolicy {
 /// The same request against a tenant holding a chosen set of signing keys.
 async fn post_to(
     keys: &FakeKeys,
-    outbound: &dyn JwksFetcher,
+    outbound: &dyn ClientUrlFetcher,
     policy: &RegistrationPolicy,
     registry: &FakeRegistry,
     audit: &FakeAudit,

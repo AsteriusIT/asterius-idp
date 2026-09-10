@@ -22,7 +22,7 @@ use asterius_admin_api::{AdminBackend, ClientAddress};
 use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::PasskeyRepository as _;
 use asterius_domain::ports::{
-    ClientAdministration, JwksFetcher, TenantRepository, TenantSettingsRepository,
+    ClientAdministration, ClientUrlFetcher, TenantRepository, TenantSettingsRepository,
 };
 use asterius_domain::{
     AuditSink, Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration,
@@ -53,7 +53,7 @@ pub struct Deployment {
     settings: SettingsDirectory,
     capabilities: Capabilities,
     registration: RegistrationPolicy,
-    outbound: Arc<dyn JwksFetcher>,
+    outbound: Arc<dyn ClientUrlFetcher>,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -76,14 +76,14 @@ impl Deployment {
     /// does not decrypt on the next boot — after the rotation, on somebody
     /// else's shift.
     ///
-    /// `outbound` must be the process's one [`JwksFetcher`] for the reason
+    /// `outbound` must be the process's one [`ClientUrlFetcher`] for the reason
     /// ADR-0006 gives: it is the only object in this deployment allowed to
     /// dereference a URL somebody else wrote, and the console registering a
     /// client is one of the two callers that has to.
     ///
     /// Takes one struct rather than eight arguments, so that a caller cannot
     /// transpose two handles of the same type — `Arc<dyn TenantRepository>` and
-    /// `Arc<dyn JwksFetcher>` are different, but a future seventh and eighth
+    /// `Arc<dyn ClientUrlFetcher>` are different, but a future seventh and eighth
     /// may not be.
     #[must_use]
     pub fn new(parts: DeploymentParts) -> Self {
@@ -119,7 +119,7 @@ pub struct DeploymentParts {
     /// Who dynamic client registration admits.
     pub registration: RegistrationPolicy,
     /// ADR-0006's single outbound path.
-    pub outbound: Arc<dyn JwksFetcher>,
+    pub outbound: Arc<dyn ClientUrlFetcher>,
 }
 
 impl std::fmt::Debug for DeploymentParts {
@@ -138,7 +138,7 @@ impl std::fmt::Debug for DeploymentParts {
 struct DeploymentClients {
     store: Store,
     capabilities: Capabilities,
-    outbound: Arc<dyn JwksFetcher>,
+    outbound: Arc<dyn ClientUrlFetcher>,
 }
 
 impl std::fmt::Debug for DeploymentClients {

@@ -138,7 +138,7 @@ pub struct ClientEndpoints {
     /// ADR-0006's one outbound path, for the URLs a registration document
     /// names. Shared with nothing else: the client key cache holds its own
     /// handle to the same adapter.
-    pub outbound: Arc<dyn asterius_domain::ports::JwksFetcher>,
+    pub outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
     /// Where registration decisions are recorded.
     pub audit: Arc<dyn asterius_domain::AuditSink>,
     /// How long this deployment's sessions live.

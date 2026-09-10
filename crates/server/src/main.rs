@@ -15,7 +15,7 @@ use asterius_server::http::protocol::{self, ClientEndpoints, ProtocolState};
 use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, shutdown_signal};
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
-use asterius_server::outbound::HttpsJwksFetcher;
+use asterius_server::outbound::HttpsClientUrlFetcher;
 use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
 use asterius_server::signing::CachedSigner;
@@ -176,8 +176,8 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // `sector_identifier_uri` through it, and so does the admin API's
         // client screen (`ast-f7m.5`). ADR-0006 says one path, and one instance
         // is how that is spelt here.
-        let outbound: Arc<dyn asterius_domain::ports::JwksFetcher> = Arc::new(
-            HttpsJwksFetcher::new()
+        let outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher> = Arc::new(
+            HttpsClientUrlFetcher::new()
                 .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?,
         );
         let admin_clients = AdminClientContext::of(&config, &outbound);
@@ -286,7 +286,7 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 struct AdminClientContext {
     capabilities: asterius_domain::Capabilities,
     registration: asterius_server::http::register::RegistrationPolicy,
-    outbound: Arc<dyn asterius_domain::ports::JwksFetcher>,
+    outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
 }
 
 impl AdminClientContext {
@@ -296,7 +296,7 @@ impl AdminClientContext {
     /// it is the third caller of ADR-0006's one outbound path, beside the key
     /// cache and `POST /register`, and a second HTTP client built for the
     /// console would be a second SSRF guard to keep in step.
-    fn of(config: &Config, outbound: &Arc<dyn asterius_domain::ports::JwksFetcher>) -> Self {
+    fn of(config: &Config, outbound: &Arc<dyn asterius_domain::ports::ClientUrlFetcher>) -> Self {
         Self {
             capabilities: config.features,
             registration: config.registration.clone(),
@@ -382,7 +382,7 @@ fn console_routes(store: &Store) -> axum::Router {
 /// configure and the third party, not this deployment, notices first
 /// (`ast-mxc.8`). The shared row makes the window one decision.
 fn client_key_cache(
-    outbound: &Arc<dyn asterius_domain::ports::JwksFetcher>,
+    outbound: &Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
     store: &Store,
 ) -> Arc<ClientKeyCache> {
     Arc::new(

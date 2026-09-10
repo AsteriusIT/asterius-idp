@@ -113,7 +113,7 @@ use crate::http::register::{
 };
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
     ClientStatus, DomainError, KeyStore, ManagedClient, Tenant, ct_eq, sha256,
@@ -504,7 +504,7 @@ pub struct ConfigurationContext<'a> {
     /// `sector_identifier_uri` and must prove it the same way a fresh
     /// registration does. Leaving the check out here would make the update
     /// endpoint the way around it.
-    pub outbound: &'a dyn JwksFetcher,
+    pub outbound: &'a dyn ClientUrlFetcher,
     /// Where the decision is recorded.
     pub audit: &'a dyn AuditSink,
     /// The request id, for correlating the audit record with the access log.

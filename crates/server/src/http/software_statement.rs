@@ -43,7 +43,7 @@
 //! stays believed. Registrations carrying a statement are rare — an agent is
 //! onboarded once — so the cost is one fetch per new client.
 
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{ClientMetadataError, SoftwareStatementRule, keys::SigningAlgorithm};
 use asterius_jose::client_keys::parse_jwk_set;
 use asterius_jose::verify::{Policy, TypRule};
@@ -134,7 +134,7 @@ fn claimed_issuer(statement: &str) -> Option<String> {
 ///   published key verifies, an expired statement, or claims that are not a
 ///   JSON object.
 pub async fn merge(
-    outbound: &dyn JwksFetcher,
+    outbound: &dyn ClientUrlFetcher,
     rule: &SoftwareStatementRule,
     statement: &str,
     document: &[u8],

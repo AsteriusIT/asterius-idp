@@ -9,7 +9,7 @@
 //! because a test that stubs the signature check proves nothing about the one
 //! thing this module exists to do.
 
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientRegistration, ClientRepository, ClientStatus,
     DomainError, Issuer, Kid, ReplayCheck, ReplayGuard, ReplayPurpose, SigningAlgorithm, Tenant,
@@ -87,7 +87,7 @@ impl ReplayGuard for FakeReplay {
 struct NoFetching;
 
 #[async_trait::async_trait]
-impl JwksFetcher for NoFetching {
+impl ClientUrlFetcher for NoFetching {
     async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
         panic!("a test reached the network; every fixture here has inline keys");
     }

@@ -13,7 +13,7 @@
 //! the TLS handshake tests skip — the property is worth checking wherever the
 //! tool exists and is not worth a hard dependency for everyone else.
 
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientRegistration, ClientRepository, ClientStatus,
     DomainError, Issuer, ReplayCheck, ReplayGuard, ReplayPurpose, Tenant, TenantId, TenantStatus,
@@ -256,7 +256,7 @@ impl ReplayGuard for FakeReplay {
 struct NoFetching;
 
 #[async_trait::async_trait]
-impl JwksFetcher for NoFetching {
+impl ClientUrlFetcher for NoFetching {
     async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
         panic!("a test reached the network; every fixture here has inline keys");
     }

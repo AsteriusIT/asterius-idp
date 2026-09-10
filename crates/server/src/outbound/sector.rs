@@ -20,8 +20,8 @@
 //! The URI is a string a client wrote, so fetching it is exactly the SSRF
 //! problem ADR-0006 settled for `jwks_uri`, and this module adds no second
 //! answer to it: it holds no socket, no HTTP client and no timeout. It takes
-//! [`asterius_domain::ports::JwksFetcher`] — the port whose one implementation
-//! is [`super::jwks::HttpsJwksFetcher`] — and so inherits the address guard,
+//! [`asterius_domain::ports::ClientUrlFetcher`] — the port whose one implementation
+//! is [`super::jwks::HttpsClientUrlFetcher`] — and so inherits the address guard,
 //! the refusal to follow redirects, the body cap and the timeouts unchanged.
 //! A sector document is served as `application/json`, which that adapter
 //! already accepts.
@@ -39,7 +39,7 @@
 //! even that is delegated: [`ClientRegistration::check_sector_identifier_document`]
 //! is pure and lives in the domain. This module is the two lines between them.
 
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{ClientMetadataError, ClientRegistration, SectorIdentifier};
 
 /// The metadata field every failure here is reported against.
@@ -62,7 +62,7 @@ const FIELD: &str = "sector_identifier_uri";
 /// refused either way, and distinguishing "I could not reach your host" from
 /// "your host answered" for an arbitrary address is a network probe.
 pub async fn verify(
-    fetcher: &dyn JwksFetcher,
+    fetcher: &dyn ClientUrlFetcher,
     registration: &ClientRegistration,
 ) -> Result<(), ClientMetadataError> {
     // Before the fetch, and without one: a pairwise client whose redirect URIs
@@ -102,7 +102,7 @@ mod tests {
     struct Canned(Result<Vec<u8>, &'static str>);
 
     #[async_trait::async_trait]
-    impl JwksFetcher for Canned {
+    impl ClientUrlFetcher for Canned {
         async fn fetch(&self, _url: &str) -> Result<Vec<u8>, DomainError> {
             self.0
                 .clone()
