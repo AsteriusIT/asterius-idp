@@ -25,6 +25,10 @@ const ISSUER: &str = "https://as.example/t/demo";
 struct Store {
     pushed: Mutex<Vec<PushedRequest>>,
     begun: Mutex<Vec<(String, String)>>,
+    /// Every state this handler wrote: the interaction, the document, and the
+    /// session it was attached to. Kept because *where an interaction begins*
+    /// is a fact only this write records (`ast-ovr`, `ast-k7f`).
+    states: Mutex<Vec<(String, Value, Option<String>)>>,
     fail_begin: bool,
 }
 
@@ -98,11 +102,16 @@ impl InteractionRepository for Store {
     }
     async fn save_interaction_state(
         &self,
-        _d: &str,
-        _s: &Value,
-        _sess: Option<&str>,
+        digest: &str,
+        state: &Value,
+        session: Option<&str>,
         _n: OffsetDateTime,
     ) -> Result<(), DomainError> {
+        self.states.lock().expect("lock").push((
+            digest.to_owned(),
+            state.clone(),
+            session.map(ToOwned::to_owned),
+        ));
         Ok(())
     }
     async fn complete_interaction(
@@ -175,6 +184,34 @@ impl asterius_domain::GrantRepository for Grants {
     }
 }
 
+/// The accounts, for the one thing `/authorize` reads them for: the name the
+/// consent screen puts on the person a session names (`ast-k7f`, `ast-bo5`).
+#[derive(Debug, Default)]
+struct Directory;
+
+/// The username [`Directory`] answers with.
+const USERNAME: &str = "ada";
+
+#[async_trait::async_trait]
+impl asterius_domain::UserDirectory for Directory {
+    async fn by_id(
+        &self,
+        id: asterius_domain::UserId,
+    ) -> Result<Option<asterius_domain::User>, DomainError> {
+        Ok(Some(asterius_domain::User {
+            tenant: TenantId::new("demo"),
+            id,
+            username: USERNAME.to_owned(),
+            email: None,
+            email_verified: false,
+            status: asterius_domain::UserStatus::Active,
+            claims: asterius_domain::ClaimSet::default(),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }))
+    }
+}
+
 /// The same, for a browser that already has a session (`ast-gxh.8`).
 async fn run_with(
     store: &Store,
@@ -215,6 +252,7 @@ async fn run_mounted(
             interactions: store,
             session,
             grants,
+            users: &Directory,
             policy: DecisionPolicy::default(),
             acr: &asterius_domain::AcrPolicy::default(),
             memory: MemoryPolicy::default(),
@@ -887,4 +925,124 @@ async fn an_ordinary_request_still_reaches_the_interaction() {
 
     assert_eq!(response.status().as_u16(), 303);
     assert_eq!(store.begun.lock().expect("lock").len(), 1);
+}
+
+// ---- where an interaction begins (`ast-ovr`, `ast-k7f`) ------------------
+
+/// The state this handler wrote for the interaction it began, and the session
+/// it attached to it.
+fn beginning(store: &Store) -> (Value, Option<String>) {
+    let states = store.states.lock().expect("lock");
+    let (_, state, session) = states
+        .last()
+        .expect("the handler recorded where the interaction begins");
+    (state.clone(), session.clone())
+}
+
+/// **`ast-k7f`**: a signed-in user meeting a client they have never consented
+/// to begins at the consent stage, not at the sign-in form.
+///
+/// The decision is `Interaction::Consent`, and `decide` returns it only for a
+/// session that is usable, fresh and about the right person. What is left to
+/// do is one screen, and the session goes with the stage because the browser's
+/// cookie is not something the interaction handler re-resolves.
+#[tokio::test]
+async fn a_signed_in_user_with_no_memory_of_this_client_begins_at_consent() {
+    // Arrange: a live session, and a user holding no grant at all.
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(request("billing", minted.digest(), later()));
+    let session = session(time::Duration::minutes(1));
+
+    // Act
+    let response = run_with(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&session),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status().as_u16(), 303);
+    let (state, attached) = beginning(&store);
+    assert_eq!(
+        state["stage"],
+        serde_json::json!("consent"),
+        "a signed-in user was sent back to the login stage: {state}"
+    );
+    assert_eq!(
+        attached.as_deref(),
+        Some(session.id_digest.as_str()),
+        "the stage was recorded without the session it is about"
+    );
+    // `ast-bo5`: no sign-in step ran, so this is the only place the name the
+    // consent screen displays can come from.
+    assert_eq!(
+        state["username"],
+        serde_json::json!(USERNAME),
+        "the consent screen would name nobody: {state}"
+    );
+}
+
+/// **OIDC Core §3.1.2.1**: `prompt=login` is not answered from a session,
+/// however much a memory would have covered.
+#[tokio::test]
+async fn prompt_login_begins_at_the_login_stage_whatever_the_session_says() {
+    // Arrange
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(request_with(
+        minted.digest(),
+        serde_json::json!({
+            "redirect_uri": "https://rp.example/cb",
+            "prompts": ["login"],
+        }),
+    ));
+    let session = session(time::Duration::minutes(1));
+
+    // Act
+    let response = run_with(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&session),
+    )
+    .await;
+
+    // Assert: nothing was recorded, which is how this handler says an
+    // interaction starts at the beginning — `Stage::Login` is the default of
+    // the state the interaction writes for itself.
+    assert_eq!(response.status().as_u16(), 303);
+    assert!(
+        store.states.lock().expect("lock").is_empty(),
+        "prompt=login began somewhere other than the sign-in form"
+    );
+}
+
+/// **OIDC Core §3.1.2.3**: an authentication older than `max_age` is stale, and
+/// a stale session cannot skip the sign-in form either.
+#[tokio::test]
+async fn an_exceeded_max_age_begins_at_the_login_stage() {
+    // Arrange
+    let minted = MintedRequestUri::generate();
+    let store = Store::with(request_with(
+        minted.digest(),
+        serde_json::json!({
+            "redirect_uri": "https://rp.example/cb",
+            "max_age": 0,
+        }),
+    ));
+    let session = session(time::Duration::minutes(30));
+
+    // Act
+    let response = run_with(
+        &store,
+        &[("client_id", "billing"), ("request_uri", minted.uri())],
+        Some(&session),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status().as_u16(), 303);
+    assert!(
+        store.states.lock().expect("lock").is_empty(),
+        "max_age was answered from an authentication that is too old"
+    );
 }
