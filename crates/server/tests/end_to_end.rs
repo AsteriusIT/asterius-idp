@@ -37,11 +37,11 @@
 //! touches nothing outside it, and deletes it at the end.
 
 use asterius_domain::entities::user::{User, UserStatus};
-use asterius_domain::ports::{PasskeyRepository, TenantRepository};
+use asterius_domain::ports::{PasskeyRepository, TenantRepository, TenantSettingsRepository};
 use asterius_domain::{
     Argon2Parameters, Capabilities, ClaimSet, Client, ClientId, ClientRegistration, ClientStatus,
     EndpointLimit, EndpointLimits, Issuer, Kid, Lifetimes, LoginLimits, NewPasskey, RateLimit,
-    SigningAlgorithm, Tenant, TenantId, TenantStatus, UserId,
+    SigningAlgorithm, Tenant, TenantId, TenantSettings, TenantStatus, UserId,
 };
 use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, SigningKey, jws};
@@ -54,9 +54,10 @@ use asterius_server::http::register::RegistrationPolicy;
 use asterius_server::http::server::app;
 use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
+use asterius_server::tenant_settings::SettingsDirectory;
 use asterius_store_pg::{
-    PgAuditSink, PgPasskeyRepository, PgReplayGuard, PgTenantRepository, PgUserRepository, Store,
-    TenantKeyStore,
+    PgAuditSink, PgPasskeyRepository, PgReplayGuard, PgTenantRepository, PgTenantSettings,
+    PgUserRepository, Redemption, Store, TenantKeyStore,
 };
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
@@ -67,7 +68,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use ciborium::value::Value as Cbor;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use time::OffsetDateTime;
@@ -258,6 +259,9 @@ struct Flow {
     store: Store,
     kek: Arc<dyn Kek>,
     tenant: Tenant,
+    /// The same settings cache the application reads its per-tenant lifetimes
+    /// from, held so that a test can drop it after writing a row.
+    settings: SettingsDirectory,
     /// What the browser is holding, by cookie name.
     jar: BTreeMap<String, String>,
     client_key: SigningKey,
@@ -310,11 +314,14 @@ impl Flow {
         let user = UserId::generate();
         let authenticator = Authenticator::new();
 
+        let settings =
+            SettingsDirectory::new(Arc::new(PgTenantSettings::new(store.pool().clone())));
         let flow = Self {
-            app: assemble(&store, &kek, &keys, Arc::clone(&audit)),
+            app: assemble(&store, &kek, &keys, Arc::clone(&audit), settings.clone()),
             store,
             kek,
             tenant,
+            settings,
             jar: BTreeMap::new(),
             client_key,
             authenticator,
@@ -688,6 +695,43 @@ impl Flow {
             .to_owned()
     }
 
+    /// Writes this tenant's lifetimes, the way the admin API writes them, and
+    /// drops the cache in front of them so the next request reads the row.
+    async fn set_lifetimes(
+        &self,
+        authorization_code: time::Duration,
+        access_token: time::Duration,
+    ) {
+        let settings = TenantSettings::validated(BTreeSet::new(), authorization_code, access_token)
+            .expect("lifetimes within the profile's caps");
+        PgTenantSettings::new(self.store.pool().clone())
+            .save(&self.tenant.id, &settings)
+            .await
+            .expect("store the tenant's settings");
+        self.settings.invalidate();
+    }
+
+    /// The stored binding of a code this flow was just handed.
+    ///
+    /// Read through the repository port rather than by a query of its own, and
+    /// it spends the code: that is what `redeem` is, and a test that wanted the
+    /// row without spending it would be reaching past the port.
+    async fn spend(&self, code: &str, now: OffsetDateTime) -> asterius_domain::CodeBinding {
+        let digest =
+            asterius_oidc::code::digest_of(code).expect("a code this server has just issued");
+        match self
+            .store
+            .scope(self.tenant.id.clone())
+            .codes()
+            .redeem(&digest, now)
+            .await
+            .expect("read the stored code")
+        {
+            Redemption::Redeemed(binding) => *binding,
+            other => panic!("the code was not redeemable: {other:?}"),
+        }
+    }
+
     async fn tear_down(self) {
         PgTenantRepository::new(self.store.pool().clone(), self.kek)
             .delete(&self.tenant.id)
@@ -714,6 +758,7 @@ fn assemble(
     kek: &Arc<dyn Kek>,
     keys: &TenantKeyStore,
     audit: Arc<PgAuditSink>,
+    settings: SettingsDirectory,
 ) -> Router {
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("a literal address"),
@@ -749,16 +794,20 @@ fn assemble(
     let routes = protocol::routes(ProtocolState {
         keys: Arc::clone(&key_store),
         capabilities: Capabilities::default(),
-        // No tenant has settings of its own here, so the document describes
-        // exactly the deployment's capabilities (`ast-f7m.4`).
-        tenant_settings: None,
+        // The real repository, as the binary wires it: a tenant that has
+        // never expressed an opinion reads back the defaults, and one that has
+        // gets what it asked for (`ast-f7m.4`, `ast-5c6`).
+        tenant_settings: Some(settings.clone()),
         clients: Some(Arc::new(ClientEndpoints {
             authenticator,
             store: store.clone(),
             keys: key_store,
             capabilities: Capabilities::default(),
             par_lifetime: time::Duration::seconds(90),
-            code_lifetime: time::Duration::seconds(60),
+            tenant_settings: Some(settings),
+            // The deployment fallback. Every test here that cares about a
+            // lifetime writes the tenant a setting instead (`ast-5c6`).
+            lifetimes: asterius_domain::TokenLifetimes::default(),
             kek: Arc::clone(kek),
             registration: RegistrationPolicy::Closed,
             outbound,
@@ -937,4 +986,107 @@ async fn a_push_becomes_a_code_becomes_a_token_becomes_a_refresh() {
     assert_eq!(refreshed["token_type"], "DPoP", "{refreshed}");
 
     flow.tear_down().await;
+}
+
+/// **A tenant's authorization-code lifetime is the one issuance uses**
+/// (`ast-5c6`).
+///
+/// The setting is written the way the admin API writes it, the flow runs to a
+/// code, and the stored binding is read back through the repository. Before the
+/// wiring existed this failed with the process-wide sixty seconds, which is how
+/// it was checked to be about something.
+#[tokio::test]
+async fn a_code_expires_when_the_tenants_setting_says_so() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.set_lifetimes(time::Duration::seconds(30), time::Duration::minutes(2))
+        .await;
+    let key = ProofKey::generate();
+
+    // Act
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let before = OffsetDateTime::now_utc();
+    let code = flow.consent(&interaction).await;
+    let binding = flow.spend(&code, before).await;
+
+    // Assert: the code was issued at some instant at or after `before`, so the
+    // window is bounded below by the setting and above by it plus the time the
+    // consent request took.
+    let lifetime = binding.expires_at - before;
+    assert!(
+        lifetime >= time::Duration::seconds(30) && lifetime < time::Duration::seconds(40),
+        "the code did not follow the tenant's 30-second setting: {lifetime}"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **A tenant's access-token lifetime is the one issuance uses** (`ast-5c6`).
+///
+/// Both halves are asserted: `expires_in`, which is what a client reads, and
+/// the `exp` of the token itself, which is what a resource server enforces. A
+/// response that said one thing and signed another would be the worse bug.
+#[tokio::test]
+async fn an_access_token_expires_when_the_tenants_setting_says_so() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    flow.set_lifetimes(time::Duration::seconds(60), time::Duration::minutes(2))
+        .await;
+    let key = ProofKey::generate();
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+
+    // Act
+    let redeemed = flow
+        .token(
+            &key,
+            "assertion-code",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await;
+
+    // Assert
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "the code was refused: {}",
+        redeemed.text()
+    );
+    let tokens = redeemed.json();
+    assert_eq!(tokens["expires_in"], 120, "{tokens}");
+    let claims = claims_of(
+        tokens["access_token"]
+            .as_str()
+            .expect("RFC 6749 §5.1 requires an access token"),
+    );
+    let exp = claims["exp"].as_i64().expect("RFC 9068 §2.2 requires exp");
+    let iat = claims["iat"].as_i64().expect("RFC 9068 §2.2 requires iat");
+    assert_eq!(exp - iat, 120, "the signed token disagrees with expires_in");
+
+    flow.tear_down().await;
+}
+
+/// The payload of a JWS this server signed, unverified.
+///
+/// Unverified on purpose: what is under test is a number the server put in the
+/// token, and the signature is checked by every other test that presents one.
+fn claims_of(jwt: &str) -> Value {
+    let payload = jwt.split('.').nth(1).expect("a JWS has three parts");
+    serde_json::from_slice(&B64.decode(payload).expect("the payload is base64url"))
+        .expect("the payload is JSON")
 }

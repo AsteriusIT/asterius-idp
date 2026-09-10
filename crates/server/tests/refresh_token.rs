@@ -364,6 +364,9 @@ impl Fixture {
             sessions: &sessions,
             users: &users,
             signer: self.signer.as_ref(),
+            // The deployment fallback: these tests write the tenant no
+            // settings of its own (`ast-5c6`).
+            lifetimes: asterius_domain::TokenLifetimes::default(),
             proof_key: Some(jkt),
             now: self.now,
         };
@@ -405,6 +408,7 @@ impl Fixture {
             users: &users,
             signer: self.signer.as_ref(),
             audit: self.audit.as_ref(),
+            lifetimes: asterius_domain::TokenLifetimes::default(),
             proof_key,
             now: self.now,
         };

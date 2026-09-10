@@ -2,12 +2,12 @@
 #![forbid(unsafe_code)]
 
 use asterius_domain::ports::TenantRepository as _;
-use asterius_domain::{Argon2Parameters, Lifetimes, ReplayGuard, Secret};
+use asterius_domain::{Argon2Parameters, Lifetimes, ReplayGuard, Secret, TokenLifetimes};
 use asterius_domain::{Feature, Tenant, TenantStatus};
 use asterius_jose::LocalKek;
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::kek::Kek;
-use asterius_oidc::{code, par};
+use asterius_oidc::par;
 use asterius_server::client_auth::ClientAuthenticator;
 use asterius_server::config::{AdminConfig, KekSource, PasswordSource};
 use asterius_server::http::dpop::DpopEndpoint;
@@ -120,8 +120,6 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let tenant_state = TenantState::new(directory.clone(), &config.server);
         let operations = operational_routes(&store, &config, metrics);
 
-        let signer = prepare_signer(&keys);
-
         // Client-facing endpoints: the ones that need an authenticated client
         // and the database. Built here rather than lazily so that a deployment
         // that cannot construct them fails at startup, where somebody is
@@ -164,11 +162,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
                 capabilities: config.features,
                 par_lifetime: par::clamp_lifetime(par::DEFAULT_LIFETIME),
-                // `ast-ndk.2` makes this per tenant. The default is the cap
-                // itself: a code is redeemed within one round trip of being
-                // issued, so a shorter one buys nothing and a slow network
-                // loses by it.
-                code_lifetime: code::clamp_lifetime(code::DEFAULT_LIFETIME),
+                // What a tenant with no opinion of its own issues under; one
+                // that has an opinion overrides it, read through `settings`
+                // (`ast-ndk.2`, `ast-5c6`).
+                lifetimes: TokenLifetimes::default(),
+                tenant_settings: Some(settings.clone()),
                 kek: Arc::clone(&kek),
                 registration: config.registration.clone(),
                 outbound,
@@ -187,7 +185,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 // What bounds abuse of the endpoints a client talks to
                 // (`ast-p2l.3`). Validated at load, like the login limits.
                 endpoint_limits: config.limits,
-                signer,
+                signer: prepare_signer(&keys),
                 dpop,
             })),
         });

@@ -42,17 +42,24 @@ pub const CODE_BITS: usize = 256;
 
 /// The longest an authorization code may live.
 ///
-/// FAPI 2.0 SP §5.3.2.1 item 11. A hard cap: `clamp_lifetime` reduces anything
-/// larger rather than refusing it, so a misconfiguration produces a compliant
-/// server rather than one that will not start.
-pub const MAX_LIFETIME: Duration = Duration::seconds(60);
+/// FAPI 2.0 SP §5.3.2.1 item 11, and *the same constant* the tenant settings
+/// validate against rather than a second copy of the number: `ast-5c6` found
+/// the cap enforced in two places that disagreed about how — a refusal there,
+/// a silent clamp here — so an administrator's 300 seconds was rejected by the
+/// admin API and would have been quietly shortened by issuance. There is now
+/// one mechanism, [`asterius_domain::TokenLifetimes::validated`], and it
+/// refuses; a lifetime that reaches issuance is under this cap by
+/// construction, so there is nothing left here to clamp.
+pub const MAX_LIFETIME: Duration =
+    asterius_domain::entities::tenant_settings::MAX_AUTHORIZATION_CODE_LIFETIME;
 
 /// How long a code lives unless a tenant says less.
 ///
 /// The cap itself. A code is redeemed within one HTTP round trip of being
 /// issued, so there is nothing to gain from a shorter default and a slow
 /// network to lose by it.
-pub const DEFAULT_LIFETIME: Duration = MAX_LIFETIME;
+pub const DEFAULT_LIFETIME: Duration =
+    asterius_domain::entities::tenant_settings::DEFAULT_AUTHORIZATION_CODE_LIFETIME;
 
 /// A freshly minted code and the digest to store.
 ///
@@ -119,12 +126,6 @@ pub fn digest_of(presented: &str) -> Result<String, MalformedCode> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("not an authorization code issued by this server")]
 pub struct MalformedCode;
-
-/// Clamps a configured code lifetime to the profile's cap.
-#[must_use]
-pub fn clamp_lifetime(configured: Duration) -> Duration {
-    configured.clamp(Duration::seconds(1), MAX_LIFETIME)
-}
 
 /// The parameters of the redirect back to the client.
 ///
@@ -365,16 +366,19 @@ mod tests {
     /// FAPI 2.0 SP §5.3.2.1 item 11. The schema carries the same rule as a
     /// `CHECK`, so a row violating it cannot be written even if this were
     /// wrong.
+    ///
+    /// The cap is asserted as an *identity* with the constant the tenant
+    /// settings validate against, not as a second copy of sixty: `ast-5c6`'s
+    /// whole point is that there is one authority for this number, and this is
+    /// the test that fails if a second one grows back.
     #[test]
-    fn a_lifetime_is_capped_at_sixty_seconds() {
-        assert_eq!(clamp_lifetime(Duration::seconds(30)), Duration::seconds(30));
-        assert_eq!(clamp_lifetime(Duration::hours(1)), MAX_LIFETIME);
+    fn the_cap_is_the_one_the_tenant_settings_enforce() {
+        assert_eq!(
+            MAX_LIFETIME,
+            asterius_domain::entities::tenant_settings::MAX_AUTHORIZATION_CODE_LIFETIME
+        );
         assert_eq!(MAX_LIFETIME, Duration::seconds(60));
         assert!(DEFAULT_LIFETIME <= MAX_LIFETIME);
-        // Never zero: a code that has expired when it is issued is a client
-        // that can never succeed and cannot tell why.
-        assert_eq!(clamp_lifetime(Duration::ZERO), Duration::seconds(1));
-        assert_eq!(clamp_lifetime(Duration::seconds(-5)), Duration::seconds(1));
     }
 
     /// RFC 9207 §2. The mix-up attack works just as well with an error

@@ -83,6 +83,12 @@ pub struct AuthorizationCode<'a> {
     pub users: &'a PgUserRepository,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
+    /// How long this tenant's access tokens live (`ast-5c6`).
+    ///
+    /// Resolved once per request by [`crate::http::protocol`] and handed down,
+    /// rather than read here: the two grants this endpoint dispatches to must
+    /// mint under the same numbers, and one read is what makes that so.
+    pub lifetimes: asterius_domain::TokenLifetimes,
     /// The thumbprint of the DPoP proof presented with this request.
     ///
     /// `None` when the request carried no proof, which for this grant is a
@@ -262,6 +268,7 @@ impl AuthorizationCode<'_> {
         // decision, and making it a tenant option is follow-up work — which a
         // deployment whose resource servers are all third parties will want.
         .with_grant_id()
+        .for_lifetime(self.lifetimes.access_token())
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
 
@@ -309,6 +316,7 @@ impl AuthorizationCode<'_> {
             access_token.as_str(),
             id_token.as_deref(),
             refresh_token.as_deref(),
+            self.lifetimes.access_token(),
         ))
     }
 
@@ -435,6 +443,7 @@ impl AuthorizationCode<'_> {
         access_token: &str,
         id_token: Option<&str>,
         refresh_token: Option<&str>,
+        access_token_lifetime: time::Duration,
     ) -> Response {
         let mut body = json!({
             "access_token": access_token,
@@ -444,7 +453,11 @@ impl AuthorizationCode<'_> {
             // (RFC 8705 §3.1) and are `ast-a05.7`; this handler binds to DPoP
             // and nothing else, so the value is constant.
             "token_type": "DPoP",
-            "expires_in": AccessToken::DEFAULT_LIFETIME.whole_seconds(),
+            // The lifetime this token was actually signed with, not a
+            // constant: `ast-5c6` found the two able to disagree, and a client
+            // that renews on `expires_in` would then renew after its token had
+            // already died.
+            "expires_in": access_token_lifetime.whole_seconds(),
             // RFC 6749 §5.1 makes `scope` optional when it is identical to
             // what was requested. The token request for this grant carries no
             // scope at all, so there is nothing for a client to compare

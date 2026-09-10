@@ -355,7 +355,8 @@ impl<'a> AccessToken<'a> {
     /// authorization server". Five minutes is short enough that a token
     /// captured from a log is usually already dead and long enough that a
     /// normal request does not renew mid-flight.
-    pub const DEFAULT_LIFETIME: Duration = Duration::minutes(5);
+    pub const DEFAULT_LIFETIME: Duration =
+        asterius_domain::entities::tenant_settings::DEFAULT_ACCESS_TOKEN_LIFETIME;
 
     /// The longest lifetime this server will mint, whatever a caller asks for.
     ///
@@ -364,7 +365,12 @@ impl<'a> AccessToken<'a> {
     /// the point past which "short-lived" stops being an accurate description
     /// and the `jti` denylist has to hold rows for a quarter of an hour after
     /// every revocation.
-    pub const MAX_LIFETIME: Duration = Duration::minutes(15);
+    /// The same constant the tenant settings validate against, aliased rather
+    /// than repeated: `ast-5c6`'s finding was that a cap written down twice
+    /// drifts into two mechanisms, and a tenant's configured lifetime is now
+    /// handed straight to [`AccessToken::for_lifetime`].
+    pub const MAX_LIFETIME: Duration =
+        asterius_domain::entities::tenant_settings::MAX_ACCESS_TOKEN_LIFETIME;
 
     /// The deepest `act` chain that may be rendered (RFC 8693 §4.1).
     ///

@@ -106,6 +106,12 @@ pub struct RefreshToken<'a> {
     pub signer: &'a dyn Signer,
     /// The trail. Every refresh is recorded, successful or not.
     pub audit: &'a dyn AuditSink,
+    /// How long this tenant's access tokens live (`ast-5c6`).
+    ///
+    /// The same value the code grant mints under: a refresh that renewed a
+    /// token for longer than the authorization that started it would be a way
+    /// to escape the setting by asking twice.
+    pub lifetimes: asterius_domain::TokenLifetimes,
     /// The thumbprint of the DPoP proof presented with this request.
     ///
     /// `None` is a refusal rather than a mode: FAPI 2.0 SP §5.3.2.1 item 4
@@ -288,6 +294,7 @@ impl RefreshToken<'_> {
             &access_token,
             &returned,
             id_token.as_deref(),
+            self.lifetimes.access_token(),
         ))
     }
 
@@ -335,6 +342,7 @@ impl RefreshToken<'_> {
             self.now,
         )
         .authenticated_by(session.authentication.clone())
+        .for_lifetime(self.lifetimes.access_token())
         .with_grant_id()
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
@@ -568,12 +576,17 @@ impl RefreshToken<'_> {
         access_token: &str,
         refresh_token: &str,
         id_token: Option<&str>,
+        access_token_lifetime: time::Duration,
     ) -> Response {
         let mut body = json!({
             "access_token": access_token,
             // RFC 9449 §5: a DPoP-bound access token is `DPoP`, not `Bearer`.
             "token_type": "DPoP",
-            "expires_in": AccessToken::DEFAULT_LIFETIME.whole_seconds(),
+            // The lifetime this token was actually signed with, not a
+            // constant: `ast-5c6` found the two able to disagree, and a client
+            // that renews on `expires_in` would then renew after its token had
+            // already died.
+            "expires_in": access_token_lifetime.whole_seconds(),
             // RFC 6749 §5.1 makes `scope` optional when it is identical to
             // what was requested, and §6 makes a refresh request's `scope`
             // optional. Always sent, because "identical to what was requested"

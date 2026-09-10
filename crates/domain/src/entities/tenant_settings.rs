@@ -29,20 +29,25 @@ use time::Duration;
 /// The longest an authorization code may live, whatever a tenant asks for.
 ///
 /// FAPI 2.0 Security Profile §5.3.2.1 item 11: an authorization server "shall
-/// issue authorization codes with a maximum lifetime of 60 seconds". The same
-/// number is `asterius_oidc::code::MAX_LIFETIME`, which is where issuance
-/// clamps; this constant is where a *configuration* that would exceed it is
-/// refused, so that the stored value and the served behaviour agree instead of
-/// the second silently correcting the first.
+/// issue authorization codes with a maximum lifetime of 60 seconds".
+///
+/// This is the *only* place that number lives. `asterius_oidc::code::MAX_LIFETIME`
+/// is an alias of it, and issuance no longer clamps: `ast-5c6` found the cap
+/// enforced twice and differently — refused here, silently shortened there —
+/// so an administrator could be told 300 seconds was rejected while the same
+/// value arriving by another route would have been quietly rewritten. One
+/// mechanism, and it refuses, so a lifetime that reaches issuance is under the
+/// cap by construction.
 pub const MAX_AUTHORIZATION_CODE_LIFETIME: Duration = Duration::seconds(60);
 
 /// The longest an access token may live, whatever a tenant asks for.
 ///
 /// FAPI 2.0 Security Profile §6.1 asks for short-lived access tokens behind
-/// longer-lived grants without naming a number; fifteen minutes is
-/// `asterius_oidc::tokens::AccessToken::MAX_LIFETIME`, the number this server
-/// will actually sign, and a stored setting above it would be a lifetime an
+/// longer-lived grants without naming a number; fifteen minutes is what this
+/// server will sign, and a stored setting above it would be a lifetime an
 /// operator believes is in force and is not.
+/// `asterius_oidc::tokens::AccessToken::MAX_LIFETIME` is an alias of this
+/// constant, for the reason [`MAX_AUTHORIZATION_CODE_LIFETIME`] gives.
 pub const MAX_ACCESS_TOKEN_LIFETIME: Duration = Duration::minutes(15);
 
 /// The shortest either lifetime may be.
@@ -52,7 +57,7 @@ pub const MAX_ACCESS_TOKEN_LIFETIME: Duration = Duration::minutes(15);
 pub const MIN_LIFETIME: Duration = Duration::seconds(1);
 
 /// The lifetime an authorization code gets unless a tenant says otherwise: the
-/// cap, which is also `asterius_oidc::code::DEFAULT_LIFETIME`.
+/// cap, and the value `asterius_oidc::code::DEFAULT_LIFETIME` aliases.
 pub const DEFAULT_AUTHORIZATION_CODE_LIFETIME: Duration = MAX_AUTHORIZATION_CODE_LIFETIME;
 
 /// The lifetime an access token gets unless a tenant says otherwise.
