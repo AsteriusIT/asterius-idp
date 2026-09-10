@@ -132,6 +132,20 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "client_key_fetches",
+        rule: Rule::Sweep {
+            // A negative cache entry (`ast-mxc.8`). Past `next_attempt_at` it
+            // no longer suppresses anything: the next fetch goes ahead whether
+            // the row is there or not, so keeping it only accumulates a row per
+            // URL a client ever mistyped.
+            statement: "delete from client_key_fetches where ctid = any (array(
+                            select ctid from client_key_fetches
+                             where tenant_id = $1 and next_attempt_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "resource_servers",
         rule: Rule::Kept(
             "a registered API is configuration: it is withdrawn by an operator, \

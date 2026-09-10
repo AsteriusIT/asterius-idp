@@ -189,6 +189,87 @@ pub trait JwksFetcher: Debug + Send + Sync {
     async fn fetch(&self, url: &str) -> Result<Vec<u8>, DomainError>;
 }
 
+/// Remembers, across replicas and restarts, that fetching a `jwks_uri` failed.
+///
+/// The in-process negative cache in `asterius-jose`'s client key cache is
+/// correct and it is per replica: N replicas each try an unreachable
+/// third-party `jwks_uri` once per backoff window instead of once between them,
+/// and a restart forgets the failure entirely. ADR-0001 expects more than one
+/// replica, and ADR-0006 makes the treatment of client-supplied URLs a
+/// *policy*; a policy whose rate depends on how many processes happen to be
+/// running is not one. This port is where "do not fetch this URL again yet"
+/// becomes a shared fact.
+///
+/// Keyed by `(tenant, client, jwks_uri)` rather than by client alone: a client
+/// that re-registers with a different URL has not inherited the old URL's
+/// outage, and one URL's failure says nothing about another's.
+///
+/// # What an implementation must not store
+///
+/// The URL itself is a client-supplied string that may carry a query parameter
+/// the client considers a secret, and the error is a *reason*, never the
+/// response body: a body is attacker-controlled bytes of arbitrary size, and a
+/// database column is not where they belong. An implementation is expected to
+/// key by a digest of the URL and to bound the error text.
+///
+/// # Failures here are advisory
+///
+/// A caller treats an error from this port as "nothing is known" and falls back
+/// to its in-process state. The store being unreachable must not be the reason
+/// a client cannot authenticate; the worst it can cost is the traffic this port
+/// exists to suppress.
+#[async_trait::async_trait]
+pub trait ClientKeyFetchBackoff: Debug + Send + Sync {
+    /// When the next fetch of `jwks_uri` for this client may be attempted, if
+    /// a failure is on record.
+    ///
+    /// `None` means no failure is remembered — nothing here ever says "go ahead
+    /// now", only "not before this instant".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::Storage`] if the store could not be reached.
+    async fn next_attempt_at(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        jwks_uri: &str,
+    ) -> Result<Option<OffsetDateTime>, DomainError>;
+
+    /// Records a failed fetch, and the instant before which no replica should
+    /// try again.
+    ///
+    /// `error` is a short reason for an operator. Implementations bound it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::Storage`] if the store could not be reached.
+    async fn record_failure(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        jwks_uri: &str,
+        error: &str,
+        attempted_at: OffsetDateTime,
+        next_attempt_at: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Forgets any recorded failure for this client and URL.
+    ///
+    /// Called after a fetch succeeds: the backoff describes the last attempt,
+    /// and the last attempt worked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DomainError::Storage`] if the store could not be reached.
+    async fn clear(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        jwks_uri: &str,
+    ) -> Result<(), DomainError>;
+}
+
 /// Reads the clients of one tenant.
 ///
 /// Tenant-scoped, like the repository that implements it: a `client_id` means

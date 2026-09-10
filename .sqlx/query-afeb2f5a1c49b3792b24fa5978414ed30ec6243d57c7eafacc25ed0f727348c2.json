@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into client_key_fetches\n                 (tenant_id, client_id, jwks_uri_hash,\n                  last_attempt_at, last_error, next_attempt_at)\n             values ($1, $2, $3, $4, $5, $6)\n             on conflict (tenant_id, client_id, jwks_uri_hash) do update\n                set last_attempt_at = excluded.last_attempt_at,\n                    last_error      = excluded.last_error,\n                    next_attempt_at = excluded.next_attempt_at\n              where client_key_fetches.last_attempt_at < excluded.last_attempt_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bytea",
+        "Timestamptz",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "afeb2f5a1c49b3792b24fa5978414ed30ec6243d57c7eafacc25ed0f727348c2"
+}
