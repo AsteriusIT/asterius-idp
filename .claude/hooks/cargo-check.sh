@@ -31,6 +31,22 @@ case "$PWD" in
     ;;
 esac
 
+# `SQLX_OFFLINE=true` is not an optimisation, it is what keeps this hook from
+# hanging an agent. `sqlx::query!` checks its SQL at compile time: without this
+# variable it dials `DATABASE_URL` (port 5433 here), and with nothing listening
+# it waits out the connect timeout while holding cargo's build lock. The agent
+# then looks idle with no visible process, and the harness believes it is still
+# working — one hour lost on ast-295.
+#
+# The `.sqlx/` directory is committed, so the offline check is always available
+# and is the right default after every saved file. Checking against a real
+# database belongs to `/verify` and to CI, not to an edit hook.
+#
+# Beware the half-measure: a database started without its migrations is worse
+# than no database at all, because sqlx then leaves offline mode and fails to
+# verify every query. See CONTRIBUTING.md, "Running the checks".
+export SQLX_OFFLINE=true
+
 # --message-format short : une ligne par diagnostic, économe en contexte.
 OUTPUT="$(cargo check --all-targets --message-format short 2>&1)"
 STATUS=$?

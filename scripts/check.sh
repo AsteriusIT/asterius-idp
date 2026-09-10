@@ -24,6 +24,11 @@ if $want_db; then
   run docker compose up -d --wait db
   : "${DATABASE_URL:=postgres://asterius:asterius@127.0.0.1:5433/asterius}"
   export DATABASE_URL
+  # A database without its migrations is worse than no database: `DATABASE_URL`
+  # takes sqlx out of offline mode, and it then fails to verify every
+  # `query!` against an empty schema. Starting the container and migrating it
+  # are one step, never two.
+  run cargo sqlx migrate run --source crates/store-pg/migrations
   run cargo test --workspace
   run cargo sqlx prepare --check --workspace -- --all-targets
 else
