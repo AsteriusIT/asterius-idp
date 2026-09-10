@@ -65,7 +65,7 @@ returns jsonb language sql immutable as $$
 $$;
 
 -- Whether a value carries a reserved member name anywhere. Same predicate as
--- the detection script, named once here because thirteen statements use it.
+-- the detection script, named once here because every statement below uses it.
 create function pg_temp.has_serde_json_sentinel(doc jsonb)
 returns boolean language sql immutable as $$
     select jsonb_path_exists(
@@ -183,6 +183,15 @@ grants_actor_chain as (
               jsonb_build_object('tenant_id', tenant_id, 'grant_id', grant_id),
               pg_temp.quarantined_keys(actor_chain)
 ),
+device_codes_authorization_details as (
+    update device_codes
+       set authorization_details = pg_temp.quarantine_serde_json_sentinels(authorization_details)
+    where pg_temp.has_serde_json_sentinel(authorization_details)
+    returning 'device_codes', 'authorization_details',
+              jsonb_build_object('tenant_id', tenant_id,
+                                 'device_code_hash', encode(device_code_hash, 'hex')),
+              pg_temp.quarantined_keys(authorization_details)
+),
 signing_keys_public_jwk as (
     update signing_keys set public_jwk = pg_temp.quarantine_serde_json_sentinels(public_jwk)
     where pg_temp.has_serde_json_sentinel(public_jwk)
@@ -211,6 +220,7 @@ repaired as (
     union all select * from authorization_details_types_schema
     union all select * from grants_authorization_details
     union all select * from grants_actor_chain
+    union all select * from device_codes_authorization_details
     union all select * from signing_keys_public_jwk
     union all select * from outbox_payload
 )

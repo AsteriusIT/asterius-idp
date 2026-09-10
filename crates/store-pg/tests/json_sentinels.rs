@@ -317,12 +317,60 @@ db_test! {
     async fn every_jsonb_column_in_the_schema_is_covered(db) {
         let findings = detect(&db).await;
 
+        let gaps: Vec<String> = findings
+            .iter()
+            .filter(|(finding, ..)| finding == "unreviewed_column")
+            .map(|(_, table, column, _)| match declaring_migration(table, column) {
+                Some(migration) => format!("{table}.{column} (added by migration {migration})"),
+                None => format!("{table}.{column}"),
+            })
+            .collect();
+
         assert!(
             findings.is_empty(),
             "a freshly migrated schema reported {findings:?}; \
-             'unreviewed_column' means scripts/sql/json-sentinels-detect.sql is stale"
+             'unreviewed_column' means scripts/sql/json-sentinels-detect.sql is stale \
+             and must file these columns: {gaps:?}"
         );
     }
+}
+
+/// The migration that declares a JSONB column, so that an `unreviewed_column`
+/// finding says which file to read and not only which column is missing.
+///
+/// Best effort, deliberately: it looks for `<column> jsonb` in a migration that
+/// also names the table — how every migration here spells a column — and says
+/// nothing when it cannot tell. A confident wrong answer in a failure message
+/// costs more than no answer.
+fn declaring_migration(table: &str, column: &str) -> Option<String> {
+    MIGRATOR
+        .iter()
+        .find(|migration| {
+            migration.sql.contains(table)
+                && migration.sql.lines().any(|line| {
+                    let tokens: Vec<&str> = line.split_whitespace().collect();
+                    tokens
+                        .windows(2)
+                        .any(|pair| pair[0] == column && pair[1].starts_with("jsonb"))
+                })
+        })
+        .map(|migration| format!("{:04} ({})", migration.version, migration.description))
+}
+
+#[test]
+fn the_migration_that_declares_a_jsonb_column_is_named() {
+    let found = declaring_migration("device_codes", "authorization_details");
+
+    assert_eq!(
+        found.as_deref().map(|name| name.starts_with("0019")),
+        Some(true),
+        "device_codes.authorization_details is declared by migration 0019, got {found:?}"
+    );
+}
+
+#[test]
+fn a_column_no_migration_declares_is_not_guessed_at() {
+    assert_eq!(declaring_migration("device_codes", "no_such_column"), None);
 }
 
 db_test! {
