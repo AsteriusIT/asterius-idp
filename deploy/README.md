@@ -9,6 +9,9 @@ short.
 - [`compose/`](compose/) — a runnable example stack.
 - [`../docs/configuration.md`](../docs/configuration.md) — every key, with its
   type and default. Generated from the schema; do not edit it by hand.
+- [`../docs/deployment/tls-and-proxy.md`](../docs/deployment/tls-and-proxy.md) —
+  TLS, HSTS and what a reverse proxy must set, and must strip, in front of this
+  server.
 - [`../Dockerfile`](../Dockerfile) — the release image.
 - [`../docs/runbooks/`](../docs/runbooks/README.md) — upgrading, rotating the
   key-encryption key, backup and restore.
@@ -39,7 +42,7 @@ this shape is safe anywhere real:
 
 | Change | Why |
 | --- | --- |
-| Terminate TLS, in front or in-process | The example speaks cleartext on the loopback. FAPI 2.0 SP §5.2 requires TLS on every endpoint. |
+| Terminate TLS, in front or in-process | The example speaks cleartext on the loopback. FAPI 2.0 SP §5.2 requires TLS on every endpoint. [`../docs/deployment/tls-and-proxy.md`](../docs/deployment/tls-and-proxy.md) is the guide for both shapes. |
 | Replace `ASTERIUS_KEK` with a mounted `keys.kek_file` | The example KEK is in the compose file, and an environment variable is readable through `/proc/self/environ`. |
 | Replace the database password | `asterius:asterius` is not a credential. |
 | Replace `ASTERIUS_ADMIN_PASSWORD` with a mounted `admin.password_file` | The variable is fine for a demo you started by hand; a real deployment mounts the admin password from its secret store, and rotating it is an edit to that file and a restart. |
@@ -127,8 +130,6 @@ form nobody has run:
 - A Helm chart, and the Kubernetes-specific parts of this guide (probes,
   `PodSecurityContext`, secret mounts).
 - SBOM generation and publication with each release, plus image signing.
-- The TLS/HSTS/reverse-proxy guide: what a proxy in front of Asterius has to
-  set, and what it must not strip.
 - Runbooks for upgrade and for key-encryption-key rotation. Until the rotation
   runbook exists, treat the KEK as unrotatable.
 - A conformance-suite service in the example stack.
