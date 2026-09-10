@@ -45,6 +45,24 @@ const TENANT_SCOPED_TABLES: &[&str] = &[
     "recovery_tokens",
 ];
 
+/// Statements that read across every tenant on purpose.
+///
+/// One entry per statement — the file, the statement exactly as written, and a
+/// sentence a reviewer has to agree with — because the alternative to an
+/// explicit list is a predicate written to satisfy the check rather than the
+/// question, and `and tenant_id is not null` would pass this test while saying
+/// nothing. Both directions are checked: an entry that matches nothing fails
+/// too, so a statement that changes shape comes back here to be re-argued
+/// instead of keeping an exemption it has outgrown.
+const DELIBERATELY_ACROSS_TENANTS: &[(&str, &str, &str)] = &[(
+    "outbox.rs",
+    "select count(*) from outbox where status in ('pending', 'failed', 'claimed')",
+    "the delivery backlog gauge (`ast-0ju.9`). What an operator watches is the \
+     deployment's queue depth: a worker delivers for every tenant, and a count \
+     scoped to one would answer a question nobody asked while leaving the \
+     others' backlog invisible. It reads no row and returns no tenant's data.",
+)];
+
 /// Extracts the SQL string literals passed to `sqlx` macros in one file.
 ///
 /// Crude on purpose: it looks for `sqlx::query` and takes the double-quoted
@@ -126,6 +144,7 @@ mod tests {
     #[test]
     fn every_query_over_a_tenant_scoped_table_names_tenant_id() {
         let mut offenders = Vec::new();
+        let mut claimed = vec![false; DELIBERATELY_ACROSS_TENANTS.len()];
         for (file, source) in crate_sources() {
             for sql in sql_literals(&source) {
                 let lowered = sql.to_lowercase();
@@ -140,15 +159,40 @@ mod tests {
                             .any(|word| word == *table)
                     })
                     .collect();
-                if !touches.is_empty() && !lowered.contains("tenant_id") {
-                    offenders.push(format!("{file}: {touches:?} in `{}`", sql.trim()));
+                if touches.is_empty() || lowered.contains("tenant_id") {
+                    continue;
                 }
+                let statement = sql.trim();
+                if let Some(index) = DELIBERATELY_ACROSS_TENANTS
+                    .iter()
+                    .position(|entry| entry.0 == file && entry.1 == statement)
+                {
+                    claimed[index] = true;
+                    continue;
+                }
+                offenders.push(format!("{file}: {touches:?} in `{statement}`"));
             }
         }
         assert!(
             offenders.is_empty(),
             "these statements touch tenant-scoped tables without a tenant_id predicate:\n  {}",
             offenders.join("\n  ")
+        );
+
+        // The other direction, for the reason the list itself gives: an
+        // exemption nothing matches has stopped describing the code and would
+        // otherwise sit here excusing a statement that no longer exists — or,
+        // worse, one whose text has drifted while the exemption stayed.
+        let stale: Vec<&str> = DELIBERATELY_ACROSS_TENANTS
+            .iter()
+            .zip(&claimed)
+            .filter(|(_, used)| !**used)
+            .map(|(entry, _)| entry.1)
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "these exemptions match no statement any more; delete them:\n  {}",
+            stale.join("\n  ")
         );
     }
 
