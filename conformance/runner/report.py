@@ -22,15 +22,27 @@ that tested nothing is worse than a red one, so:
     counts below are no longer counting what they say they are.
 
 It also writes the HTML report per plan into /results, which is what the
-nightly job publishes.
+nightly job publishes, and `verdict.json` beside it: one line per module, in a
+shape that outlives the container. Applying the waivers to that file, and
+deciding whether a release may be tagged on the strength of it, is
+`scripts/conformance-verdict.py` — deliberately not here. This script runs
+inside the runner container, which has the suite's API and nothing else; the
+waivers name beads tickets, and whether a ticket is open is a question only the
+repository can answer.
 """
 
+import datetime
 import json
 import os
 import ssl
 import sys
 import urllib.error
 import urllib.request
+
+# Bumped when the shape of `verdict.json` changes in a way a reader has to know
+# about. `scripts/conformance-verdict.py` refuses a version it does not know
+# rather than reading fields that may have moved.
+VERDICT_SCHEMA = 1
 
 # TestModule.Status and TestModule.Result, from the suite's own source at the
 # pinned release. A value outside these sets is a format change, not a result.
@@ -137,9 +149,33 @@ def main() -> int:
     attention: list[str] = []
     counts: dict[str, int] = {}
     unfinished: list[str] = []
+    verdict: dict[str, object] = {
+        "schema": VERDICT_SCHEMA,
+        # UTC and second-resolution, because the release gate compares it with
+        # `now` to decide whether the report is stale.
+        "generated": datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "since": os.environ.get("CONFORMANCE_SINCE", ""),
+        "plan": os.environ.get("CONFORMANCE_PLAN", ""),
+        "revision": os.environ.get("CONFORMANCE_REVISION", ""),
+        "plans": [],
+        "modules": [],
+        "counts": counts,
+    }
+    verdict_plans: list[dict[str, str]] = verdict["plans"]  # type: ignore[assignment]
+    verdict_modules: list[dict[str, str]] = verdict["modules"]  # type: ignore[assignment]
 
     for plan in plans:
         identifier = plan_id(plan)
+        verdict_plans.append(
+            {
+                "id": identifier,
+                "name": str(plan.get("planName", "")),
+                "started": str(plan.get("started", "")),
+            }
+        )
         print(f"\nplan {identifier}: {plan.get('planName', '(unnamed)')}")
         for module in plan.get("modules", []):
             for instance in module.get("instances", []) or []:
@@ -160,6 +196,15 @@ def main() -> int:
                     return EXIT_UNKNOWN_FORMAT
                 total += 1
                 counts[result] = counts.get(result, 0) + 1
+                verdict_modules.append(
+                    {
+                        "module": str(module.get("testModule", name)),
+                        "name": str(name),
+                        "result": result,
+                        "status": status,
+                        "log": f"{base}log-detail.html?log={instance}",
+                    }
+                )
                 if status != "FINISHED":
                     unfinished.append(f"{name} ({status})")
                 if result in NEEDS_ATTENTION:
@@ -174,6 +219,17 @@ def main() -> int:
             # Not fatal on its own: the results above were read successfully, and
             # a missing archive must not be reported as a missing run.
             print(f"  could not export the html report: {error}", file=sys.stderr)
+
+    # Written before the gates below, and whatever they decide: a run that
+    # executed nothing is exactly the run whose verdict file somebody needs to
+    # see, and a release gate that finds no file at all cannot tell "the report
+    # is missing" from "the report is empty".
+    verdict["modules"] = sorted(verdict_modules, key=lambda entry: entry["name"])
+    verdict_path = os.path.join(results_dir, "verdict.json")
+    with open(verdict_path, "w", encoding="utf-8") as handle:
+        json.dump(verdict, handle, indent=2, sort_keys=False)
+        handle.write("\n")
+    print(f"\nverdict: {verdict_path}")
 
     print("\n--- summary -------------------------------------------------")
     print(f"plans:   {len(plans)}")

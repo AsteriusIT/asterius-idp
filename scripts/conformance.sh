@@ -21,6 +21,11 @@
 #     FINISHED, is an error however happy the exit code.
 #   * a result whose status the report gate does not recognise is an error,
 #     because an unrecognised status is a report format we can no longer read.
+#   * a module that FAILED, or that finished with no verdict at all, is an error
+#     unless conformance/waivers.json names it and names an open ticket for it.
+#     PASSED, REVIEW, WARNING and SKIPPED are green: see
+#     scripts/conformance-verdict.py for why, and docs/certification.md for what
+#     is waived today.
 #
 # Environment (all optional):
 #   CONFORMANCE_PLAN            plan name with variants. Default: the FAPI2
@@ -51,10 +56,14 @@ SUITE_REPO="https://gitlab.com/openid/conformance-suite.git"
 
 # --- the deployment under test ---------------------------------------------
 TENANT="conformance"
-# The authority in the tenant's issuer, which is also the compose service name,
-# the SAN in the run certificate and the name taught to the JVM truststore.
-# Changing one of those means changing all four.
-HOST="asterius:9443"
+# The tenant is addressed at its issuer, prefix included —
+# `https://asterius:9443/t/conformance`, which is what conformance/asterius.toml
+# configures and what the plan's `discoveryUrl` fetches. `asterius` is the
+# compose service name, the SAN in the run certificate and the name taught to
+# the JVM truststore; changing one of those means changing all four. Nothing
+# writes `custom_host` any more (`ast-p2l.1`, after `ast-f0y` did the same for
+# the browser sweep): path-based tenancy is the shape a deployment gets without
+# extra DNS, and it is the shape the suite should drive.
 USERNAME="conformance@example.test"
 # Argon2id, m=19456 t=2 p=1, of "correct horse battery staple". The same
 # constant as e2e/fixtures/seed.sql, whose file this reuses; see the note there
@@ -95,7 +104,7 @@ for arg in "$@"; do
   case "$arg" in
     --keep) keep=1 ;;
     --help|-h)
-      sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -136,6 +145,14 @@ for tool in docker git openssl curl python3; do
 done
 docker compose version >/dev/null 2>&1 || die "docker compose v2 is required" 69
 printf 'docker, git, openssl and curl are present\n'
+
+# The waiver list is read at the end, after an hour of runtime. Its shape is
+# checked now, when a missing `ticket` costs a second rather than a night.
+python3 "$root/scripts/conformance-verdict.py" \
+  || die "conformance/waivers.json is not usable; the run would have no verdict" 70
+# Recorded in the report, because a verdict is about a tree. `unknown` rather
+# than a failure: a tarball with no .git is still allowed to run the suite.
+REVISION="$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)"
 
 # --- 1. the suite, pinned ---------------------------------------------------
 # A checkout rather than a tarball because the runner needs the whole scripts/
@@ -234,14 +251,14 @@ done
 printf 'asterius /readyz answers 200\n'
 
 # --- 5. the fixtures --------------------------------------------------------
-# After the server, not before: booting upserts the configured tenants, and
-# that upsert writes `custom_host` back to NULL. See e2e/fixtures/seed.sql.
+# After the server, not before: the rows below reference tenants the server
+# upserts at boot. See e2e/fixtures/seed.sql.
 step "fixtures"
 seed() {
   compose exec -T db psql -U asterius -d asterius \
     --quiet --no-psqlrc -v ON_ERROR_STOP=1 "$@"
 }
-seed -v "tenant=${TENANT}" -v "host=${HOST}" \
+seed -v "tenant=${TENANT}" \
      -v "username=${USERNAME}" -v "hash=${PASSWORD_HASH}" \
      -f - < "$root/e2e/fixtures/seed.sql" \
   || die "could not seed the conformance user"
@@ -255,7 +272,7 @@ public_jwks() {
     || die "could not read ${1}'s JWKS out of ${plan_config}" 70
 }
 plan_config="$root/conformance/plans/fapi2-sp-final.json"
-seed -v "tenant=${TENANT}" -v "redirect_uri=${REDIRECT_URI}" -v "host=${HOST}" \
+seed -v "tenant=${TENANT}" -v "redirect_uri=${REDIRECT_URI}" \
      -v "redirect_uri_with_query=${REDIRECT_URI_WITH_QUERY}" \
      -v "jwks1=$(public_jwks client)" \
      -v "jwks2=$(public_jwks client2)" \
@@ -293,20 +310,38 @@ rc=0
 compose run --rm --quiet-pull runner /runner/run.sh "$PLAN" || rc=$?
 printf '\nrun-test-plan exit code: %d\n' "$rc"
 
-# --- 8. the gate ------------------------------------------------------------
+# --- 8. the report ----------------------------------------------------------
 # Whatever the runner said, the results are read back from the suite's own API:
 # a run that executed no module, or one whose statuses this gate cannot read,
-# is a failure even when everything else looked fine.
+# is a failure even when everything else looked fine. It also writes
+# `verdict.json`, which is what step 9 and the release gate read.
 step "results"
 gate=0
 compose run --rm --quiet-pull \
   --env "CONFORMANCE_SINCE=${started}" \
+  --env "CONFORMANCE_PLAN=${PLAN}" \
+  --env "CONFORMANCE_REVISION=${REVISION}" \
   --entrypoint python3 runner /runner/report.py || gate=$?
 
 if [ "$gate" -ne 0 ]; then
   die "the conformance run produced no usable result (gate exit ${gate})" "$gate"
 fi
+
+# --- 9. the verdict ---------------------------------------------------------
+# `run-test-plan.py`'s exit code is not the verdict, because this plan does not
+# produce "100 % pass" and never will: five modules end on an error page the
+# suite wants a human to look at (REVIEW), one carries a claim the suite's list
+# predates (WARNING), one is skipped for an algorithm ADR-0003 refuses to offer.
+# What a release may be cut on is decided in one place, from the report, against
+# a versioned waiver list — `ast-p2l.1`. Its exit codes are its own; see
+# scripts/conformance-verdict.py.
+step "verdict"
 if [ "$rc" -ne 0 ]; then
-  die "the conformance plan reported failures. The reports are in ${RESULTS_DIR}" "$rc"
+  printf 'run-test-plan exited %d; the verdict below is the authority.\n\n' "$rc"
 fi
-printf '\nconformance run passed. Reports in %s\n' "$RESULTS_DIR"
+verdict=0
+python3 "$root/scripts/conformance-verdict.py" "$RESULTS_DIR/verdict.json" || verdict=$?
+if [ "$verdict" -ne 0 ]; then
+  die "the conformance run is not releasable. The reports are in ${RESULTS_DIR}" "$verdict"
+fi
+printf '\nconformance run is releasable. Reports in %s\n' "$RESULTS_DIR"

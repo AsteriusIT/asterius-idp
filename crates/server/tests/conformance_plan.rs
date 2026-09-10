@@ -18,6 +18,10 @@
 //! mounts. Reverting a pattern to `/interaction/*` fails this test instead of
 //! the harness.
 //!
+//! The second half of the file guards `conformance/waivers.json`, the list of
+//! modules whose failure does not stop a release (`ast-p2l.1`): every waiver
+//! has to name a beads ticket that is still open.
+//!
 //! No database, no browser: JSON, the endpoint registry, and the page path
 //! constants. It runs in the default suite like `source_audit`.
 
@@ -289,6 +293,133 @@ fn every_literal_route_in_protocol_is_known_here() {
             mounted.contains(&literal),
             "protocol.rs mounts {literal}, which this test's route table does not know; \
              add it so the conformance plan check can see it"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The waiver list.
+//
+// `ast-p2l.1`: the FAPI 2.0 plan does not end at "100 % pass", so
+// `scripts/conformance-verdict.py` treats PASSED, REVIEW, WARNING and SKIPPED
+// as green and FAILED as red — unless `conformance/waivers.json` names the
+// module. A waiver is a decision to ship a known non-conformance, and what makes
+// it a decision rather than a shrug is the ticket attached to it.
+//
+// So the ticket is checked here, on every pull request, and not in the gate that
+// runs at 3am: a waiver whose ticket has been closed is a failure nobody is
+// dealing with any more, and the moment to find that out is the moment the
+// ticket is closed. `.beads/issues.jsonl` is a passive export of the tracker —
+// if it is stale, this test is stale with it, which is the same bargain every
+// other check that reads a committed file makes.
+// ---------------------------------------------------------------------------
+
+/// The waiver entries, as the JSON objects they are written as.
+fn waivers() -> Vec<Value> {
+    let path = repo_root().join("conformance/waivers.json");
+    let text = std::fs::read_to_string(&path).expect("conformance/waivers.json is readable");
+    let json: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("conformance/waivers.json is not JSON: {e}"));
+    json.get("waivers")
+        .and_then(Value::as_array)
+        .expect("conformance/waivers.json has a 'waivers' array")
+        .clone()
+}
+
+/// The status beads holds for an issue, or `None` if the export has never heard
+/// of it.
+fn beads_status(id: &str) -> Option<String> {
+    let path = repo_root().join(".beads/issues.jsonl");
+    let text = std::fs::read_to_string(&path).expect(".beads/issues.jsonl is readable");
+    for line in text.lines() {
+        let Ok(issue) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if issue.get("id").and_then(Value::as_str) == Some(id) {
+            return issue
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+    }
+    None
+}
+
+/// Every waiver says which module, why, when, and under which ticket.
+#[test]
+fn every_waiver_is_a_decision_somebody_wrote_down() {
+    // Arrange.
+    let entries = waivers();
+    let mut seen: Vec<String> = Vec::new();
+
+    for waiver in entries {
+        // Act.
+        let module = waiver
+            .get("module")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let ticket = waiver.get("ticket").and_then(Value::as_str).unwrap_or("");
+        let reason = waiver.get("reason").and_then(Value::as_str).unwrap_or("");
+        let recorded = waiver.get("recorded").and_then(Value::as_str).unwrap_or("");
+
+        // Assert.
+        assert!(
+            !module.is_empty(),
+            "a waiver in conformance/waivers.json names no module"
+        );
+        assert!(
+            ticket.starts_with("ast-"),
+            "the waiver for {module} names {ticket:?}, which is not a beads id"
+        );
+        assert!(
+            reason.len() >= 40,
+            "the waiver for {module} explains itself in {} characters. A waiver is read \
+             by somebody deciding whether to ship without this module passing",
+            reason.len()
+        );
+        assert!(
+            recorded.len() == 10 && recorded.split('-').count() == 3,
+            "the waiver for {module} was recorded {recorded:?}, which is not a YYYY-MM-DD date"
+        );
+        assert!(
+            !seen.contains(&module),
+            "{module} is waived twice; the second entry is dead text"
+        );
+        seen.push(module);
+    }
+}
+
+/// A waived module names a ticket, and that ticket is still open.
+#[test]
+fn every_waiver_names_a_ticket_beads_still_has_open() {
+    for waiver in waivers() {
+        // Arrange.
+        let module = waiver
+            .get("module")
+            .and_then(Value::as_str)
+            .expect("a waiver names a module");
+        let ticket = waiver
+            .get("ticket")
+            .and_then(Value::as_str)
+            .expect("a waiver names a ticket");
+
+        // Act.
+        let status = beads_status(ticket);
+
+        // Assert.
+        let status = status.unwrap_or_else(|| {
+            panic!(
+                "the waiver for {module} names {ticket}, which beads does not know. A \
+                 conformance failure waived under a ticket that does not exist is a \
+                 failure nobody is dealing with"
+            )
+        });
+        assert_ne!(
+            status, "closed",
+            "the waiver for {module} names {ticket}, which is closed. Either the module \
+             passes now and the waiver goes, or the work is not done and the ticket \
+             reopens — but the conformance suite must not be waived on a finished ticket"
         );
     }
 }

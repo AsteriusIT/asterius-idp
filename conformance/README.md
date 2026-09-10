@@ -60,10 +60,23 @@ teaches it to the suite's JVM by copying the JDK's own `cacerts` and adding that
 one certificate to the copy. The public roots stay, because the suite also
 fetches its own base URL.
 
-The tenant, its user and its two clients are seeded after Asterius has started,
-because booting upserts the configured tenants and that upsert overwrites
-`custom_host` — the same ordering constraint `e2e/fixtures/seed.sql` records,
-and that same file is what seeds the user here. The clients are seeded by
+The tenant is addressed at its issuer, prefix included:
+`https://asterius:9443/t/conformance`, which is what the plan's `discoveryUrl`
+fetches and what its browser `match` patterns name. Path-based tenancy is the
+shape a deployment gets without extra DNS, and until `ast-295` the suite could
+not walk it — `/authorize` named the interaction page root-relative, so the
+browser lost its tenant on the second hop. The harness papered over that by
+writing `custom_host` on the tenant after boot, which made it host-routed and
+left the path-based flow untested; `ast-p2l.1` removed the statement, as
+`ast-f0y` did for the browser sweep. A workaround kept past its cause hides the
+next regression. The plan was replayed once without it, on 2026-09-10: the same
+56 modules, the same 48 PASSED / 5 REVIEW / 1 WARNING / 1 SKIPPED / 1 FAILED.
+Nothing about the verdict depended on that statement.
+
+The tenant's user and its two clients are still seeded after Asterius has
+started, for the one reason that survives: the rows reference a tenant the boot
+upserts. `e2e/fixtures/seed.sql` records the same constraint, and that same file
+is what seeds the user here. The clients are seeded by
 `fixtures/clients.sql` with the suite's redirect URI byte for byte (ADR-0005
 matches exactly) and with the public halves of the keys in
 `plans/fapi2-sp-final.json`, derived from that file at seed time by
@@ -82,9 +95,10 @@ exit code and a sentence:
 | Asterius or the suite did not become ready in `CONFORMANCE_TIMEOUT` | 71 |
 | the suite holds no plan, the plan executed zero modules, or not one module reached FINISHED | 72 |
 | a status or a result the report gate does not recognise | 73 |
-| the plan ran and reported failures | `run-test-plan.py`'s own exit code |
+| a module FAILED, or finished with no verdict, and no waiver covers it | 74 |
+| `conformance/waivers.json` is unreadable, or a waiver has no ticket | 70 at the start, 73 at the end |
 
-The last two are the important ones. `run-test-plan.py` exits 0 when every
+72 and 73 are the important ones. `run-test-plan.py` exits 0 when every
 module it ran passed, *including when it ran none* — a typo in a plan name, a
 suite that lost its Mongo database and a variant combination with no modules in
 it all look exactly like success. So `runner/report.py` reads the results back
@@ -92,6 +106,12 @@ out of the suite's API afterwards and fails on an empty or unreadable run,
 whatever the runner said. It also refuses to interpret a status it does not
 know: that is the `ast-yxu` lesson (an unpinned `cargo-geiger` changed its
 output format and a gate went green on nothing) written as a check.
+
+74 is the verdict, and it is deliberately *not* `run-test-plan.py`'s exit code:
+that code says "some module did not pass", and some modules of this plan do not
+pass for reasons that are not the server's. What a release may be cut on is
+decided in one place, `scripts/conformance-verdict.py`, from the report and the
+waiver list — see "The verdict, and what is waived".
 
 ## The pin, and how to move it
 
@@ -250,6 +270,35 @@ which FAPI 2.0 SP §5.3.2.2 Note 3 recommends against. A recommendation, and a
 ticket of its own. The two FAILED of the first run — the mismatched DPoP proof
 `jkt` and the refresh token — now pass: `ast-36g` and `ast-1h1` fixed them.
 
+## The verdict, and what is waived
+
+"100 % pass" is not what this plan produces, and a gate that demanded it would
+be a gate somebody turns off. The run of 2026-09-10 stands at 48 PASSED,
+5 REVIEW, 1 WARNING, 1 SKIPPED, 1 FAILED, and each of the last three is
+explained above rather than accidental. So the rule, decided in `ast-p2l.1` and
+implemented in `scripts/conformance-verdict.py`:
+
+* **PASSED, REVIEW, WARNING, SKIPPED — green.** REVIEW is the suite asking a
+  human to look at a screenshot the harness already takes and uploads. The
+  WARNING is `sid` in the ID token, which Back-Channel Logout 1.0 §2.1 requires
+  and the suite's claim list predates. The SKIPPED is RS256, which ADR-0003
+  refuses to offer.
+* **FAILED, or finished with no verdict at all — red**, unless
+  `conformance/waivers.json` names the module. UNKNOWN counts as red on purpose:
+  a module that judged nothing has not judged the server.
+* **A waiver carries a ticket**, and `crates/server/tests/conformance_plan.rs`
+  fails the per-PR pipeline when that ticket is closed or unknown to beads. A
+  waiver is a decision to ship a known non-conformance; it is not a way to
+  quieten a run, and it is not allowed to outlive the person who took it.
+* **A waiver that covered nothing is printed loudly and does not fail the run.**
+  A module that started passing must not break a release — but a waiver kept
+  past its cause is the next hidden regression, so it is shouted about.
+
+Exactly one waiver exists today:
+`fapi2-security-profile-final-user-rejects-authentication`, for `ast-k5u`, whose
+story is two sections up. `docs/certification.md` is the submission checklist
+that reads out of all this.
+
 ## What is not covered
 
 * **mTLS.** FAPI 2.0 SP allows either `private_key_jwt` + DPoP or mTLS for both
@@ -260,10 +309,9 @@ ticket of its own. The two FAILED of the first run — the mismatched DPoP proof
 * **Message signing (JAR/JARM).** `fapi2-message-signing-final-test-plan` is a
   separate plan; `request_parameter_supported` is `false` today.
 * **OpenID Connect Core plans.** Gated by decision E16_02, per the ticket.
-* **A release gate.** `ast-p2l.1` is the ticket that decides whether a red run
-  blocks a release tag. This one delivers the harness and says what it found;
-  turning that into a barrier is a separate decision, deliberately not
-  pre-empted here.
+* **The mTLS variant of this plan.** Prepared but not wired: see
+  `.github/workflows/conformance.yml`, whose `mtls` input exists and refuses to
+  run until `features.mtls` and a second ingress do (`ast-m9c.3`).
 
 ## Where the results go
 
@@ -273,6 +321,10 @@ ticket of its own. The two FAILED of the first run — the mismatched DPoP proof
   archive, which is what a certification submission is made of.
 * `report-<planid>.zip`, written by `runner/report.py`: the suite's HTML report
   for the plan. This is what the nightly job publishes as an artefact.
+* `verdict.json`, also written by `runner/report.py`: one line per module —
+  name, result, status, log URL — plus the revision and the plan the run was
+  about. Nothing is decided in it. It is the input to
+  `scripts/conformance-verdict.py`, and it is what the release gate downloads.
 
 With `make conformance-keep` the stack stays up and the suite's UI is at
 `https://127.0.0.1:8443/` (`CONFORMANCE_HTTPS_PORT` if 8443 is taken on your
@@ -284,5 +336,11 @@ port the suite listens on inside its own network). Asterius is at
 
 It takes tens of minutes and it builds a release image. `ast-83p.15` exists
 because one job once took 91 % of the pipeline; this one would take more. It
-runs nightly, in `.github/workflows/conformance-nightly.yml`, and on demand from
-the Actions tab. The per-PR pipeline in `ci.yml` is untouched.
+runs nightly, in `.github/workflows/conformance.yml`, on demand from the Actions
+tab, and on every push to a `release/**` branch. The per-PR pipeline in `ci.yml`
+is untouched — a separate file on purpose, so that the two never conflict.
+
+What *does* run per PR is `crates/server/tests/conformance_plan.rs`: it ties the
+plan's `match` patterns to the routes the router mounts, and every waiver to a
+beads ticket that is still open. Both are cheap, and both catch the thing that
+would otherwise be found at 3am by a job nobody reads.

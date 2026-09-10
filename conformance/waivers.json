@@ -1,0 +1,18 @@
+{
+  "$comment": [
+    "Modules of the FAPI 2.0 Security Profile Final plan whose FAILED verdict does not stop a release.",
+    "A waiver is a promise that somebody is dealing with it, so each one names an open beads ticket:",
+    "crates/server/tests/conformance_plan.rs fails the per-PR pipeline when a ticket named here is",
+    "closed or unknown, and scripts/conformance-verdict.py fails the run when a module failed without a",
+    "waiver. Every other verdict - PASSED, REVIEW, WARNING, SKIPPED - is green; see docs/certification.md.",
+    "Adding an entry here is a decision to ship a known non-conformance. It is not a way to quieten a run."
+  ],
+  "waivers": [
+    {
+      "module": "fapi2-security-profile-final-user-rejects-authentication",
+      "ticket": "ast-k5u",
+      "recorded": "2026-09-10",
+      "reason": "The module needs the person at the browser to refuse. The only refusal this server offers is the Deny button on the consent screen, and that screen is skipped once the tenant remembers a consent covering the request - which, by the time this module runs, it does. The fix is a product decision (a per-tenant 'always ask' setting, a refusal on the login page, or a manual run of this module at submission time), which is what ast-k5u is for."
+    }
+  ]
+}

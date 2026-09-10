@@ -72,7 +72,7 @@ the workspace manifest and inherited with `[lints] workspace = true`.
 - No refresh-token rotation (FAPI 2.0 SP §5.3.2.1), authorization codes ≤ 60 s, single-use codes with replay revocation, `jti` replay protection for client assertions and DPoP proofs.
 - `#![forbid(unsafe_code)]` in every crate; constant-time comparison for every secret; opaque credentials stored only as hashes; private keys encrypted at rest.
 - Definition of done for any protocol task: conformance-suite or spec-derived test passes, a fuzz target exists for every new parser/validator, the threat-model note is updated, no new `unsafe` — and generated crypto/parsing code is never "done" until a human has read the RFC.
-- Target certification: OpenID FAPI 2.0 Security Profile (conformance suite runs in CI).
+- Target certification: OpenID FAPI 2.0 Security Profile. The OpenID Foundation's own suite runs nightly and on release branches ([`.github/workflows/conformance.yml`](.github/workflows/conformance.yml)), and a release tag is refused if its last report is red or stale. [`docs/certification.md`](docs/certification.md) is the submission checklist, including the one module knowingly waived and why.
 
 ## Roadmap
 

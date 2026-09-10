@@ -23,7 +23,10 @@ console:
 
 # `ast-83p.8`. Brings up PostgreSQL, Asterius and the OpenID Foundation
 # conformance suite, runs the FAPI 2.0 Security Profile Final plan headless and
-# exits non-zero if it did not pass — or if it did not really run.
+# exits non-zero if the run is not releasable — or if it did not really run.
+# "Releasable", not "100 % pass": REVIEW, WARNING and SKIPPED are green, FAILED
+# is red unless conformance/waivers.json waives it under an open ticket
+# (`ast-p2l.1`, scripts/conformance-verdict.py, docs/certification.md).
 #
 # No secret, no account, no network access to anything but the pinned suite
 # images. Takes tens of minutes: it is not, and must not become, part of the
