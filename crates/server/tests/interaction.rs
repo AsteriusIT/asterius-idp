@@ -296,6 +296,7 @@ impl SessionRepository for FakeSessions {
         _o: &str,
         _n: &str,
         _m: &[AuthenticationMethod],
+        _acr: Option<&str>,
         _at: OffsetDateTime,
     ) -> Result<(), DomainError> {
         Ok(())
@@ -553,6 +554,7 @@ fn context_with<'a>(
         credentials: auth,
         sessions,
         lifetimes: Lifetimes::default(),
+        acr: acr_policy(),
         username: Some("ada"),
         clients: &FakeClients,
         grants: &issued.grants,
@@ -2660,4 +2662,12 @@ async fn the_root_path_still_reaches_no_path_based_tenant() {
     .await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// The ladder these tests run against: the one the binary wires in
+/// (`asterius_server::http::protocol`), built once so a context can borrow it.
+fn acr_policy() -> &'static asterius_domain::AcrPolicy {
+    static POLICY: std::sync::LazyLock<asterius_domain::AcrPolicy> =
+        std::sync::LazyLock::new(asterius_domain::AcrPolicy::default);
+    &POLICY
 }

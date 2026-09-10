@@ -38,13 +38,14 @@ use asterius_domain::entities::session::SessionId;
 use asterius_domain::{
     AuthenticationMethod, ClientRequest, CodeBinding, CodeIssuer, CredentialVerifier,
     FirstPartyDestination, Grant, GrantRepository, InteractionRecord, InteractionRepository,
-    Lifetimes, Secret, SectorIdentifier, Session, SessionId as DomainSessionId, SessionRepository,
+    Lifetimes, Secret, SectorIdentifier, SessionId as DomainSessionId, SessionRepository,
     SubjectResolver, Tenant, TenantId, UserId,
 };
 use asterius_oidc::authorize::ResponseMode;
 use asterius_oidc::code::{AuthorizationResponse, MintedCode};
 use asterius_oidc::consent::{ConsentRequest, Decision};
 use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
+use asterius_oidc::decision::Requirements;
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
 };
@@ -67,6 +68,12 @@ pub struct InteractionContext<'a> {
     pub sessions: &'a dyn SessionRepository,
     /// How long this tenant's sessions live.
     pub lifetimes: Lifetimes,
+    /// The authentication contexts this tenant can produce (`ast-2vk.7`).
+    ///
+    /// Consulted when an authentication succeeds, to decide which `acr` the
+    /// session it produces carries — and, for an essential request, to make
+    /// that value one of the ones the client asked for (OIDC Core §5.5.1.1).
+    pub acr: &'a asterius_domain::AcrPolicy,
     /// Who is signed in, shown on the consent screen so a user on a shared
     /// machine can see whose account is about to be granted.
     pub username: Option<&'a str>,
@@ -361,11 +368,19 @@ pub async fn submit(
     state.spend_csrf();
 
     match state.stage {
-        Stage::Login => sign_in(&context, &presented, state, id, &form, &record, now).await,
+        // `Login` and `StepUp` take the same submission and the same form: the
+        // difference between them is not what is asked of the person, it is
+        // what the answer is worth — a step-up rotates onto the session that is
+        // already there and accumulates its `amr` (`http::step_up`), where a
+        // login starts one. Refusing a password at `StepUp` would instead
+        // strand every request whose essential `acr` a password *does* satisfy.
+        Stage::Login | Stage::StepUp => {
+            sign_in(&context, &presented, state, id, &form, &record, now).await
+        }
         Stage::Consent => decide(&context, &presented, state, &form, &record, now).await,
-        // `ast-2vk.7` owns step-up. A submission at `Response` has nothing
-        // left to submit: the request was spent when the response was sent.
-        Stage::StepUp | Stage::Response => error_page(
+        // A submission at `Response` has nothing left to submit: the request
+        // was spent when the response was sent.
+        Stage::Response => error_page(
             &context,
             StatusCode::NOT_IMPLEMENTED,
             InteractionError::NotAvailable,
@@ -472,27 +487,50 @@ async fn authenticated(
     user: uuid::Uuid,
     now: OffsetDateTime,
 ) -> Response {
+    // What the request asked for about `acr`, read off the stored parameters
+    // rather than guessed: an essential value (OIDC Core §5.5.1.1) has to be
+    // the value written onto the session, or the ID token would report a class
+    // the client did not ask for and the requirement would fail on the token it
+    // claims to satisfy. A first-party interaction has no client request and
+    // asks for nothing (`ast-2vk.7`).
+    let requested = record
+        .client_request()
+        .map(|request| Requirements::from_parameters(&request.parameters))
+        .unwrap_or_default();
+
     // A session id the browser has never held before. See
     // `asterius_domain::entities::session`: an id it held
     // *before* authenticating is one an attacker may have
-    // planted, and this is the moment that stops mattering.
-    let id_value = SessionId::generate();
-    let session = Session::begin(
-        context.tenant.id.clone(),
-        &id_value,
+    // planted, and this is the moment that stops mattering. A
+    // step-up rotates the existing session rather than starting a
+    // new one — `http::step_up` owns that, and its guards.
+    let established = match crate::http::step_up::establish(
+        crate::http::step_up::Authentication {
+            sessions: context.sessions,
+            tenant: &context.tenant.id,
+            acr: context.acr,
+            lifetimes: context.lifetimes,
+        },
+        state.stage,
+        record.session.as_deref(),
         user,
         vec![AuthenticationMethod::Password],
+        &requested,
         now,
-        context.lifetimes,
-    );
-    if let Err(error) = context.sessions.begin(&session).await {
-        tracing::error!(%error, "cannot start a session");
-        return error_page(
-            context,
-            StatusCode::SERVICE_UNAVAILABLE,
-            InteractionError::NotAvailable,
-        );
-    }
+    )
+    .await
+    {
+        Ok(established) => established,
+        Err(error) => {
+            tracing::error!(%error, "cannot start a session");
+            return error_page(
+                context,
+                StatusCode::SERVICE_UNAVAILABLE,
+                InteractionError::NotAvailable,
+            );
+        }
+    };
+    let id_value = established.id;
 
     // `ast-2vk.7` decides whether a step-up is needed; until then
     // an authenticated user goes straight to whatever this interaction
@@ -509,7 +547,7 @@ async fn authenticated(
     // returns before a consent offer is even described.
     if let Some(destination) = record.continuation.first_party() {
         state.spend_csrf();
-        if let Err(error) = save(context, presented, &state, Some(&session.id_digest), now).await {
+        if let Err(error) = save(context, presented, &state, Some(&established.digest), now).await {
             return *error;
         }
         let mut response = arrive(context, presented, destination, now).await;
@@ -518,7 +556,7 @@ async fn authenticated(
     }
 
     let token = state.issue_csrf();
-    if let Err(error) = save(context, presented, &state, Some(&session.id_digest), now).await {
+    if let Err(error) = save(context, presented, &state, Some(&established.digest), now).await {
         return *error;
     }
 
@@ -528,7 +566,7 @@ async fn authenticated(
     // re-reading the row: it is the same value the `save` above just
     // stored, and a second read could only disagree with it.
     let record = InteractionRecord {
-        session: Some(session.id_digest.clone()),
+        session: Some(established.digest.clone()),
         ..record.clone()
     };
     if let Some(response) =

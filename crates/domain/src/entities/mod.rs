@@ -1,5 +1,6 @@
 //! Entities: the things Asterius stores and reasons about.
 
+pub mod acr_policy;
 pub mod auth_request;
 pub mod client;
 pub mod grant;
@@ -11,6 +12,7 @@ pub mod tenant;
 pub mod tenant_settings;
 pub mod user;
 
+pub use acr_policy::{AcrLevel, AcrPolicy, AcrPolicyError};
 pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
     GrantType, JwksSource, RedirectUri, RedirectUriError, SubjectType, TokenBinding,

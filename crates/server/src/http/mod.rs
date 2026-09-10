@@ -27,6 +27,7 @@ pub mod revocation;
 pub mod security_headers;
 pub mod server;
 mod source_audit;
+pub mod step_up;
 pub mod throttle;
 pub mod tls;
 pub mod token;

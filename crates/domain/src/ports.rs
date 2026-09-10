@@ -782,6 +782,14 @@ pub trait SessionRepository: Debug + Send + Sync {
     /// `authenticated_at` moves too, because the reason to rotate is always
     /// that the user has just proved something.
     ///
+    /// `methods` and `acr` are what the session is worth *after* the thing that
+    /// was just proved — the caller composes them, because only it knows
+    /// whether this was a step-up onto an existing authentication (`ast-2vk.7`,
+    /// where the methods accumulate) or a re-proof of the same one. `acr` is
+    /// `None` for a tenant whose ladder has no rung for what happened, and it
+    /// overwrites: a rotation that left a stale `acr` behind would report an
+    /// authentication context the current `amr` no longer supports.
+    ///
     /// # Errors
     ///
     /// [`DomainError::NotFound`] if the old session is not there to rotate.
@@ -790,6 +798,7 @@ pub trait SessionRepository: Debug + Send + Sync {
         old_digest: &str,
         new_digest: &str,
         methods: &[AuthenticationMethod],
+        acr: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<(), DomainError>;
 

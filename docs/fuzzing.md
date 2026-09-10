@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 50 targets below cover 62 declared entry points. Generated from the
+The 51 targets below cover 65 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -76,6 +76,8 @@ The 50 targets below cover 62 declared entry points. Generated from the
 | `access_token_claims` | `AccessToken::subject_claim` | `crates/oidc/src/tokens/access.rs` |
 | `access_token_claims` | `actor_claim` | `crates/oidc/src/tokens/access.rs` |
 | `access_token_claims` | `thumbprint` | `crates/oidc/src/tokens/access.rs` |
+| `acr_policy` | `AcrPolicy::assign` | `crates/domain/src/entities/acr_policy.rs` |
+| `acr_policy` | `AcrPolicy::from_json` | `crates/domain/src/entities/acr_policy.rs` |
 | `admin_cursor` | `Cursor::decode` | `crates/admin-api/src/pagination.rs` |
 | `admin_fetch_metadata` | `site` | `crates/admin-api/src/csrf.rs` |
 | `admin_idempotency_key` | `IdempotencyKey::parse` | `crates/admin-api/src/idempotency.rs` |
@@ -88,6 +90,7 @@ The 50 targets below cover 62 declared entry points. Generated from the
 | `authenticator_data` | `verify_registration` | `crates/webauthn/src/authenticator_data.rs` |
 | `authorization_code` | `digest_of` | `crates/oidc/src/code.rs` |
 | `authorization_hints` | `Prompt::parse_list` | `crates/oidc/src/authorize.rs` |
+| `authorization_hints` | `parse_acr_values` | `crates/oidc/src/authorize.rs` |
 | `authorization_hints` | `parse_id_token_hint` | `crates/oidc/src/authorize.rs` |
 | `authorization_hints` | `parse_login_hint` | `crates/oidc/src/authorize.rs` |
 | `authorization_hints` | `parse_max_age` | `crates/oidc/src/authorize.rs` |

@@ -23,6 +23,8 @@ mod secret_audit;
 pub use audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 pub use capabilities::{Capabilities, Feature};
 pub use credentials::{OpaqueToken, sha256, sha256_hex};
+/// The authentication contexts a tenant can produce (`ast-2vk.7`).
+pub use entities::acr_policy as acr;
 pub use entities::auth_request::{
     ClientRequest, CodeBinding, Consumed, Continuation, FirstPartyDestination, InteractionRecord,
     PushedRequest,
@@ -35,13 +37,13 @@ pub use entities::session::{
     AuthenticationMethod, Lifetimes, Participant, Session, SessionRevocation, SessionStatus,
 };
 pub use entities::{
-    ApplicationType, Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, ClaimedGrant, Client,
-    ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantError,
-    GrantRecord, GrantStatus, GrantType, JwksSource, LiveAccessToken, PairwiseSalt, RedirectUri,
-    RedirectUriError, RefreshPolicy, RefreshPolicyError, RevocationReason, Role, RoleScope,
-    Rotation, SectorIdentifier, SubjectError, SubjectType, Tenant, TenantSettings,
-    TenantSettingsError, TenantStatus, TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User,
-    UserId, UserRole, UserStatus,
+    AcrLevel, AcrPolicy, AcrPolicyError, ApplicationType, Claim, ClaimError, ClaimName, ClaimSet,
+    ClaimSource, ClaimedGrant, Client, ClientMetadata, ClientMetadataError, ClientRegistration,
+    ClientStatus, Grant, GrantError, GrantRecord, GrantStatus, GrantType, JwksSource,
+    LiveAccessToken, PairwiseSalt, RedirectUri, RedirectUriError, RefreshPolicy,
+    RefreshPolicyError, RevocationReason, Role, RoleScope, Rotation, SectorIdentifier,
+    SubjectError, SubjectType, Tenant, TenantSettings, TenantSettingsError, TenantStatus,
+    TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User, UserId, UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};

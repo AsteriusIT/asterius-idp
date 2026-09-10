@@ -506,7 +506,11 @@ async fn discovery(
         },
     };
 
-    let document = metadata::provider_metadata(&tenant.issuer, &capabilities);
+    // `acr_values_supported` comes from the same ladder `/authorize` consults,
+    // for the reason RFC 8414 §2 gives: a document that advertised a class this
+    // server would refuse as `unmet_authentication_requirements` would be
+    // telling clients to ask for something it cannot do (`ast-2vk.7`).
+    let document = metadata::provider_metadata(&tenant.issuer, &capabilities, acr_policy());
     cacheable_json(&document, METADATA_MAX_AGE)
 }
 
@@ -1257,6 +1261,7 @@ async fn run_authorize(
             session: session.as_ref(),
             grants: &scope.grants(),
             policy: decision_policy(),
+            acr: acr_policy(),
             memory: memory_policy(),
             nonce,
             mount,
@@ -1303,6 +1308,29 @@ const fn decision_policy() -> asterius_oidc::decision::DecisionPolicy {
 /// chose.
 const fn memory_policy() -> asterius_oidc::consent_memory::MemoryPolicy {
     asterius_oidc::consent_memory::MemoryPolicy::new(false)
+}
+
+/// Which authentication contexts this deployment can produce (`ast-2vk.7`).
+///
+/// `asterius_domain::AcrPolicy::default()`: the three rungs this server can
+/// actually stand behind — a password, a WebAuthn assertion, and a WebAuthn
+/// assertion whose UV bit was set — plus EAP ACR Values 1.0's `phr` as a name
+/// for the second. Nothing on it is a class this build cannot verify having
+/// reached.
+///
+/// A function rather than a literal at each call site, and for the reason
+/// [`decision_policy`] is one: the discovery document, the authorization
+/// decision and the session an authentication writes must all be reading the
+/// same ladder. Per-tenant ladders are the obvious next step and are not this
+/// one — they need a store, and `crates/domain/src/entities/acr_policy.rs`
+/// already carries the round-trip (`AcrPolicy::from_json`) a column would use.
+fn acr_policy() -> &'static asterius_domain::AcrPolicy {
+    // Built once. It is immutable, it is read on every authorization and every
+    // discovery request, and a fresh copy per request would be an allocation
+    // per rung to arrive at the same answer.
+    static POLICY: std::sync::LazyLock<asterius_domain::AcrPolicy> =
+        std::sync::LazyLock::new(asterius_domain::AcrPolicy::default);
+    &POLICY
 }
 
 /// What this deployment offers an authorization request, in one place.
@@ -1466,6 +1494,7 @@ async fn interaction_show(
                 .map(|v| v as &dyn asterius_domain::CredentialVerifier),
             sessions: &sessions,
             lifetimes: endpoints.session_lifetimes,
+            acr: acr_policy(),
             // `ast-2vk.8` resolves a display name; until then the consent
             // screen names the signed-in user only when the session carries
             // one.
@@ -1535,6 +1564,7 @@ async fn interaction_submit(
                 .map(|v| v as &dyn asterius_domain::CredentialVerifier),
             sessions: &sessions,
             lifetimes: endpoints.session_lifetimes,
+            acr: acr_policy(),
             // `ast-2vk.8` resolves a display name; until then the consent
             // screen names the signed-in user only when the session carries
             // one.
@@ -1733,6 +1763,7 @@ async fn passkey_login_options(
             sessions: &sessions,
             users: &users,
             lifetimes: endpoints.session_lifetimes,
+            acr: acr_policy(),
             audit: endpoints.audit.as_ref(),
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
         },
@@ -1767,6 +1798,7 @@ async fn passkey_login_finish(
             sessions: &sessions,
             users: &users,
             lifetimes: endpoints.session_lifetimes,
+            acr: acr_policy(),
             audit: endpoints.audit.as_ref(),
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
         },

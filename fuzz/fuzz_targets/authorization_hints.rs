@@ -21,11 +21,16 @@
 //!   whose output nobody has seen.
 //! * `id_token_hint` — accepted input is three non-empty base64url segments,
 //!   which is the whole of JWS Compact Serialization's shape.
+//! * `acr_values` — the result is a bounded, repeat-free subsequence of the
+//!   whitespace split of the input, in the input's order. Order *is* the
+//!   parameter's meaning ("in order of preference"), and a value that appeared
+//!   nowhere in the request would be an authentication context nobody asked
+//!   for (`ast-2vk.7`).
 #![no_main]
 
 use asterius_oidc::authorize::{
-    AuthorizationPolicy, MAX_ID_TOKEN_HINT_LEN, MAX_LOGIN_HINT_LEN, Prompt, parse_id_token_hint,
-    parse_login_hint, parse_max_age,
+    AuthorizationPolicy, MAX_ACR_VALUES, MAX_ID_TOKEN_HINT_LEN, MAX_LOGIN_HINT_LEN, Prompt,
+    parse_acr_values, parse_id_token_hint, parse_login_hint, parse_max_age,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -104,6 +109,39 @@ fuzz_target!(|data: &[u8]| {
             !hint.chars().any(is_forbidden_in_a_hint),
             "accepted a hint that can rewrite a page: {hint:?}"
         );
+    }
+
+    let acr_values = parse_acr_values(Some(text));
+    assert!(
+        acr_values.len() <= MAX_ACR_VALUES,
+        "an unbounded preference list survived"
+    );
+    {
+        // A subsequence of the split, in order, with no repeats — checked
+        // against a split this target does itself rather than against the
+        // parser's own.
+        let mut split = text.split_whitespace();
+        for value in &acr_values {
+            assert!(
+                split.any(|token| token == value),
+                "acr_values invented or reordered {value:?}"
+            );
+        }
+        let unique: std::collections::BTreeSet<&String> = acr_values.iter().collect();
+        assert_eq!(
+            unique.len(),
+            acr_values.len(),
+            "a repeat became a preference"
+        );
+        if text.split_whitespace().count() <= MAX_ACR_VALUES {
+            assert_eq!(
+                unique.len(),
+                text.split_whitespace()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                "a value inside the bound was dropped"
+            );
+        }
     }
 
     if let Ok(Some(hint)) = parse_id_token_hint(Some(text)) {

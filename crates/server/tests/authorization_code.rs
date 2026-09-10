@@ -573,6 +573,7 @@ db_test! {
                 &session.id_digest,
                 &rotated_id.digest(),
                 &[AuthenticationMethod::Password],
+                None,
                 fixture.now + time::Duration::minutes(1),
             )
             .await

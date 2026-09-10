@@ -1,6 +1,9 @@
 {
   "acr_values_supported": [
-    "urn:mace:incommon:iap:silver"
+    "urn:asterius:acr:passkey-uv",
+    "urn:asterius:acr:passkey",
+    "phr",
+    "urn:asterius:acr:pwd"
   ],
   "authorization_endpoint": "https://as.example/t/demo/authorize",
   "authorization_response_iss_parameter_supported": true,

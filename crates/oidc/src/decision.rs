@@ -236,6 +236,36 @@ pub trait AcrPolicy {
     fn satisfied_by(&self, achieved: Option<&str>, requested: &[String]) -> bool;
 }
 
+/// A tenant's configured ladder, answering the two questions [`decide`] asks.
+///
+/// The bridge between `asterius_domain::AcrPolicy` — which knows *how* a
+/// context is produced, in authentication methods — and this module, which only
+/// ever asks whether a context is producible and whether it has been produced.
+///
+/// # Why satisfaction is string equality and not method containment
+///
+/// A session whose `amr` would satisfy a requested level, but whose recorded
+/// `acr` is a different name for it, is treated as **not** satisfying the
+/// request. It costs a step-up that a cleverer reading would skip, and it is
+/// the reading OIDC Core §5.5.1.1 demands: the response "MUST return an `acr`
+/// Claim Value that matches one of the requested values", and the value this
+/// server would return is the one recorded on the session. Answering
+/// "satisfied" and then returning a different string would be a token that
+/// fails the requirement it claims to have met. The re-authentication that
+/// follows writes the requested value onto the session
+/// (`asterius_domain::AcrPolicy::assign`), so the second attempt is exact
+/// rather than nearly right.
+impl AcrPolicy for asterius_domain::AcrPolicy {
+    fn can_satisfy(&self, requested: &[String]) -> bool {
+        Self::can_satisfy(self, requested)
+    }
+
+    fn satisfied_by(&self, achieved: Option<&str>, requested: &[String]) -> bool {
+        requested.is_empty()
+            || achieved.is_some_and(|achieved| requested.iter().any(|value| value == achieved))
+    }
+}
+
 /// The policy of a tenant that has configured no authentication contexts.
 ///
 /// It can satisfy exactly one requirement: the empty one. That is not a
@@ -323,11 +353,90 @@ impl Requirements {
         }
     }
 
+    /// Reads the requirements back off a **stored** request.
+    ///
+    /// The parameters this server itself wrote at the push, not the document a
+    /// client sent: the pushed-request validator ran against an authenticated
+    /// client and the result was serialised, so this is a read of canonical
+    /// JSON rather than a second parse of an untrusted document. A member that
+    /// is missing or of the wrong shape is treated as absent, which for every
+    /// one of them is the "asked for nothing" reading — the alternative is
+    /// refusing a row this server produced, and a stricter reading here would
+    /// not make the row any more correct.
+    ///
+    /// Here rather than in the authorization handler because two callers need
+    /// the same answer and must not compute it twice: `/authorize` decides
+    /// whether a step-up is required, and the login that follows decides which
+    /// `acr` the session it creates should carry. `ast-0zg` was exactly that
+    /// seam going untested.
+    #[must_use]
+    pub fn from_parameters(parameters: &serde_json::Value) -> Self {
+        let strings = |name: &str| -> Vec<String> {
+            parameters
+                .get(name)
+                .and_then(serde_json::Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        Self {
+            prompts: strings("prompts")
+                .iter()
+                .filter_map(|value| Prompt::parse(value))
+                .collect(),
+            max_age: parameters
+                .get("max_age")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|seconds| u32::try_from(seconds).ok()),
+            hinted_subject: parameters
+                .get("id_token_hint_sub")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned),
+            acr_values: strings("acr_values"),
+            essential_acr: essential_acr(parameters),
+        }
+    }
+
     /// Whether the client forbade every form of interaction (§3.1.2.1).
     #[must_use]
     pub fn is_silent(&self) -> bool {
         self.prompts.contains(&Prompt::None)
     }
+}
+
+/// The `acr` values a stored request marked essential (OIDC Core §5.5.1.1).
+///
+/// Read out of the stored `claims` document, which is the canonical form
+/// [`crate::claims::ClaimsRequest::to_json`] wrote — never the document the
+/// client sent. A stored request that will not parse back is a damaged row: it
+/// yields no essential values, which makes the request a voluntary one rather
+/// than an unmeetable one, and it is logged as the server-side fault it is.
+fn essential_acr(parameters: &serde_json::Value) -> Vec<String> {
+    let Some(claims) = parameters.get("claims") else {
+        return Vec::new();
+    };
+    // Silent, because this crate has no I/O and no logger by design (it is
+    // pure functions over domain types). The caller that *can* log is the one
+    // holding the tenant and the row: `asterius_server::http::authorize` says
+    // so on the way past, and this returns the reading that keeps a damaged row
+    // from becoming an unmeetable requirement.
+    let Ok(claims) = crate::claims::ClaimsRequest::from_json(claims) else {
+        return Vec::new();
+    };
+    claims
+        .acr()
+        .filter(|acr| acr.is_essential())
+        .map(|acr| {
+            acr.accepted_values()
+                .iter()
+                .filter_map(|value| value.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Decides what happens next.
@@ -610,6 +719,187 @@ mod tests {
             &NoAcrPolicy,
             now(),
         )
+    }
+
+    /// The same decision, against a tenant that has actually configured a
+    /// ladder.
+    fn decide_under(
+        requirements: &Requirements,
+        state: &SessionState<'_>,
+        policy: &asterius_domain::AcrPolicy,
+    ) -> Interaction {
+        decide(
+            requirements,
+            state,
+            DecisionPolicy::default(),
+            policy,
+            now(),
+        )
+    }
+
+    fn values(requested: &[&str]) -> Vec<String> {
+        requested.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    // ---- ast-2vk.7: the ladder a tenant configured -----------------------
+
+    /// OIDC Core §3.1.2.1: `acr_values` is voluntary. A value this tenant
+    /// cannot produce does not refuse the request and does not stop it being
+    /// answered silently — what the authentication reached is reported in
+    /// `acr`, and that is all.
+    #[test]
+    fn a_voluntary_acr_value_out_of_reach_does_not_disturb_the_request() {
+        let session = session(Duration::minutes(1));
+        let requirements = Requirements {
+            acr_values: values(&["urn:mace:incommon:iap:silver"]),
+            ..requirements(&[Prompt::None])
+        };
+
+        let outcome = decide_under(
+            &requirements,
+            &active(&session, Consent::Granted),
+            &asterius_domain::AcrPolicy::default(),
+        );
+
+        assert_eq!(outcome, Interaction::Silent);
+    }
+
+    /// Unmet Authentication Requirements 1.0 §2: an essential `acr` no
+    /// authentication this tenant offers could produce is refused, before any
+    /// screen — asking the user first would spend an authentication to arrive
+    /// at the same error.
+    #[test]
+    fn an_essential_acr_off_the_ladder_is_refused_as_unmet() {
+        let requirements = Requirements {
+            essential_acr: values(&["urn:mace:incommon:iap:silver"]),
+            ..Requirements::default()
+        };
+
+        let outcome = decide_under(
+            &requirements,
+            &SessionState::None,
+            &asterius_domain::AcrPolicy::default(),
+        );
+
+        assert_eq!(
+            outcome,
+            Interaction::Refuse(Unmet::UnmetAuthenticationRequirements)
+        );
+    }
+
+    /// OIDC Core §5.5.1.1: an essential `acr` the tenant *can* produce, and a
+    /// session that has not produced it, is a step-up — not an error, and not
+    /// a fresh sign-in that would throw the session away.
+    #[test]
+    fn an_essential_acr_the_session_has_not_reached_is_a_step_up() {
+        let session = session(Duration::minutes(1));
+        let requirements = Requirements {
+            essential_acr: values(&[asterius_domain::acr::PASSKEY_USER_VERIFIED]),
+            ..Requirements::default()
+        };
+
+        let outcome = decide_under(
+            &requirements,
+            &active(&session, Consent::Granted),
+            &asterius_domain::AcrPolicy::default(),
+        );
+
+        assert_eq!(outcome, Interaction::StepUp);
+    }
+
+    /// And the session that *has* reached it is not disturbed. §5.5.1.1 is
+    /// satisfied by the recorded value matching one of the requested ones.
+    #[test]
+    fn an_essential_acr_the_session_already_carries_asks_for_nothing() {
+        let mut session = session(Duration::minutes(1));
+        session.acr = Some(asterius_domain::acr::PASSKEY_USER_VERIFIED.to_owned());
+        let requirements = Requirements {
+            essential_acr: values(&[asterius_domain::acr::PASSKEY_USER_VERIFIED]),
+            ..Requirements::default()
+        };
+
+        let outcome = decide_under(
+            &requirements,
+            &active(&session, Consent::Granted),
+            &asterius_domain::AcrPolicy::default(),
+        );
+
+        assert_eq!(outcome, Interaction::Silent);
+    }
+
+    /// §3.1.2.1 forbids displaying anything for `prompt=none`, and a step-up is
+    /// a display. The code is `interaction_required` rather than
+    /// `unmet_authentication_requirements`, because the requirement *is*
+    /// meetable — just not silently.
+    #[test]
+    fn a_step_up_a_silent_request_forbids_is_interaction_required() {
+        let session = session(Duration::minutes(1));
+        let requirements = Requirements {
+            essential_acr: values(&[asterius_domain::acr::PASSKEY_USER_VERIFIED]),
+            ..requirements(&[Prompt::None])
+        };
+
+        let outcome = decide_under(
+            &requirements,
+            &active(&session, Consent::Granted),
+            &asterius_domain::AcrPolicy::default(),
+        );
+
+        assert_eq!(outcome, Interaction::Refuse(Unmet::InteractionRequired));
+    }
+
+    // ---- ast-0zg: the stored request, read back --------------------------
+
+    /// The seam `ast-0zg` names: a `claims` request marked essential is written
+    /// at the push and read back at `/authorize`, and nothing tested the round
+    /// trip. OIDC Core §5.5.1.1 puts `acr` under `id_token`, and a reader that
+    /// looked at the root would find nothing and turn a requirement into a
+    /// suggestion.
+    #[test]
+    fn an_essential_acr_survives_the_canonical_form_the_push_stored() {
+        let requested = crate::claims::ClaimsRequest::parse(
+            &serde_json::json!({
+                "id_token": {"acr": {"essential": true, "values": ["urn:example:strong"]}}
+            })
+            .to_string(),
+        )
+        .expect("the claims request is well formed");
+        let stored = serde_json::json!({ "claims": requested.to_json() });
+
+        let requirements = Requirements::from_parameters(&stored);
+
+        assert_eq!(requirements.essential_acr, values(&["urn:example:strong"]));
+    }
+
+    /// The other half of §5.5.1.1: a `claims` request that does *not* mark
+    /// `acr` essential is a voluntary one, and reading it as a requirement
+    /// would refuse requests that must be answered.
+    #[test]
+    fn a_claims_request_that_is_not_essential_creates_no_requirement() {
+        let requested = crate::claims::ClaimsRequest::parse(
+            &serde_json::json!({
+                "id_token": {"acr": {"values": ["urn:example:strong"]}}
+            })
+            .to_string(),
+        )
+        .expect("the claims request is well formed");
+        let stored = serde_json::json!({ "claims": requested.to_json() });
+
+        let requirements = Requirements::from_parameters(&stored);
+
+        assert!(requirements.essential_acr.is_empty());
+    }
+
+    /// A stored row this server cannot read back is a damaged row, not an
+    /// unmeetable requirement: the request continues as a voluntary one rather
+    /// than being refused with `unmet_authentication_requirements`.
+    #[test]
+    fn a_damaged_claims_row_leaves_no_requirement_behind() {
+        let stored = serde_json::json!({ "claims": "not a claims request" });
+
+        let requirements = Requirements::from_parameters(&stored);
+
+        assert!(requirements.essential_acr.is_empty());
     }
 
     // ---- row 3: prompt=none with nothing to go on ------------------------
