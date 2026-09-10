@@ -1457,10 +1457,13 @@ async fn a_locked_identifier_and_an_unknown_one_answer_the_same_thing() {
     // What the person is told. The rest of the page differs only in the
     // per-render values — the interaction id, the CSP nonce, the synchroniser
     // token — none of which is derived from what was typed.
+    // Read out of the error summary `error_summary.html` renders — a `<div
+    // class="error" role="alert">`, which is where a failure is identified in
+    // text (WCAG 2.2 SC 3.3.1).
     let said = |html: &str| {
-        html.split(r#"<p class="error">"#)
+        html.split(r#"<div class="error""#)
             .nth(1)
-            .and_then(|rest| rest.split("</p>").next())
+            .and_then(|rest| rest.split("</div>").next())
             .map(ToOwned::to_owned)
             .expect("a message on the page")
     };
