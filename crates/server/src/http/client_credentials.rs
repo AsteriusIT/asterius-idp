@@ -213,6 +213,7 @@ impl ClientCredentials<'_> {
         })?;
 
         let scopes = Self::scopes(client, params)?;
+        let lifetimes = self.lifetimes(client);
 
         // The grant is assembled before it is stored, because the audience
         // resolution below reads it. `user`, `subject` and `session` stay
@@ -231,7 +232,7 @@ impl ClientCredentials<'_> {
         // revoke once the only credential minted from it has expired. Giving it
         // the token's own deadline keeps `Grant::status` honest about that
         // without a sweep having to decide it.
-        grant.expires_at = Some(self.now + self.lifetimes.access_token());
+        grant.expires_at = Some(self.now + lifetimes.access_token());
 
         let targeting = self.targeting(tenant, client, &grant, params).await?;
         // What the audience resolution settled on, recorded on the row: the
@@ -264,7 +265,7 @@ impl ClientCredentials<'_> {
         // reaches this token through. A client-only token that did not carry it
         // would be the one credential this server cannot withdraw.
         .with_grant_id_when(self.grant_id_claim)
-        .for_lifetime(self.lifetimes.access_token())
+        .for_lifetime(lifetimes.access_token())
         // Deliberately no `authenticated_by`: RFC 9068 §2.2.1's `auth_time`,
         // `acr` and `amr` describe how a *person* authenticated, and asserting
         // anything there about a client would be a claim a relying party uses
@@ -293,7 +294,7 @@ impl ClientCredentials<'_> {
                 issuance::token_type(client),
                 access_token.as_str(),
                 &targeting.scopes,
-                self.lifetimes.access_token(),
+                lifetimes.access_token(),
             ),
             grant.id,
         ))
@@ -325,12 +326,50 @@ impl ClientCredentials<'_> {
             .get("scope")
             .map_err(|_| Failure::Client("invalid_request", "scope was sent more than once"))?;
 
-        asterius_oidc::refresh::requested_scopes(requested, &permitted).map_err(|_| {
-            Failure::Client(
+        let scopes =
+            asterius_oidc::refresh::requested_scopes(requested, &permitted).map_err(|_| {
+                Failure::Client(
+                    "invalid_scope",
+                    "the requested scope exceeds what this client may be issued",
+                )
+            })?;
+
+        // `ast-lh3.1`. A scope the tenant marked as needing human approval is
+        // exactly what this grant cannot supply: there is nobody at the other
+        // end of a client credentials request, and no earlier authorization for
+        // this token to inherit one from. It is refused here rather than
+        // silently dropped, because a client that asked for a scope and got a
+        // token without it has no way to tell.
+        if let Some(agent) = &client.registration.agent
+            && let Some(scope) =
+                agent.scope_needing_human_approval(scopes.iter().map(String::as_str))
+        {
+            tracing::debug!(
+                client = %client.id,
+                %scope,
+                "an agent asked for a scope that requires human approval"
+            );
+            return Err(Failure::Client(
                 "invalid_scope",
-                "the requested scope exceeds what this client may be issued",
-            )
-        })
+                "this scope requires a person to approve it, and this grant has none",
+            ));
+        }
+
+        Ok(scopes)
+    }
+
+    /// The lifetimes this issuance uses.
+    ///
+    /// The tenant's (`ast-5c6`), bounded below by the agent profile's ceiling
+    /// (`ast-lh3.1`). The minimum of the two and never the agent's alone: a
+    /// profile may shorten an agent's token and may not lengthen it past what
+    /// the tenant validated.
+    fn lifetimes(&self, client: &Client) -> asterius_domain::TokenLifetimes {
+        client
+            .registration
+            .agent
+            .as_ref()
+            .map_or(self.lifetimes, |agent| agent.cap(self.lifetimes))
     }
 
     /// What this request's `resource` parameters decide about the token
@@ -376,10 +415,16 @@ impl ClientCredentials<'_> {
     /// client is a key being tried. Both answers want one type and two
     /// outcomes.
     ///
-    /// The detail is deliberately open. The agent profile of `ast-lh3.1`
-    /// (`E11_01`) will have things to say about *which* agent asked and on whose
-    /// authority; none of those fields exist yet, and inventing a shape for
-    /// them now would be a schema to migrate rather than a fact to record.
+    /// For an agent (`ast-lh3.1`) the actor is [`Actor::Agent`] and not
+    /// [`Actor::Client`], and the detail carries `agent_owner` — the account
+    /// the agent acts for. That is the whole point of the entry: an agent's
+    /// actions are only attributable if every token it was issued names the
+    /// human answerable for it, and a trail that recorded the `client_id` alone
+    /// would leave an investigator to join it against a table whose row may
+    /// since have been deleted.
+    ///
+    /// `agent_id` is not a second field: it is the actor's own identifier,
+    /// which [`Actor::Agent`] already carries and every reader already reads.
     async fn record(
         &self,
         tenant: &Tenant,
@@ -387,15 +432,32 @@ impl ClientCredentials<'_> {
         outcome: Outcome,
         grant: Option<&GrantId>,
     ) {
+        let agent = client.registration.agent.as_ref();
+        let actor = agent.map_or_else(
+            || Actor::Client(client.id.clone()),
+            |profile| Actor::Agent {
+                client: client.id.clone(),
+                on_behalf_of: profile.owner().to_string(),
+            },
+        );
+        let mut detail = Detail::new().label("grant_type", "client_credentials");
+        if let Some(profile) = agent {
+            // `text` and not `label`: the value is a UUID rather than a
+            // compile-time constant. It survives `redact` unchanged — a UUID
+            // is hyphen-separated groups of at most twelve characters, and the
+            // scanner looks for unbroken runs of twenty-two — which the audit
+            // test asserts rather than assumes.
+            detail = detail.text("agent_owner", profile.owner().to_string());
+        }
         let mut event = AuditEvent::new(
             tenant.id.clone(),
             EventType::TOKEN_ISSUED,
             outcome,
-            Actor::Client(client.id.clone()),
+            actor,
             self.now,
         )
         .client(client.id.clone())
-        .detail(Detail::new().label("grant_type", "client_credentials"));
+        .detail(detail);
         if let Some(grant) = grant {
             event = event.grant(grant.clone());
         }

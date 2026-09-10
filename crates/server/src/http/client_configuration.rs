@@ -598,12 +598,84 @@ pub async fn read(
 /// Lifted out of [`update`] so that the endpoint's shape — authenticate, parse,
 /// check, replace — stays readable, and because both arms record the same audit
 /// event with only the reason differing. `Some` is the response to return.
+/// The refusals an update earns before its document is even parsed.
+///
+/// Size, content type, and the fields this server owns — all three are
+/// judgements about the *request*, made in one place so that
+/// [`update`] reads as the sequence of decisions it is rather than as a wall
+/// of early returns. Reached only after the caller has authenticated, so none
+/// of this is work an unauthorised caller can make this process do.
+async fn inadmissible(
+    context: &ConfigurationContext<'_>,
+    client_id: &ClientId,
+    headers: &HeaderMap,
+    body: &Bytes,
+    now: OffsetDateTime,
+) -> Option<Response> {
+    if body.len() > MAX_BODY_BYTES {
+        return Some(
+            rejected(
+                context,
+                now,
+                client_id,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "invalid_client_metadata",
+                "the registration document is too large",
+            )
+            .await,
+        );
+    }
+
+    // RFC 7592 §2.2: the update request carries "a content type of
+    // application/json".
+    if !is_json(headers) {
+        return Some(
+            rejected(
+                context,
+                now,
+                client_id,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "invalid_client_metadata",
+                "content-type must be application/json",
+            )
+            .await,
+        );
+    }
+
+    // The fields this server owns, before the validator sees a document that
+    // may be trying to move one of them.
+    if let Err(failure) = update_guard(body, client_id.as_str()) {
+        return Some(
+            rejected(
+                context,
+                now,
+                client_id,
+                StatusCode::BAD_REQUEST,
+                "invalid_client_metadata",
+                failure.description(),
+            )
+            .await,
+        );
+    }
+
+    None
+}
+
 async fn unacceptable(
     context: &ConfigurationContext<'_>,
     client_id: &ClientId,
     now: OffsetDateTime,
+    managed: &ManagedClient,
     registration: &ClientRegistration,
 ) -> Option<Response> {
+    // `ast-lh3.1`, first, because it is the only one of these rules that reads
+    // a row this request has already loaded: no fetch, no key lookup.
+    if let Some(refusal) =
+        outside_its_agent_profile(context, client_id, now, managed, registration).await
+    {
+        return Some(refusal);
+    }
+
     // This tenant's rules, before anything is fetched: a document the policy
     // refuses is refused whatever a sector document says.
     if let Err(violation) = context.tenant_policy.evaluate(registration) {
@@ -671,48 +743,15 @@ pub async fn update(
     // Authorization first, so that nothing below is work an unauthorised caller
     // can make this process do — not a JSON parse, not an allocation the size
     // of the body, not an audit row.
-    if let Err(denied) = authenticate(context, &client_id, headers, now).await {
-        return refuse(context, now, EventType::CLIENT_UPDATED, &client_id, denied).await;
-    }
+    let managed = match authenticate(context, &client_id, headers, now).await {
+        Ok(managed) => managed,
+        Err(denied) => {
+            return refuse(context, now, EventType::CLIENT_UPDATED, &client_id, denied).await;
+        }
+    };
 
-    if body.len() > MAX_BODY_BYTES {
-        return rejected(
-            context,
-            now,
-            &client_id,
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "invalid_client_metadata",
-            "the registration document is too large",
-        )
-        .await;
-    }
-
-    // RFC 7592 §2.2: the update request carries "a content type of
-    // application/json".
-    if !is_json(headers) {
-        return rejected(
-            context,
-            now,
-            &client_id,
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "invalid_client_metadata",
-            "content-type must be application/json",
-        )
-        .await;
-    }
-
-    // The fields this server owns, before the validator sees a document that
-    // may be trying to move one of them.
-    if let Err(failure) = update_guard(body, client_id.as_str()) {
-        return rejected(
-            context,
-            now,
-            &client_id,
-            StatusCode::BAD_REQUEST,
-            "invalid_client_metadata",
-            failure.description(),
-        )
-        .await;
+    if let Some(refusal) = inadmissible(context, &client_id, headers, body, now).await {
+        return refusal;
     }
 
     let registration = match ClientRegistration::from_json(body, context.capabilities) {
@@ -732,9 +771,10 @@ pub async fn update(
         }
     };
 
-    // The two checks the validator cannot make on the document alone: one
-    // about this tenant's keys, one about a host that has to be asked.
-    if let Some(refusal) = unacceptable(context, &client_id, now, &registration).await {
+    // The three checks the validator cannot make on the document alone: one
+    // about the agent profile the row carries, one about this tenant's keys,
+    // one about a host that has to be asked.
+    if let Some(refusal) = unacceptable(context, &client_id, now, &managed, &registration).await {
         return refusal;
     }
 
@@ -1085,6 +1125,37 @@ async fn burn(context: &ConfigurationContext<'_>, presented: &[u8; 32]) -> Denie
 /// cause changes to the Client's registered metadata values" — and a spare
 /// credential the server already decided to withdraw is not a metadata value.
 /// Nothing in the document a read returns depends on it.
+/// The refusal for an update that would take an agent outside its tenant's
+/// limits (`ast-lh3.1`), or `None` for every other update.
+///
+/// An agent's limits are the tenant's, and RFC 7592 §2.2 is the *client*
+/// rewriting its own metadata: a replacement that leaves them is a bad
+/// document, so it is refused here — while the document is still in hand — with
+/// §2.2's `400 invalid_client_metadata`. `PgClientRepository::replace` refuses
+/// it too, and that refusal is a storage error the caller cannot act on;
+/// reaching it would mean this check had been skipped.
+async fn outside_its_agent_profile(
+    context: &ConfigurationContext<'_>,
+    client_id: &ClientId,
+    now: OffsetDateTime,
+    managed: &ManagedClient,
+    registration: &ClientRegistration,
+) -> Option<Response> {
+    let agent = managed.agent.as_ref()?;
+    let failure = agent.limits().check(registration).err()?;
+    record(
+        context,
+        now,
+        EventType::CLIENT_UPDATED,
+        Outcome::Failure,
+        client_id,
+        Some(failure.code()),
+        None,
+    )
+    .await;
+    Some(metadata_error(&failure))
+}
+
 async fn authenticate(
     context: &ConfigurationContext<'_>,
     client_id: &ClientId,

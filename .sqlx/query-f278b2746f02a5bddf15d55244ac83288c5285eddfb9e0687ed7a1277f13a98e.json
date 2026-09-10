@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select status, registration_access_token_hash,\n                    previous_registration_access_token_hash,\n                    previous_registration_access_token_expires_at,\n                    is_agent, agent_owner_user_id, agent_policy\n             from clients\n             where tenant_id = $1 and client_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "registration_access_token_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "previous_registration_access_token_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "previous_registration_access_token_expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "is_agent",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "agent_owner_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "agent_policy",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "f278b2746f02a5bddf15d55244ac83288c5285eddfb9e0687ed7a1277f13a98e"
+}

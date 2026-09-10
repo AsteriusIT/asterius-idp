@@ -2,6 +2,7 @@
 
 pub mod acr_policy;
 pub mod admin_access;
+pub mod agent;
 pub mod auth_request;
 pub mod authorization_details;
 pub mod client;
@@ -21,6 +22,10 @@ pub mod user;
 
 pub use acr_policy::{AcrLevel, AcrPolicy, AcrPolicyError};
 pub use admin_access::{AdminAdmission, PasskeyEnrolment};
+pub use agent::{
+    AGENT_GRANT_TYPES, AgentLimits, AgentOwner, AgentProfile, AgentProfileError,
+    DEFAULT_MAX_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH,
+};
 pub use authorization_details::{
     AuthorizationDetail, AuthorizationDetails, AuthorizationDetailsRegistry,
     AuthorizationDetailsType, InvalidAuthorizationDetails, Schema as JsonSchema,

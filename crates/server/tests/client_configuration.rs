@@ -130,6 +130,7 @@ impl ClientConfiguration for FakeClients {
             registration_access_token: row.registration_access_token,
             previous_registration_access_token: row.previous_registration_access_token,
             status: row.client.status,
+            agent: row.client.registration.agent.clone(),
         }))
     }
 
@@ -404,6 +405,39 @@ impl Fixture {
             alpha,
             beta,
         }
+    }
+
+    /// The same fixture whose `c.alpha` is an agent (`ast-lh3.1`) under
+    /// `limits`, registered for the grants those limits permit.
+    ///
+    /// The row is built the way `POST /register` builds one: the document
+    /// carries the owner, the tenant carries the limits.
+    fn with_agent(self, limits: asterius_domain::AgentLimits) -> Self {
+        let owner = asterius_domain::UserId::generate();
+        let mut agent = client(
+            "c.alpha",
+            &json!({
+                "client_name": "Reconciler",
+                "grant_types": ["client_credentials"],
+                "response_types": [],
+                "scope": "payments",
+                "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+                "client_kind": "agent",
+                "agent_owner": owner.to_string(),
+            }),
+        );
+        agent.registration.agent = agent
+            .registration
+            .agent
+            .take()
+            .map(|profile| profile.under(limits));
+        self.clients.insert(Row {
+            client: agent,
+            registration_access_token: Some(sha256(self.alpha.expose().as_bytes())),
+            previous_registration_access_token: None,
+            resources: Vec::new(),
+        });
+        self
     }
 
     /// The same fixture on a tenant that signs with `algorithms` and nothing
@@ -2338,4 +2372,92 @@ async fn a_previous_token_is_not_a_credential_for_another_client() {
     // Beta's own credential is untouched by somebody else's mistake.
     let beta = read(&fixture.context(), "c.beta", &bearer(&fixture.beta), now()).await;
     assert_eq!(beta.status(), StatusCode::OK);
+}
+
+/// RFC 7592 §2.2 lets a client rewrite its own metadata; `ast-lh3.1` says an
+/// agent's *limits* are not its own to rewrite. The refusal is therefore about
+/// the document — `400 invalid_client_metadata` — and not a storage failure the
+/// caller cannot act on, which is what it used to be.
+#[tokio::test]
+async fn an_agent_cannot_update_itself_outside_its_tenants_limits() {
+    // Arrange: an agent whose tenant permits one scope, updating itself to
+    // another.
+    let fixture = Fixture::new()
+        .with_agent(asterius_domain::AgentLimits::default().with_scopes(["payments"]));
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "client_id": "c.alpha",
+            "client_name": "Reconciler",
+            "grant_types": ["client_credentials"],
+            "response_types": [],
+            "scope": "payments treasury",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        }))
+        .expect("serialise"),
+    );
+
+    // Act.
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &body,
+        now(),
+    )
+    .await;
+
+    // Assert: a 400 the client can act on, and nothing written.
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let document = body_of(response).await;
+    assert_eq!(document["error"], json!("invalid_client_metadata"));
+    let stored = fixture
+        .clients
+        .row("c.alpha")
+        .expect("the row is still there");
+    assert_eq!(
+        stored
+            .client
+            .registration
+            .scopes
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["payments"],
+        "a refused update was written anyway"
+    );
+}
+
+/// And an update that stays inside them is an ordinary update: the rule is
+/// about one document, not about agents.
+#[tokio::test]
+async fn an_agent_may_update_itself_inside_its_tenants_limits() {
+    // Arrange.
+    let fixture = Fixture::new()
+        .with_agent(asterius_domain::AgentLimits::default().with_scopes(["payments"]));
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "client_id": "c.alpha",
+            "client_name": "Reconciler, renamed",
+            "grant_types": ["client_credentials"],
+            "response_types": [],
+            "scope": "payments",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        }))
+        .expect("serialise"),
+    );
+
+    // Act.
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &body,
+        now(),
+    )
+    .await;
+
+    // Assert.
+    assert_eq!(response.status(), StatusCode::OK);
+    let document = body_of(response).await;
+    assert_eq!(document["client_name"], json!("Reconciler, renamed"));
 }

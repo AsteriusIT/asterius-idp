@@ -953,7 +953,7 @@ db_test! {
 // ---------------------------------------------------------------------------
 
 use asterius_domain::{
-    Capabilities, Client, ClientId, ClientRegistration, ClientStatus, TokenBinding,
+    AgentLimits, Capabilities, Client, ClientId, ClientRegistration, ClientStatus, TokenBinding,
 };
 use serde_json::json;
 
@@ -1341,9 +1341,7 @@ db_test! {
 
         sqlx::query(
             "update clients
-             set is_agent = true,
-                 agent_owner_sub = 'alice',
-                 registration_access_token_hash = repeat('\\001', 32)::bytea
+             set registration_access_token_hash = repeat('\\001', 32)::bytea
              where tenant_id = 'demo' and client_id = 'agent'",
         )
         .execute(&db.pool)
@@ -1355,20 +1353,150 @@ db_test! {
         repo.upsert(&renamed).await.expect("update");
 
         let row = sqlx::query(
-            "select client_name, is_agent, agent_owner_sub, registration_access_token_hash
+            "select client_name, registration_access_token_hash
              from clients where tenant_id = 'demo' and client_id = 'agent'",
         )
         .fetch_one(&db.pool)
         .await
         .expect("read back");
         assert_eq!(row.get::<String, _>("client_name"), "Renamed");
-        assert!(row.get::<bool, _>("is_agent"), "the agent flag was erased");
-        assert_eq!(row.get::<Option<String>, _>("agent_owner_sub").as_deref(), Some("alice"));
         assert_eq!(
             row.get::<Option<Vec<u8>>, _>("registration_access_token_hash"),
             Some(vec![1_u8; 32]),
             "the registration access token was erased by a metadata update"
         );
+    }
+}
+
+/// The document that registers an agent (`ast-lh3.1`) owned by `owner`.
+fn agent_document(owner: asterius_domain::UserId) -> serde_json::Value {
+    json!({
+        "client_name": "Reconciler",
+        "grant_types": ["client_credentials"],
+        "response_types": [],
+        "scope": "payments",
+        "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        "client_kind": "agent",
+        "agent_owner": owner.to_string(),
+    })
+}
+
+db_test! {
+    /// The profile is stored in its own columns and comes back as the entity it
+    /// went in as: the owner from `agent_owner_user_id`, the limits from
+    /// `agent_policy`. A round trip that lost either would leave an agent with
+    /// nobody answerable for it or with none of its tenant's limits.
+    async fn an_agent_profile_survives_the_round_trip(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        let owner = seed_user(&db.pool, "demo", "ada").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        let mut agent = client("demo", "reconciler", &agent_document(owner));
+        agent.registration.agent = agent.registration.agent.take().map(|profile| {
+            profile.under(
+                AgentLimits::default().with_access_token_ttl_cap(time::Duration::minutes(2)),
+            )
+        });
+
+        // Act
+        repo.upsert(&agent).await.expect("store the agent");
+        let read_back = repo
+            .find(&ClientId::new("reconciler"))
+            .await
+            .expect("read the agent back")
+            .expect("the agent exists");
+
+        // Assert
+        assert_eq!(read_back.registration.agent, agent.registration.agent);
+    }
+}
+
+db_test! {
+    /// Migration `0021`: an agent whose owner is deleted is disabled, and its
+    /// owner column is emptied. Not cascaded away — the row has an audit history
+    /// and possibly live grants, and destroying it would destroy the evidence of
+    /// what the agent did.
+    async fn deleting_an_owner_disables_their_agents(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        let owner = seed_user(&db.pool, "demo", "ada").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        repo.upsert(&client("demo", "reconciler", &agent_document(owner)))
+            .await
+            .expect("store the agent");
+
+        // Act
+        sqlx::query("delete from users where tenant_id = 'demo' and user_id = $1")
+            .bind(owner.as_uuid())
+            .execute(&db.pool)
+            .await
+            .expect("delete the owner");
+
+        // Assert
+        let row = sqlx::query(
+            "select status, agent_owner_user_id, is_agent from clients
+             where tenant_id = 'demo' and client_id = 'reconciler'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("the client row is still there");
+        assert_eq!(row.get::<String, _>("status"), "disabled");
+        assert!(row.get::<Option<uuid::Uuid>, _>("agent_owner_user_id").is_none());
+        assert!(row.get::<bool, _>("is_agent"), "the row is still an agent");
+    }
+}
+
+db_test! {
+    /// And it does not load. An ownerless agent is nobody's agent: demoting it
+    /// to an ordinary client would hand back a client holding an agent's grants
+    /// and none of an agent's limits.
+    async fn an_agent_whose_owner_is_gone_does_not_load(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        let owner = seed_user(&db.pool, "demo", "ada").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        repo.upsert(&client("demo", "reconciler", &agent_document(owner)))
+            .await
+            .expect("store the agent");
+        sqlx::query("delete from users where tenant_id = 'demo' and user_id = $1")
+            .bind(owner.as_uuid())
+            .execute(&db.pool)
+            .await
+            .expect("delete the owner");
+
+        // Act
+        let loaded = repo.find(&ClientId::new("reconciler")).await;
+
+        // Assert
+        assert!(
+            matches!(loaded, Err(asterius_domain::DomainError::Invalid { .. })),
+            "an ownerless agent loaded: {loaded:?}"
+        );
+    }
+}
+
+db_test! {
+    /// The owner is a user of the *same* tenant. A client owned across a tenant
+    /// boundary would be a delegation the other tenant never agreed to, so the
+    /// composite foreign key refuses the row.
+    async fn an_agent_cannot_be_owned_by_another_tenants_user(db) {
+        // Arrange
+        seed_tenant(&db.pool, "demo").await;
+        seed_tenant(&db.pool, "other").await;
+        let stranger = seed_user(&db.pool, "other", "ada").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+
+        // Act
+        let stored = repo
+            .upsert(&client("demo", "reconciler", &agent_document(stranger)))
+            .await;
+
+        // Assert
+        assert!(stored.is_err(), "an agent was owned across tenants");
     }
 }
 
@@ -6710,6 +6838,9 @@ mod client_configuration {
                     // (`ast-m9c.12`), so there is no second credential.
                     previous_registration_access_token: None,
                     status: ClientStatus::Active,
+                    // Not an agent (`ast-lh3.1`), so there is no profile to
+                    // judge a management request against.
+                    agent: None,
                 }
             );
             assert_ne!(
@@ -6870,8 +7001,6 @@ mod client_configuration {
             sqlx::query(
                 "update clients
                  set resources = array['https://api.example/accounts'],
-                     is_agent = true,
-                     agent_owner_sub = 'alice',
                      software_statement = '{\"iss\": \"softwarehouse\"}'::jsonb
                  where tenant_id = 'demo' and client_id = 'c.abc'",
             )
@@ -6944,8 +7073,7 @@ mod client_configuration {
             }
 
             let row = sqlx::query(
-                "select registration_access_token_hash, is_agent, agent_owner_sub,
-                        software_statement, client_type
+                "select registration_access_token_hash, software_statement, client_type
                  from clients where tenant_id = 'demo' and client_id = 'c.abc'",
             )
             .fetch_one(&db.pool)
@@ -6955,11 +7083,6 @@ mod client_configuration {
                 row.get::<Option<Vec<u8>>, _>("registration_access_token_hash"),
                 Some(digest.to_vec()),
                 "an update rotated or erased the registration access token"
-            );
-            assert!(row.get::<bool, _>("is_agent"), "an update erased the agent flag");
-            assert_eq!(
-                row.get::<Option<String>, _>("agent_owner_sub").as_deref(),
-                Some("alice")
             );
             assert!(row.get::<Option<serde_json::Value>, _>("software_statement").is_some());
             assert_eq!(row.get::<String, _>("client_type"), "confidential");

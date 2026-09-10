@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select is_agent, agent_policy from clients\n             where tenant_id = $1 and client_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_agent",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "agent_policy",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d0f486d6296d0302d603a64bf2e5051b98e1c1576b07bc96c9be85ce029768f2"
+}

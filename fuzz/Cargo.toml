@@ -106,6 +106,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agent_profile"
+path = "fuzz_targets/agent_profile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "attestation_object"
 path = "fuzz_targets/attestation_object.rs"
 test = false

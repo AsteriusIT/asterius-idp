@@ -40,6 +40,7 @@
 //! operator can tell "everybody is failing the host allow-list" from "somebody
 //! is probing", and a client learns neither.
 
+use crate::entities::agent::{AgentLimits, AgentProfileError};
 use crate::entities::authorization_details::Schema;
 use crate::entities::client::{
     ClientMetadataError, ClientRegistration, GrantType, JwksSource, TokenEndpointAuthMethod,
@@ -270,11 +271,14 @@ pub enum RuleId {
     SoftwareStatementRequired,
     /// The initial access token has registered as many clients as it may.
     ClientQuota,
+    /// The document registers an agent (`ast-lh3.1`) and this tenant does not
+    /// onboard agents.
+    AgentProfile,
 }
 
 impl RuleId {
     /// Every rule, so a test can assert each has an identifier and a sentence.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::AuthMethod,
         Self::GrantType,
         Self::Scope,
@@ -283,6 +287,7 @@ impl RuleId {
         Self::JwksSource,
         Self::SoftwareStatementRequired,
         Self::ClientQuota,
+        Self::AgentProfile,
     ];
 
     /// The stable identifier that reaches the audit trail.
@@ -297,6 +302,7 @@ impl RuleId {
             Self::JwksSource => "jwks_source_not_allowed",
             Self::SoftwareStatementRequired => "software_statement_required",
             Self::ClientQuota => "client_quota_exhausted",
+            Self::AgentProfile => "agent_profile_not_configured",
         }
     }
 
@@ -311,6 +317,7 @@ impl RuleId {
             Self::RedirectHost => "redirect_uris",
             Self::JwksSource => "jwks",
             Self::SoftwareStatementRequired | Self::ClientQuota => "software_statement",
+            Self::AgentProfile => "client_kind",
         }
     }
 
@@ -346,6 +353,7 @@ impl RuleId {
             Self::ClientQuota => {
                 "this initial access token has registered as many clients as it may"
             }
+            Self::AgentProfile => "this tenant does not register agent clients",
         }
     }
 }
@@ -410,6 +418,7 @@ pub struct RegistrationPolicy {
     unused_client_expiry: Option<Duration>,
     rotate_registration_access_token: bool,
     registration_access_token_grace: Option<Duration>,
+    agent: Option<AgentLimits>,
 }
 
 impl RegistrationPolicy {
@@ -455,6 +464,11 @@ impl RegistrationPolicy {
             // has no re-issue path. A tenant that wants it says so.
             rotate_registration_access_token: false,
             registration_access_token_grace: None,
+            // `ast-lh3.1`: this preset is what makes an agent an agent. A
+            // tenant selecting it gets the narrowest limits there are —
+            // `client_credentials`, one hop of delegation, no allow-list of its
+            // own — and widens them by writing them down.
+            agent: Some(AgentLimits::default()),
         }
     }
 
@@ -641,6 +655,44 @@ impl RegistrationPolicy {
         Ok(())
     }
 
+    /// The limits this tenant puts on its agents (`ast-lh3.1`), or `None`
+    /// where it registers no agents at all.
+    ///
+    /// `None` is not "no limits": it is a tenant whose policy never mentioned
+    /// agents, and a document arriving with `client_kind` of `agent` under such
+    /// a policy is refused by [`RegistrationPolicy::check_agent`]. A tenant
+    /// onboards agents by saying so.
+    #[must_use]
+    pub const fn agent_limits(&self) -> Option<&AgentLimits> {
+        self.agent.as_ref()
+    }
+
+    /// Whether this tenant will register `registration` as an agent, and under
+    /// which limits.
+    ///
+    /// `Ok(None)` is an ordinary client, which this rule has nothing to say
+    /// about. `Ok(Some(_))` is the limits to attach to the stored profile: they
+    /// come from here and never from the document, which is the whole of
+    /// `ast-lh3.1`'s answer to RFC 8693 §5 — a delegated credential whose
+    /// bounds are written by its holder has no bounds.
+    ///
+    /// # Errors
+    ///
+    /// [`RuleId::AgentProfile`] when the document registers an agent and this
+    /// tenant does not onboard them.
+    pub fn check_agent(
+        &self,
+        registration: &ClientRegistration,
+    ) -> Result<Option<&AgentLimits>, PolicyViolation> {
+        if registration.agent.is_none() {
+            return Ok(None);
+        }
+        self.agent
+            .as_ref()
+            .map(Some)
+            .ok_or_else(|| PolicyViolation::new(RuleId::AgentProfile))
+    }
+
     /// The JSON Schema the stored document is validated against.
     ///
     /// A `&'static str` parsed on demand rather than a `LazyLock<Schema>`,
@@ -704,7 +756,8 @@ impl RegistrationPolicy {
                 "max_clients_per_initial_access_token": { "type": "integer" },
                 "unused_client_expiry_seconds": { "type": "integer" },
                 "rotate_registration_access_token": { "type": "boolean" },
-                "registration_access_token_grace_seconds": { "type": "integer" }
+                "registration_access_token_grace_seconds": { "type": "integer" },
+                "agent": AgentLimits::schema_document()
             }
         })
     }
@@ -831,6 +884,15 @@ impl RegistrationPolicy {
             policy.registration_access_token_grace = Some(grace);
         }
 
+        // `ast-lh3.1`. Read after the preset, so a tenant that named
+        // `"profile": "agent"` and then wrote its own `agent` object gets the
+        // object it wrote rather than a merge of the two — the same rule every
+        // other member here follows, and the reason an operator can predict
+        // what a stored document means without knowing the preset.
+        if let Some(agent) = object.get("agent") {
+            policy.agent = Some(AgentLimits::from_json(agent)?);
+        }
+
         // A tenant that requires a statement and trusts nobody to sign one has
         // written a policy under which no registration can ever succeed.
         // Refused here rather than at the first registration, because this is
@@ -928,6 +990,9 @@ impl RegistrationPolicy {
                 "registration_access_token_grace_seconds".to_owned(),
                 Value::from(grace.whole_seconds()),
             );
+        }
+        if let Some(agent) = &self.agent {
+            object.insert("agent".to_owned(), agent.to_json());
         }
         document
     }
@@ -1082,11 +1147,18 @@ pub enum RegistrationPolicyError {
          rotated-out token is a second live credential rather than cover for a lost response"
     )]
     GraceTooLong,
+    /// The `agent` object (`ast-lh3.1`) is not one this server would have
+    /// written. Wrapped rather than flattened: the agent profile has its own
+    /// vocabulary of failures and a policy reader should not have to restate
+    /// it.
+    #[error("the registration policy's agent profile is unusable: {0}")]
+    Agent(#[from] AgentProfileError),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entities::agent::{AgentOwner, AgentProfile};
     use crate::entities::client::{ApplicationType, RedirectUri, SubjectType, TokenBinding};
     use crate::keys::SigningAlgorithm;
 
@@ -1119,6 +1191,7 @@ mod tests {
             backchannel_token_delivery_mode: None,
             backchannel_client_notification_endpoint: None,
             backchannel_user_code_parameter: false,
+            agent: None,
         }
     }
 
@@ -1455,6 +1528,122 @@ mod tests {
         assert_eq!(
             RegistrationPolicy::default().check_client_quota(u64::MAX),
             Ok(())
+        );
+    }
+
+    /// An agent registration under a tenant that never mentioned agents is a
+    /// delegation nobody configured. Refused, and named: the audit trail gets
+    /// `agent_profile_not_configured` rather than a generic metadata error.
+    #[test]
+    fn a_tenant_with_no_agent_profile_registers_no_agents() {
+        // Arrange
+        let mut registration = registration();
+        registration.agent = Some(AgentProfile::new(
+            AgentOwner::User(crate::UserId::generate()),
+            AgentLimits::default(),
+        ));
+        let policy = RegistrationPolicy::default();
+
+        // Act
+        let outcome = policy.check_agent(&registration);
+
+        // Assert
+        assert_eq!(
+            outcome.expect_err("a tenant with no agent profile").rule,
+            RuleId::AgentProfile
+        );
+    }
+
+    /// And the preset does: selecting it is how a tenant says "I onboard
+    /// agents", which is why the limits ride on the policy rather than on a
+    /// separate switch that could disagree with it.
+    #[test]
+    fn the_agent_preset_carries_the_limits_an_agent_is_registered_under() {
+        // Arrange
+        let mut registration = registration();
+        registration.agent = Some(AgentProfile::new(
+            AgentOwner::User(crate::UserId::generate()),
+            AgentLimits::default(),
+        ));
+        let policy = RegistrationPolicy::agent_profile();
+
+        // Act
+        let limits = policy
+            .check_agent(&registration)
+            .expect("the preset onboards agents");
+
+        // Assert
+        assert_eq!(limits, Some(&AgentLimits::default()));
+    }
+
+    /// An ordinary client is not asked about agents at all, whatever the tenant
+    /// configured.
+    #[test]
+    fn a_client_that_is_not_an_agent_passes_the_agent_rule() {
+        // Arrange & act
+        let policy = RegistrationPolicy::default();
+        let outcome = policy.check_agent(&registration());
+
+        // Assert
+        assert_eq!(outcome.expect("not an agent"), None);
+    }
+
+    /// A stored policy that spells out its own agent limits gets those and not
+    /// the preset's: a tenant reading its document back has to see what is in
+    /// force.
+    #[test]
+    fn a_stored_agent_object_replaces_the_presets_limits() {
+        // Arrange
+        let document = serde_json::json!({
+            "profile": "agent",
+            "software_statement": {
+                "required": true,
+                "issuers": [{
+                    "issuer": "https://vendor.example",
+                    "jwks_uri": "https://vendor.example/jwks",
+                }],
+            },
+            "agent": { "scopes": ["inventory:read"], "max_delegation_depth": 3 },
+        });
+
+        // Act
+        let policy = RegistrationPolicy::from_json(Some(&document)).expect("a valid policy");
+
+        // Assert
+        let limits = policy.agent_limits().expect("the preset onboards agents");
+        assert_eq!(limits.max_delegation_depth(), 3);
+        assert_eq!(
+            limits.scopes(),
+            Some(&BTreeSet::from(["inventory:read".to_owned()]))
+        );
+    }
+
+    /// A policy round-trips through its own JSON, agent limits included: what a
+    /// tenant saved is what a tenant reads back.
+    #[test]
+    fn an_agent_policy_round_trips() {
+        // Arrange: the preset with the issuer it insists on, since a policy
+        // that requires a software statement and trusts nobody is refused.
+        let policy = policy(&serde_json::json!({
+            "profile": "agent",
+            "software_statement": {
+                "required": true,
+                "issuers": [{
+                    "issuer": "https://vendor.example",
+                    "jwks_uri": "https://vendor.example/jwks",
+                }],
+            },
+        }));
+
+        // Act
+        let read_back = RegistrationPolicy::from_json(Some(&policy.to_json()));
+
+        // Assert
+        assert_eq!(
+            read_back
+                .expect("the document this build wrote")
+                .agent_limits(),
+            Some(&AgentLimits::default())
         );
     }
 

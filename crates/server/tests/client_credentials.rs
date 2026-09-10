@@ -21,8 +21,9 @@ use asterius_domain::audit::{AuditEvent, AuditSink, EventType, Outcome};
 use asterius_domain::entities::grant::GrantStatus;
 use asterius_domain::ports::TenantRepository;
 use asterius_domain::{
-    Capabilities, Client, ClientId, ClientRegistration, ClientStatus, GrantId, Issuer, KeyStore,
-    Kid, ResourceIdentifier, ResourceServer, Tenant, TenantId, TenantStatus,
+    AgentLimits, Capabilities, Client, ClientId, ClientRegistration, ClientStatus, GrantId, Issuer,
+    KeyStore, Kid, ResourceIdentifier, ResourceServer, Tenant, TenantId, TenantStatus, User,
+    UserId, UserStatus,
 };
 use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
@@ -32,7 +33,8 @@ use asterius_server::http::issuance::SenderConstraint;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
 use asterius_server::signing::CachedSigner;
 use asterius_store_pg::{
-    PgAuditSink, PgGrantRepository, PgResourceServers, PgTenantRepository, Store, TenantKeyStore,
+    PgAuditSink, PgGrantRepository, PgResourceServers, PgTenantRepository, PgUserRepository, Store,
+    TenantKeyStore,
 };
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -40,7 +42,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
 /// The audit trail, in memory: `asterius-server` cannot read `audit_events`
 /// back (ADR-0001), and the sink is a port, so the honest substitute is a port
@@ -200,6 +202,71 @@ impl Fixture {
             .upsert(&client)
             .await
             .expect("store the client");
+        client
+    }
+
+    /// An agent client (`ast-lh3.1`) owned by a real account, under `limits`.
+    ///
+    /// The owner is a row in `users` and not a fixture string: migration `0021`
+    /// makes the owner a foreign key, so a test that invented one would be
+    /// testing a shape the database refuses.
+    async fn agent(&self, limits: AgentLimits) -> Client {
+        let owner = UserId::generate();
+        PgUserRepository::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+            Arc::clone(&self.kek),
+        )
+        .upsert(&User {
+            tenant: self.tenant.id.clone(),
+            id: owner,
+            username: owner.to_string(),
+            email: None,
+            email_verified: false,
+            status: UserStatus::Active,
+            claims: asterius_domain::entities::user::ClaimSet::default(),
+            created_at: self.now,
+            updated_at: self.now,
+        })
+        .await
+        .expect("create the owner");
+
+        let document = json!({
+            "client_name": "Reconciler",
+            "grant_types": ["client_credentials"],
+            "response_types": [],
+            "scope": REGISTERED_SCOPE,
+            "token_endpoint_auth_method": "private_key_jwt",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+            "client_kind": "agent",
+            "agent_owner": owner.to_string(),
+        });
+        let mut registration = ClientRegistration::from_json(
+            &serde_json::to_vec(&document).expect("serialise"),
+            Capabilities::default(),
+        )
+        .expect("a valid agent registration");
+        // What `POST /register` does with the tenant's policy, done here: the
+        // document carries the owner, the tenant carries the limits.
+        registration.agent = registration
+            .agent
+            .take()
+            .map(|profile| profile.under(limits));
+
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(CLIENT),
+            registration,
+            status: ClientStatus::Active,
+            created_at: self.now,
+            updated_at: self.now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities::default())
+            .upsert(&client)
+            .await
+            .expect("store the agent");
         client
     }
 
@@ -735,6 +802,131 @@ db_test! {
         let event = events.first().expect("a refusal is recorded");
         assert_eq!(event.event_type, EventType::TOKEN_ISSUED);
         assert_eq!(event.outcome, Outcome::Failure);
+        f.tear_down().await;
+    }
+}
+
+// ---- Agent clients (`ast-lh3.1`) -----------------------------------------
+
+db_test! {
+    /// An agent acts for somebody, and every token it is issued has to say who.
+    /// `Actor::Client` would record that a credential was used; `Actor::Agent`
+    /// records who is answerable for it, which is the only thing that makes an
+    /// unattended fleet auditable.
+    async fn an_issuance_to_an_agent_names_its_owner(f) {
+        // Arrange
+        let client = f.agent(AgentLimits::default()).await;
+        let owner = client
+            .registration
+            .agent
+            .as_ref()
+            .expect("the client is an agent")
+            .owner()
+            .to_string();
+
+        // Act
+        let (status, body) = f.request(&client, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let events = f.audit.events();
+        let event = events.first().expect("an issuance is recorded");
+        let actor = asterius_domain::audit::record::actor_json(&event.actor);
+        assert_eq!(actor["type"], "agent");
+        assert_eq!(actor["id"], CLIENT);
+        assert_eq!(actor["on_behalf_of"], owner);
+        let detail = asterius_domain::audit::record::detail_json(&event.detail);
+        assert_eq!(
+            detail["agent_owner"], owner,
+            "the trail entry does not name the account the agent acts for"
+        );
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// An ordinary client is not an agent, and the trail must not suggest one:
+    /// `on_behalf_of` on a client that acts for itself would invent a
+    /// delegation nobody performed.
+    async fn an_issuance_to_an_ordinary_client_names_no_owner(f) {
+        // Arrange
+        let client = f.client(&["client_credentials"]).await;
+
+        // Act
+        let (status, body) = f.request(&client, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let events = f.audit.events();
+        let event = events.first().expect("an issuance is recorded");
+        let actor = asterius_domain::audit::record::actor_json(&event.actor);
+        assert_eq!(actor["type"], "client");
+        assert!(actor.get("on_behalf_of").is_none());
+        let detail = asterius_domain::audit::record::detail_json(&event.detail);
+        assert!(detail.get("agent_owner").is_none());
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// The agent profile's ceiling bounds the tenant's lifetime rather than
+    /// replacing it (`ast-5c6` and `ast-lh3.1` are both in force): the tenant
+    /// default here is five minutes and the profile says one, so the token
+    /// lives one.
+    async fn an_agents_token_lifetime_is_capped_by_its_profile(f) {
+        // Arrange
+        let limits = AgentLimits::default().with_access_token_ttl_cap(Duration::minutes(1));
+        let client = f.agent(limits).await;
+
+        // Act
+        let (status, body) = f.request(&client, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["expires_in"].as_i64(),
+            Some(60),
+            "the agent profile's ceiling did not shorten the token"
+        );
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// A scope the tenant marked as needing human approval cannot be reached by
+    /// a grant with no human in it. RFC 6749 §5.2's `invalid_scope`, and a
+    /// refusal rather than a quiet narrowing: a client that asked for a scope
+    /// and got a token without it has no way to tell.
+    async fn an_agent_cannot_take_a_scope_that_needs_a_person(f) {
+        // Arrange
+        let limits = AgentLimits::default().with_human_approval_scopes(["payments.write"]);
+        let client = f.agent(limits).await;
+
+        // Act
+        let (status, body) = f
+            .request(&client, &[("scope", "payments.write")])
+            .await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "invalid_scope");
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// The same agent, asking for the scope beside it, is issued a token: the
+    /// rule is about one scope and not about agents.
+    async fn an_agent_may_take_an_unattended_scope(f) {
+        // Arrange
+        let limits = AgentLimits::default().with_human_approval_scopes(["payments.write"]);
+        let client = f.agent(limits).await;
+
+        // Act
+        let (status, body) = f.request(&client, &[("scope", "payments.read")]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK, "{body}");
         f.tear_down().await;
     }
 }

@@ -523,6 +523,11 @@ async fn registered(
         return refusal;
     }
 
+    let registration = match under_agent_policy(context, now, registration).await {
+        Ok(registration) => registration,
+        Err(refusal) => return *refusal,
+    };
+
     // Minted after validation, so a rejected document consumes no identifier
     // and no entropy.
     let client_id = ClientId::mint();
@@ -812,6 +817,49 @@ async fn unacceptable(
     None
 }
 
+/// The registration with this tenant's agent limits attached (`ast-lh3.1`).
+///
+/// An agent's *owner* came from the document and was validated with it; its
+/// *limits* come from the tenant and are attached here, in the one place both
+/// are in hand. A client that could write its own limits would be a delegated
+/// credential with no bounds (RFC 8693 §5), so this is an overwrite and never a
+/// merge.
+///
+/// A registration that is not an agent's passes through untouched, whatever the
+/// tenant configured.
+///
+/// # Errors
+///
+/// The response to return: `invalid_client_metadata` for a document the limits
+/// refuse, and the policy refusal for a tenant that registers no agents at all.
+async fn under_agent_policy(
+    context: &RegisterContext<'_>,
+    now: OffsetDateTime,
+    mut registration: ClientRegistration,
+) -> Result<ClientRegistration, Box<Response>> {
+    let limits = match context.tenant_policy.check_agent(&registration) {
+        Ok(limits) => limits,
+        Err(violation) => return Err(Box::new(refuse_by_policy(context, now, violation).await)),
+    };
+    let (Some(agent), Some(limits)) = (registration.agent.take(), limits) else {
+        return Ok(registration);
+    };
+    if let Err(failure) = limits.check(&registration) {
+        record(
+            context,
+            now,
+            Outcome::Failure,
+            None,
+            Some(failure.code()),
+            None,
+        )
+        .await;
+        return Err(Box::new(metadata_error(&failure)));
+    }
+    registration.agent = Some(agent.under(limits.clone()));
+    Ok(registration)
+}
+
 /// The document to validate, once any software statement has had its say.
 ///
 /// `Ok(None)` is a registration that carried no statement, whose document is
@@ -1078,6 +1126,19 @@ pub(crate) fn client_information(
     }
     if registration.backchannel_user_code_parameter {
         object.insert("backchannel_user_code_parameter".to_owned(), json!(true));
+    }
+    // `ast-lh3.1`. Omitted for an ordinary client, for the reason above: a
+    // `client_kind` of `standard` on every response would make the member look
+    // like something a client chose rather than the default it is.
+    //
+    // The *limits* are deliberately absent. They are the tenant's, not the
+    // client's registered metadata, and echoing them here would tell a
+    // registrant which scopes its owner has to approve and how deep a
+    // delegation may go — a map of the tenant's policy handed to the one party
+    // it constrains.
+    if let Some(agent) = &registration.agent {
+        object.insert("client_kind".to_owned(), json!("agent"));
+        object.insert("agent_owner".to_owned(), json!(agent.owner().to_string()));
     }
 
     document
