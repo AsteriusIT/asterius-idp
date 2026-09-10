@@ -408,6 +408,8 @@ pub struct RegistrationPolicy {
     software_statement: SoftwareStatementRule,
     max_clients_per_initial_access_token: Option<u32>,
     unused_client_expiry: Option<Duration>,
+    rotate_registration_access_token: bool,
+    registration_access_token_grace: Option<Duration>,
 }
 
 impl RegistrationPolicy {
@@ -447,6 +449,12 @@ impl RegistrationPolicy {
             },
             max_clients_per_initial_access_token: Some(DEFAULT_AGENT_CLIENT_QUOTA),
             unused_client_expiry: Some(DEFAULT_AGENT_UNUSED_EXPIRY),
+            // Off, like everywhere else. An agent fleet is the population least
+            // able to cope with a rotation whose response is lost: nobody is at
+            // the keyboard to notice a 200 that never arrived, and this server
+            // has no re-issue path. A tenant that wants it says so.
+            rotate_registration_access_token: false,
+            registration_access_token_grace: None,
         }
     }
 
@@ -496,6 +504,49 @@ impl RegistrationPolicy {
     #[must_use]
     pub const fn unused_client_expiry(&self) -> Option<Duration> {
         self.unused_client_expiry
+    }
+
+    /// Whether an update at the RFC 7592 endpoint issues a fresh registration
+    /// access token (`ast-m9c.12`).
+    ///
+    /// **Off unless this tenant turned it on**, and the default is the decision
+    /// rather than an omission. RFC 7592 §5 only says the token "MAY be
+    /// rotated when the developer or client does a read or update operation",
+    /// and the cost of taking that MAY is asymmetric here: this server issues
+    /// no client secret (FAPI 2.0 SP §5.3.2.1), so the registration access
+    /// token is a client's only credential and there is no re-issue path. A
+    /// rotation whose `200` is lost in transit would stand the client down
+    /// permanently — the state §5 tells implementers to avoid — unless the
+    /// predecessor keeps working for a while, which is what
+    /// [`Self::registration_access_token_grace`] buys and what a tenant is
+    /// really consenting to when it sets this.
+    ///
+    /// It never applies to a read. OIDC Registration §4.3: "since Read
+    /// operations are intended to be idempotent, the Client Read Request itself
+    /// SHOULD NOT cause changes". The endpoint enforces that; this flag cannot
+    /// express it.
+    #[must_use]
+    pub const fn rotates_registration_access_token(&self) -> bool {
+        self.rotate_registration_access_token
+    }
+
+    /// How long a rotated-out registration access token keeps working.
+    ///
+    /// Always a bounded window, never `None`: a grace that a tenant forgot to
+    /// set must be short, not infinite, so an unset value reads as
+    /// [`DEFAULT_REGISTRATION_ACCESS_TOKEN_GRACE`] and
+    /// [`MAX_REGISTRATION_ACCESS_TOKEN_GRACE`] is the ceiling
+    /// [`Self::from_json`] refuses past.
+    ///
+    /// The window exists for exactly one failure — the response carrying the
+    /// new token did not arrive — and not for running two credentials side by
+    /// side. That is why the endpoint retires the predecessor the instant the
+    /// successor is used: once the client has demonstrably received the new
+    /// token, the old one is a spare key with no purpose.
+    #[must_use]
+    pub fn registration_access_token_grace(&self) -> Duration {
+        self.registration_access_token_grace
+            .unwrap_or(DEFAULT_REGISTRATION_ACCESS_TOKEN_GRACE)
     }
 
     /// Evaluates a registration against this policy.
@@ -651,7 +702,9 @@ impl RegistrationPolicy {
                     }
                 },
                 "max_clients_per_initial_access_token": { "type": "integer" },
-                "unused_client_expiry_seconds": { "type": "integer" }
+                "unused_client_expiry_seconds": { "type": "integer" },
+                "rotate_registration_access_token": { "type": "boolean" },
+                "registration_access_token_grace_seconds": { "type": "integer" }
             }
         })
     }
@@ -756,6 +809,28 @@ impl RegistrationPolicy {
             policy.unused_client_expiry = Some(Duration::seconds(seconds));
         }
 
+        // `ast-m9c.12`. Read before the window, so that a document naming only
+        // a window is still off: the window describes what rotation does, not
+        // whether it happens, and inferring the flag from it would turn a
+        // tenant tuning a setting into a tenant enabling a feature.
+        if let Some(rotate) = object.get("rotate_registration_access_token") {
+            policy.rotate_registration_access_token = rotate
+                .as_bool()
+                .ok_or(RegistrationPolicyError::SchemaRejected)?;
+        }
+        if let Some(seconds) = object.get("registration_access_token_grace_seconds") {
+            let seconds = seconds.as_i64().filter(|value| *value > 0).ok_or(
+                RegistrationPolicyError::NotAPositiveCount(
+                    "registration_access_token_grace_seconds",
+                ),
+            )?;
+            let grace = Duration::seconds(seconds);
+            if grace > MAX_REGISTRATION_ACCESS_TOKEN_GRACE {
+                return Err(RegistrationPolicyError::GraceTooLong);
+            }
+            policy.registration_access_token_grace = Some(grace);
+        }
+
         // A tenant that requires a statement and trusts nobody to sign one has
         // written a policy under which no registration can ever succeed.
         // Refused here rather than at the first registration, because this is
@@ -839,6 +914,21 @@ impl RegistrationPolicy {
                 Value::from(expiry.whole_seconds()),
             );
         }
+        // Written out whenever it is on, and left out when it is off, so that a
+        // stored document says nothing about a feature the tenant never touched
+        // — the same shape every other optional member has here.
+        if self.rotate_registration_access_token {
+            object.insert(
+                "rotate_registration_access_token".to_owned(),
+                Value::from(true),
+            );
+        }
+        if let Some(grace) = self.registration_access_token_grace {
+            object.insert(
+                "registration_access_token_grace_seconds".to_owned(),
+                Value::from(grace.whole_seconds()),
+            );
+        }
         document
     }
 }
@@ -859,6 +949,30 @@ pub const DEFAULT_AGENT_CLIENT_QUOTA: u32 = 25;
 /// never authenticated in a month is one nobody will miss, and every one that
 /// stays is a live credential with a key attached.
 pub const DEFAULT_AGENT_UNUSED_EXPIRY: Duration = Duration::days(30);
+
+/// How long a rotated-out registration access token keeps working when a tenant
+/// turned rotation on and said nothing about the window: five minutes.
+///
+/// Sized against the failure it exists for and nothing else. That failure is a
+/// `200` that never reached the client — a dropped connection, a proxy timeout,
+/// a process killed between the write and the read — and a client that suffered
+/// it retries within seconds, not hours. Five minutes covers a retry with a
+/// backoff or two and an operator re-running the same request by hand; it does
+/// not cover a deployment pipeline that stashes the old token in a config file
+/// and rolls it out tomorrow, and it is not meant to. Every second of the
+/// window is a second in which two credentials open the same door.
+pub const DEFAULT_REGISTRATION_ACCESS_TOKEN_GRACE: Duration = Duration::minutes(5);
+
+/// The longest grace window a tenant may configure: one hour.
+///
+/// A ceiling rather than a suggestion, because the argument for the window runs
+/// out long before this. Past an hour, a predecessor is no longer covering a
+/// lost response — the client either received the new token or has stopped
+/// retrying — and what is left is a second live credential for a client that is
+/// supposed to have exactly one. A tenant that asks for more has misread the
+/// window as a migration period, and [`RegistrationPolicy::from_json`] says so
+/// at the moment an administrator is watching rather than a month later.
+pub const MAX_REGISTRATION_ACCESS_TOKEN_GRACE: Duration = Duration::hours(1);
 
 /// Reads an optional array of strings.
 fn strings(value: Option<&Value>) -> Result<Option<Vec<String>>, RegistrationPolicyError> {
@@ -962,6 +1076,12 @@ pub enum RegistrationPolicyError {
          so no registration could ever succeed"
     )]
     NoTrustedIssuer,
+    /// A registration access token grace window longer than the ceiling.
+    #[error(
+        "`registration_access_token_grace_seconds` must not exceed one hour: past that a \
+         rotated-out token is a second live credential rather than cover for a lost response"
+    )]
+    GraceTooLong,
 }
 
 #[cfg(test)]
@@ -1465,5 +1585,136 @@ mod tests {
                 "unused_client_expiry_seconds"
             ))
         );
+    }
+
+    // ---- registration access token rotation (`ast-m9c.12`) ----------------
+
+    /// The default the whole feature rests on: a tenant that never mentioned
+    /// rotation does not rotate. RFC 7592 §5's "MAY", declined until asked.
+    #[test]
+    fn rotation_is_off_unless_a_tenant_turns_it_on() {
+        // Arrange
+        let document = serde_json::json!({ "mode": "open" });
+
+        // Act
+        let policy = policy(&document);
+
+        // Assert
+        assert!(!policy.rotates_registration_access_token());
+        assert!(!RegistrationPolicy::default().rotates_registration_access_token());
+    }
+
+    #[test]
+    fn a_tenant_can_turn_rotation_on() {
+        // Arrange
+        let document = serde_json::json!({ "rotate_registration_access_token": true });
+
+        // Act
+        let policy = policy(&document);
+
+        // Assert
+        assert!(policy.rotates_registration_access_token());
+    }
+
+    /// A window is a parameter of rotation, not a way of enabling it: a
+    /// document that tunes the grace without asking for rotation still does not
+    /// rotate.
+    #[test]
+    fn a_grace_window_alone_does_not_enable_rotation() {
+        // Arrange
+        let document = serde_json::json!({ "registration_access_token_grace_seconds": 60 });
+
+        // Act
+        let policy = policy(&document);
+
+        // Assert
+        assert!(!policy.rotates_registration_access_token());
+        assert_eq!(
+            policy.registration_access_token_grace(),
+            Duration::seconds(60)
+        );
+    }
+
+    /// The window is bounded even when nobody bounded it: an unset grace is the
+    /// documented default, never "forever".
+    #[test]
+    fn an_unset_grace_window_is_the_default_and_not_unbounded() {
+        // Arrange
+        let policy = policy(&serde_json::json!({ "rotate_registration_access_token": true }));
+
+        // Act
+        let grace = policy.registration_access_token_grace();
+
+        // Assert
+        assert_eq!(grace, DEFAULT_REGISTRATION_ACCESS_TOKEN_GRACE);
+        assert!(grace <= MAX_REGISTRATION_ACCESS_TOKEN_GRACE);
+        assert!(grace > Duration::ZERO);
+    }
+
+    #[test]
+    fn a_grace_window_past_the_ceiling_is_refused() {
+        // Arrange
+        let seconds = MAX_REGISTRATION_ACCESS_TOKEN_GRACE.whole_seconds() + 1;
+        let document = serde_json::json!({ "registration_access_token_grace_seconds": seconds });
+
+        // Act
+        let outcome = RegistrationPolicy::from_json(Some(&document));
+
+        // Assert
+        assert_eq!(outcome, Err(RegistrationPolicyError::GraceTooLong));
+    }
+
+    #[test]
+    fn a_zero_grace_window_is_refused() {
+        // Arrange
+        let document = serde_json::json!({ "registration_access_token_grace_seconds": 0 });
+
+        // Act
+        let outcome = RegistrationPolicy::from_json(Some(&document));
+
+        // Assert
+        assert_eq!(
+            outcome,
+            Err(RegistrationPolicyError::NotAPositiveCount(
+                "registration_access_token_grace_seconds"
+            ))
+        );
+    }
+
+    /// A policy that goes to the tenant row and comes back has to mean the same
+    /// thing, or an administrator's decision is lost on the next read.
+    #[test]
+    fn rotation_survives_a_round_trip_through_storage() {
+        // Arrange
+        let policy = policy(&serde_json::json!({
+            "rotate_registration_access_token": true,
+            "registration_access_token_grace_seconds": 120,
+        }));
+
+        // Act
+        let restored = RegistrationPolicy::from_json(Some(&policy.to_json()))
+            .expect("a policy this server wrote must be one it can read");
+
+        // Assert
+        assert_eq!(restored, policy);
+        assert!(restored.rotates_registration_access_token());
+        assert_eq!(
+            restored.registration_access_token_grace(),
+            Duration::seconds(120)
+        );
+    }
+
+    /// The onboarding preset must not opt a fleet into a credential change
+    /// nobody is watching for.
+    #[test]
+    fn the_agent_profile_does_not_rotate() {
+        // Arrange
+        let policy = RegistrationPolicy::agent_profile();
+
+        // Act
+        let rotates = policy.rotates_registration_access_token();
+
+        // Assert
+        assert!(!rotates);
     }
 }

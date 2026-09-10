@@ -127,7 +127,9 @@ The deployment's posture is a ceiling, not the whole answer. Each tenant carries
     ]
   },
   "max_clients_per_initial_access_token": 25,
-  "unused_client_expiry_seconds": 2592000
+  "unused_client_expiry_seconds": 2592000,
+  "rotate_registration_access_token": false,
+  "registration_access_token_grace_seconds": 300
 }
 ```
 
@@ -139,6 +141,16 @@ Both quota members are enforced since `ast-cu3`:
 
 * **`max_clients_per_initial_access_token`** is stamped onto every token the admin API issues for this tenant (`POST /admin/api/v1/initial-access-tokens`), and charged atomically at `POST /register`. It applies to the tenant's own tokens, which are rows; the initial access tokens an operator configures in this file belong to the *deployment* and still have no quota. A tenant that sets `mode: "initial_access_token"` therefore stops accepting the deployment's tokens and starts accepting only its own — which is the point, and which means such a tenant must issue at least one token before anybody can register.
 * **`unused_client_expiry_seconds`** is honoured by the retention sweep: a client that has not authenticated at the token endpoint or PAR for that long is deleted, dated by `clients.last_used_at` and falling back to `created_at` for a client that has never authenticated. A tenant that sets nothing here keeps every client for ever, which stays the default. `last_used_at` is written at most once per client per hour, so the value is accurate to the hour against a window measured in days.
+
+### Rotating the registration access token
+
+`rotate_registration_access_token` takes RFC 7592 §5's "MAY be rotated when the developer or client does a read or update operation", for updates only and only where a tenant asks. **It is `false` unless the tenant sets it**, and that default is a decision: this server issues no client secret (FAPI 2.0 SP §5.3.2.1), so the registration access token is a client's only credential and there is no re-issue path. A rotation whose `200` is lost in transit would otherwise strand the client for good — the state §5 tells implementers to avoid.
+
+* **A `PUT /register/{client_id}` rotates.** The response carries the new `registration_access_token`, which is the only time the client will see it; the server keeps a digest.
+* **A `GET` never rotates**, whatever the policy says. OIDC Registration §4.3: "since Read operations are intended to be idempotent, the Client Read Request itself SHOULD NOT cause changes."
+* **The previous token keeps working for `registration_access_token_grace_seconds`** — 300 by default, one hour at most — so a client that never received the response can retry with the token it still holds and be handed a new one. The window covers a lost response, not two credentials in parallel: the **first** request authenticated with the new token retires the old one immediately, whatever the window had left. Past the window the old token is refused with the same 401 an unknown client gets.
+
+Each rotation is recorded in the audit trail as `client.credential_rotated`, naming the client and the moment and never the token. A rotation that could not be written is not announced: the response is a `200` with no `registration_access_token`, and the client keeps the credential it has.
 
 ## `[login]` — abuse protection at sign-in
 

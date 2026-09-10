@@ -92,14 +92,17 @@
 //!
 //! # What this endpoint deliberately does not do
 //!
-//! * **It does not rotate the token on a read or an update.** RFC 7592 §5
-//!   permits it ("MAY be rotated when the developer or client does a read or
-//!   update operation") and OIDC Registration §4.3 argues against doing it on a
-//!   read ("since Read operations are intended to be idempotent, the Client
-//!   Read Request itself SHOULD NOT cause changes"). The deciding argument is
-//!   delivery: a rotation whose response is lost in transit strands the client
-//!   permanently, for the same reason as above. `ast-m9c.12` adds it behind
-//!   tenant policy, with the response-loss problem solved rather than ignored.
+//! * **It does not rotate the token on a read.** RFC 7592 §5 would permit it
+//!   ("MAY be rotated when the developer or client does a read or update
+//!   operation"), but OIDC Registration §4.3 is against it — "since Read
+//!   operations are intended to be idempotent, the Client Read Request itself
+//!   SHOULD NOT cause changes" — and no tenant setting can turn it on. An
+//!   **update** does rotate where the tenant's registration policy asks for it
+//!   (`ast-m9c.12`), and the reason it took a policy flag is delivery: a
+//!   rotation whose response is lost in transit would strand the client
+//!   permanently, for the same reason as above. The predecessor therefore keeps
+//!   working for a bounded grace window, and stops the moment the successor is
+//!   used. See [`authenticate`] and [`rotate`].
 //! * **It does not send CORS headers.** OIDC Registration §4 says the endpoint
 //!   "SHOULD support the use of Cross-Origin Resource Sharing (CORS) ... to
 //!   enable JavaScript Clients and other Browser-Based Clients to access it".
@@ -109,14 +112,16 @@
 //!   population this profile does not have.
 
 use crate::http::register::{
-    MAX_BODY_BYTES, bearer, client_information, error, is_json, metadata_error, nqschar, unsignable,
+    MAX_BODY_BYTES, REGISTRATION_TOKEN_BITS, bearer, client_information, error, is_json,
+    metadata_error, nqschar, unsignable,
 };
 use crate::outbound::sector;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::ports::ClientUrlFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
-    ClientStatus, DomainError, KeyStore, ManagedClient, Tenant, ct_eq, sha256,
+    ClientStatus, DomainError, KeyStore, ManagedClient, OpaqueToken,
+    PreviousRegistrationAccessToken, Tenant, ct_eq, sha256,
 };
 use asterius_oidc::metadata::Endpoint;
 use axum::Json;
@@ -363,8 +368,8 @@ impl NotYours {
                  secrets, so there is none to expire (RFC 7592 2.2)"
             }
             Self::RegistrationAccessToken => {
-                "registration_access_token must not be sent in an update request; this \
-                 endpoint does not rotate it (RFC 7592 2.2)"
+                "registration_access_token must not be sent in an update request; whether it \
+                 is rotated is the server's decision, not the client's (RFC 7592 2.2, 5)"
             }
         }
     }
@@ -536,7 +541,7 @@ pub async fn read(
     now: OffsetDateTime,
 ) -> Response {
     let client_id = ClientId::new(client_id.to_owned());
-    if let Err(denied) = authenticate(context, &client_id, headers).await {
+    if let Err(denied) = authenticate(context, &client_id, headers, now).await {
         return refuse(context, now, EventType::CLIENT_READ, &client_id, denied).await;
     }
 
@@ -666,7 +671,7 @@ pub async fn update(
     // Authorization first, so that nothing below is work an unauthorised caller
     // can make this process do — not a JSON parse, not an allocation the size
     // of the body, not an audit row.
-    if let Err(denied) = authenticate(context, &client_id, headers).await {
+    if let Err(denied) = authenticate(context, &client_id, headers, now).await {
         return refuse(context, now, EventType::CLIENT_UPDATED, &client_id, denied).await;
     }
 
@@ -774,7 +779,81 @@ pub async fn update(
         None,
     )
     .await;
-    ok(client_information(&stored, context.tenant, None, now))
+
+    // RFC 7592 §5's "MAY be rotated ... on a read or update operation", taken
+    // for the update alone and only where a tenant asked for it. After the
+    // replacement, never before: a rotation that landed on a `PUT` the
+    // validator went on to refuse would hand the client a new credential in a
+    // response that says the update failed.
+    let rotated = rotate(context, &client_id, now).await;
+    ok(client_information(
+        &stored,
+        context.tenant,
+        rotated.as_ref(),
+        now,
+    ))
+}
+
+/// Issues this client a new registration access token, if the tenant asked for
+/// one (`ast-m9c.12`).
+///
+/// `None` — meaning the response carries no `registration_access_token` and the
+/// client keeps the one it has — in three cases, and they are deliberately the
+/// same answer:
+///
+/// * this tenant does not rotate, which is the default;
+/// * the write failed;
+/// * the row vanished between the update and the rotation.
+///
+/// The last two are the reason the response is rendered from what this returns
+/// rather than from what was minted. The one outcome that must never happen is
+/// a `200` naming a token the database does not hold: a client that believed it
+/// would discard a working credential for one that authenticates nothing, and
+/// with no client secret and no re-issue path that is permanent. Failing to
+/// rotate leaves the client exactly as it was, which is a state it can act
+/// from.
+///
+/// The audit record is written before the token reaches the response and names
+/// no part of it — see [`EventType::CLIENT_CREDENTIAL_ROTATED`].
+async fn rotate(
+    context: &ConfigurationContext<'_>,
+    client_id: &ClientId,
+    now: OffsetDateTime,
+) -> Option<OpaqueToken> {
+    if !context.tenant_policy.rotates_registration_access_token() {
+        return None;
+    }
+
+    let token = OpaqueToken::generate_bits::<REGISTRATION_TOKEN_BITS>();
+    let digest = sha256(token.expose().as_bytes());
+    let grace_expires_at = now + context.tenant_policy.registration_access_token_grace();
+    if let Err(failure) = context
+        .configuration
+        .rotate_registration_access_token(client_id, &digest, grace_expires_at)
+        .await
+    {
+        // At `error`, because the client is about to be told nothing happened
+        // and the operator is the only one who can see why.
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            client = %client_id,
+            "a registration access token could not be rotated; the client keeps the one it has"
+        );
+        return None;
+    }
+
+    record(
+        context,
+        now,
+        EventType::CLIENT_CREDENTIAL_ROTATED,
+        Outcome::Success,
+        client_id,
+        None,
+        None,
+    )
+    .await;
+    Some(token)
 }
 
 /// `DELETE` — RFC 7592 §2.3.
@@ -811,7 +890,7 @@ pub async fn remove(
     now: OffsetDateTime,
 ) -> Response {
     let client_id = ClientId::new(client_id.to_owned());
-    if let Err(denied) = authenticate(context, &client_id, headers).await {
+    if let Err(denied) = authenticate(context, &client_id, headers, now).await {
         return refuse(context, now, EventType::CLIENT_DELETED, &client_id, denied).await;
     }
 
@@ -869,6 +948,29 @@ fn admits(stored: Option<[u8; 32]>, presented: &[u8; 32]) -> bool {
     // one with the wrong token, and can never be admitted by a comparison
     // against the decoy. See `DECOY` for what that does and does not buy.
     ct_eq(&stored.unwrap_or(*DECOY), presented) & stored.is_some()
+}
+
+/// Whether a presented digest is a rotated-out token still inside its grace
+/// window (`ast-m9c.12`).
+///
+/// The same shape as [`admits`] and for the same reason: the comparison happens
+/// whether or not there is a predecessor and whether or not its window has
+/// closed, so an expired predecessor costs exactly what a live one does. What
+/// makes the answer `false` is the `&`, never a branch that skipped the
+/// comparison.
+///
+/// The window is checked against the request's own `now` rather than swept by a
+/// background job, so a predecessor is refused the moment it expires even
+/// though its digest is still in the row. Storage is where the value lives;
+/// this is where it stops being a credential.
+fn admits_previous(
+    previous: Option<PreviousRegistrationAccessToken>,
+    presented: &[u8; 32],
+    now: OffsetDateTime,
+) -> bool {
+    let digest = previous.map_or(*DECOY, |previous| previous.digest);
+    let within_grace = previous.is_some_and(|previous| previous.is_within_grace(now));
+    ct_eq(&digest, presented) & within_grace
 }
 
 /// Revokes a credential that did not fit, and refuses either way.
@@ -957,10 +1059,34 @@ async fn burn(context: &ConfigurationContext<'_>, presented: &[u8; 32]) -> Denie
 ///    path. The lookup by digest exists ([`burn`]), but it only ever revokes;
 ///    it can never admit.
 /// 3. The client is not suspended.
+///
+/// # The predecessor, during its grace window
+///
+/// Since `ast-m9c.12` a client may hold two digests: the current one and the
+/// one a rotation replaced, for the bounded window
+/// [`PreviousRegistrationAccessToken`] describes. Both are compared, and the
+/// second is what stops a rotation whose `200` was lost from ending the
+/// client's ability to manage its own registration — this server issues no
+/// client secret, so there would be no way back.
+///
+/// The window closes early on success: a request that authenticated with the
+/// **current** token proves the client received it, so the predecessor is
+/// retired here and now rather than at its expiry. That is what keeps the grace
+/// a cover for a lost response instead of a period in which one client has two
+/// credentials, and it is why the retirement lives in this function — every
+/// verb goes through it, so a client whose next call is a read closes the
+/// window just as a client that updates again does.
+///
+/// Retiring on a read is not the change OIDC Registration §4.3 rules out. §4.3
+/// protects the *registration* — "the Client Read Request itself SHOULD NOT
+/// cause changes to the Client's registered metadata values" — and a spare
+/// credential the server already decided to withdraw is not a metadata value.
+/// Nothing in the document a read returns depends on it.
 async fn authenticate(
     context: &ConfigurationContext<'_>,
     client_id: &ClientId,
     headers: &HeaderMap,
+    now: OffsetDateTime,
 ) -> Result<ManagedClient, Denied> {
     let Some(presented) = bearer(headers) else {
         return Err(Denied::Refused(Refusal::Missing));
@@ -989,7 +1115,20 @@ async fn authenticate(
     };
 
     let stored = managed.as_ref().and_then(|m| m.registration_access_token);
-    if !admits(stored, &presented) {
+    let previous = managed
+        .as_ref()
+        .and_then(|m| m.previous_registration_access_token);
+    // Both comparisons happen, always — `|`, not `||` — so that a client with a
+    // predecessor and one without do the same work, and so that which of the
+    // two digests matched is not a timing signal.
+    let by_current = admits(stored, &presented);
+    let by_previous = admits_previous(previous, &presented, now);
+    if !(by_current | by_previous) {
+        // `burn` looks at the current digest only. A rotated-out token
+        // presented at the wrong client is refused but not revoked, and that is
+        // the trade the migration argues: honouring the SHOULD for it too would
+        // mean a second indexed lookup on every unauthenticated request, to
+        // shorten a life already capped at minutes.
         return Err(burn(context, &presented).await);
     }
 
@@ -1007,6 +1146,32 @@ async fn authenticate(
         // grants that are the evidence. An operator who wants it gone removes
         // it through the admin path.
         return Err(Denied::Refused(Refusal::Suspended));
+    }
+
+    // The successor has been used, so the predecessor has no job left
+    // (`ast-m9c.12`). Done before the request is served rather than after, so
+    // that a client cannot use the window's remaining seconds by pipelining.
+    //
+    // A failure here does not fail the request. The caller authenticated with
+    // the credential this server issued it; refusing that because a
+    // housekeeping statement did not land would break the endpoint for the very
+    // client the rotation was for, and the predecessor still dies at its expiry
+    // — which is the point of the expiry being in the row rather than only in
+    // this decision.
+    if by_current
+        && previous.is_some()
+        && let Err(failure) = context
+            .configuration
+            .retire_previous_registration_access_token(client_id)
+            .await
+    {
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            client = %client_id,
+            "a rotated-out registration access token could not be retired early; it stays \
+             valid until its grace window closes"
+        );
     }
     Ok(managed)
 }

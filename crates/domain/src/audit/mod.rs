@@ -134,6 +134,19 @@ impl EventType {
     pub const CLIENT_UPDATED: Self = Self("client.updated");
     /// A client deprovisioned itself (RFC 7592 §2.3).
     pub const CLIENT_DELETED: Self = Self("client.deleted");
+    /// A client's registration access token was rotated (RFC 7592 §5,
+    /// `ast-m9c.12`).
+    ///
+    /// Its own type rather than a detail on [`Self::CLIENT_UPDATED`], because
+    /// the two answer different questions and only one of them is about a
+    /// credential. "What does this client look like now" is answered by the
+    /// update; "when did the string that manages this registration last
+    /// change, and did anybody expect it to" is an incident question, and it
+    /// has to be answerable without reading the detail of every update in the
+    /// trail. The record names the client and the moment. It never carries the
+    /// token, in any form — not the new one, not the old one, not a prefix:
+    /// the audit trail is the one table nobody can delete from.
+    pub const CLIENT_CREDENTIAL_ROTATED: Self = Self("client.credential_rotated");
     /// A signing key was rotated.
     pub const KEY_ROTATED: Self = Self("key.rotated");
     /// A signing key's private material was destroyed after a compromise.
@@ -163,7 +176,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 30] = [
+    pub const ALL: [Self; 31] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -189,6 +202,7 @@ impl EventType {
         Self::CLIENT_READ,
         Self::CLIENT_UPDATED,
         Self::CLIENT_DELETED,
+        Self::CLIENT_CREDENTIAL_ROTATED,
         Self::KEY_ROTATED,
         Self::KEY_PURGED,
         Self::SUBJECT_COLLISION,

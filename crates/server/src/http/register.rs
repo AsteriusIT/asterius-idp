@@ -98,7 +98,7 @@ pub const MAX_BODY_BYTES: usize = 16 * 1024;
 /// client it was issued for (OIDC Registration §3.2, RFC 7592 §2) — so it takes
 /// [`asterius_domain::credentials::DEFAULT_ENTROPY_BITS`], twice the FAPI floor,
 /// like every other opaque token this server issues.
-const REGISTRATION_TOKEN_BITS: usize = 256;
+pub(crate) const REGISTRATION_TOKEN_BITS: usize = 256;
 
 /// The shortest initial access token an operator may configure.
 ///
