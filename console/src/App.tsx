@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, loadSession, type Session } from './api';
+import { Keys } from './keys';
 import { visibleTo } from './navigation';
 import { hrefOf, routeOf } from './routes';
 
@@ -107,6 +108,9 @@ function focusMain(): void {
  * tickets that follow it.
  */
 function Screen({ route, session }: { route: string; session: Session }): JSX.Element {
+  if (route === 'keys') {
+    return <Keys session={session} />;
+  }
   if (route === 'overview') {
     return (
       <>

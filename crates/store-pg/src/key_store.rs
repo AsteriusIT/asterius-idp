@@ -16,7 +16,8 @@
 //! worth more than an allocation.
 
 use crate::keys::PgKeyRepository;
-use asterius_domain::audit::AuditSink;
+use asterius_domain::audit::{Actor, AuditSink};
+use asterius_domain::keys::{Activation, KeyAdministration, KeyRotation, RotationSchedule};
 use asterius_domain::{DomainError, KeyStore, Kid, PublicKeyRecord, SigningAlgorithm, TenantId};
 use asterius_jose::kek::Kek;
 use sqlx::postgres::PgPool;
@@ -114,6 +115,89 @@ impl TenantKeyStore {
                 })?;
         }
         Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl KeyAdministration for TenantKeyStore {
+    async fn inventory(&self, tenant: &TenantId) -> Result<Vec<PublicKeyRecord>, DomainError> {
+        self.for_tenant(tenant).inventory().await
+    }
+
+    async fn schedules(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Vec<(SigningAlgorithm, RotationSchedule)>, DomainError> {
+        let repository = self.for_tenant(tenant);
+        let mut schedules = Vec::with_capacity(SigningAlgorithm::ALL.len());
+        for algorithm in SigningAlgorithm::ALL {
+            schedules.push((algorithm, repository.schedule(algorithm).await?));
+        }
+        Ok(schedules)
+    }
+
+    async fn set_schedule(
+        &self,
+        tenant: &TenantId,
+        algorithm: SigningAlgorithm,
+        schedule: RotationSchedule,
+    ) -> Result<(), DomainError> {
+        self.for_tenant(tenant)
+            .set_schedule(algorithm, schedule)
+            .await
+    }
+
+    /// Stages a key, and — for [`Activation::Immediate`] — promotes the key
+    /// this call staged.
+    ///
+    /// Two repository calls rather than one, because the intermediate state is
+    /// a state the machine already has: a `pending` key sitting in the JWKS is
+    /// what every scheduled rotation produces. A failure between them has
+    /// published a key early and done nothing else, which is recoverable by
+    /// pressing the button again.
+    ///
+    /// `created` is `None` only when a key was already staged and waiting, and
+    /// promoting *that* one is exactly what an operator asking for an immediate
+    /// rotation means.
+    async fn rotate(
+        &self,
+        tenant: &TenantId,
+        algorithm: SigningAlgorithm,
+        activation: Activation,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<KeyRotation, DomainError> {
+        let repository = self.for_tenant(tenant);
+        let staged = repository.rotate(algorithm, actor.clone(), now).await?;
+
+        if activation == Activation::OnSchedule {
+            return Ok(staged);
+        }
+
+        let Some(kid) = staged.created.clone() else {
+            return Ok(staged);
+        };
+
+        let promoted = repository.activate(&kid, actor, now).await?;
+        Ok(KeyRotation {
+            created: staged.created,
+            // `activate` reports nothing when the key is already active, which
+            // is the tenant's first key: it was created active, so the
+            // rotation's own account of the pass is the accurate one.
+            activated: promoted.activated.or(staged.activated),
+            superseded: promoted.superseded.or(staged.superseded),
+            retired: staged.retired,
+        })
+    }
+
+    async fn retire(
+        &self,
+        tenant: &TenantId,
+        kid: &Kid,
+        actor: Actor,
+        now: OffsetDateTime,
+    ) -> Result<KeyRotation, DomainError> {
+        self.for_tenant(tenant).retire(kid, actor, now).await
     }
 }
 

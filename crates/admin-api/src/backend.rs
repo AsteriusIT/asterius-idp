@@ -16,6 +16,7 @@
 //! the failure would surface days later at somebody else's endpoint. The port
 //! type is what makes the right thing the only thing available.
 
+use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::{TenantRepository, TenantSettingsRepository};
 use asterius_domain::{
     AuditSink, DomainError, RateLimitStore, ReplayGuard, Role, Session, TenantId, UserId,
@@ -60,6 +61,19 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// [`asterius_domain::TenantSettings`], which cannot be built without
     /// having passed the profile's ceilings.
     fn tenant_settings(&self) -> Arc<dyn TenantSettingsRepository>;
+
+    /// The deployment's signing keys, for the console's key screen.
+    ///
+    /// A handle for the same reason [`Self::tenants`] is one: the object behind
+    /// it is the process's `TenantKeyStore`, holding the key-encryption key and
+    /// the audit sink a rotation must be recorded through. A repository built
+    /// here instead would be one holding a different KEK, and a key sealed
+    /// under it would not decrypt on the next boot.
+    ///
+    /// The port is [`KeyAdministration`] and not the read-side `KeyStore`,
+    /// which is what stops a handler from reaching a signing key: there is no
+    /// method on it that returns one.
+    fn keys(&self) -> Arc<dyn KeyAdministration>;
 
     /// Where an administrative change is recorded.
     fn audit(&self) -> Arc<dyn AuditSink>;
