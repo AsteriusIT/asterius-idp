@@ -64,7 +64,7 @@ pub const MAX_PIXELS: u64 = 4_000_000;
 
 /// The longest either edge of an uploaded image may be, before it is decoded.
 ///
-/// A separate bound from [`MAX_PIXELS`] because 1×4_000_000 is under the pixel
+/// A separate bound from [`MAX_PIXELS`] because `1 x 4_000_000` is under the pixel
 /// count and is still a pathological buffer for every resampler.
 pub const MAX_EDGE: u32 = 2_000;
 
@@ -195,9 +195,11 @@ pub fn accept(bytes: &[u8]) -> Result<ReEncodedImage, ImageError> {
     }
 
     // The bomb check, on the header, before a row is decoded.
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|_| ImageError::UnsupportedFormat)?;
+    // A format this endpoint accepts whose header does not hold up is
+    // `Undecodable` and not `UnsupportedFormat`: the difference is 400 against
+    // 415, and telling an administrator their PNG is an unsupported type when
+    // it is a truncated PNG sends them looking in the wrong place.
+    let mut decoder = reader.into_decoder().map_err(|_| ImageError::Undecodable)?;
     let (width, height) = decoder.dimensions();
     if width == 0
         || height == 0
@@ -220,20 +222,20 @@ pub fn accept(bytes: &[u8]) -> Result<ReEncodedImage, ImageError> {
         .set_limits(limits)
         .map_err(|_| ImageError::TooManyPixels)?;
 
-    let decoded = DynamicImage::from_decoder(decoder).map_err(|_| ImageError::Undecodable)?;
+    let image = DynamicImage::from_decoder(decoder).map_err(|_| ImageError::Undecodable)?;
 
     // Downscale so that the stored artefact is bounded too. `thumbnail` keeps
     // the aspect ratio and only ever shrinks.
-    let decoded = if decoded.width() > MAX_STORED_EDGE || decoded.height() > MAX_STORED_EDGE {
-        decoded.thumbnail(MAX_STORED_EDGE, MAX_STORED_EDGE)
+    let image = if image.width() > MAX_STORED_EDGE || image.height() > MAX_STORED_EDGE {
+        image.thumbnail(MAX_STORED_EDGE, MAX_STORED_EDGE)
     } else {
-        decoded
+        image
     };
 
     // Re-encode from raw RGBA. This is where every ancillary chunk, every EXIF
     // block and every trailing byte after the image data is dropped: the
     // encoder is handed pixels, and pixels are all it can write.
-    let rgba = decoded.to_rgba8();
+    let rgba = image.to_rgba8();
     let mut png = Vec::new();
     image::codecs::png::PngEncoder::new(&mut png)
         .write_image(
@@ -279,15 +281,24 @@ mod tests {
         assert!(accepted.bytes().starts_with(b"\x89PNG\r\n\x1a\n"));
     }
 
+    /// The digest names what is stored, which is not what was uploaded.
+    ///
+    /// Note what this test does *not* claim: a PNG this server itself encoded
+    /// re-encodes to the same bytes, and that is correct — re-encoding is
+    /// idempotent on its own output, which is what makes content addressing
+    /// work at all. The property is that the digest is computed over the
+    /// stored bytes, so a file that carried anything extra gets the identity
+    /// of the cleaned version.
     #[test]
-    fn the_digest_is_of_the_re_encoded_bytes_and_not_of_the_upload() {
-        let uploaded = png(32, 32);
+    fn the_digest_names_the_stored_bytes_and_not_the_upload() {
+        let uploaded = with_trailing_payload(png(32, 32));
 
         let accepted = accept(&uploaded).expect("valid");
 
         assert_eq!(
             accepted.digest(),
-            hex::encode(Sha256::digest(accepted.bytes()))
+            hex::encode(Sha256::digest(accepted.bytes())),
+            "the digest is over what is stored"
         );
         assert_ne!(
             accepted.digest(),
@@ -343,26 +354,70 @@ mod tests {
     /// The decompression bomb: a header that declares far more pixels than the
     /// file could hold. It must be refused on the header, which is the only
     /// way to refuse it *cheaply*.
+    /// CRC-32 of a PNG chunk, so that the bomb fixture below is a *valid* PNG
+    /// header rather than a corrupt one — a corrupt one would be refused for
+    /// the wrong reason and prove nothing about the dimension check.
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffff_u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
     #[test]
     fn a_decompression_bomb_is_refused_on_its_header() {
-        // A PNG signature and an IHDR declaring 30000x30000.
+        // A PNG signature and a well-formed IHDR declaring 30000x30000 RGBA:
+        // 3.6 GiB of decoded pixels in a file of 45 bytes. There is no image
+        // data at all, and there does not need to be — the point is that
+        // nothing past the header is ever read.
+        let mut chunk = Vec::from(b"IHDR".as_slice());
+        chunk.extend_from_slice(&30_000u32.to_be_bytes());
+        chunk.extend_from_slice(&30_000u32.to_be_bytes());
+        chunk.extend_from_slice(&[8, 6, 0, 0, 0]);
+
         let mut bomb = Vec::from(b"\x89PNG\r\n\x1a\n".as_slice());
         bomb.extend_from_slice(&13u32.to_be_bytes());
-        bomb.extend_from_slice(b"IHDR");
-        bomb.extend_from_slice(&30_000u32.to_be_bytes());
-        bomb.extend_from_slice(&30_000u32.to_be_bytes());
-        bomb.extend_from_slice(&[8, 6, 0, 0, 0]);
-        // A wrong CRC and no image data: the point is that neither is ever
-        // reached, because the dimensions are refused first.
-        bomb.extend_from_slice(&[0, 0, 0, 0]);
+        bomb.extend_from_slice(&chunk);
+        bomb.extend_from_slice(&crc32(&chunk).to_be_bytes());
 
         let error = accept(&bomb).expect_err("30000x30000 is 3.6 GiB of RGBA");
 
-        assert_eq!(error, ImageError::TooManyPixels);
+        // Either refusal is a refusal *of the header*: `TooManyPixels` is this
+        // module's own check, and `Undecodable` is the PNG decoder declining
+        // to be constructed around dimensions that large. What matters is that
+        // neither one allocated a pixel buffer, and that no third answer — an
+        // acceptance, or an out-of-memory abort — is possible.
+        assert!(
+            matches!(error, ImageError::TooManyPixels | ImageError::Undecodable),
+            "{error}"
+        );
         assert!(
             u64::from(30_000u32) * u64::from(30_000u32) > MAX_PIXELS,
             "the fixture is only a bomb because it is past the bound"
         );
+    }
+
+    /// The dimension check itself, on an image that really is what it says.
+    ///
+    /// The hand-built bomb above proves a header nothing decodes is refused;
+    /// this proves the bound is *ours* and applies to a perfectly valid file
+    /// one pixel past it.
+    #[test]
+    fn a_valid_image_past_the_dimension_bound_is_refused_with_413() {
+        let oversized = png(MAX_EDGE + 1, MAX_EDGE + 1);
+
+        let error = accept(&oversized).expect_err("past the bound is past the bound");
+
+        assert_eq!(error, ImageError::TooManyPixels);
+        assert_eq!(error.status_code(), 413);
     }
 
     #[test]
@@ -380,18 +435,22 @@ mod tests {
 
     /// Re-encoding is the whole reason this module exists: the stored bytes
     /// must carry no chunk the encoder did not write.
-    #[test]
-    fn a_re_encoded_image_carries_no_metadata_chunk() {
-        let mut uploaded = png(16, 16);
-        // A `tEXt` chunk appended after the image data: the shape of every
-        // "the file also contained a payload" report.
+    /// A PNG with something riding along after the image data: the shape of
+    /// every "the file also contained a payload" report.
+    fn with_trailing_payload(mut png: Vec<u8>) -> Vec<u8> {
         let payload = b"tEXtComment\0<script>alert(1)</script>";
-        uploaded.extend_from_slice(
+        png.extend_from_slice(
             &u32::try_from(payload.len() - 4)
                 .expect("small")
                 .to_be_bytes(),
         );
-        uploaded.extend_from_slice(payload);
+        png.extend_from_slice(payload);
+        png
+    }
+
+    #[test]
+    fn a_re_encoded_image_carries_no_metadata_chunk() {
+        let uploaded = with_trailing_payload(png(16, 16));
 
         let accepted = accept(&uploaded).expect("the pixels still decode");
 
@@ -423,9 +482,11 @@ mod tests {
 
         let error = accept(&truncated).expect_err("half a PNG is not a PNG");
 
-        assert!(
-            matches!(error, ImageError::Undecodable | ImageError::TooManyPixels),
-            "{error}"
+        assert_eq!(error, ImageError::Undecodable);
+        assert_eq!(
+            error.status_code(),
+            400,
+            "a truncated PNG is a bad request, not an unsupported type"
         );
     }
 

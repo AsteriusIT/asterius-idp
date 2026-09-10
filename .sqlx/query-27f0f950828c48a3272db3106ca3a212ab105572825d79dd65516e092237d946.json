@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tenant_theme_assets (tenant_id, digest, content_type, bytes)\n             select $1, $2, $3, $4\n              where exists (select 1 from tenants where tenant_id = $1)\n             on conflict (tenant_id, digest) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "27f0f950828c48a3272db3106ca3a212ab105572825d79dd65516e092237d946"
+}

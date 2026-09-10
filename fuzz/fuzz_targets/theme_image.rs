@@ -78,12 +78,17 @@ fuzz_target!(|data: &[u8]| {
                 "a digest left the hex alphabet"
             );
 
-            // Nothing that arrived survives verbatim: an uploaded file that is
-            // byte-identical to the stored one would mean the re-encoding did
-            // not happen.
-            if data.len() > 8 {
-                assert_ne!(one.bytes(), data, "the upload was stored unchanged");
-            }
+            // Re-encoding is idempotent on its own output: a PNG this server
+            // produced re-encodes to itself, which is what makes content
+            // addressing stable. So "the bytes changed" is *not* a property
+            // here; "the bytes are ours" is, and it is the PNG signature and
+            // the digest above that say so.
+            let again = accept(one.bytes()).expect("this server's own output is acceptable");
+            assert_eq!(
+                again.digest(),
+                one.digest(),
+                "re-encoding is not idempotent on its own output"
+            );
         }
         _ => panic!("accepting the same bytes twice disagreed"),
     }

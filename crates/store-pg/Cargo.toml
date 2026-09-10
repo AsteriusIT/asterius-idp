@@ -37,3 +37,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # The previous-KEK tests implement `Kek` to count what the fallback asks for,
 # and the trait's `unwrap` hands back a `Zeroizing<Vec<u8>>`.
 zeroize.workspace = true
+# The theme tests compute an asset's digest the way the upload adapter does,
+# over the bytes they are about to store.
+sha2.workspace = true

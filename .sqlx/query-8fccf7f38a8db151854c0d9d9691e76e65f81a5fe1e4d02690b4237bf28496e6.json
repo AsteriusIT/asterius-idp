@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select digest, content_type, bytes from tenant_theme_assets\n              where tenant_id = $1 and digest = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "digest",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "content_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "bytes",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8fccf7f38a8db151854c0d9d9691e76e65f81a5fe1e4d02690b4237bf28496e6"
+}

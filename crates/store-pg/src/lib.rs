@@ -40,6 +40,7 @@ mod sql_audit;
 mod store;
 mod tenant_settings;
 mod tenants;
+mod themes;
 mod users;
 
 pub use admin_seed::{DeploymentAdmin, PgAdminSeed, Seeded};
@@ -74,4 +75,5 @@ pub use sessions::PgSessionRepository;
 pub use store::{MIGRATOR, Store};
 pub use tenant_settings::PgTenantSettings;
 pub use tenants::PgTenantRepository;
+pub use themes::PgThemes;
 pub use users::PgUserRepository;

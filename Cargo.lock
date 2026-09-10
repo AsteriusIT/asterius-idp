@@ -246,6 +246,7 @@ dependencies = [
  "base64",
  "hex",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror",
  "time",

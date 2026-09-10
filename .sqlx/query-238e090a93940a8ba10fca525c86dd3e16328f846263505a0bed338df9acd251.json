@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select document from tenant_themes where tenant_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "document",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "238e090a93940a8ba10fca525c86dd3e16328f846263505a0bed338df9acd251"
+}

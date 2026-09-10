@@ -9,7 +9,8 @@ use crate::{
     FirstPartyDestination, Grant, InitialAccessToken, InitialAccessTokenReservation,
     InteractionRecord, IssuedRecovery, Issuer, NewInitialAccessToken, NewPasskey, Participant,
     PushedRequest, RegisteredPasskey, ResourceServer, Secret, SectorIdentifier, Session,
-    SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, User, UserId,
+    SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings, Theme, User, UserId,
+    entities::theme::ImageFormat,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -91,6 +92,93 @@ pub trait TenantSettingsRepository: Debug + Send + Sync {
     /// A storage failure, or [`DomainError::NotFound`] if no such tenant
     /// exists.
     async fn save(&self, tenant: &TenantId, settings: &TenantSettings) -> Result<(), DomainError>;
+}
+
+/// Reads and writes one tenant's design tokens and the images they name
+/// (`ast-ndk.1`).
+///
+/// Its own port, and its own table, for two reasons the settings port does not
+/// have. The first is size: a logo is a blob, and a blob in the `tenants` row
+/// would be read by every request that resolves a tenant. The second is the
+/// write path, which is the same argument [`TenantSettingsRepository`] makes:
+/// the only way to reach `save` is with a [`crate::Theme`], which cannot exist
+/// without having been through the schema, the palette contrast check and the
+/// URL rules — and the only way to reach `store_asset` is with bytes some
+/// adapter has already decoded and re-encoded.
+///
+/// # Assets are content-addressed and not deleted here
+///
+/// [`ThemeRepository::store_asset`] is keyed by the digest of the *stored*
+/// bytes, so uploading the same logo twice is one row and the second upload is
+/// idempotent. Nothing removes an asset a theme has stopped naming: an
+/// administrator who reverts a logo change within the minute would otherwise
+/// find the old one gone, and the table is bounded by the number of uploads a
+/// tenant makes, not by traffic.
+#[async_trait::async_trait]
+pub trait ThemeRepository: Debug + Send + Sync {
+    /// One tenant's theme, or the defaults if it has never set one.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] for a stored document this build refuses —
+    /// deliberately, like [`TenantSettingsRepository::settings`]: a palette
+    /// that quietly reverted to the shipped default is a brand an
+    /// administrator believes is in force and is not — or a storage failure.
+    async fn theme(&self, tenant: &TenantId) -> Result<Theme, DomainError>;
+
+    /// Replaces one tenant's theme.
+    ///
+    /// # Errors
+    ///
+    /// A storage failure, or [`DomainError::NotFound`] if no such tenant
+    /// exists.
+    async fn save_theme(&self, tenant: &TenantId, theme: &Theme) -> Result<(), DomainError>;
+
+    /// Stores re-encoded image bytes under their own digest.
+    ///
+    /// The digest is the caller's, computed over the bytes it is storing, and
+    /// the adapter does not recompute it: the one producer of both is the
+    /// upload adapter, and a second hasher here would be a second thing to get
+    /// wrong. What the adapter does guarantee is that a second call with the
+    /// same digest changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// A storage failure, or [`DomainError::NotFound`] for an unknown tenant.
+    async fn store_asset(&self, tenant: &TenantId, asset: &StoredAsset) -> Result<(), DomainError>;
+
+    /// The bytes of one asset, for the handler that serves it.
+    ///
+    /// Scoped to the tenant: a digest is guessable in the sense that anybody
+    /// who has seen a logo knows it, and one tenant must not be able to serve
+    /// another's asset by naming it.
+    ///
+    /// # Errors
+    ///
+    /// A storage failure. A digest nothing stored is [`Ok(None)`], because a
+    /// theme naming an asset that is gone is a page without a logo, not an
+    /// error.
+    async fn asset(
+        &self,
+        tenant: &TenantId,
+        digest: &str,
+    ) -> Result<Option<StoredAsset>, DomainError>;
+}
+
+/// An image this server decoded, re-encoded and stored.
+///
+/// The bytes are the *output* of a re-encoding, never an upload: nothing in
+/// this workspace builds one of these from what arrived on a request, and the
+/// only producer is `asterius_admin_api::theme_image`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredAsset {
+    /// `sha-256` of [`StoredAsset::bytes`], in lowercase hex. Also the path
+    /// segment the asset is served under.
+    pub digest: String,
+    /// What the bytes are, and what they are served as.
+    pub format: ImageFormat,
+    /// The re-encoded image.
+    pub bytes: Vec<u8>,
 }
 
 /// One tenant's registered resource servers (RFC 8707).

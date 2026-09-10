@@ -707,7 +707,7 @@ impl Default for Theme {
 /// [`crate::entities::authorization_details`].
 ///
 /// Kept as a JSON literal rather than built with constructors so that it can be
-/// read as the document it describes, and copied into an OpenAPI description
+/// read as the document it describes, and copied into an `OpenAPI` description
 /// without a second source of truth. `additionalProperties: false` at every
 /// level is the product rule in one keyword: a member this server does not know
 /// about is refused, not carried.

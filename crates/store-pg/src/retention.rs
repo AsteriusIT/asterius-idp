@@ -536,6 +536,24 @@ pub const POLICY: &[Retention] = &[
             grace: Duration::ZERO,
         },
     },
+    Retention {
+        table: "tenant_themes",
+        rule: Rule::Kept(
+            "one row per tenant, rewritten rather than accumulated; a palette \
+             an administrator chose is not an artefact of one authorization \
+             and no timer should decide a tenant stops looking like itself",
+        ),
+    },
+    Retention {
+        table: "tenant_theme_assets",
+        rule: Rule::Kept(
+            "a logo lives as long as the tenant that uploaded it. Content \
+             addressed and bounded by the number of uploads an administrator \
+             makes, so it does not grow with traffic; an asset the current \
+             theme no longer names is kept because reverting a logo change \
+             minutes later must not find it swept",
+        ),
+    },
 ];
 
 /// What one tenant's sweep did.
