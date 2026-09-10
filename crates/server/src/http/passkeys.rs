@@ -248,7 +248,7 @@ pub async fn page(
     let page_href = context.mount.absolute(PAGE_PATH);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&PasskeyPage {
-            locale: "en",
+            text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             username: &who.username,
             options_action: &options_action,
@@ -1385,7 +1385,7 @@ fn error_page(context: &PasskeyContext<'_>, status: StatusCode) -> Response {
     );
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
-            locale: "en",
+            text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             message: "Something went wrong, and this request cannot continue.",
             correlation_id: &correlation,

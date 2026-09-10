@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{% if signed_out %}Signed out{% else %}Still signed in{% endif %} — {{ tenant_name }}{% endblock %}
+{% block title %}{% if signed_out %}{{ text.logged_out_title() }}{% else %}{{ text.still_signed_in_title() }}{% endif %} — {{ tenant_name }}{% endblock %}
 {% block content %}
 {# The neutral end of a logout. It is what a user sees when there is no
    post-logout redirect to perform — because the relying party was not
@@ -10,12 +10,10 @@
    requests this server could not attribute, so it names no client and offers
    no link that anybody else chose. #}
 {% if signed_out %}
-<h2>You are signed out</h2>
-<p class="muted">Your session with {{ tenant_name }} has ended. Applications you
-were signed in to may still keep sessions of their own.</p>
+<h2>{{ text.logged_out_heading() }}</h2>
+<p class="muted">{{ text.logged_out_body(tenant_name) }}</p>
 {% else %}
-<h2>You are still signed in</h2>
-<p class="muted">Nothing was changed. Your session with {{ tenant_name }}
-continues.</p>
+<h2>{{ text.still_signed_in_heading() }}</h2>
+<p class="muted">{{ text.still_signed_in_body(tenant_name) }}</p>
 {% endif %}
 {% endblock %}

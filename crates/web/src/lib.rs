@@ -14,6 +14,7 @@
 
 pub mod csp;
 pub mod document;
+pub mod i18n;
 pub mod interaction;
 pub mod pages;
 pub mod recovery;
@@ -24,4 +25,5 @@ pub mod theme;
 
 pub use csp::{FormActionOrigin, InvalidOrigin, Nonce, Policy};
 pub use document::Document;
+pub use i18n::{Catalog, MessageKey, OverrideError, validate_overrides};
 pub use interaction::{CsrfToken, Interaction, InteractionError, InteractionId, Stage};

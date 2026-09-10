@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Sign in — {{ tenant_name }}{% endblock %}
+{% block title %}{{ text.login_title() }} — {{ tenant_name }}{% endblock %}
 {% block content %}
 {# The second page in this tree that runs script, and the reason
    `crates/web/src/source_audit.rs` carries a named exemption for it:
@@ -29,10 +29,10 @@
      data-finish-url="{{ passkey_finish_action }}"
      data-next-url="{{ action }}"
      data-csrf="{{ csrf }}"
-     data-working="Follow your device's prompt to sign in."
-     data-failed="That did not work. Sign in with your password instead."
+     data-working="{{ text.login_passkey_working() }}"
+     data-failed="{{ text.login_passkey_failed() }}"
      hidden>
-  <div class="actions"><button type="button" id="passkey-signin-button">Sign in with a passkey</button></div>
+  <div class="actions"><button type="button" id="passkey-signin-button">{{ text.login_passkey_button() }}</button></div>
   <p class="muted" id="passkey-signin-status"></p>
 </div>
 
@@ -41,7 +41,7 @@
    `crates/web/src/source_audit.rs`, which fails the build if one does not. #}
 <input type="hidden" name="csrf" value="{{ csrf }}">
 <label>
-  <span>Username</span>
+  <span>{{ text.login_username() }}</span>
   {# `autofocus` only when nothing went wrong: when it did, the error summary
      above takes the caret instead, and two elements asking for it would leave
      HTML's "first in document order" rule to decide. #}
@@ -51,19 +51,17 @@
          spellcheck="false" required{% if let Some(hint) = login_hint %} value="{{ hint }}"{% endif %}>
 </label>
 <label>
-  <span>Password</span>
+  <span>{{ text.login_password() }}</span>
   <input type="password" name="password" autocomplete="current-password" required>
 </label>
-<div class="actions"><button type="submit">Sign in</button></div>
+<div class="actions"><button type="submit">{{ text.login_submit() }}</button></div>
 </form>
 
 <noscript>
 {# Rendered only when scripting is off. The page still signs people in — the
    form above is untouched — so this says what is missing rather than
    apologising for the page. #}
-<p class="muted">Signing in with a passkey needs JavaScript, because it is a
-browser API that a page has to call. JavaScript is switched off here, so use
-your username and password.</p>
+<p class="muted">{{ text.login_no_script() }}</p>
 </noscript>
 
 <script {{ nonce_attribute|safe }}>

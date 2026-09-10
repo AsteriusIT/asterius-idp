@@ -756,6 +756,13 @@ fn serialise(
         // OIDC Core §5.2. Stored with the authorization it was expressed in,
         // because the token request that follows carries no such parameter.
         "claims_locales": request.claims_locales.preferences(),
+        // OIDC Core §3.1.2.1. Stored for the same reason `claims_locales` is,
+        // and read by a different reader: `http::interaction` negotiates the
+        // language of the first screen from this member, the browser's
+        // `Accept-Language` and the tenant's default, in that order. A pushed
+        // request that named a language is the only record of that preference
+        // by the time a person arrives at the sign-in page.
+        "ui_locales": request.ui_locales.preferences(),
         // RFC 9396 §2, the *parsed* elements and not the document the client
         // sent, for the same reason `claims` is parsed: this is what will be
         // copied onto the grant when the user consents, and it has already been

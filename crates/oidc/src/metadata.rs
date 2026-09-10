@@ -422,7 +422,12 @@ pub fn provider_metadata(
         // would have refused as `unmet_authentication_requirements` the moment
         // a client believed the document and asked for it (`ast-2vk.7`).
         "acr_values_supported": acr.supported_values(),
-        "ui_locales_supported": ["en"],
+        // OIDC Discovery §3, rendered from the catalogue rather than written
+        // out here. A document that advertised a language this build has no
+        // words for would be inviting clients to send a `ui_locales` this
+        // server answers in English (`ast-ndk.5`), and one that omitted a
+        // language it does render hides it from the clients that would ask.
+        "ui_locales_supported": asterius_domain::Locale::SUPPORTED_TAGS,
 
         // Back-channel logout only. There is no front-channel logout and no
         // session management iframe (ast-o4u.4).

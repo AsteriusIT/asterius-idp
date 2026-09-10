@@ -269,6 +269,21 @@ pub struct StoredState {
     /// from it, and the session is what carries the identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    /// The language this interaction is being conducted in, as a BCP 47 tag.
+    ///
+    /// Negotiated once, when the first screen is drawn, and carried from screen
+    /// to screen from then on. Stored rather than recomputed because the three
+    /// inputs do not all survive: `ui_locales` is on the pushed request but the
+    /// `Accept-Language` of the *next* request is whatever that browser sends,
+    /// and a sign-in that changed language between the password page and the
+    /// consent page would be asking somebody to agree to a sentence they have
+    /// not been reading (OIDC Core §3.1.2.1 asks for the End-User's preferred
+    /// languages for "the user interface", not for a response).
+    ///
+    /// `None` is an interaction begun before this field existed, or one whose
+    /// state was never written; the reader falls back to negotiating afresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
 }
 
 /// A consent decision, as it survives between requests.
@@ -291,6 +306,7 @@ impl Default for StoredState {
             csrf_digest: None,
             decision: None,
             username: None,
+            locale: None,
         }
     }
 }

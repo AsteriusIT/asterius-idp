@@ -606,6 +606,37 @@ impl Handling<'_> {
                 .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?,
         };
 
+        // Read before assembly, like the registration policy: these settings
+        // are replaced wholesale, so a form that does not carry a tenant's
+        // language and its overridden wording would delete both.
+        let default_locale = match &requested.default_locale {
+            None => previous.default_locale(),
+            Some(tag) => asterius_domain::Locale::matching(tag).ok_or_else(|| {
+                AdminError::Invalid(format!(
+                    "'{tag}' is not a language this server renders; the supported tags are the \
+                     members of `ui_locales_supported`"
+                ))
+            })?,
+        };
+
+        // Two validators, and both of them run here rather than at render time.
+        // `MessageOverrides` decides what a *string* may be — text, bounded, no
+        // `<` and no `>`, no non-printing characters — and
+        // `asterius_web::validate_overrides` decides what a *key* may be,
+        // because the catalogue lives with the pages. An administrator who
+        // mistypes a key is told which one; the sign-in page that reads the row
+        // later cannot fail, and ignores what it does not know.
+        let messages = match &requested.messages {
+            None => previous.messages().clone(),
+            Some(document) => {
+                let parsed = asterius_domain::MessageOverrides::from_json(Some(document))
+                    .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?;
+                asterius_web::validate_overrides(&parsed)
+                    .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?;
+                parsed
+            }
+        };
+
         // The one line this whole operation exists for. `TenantSettings` has
         // private fields and one constructor, so there is no way past it.
         let settings = TenantSettings::validated(
@@ -614,7 +645,9 @@ impl Handling<'_> {
             time::Duration::seconds(requested.access_token_lifetime_seconds),
         )
         .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?
-        .with_registration(registration);
+        .with_registration(registration)
+        .with_default_locale(default_locale)
+        .with_messages(messages);
 
         repository
             .save(&named, &settings)
@@ -1443,6 +1476,21 @@ struct RequestedSettings {
     /// first one must not silently reopen an endpoint the second one closed.
     #[serde(default)]
     registration_policy: Option<serde_json::Value>,
+    /// The language this tenant's pages fall back to (`ast-ndk.5`), as a BCP 47
+    /// tag from `ui_locales_supported`.
+    ///
+    /// Absent means "leave it as it is", like the registration policy and for
+    /// the same reason.
+    #[serde(default)]
+    default_locale: Option<String>,
+    /// The wording this tenant substitutes, as an object of message key to
+    /// text.
+    ///
+    /// Absent means "leave it as it is". An empty object means "use the
+    /// built-in wording for everything", which is a different instruction and
+    /// one an administrator has to be able to give.
+    #[serde(default)]
+    messages: Option<serde_json::Value>,
 }
 
 /// A settings document as this API renders it.
@@ -1470,6 +1518,12 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         // so a console shows the rules that are in force — including the ones
         // a preset expanded into.
         "registration_policy": settings.registration().to_json(),
+        // OIDC Core §3.1.2.1's last layer, and the wording this tenant has
+        // substituted. Rendered from the stored settings rather than echoed
+        // from a request, like the policy above.
+        "default_locale": settings.default_locale().as_tag(),
+        "messages": settings.messages().to_json(),
+        "supported_locales": asterius_domain::Locale::SUPPORTED_TAGS,
         "limits": {
             "max_authorization_code_lifetime_seconds":
                 MAX_AUTHORIZATION_CODE_LIFETIME.whole_seconds(),
@@ -5045,6 +5099,99 @@ mod tests {
             "authorization_code_lifetime_seconds": code_seconds,
             "access_token_lifetime_seconds": access_token_seconds,
         })
+    }
+
+    /// The acceptance criterion of `ast-ndk.5`, at the door an administrator
+    /// actually knocks on: an override naming a key no page has is refused,
+    /// and the refusal says which key.
+    #[tokio::test]
+    async fn the_api_refuses_a_message_override_for_a_key_no_page_has() {
+        // Arrange
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["messages"] = serde_json::json!({ "consent.allowed": "Continuer" });
+
+        // Act
+        let response = put_settings(&world, body).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let refused = body_of(response).await;
+        let message = refused["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("consent.allowed"),
+            "the refusal does not name the key: {message}"
+        );
+    }
+
+    /// The other half, and the one that is a security control rather than a
+    /// usability one: a tenant supplies no markup.
+    #[tokio::test]
+    async fn the_api_refuses_a_message_override_that_carries_markup() {
+        // Arrange
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["messages"] = serde_json::json!({ "consent.allow": "<script>alert(1)</script>" });
+
+        // Act
+        let response = put_settings(&world, body).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let refused = body_of(response).await;
+        let message = refused["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("consent.allow"),
+            "the refusal does not name the key: {message}"
+        );
+    }
+
+    /// A tenant's language and wording are stored, rendered back, and — the
+    /// part a wholesale replacement gets wrong — survive the next settings save
+    /// that does not mention them.
+    #[tokio::test]
+    async fn a_tenants_language_and_wording_are_stored_and_survive_the_next_save() {
+        // Arrange
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["default_locale"] = serde_json::json!("fr");
+        body["messages"] = serde_json::json!({ "consent.allow": "Continuer" });
+
+        // Act
+        let stored = body_of(put_settings(&world, body).await).await;
+        let unrelated = body_of(put_settings(&world, settings_body(45, 300)).await).await;
+
+        // Assert
+        assert_eq!(stored["default_locale"], "fr", "{stored}");
+        assert_eq!(stored["messages"]["consent.allow"], "Continuer", "{stored}");
+        assert_eq!(
+            unrelated["default_locale"], "fr",
+            "a save that did not mention the language deleted it: {unrelated}"
+        );
+        assert_eq!(
+            unrelated["messages"]["consent.allow"], "Continuer",
+            "a save that did not mention the wording deleted it: {unrelated}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_api_refuses_a_default_locale_this_build_cannot_render() {
+        // Arrange
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["default_locale"] = serde_json::json!("de");
+
+        // Act
+        let response = put_settings(&world, body).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let refused = body_of(response).await;
+        let message = refused["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("ui_locales_supported"),
+            "the refusal does not say where the supported tags are listed: {message}"
+        );
     }
 
     /// `ast-f7m.4`'s first acceptance criterion. The refusal is the *API's*,

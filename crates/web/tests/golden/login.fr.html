@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <meta name="referrer" content="no-referrer">
-<title>Sign in — Example Tenant</title>
+<title>Connexion — Example Tenant</title>
 <style nonce="snapshot-nonce">/* The defaults. A tenant's design tokens are appended to this same <style>
    element as one more :root rule, so they win on document order. */
 :root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc;
@@ -63,7 +63,7 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 
 
 <div class="error" role="alert" tabindex="-1" autofocus>
-<p><strong>There is a problem</strong></p>
+<p><strong>Un problème est survenu</strong></p>
 <p>That username and password did not match.</p>
 </div>
 
@@ -73,10 +73,10 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
      data-finish-url="/interaction/abc/passkeys/finish"
      data-next-url="/interaction/abc/login"
      data-csrf="snapshot-csrf"
-     data-working="Follow your device's prompt to sign in."
-     data-failed="That did not work. Sign in with your password instead."
+     data-working="Suivez l&#39;invite de votre appareil pour vous connecter."
+     data-failed="Cela n&#39;a pas fonctionné. Connectez-vous plutôt avec votre mot de passe."
      hidden>
-  <div class="actions"><button type="button" id="passkey-signin-button">Sign in with a passkey</button></div>
+  <div class="actions"><button type="button" id="passkey-signin-button">Se connecter avec une clé d&#39;accès</button></div>
   <p class="muted" id="passkey-signin-status"></p>
 </div>
 
@@ -84,7 +84,7 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 
 <input type="hidden" name="csrf" value="snapshot-csrf">
 <label>
-  <span>Username</span>
+  <span>Identifiant</span>
   
   <input type="text" name="username" id="username" autocomplete="username webauthn"
          autocapitalize="none"
@@ -92,17 +92,15 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
          spellcheck="false" required value="ada@example.test">
 </label>
 <label>
-  <span>Password</span>
+  <span>Mot de passe</span>
   <input type="password" name="password" autocomplete="current-password" required>
 </label>
-<div class="actions"><button type="submit">Sign in</button></div>
+<div class="actions"><button type="submit">Se connecter</button></div>
 </form>
 
 <noscript>
 
-<p class="muted">Signing in with a passkey needs JavaScript, because it is a
-browser API that a page has to call. JavaScript is switched off here, so use
-your username and password.</p>
+<p class="muted">La connexion par clé d&#39;accès nécessite JavaScript, car il s&#39;agit d&#39;une API du navigateur qu&#39;une page doit appeler. JavaScript est désactivé ici : utilisez votre identifiant et votre mot de passe.</p>
 </noscript>
 
 <script nonce="snapshot-nonce">

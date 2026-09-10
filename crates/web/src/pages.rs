@@ -55,13 +55,23 @@
 //! markup. There is no field on any type here that carries HTML, no template
 //! renders one unescaped, and `crate::source_audit` fails the build if either
 //! stops being true. What a tenant does get is the design tokens of
-//! `style.css` (`ast-ndk.1`) and, once `ast-ndk.5` lands, the strings — which
-//! is why [`LoginPage::locale`] already exists on every page and
-//! does nothing but write the `lang` attribute.
+//! `style.css` (`ast-ndk.1`) and the strings: `ast-ndk.5` replaced the `locale`
+//! tag every page used to carry with the [`crate::i18n::Catalog`] every page
+//! now carries, so the `lang` attribute and the words under it come out of one
+//! value. A tenant's substituted wording arrives through the same type, already
+//! held to `asterius_domain::MessageOverrides` — text, bounded, no `<` and no
+//! `>` — and is then escaped like everything else here.
+//!
+//! Not every page has moved. The device pages, registration, email
+//! verification, the two password-reset pages, the passkey enrolment page and
+//! the form-post page still hold their strings as English literals in their
+//! templates; `crate::snapshots` names which have and which have not, and fails
+//! when that list stops being true.
 //!
 //! Every page is pinned as bytes in both locales; see `crate::snapshots`.
 
 use crate::csp::Nonce;
+use crate::i18n::Catalog;
 use askama::Template;
 
 /// A scope, as shown on the consent screen.
@@ -136,8 +146,12 @@ pub struct DetailLine {
 #[derive(Debug, Template)]
 #[template(path = "login.html")]
 pub struct LoginPage<'a> {
-    /// BCP 47 tag for the `lang` attribute.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Where the form posts to, and where a passkey sign-in navigates on
@@ -176,8 +190,12 @@ pub struct LoginPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "consent.html")]
 pub struct ConsentPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// The client's registered name. Attacker-chosen at registration time.
@@ -217,8 +235,12 @@ pub struct ConsentPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "logout_confirm.html")]
 pub struct LogoutConfirmationPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name. The only name on the page.
     pub tenant_name: &'a str,
     /// Where the form posts to.
@@ -241,8 +263,12 @@ pub struct LogoutConfirmationPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "logged_out.html")]
 pub struct LoggedOutPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Whether the session was actually ended.
@@ -279,8 +305,12 @@ pub struct LoggedOutPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "passkey.html")]
 pub struct PasskeyPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Who is enrolling, so a user on a shared machine can see it is them.
@@ -353,8 +383,12 @@ pub struct ResponseField {
 #[derive(Debug, Template)]
 #[template(path = "form_post.html")]
 pub struct FormPostPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// The host the answer is being sent to, so the page says where the
@@ -389,8 +423,12 @@ pub struct FormPostPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "device.html")]
 pub struct DevicePage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Where the form posts to.
@@ -428,8 +466,12 @@ pub struct DevicePage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "device_confirm.html")]
 pub struct DeviceConfirmationPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// The client's registered name. Attacker-chosen at registration time,
@@ -460,8 +502,12 @@ pub struct DeviceConfirmationPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "device_done.html")]
 pub struct DeviceOutcomePage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Whether the device was authorized.
@@ -489,8 +535,12 @@ pub struct DeviceOutcomePage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "register.html")]
 pub struct RegistrationPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Where the form posts to.
@@ -528,8 +578,12 @@ pub struct RegistrationPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "verify_email.html")]
 pub struct EmailVerificationPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// The address a link was sent to. The user's own text, escaped.
@@ -561,8 +615,12 @@ pub struct EmailVerificationPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "password_reset.html")]
 pub struct PasswordResetRequestPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Where the form posts to.
@@ -594,8 +652,12 @@ pub struct PasswordResetRequestPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "password_reset_sent.html")]
 pub struct PasswordResetSentPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Back to the sign-in page.
@@ -619,8 +681,12 @@ pub struct PasswordResetSentPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "password_new.html")]
 pub struct NewPasswordPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// Whose password is being changed, shown so a user with two accounts —
@@ -655,8 +721,12 @@ pub struct NewPasswordPage<'a> {
 #[derive(Debug, Template)]
 #[template(path = "error.html")]
 pub struct ErrorPage<'a> {
-    /// BCP 47 tag.
-    pub locale: &'a str,
+    /// The words this page is rendered with, and the language they are in.
+    ///
+    /// The `lang` attribute comes out of the same value as the text under it
+    /// (`i18n::Catalog::lang`), so a page cannot declare one language and be
+    /// written in another.
+    pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
     /// A generic description of what went wrong.
@@ -702,6 +772,15 @@ pub fn nonce_attribute(nonce: &Nonce) -> String {
 mod tests {
     use super::*;
     use crate::csp::Nonce;
+    use asterius_domain::Locale;
+
+    /// The catalogue these tests render with.
+    ///
+    /// English, because what almost every test here asserts is a property of
+    /// the *markup* — that a value is escaped, that a form carries a token —
+    /// and one language keeps those assertions readable. The tests that are
+    /// about language are in `crate::i18n` and `crate::snapshots`.
+    static ENGLISH: Catalog = Catalog::new(Locale::English);
 
     /// Values a client or a request can choose, each of which breaks out of
     /// HTML if it is not escaped.
@@ -740,7 +819,7 @@ mod tests {
         for hostile in HOSTILE {
             let nonce = nonce();
             let page = LoginPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: hostile,
                 action: "/interaction/x/login",
                 passkey_options_action: hostile,
@@ -763,7 +842,7 @@ mod tests {
         for hostile in HOSTILE {
             let nonce = nonce();
             let page = ConsentPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: hostile,
                 client_name: hostile,
                 username: hostile,
@@ -800,7 +879,7 @@ mod tests {
         for hostile in HOSTILE {
             let nonce = nonce();
             let page = ErrorPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: hostile,
                 message: hostile,
                 correlation_id: hostile,
@@ -815,7 +894,7 @@ mod tests {
     /// A passkey page with the values a caller would pass.
     fn passkey<'a>(username: &'a str, message: Option<&'a str>) -> PasskeyPage<'a> {
         PasskeyPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             username,
             options_action: "/passkeys/options",
@@ -923,7 +1002,7 @@ mod tests {
     fn the_sign_in_script_interpolates_nothing() {
         let nonce = nonce();
         let html = LoginPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             action: "/interaction/abc",
             passkey_options_action: "/interaction/abc/passkey/options",
@@ -964,7 +1043,7 @@ mod tests {
     fn without_javascript_the_sign_in_page_still_has_its_password_form() {
         let nonce = nonce();
         let html = LoginPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             action: "/interaction/abc",
             passkey_options_action: "/interaction/abc/passkey/options",
@@ -1013,7 +1092,7 @@ mod tests {
     fn the_username_field_asks_for_conditional_mediation() {
         let nonce = nonce();
         let html = LoginPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             action: "/interaction/abc",
             passkey_options_action: "/interaction/abc/passkey/options",
@@ -1074,7 +1153,7 @@ mod tests {
         for hostile in HOSTILE {
             let nonce = nonce();
             let confirmation = LogoutConfirmationPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: hostile,
                 action: "/logout",
                 csrf: hostile,
@@ -1087,7 +1166,7 @@ mod tests {
 
             for signed_out in [true, false] {
                 let html = LoggedOutPage {
-                    locale: "en",
+                    text: &ENGLISH,
                     tenant_name: hostile,
                     signed_out,
                     nonce_attribute: nonce_attribute(&nonce),
@@ -1107,7 +1186,7 @@ mod tests {
     fn the_confirmation_page_can_render_no_relying_party_text() {
         let nonce = nonce();
         let html = LogoutConfirmationPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             action: "/logout",
             csrf: "the-token",
@@ -1186,7 +1265,7 @@ mod tests {
     fn the_page_carries_the_nonce_it_was_given() {
         let nonce = nonce();
         let page = ErrorPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             message: "Something went wrong.",
             correlation_id: "abc123",
@@ -1213,7 +1292,7 @@ mod tests {
         let nonce = nonce();
         let pages = [
             ConsentPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: "Demo",
                 client_name: "Billing",
                 username: "ada",
@@ -1234,7 +1313,7 @@ mod tests {
             .render()
             .expect("render"),
             ErrorPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: "Demo",
                 message: "Something went wrong.",
                 correlation_id: "abc",
@@ -1257,7 +1336,7 @@ mod tests {
         let nonce = nonce();
         for html in [
             LoginPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: "Demo",
                 action: "/x",
                 passkey_options_action: "/x/passkey/options",
@@ -1271,7 +1350,7 @@ mod tests {
             .render()
             .expect("render"),
             ConsentPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: "Demo",
                 client_name: "Billing",
                 username: "ada",
@@ -1301,7 +1380,7 @@ mod tests {
     fn the_consent_form_offers_both_decisions_under_one_token() {
         let nonce = nonce();
         let html = ConsentPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             client_name: "Billing",
             username: "ada",
@@ -1329,7 +1408,7 @@ mod tests {
     fn consent(scopes: Vec<ScopeLine>, offline: bool, resources: Vec<String>) -> String {
         let nonce = nonce();
         ConsentPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             client_name: "Billing",
             username: "ada",
@@ -1469,7 +1548,7 @@ mod tests {
     fn form_post(action: &str, fields: Vec<(&str, &str)>) -> String {
         let nonce = nonce();
         FormPostPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             redirect_host: "rp.example",
             action,
@@ -1559,7 +1638,7 @@ mod tests {
     fn the_auto_submit_script_carries_the_nonce_and_interpolates_nothing() {
         let nonce = nonce();
         let html = FormPostPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             redirect_host: "rp.example",
             action: "https://rp.example/cb",
@@ -1604,7 +1683,7 @@ mod tests {
 
     fn device(user_code: Option<&str>, message: Option<&str>) -> String {
         render(&DevicePage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             action: "/device",
             csrf: "token",
@@ -1617,7 +1696,7 @@ mod tests {
 
     fn device_confirmation<'a>(client_name: &'a str, user_code: &'a str) -> String {
         render(&DeviceConfirmationPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             client_name,
             user_code,
@@ -1674,7 +1753,7 @@ mod tests {
     #[test]
     fn an_unconnected_device_names_no_client_and_no_reason() {
         let refused = render(&DeviceOutcomePage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             connected: false,
             client_name: "Example App",
@@ -1690,7 +1769,7 @@ mod tests {
         }
 
         let connected = render(&DeviceOutcomePage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             connected: true,
             client_name: "Example App",
@@ -1706,7 +1785,7 @@ mod tests {
 
     fn registration<'a>(username: Option<&'a str>, email: Option<&'a str>) -> String {
         render(&RegistrationPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             action: "/register",
             csrf: "token",
@@ -1722,7 +1801,7 @@ mod tests {
 
     fn email_verification(email: &str, verified: bool) -> String {
         render(&EmailVerificationPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             email,
             verified,
@@ -1737,7 +1816,7 @@ mod tests {
 
     fn new_password<'a>(username: &'a str, reset_token: &'a str) -> String {
         render(&NewPasswordPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             username,
             action: "/password/new",
@@ -1771,7 +1850,7 @@ mod tests {
     #[test]
     fn a_reset_confirmation_cannot_reveal_whether_the_account_exists() {
         let html = render(&PasswordResetSentPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             sign_in_href: "/login",
             nonce_attribute: nonce_attribute(&nonce()),
@@ -1850,7 +1929,7 @@ mod tests {
             device(None, Some("That code did not work.")),
             registration(None, None),
             render(&LoginPage {
-                locale: "en",
+                text: &ENGLISH,
                 tenant_name: "Demo",
                 action: "/interaction/abc/login",
                 passkey_options_action: "/interaction/abc/passkeys/options",
@@ -1875,7 +1954,7 @@ mod tests {
     fn every_page_declares_no_referrer_in_the_markup_too() {
         let nonce = nonce();
         let html = ErrorPage {
-            locale: "en",
+            text: &ENGLISH,
             tenant_name: "Demo",
             message: "x",
             correlation_id: "y",

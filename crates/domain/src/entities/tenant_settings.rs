@@ -26,6 +26,8 @@ use crate::capabilities::{Capabilities, Feature};
 use crate::entities::registration_policy::{
     RegistrationMode, RegistrationPolicy, RegistrationPolicyError,
 };
+use crate::locale::Locale;
+use crate::messages::MessageOverrides;
 use std::collections::BTreeSet;
 use time::Duration;
 
@@ -149,6 +151,18 @@ pub struct TenantSettings {
     /// tenant that has switched the feature off cannot require a parameter it
     /// also ignores.
     grant_management_action_required: bool,
+    /// The language this tenant's pages fall back to (OIDC Core §3.1.2.1).
+    ///
+    /// Last in the negotiation `asterius_domain::locale::negotiate` performs,
+    /// and read only when neither the client's `ui_locales` nor the browser's
+    /// `Accept-Language` names a language this build renders.
+    default_locale: Locale,
+    /// Wording this tenant has substituted for the built-in strings.
+    ///
+    /// Validated as text by [`MessageOverrides`] and against the catalogue's
+    /// key space by `asterius_web::i18n`: this crate knows what a safe string
+    /// is, the crate that renders the pages knows what a key is.
+    messages: MessageOverrides,
 }
 
 impl TenantSettings {
@@ -170,6 +184,8 @@ impl TenantSettings {
             )?,
             registration: RegistrationPolicy::default(),
             grant_management_action_required: false,
+            default_locale: Locale::default(),
+            messages: MessageOverrides::default(),
         })
     }
 
@@ -211,6 +227,36 @@ impl TenantSettings {
             && self
                 .effective_capabilities(deployment)
                 .is_enabled(Feature::GrantManagement)
+    }
+
+    /// The same settings with a fallback language.
+    ///
+    /// A builder for the reason [`Self::with_registration`] gives: every
+    /// existing caller means "the default", and widening the constructor would
+    /// make a language look as consequential as a token lifetime.
+    #[must_use]
+    pub const fn with_default_locale(mut self, locale: Locale) -> Self {
+        self.default_locale = locale;
+        self
+    }
+
+    /// The same settings with a tenant's own wording attached.
+    #[must_use]
+    pub fn with_messages(mut self, messages: MessageOverrides) -> Self {
+        self.messages = messages;
+        self
+    }
+
+    /// The language this tenant's pages fall back to.
+    #[must_use]
+    pub const fn default_locale(&self) -> Locale {
+        self.default_locale
+    }
+
+    /// The wording this tenant has substituted.
+    #[must_use]
+    pub const fn messages(&self) -> &MessageOverrides {
+        &self.messages
     }
 
     /// This tenant's registration policy.
@@ -276,6 +322,12 @@ impl TenantSettings {
             "access_token_lifetime_seconds": self.lifetimes.access_token.whole_seconds(),
             "registration_policy": self.registration.to_json(),
             "grant_management_action_required": self.grant_management_action_required,
+            // OIDC Core §3.1.2.1's last resort. Written as the tag rather than
+            // as an index into an enum, because the row outlives the build that
+            // wrote it and a reordered enum must not silently change a
+            // tenant's language.
+            "default_locale": self.default_locale.as_tag(),
+            "messages": self.messages.to_json(),
         })
     }
 
@@ -338,10 +390,29 @@ impl TenantSettings {
             }
         };
 
+        // Absent is the built-in default, which is what every row written
+        // before this setting existed means. Present and not a language this
+        // build renders is refused rather than coerced: a tenant that
+        // configured French and is served English has a setting an operator
+        // believes is in force and is not — the same rule the lifetimes follow.
+        // Note the asymmetry with `ui_locales`, which is a *client's* hint and
+        // must never fail a request (§3.1.2.1); this is the deployment's own
+        // configuration, and it fails a settings read rather than a sign-in.
+        let default_locale = match object.get("default_locale") {
+            None | Some(serde_json::Value::Null) => Locale::default(),
+            Some(serde_json::Value::String(tag)) => Locale::matching(tag)
+                .ok_or_else(|| TenantSettingsError::UnsupportedLocale(tag.clone()))?,
+            Some(_) => return Err(TenantSettingsError::UnsupportedLocale(String::new())),
+        };
+
+        let messages = MessageOverrides::from_json(object.get("messages"))?;
+
         Ok(
             Self::validated(disabled_features, authorization_code, access_token)?
                 .with_registration(registration)
-                .requiring_a_grant_management_action(grant_management_action_required),
+                .requiring_a_grant_management_action(grant_management_action_required)
+                .with_default_locale(default_locale)
+                .with_messages(messages),
         )
     }
 }
@@ -404,6 +475,14 @@ pub enum TenantSettingsError {
     /// The stored registration policy is not one this server wrote.
     #[error("the stored registration policy is invalid: {0}")]
     RegistrationPolicy(#[from] RegistrationPolicyError),
+    /// A language this build has no catalogue for.
+    #[error(
+        "the stored default locale '{0}' is not one this build renders; the supported tags are          the members of `ui_locales_supported`"
+    )]
+    UnsupportedLocale(String),
+    /// The stored message overrides are not ones this server would accept.
+    #[error("the stored message overrides are invalid: {0}")]
+    MessageOverrides(#[from] crate::messages::MessageOverrideError),
     /// A member that must be `true` or `false` is something else.
     ///
     /// Refused rather than read as `false`, for the reason a stored lifetime is
@@ -417,6 +496,68 @@ pub enum TenantSettingsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tenant default is the last layer of OIDC Core §3.1.2.1 negotiation,
+    /// so it has to survive a write and a read.
+    #[test]
+    fn the_default_locale_round_trips_and_is_english_when_absent() {
+        // Arrange
+        let settings = TenantSettings::default().with_default_locale(Locale::French);
+
+        // Act
+        let read_back =
+            TenantSettings::from_json(Some(&settings.to_json())).expect("this server wrote it");
+
+        // Assert
+        assert_eq!(read_back.default_locale(), Locale::French);
+        assert_eq!(
+            TenantSettings::from_json(Some(&serde_json::json!({})))
+                .expect("an empty document is the defaults")
+                .default_locale(),
+            Locale::English
+        );
+    }
+
+    /// A hand-edited row naming a language with no catalogue fails the read
+    /// rather than quietly serving English.
+    #[test]
+    fn a_stored_locale_this_build_cannot_render_is_refused() {
+        // Arrange
+        let document = serde_json::json!({ "default_locale": "de" });
+
+        // Act
+        let refused = TenantSettings::from_json(Some(&document)).expect_err("no German catalogue");
+
+        // Assert
+        assert_eq!(
+            refused,
+            TenantSettingsError::UnsupportedLocale("de".to_owned())
+        );
+    }
+
+    /// The overrides travel in the same document as the lifetimes, and markup
+    /// in one of them fails the whole read.
+    #[test]
+    fn message_overrides_round_trip_and_markup_fails_the_read() {
+        // Arrange
+        let overrides =
+            MessageOverrides::from_pairs([("consent.allow", "Autoriser")]).expect("plain text");
+        let settings = TenantSettings::default().with_messages(overrides);
+
+        // Act
+        let read_back =
+            TenantSettings::from_json(Some(&settings.to_json())).expect("this server wrote it");
+        let hostile = TenantSettings::from_json(Some(&serde_json::json!({
+            "messages": { "consent.allow": "<script>alert(1)</script>" }
+        })));
+
+        // Assert
+        assert_eq!(read_back.messages().get("consent.allow"), Some("Autoriser"));
+        assert!(matches!(
+            hostile,
+            Err(TenantSettingsError::MessageOverrides(_))
+        ));
+    }
 
     /// Grant Management ID1 §7.1 round-trips through the stored document, and
     /// a row written before the setting existed reads back as "not required".

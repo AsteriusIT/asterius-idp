@@ -128,7 +128,7 @@ fn form_post(
         .collect();
     let document = Document::render(nonce, |nonce| {
         asterius_web::pages::render(&FormPostPage {
-            locale: "en",
+            text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &tenant.display_name,
             redirect_host: url.host_str().unwrap_or_default(),
             action: &action,

@@ -559,6 +559,23 @@ impl Flow {
         self.send(request).await
     }
 
+    /// The same GET, with the fields a browser would add.
+    ///
+    /// `Accept-Language` is the only one any test needs so far, and it is the
+    /// middle layer of OIDC Core §3.1.2.1's negotiation: the layer that is
+    /// reached only when the client named no language this server renders.
+    async fn get_with_headers(&mut self, path: &str, extra: &[(&str, &str)]) -> Reply {
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(path)
+            .header(header::HOST, HOST);
+        for (name, value) in extra {
+            builder = builder.header(*name, *value);
+        }
+        let request = builder.body(Body::empty()).expect("a request");
+        self.send(request).await
+    }
+
     async fn post_form(&mut self, path: &str, pairs: &[(&str, &str)], dpop: Option<&str>) -> Reply {
         let mut encoder = url::form_urlencoded::Serializer::new(String::new());
         for (key, value) in pairs {
@@ -878,8 +895,13 @@ impl Flow {
         // `ast-bo5`: the sign-in above was a passkey ceremony, where nobody
         // typed a name. The screen still has to say whose account is about to
         // be granted, or a person on a shared machine reads "Signed in as ."
+        //
+        // The name, not the sentence around it: since `ast-ndk.5` that sentence
+        // comes from the message catalogue and is different in each language,
+        // and this helper is used by the tests that ask for French. What
+        // `ast-bo5` is about is whether the person is named at all.
         assert!(
-            html.contains(&format!("Signed in as {}.", self.user.as_uuid())),
+            html.contains(&self.user.as_uuid().to_string()),
             "the consent screen did not name who signed in:\n{html}"
         );
         let csrf = csrf_from(&html);
@@ -4031,6 +4053,119 @@ async fn with_the_feature_off_the_parameters_are_ignored_and_unadvertised() {
     assert!(
         grants.iter().any(|grant| grant.id == first.id),
         "the first grant was amended by a parameter nobody advertised"
+    );
+
+    flow.tear_down().await;
+}
+
+/// **A language asked for at the push is the language of every screen**
+/// (`ast-ndk.5`).
+///
+/// OIDC Core §3.1.2.1: `ui_locales` is the End-User's preferred languages for
+/// the *user interface*, "ordered by preference". The parameter arrives on the
+/// pushed request; the person arrives at the sign-in page minutes later, on a
+/// different HTTP request, from a browser that has its own opinion. This walks
+/// that gap through the assembled application, in both languages, and asserts
+/// what a person would see:
+///
+/// * `ui_locales=fr-CA fr en` renders French — at the *first* preference, by
+///   RFC 4647 §3.4 lookup, and not at the second;
+/// * the language survives from the login page to the consent page, which are
+///   two requests and, in between, a WebAuthn ceremony;
+/// * an unsupported language is not an error (§3.1.2.1's MUST NOT), and the
+///   pages come back in the tenant's default;
+/// * with no `ui_locales` at all, the browser's `Accept-Language` decides.
+///
+/// Two locales, two renderings, as the acceptance criterion asks. The assertions
+/// are on words a user reads rather than on a `lang` attribute alone: a page
+/// that declared `fr` over English would pass the attribute check and fail the
+/// person.
+#[tokio::test]
+async fn a_ui_locales_preference_survives_from_the_push_to_the_consent_screen() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+
+    // Act: French, asked for by the client at the push.
+    let request_uri = flow
+        .push_with(&key, &[("ui_locales", "fr-CA fr en")])
+        .await
+        .request_uri();
+    let interaction = flow.authorize(&request_uri).await;
+    let login = flow.get(&interaction).await;
+    let login_html = login.text();
+    flow.sign_in(&interaction).await;
+    let consent = flow.get(&interaction).await;
+    let consent_html = consent.text();
+
+    // Assert: the sign-in page is French, and says so.
+    assert_eq!(login.status, StatusCode::OK, "{login_html}");
+    assert!(
+        login_html.contains("<html lang=\"fr\">"),
+        "the sign-in page did not declare French:\n{login_html}"
+    );
+    assert!(
+        login_html.contains("Mot de passe") && login_html.contains("Se connecter"),
+        "the sign-in page declared French and was written in English:\n{login_html}"
+    );
+    // The screen after the ceremony is the one the acceptance criterion is
+    // about: a different request, and the language has to have survived it.
+    assert!(
+        consent_html.contains("<html lang=\"fr\">"),
+        "the consent screen dropped the language the push asked for:\n{consent_html}"
+    );
+    assert!(
+        consent_html.contains("Autoriser") && consent_html.contains("Refuser"),
+        "the consent screen declared French and was written in English:\n{consent_html}"
+    );
+    // Finish the flow, so the interaction is spent like any other, and then
+    // forget the browser: the next two scenarios are about the *sign-in* page,
+    // and a jar still holding this session would start them at consent — or
+    // skip the screen altogether, since the grant just written remembers it.
+    let _ = flow.consent(&interaction).await;
+    flow.jar.clear();
+
+    // Act: a language this server has no words for, which §3.1.2.1 forbids
+    // erroring on, and a browser that asks for nothing.
+    let request_uri = flow
+        .push_with(&key, &[("ui_locales", "ja-Kana-JP de-CH")])
+        .await
+        .request_uri();
+    let interaction = flow.authorize(&request_uri).await;
+    let login = flow.get(&interaction).await;
+    let login_html = login.text();
+
+    // Assert: a page, in the tenant's default, and not an error.
+    assert_eq!(
+        login.status,
+        StatusCode::OK,
+        "an unsupported ui_locales must not be an error (OIDC Core §3.1.2.1): {login_html}"
+    );
+    assert!(
+        login_html.contains("<html lang=\"en\">") && login_html.contains("Password"),
+        "an unsupported language did not fall back to the tenant's default:\n{login_html}"
+    );
+
+    // Act: no `ui_locales` at all, and a browser that asks for French. This is
+    // the middle layer, and it is only reachable because the layer above named
+    // nothing.
+    let request_uri = flow.push(&key).await;
+    let interaction = flow.authorize(&request_uri).await;
+    let login = flow
+        .get_with_headers(
+            &interaction,
+            &[("accept-language", "fr-CA,fr;q=0.9,en;q=0.8")],
+        )
+        .await;
+    let login_html = login.text();
+
+    // Assert
+    assert!(
+        login_html.contains("<html lang=\"fr\">") && login_html.contains("Mot de passe"),
+        "the browser's Accept-Language was not consulted:\n{login_html}"
     );
 
     flow.tear_down().await;

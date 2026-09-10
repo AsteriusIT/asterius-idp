@@ -6,7 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <meta name="referrer" content="no-referrer">
-<title>Log out — Example Tenant</title>
+<title>Déconnexion — Example Tenant</title>
 <style nonce="snapshot-nonce">/* The defaults. A tenant's design tokens are appended to this same <style>
    element as one more :root rule, so they win on document order. */
 :root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc;
@@ -59,16 +59,15 @@ a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
 <h1>Example Tenant</h1>
 
 
-<h2>Log out of Example Tenant?</h2>
-<p class="muted">Somebody asked to end your session. We could not confirm who,
-so nothing has changed yet.</p>
+<h2>Se déconnecter de Example Tenant ?</h2>
+<p class="muted">Quelqu&#39;un a demandé à mettre fin à votre session. Nous n&#39;avons pas pu vérifier qui : rien n&#39;a encore changé.</p>
 
 <form method="post" action="/logout">
 <input type="hidden" name="csrf" value="snapshot-csrf">
 
 <div class="actions">
-  <button type="submit" name="decision" value="logout">Log out</button>
-  <button type="submit" name="decision" value="stay" class="secondary">Stay signed in</button>
+  <button type="submit" name="decision" value="logout">Se déconnecter</button>
+  <button type="submit" name="decision" value="stay" class="secondary">Rester connecté</button>
 </div>
 </form>
 

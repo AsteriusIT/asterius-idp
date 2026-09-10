@@ -16,7 +16,7 @@
    request. #}
 {% if let Some(message) = message %}
 <div class="error" role="alert" tabindex="-1" autofocus>
-<p><strong>There is a problem</strong></p>
+<p><strong>{{ text.error_summary_heading() }}</strong></p>
 <p>{{ message }}</p>
 </div>
 {% endif %}

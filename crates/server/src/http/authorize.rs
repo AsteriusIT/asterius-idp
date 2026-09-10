@@ -52,6 +52,14 @@ use time::OffsetDateTime;
 pub struct AuthorizeContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// The three layers a page's language is chosen from (OIDC Core §3.1.2.1).
+    ///
+    /// This endpoint renders exactly one page — the error page — and it renders
+    /// it for requests that never reached a stored `ui_locales`. So the
+    /// negotiation here is the browser's field and the tenant's default; the
+    /// journey's own language is decided by `crate::http::interaction`, which
+    /// has the pushed request in front of it.
+    pub language: &'a crate::http::i18n::PageLanguage,
     /// The client's view of a pushed request.
     pub requests: &'a dyn AuthRequestRepository,
     /// The browser's view of the same rows.
@@ -540,9 +548,12 @@ fn error_page(context: &AuthorizeContext<'_>, status: StatusCode) -> Response {
         "authorization request refused"
     );
 
+    let text = &context
+        .language
+        .for_request(&asterius_domain::locale::UiLocales::default());
     let document = Document::render(context.nonce, |nonce| {
         asterius_web::pages::render(&ErrorPage {
-            locale: "en",
+            text,
             tenant_name: &context.tenant.display_name,
             message: "This sign-in request cannot be continued.",
             correlation_id: &correlation,
