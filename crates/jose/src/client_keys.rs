@@ -41,7 +41,7 @@
 
 use crate::verify::KeyResolver;
 use crate::{MIN_RSA_BITS, VerifyingKey};
-use asterius_domain::ports::JwksFetcher;
+use asterius_domain::ports::{ClientKeyFetchBackoff, JwksFetcher};
 use asterius_domain::{ClientId, JwksSource, Kid, SigningAlgorithm, TenantId};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -600,11 +600,26 @@ struct Entry {
 /// * **This server**, from doing unbounded outbound work on demand. The refresh
 ///   that OIDC Core §10.1.1 asks for on an unknown `kid` is triggered by a value
 ///   the token's author chose, so it is rate-limited per client.
+///
+/// # Two levels, and which one decides
+///
+/// The map above is per process. With more than one replica — which ADR-0001
+/// expects — that is a backoff *per replica*: N processes each try a dead
+/// third-party `jwks_uri` once per window instead of once between them, and a
+/// restart forgets the failure altogether. [`Self::sharing_backoff`] adds the
+/// second level, [`ClientKeyFetchBackoff`], where the decision "do not fetch
+/// this URL again yet" is a row every replica reads. The map stays as the
+/// first level, because it answers without a round trip; the shared row is
+/// consulted only when the map would otherwise fetch, which is exactly the
+/// moment the decision matters.
 pub struct ClientKeyCache {
     fetcher: std::sync::Arc<dyn JwksFetcher>,
     limits: CacheLimits,
     entries: Mutex<HashMap<(TenantId, ClientId), Entry>>,
     counters: Counters,
+    /// The shared negative cache, when the deployment has one. `None` leaves
+    /// the behaviour exactly as it was: correct, and per replica.
+    backoff: Option<std::sync::Arc<dyn ClientKeyFetchBackoff>>,
 }
 
 impl std::fmt::Debug for ClientKeyCache {
@@ -634,7 +649,26 @@ impl ClientKeyCache {
             limits,
             entries: Mutex::new(HashMap::new()),
             counters: Counters::default(),
+            backoff: None,
         }
+    }
+
+    /// The same cache, with its negative entries shared through `backoff`.
+    ///
+    /// Without this, the negative cache is per replica and per process
+    /// lifetime, so the interval an operator configured is divided by however
+    /// many replicas happen to be running and reset by every restart. ADR-0006
+    /// makes the treatment of a client-supplied URL a policy; this is what
+    /// keeps that policy from depending on the deployment topology.
+    ///
+    /// Best-effort by construction: the store is consulted before a fetch and
+    /// written after one, and an error from it is a log line. A database that
+    /// is down must not be the reason a client cannot authenticate — the only
+    /// thing lost is the traffic this saves.
+    #[must_use]
+    pub fn sharing_backoff(mut self, backoff: std::sync::Arc<dyn ClientKeyFetchBackoff>) -> Self {
+        self.backoff = Some(backoff);
+        self
     }
 
     /// What the cache has been doing since it was built.
@@ -757,12 +791,29 @@ impl ClientKeyCache {
             self.reserve(&mut entries, &key, uri, now);
         }
 
+        // The second level. Asked only here, on the path that would otherwise
+        // open a socket: a request answered from memory costs no round trip,
+        // and the one about to fetch is the only one whose answer this can
+        // change.
+        if let Some(until) = self.shared_backoff_until(tenant, client, uri, now).await {
+            return self.adopt_shared_backoff(&key, uri, until, now);
+        }
+
         self.counters.misses.fetch_add(1, Ordering::Relaxed);
         let fetched = self.fetcher.fetch(uri).await;
+        // The reason, for an operator, and never the document: the body is
+        // bytes somebody else chose, and the URL may carry a query parameter
+        // the client considers a secret.
+        let mut reason = String::new();
         let parsed = match fetched {
-            Ok(body) => parse_jwk_set(&body),
-            Err(_) => Err(ClientKeyError::Unavailable),
+            Ok(body) => parse_jwk_set(&body).inspect_err(|error| reason = error.to_string()),
+            Err(error) => {
+                reason = error.to_string();
+                Err(ClientKeyError::Unavailable)
+            }
         };
+        self.write_through(tenant, client, uri, &parsed, &reason, now)
+            .await;
 
         let mut entries = self
             .entries
@@ -794,6 +845,110 @@ impl ClientKeyCache {
             },
         );
         parsed
+    }
+
+    /// The instant the shared store says no replica should fetch before, when
+    /// that instant is still in the future.
+    ///
+    /// An unreachable store answers `None`: the backoff saves somebody else's
+    /// server some traffic, and losing it is a smaller failure than refusing a
+    /// client whose keys we could have fetched.
+    async fn shared_backoff_until(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        uri: &str,
+        now: OffsetDateTime,
+    ) -> Option<OffsetDateTime> {
+        let backoff = self.backoff.as_ref()?;
+        match backoff.next_attempt_at(tenant, client, uri).await {
+            Ok(Some(until)) if now < until => Some(until),
+            Ok(_) => None,
+            Err(error) => {
+                tracing::debug!(%error, "the shared client key backoff could not be read");
+                None
+            }
+        }
+    }
+
+    /// Takes another replica's failure as this replica's, without fetching.
+    ///
+    /// A cache that still holds usable keys keeps serving them: the backoff
+    /// suppresses *fetches*, and turning it into "this client has no keys"
+    /// would make a third party's outage into an authentication failure here.
+    fn adopt_shared_backoff(
+        &self,
+        key: &(TenantId, ClientId),
+        uri: &str,
+        until: OffsetDateTime,
+        now: OffsetDateTime,
+    ) -> Result<ClientKeySet, ClientKeyError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| ClientKeyError::Unavailable)?;
+
+        if let Some(entry) = entries.get(key)
+            && entry.serves(None, now)
+        {
+            self.counters
+                .refreshes_suppressed
+                .fetch_add(1, Ordering::Relaxed);
+            return entry.keys();
+        }
+
+        // `last_attempt` is when the attempt this row describes was made, not
+        // now: it is the failing replica's clock we are adopting, and dating it
+        // now would extend the refresh rate limit past the backoff window every
+        // time another replica failed.
+        let last_attempt = (until - self.limits.negative_ttl).min(now);
+        entries.insert(
+            key.clone(),
+            Entry {
+                uri: uri.to_owned(),
+                state: State::Failed { until },
+                last_attempt,
+            },
+        );
+        self.counters.failures.fetch_add(1, Ordering::Relaxed);
+        Err(ClientKeyError::Unavailable)
+    }
+
+    /// Publishes the outcome of a fetch to the shared store.
+    ///
+    /// A success clears the row — the row describes the last attempt, and the
+    /// last attempt worked — and a failure records the window. Errors are
+    /// logged and dropped for the same reason as in
+    /// [`Self::shared_backoff_until`].
+    async fn write_through(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        uri: &str,
+        parsed: &Result<ClientKeySet, ClientKeyError>,
+        reason: &str,
+        now: OffsetDateTime,
+    ) {
+        let Some(backoff) = self.backoff.as_ref() else {
+            return;
+        };
+        let written = if parsed.is_ok() {
+            backoff.clear(tenant, client, uri).await
+        } else {
+            backoff
+                .record_failure(
+                    tenant,
+                    client,
+                    uri,
+                    reason,
+                    now,
+                    now + self.limits.negative_ttl,
+                )
+                .await
+        };
+        if let Err(error) = written {
+            tracing::debug!(%error, "the shared client key backoff could not be written");
+        }
     }
 
     /// Records that a fetch is starting, evicting if the cache is full.
@@ -1573,5 +1728,300 @@ mod tests {
                 .expect("resolve");
         }
         assert!(cache.entries.lock().expect("lock").len() <= 4);
+    }
+
+    // ---- the shared backoff (`ast-mxc.8`) --------------------------------
+
+    /// A [`ClientKeyFetchBackoff`] in a `HashMap`, standing in for the table.
+    ///
+    /// Shared between two caches by `Arc`, which is what makes the tests below
+    /// about *replicas* rather than about one cache calling itself: two
+    /// `ClientKeyCache` values over one store are two processes over one
+    /// database, minus the socket.
+    #[derive(Debug, Default)]
+    struct SharedBackoff {
+        rows: Mutex<HashMap<(TenantId, ClientId, String), OffsetDateTime>>,
+        down: std::sync::atomic::AtomicBool,
+        errors: Mutex<Vec<String>>,
+    }
+
+    impl SharedBackoff {
+        fn shared() -> Arc<Self> {
+            Arc::new(Self::default())
+        }
+
+        fn rows(&self) -> usize {
+            self.rows.lock().expect("lock").len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::ClientKeyFetchBackoff for SharedBackoff {
+        async fn next_attempt_at(
+            &self,
+            tenant: &TenantId,
+            client: &ClientId,
+            jwks_uri: &str,
+        ) -> Result<Option<OffsetDateTime>, DomainError> {
+            if self.down.load(Ordering::Relaxed) {
+                return Err(DomainError::Storage("the store is down".into()));
+            }
+            Ok(self
+                .rows
+                .lock()
+                .expect("lock")
+                .get(&(tenant.clone(), client.clone(), jwks_uri.to_owned()))
+                .copied())
+        }
+
+        async fn record_failure(
+            &self,
+            tenant: &TenantId,
+            client: &ClientId,
+            jwks_uri: &str,
+            error: &str,
+            _attempted_at: OffsetDateTime,
+            next_attempt_at: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            if self.down.load(Ordering::Relaxed) {
+                return Err(DomainError::Storage("the store is down".into()));
+            }
+            self.errors.lock().expect("lock").push(error.to_owned());
+            self.rows.lock().expect("lock").insert(
+                (tenant.clone(), client.clone(), jwks_uri.to_owned()),
+                next_attempt_at,
+            );
+            Ok(())
+        }
+
+        async fn clear(
+            &self,
+            tenant: &TenantId,
+            client: &ClientId,
+            jwks_uri: &str,
+        ) -> Result<(), DomainError> {
+            if self.down.load(Ordering::Relaxed) {
+                return Err(DomainError::Storage("the store is down".into()));
+            }
+            self.rows.lock().expect("lock").remove(&(
+                tenant.clone(),
+                client.clone(),
+                jwks_uri.to_owned(),
+            ));
+            Ok(())
+        }
+    }
+
+    /// The whole point of the shared table: the backoff is a rate, and a rate
+    /// that is multiplied by the number of replicas is not the rate the
+    /// operator configured. Two caches over one store fetch a broken
+    /// `jwks_uri` once between them, not once each.
+    #[tokio::test]
+    async fn two_replicas_sharing_a_store_fetch_a_failing_uri_once_between_them() {
+        let fetcher = StubFetcher::failing();
+        let store = SharedBackoff::shared();
+        let replicas: Vec<_> = (0..3)
+            .map(|_| ClientKeyCache::new(fetcher.clone()).sharing_backoff(store.clone()))
+            .collect();
+        let source = JwksSource::Uri(URI.to_owned());
+
+        for second in 0..30 {
+            for replica in &replicas {
+                assert_eq!(
+                    replica
+                        .resolve(
+                            &tenant(),
+                            &client(),
+                            &source,
+                            None,
+                            now() + Duration::seconds(second),
+                        )
+                        .await,
+                    Err(ClientKeyError::Unavailable)
+                );
+            }
+        }
+        assert_eq!(
+            fetcher.calls(),
+            1,
+            "each replica ran its own backoff window"
+        );
+        assert_eq!(store.rows(), 1);
+    }
+
+    /// A restart used to clear the memory of a failure entirely, so a
+    /// deployment that rolls its pods fetches a dead third-party URL again on
+    /// every roll. A new cache over the same store sees the row.
+    #[tokio::test]
+    async fn a_restarted_replica_respects_a_backoff_recorded_before_it_started() {
+        let fetcher = StubFetcher::failing();
+        let store = SharedBackoff::shared();
+        let source = JwksSource::Uri(URI.to_owned());
+
+        let before = ClientKeyCache::new(fetcher.clone()).sharing_backoff(store.clone());
+        let _ = before
+            .resolve(&tenant(), &client(), &source, None, now())
+            .await;
+        assert_eq!(fetcher.calls(), 1);
+        drop(before);
+
+        // A fresh process, with nothing in memory.
+        let after = ClientKeyCache::new(fetcher.clone()).sharing_backoff(store.clone());
+        assert_eq!(
+            after
+                .resolve(
+                    &tenant(),
+                    &client(),
+                    &source,
+                    None,
+                    now() + Duration::seconds(30),
+                )
+                .await,
+            Err(ClientKeyError::Unavailable)
+        );
+        assert_eq!(fetcher.calls(), 1, "the restart forgot the failure");
+
+        // And the window still ends: the row holds an instant, not a verdict.
+        let _ = after
+            .resolve(
+                &tenant(),
+                &client(),
+                &source,
+                None,
+                now() + DEFAULT_NEGATIVE_TTL,
+            )
+            .await;
+        assert_eq!(fetcher.calls(), 2);
+    }
+
+    /// The row describes the last attempt, so a successful fetch must remove
+    /// it — otherwise a client that fixed its key server would be held back
+    /// until the window expired on a replica that never saw the success.
+    #[tokio::test]
+    async fn a_successful_fetch_clears_the_shared_negative_entry() {
+        let key = SigningKey::generate(SigningAlgorithm::EdDsa).expect("generate");
+        let fetcher = StubFetcher::failing();
+        let store = SharedBackoff::shared();
+        let source = JwksSource::Uri(URI.to_owned());
+        let cache = ClientKeyCache::new(fetcher.clone()).sharing_backoff(store.clone());
+
+        let _ = cache
+            .resolve(&tenant(), &client(), &source, None, now())
+            .await;
+        assert_eq!(store.rows(), 1, "the failure was not recorded");
+
+        fetcher.now_serving(&published(&[(&key, Some("k1"))]));
+        let resolved = ClientKeyCache::new(fetcher.clone())
+            .sharing_backoff(store.clone())
+            .resolve(
+                &tenant(),
+                &client(),
+                &source,
+                None,
+                now() + DEFAULT_NEGATIVE_TTL,
+            )
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.keys().len(), 1);
+        assert_eq!(store.rows(), 0, "the negative entry outlived the outage");
+    }
+
+    /// The recorded reason is for an operator, and it must never be the
+    /// response body: a body is bytes somebody else chose.
+    #[tokio::test]
+    async fn the_recorded_reason_is_the_error_and_not_the_document() {
+        let fetcher = Arc::new(StubFetcher {
+            response: Mutex::new(Ok(b"<html>not a JWK Set at all</html>".to_vec())),
+            calls: AtomicU64::new(0),
+        });
+        let store = SharedBackoff::shared();
+        let cache = ClientKeyCache::new(fetcher).sharing_backoff(store.clone());
+
+        let _ = cache
+            .resolve(
+                &tenant(),
+                &client(),
+                &JwksSource::Uri(URI.to_owned()),
+                None,
+                now(),
+            )
+            .await;
+
+        let errors = store.errors.lock().expect("lock").clone();
+        assert_eq!(errors.len(), 1);
+        assert!(!errors[0].contains("<html>"), "{}", errors[0]);
+        assert!(!errors[0].contains(URI), "{}", errors[0]);
+    }
+
+    /// The backoff exists to save somebody else's server traffic. A store that
+    /// cannot be reached is a reason to fetch, not a reason to refuse a client
+    /// that has done nothing wrong.
+    #[tokio::test]
+    async fn a_backoff_store_that_is_down_does_not_stop_a_resolution() {
+        let key = SigningKey::generate(SigningAlgorithm::EdDsa).expect("generate");
+        let fetcher = StubFetcher::serving(&published(&[(&key, Some("k1"))]));
+        let store = SharedBackoff::shared();
+        store.down.store(true, Ordering::Relaxed);
+        let cache = ClientKeyCache::new(fetcher.clone()).sharing_backoff(store.clone());
+
+        let resolved = cache
+            .resolve(
+                &tenant(),
+                &client(),
+                &JwksSource::Uri(URI.to_owned()),
+                None,
+                now(),
+            )
+            .await
+            .expect("a store outage must not fail a resolution");
+        assert_eq!(resolved.keys().len(), 1);
+        assert_eq!(fetcher.calls(), 1);
+    }
+
+    /// Keys already held answer the request even when the shared row forbids a
+    /// refresh: the backoff suppresses *fetches*, and turning it into "this
+    /// client has no keys" would take a third party's outage and make it an
+    /// authentication failure here.
+    #[tokio::test]
+    async fn a_shared_backoff_does_not_discard_keys_the_cache_already_holds() {
+        let key = SigningKey::generate(SigningAlgorithm::EdDsa).expect("generate");
+        let fetcher = StubFetcher::serving(&published(&[(&key, Some("k1"))]));
+        let store = SharedBackoff::shared();
+        let source = JwksSource::Uri(URI.to_owned());
+        let cache = ClientKeyCache::new(fetcher.clone()).sharing_backoff(store.clone());
+
+        cache
+            .resolve(&tenant(), &client(), &source, None, now())
+            .await
+            .expect("first");
+
+        // Another replica has just failed against the same URL.
+        asterius_domain::ports::ClientKeyFetchBackoff::record_failure(
+            store.as_ref(),
+            &tenant(),
+            &client(),
+            URI,
+            "cannot connect to client.example",
+            now(),
+            now() + Duration::minutes(30),
+        )
+        .await
+        .expect("record");
+
+        // An unknown `kid` would normally provoke a refresh once the refresh
+        // interval has passed; the shared row says not yet, and the keys we
+        // hold are served anyway.
+        let served = cache
+            .resolve(
+                &tenant(),
+                &client(),
+                &source,
+                Some(&Kid::new("rotated")),
+                now() + DEFAULT_MIN_REFRESH_INTERVAL + Duration::seconds(1),
+            )
+            .await
+            .expect("the held keys must still answer");
+        assert_eq!(served.keys().len(), 1);
+        assert_eq!(fetcher.calls(), 1, "the backoff was ignored");
     }
 }

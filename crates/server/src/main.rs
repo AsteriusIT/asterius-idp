@@ -23,8 +23,9 @@ use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::tenant_settings::SettingsDirectory;
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{
-    DeploymentAdmin, PgAdminSeed, PgAuditSink, PgKekRewrap, PgReplayGuard, PgRetention,
-    PgTenantRepository, PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
+    DeploymentAdmin, PgAdminSeed, PgAuditSink, PgClientKeyFetches, PgKekRewrap, PgReplayGuard,
+    PgRetention, PgTenantRepository, PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store,
+    TenantKeyStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -134,7 +135,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?,
         );
         let admin_clients = AdminClientContext::of(&config, &outbound);
-        let client_keys = Arc::new(ClientKeyCache::new(Arc::clone(&outbound)));
+        let client_keys = client_key_cache(&outbound, &store);
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = Arc::new(
             ClientAuthenticator::new(client_keys, Arc::clone(&replay) as Arc<dyn ReplayGuard>)
@@ -330,6 +331,23 @@ fn admin_routes(
 /// that a deployment's URL space does not depend on how the binary was built.
 fn console_routes(store: &Store) -> axum::Router {
     asterius_server::http::console::routes(store.clone(), asterius_admin_api::Bundle::embedded())
+}
+
+/// The client key cache, with its negative half shared through the database.
+///
+/// In memory alone the negative cache is per replica and per process lifetime,
+/// so an unreachable third-party `jwks_uri` is fetched once per replica per
+/// backoff window and again after every restart — a rate the operator did not
+/// configure and the third party, not this deployment, notices first
+/// (`ast-mxc.8`). The shared row makes the window one decision.
+fn client_key_cache(
+    outbound: &Arc<dyn asterius_domain::ports::JwksFetcher>,
+    store: &Store,
+) -> Arc<ClientKeyCache> {
+    Arc::new(
+        ClientKeyCache::new(Arc::clone(outbound))
+            .sharing_backoff(Arc::new(PgClientKeyFetches::new(store.pool().clone()))),
+    )
 }
 
 /// The key store, and the tenant repository the whole process holds.

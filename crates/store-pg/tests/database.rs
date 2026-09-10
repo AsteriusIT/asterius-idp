@@ -6809,6 +6809,8 @@ mod retention {
             .await
             .expect("seed client key");
 
+            seed_client_key_fetch(pool, tenant, label, old, expires).await;
+
             sqlx::query(
                 "insert into sessions (tenant_id, session_id, public_sid, user_id,
                                        authenticated_at, expires_at, idle_expires_at)
@@ -6903,6 +6905,32 @@ mod retention {
             .await
             .expect("seed rate limit");
         }
+    }
+
+    /// One negative cache entry per seeded label (`ast-mxc.8`).
+    ///
+    /// Expired once `next_attempt_at` has passed: from that instant the row
+    /// suppresses no fetch, so keeping it would only accumulate a row per URL
+    /// a client ever mistyped.
+    async fn seed_client_key_fetch(
+        pool: &PgPool,
+        tenant: &str,
+        label: &str,
+        attempted: OffsetDateTime,
+        next_attempt: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into client_key_fetches (tenant_id, client_id, jwks_uri_hash,
+                                             last_attempt_at, last_error, next_attempt_at)
+             values ($1, 'billing', $2, $3, 'cannot connect to client.example', $4)",
+        )
+        .bind(tenant)
+        .bind(asterius_domain::sha256(label.as_bytes()).to_vec())
+        .bind(attempted)
+        .bind(next_attempt)
+        .execute(pool)
+        .await
+        .expect("seed client key fetch");
     }
 
     /// One enrolment per seeded session, expiring with it.
@@ -9166,6 +9194,328 @@ db_test! {
             .execute(&db.pool)
             .await;
             assert!(refused.is_err(), "the schema stored {wrong:?} as an audience");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The shared client key fetch backoff (`ast-mxc.8`)
+// ---------------------------------------------------------------------------
+
+/// A negative cache one replica can read from another's failure.
+///
+/// The in-memory cache in `asterius-jose` is correct and per process; these
+/// tests are about the half that has to survive a second replica and a
+/// restart, so every one of them uses two adapters — or two caches — over one
+/// database.
+mod client_key_fetches {
+    use super::*;
+    use asterius_domain::ClientId;
+    use asterius_domain::ports::{ClientKeyFetchBackoff, JwksFetcher};
+    use asterius_jose::ClientKeyCache;
+    use asterius_store_pg::PgClientKeyFetches;
+    use std::sync::atomic::AtomicU64;
+
+    const URI: &str = "https://client.example/jwks?tenant=secret";
+
+    fn at(offset: i64) -> OffsetDateTime {
+        OffsetDateTime::from_unix_timestamp(1_800_000_000 + offset).expect("a valid instant")
+    }
+
+    fn client() -> ClientId {
+        ClientId::new("billing")
+    }
+
+    /// A tenant with one client, which the table's foreign key requires.
+    async fn seed(pool: &PgPool) -> TenantId {
+        seed_tenant(pool, "demo").await;
+        sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks_uri)
+             values ($1, 'billing', 'Billing', 'private_key_jwt', $2)",
+        )
+        .bind("demo")
+        .bind(URI)
+        .execute(pool)
+        .await
+        .expect("seed client");
+        TenantId::new("demo")
+    }
+
+    db_test! {
+        /// The whole point of the table: a failure one replica saw is a
+        /// failure the next replica does not have to repeat.
+        async fn a_failure_recorded_by_one_replica_is_read_by_another(db) {
+            let tenant = seed(&db.pool).await;
+            let first = PgClientKeyFetches::new(db.pool.clone());
+            let second = PgClientKeyFetches::new(db.pool.clone());
+
+            assert_eq!(
+                second.next_attempt_at(&tenant, &client(), URI).await.expect("read"),
+                None,
+                "nothing has failed yet"
+            );
+
+            first
+                .record_failure(
+                    &tenant,
+                    &client(),
+                    URI,
+                    "cannot connect to client.example",
+                    at(0),
+                    at(60),
+                )
+                .await
+                .expect("record");
+
+            assert_eq!(
+                second.next_attempt_at(&tenant, &client(), URI).await.expect("read"),
+                Some(at(60))
+            );
+        }
+    }
+
+    db_test! {
+        /// The row describes the last attempt, and a successful attempt is not
+        /// a reason to hold anybody back.
+        async fn a_successful_fetch_clears_the_row_for_every_replica(db) {
+            let tenant = seed(&db.pool).await;
+            let store = PgClientKeyFetches::new(db.pool.clone());
+            store
+                .record_failure(&tenant, &client(), URI, "timed out", at(0), at(60))
+                .await
+                .expect("record");
+
+            PgClientKeyFetches::new(db.pool.clone())
+                .clear(&tenant, &client(), URI)
+                .await
+                .expect("clear");
+
+            assert_eq!(
+                store.next_attempt_at(&tenant, &client(), URI).await.expect("read"),
+                None
+            );
+        }
+    }
+
+    db_test! {
+        /// Keyed by URL, so a client that re-registers elsewhere does not
+        /// inherit the old URL's outage — and a second URL is not held back by
+        /// the first one's.
+        async fn one_urls_failure_does_not_hold_back_another(db) {
+            let tenant = seed(&db.pool).await;
+            let store = PgClientKeyFetches::new(db.pool.clone());
+            store
+                .record_failure(&tenant, &client(), URI, "timed out", at(0), at(60))
+                .await
+                .expect("record");
+
+            assert_eq!(
+                store
+                    .next_attempt_at(&tenant, &client(), "https://elsewhere.example/jwks")
+                    .await
+                    .expect("read"),
+                None
+            );
+        }
+    }
+
+    db_test! {
+        /// The row is a deadline every replica reads, so a report from an
+        /// earlier attempt — a slow replica finishing after a later one — must
+        /// not move it backwards and reopen the window.
+        async fn a_late_report_of_an_earlier_attempt_does_not_shorten_the_window(db) {
+            let tenant = seed(&db.pool).await;
+            let store = PgClientKeyFetches::new(db.pool.clone());
+            store
+                .record_failure(&tenant, &client(), URI, "later attempt", at(30), at(90))
+                .await
+                .expect("record the later attempt");
+            store
+                .record_failure(&tenant, &client(), URI, "earlier attempt", at(0), at(60))
+                .await
+                .expect("record the earlier attempt");
+
+            assert_eq!(
+                store.next_attempt_at(&tenant, &client(), URI).await.expect("read"),
+                Some(at(90))
+            );
+        }
+    }
+
+    db_test! {
+        /// A `jwks_uri` may carry a query parameter the client considers a
+        /// secret, so the URL itself never reaches a column — only a digest of
+        /// it, and the reason, which is ours.
+        async fn the_url_is_never_stored_in_the_clear(db) {
+            let tenant = seed(&db.pool).await;
+            PgClientKeyFetches::new(db.pool.clone())
+                .record_failure(&tenant, &client(), URI, "timed out", at(0), at(60))
+                .await
+                .expect("record");
+
+            let found: i64 = sqlx::query_scalar(
+                "select count(*) from client_key_fetches
+                  where tenant_id = $1 and last_error like '%client.example%'",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("scan the table");
+            assert_eq!(found, 0, "the URL reached a column");
+        }
+    }
+
+    db_test! {
+        /// A reason longer than the column allows must be cut, not refused: a
+        /// fetch that failed and whose failure could not be recorded is the
+        /// worst of both.
+        async fn an_overlong_reason_is_stored_rather_than_refused(db) {
+            let tenant = seed(&db.pool).await;
+            PgClientKeyFetches::new(db.pool.clone())
+                .record_failure(&tenant, &client(), URI, &"x".repeat(5_000), at(0), at(60))
+                .await
+                .expect("an overlong reason must not fail the write");
+
+            let length: i32 = sqlx::query_scalar(
+                "select length(last_error) from client_key_fetches where tenant_id = $1",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the reason");
+            assert!(length <= 200, "the reason was stored at {length} characters");
+        }
+    }
+
+    /// A fetcher that always fails and counts how often it was asked.
+    #[derive(Debug, Default)]
+    struct CountingFetcher {
+        calls: AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl JwksFetcher for CountingFetcher {
+        async fn fetch(&self, _url: &str) -> Result<Vec<u8>, asterius_domain::DomainError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Err(asterius_domain::DomainError::Storage(
+                "cannot connect to client.example".into(),
+            ))
+        }
+    }
+
+    db_test! {
+        /// The criterion of `ast-mxc.8`, end to end and over a real database:
+        /// three replicas and a restart cost the third party one fetch per
+        /// backoff window between them, not one each.
+        async fn replicas_and_a_restart_share_one_backoff_window(db) {
+            let tenant = seed(&db.pool).await;
+            let fetcher = Arc::new(CountingFetcher::default());
+            let source = asterius_domain::JwksSource::Uri(URI.to_owned());
+            let store = Arc::new(PgClientKeyFetches::new(db.pool.clone()));
+
+            let replica = || {
+                ClientKeyCache::new(fetcher.clone() as Arc<dyn JwksFetcher>)
+                    .sharing_backoff(store.clone() as Arc<dyn ClientKeyFetchBackoff>)
+            };
+            let replicas = [replica(), replica(), replica()];
+
+            for second in 0..30 {
+                for replica in &replicas {
+                    let _ = replica
+                        .resolve(&tenant, &client(), &source, None, at(second))
+                        .await;
+                }
+            }
+            // A restart: nothing in memory, the row still there.
+            let _ = replica()
+                .resolve(&tenant, &client(), &source, None, at(31))
+                .await;
+            assert_eq!(
+                fetcher.calls.load(Ordering::Relaxed),
+                1,
+                "the third party was fetched once per replica, not once between them"
+            );
+
+            // And the window ends. `DEFAULT_NEGATIVE_TTL` is 60 seconds.
+            let _ = replica()
+                .resolve(&tenant, &client(), &source, None, at(60))
+                .await;
+            assert_eq!(
+                fetcher.calls.load(Ordering::Relaxed),
+                2,
+                "the backoff outlived its window"
+            );
+        }
+    }
+
+    db_test! {
+        /// Retention sweeps the table (`POLICY`), and the row it removes is the
+        /// spent one: past `next_attempt_at` an entry suppresses nothing.
+        async fn a_spent_entry_is_swept_and_a_live_one_is_not(db) {
+            let tenant = seed(&db.pool).await;
+            let store = PgClientKeyFetches::new(db.pool.clone());
+            store
+                .record_failure(&tenant, &client(), "https://spent.example/jwks",
+                                "timed out", at(-600), at(-60))
+                .await
+                .expect("record the spent entry");
+            store
+                .record_failure(&tenant, &client(), "https://live.example/jwks",
+                                "timed out", at(0), at(600))
+                .await
+                .expect("record the live entry");
+
+            asterius_store_pg::PgRetention::new(db.pool.clone())
+                .sweep_tenant(&tenant, at(0))
+                .await
+                .expect("sweep");
+
+            let left: Vec<Vec<u8>> = sqlx::query_scalar(
+                "select jwks_uri_hash from client_key_fetches where tenant_id = $1",
+            )
+            .bind("demo")
+            .fetch_all(&db.pool)
+            .await
+            .expect("read what is left");
+            assert_eq!(left.len(), 1, "the sweep took the wrong number of rows");
+            assert_eq!(
+                left[0],
+                asterius_domain::sha256("https://live.example/jwks".as_bytes()).to_vec(),
+                "the live entry was swept and the spent one kept"
+            );
+        }
+    }
+
+    db_test! {
+        /// One tenant's clients never answer for another's: the key leads with
+        /// the tenant, and a client id means nothing outside it.
+        async fn a_failure_in_one_tenant_is_invisible_in_another(db) {
+            let tenant = seed(&db.pool).await;
+            seed_tenant(&db.pool, "other").await;
+            sqlx::query(
+                "insert into clients (tenant_id, client_id, client_name,
+                                      token_endpoint_auth_method, jwks_uri)
+                 values ('other', 'billing', 'Billing', 'private_key_jwt', $1)",
+            )
+            .bind(URI)
+            .execute(&db.pool)
+            .await
+            .expect("seed the other tenant's client");
+
+            let store = PgClientKeyFetches::new(db.pool.clone());
+            store
+                .record_failure(&tenant, &client(), URI, "timed out", at(0), at(60))
+                .await
+                .expect("record");
+
+            assert_eq!(
+                store
+                    .next_attempt_at(&TenantId::new("other"), &client(), URI)
+                    .await
+                    .expect("read"),
+                None
+            );
         }
     }
 }

@@ -23,6 +23,10 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 time.workspace = true
+# The shared fetch backoff (`ast-mxc.8`) is best-effort: a store that cannot be
+# reached must not stop a client authenticating, so the failure is a log line
+# rather than an error. That is the only thing logged from this crate.
+tracing.workspace = true
 # RFC 9449 §4.3 asks a server to compare `htu` after RFC 3986 §6.2.2/§6.2.3
 # normalisation. That comparison is a security boundary — see
 # `dpop::NormalisedUri` — and hand-rolling a URI parser to reach it would be

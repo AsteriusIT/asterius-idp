@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select next_attempt_at from client_key_fetches\n              where tenant_id = $1 and client_id = $2 and jwks_uri_hash = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "next_attempt_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "23d5b7fa188ce6eb65690239ec5edadf586397ccbce62f190dd7593e89bd4c02"
+}
