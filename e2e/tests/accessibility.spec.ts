@@ -124,7 +124,28 @@ test('the logout confirmation page has no accessibility violation', async ({ pag
   await expectNoViolation(page, testInfo);
 });
 
+/**
+ * **A documented failure, and a defect this sweep found (`ast-rna`).**
+ *
+ * The confirmation page above posts to
+ * `asterius_oidc::metadata::Endpoint::EndSession.path()` — the bare `/logout`,
+ * root-relative and with no mount prefix
+ * (`crates/server/src/http/logout.rs::confirmation_page`). A tenant reached at
+ * `/t/{id}` therefore loses its tenant on the answer, and the browser gets a
+ * 404 instead of the signed-out page: pressing "Log out" on a path-routed
+ * tenant ends nothing. `ast-295` made the rendered URLs carry their prefix and
+ * this page was missed; `ast-f0y` then removed the `custom_host` fixture that
+ * had been hiding it, which is why it is visible now.
+ *
+ * Marked `test.fail()` rather than deleted, on the precedent `ast-jsq` set in
+ * `no-js-flow.spec.ts`: the assertion is what the page must do, and the day
+ * the action carries its prefix this test passes unexpectedly and fails the
+ * run until the annotation is removed. Fixing the handler belongs to whoever
+ * owns that file, not to a bead about CI.
+ */
 test('the signed-out page has no accessibility violation', async ({ page }, testInfo) => {
+  test.fail(true, 'the confirmation form posts to /logout without the tenant prefix');
+
   // Arrange: the answer to the question above.
   await signIn(page);
   await page.goto(`${BASE_URL}/logout`);

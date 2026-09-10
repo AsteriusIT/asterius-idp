@@ -73,6 +73,16 @@ authorization was validated against, one origin and that page only.
 `tests/csp-sweep.spec.ts` asserts both halves: the widening on the consent page,
 and its absence on every other page.
 
+The signed-out page in `tests/accessibility.spec.ts` is a documented
+`test.fail()` for the same kind of reason (`ast-rna`). The logout confirmation
+posts to the bare `/logout`, root-relative and with no mount prefix, so on a
+path-routed tenant the answer lands on a 404 and pressing "Log out" ends
+nothing. `ast-295` gave the rendered URLs their prefix and
+`crates/server/src/http/logout.rs::confirmation_page` was missed; `ast-f0y`
+then removed the `custom_host` fixture that had been hiding it. The day the
+action carries its prefix, the test passes unexpectedly and the annotation
+comes off.
+
 ## Fixture notes
 
 - Both tenants are addressed by their path — `https://127.0.0.1:{port}/t/e2e`
