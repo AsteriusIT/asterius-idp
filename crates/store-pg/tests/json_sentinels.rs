@@ -412,3 +412,184 @@ db_test! {
         assert!(still_there, "the record must be untouched, not silently edited");
     }
 }
+
+db_test! {
+    /// The console's login holds the same progress document as `auth_requests`
+    /// in a table of its own, and the detection script calls it repairable. A
+    /// row there must therefore come out renamed like any other (`ast-sgo`),
+    /// and not be reported repairable by one script and ignored by the other.
+    async fn a_corrupted_first_party_interaction_is_repaired(db) {
+        sqlx::query(
+            "insert into first_party_interactions
+                 (tenant_id, interaction_id_hash, destination, interaction_state, expires_at)
+             values ($1, sha256('interaction'), 'console',
+                     '{\"$serde_json::private::RawValue\": \"{}\", \"stage\": \"password\"}'::jsonb,
+                     now() + interval '10 minutes')",
+        )
+        .bind(&db.tenant)
+        .execute(&db.pool)
+        .await
+        .expect("seed corrupt interaction");
+
+        let journal = repair(&db).await;
+
+        assert_eq!(
+            journal,
+            vec![(
+                "repaired".to_owned(),
+                "first_party_interactions".to_owned(),
+                "interaction_state".to_owned(),
+            )]
+        );
+        let state: Value = sqlx::query_scalar(
+            "select interaction_state from first_party_interactions where tenant_id = $1",
+        )
+        .bind(&db.tenant)
+        .fetch_one(&db.pool)
+        .await
+        .expect("read the repaired interaction");
+        assert_eq!(
+            state,
+            json!({
+                "quarantined_$serde_json::private::RawValue": "{}",
+                "stage": "password",
+            }),
+            "the repair renames the reserved member and keeps the progress it can keep"
+        );
+        assert!(detect(&db).await.is_empty(), "the repair must be complete");
+    }
+}
+
+/// Strips `--` line comments, so that prose about an `update` or about a column
+/// being repairable is not read as if it were a statement.
+fn without_comments(script: &str) -> String {
+    script
+        .lines()
+        .map(|line| match line.find("--") {
+            Some(start) => &line[..start],
+            None => line,
+        })
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+/// The `(table, column)` pairs the detection script announces as repairable,
+/// read out of the inventory an operator actually runs.
+///
+/// Each entry is one `select '<table>', '<column>', <repairable>,` line, which
+/// is how every row of the `docs` CTE is spelled. A line of another shape is
+/// not an entry — the closing `select` of the script included.
+fn columns_declared_repairable(script: &str) -> Vec<(String, String)> {
+    without_comments(script)
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+            let [head, column, repairable, ..] = fields.as_slice() else {
+                return None;
+            };
+            let table = head.strip_prefix("select ")?;
+            if *repairable != "true" {
+                return None;
+            }
+            Some((unquote(table)?, unquote(column)?))
+        })
+        .collect()
+}
+
+/// The `(table, column)` pairs the repair script rewrites, read out of its
+/// `update <table> set <column> =` statements. Whitespace is collapsed first
+/// because a statement may be wrapped over two lines.
+fn columns_updated_by_the_repair(script: &str) -> Vec<(String, String)> {
+    let flattened = without_comments(script)
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    flattened
+        .match_indices("update ")
+        .filter_map(|(at, _)| {
+            let tokens: Vec<&str> = flattened[at..].split_whitespace().take(4).collect();
+            match tokens.as_slice() {
+                ["update", table, "set", column] => {
+                    Some(((*table).to_owned(), (*column).to_owned()))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The content of a single-quoted SQL literal, or `None` for anything else.
+fn unquote(field: &str) -> Option<String> {
+    field
+        .strip_prefix('\'')?
+        .strip_suffix('\'')
+        .map(str::to_owned)
+}
+
+/// The guard that was missing: `repairable = true` is a promise made to an
+/// operator reading the detection output, and only an `update` in the repair
+/// script keeps it. Without this, a column can be announced as repairable and
+/// left corrupt while the runbook says the repair ran — which is what happened
+/// to `first_party_interactions.interaction_state` (`ast-sgo`).
+#[test]
+fn every_repairable_column_is_actually_repaired() {
+    let promised = columns_declared_repairable(DETECT);
+    let repaired = columns_updated_by_the_repair(REPAIR);
+
+    let unkept: Vec<&(String, String)> = promised
+        .iter()
+        .filter(|column| !repaired.contains(column))
+        .collect();
+
+    assert!(
+        unkept.is_empty(),
+        "json-sentinels-detect.sql calls {unkept:?} repairable but \
+         json-sentinels-repair.sql has no update for them: an operator following \
+         the runbook would be told the row was repairable and leave it corrupt"
+    );
+}
+
+/// The same promise from the other side: a row rewritten by the repair without
+/// the detection saying so is a row an operator was never told would change.
+#[test]
+fn a_column_the_repair_rewrites_is_announced_as_repairable() {
+    let promised = columns_declared_repairable(DETECT);
+    let repaired = columns_updated_by_the_repair(REPAIR);
+
+    let unannounced: Vec<&(String, String)> = repaired
+        .iter()
+        .filter(|column| !promised.contains(column))
+        .collect();
+
+    assert!(
+        unannounced.is_empty(),
+        "json-sentinels-repair.sql rewrites {unannounced:?}, which \
+         json-sentinels-detect.sql does not call repairable"
+    );
+}
+
+/// The two parsers above are what the guard rests on, and one that quietly
+/// matched nothing would make it pass against any pair of scripts.
+#[test]
+fn the_repairable_inventory_is_read_from_the_detection_script() {
+    let promised = columns_declared_repairable(DETECT);
+
+    assert!(
+        promised.contains(&("users".to_owned(), "claims".to_owned())),
+        "users.claims is repairable in the detection script, got {promised:?}"
+    );
+    assert!(
+        !promised.contains(&("audit_events".to_owned(), "detail".to_owned())),
+        "audit_events is append-only and must never be read as repairable"
+    );
+}
+
+#[test]
+fn the_updates_are_read_from_the_repair_script() {
+    let repaired = columns_updated_by_the_repair(REPAIR);
+
+    assert!(
+        repaired.contains(&("users".to_owned(), "claims".to_owned())),
+        "the repair script updates users.claims, got {repaired:?}"
+    );
+}

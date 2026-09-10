@@ -162,6 +162,28 @@ auth_requests_interaction_state as (
                                  'request_uri_hash', encode(request_uri_hash, 'hex')),
               pg_temp.quarantined_keys(interaction_state)
 ),
+-- The console's login keeps the same progress document in a table of its own
+-- (`ast-wr4`), so it is repaired on exactly the same terms as the column above:
+-- one stage machine writes both, and a rule that held for one of the two
+-- tables and not the other would be a rule about where the row sits rather
+-- than about what it holds. Missing here until `ast-sgo`, while the detection
+-- script called it repairable.
+--
+-- The rename does not reconstruct login progress -- nothing can, an
+-- interaction is a flow in mid-air -- it makes the row loadable again. What
+-- the stage machine does with a quarantined member is what it does with any
+-- state it cannot make sense of: the person starts the login over, and the
+-- row is swept by the `first_party_interactions` retention rule at
+-- `expires_at`, as expired interactions always are.
+first_party_interactions_interaction_state as (
+    update first_party_interactions
+       set interaction_state = pg_temp.quarantine_serde_json_sentinels(interaction_state)
+    where pg_temp.has_serde_json_sentinel(interaction_state)
+    returning 'first_party_interactions', 'interaction_state',
+              jsonb_build_object('tenant_id', tenant_id,
+                                 'interaction_id_hash', encode(interaction_id_hash, 'hex')),
+              pg_temp.quarantined_keys(interaction_state)
+),
 grants_claims as (
     update grants set claims = pg_temp.quarantine_serde_json_sentinels(claims)
     where pg_temp.has_serde_json_sentinel(claims)
@@ -216,6 +238,7 @@ repaired as (
     union all select * from users_claims
     union all select * from auth_requests_parameters
     union all select * from auth_requests_interaction_state
+    union all select * from first_party_interactions_interaction_state
     union all select * from grants_claims
     union all select * from authorization_details_types_schema
     union all select * from grants_authorization_details
