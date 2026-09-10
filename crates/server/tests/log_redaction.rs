@@ -339,7 +339,7 @@ fn a_worker_log_still_says_what_happened_and_where() {
         // The outbox worker has to stay diagnosable too: which row, which
         // family, and what the receiver said.
         "an outbox row was abandoned",
-        "family=\"logout\"",
+        "family=logout",
         "rp.example answered 503",
     ] {
         assert!(logs.contains(expected), "lost {expected:?}:\n{logs}");

@@ -145,14 +145,18 @@ mod tests {
             .collect();
 
         // Assert
+        //
+        // Sorted, because `serde_json::Value` holds an object in a `BTreeMap`.
+        // The order is not the assertion; the *set* is, and a field carrying a
+        // payload or a destination would show up in it.
         assert_eq!(
             fields,
             vec![
-                "id",
-                "kind",
-                "family",
                 "attempts",
                 "created_at",
+                "family",
+                "id",
+                "kind",
                 "last_attempt_at",
                 "last_error",
             ]

@@ -7939,6 +7939,25 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed outbox");
+
+        // One attempt against the oldest row, so the `Kept` rule for
+        // `outbox_attempts` has something to be checked against (`ast-0ju.9`).
+        // It is kept rather than swept because it cascades from `outbox`: the
+        // trail of a delivery disappears exactly when the row it describes
+        // does, and a second cutoff here would either outlive the row or
+        // predecease it.
+        sqlx::query(
+            "insert into outbox_attempts
+                 (tenant_id, outbox_id, attempt, attempted_at, outcome, detail)
+             select $1, min(outbox_id), 1, $2, 'delivered', null
+               from outbox
+              where tenant_id = $1",
+        )
+        .bind(tenant)
+        .bind(now() - Duration::days(8))
+        .execute(pool)
+        .await
+        .expect("seed an outbox attempt");
     }
 
     db_test! {
