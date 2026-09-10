@@ -1298,10 +1298,11 @@ impl userinfo::UserInfoSource for StoredClaims {
 /// Wiring only, like the PAR handler: everything that decides anything is in
 /// [`crate::http::token::token`].
 ///
-/// Three grants are registered: `authorization_code`, `refresh_token` and
-/// `client_credentials`. Anything else this deployment advertises but has not
-/// built answers 501, and a fourth handler joins the list below without
-/// touching the dispatch, the error shape or the caching rules.
+/// Five grants are registered: `authorization_code`, `refresh_token`,
+/// `client_credentials`, `device_code` and `token-exchange`. Anything else this
+/// deployment advertises but has not built answers 501, and a further handler
+/// joins the list below without touching the dispatch, the error shape or the
+/// caching rules.
 async fn token_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
@@ -1338,7 +1339,6 @@ async fn token_endpoint_inner(
     certificate: Option<&asterius_oidc::mtls::ClientCertificate>,
 ) -> Response {
     let scope = endpoints.store.scope(tenant.id.clone());
-    let clients = scope.clients(endpoints.capabilities);
 
     let now = time::OffsetDateTime::now_utc();
     let binding = match token_endpoint_proof(endpoints, tenant, headers, now).await {
@@ -1346,6 +1346,71 @@ async fn token_endpoint_inner(
         Err(refusal) => return *refusal,
     };
 
+    // One read for all five grants, so that whichever this request turns out
+    // to be it mints under the same settings — the same argument `now` and the
+    // proof key are resolved once, just above.
+    let issuing = match issuing_policy(endpoints, tenant).await {
+        Ok(policy) => policy,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+
+    dispatch_grants(
+        endpoints,
+        tenant,
+        &scope,
+        issuing,
+        Dispatching {
+            certificate,
+            headers,
+            body,
+            binding: binding.as_ref(),
+            now,
+        },
+    )
+    .await
+}
+
+/// What one token request proved and carried, resolved at the edge.
+///
+/// A struct because every member is a fact about *this* request, and a
+/// signature matched by position is one in which the headers and the body can
+/// be swapped.
+struct Dispatching<'a> {
+    certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
+    headers: &'a axum::http::HeaderMap,
+    body: &'a axum::body::Bytes,
+    binding: Option<&'a crate::http::dpop::Binding>,
+    now: time::OffsetDateTime,
+}
+
+/// Builds every grant handler and hands the request to whichever owns it.
+///
+/// Separate from [`token_endpoint_inner`] because the handlers borrow the
+/// repositories beside them: they have to be built in the frame that
+/// dispatches, and that frame is better holding nothing else. Adding a grant
+/// is adding a value to the list at the bottom.
+async fn dispatch_grants(
+    endpoints: &ClientEndpoints,
+    tenant: &Arc<Tenant>,
+    scope: &asterius_store_pg::TenantScope<'_>,
+    issuing: Issuing,
+    request: Dispatching<'_>,
+) -> Response {
+    // Named once, because every handler below takes all three and a request
+    // judged against two clock readings is two requests.
+    let Dispatching {
+        certificate, now, ..
+    } = request;
+    let Issuing {
+        lifetimes,
+        grant_id_claim,
+        grant_management,
+    } = issuing;
+
+    let clients = scope.clients(endpoints.capabilities);
     let authenticator = Arc::clone(&endpoints.authenticator);
     let tenant_for_auth = Arc::clone(tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
@@ -1362,27 +1427,13 @@ async fn token_endpoint_inner(
     // Read only, to project the claims the grant covers into the ID token
     // (OIDC Core §5.4, §5.5). The KEK is the one every other user read takes.
     let users = scope.users(Arc::clone(&endpoints.kek));
-    // One read for all three grants, so that whichever this request turns out
-    // to be it mints under the same settings — the same argument `now` and the
-    // proof key are resolved once, just above.
-    let Issuing {
-        lifetimes,
-        grant_id_claim,
-        grant_management,
-    } = match issuing_policy(endpoints, tenant).await {
-        Ok(policy) => policy,
-        Err(error) => {
-            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
-            return unavailable();
-        }
-    };
     // RFC 8707: what a `resource` may name and what an `aud` may hold.
     let resource_servers = scope.resource_servers();
     // One value for every grant: what this request proved possession of. The
     // registration decides which half binds the token (RFC 9449 §6, RFC 8705
     // §3), so no grant handler chooses for itself.
     let constraint = crate::http::issuance::SenderConstraint {
-        proof_key: binding.as_ref().map(|binding| &binding.jkt),
+        proof_key: request.binding.map(|binding| &binding.jkt),
         certificate,
     };
     let authorization_code = AuthorizationCode {
@@ -1421,6 +1472,17 @@ async fn token_endpoint_inner(
     // clock reading or a different proven key.
     let device_codes = scope.device_codes();
     let device_code = DeviceCode::sharing(&authorization_code, &device_codes);
+    // The fifth grant (RFC 8693). It reads the client registry — the policy
+    // that decides whether one client's token may be exchanged by another
+    // lives on the client the token was minted for — and this deployment's
+    // keys, because the subject token is one *this* server issued and nothing
+    // else can say so.
+    let token_exchange = crate::http::token_exchange::TokenExchange::sharing(
+        &authorization_code,
+        &clients,
+        endpoints.keys.as_ref(),
+        endpoints.audit.as_ref(),
+    );
     let refresh_token = RefreshToken {
         tokens: &refresh_tokens,
         grants: &grants,
@@ -1446,11 +1508,12 @@ async fn token_endpoint_inner(
                 &refresh_token,
                 &client_credentials,
                 &device_code,
+                &token_exchange,
             ],
             certificate,
         },
-        headers,
-        body,
+        request.headers,
+        request.body,
         async |attempt: &Attempt<'_>, rules: &AssertionRules| {
             authenticator
                 .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
@@ -1462,7 +1525,7 @@ async fn token_endpoint_inner(
     // RFC 9449 §8.2: hand the client the next nonce on a successful response,
     // so a well-behaved one sees the `use_dpop_nonce` refusal exactly once
     // rather than on every request.
-    if let Some(binding) = &binding {
+    if let Some(binding) = request.binding {
         DpopEndpoint::supply_nonce(&mut response, binding);
     }
     response

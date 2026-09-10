@@ -519,6 +519,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "token_exchange_form"
+path = "fuzz_targets/token_exchange_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "token_form"
 path = "fuzz_targets/token_form.rs"
 test = false

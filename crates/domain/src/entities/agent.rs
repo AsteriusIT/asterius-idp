@@ -39,16 +39,18 @@
 //!
 //! # What is stored and not yet enforced — say so
 //!
-//! [`AgentLimits::max_delegation_depth`] and the `token-exchange` and `ciba`
-//! grants are **stored and validated, and applied to nothing**. Token exchange
-//! (`ast-lh3.2`) and CIBA do not exist in this build, so there is no chain to
-//! measure and no request to refuse. They are here because they are the
-//! contract `ast-lh3.2` will read on the day it lands, and because a profile
-//! written now must not have to be rewritten then. A reader who wants to know
-//! what is *in force* today should read [`AgentProfile::cap`] (token lifetimes),
-//! [`AgentLimits::check`] (registration) and
-//! [`AgentProfile::scope_needing_human_approval`] (issuance) — those three, and
-//! nothing else.
+//! Most of this profile is in force. [`AgentLimits::max_delegation_depth`],
+//! [`AgentLimits::impersonation`], [`AgentLimits::exchangeable`] and
+//! [`AgentLimits::audiences`] are read on every token exchange (`ast-lh3.2`);
+//! [`AgentProfile::cap`] bounds token lifetimes, [`AgentLimits::check`] bounds
+//! registration, and [`AgentProfile::scope_needing_human_approval`] bounds
+//! issuance.
+//!
+//! What remains **stored and applied to nothing** is the `ciba` grant: CIBA
+//! does not exist in this build, so a profile that permits it permits a
+//! registration for a grant no endpoint answers. It is here because it is the
+//! contract CIBA will read on the day it lands, and because a profile written
+//! now must not have to be rewritten then.
 //!
 //! `ast-5c6` and `ast-cu3` both say a setting with no effect is worse than an
 //! absent one. The rule stands; the exception is bounded and documented here
@@ -67,8 +69,8 @@
 //!    [`crate::ClientId::MINTED_PREFIX`] is where that argument lives.
 //! 2. **Unbounded delegation.** An agent that may mint further delegations is
 //!    an agent whose blast radius is whatever the next hop decides.
-//!    [`AgentLimits::max_delegation_depth`] is the bound; see above for what it
-//!    does today.
+//!    [`AgentLimits::max_delegation_depth`] is the bound, and token exchange
+//!    (`ast-lh3.2`) is where it binds.
 //! 3. **Silent escalation.** An agent asking for a scope no human ever agreed
 //!    to is the whole risk of the pattern, and it does not announce itself.
 //!    [`AgentLimits::human_approval_scopes`] marks those scopes, and a grant
@@ -226,6 +228,8 @@ pub struct AgentLimits {
     scopes: Option<BTreeSet<String>>,
     authorization_details_types: Option<BTreeSet<String>>,
     max_delegation_depth: u8,
+    impersonation: bool,
+    exchangeable: bool,
     access_token_ttl_cap: Option<Duration>,
     human_approval_scopes: BTreeSet<String>,
     human_approval_authorization_details_types: BTreeSet<String>,
@@ -245,6 +249,8 @@ impl Default for AgentLimits {
             scopes: None,
             authorization_details_types: None,
             max_delegation_depth: DEFAULT_MAX_DELEGATION_DEPTH,
+            impersonation: false,
+            exchangeable: false,
             access_token_ttl_cap: None,
             human_approval_scopes: BTreeSet::new(),
             human_approval_authorization_details_types: BTreeSet::new(),
@@ -278,13 +284,42 @@ impl AgentLimits {
         self.authorization_details_types.as_ref()
     }
 
-    /// How deep a delegation chain may go.
+    /// How deep a delegation chain may go (RFC 8693 §4.1).
     ///
-    /// **Stored, not enforced.** See the module documentation: there is no
-    /// delegation to measure until `ast-lh3.2` lands.
+    /// Counted in actors: one permits an agent to act for a person and permits
+    /// nothing further, which is what a token exchange applies when it extends
+    /// the `act` chain. A request that would exceed it is `invalid_request`.
     #[must_use]
     pub const fn max_delegation_depth(&self) -> u8 {
         self.max_delegation_depth
+    }
+
+    /// Whether this agent may be issued a token that *impersonates* its
+    /// subject — one with no `act` claim (RFC 8693 §5).
+    ///
+    /// False unless the tenant said otherwise, and that default is the whole
+    /// point. §5: "impersonation … the resource server cannot distinguish
+    /// between the original subject and the actor", so a trail that could have
+    /// named the agent names the person instead. Delegation is what an agent
+    /// gets when nobody made a decision.
+    #[must_use]
+    pub const fn impersonation(&self) -> bool {
+        self.impersonation
+    }
+
+    /// Whether an access token issued *to* this client may be presented as the
+    /// `subject_token` of a token exchange by a different client.
+    ///
+    /// False unless the tenant said otherwise. A token exchange normally
+    /// requires the presenter to prove possession of the key the subject token
+    /// is bound to (RFC 9449 §7.1's property, applied one endpoint earlier):
+    /// the agent exchanging a token is the party that holds it. This flag is
+    /// the deliberate exception — a token minted for one client and handed to
+    /// another — and it is the one an operator has to opt into, because it
+    /// turns a sender-constrained credential into one that travels.
+    #[must_use]
+    pub const fn exchangeable(&self) -> bool {
+        self.exchangeable
     }
 
     /// The ceiling on an agent's access token lifetime, or `None`.
@@ -377,6 +412,8 @@ impl AgentLimits {
                 "scopes": list,
                 "authorization_details_types": list,
                 "max_delegation_depth": { "type": "integer" },
+                "impersonation": { "type": "boolean" },
+                "exchangeable": { "type": "boolean" },
                 "access_token_ttl_seconds": { "type": "integer" },
                 "human_approval_scopes": list,
                 "human_approval_authorization_details_types": list
@@ -426,6 +463,14 @@ impl AgentLimits {
                 .ok_or(AgentProfileError::UnusableDelegationDepth)?;
             limits.max_delegation_depth = depth;
         }
+        for (key, slot) in [
+            ("impersonation", &mut limits.impersonation),
+            ("exchangeable", &mut limits.exchangeable),
+        ] {
+            if let Some(value) = object.get(key) {
+                *slot = value.as_bool().ok_or(AgentProfileError::SchemaRejected)?;
+            }
+        }
         if let Some(seconds) = object.get("access_token_ttl_seconds") {
             let cap = seconds
                 .as_i64()
@@ -463,6 +508,8 @@ impl AgentLimits {
         let mut document = serde_json::json!({
             "grant_types": self.grant_types.iter().map(|g| g.as_str()).collect::<Vec<_>>(),
             "max_delegation_depth": self.max_delegation_depth,
+            "impersonation": self.impersonation,
+            "exchangeable": self.exchangeable,
         });
         let object = document
             .as_object_mut()
@@ -540,6 +587,49 @@ impl AgentLimits {
         S: Into<String>,
     {
         self.scopes = Some(scopes.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// The limits with an allow-list of audiences.
+    #[must_use]
+    pub fn with_audiences<I, S>(mut self, audiences: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.audiences = Some(audiences.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// The limits with a delegation depth.
+    ///
+    /// Values outside `1..=MAX_DELEGATION_DEPTH` are clamped rather than
+    /// refused: this is a constructor for callers that already hold a number,
+    /// and the reader of the stored document is where an out-of-range
+    /// value is a rejection.
+    #[must_use]
+    pub const fn with_max_delegation_depth(mut self, depth: u8) -> Self {
+        self.max_delegation_depth = if depth < 1 {
+            1
+        } else if depth > MAX_DELEGATION_DEPTH {
+            MAX_DELEGATION_DEPTH
+        } else {
+            depth
+        };
+        self
+    }
+
+    /// The limits with impersonation permitted (RFC 8693 §5).
+    #[must_use]
+    pub const fn with_impersonation(mut self, permitted: bool) -> Self {
+        self.impersonation = permitted;
+        self
+    }
+
+    /// The limits under which this client's tokens may be exchanged by another.
+    #[must_use]
+    pub const fn with_exchangeable(mut self, exchangeable: bool) -> Self {
+        self.exchangeable = exchangeable;
         self
     }
 }
@@ -818,6 +908,55 @@ mod tests {
 
         // Assert.
         assert_eq!(read_back, profile);
+    }
+
+    #[test]
+    fn delegation_is_what_an_agent_gets_when_nobody_decided() {
+        // Arrange: a tenant that said nothing about impersonation (RFC 8693
+        // §5). Act. Assert: the agent may not impersonate, and its tokens are
+        // not somebody else's to exchange.
+        let limits = AgentLimits::default();
+
+        assert!(!limits.impersonation());
+        assert!(!limits.exchangeable());
+    }
+
+    #[test]
+    fn the_exchange_policy_survives_a_round_trip_through_the_stored_document() {
+        // Arrange.
+        let limits = AgentLimits::default()
+            .with_grant_types([GrantType::TokenExchange])
+            .with_audiences(["https://api.example/"])
+            .with_max_delegation_depth(3)
+            .with_impersonation(true)
+            .with_exchangeable(true);
+        let profile = AgentProfile::new(owner(), limits);
+
+        // Act.
+        let read_back =
+            AgentProfile::from_json(&profile.to_json()).expect("the document this build wrote");
+
+        // Assert.
+        assert_eq!(read_back, profile);
+        assert!(read_back.limits().impersonation());
+        assert!(read_back.limits().exchangeable());
+        assert_eq!(read_back.limits().max_delegation_depth(), 3);
+    }
+
+    #[test]
+    fn an_impersonation_flag_that_is_not_a_boolean_does_not_load() {
+        // Arrange: the one spelling an operator's templating language is most
+        // likely to produce. A truthy string must not become permission.
+        let document = json!({
+            "owner": owner().to_string(),
+            "impersonation": "true",
+        });
+
+        // Act.
+        let error = AgentProfile::from_json(&document);
+
+        // Assert.
+        assert_eq!(error, Err(AgentProfileError::SchemaRejected));
     }
 
     #[test]

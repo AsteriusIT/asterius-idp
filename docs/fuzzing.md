@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 71 targets below cover 90 declared entry points. Generated from the
+The 72 targets below cover 91 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -159,6 +159,7 @@ The 71 targets below cover 90 declared entry points. Generated from the
 | `tenant_settings` | `TenantSettings::from_json` | `crates/domain/src/entities/tenant_settings.rs` |
 | `theme_document` | `Theme::parse` | `crates/domain/src/entities/theme.rs` |
 | `theme_image` | `accept` | `crates/admin-api/src/theme_image.rs` |
+| `token_exchange_form` | `parse` | `crates/oidc/src/token_exchange.rs` |
 | `token_form` | `dispatch` | `crates/oidc/src/token.rs` |
 | `ui_locales_parse` | `UiLocales::parse` | `crates/domain/src/locale.rs` |
 | `userinfo_presentation` | `present` | `crates/oidc/src/userinfo.rs` |
