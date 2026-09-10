@@ -36,6 +36,7 @@
 //! issued for, not against the grant, because a token already narrowed once
 //! must not widen back on the next refresh.
 
+use asterius_domain::entities::grant::is_scope_token;
 use asterius_domain::{OpaqueToken, sha256_hex};
 use std::collections::BTreeSet;
 
@@ -157,17 +158,27 @@ pub fn requested_scopes(
     raw: Option<&str>,
     granted: &BTreeSet<String>,
 ) -> Result<BTreeSet<String>, ScopeError> {
+    // The granted set is a stored row, and rows get edited. A member outside
+    // §3.3's grammar could never have been issued by this server, and handing
+    // it back would put a scope carrying a space — two scopes, once the access
+    // token's space-delimited `scope` claim is written (RFC 9068 §2.2.3) —
+    // into a token. Refused whole rather than trimmed: the row is wrong, and a
+    // refresh that quietly drops part of what it was issued for hides that.
+    if granted.iter().any(|scope| !is_scope_token(scope)) {
+        return Err(ScopeError::NotAScopeToken);
+    }
+
     let Some(raw) = raw else {
         return Ok(granted.clone());
     };
 
     let mut requested = BTreeSet::new();
     for token in raw.split_whitespace() {
-        // Checked even though every member of `granted` already passed it:
-        // the failure below is a set-membership test, and a caller reading
-        // this function should not have to know that `granted` is clean to see
-        // that its output is.
-        if !asterius_domain::entities::grant::is_scope_token(token) {
+        // Checked even though the set-membership test below would refuse
+        // anything ungrammatical anyway, now that `granted` itself is checked:
+        // a caller reading this function should not have to follow that chain
+        // to see that the output is clean.
+        if !is_scope_token(token) {
             return Err(ScopeError::NotAScopeToken);
         }
         if !granted.contains(token) {
@@ -368,6 +379,23 @@ mod tests {
 
         // Act
         let error = requested_scopes(Some("open\"id"), &held).expect_err("not a scope token");
+
+        // Assert
+        assert_eq!(error, ScopeError::NotAScopeToken);
+    }
+
+    /// The stored set is a row, and an edited row can hold a value no
+    /// issuance would have produced. Omitting `scope` returns that set
+    /// verbatim, so without this check a newline — or a space — would ride
+    /// into an access token's `scope` claim and be read there as a scope
+    /// boundary.
+    #[test]
+    fn a_granted_set_outside_the_grammar_is_refused_even_when_scope_is_omitted() {
+        // Arrange
+        let held = granted(&["openid", "\n"]);
+
+        // Act
+        let error = requested_scopes(None, &held).expect_err("a row this server did not issue");
 
         // Assert
         assert_eq!(error, ScopeError::NotAScopeToken);
