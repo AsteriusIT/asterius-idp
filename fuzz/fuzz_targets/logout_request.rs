@@ -18,10 +18,36 @@
 use arbitrary::Arbitrary;
 use asterius_domain::ClientId;
 use asterius_oidc::logout::{
-    Disposition, LogoutRequest, Notified, Rp, confirmation_token, confirmation_token_matches,
-    disposition,
+    Disposition, LogoutRequest, Rp, confirmation_token, confirmation_token_matches, disposition,
+    notifying,
 };
 use libfuzzer_sys::fuzz_target;
+
+/// Drives a future that is ready on its first poll to completion.
+///
+/// The target needs an [`asterius_oidc::logout::Notified`] receipt, and since `ast-o4u.2` the only way
+/// to hold one is to await [`notifying`] — deliberately, so that §3's ordering
+/// is a type-level guarantee rather than a convention (`ast-t9k`). The target
+/// therefore goes through that public path instead of reaching for the
+/// `pub(crate)` constructor it used to call, and needs just enough of an
+/// executor to await it.
+///
+/// A single poll is enough and any second one would be a bug worth failing on:
+/// the notification passed below is `async { 0 }`, which yields immediately, so
+/// the future `notifying` builds is ready the first time it is polled. Looping
+/// on a no-op waker instead would spin forever on a future that ever pends, and
+/// pulling a real executor into the fuzz crate would cost every target's build
+/// time for one call site.
+fn poll_once<F: Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match future.as_mut().poll(&mut context) {
+        std::task::Poll::Ready(output) => output,
+        std::task::Poll::Pending => {
+            unreachable!("notifying over a ready notification resolves on the first poll")
+        }
+    }
+}
 
 const REGISTERED: &str = "https://rp.example/after-logout";
 const CLIENT: &str = "billing";
@@ -200,7 +226,7 @@ fuzz_target!(|input: Input| {
                 "§2: the state is echoed exactly, and only here"
             );
             let location = target
-                .location(&Notified::after_notifying(0))
+                .location(&poll_once(notifying(|| async { 0 })))
                 .expect("a registered URI parses");
             assert!(
                 !location.chars().any(char::is_control),
