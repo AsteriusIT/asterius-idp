@@ -124,14 +124,16 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // and the database. Built here rather than lazily so that a deployment
         // that cannot construct them fails at startup, where somebody is
         // watching, rather than on a client's first request.
-        // One outbound adapter, two callers: the key cache resolves `jwks_uri`
-        // through it and client registration resolves `sector_identifier_uri`
-        // through it. ADR-0006 says one path, and one instance is how that is
-        // spelt here.
+        // One outbound adapter, three callers: the key cache resolves
+        // `jwks_uri` through it, `POST /register` resolves
+        // `sector_identifier_uri` through it, and so does the admin API's
+        // client screen (`ast-f7m.5`). ADR-0006 says one path, and one instance
+        // is how that is spelt here.
         let outbound: Arc<dyn asterius_domain::ports::JwksFetcher> = Arc::new(
             HttpsJwksFetcher::new()
                 .map_err(|e| format!("cannot build the outbound TLS client: {e}"))?,
         );
+        let admin_clients = AdminClientContext::of(&config, &outbound);
         let client_keys = Arc::new(ClientKeyCache::new(Arc::clone(&outbound)));
         let replay = Arc::new(PgReplayGuard::new(store.pool().clone()));
         let authenticator = Arc::new(
@@ -190,10 +192,9 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             })),
         });
 
-        let routes = routes
-            .merge(admin_routes(&store, &tenants, &keys, directory, settings))
-            .merge(console_routes(&store))
-            .fallback(not_found);
+        let admin = admin_routes(&store, &tenants, &keys, directory, settings, admin_clients);
+        let routes = routes.merge(admin).merge(console_routes(&store));
+        let routes = routes.fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
 
         let workers = spawn_workers(
@@ -230,6 +231,38 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
     }
 }
 
+/// What the admin API's client screen needs from the protocol wiring
+/// (`ast-f7m.5`).
+///
+/// The three are grouped because they are one decision: a client the console
+/// registers must be one `POST /register` would have accepted, so the console
+/// validates against the deployment's capabilities, resolves a sector through
+/// the deployment's one outbound adapter, and reports the deployment's
+/// registration policy. Passing them individually would let a future edit hand
+/// the admin API a *different* capability set from the protocol endpoints', and
+/// the two would then disagree about what a valid client is.
+struct AdminClientContext {
+    capabilities: asterius_domain::Capabilities,
+    registration: asterius_server::http::register::RegistrationPolicy,
+    outbound: Arc<dyn asterius_domain::ports::JwksFetcher>,
+}
+
+impl AdminClientContext {
+    /// Takes the deployment's own three, and never builds one of its own.
+    ///
+    /// `outbound` in particular is *cloned* from the process's single adapter:
+    /// it is the third caller of ADR-0006's one outbound path, beside the key
+    /// cache and `POST /register`, and a second HTTP client built for the
+    /// console would be a second SSRF guard to keep in step.
+    fn of(config: &Config, outbound: &Arc<dyn asterius_domain::ports::JwksFetcher>) -> Self {
+        Self {
+            capabilities: config.features,
+            registration: config.registration.clone(),
+            outbound: Arc::clone(outbound),
+        }
+    }
+}
+
 /// The admin API (`ast-f7m.1`), ready to merge into the tenanted router.
 ///
 /// Merged into the *tenanted* router rather than mounted beside it, because an
@@ -253,14 +286,20 @@ fn admin_routes(
     keys: &Arc<TenantKeyStore>,
     directory: TenantDirectory,
     settings: SettingsDirectory,
+    clients: AdminClientContext,
 ) -> axum::Router {
     asterius_admin_api::AdminApi::new(&asterius_admin_api::AdminState {
         backend: Arc::new(asterius_server::admin::Deployment::new(
-            store.clone(),
-            Arc::clone(tenants),
-            Arc::clone(keys) as Arc<dyn asterius_domain::KeyAdministration>,
-            directory,
-            settings,
+            asterius_server::admin::DeploymentParts {
+                store: store.clone(),
+                tenants: Arc::clone(tenants),
+                keys: Arc::clone(keys) as Arc<dyn asterius_domain::KeyAdministration>,
+                directory,
+                settings,
+                capabilities: clients.capabilities,
+                registration: clients.registration,
+                outbound: clients.outbound,
+            },
         )),
         // `ast-a05.8` mints the tokens an automation caller would present.
         // Until it lands the mode answers 401 rather than accepting something

@@ -57,6 +57,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_client_request"
+path = "fuzz_targets/admin_client_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_cursor"
 path = "fuzz_targets/admin_cursor.rs"
 test = false

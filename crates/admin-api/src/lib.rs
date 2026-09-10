@@ -44,6 +44,7 @@
 
 pub mod auth;
 pub mod backend;
+pub mod clients;
 pub mod console;
 pub mod csrf;
 pub mod error;
@@ -90,6 +91,16 @@ pub const TENANT_CREATE_ID: &str = "tenants.create";
 pub const TENANT_SETTINGS_READ_ID: &str = "tenants.settings.read";
 /// The `operationId` of `PUT /tenants/{tenant_id}/settings`.
 pub const TENANT_SETTINGS_UPDATE_ID: &str = "tenants.settings.update";
+/// The `operationId` of `GET /clients`.
+pub const CLIENTS_LIST_ID: &str = "clients.list";
+/// The `operationId` of `GET /clients/{client_id}`.
+pub const CLIENT_READ_ID: &str = "clients.read";
+/// The `operationId` of `POST /clients`.
+pub const CLIENT_CREATE_ID: &str = "clients.create";
+/// The `operationId` of `PUT /clients/{client_id}`.
+pub const CLIENT_UPDATE_ID: &str = "clients.update";
+/// The `operationId` of `GET /registration`.
+pub const REGISTRATION_READ_ID: &str = "registration.read";
 /// The `operationId` of `GET /keys`.
 pub const KEYS_LIST_ID: &str = "keys.list";
 /// The `operationId` of `GET /keys/jwks`.
@@ -211,6 +222,71 @@ pub const TENANT_SETTINGS_UPDATE: Operation = Operation::mutation(
     "Replaces one tenant's feature flags and lifetimes",
 );
 
+/// This tenant's clients, one cursor page at a time, optionally filtered.
+///
+/// [`Reach::Tenant`] and no `{tenant_id}` in the path, for the reason
+/// [`KEYS_LIST`] gives: the tenant is the issuer the request arrived at, not a
+/// parameter a caller chooses.
+pub const CLIENTS_LIST: Operation = Operation::read(
+    CLIENTS_LIST_ID,
+    "/clients",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Lists this tenant's clients, filtered by an optional q parameter",
+)
+.paginated();
+
+/// One client's whole registration document.
+pub const CLIENT_READ: Operation = Operation::read(
+    CLIENT_READ_ID,
+    "/clients/{client_id}",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Reads one client's registration",
+);
+
+/// Registers a client from the console, through the RFC 7591 validator.
+///
+/// The body is a registration document — the same document `POST /register`
+/// takes — and it is handed to the same validator. See [`clients`] for why the
+/// console has no rules of its own.
+pub const CLIENT_CREATE: Operation = Operation::mutation(
+    CLIENT_CREATE_ID,
+    "/clients",
+    M::Post,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Registers a client, validated exactly as dynamic registration validates one",
+);
+
+/// Replaces one client's registration.
+///
+/// `PUT` and not `PATCH`, for the reason RFC 7592 §2.2 gives: "Valid values of
+/// client metadata fields in this request MUST replace, not augment, the values
+/// previously associated with this client." A merge would leave a client on a
+/// redirect URI an administrator has just deleted.
+pub const CLIENT_UPDATE: Operation = Operation::mutation(
+    CLIENT_UPDATE_ID,
+    "/clients/{client_id}",
+    M::Put,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Replaces one client's registration",
+);
+
+/// Whether dynamic client registration admits anybody, and on how many
+/// credentials.
+///
+/// [`Reach::Deployment`]: the registration policy is one process-wide setting
+/// read from the configuration file, not a tenant's property, and a tenant
+/// administrator learning how many initial access tokens the deployment holds
+/// learns something about a neighbour's arrangements.
+pub const REGISTRATION_READ: Operation = Operation::read(
+    REGISTRATION_READ_ID,
+    "/registration",
+    S::Get,
+    A::new(R::Deployment, "admin.clients:read"),
+    "Reports the dynamic client registration gate this deployment is running",
+);
+
 /// Every signing key this tenant holds, with each algorithm's rotation policy.
 ///
 /// [`Reach::Tenant`]: a tenant administrator manages their own tenant's keys,
@@ -275,7 +351,7 @@ pub const KEYS_SCHEDULE: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 13] = [
+static REGISTRY: [Operation; 18] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -284,6 +360,11 @@ static REGISTRY: [Operation; 13] = [
     TENANT_CREATE,
     TENANT_SETTINGS_READ,
     TENANT_SETTINGS_UPDATE,
+    CLIENTS_LIST,
+    CLIENT_READ,
+    CLIENT_CREATE,
+    CLIENT_UPDATE,
+    REGISTRATION_READ,
     KEYS_LIST,
     KEYS_JWKS,
     KEYS_ROTATE,

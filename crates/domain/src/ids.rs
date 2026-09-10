@@ -107,6 +107,56 @@ string_id!(
     /// An OAuth 2.0 `client_id`.
     ClientId
 );
+
+impl ClientId {
+    /// The prefix every `client_id` this server mints begins with.
+    ///
+    /// A full stop is not in the `base64url` alphabet (RFC 4648 §5) and not in
+    /// the hexadecimal-and-hyphen shape of a UUID, so no identifier carrying it
+    /// can collide with either spelling of a `sub` this server issues — a
+    /// public one (a UUID) or a pairwise one (43 `base64url` symbols).
+    ///
+    /// That is FAPI 2.0 SP §6.7 taken literally: it warns that a client able to
+    /// influence its `client_id` may have it "mistaken for an end-user subject
+    /// identifier". The primary mitigation is that a client cannot influence
+    /// this value at all — [`Self::mint`] takes no input — and the prefix makes
+    /// the separation visible to a human reading a log rather than merely true.
+    pub const MINTED_PREFIX: &'static str = "c.";
+
+    /// Entropy in a minted `client_id`.
+    ///
+    /// A `client_id` is not a credential and RFC 7591 §3.2.1 does not ask for
+    /// it to be unguessable. It is made unguessable anyway, because a
+    /// sequential or derived identifier lets anyone who can reach `/register`
+    /// enumerate the deployment's client list, and because `client_id` is what
+    /// an authorization request names — a guessable one is the first half of
+    /// impersonating a client at an endpoint that has not authenticated it yet.
+    ///
+    /// 128 bits is FAPI 2.0 SP §5.4.1's floor for credentials. Borrowing it
+    /// here is a ceiling argument, not a floor one: whatever an identifier
+    /// needs, it needs no more than what the profile demands of a secret.
+    pub const MINTED_BITS: usize = 128;
+
+    /// Draws a fresh `client_id`.
+    ///
+    /// Here rather than at either caller, because there are two — RFC 7591
+    /// dynamic registration and the admin API's client screen — and a
+    /// `client_id` minted with a different prefix or a different amount of
+    /// entropy depending on which door it came through would make the shape
+    /// above a coincidence rather than a rule.
+    ///
+    /// [`crate::OpaqueToken`] is the codebase's one CSPRNG path and its output
+    /// is already unpadded `base64url` (RFC 4648 §5), which is what makes an
+    /// identifier safe in a URL path, a form field and a JSON string without
+    /// escaping. It is used for the draw and the encoding only: the value is
+    /// public by design, so it is taken out of the wrapper immediately rather
+    /// than carried around as something that must not be printed.
+    #[must_use]
+    pub fn mint() -> Self {
+        let drawn = crate::OpaqueToken::generate_bits::<{ Self::MINTED_BITS }>();
+        Self::new(format!("{}{}", Self::MINTED_PREFIX, drawn.expose()))
+    }
+}
 string_id!(
     /// The `sub` claim value as seen by one client (public or pairwise).
     SubjectId
@@ -176,5 +226,34 @@ mod tests {
     fn ids_serialise_transparently() {
         let json = serde_json::to_string(&ClientId::new("c1")).expect("serialise");
         assert_eq!(json, "\"c1\"");
+    }
+
+    /// FAPI 2.0 SP §6.7: a `client_id` must not be mistakable for a subject
+    /// identifier. The prefix is what a human reading a log sees, and it is
+    /// outside both the `base64url` alphabet and a UUID's shape.
+    #[test]
+    fn a_minted_client_id_cannot_be_mistaken_for_a_subject_identifier() {
+        // Arrange / Act
+        let minted = ClientId::mint();
+
+        // Assert
+        assert!(minted.as_str().starts_with("c."), "{minted}");
+        let drawn = &minted.as_str()[2..];
+        assert!(
+            drawn
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            "{minted} is not base64url after the prefix"
+        );
+        // 128 bits, unpadded base64url: 22 symbols.
+        assert_eq!(drawn.len(), 22, "{minted}");
+    }
+
+    /// Two draws are two identifiers. A generator that repeated itself would
+    /// make the second registration a collision the store refuses — or, worse,
+    /// an overwrite if a caller ever used an upsert.
+    #[test]
+    fn two_minted_client_ids_differ() {
+        assert_ne!(ClientId::mint(), ClientId::mint());
     }
 }

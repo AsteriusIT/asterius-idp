@@ -154,3 +154,64 @@ button {
   border: 1px solid transparent;
   border-radius: 0.25rem;
 }
+
+/* The client screen (`ast-f7m.5`). The same input treatment the settings form
+   already had, extended to the field types a registration document needs. */
+input[type='text'],
+input[type='url'],
+input[type='search'],
+select,
+textarea {
+  font: inherit;
+  display: block;
+  width: 100%;
+  max-width: 40rem;
+  margin-top: 0.25rem;
+  padding: 0.3rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 0.25rem;
+  box-sizing: border-box;
+}
+
+textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 1.5rem;
+}
+
+caption {
+  text-align: left;
+  font-weight: 700;
+  padding-bottom: 0.5rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+}
+
+/* Text for a screen reader and for nothing else: a button labelled "Edit" in
+   every row is ambiguous when the rows are read out of context (WCAG 2.2
+   §2.4.6), and clipping is how the label is added without repeating it on
+   screen. Not `display: none`, which would take it out of the accessibility
+   tree as well. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

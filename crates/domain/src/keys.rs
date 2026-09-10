@@ -230,6 +230,29 @@ pub struct PublicKeyRecord {
     pub created_at: OffsetDateTime,
 }
 
+/// Whether `records` hold a key that can sign `algorithm` right now.
+///
+/// The one question a registration document raises that
+/// [`crate::ClientRegistration`] cannot answer: `id_token_signed_response_alg`
+/// names an algorithm this *build* supports, and whether this *tenant* has an
+/// active signing key for it is a fact about rows rather than about the
+/// document. A client registered for an algorithm nobody can sign with is one
+/// this server can never issue an ID token to, so both places that create a
+/// client — `POST /register` and the admin API — ask this before writing, and
+/// they ask it here so that they cannot come to different answers.
+///
+/// [`KeyState::Active`] and [`KeyPurpose::Signing`] specifically: a pending key
+/// is published and not yet signing, and a retiring one is published and no
+/// longer signing, so neither can back an ID token issued today.
+#[must_use]
+pub fn signs_with(records: &[PublicKeyRecord], algorithm: SigningAlgorithm) -> bool {
+    records.iter().any(|record| {
+        record.algorithm == algorithm
+            && record.state == KeyState::Active
+            && record.purpose == KeyPurpose::Signing
+    })
+}
+
 /// A JWS in compact serialisation, ready to put on the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactJws(String);
@@ -533,6 +556,61 @@ pub trait KeyStore: fmt::Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn key(algorithm: SigningAlgorithm, state: KeyState, purpose: KeyPurpose) -> PublicKeyRecord {
+        PublicKeyRecord {
+            tenant: TenantId::new("demo"),
+            kid: Kid::new("k-1"),
+            algorithm,
+            purpose,
+            state,
+            public_jwk: serde_json::json!({"kty": "OKP"}),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    /// Only an active signing key can sign today. A pending key is published
+    /// and not yet signing; a retiring one is published and no longer signing.
+    /// A client registered against either would be one this server could never
+    /// issue an ID token to.
+    #[test]
+    fn only_an_active_signing_key_makes_an_algorithm_signable() {
+        // Arrange
+        let cases = [
+            (KeyState::Pending, KeyPurpose::Signing, false),
+            (KeyState::Active, KeyPurpose::Signing, true),
+            (KeyState::Retiring, KeyPurpose::Signing, false),
+            (KeyState::Retired, KeyPurpose::Signing, false),
+        ];
+
+        for (state, purpose, expected) in cases {
+            // Act
+            let signable = signs_with(
+                &[key(SigningAlgorithm::EdDsa, state, purpose)],
+                SigningAlgorithm::EdDsa,
+            );
+
+            // Assert
+            assert_eq!(signable, expected, "{state:?}/{purpose:?}");
+        }
+    }
+
+    /// The algorithm asked about is the one answered about: an active EdDSA key
+    /// does not make `ES256` signable.
+    #[test]
+    fn a_key_of_another_algorithm_does_not_answer_for_this_one() {
+        // Arrange
+        let records = [key(
+            SigningAlgorithm::EdDsa,
+            KeyState::Active,
+            KeyPurpose::Signing,
+        )];
+
+        // Act / Assert
+        assert!(signs_with(&records, SigningAlgorithm::EdDsa));
+        assert!(!signs_with(&records, SigningAlgorithm::Es256));
+        assert!(!signs_with(&[], SigningAlgorithm::EdDsa));
+    }
 
     /// FAPI 2.0 SP §5.4.1 and ADR-0003: exactly three, and not the others.
     #[test]
