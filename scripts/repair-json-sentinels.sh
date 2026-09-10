@@ -17,6 +17,14 @@
 # The run is one transaction: it all lands or none of it does. The journal is
 # the CSV it prints, copied to a log file.
 #
+# What a repaired row means for the person behind it: for `auth_requests` and
+# `first_party_interactions`, `interaction_state` is login progress, and no
+# rewrite can reconstruct progress. The rename only makes the row loadable
+# again; the sign-in itself is to be started over by the user. Nothing has to
+# be deleted by hand -- both tables are swept at `expires_at` by the retention
+# rules in `crates/store-pg/src/retention.rs`, which is what already happens to
+# every interaction nobody finishes.
+#
 # Exit codes:
 #   0  repair committed (possibly with nothing to repair)
 #   1  refused: no confirmation given
