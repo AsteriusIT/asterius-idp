@@ -82,7 +82,7 @@ One PostgreSQL instance holds everything. There is no second store to keep consi
 
 ## `[features]` — optional capabilities
 
-Everything is off unless switched on here, and what is switched on is exactly what appears in the discovery metadata and on `/readyz`. There is no flag that weakens the FAPI 2.0 baseline (ADR-0002) and no `rs256` (ADR-0003).
+Everything is off unless switched on here, and what is switched on is exactly what appears in the discovery metadata and on `/readyz`. There is no flag that weakens the FAPI 2.0 baseline (ADR-0002) and no `rs256` (ADR-0003). One capability is missing from this table on purpose: `dynamic_client_registration` follows `[registration] mode` and has no key here, so that "who may register" is written once — see below.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -162,14 +162,6 @@ Requests — not failures — are counted per endpoint, in the same fixed window
 | `limits.token_per_client` | integer | 1200 | Successful token responses per window for one authenticated client. The busiest endpoint a working deployment has — every authorization and every refresh passes through it — so this is the number to raise first when a large client is refused. |
 | `limits.userinfo_per_address` | integer | 600 | Requests per window to UserInfo from one address. The most generous of the five: its callers are resource servers rather than browsers, so one address is legitimately a fleet making a request per API call. There is no per-client limit, because the caller presents an access token and reading a client out of it before verifying it would be trusting a string the caller wrote. |
 
-## Client key fetches — outbound traffic you did not ask for
-
-Not configurable, and here because it is traffic your deployment sends to somebody else. A client registered with a `jwks_uri` has its key set fetched by this server; a fetch that fails is remembered so that a broken — or third-party — URL is not fetched again on every request naming that client. The intervals are built in: keys are served for 10 minutes before they are fetched again, an unknown `kid` provokes at most one refresh per client per 60 seconds, and a failed fetch suppresses the next one for 60 seconds.
-
-Those last 60 seconds are a *shared* decision, not a per-process one. Each failure writes a row to `client_key_fetches` — the tenant, the client, a SHA-256 of the URL, the reason, and the instant before which nobody fetches again — and every replica reads it before opening a socket. Without that table the interval would be divided by the number of replicas you run and reset by every restart, which is a rate nobody chose and which the operator of the URL, not you, would notice first. The reason is bounded and the URL is only ever stored as a digest, because a `jwks_uri` may carry a query parameter the client considers a secret.
-
-Rows are removed when a fetch for that URL succeeds, and swept by the retention pass once their window has passed; nothing here needs an operator's attention unless the table is growing, which means clients are registering `jwks_uri` values that never work.
-
 ## `[[tenant]]` — one table per tenant
 
 A tenant is an issuer. This array is the source of truth for which tenants exist at boot; the admin API adds more at runtime. The upsert is idempotent, so a restart re-asserts the declared shape.
@@ -212,6 +204,14 @@ Only read when the `dpop_nonce` feature is on. **Per process if absent**: each r
 | --- | --- | --- | --- |
 | `dpop.nonce_secret_file` | path (**points at a secret**) | per-process secret | The production shape, spelt like `keys.kek_file` and read by the same parser: the orchestrator mounts the file read-only and it is never in the image. A file that cannot be read, or that does not hold 32 base64 bytes, stops the server — an unreadable secret and an absent one would otherwise look the same, and one of them is a supported deployment. |
 | `dpop.nonce_secret_env` | variable name (**names a secret**) | per-process secret | The named variable, injected by the orchestrator. Readable through `/proc/self/environ`, so the file is preferred. There is no key that takes the secret itself, for the reason `[admin]` has none. |
+
+## Client key fetches — outbound traffic you did not ask for
+
+Not configurable, and here because it is traffic your deployment sends to somebody else. A client registered with a `jwks_uri` has its key set fetched by this server; a fetch that fails is remembered so that a broken — or third-party — URL is not fetched again on every request naming that client. The intervals are built in: keys are served for 10 minutes before they are fetched again, an unknown `kid` provokes at most one refresh per client per 60 seconds, and a failed fetch suppresses the next one for 60 seconds.
+
+Those last 60 seconds are a *shared* decision, not a per-process one. Each failure writes a row to `client_key_fetches` — the tenant, the client, a SHA-256 of the URL, the reason, and the instant before which nobody fetches again — and every replica reads it before opening a socket. Without that table the interval would be divided by the number of replicas you run and reset by every restart, which is a rate nobody chose and which the operator of the URL, not you, would notice first. The reason is bounded and the URL is only ever stored as a digest, because a `jwks_uri` may carry a query parameter the client considers a secret.
+
+Rows are removed when a fetch for that URL succeeds, and swept by the retention pass once their window has passed; nothing here needs an operator's attention unless the table is growing, which means clients are registering `jwks_uri` values that never work.
 
 ## Secret sources
 
