@@ -244,6 +244,47 @@ async fn the_negotiated_cipher_suite_has_forward_secrecy_and_is_aead() {
     let _ = shutdown.send(());
 }
 
+/// FAPI 2.0 SP §5.2.2 lets a TLS 1.2 server permit only the suites BCP 195
+/// *recommends* — RFC 9325 §4.2's four ECDHE + AES-GCM suites. ChaCha20-Poly1305
+/// is merely *allowed* (SP §5.2.3 NOTE 1), and this socket also serves the token
+/// endpoint, so a TLS 1.2 client that offers nothing but `ChaCha20` must be turned
+/// away. TLS 1.3 is out of scope for that clause and keeps its `ChaCha20` suite,
+/// which the second half checks so the fix cannot quietly overshoot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tls_1_2_refuses_chacha20_while_tls_1_3_keeps_it() {
+    if !openssl_available() {
+        eprintln!("skipping: openssl is not installed");
+        return;
+    }
+    let material = issue_certificate("chacha");
+    let (addr, shutdown) = start(tls_config(&material)).await;
+
+    let (ok, output) = s_client(
+        addr,
+        &[
+            "-tls1_2",
+            "-cipher",
+            "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305",
+        ],
+    );
+    assert!(
+        !ok,
+        "a TLS 1.2 ChaCha20-only client completed a handshake:\n{output}"
+    );
+
+    let (ok, output) = s_client(
+        addr,
+        &["-tls1_3", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"],
+    );
+    assert!(ok, "TLS 1.3 ChaCha20 was refused:\n{output}");
+    assert!(
+        output.contains("TLSv1.3"),
+        "TLS 1.3 did not negotiate:\n{output}"
+    );
+
+    let _ = shutdown.send(());
+}
+
 /// A cleartext request to the TLS port must not be answered. This is the mirror
 /// of the HSTS requirement: a server that helpfully speaks plain HTTP on its
 /// TLS port hands attacker A2 the downgrade that HSTS exists to prevent.

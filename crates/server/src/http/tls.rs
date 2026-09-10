@@ -1,10 +1,12 @@
 //! The TLS listener configuration.
 //!
-//! FAPI 2.0 SP §5.2.1 requires TLS 1.2 or later and BCP 195 cipher suites;
-//! §5.2.2 repeats it for server-to-server endpoints. rustls cannot speak TLS
-//! 1.0 or 1.1 at all, which removes an entire class of misconfiguration — but
-//! the cipher suite list is still ours to get right, so it is written out
-//! explicitly here rather than inherited from a default that may widen.
+//! FAPI 2.0 SP §5.2.1 requires TLS 1.2 or later and the BCP 195 recommendations
+//! in general; §5.2.2 is the clause that pins the TLS 1.2 cipher suites, to the
+//! ones BCP 195 *recommends*, on endpoints not used by web browsers. rustls
+//! cannot speak TLS 1.0 or 1.1 at all, which removes an entire class of
+//! misconfiguration — but the cipher suite list is still ours to get right, so
+//! it is written out explicitly here rather than inherited from a default that
+//! may widen.
 
 use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::pem::PemObject as _;
@@ -19,10 +21,20 @@ pub const PROTOCOL_VERSIONS: &[&SupportedProtocolVersion] =
 
 /// The only cipher suites offered.
 ///
-/// Every entry is AEAD with forward secrecy: TLS 1.3's three suites, and for
-/// TLS 1.2 only ECDHE with GCM or ChaCha20-Poly1305. No CBC, no static RSA
-/// key exchange, no `NULL`, no export grades — the categories BCP 195 §4.2
-/// rules out.
+/// Every entry is AEAD with forward secrecy. No CBC, no static RSA key
+/// exchange, no `NULL`, no export grades — the categories BCP 195 §4.2 rules
+/// out.
+///
+/// For TLS 1.2 the list is narrower than "AEAD with forward secrecy": it is
+/// exactly the four suites RFC 9325 §4.2 *recommends*. FAPI 2.0 SP §5.2.2 says
+/// a server using TLS 1.2 "shall only permit the cipher suites recommended in
+/// [BCP195]" on endpoints not used by web browsers, while §5.2.3 only requires
+/// the wider *allowed* set on browser endpoints — a distinction §5.2.3 NOTE 1
+/// makes explicit. One listener carries both the token endpoint and
+/// `/authorize`, so the stricter of the two governs the whole socket and
+/// ChaCha20-Poly1305, allowed but not recommended, stays out of the TLS 1.2
+/// offer. TLS 1.3 is untouched by those clauses and keeps rustls's three
+/// suites.
 pub const CIPHER_SUITES: &[SupportedCipherSuite] = &[
     // TLS 1.3
     aws_lc_rs::cipher_suite::TLS13_AES_256_GCM_SHA384,
@@ -31,11 +43,9 @@ pub const CIPHER_SUITES: &[SupportedCipherSuite] = &[
     // TLS 1.2, ECDSA
     aws_lc_rs::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
     aws_lc_rs::cipher_suite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-    aws_lc_rs::cipher_suite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
     // TLS 1.2, RSA
     aws_lc_rs::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
     aws_lc_rs::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-    aws_lc_rs::cipher_suite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 ];
 
 /// Why a TLS listener could not be built.
@@ -158,6 +168,33 @@ mod tests {
             let aead = name.contains("GCM") || name.contains("POLY1305");
             assert!(aead, "{name} is not an AEAD suite");
         }
+    }
+
+    /// FAPI 2.0 SP §5.2.2: on endpoints not used by web browsers, a server
+    /// using TLS 1.2 "shall only permit the cipher suites recommended in
+    /// [BCP195]". BCP 195 (RFC 9325 §4.2) recommends exactly four, all
+    /// ECDHE + AES-GCM; ChaCha20-Poly1305 is *allowed* but not *recommended*,
+    /// a distinction SP §5.2.3 NOTE 1 spells out. This listener serves the
+    /// token endpoint and /authorize on one socket, so the stricter list wins
+    /// and the assertion is on the enumeration, not on AEAD-plus-PFS.
+    #[test]
+    fn the_tls_1_2_suites_are_exactly_the_four_bcp_195_recommends() {
+        let offered: Vec<String> = CIPHER_SUITES
+            .iter()
+            .map(|s| format!("{:?}", s.suite()))
+            .filter(|n| !n.starts_with("TLS13_"))
+            .collect();
+
+        assert_eq!(
+            offered,
+            vec![
+                "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384".to_owned(),
+                "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256".to_owned(),
+                "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384".to_owned(),
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256".to_owned(),
+            ],
+            "the TLS 1.2 offer is not RFC 9325 §4.2's list"
+        );
     }
 
     #[test]

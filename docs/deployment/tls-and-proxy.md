@@ -72,38 +72,41 @@ certificate it likes.
 ## 2. TLS versions and cipher suites
 
 This section applies to `terminate_tls`. In `behind_proxy` mode nothing here is
-enforced by Asterius and the whole of §5.2.1 is the proxy's responsibility.
+enforced by Asterius and the whole of §5.2.1–5.2.3 is the proxy's responsibility.
 
 - **Versions offered: TLS 1.3 and TLS 1.2, nothing else**
   (`crates/server/src/http/tls.rs:17-18`). rustls has no TLS 1.0 or 1.1
   implementation, so the older versions are not a setting anyone can turn back
   on. `crates/server/tests/tls_handshake.rs:196` asserts the refusal on the
   wire, with `openssl s_client` as the client.
-- **Cipher suites are written out explicitly**
-  (`crates/server/src/http/tls.rs:26-39`) rather than inherited from a provider
-  default that may widen. Three TLS 1.3 suites; for TLS 1.2, only ECDHE with
-  AES-GCM or ChaCha20-Poly1305, in both the ECDSA and the RSA spelling.
+- **Cipher suites are written out explicitly** in
+  `crates/server/src/http/tls.rs` rather than inherited from a provider default
+  that may widen. Three TLS 1.3 suites; for TLS 1.2, exactly the four BCP 195
+  recommends — ECDHE with AES-128-GCM or AES-256-GCM, in both the ECDSA and the
+  RSA spelling.
 - **ALPN offers `h2` then `http/1.1`** (`crates/server/src/http/tls.rs:91`), so
   a client cannot negotiate a protocol the server did not offer.
 - There is no configuration key for either list, by design; see
   `docs/configuration.md` §`[server.tls]`.
 
-> **Known deviation, for a human to settle against the spec text.** FAPI 2.0 SP
-> §5.2.1 permits, for TLS 1.2, exactly four cipher suites:
-> `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`,
+> **Where the four-suite list comes from.** It is not §5.2.1, which only
+> requires TLS 1.2 or later and BCP 195 in general. The binding clause is
+> §5.2.2: on endpoints *not* used by web browsers, a server using TLS 1.2
+> "shall only permit the cipher suites recommended in [BCP195]", and RFC 9325
+> §4.2 recommends exactly `TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256`,
 > `TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384`,
 > `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` and
-> `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`. `crates/server/src/http/tls.rs:34`
-> and `:38` additionally offer
-> `TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256` and
-> `TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256`. Both are AEAD suites with
-> forward secrecy and both satisfy BCP 195 — which is exactly what the module's
-> tests check (`crates/server/src/http/tls.rs:147-161`) — but §5.2.1 is an
-> enumeration, not a set of properties. Until that is settled, a deployment
-> aiming at certification should assume a conformance probe may ask for a
-> TLS 1.2 ChaCha20 handshake and get one. A proxy in `behind_proxy` mode closes
-> the gap on its own by not offering those two suites, and the nginx and Caddy
-> examples below do that.
+> `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`. §5.2.3 asks browser-facing endpoints
+> for the wider set BCP 195 merely *allows*, and NOTE 1 there states the
+> difference outright. Asterius serves the token endpoint and `/authorize` on
+> one socket, so the stricter list governs the whole listener.
+>
+> ChaCha20-Poly1305 falls in the gap: allowed, not recommended. It was offered
+> for TLS 1.2 until `ast-i6c`, because the module's tests asserted the BCP 195
+> *properties* (AEAD, forward secrecy) rather than the enumeration, and a
+> conformance probe asking for a TLS 1.2 ChaCha20 handshake got one. Both
+> suites are now out of the TLS 1.2 offer and a test asserts the exact list.
+> TLS 1.3 is not covered by either clause and keeps `TLS13_CHACHA20_POLY1305_SHA256`.
 
 What the proxy must do when it terminates TLS:
 
@@ -366,9 +369,9 @@ server {
 
     # FAPI 2.0 SP §5.2.1: TLS 1.2 or 1.3 only ...
     ssl_protocols TLSv1.2 TLSv1.3;
-    # ... and, for 1.2, only the four permitted suites. This list deliberately
-    # excludes ChaCha20-Poly1305, which the in-process listener still offers;
-    # see the deviation note in §2.
+    # ... and, for 1.2, only the four suites BCP 195 recommends (SP §5.2.2).
+    # ChaCha20-Poly1305 is allowed but not recommended, so it stays out — the
+    # same list the in-process listener offers; see §2.
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
     ssl_prefer_server_ciphers on;
     ssl_session_tickets off;
@@ -439,7 +442,7 @@ loopback.
 as.example {
 	tls /etc/asterius/tls/fullchain.pem /etc/asterius/tls/privkey.pem {
 		protocols tls1.2 tls1.3
-		# FAPI 2.0 SP §5.2.1's four TLS 1.2 suites. Caddy names TLS 1.3
+		# The four TLS 1.2 suites BCP 195 recommends (SP §5.2.2). Caddy names TLS 1.3
 		# suites separately and offers all three of them by default.
 		ciphers TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
 
