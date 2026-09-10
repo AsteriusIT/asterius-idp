@@ -986,6 +986,12 @@ fn features() -> Vec<Key> {
                     Feature::RequestObject => {
                         "Signed request objects inside a pushed request (JAR, RFC 9101)."
                     }
+                    Feature::SelfRegistration => {
+                        "Self-service account registration: `prompt=create` (OpenID Connect \
+                         Prompt Create 1.0 §3) and the sign-up page it lands on. With it off, \
+                         `prompt_values_supported` does not name `create`, a pushed request \
+                         asking for it is refused, and the registration page answers 404."
+                    }
                     // `Feature` is `#[non_exhaustive]`: a flag added without a
                     // sentence here still gets documented, and the row says so
                     // loudly enough that somebody fixes it.

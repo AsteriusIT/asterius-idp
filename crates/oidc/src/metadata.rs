@@ -320,18 +320,41 @@ fn algorithms() -> Vec<&'static str> {
 /// exchange, and [`crate::claims::claims_from_user_columns`] is what
 /// [`crate::claims::resolve`] can produce about the person for *any* user.
 ///
-/// What is deliberately absent is the [`ClaimSet`](asterius_domain::ClaimSet):
-/// `name`, `preferred_username` and the rest of OIDC Core §5.4 are released on
-/// request, but only to a user who happens to have them stored, and a tenant's
-/// static document is in no position to say who does. The list used to name
-/// two of them, and the OpenID Foundation suite duly asked for both and got
-/// neither (`ast-8p1`). See [`crate::claims::claims_from_user_columns`] for why a
-/// short list is the honest one and a long list is not.
+/// What is deliberately absent is the rest of the
+/// [`ClaimSet`](asterius_domain::ClaimSet): `name`, `nickname` and the other
+/// §5.4 claims are released on request, but only to a user who happens to have
+/// them stored, and a tenant's static document is in no position to say who
+/// does. The list used to name two of them, and the OpenID Foundation suite
+/// duly asked for both and got neither (`ast-8p1`). See
+/// [`crate::claims::claims_from_user_columns`] for why a short list is the
+/// honest one and a long list is not.
+///
+/// `preferred_username` is the one that came back, and it came back with
+/// something that serves it (`ast-pew`, `ast-2vk.8`): the sign-up page of
+/// OpenID Connect Prompt Create 1.0 §3 asks for a display name and stores it
+/// under that claim, and the account pages let a person change it. It is not
+/// projected from `users.username` — the login identifier is unique and stable
+/// and is not a display preference, and OIDC Core §5.1 is explicit that an RP
+/// "MUST NOT rely upon this value being unique" — so what is advertised is a
+/// claim this deployment produces, for the users who chose one. Discovery §3
+/// asks for "the Claim Names of the Claims that the OpenID Provider MAY be able
+/// to supply values for", and Core §5.3.2 says a claim that is not available is
+/// omitted; an account with no display name simply has none, which is the
+/// ordinary case that member describes.
 fn claims_supported() -> Vec<&'static str> {
     let mut names = ID_TOKEN_CLAIMS.to_vec();
     names.extend(crate::claims::claims_from_user_columns());
+    names.push(SELF_CHOSEN_CLAIM);
     names
 }
+
+/// The one §5.4 claim this deployment writes for a user rather than reads out
+/// of a column: OIDC Core §5.1's `preferred_username`.
+///
+/// A constant so that [`claims_supported`] and the test that pins it name the
+/// same string, and so that a reader looking for "why is this one different"
+/// finds the answer beside it rather than inside a list.
+const SELF_CHOSEN_CLAIM: &str = "preferred_username";
 
 /// The claims this server puts in an ID token about the exchange itself.
 ///
@@ -468,8 +491,16 @@ pub fn provider_metadata(
         // the pushed-request validator consults, never written out here: a
         // tenant that advertised `create` while refusing it would be telling
         // clients to send a value it rejects (`ast-gxh.8`).
+        //
+        // The policy is built from this tenant's effective capabilities rather
+        // than passed in, so that the document and `protocol::authorization_policy`
+        // read one fact — `Feature::SelfRegistration` — instead of two that
+        // could disagree (`ast-2vk.8`).
         "prompt_values_supported":
-            crate::authorize::AuthorizationPolicy::default().prompt_values_supported(),
+            crate::authorize::AuthorizationPolicy::new(
+                capabilities.is_enabled(asterius_domain::Feature::SelfRegistration),
+            )
+            .prompt_values_supported(),
         // RFC 8414 §2 and OIDC Discovery §3: rendered from the tenant's own
         // ladder, never written out here. This member used to name
         // `urn:mace:incommon:iap:silver` — a value from the specification's
@@ -795,6 +826,7 @@ mod tests {
             token_exchange: true,
             ssf: true,
             dynamic_client_registration: true,
+            self_registration: true,
             authzen: true,
             dpop_nonce: true,
             request_object: true,
@@ -1444,26 +1476,42 @@ mod tests {
     /// Discovery §3's "MAY be able to supply values for" is that publishing all
     /// of it costs nothing. It does not read that way to a conformance suite,
     /// which treats every advertised name as a request it is entitled to make:
-    /// `preferred_username` was removed for exactly that (`ast-8p1`,
-    /// `ast-2vk.8`) and does not come back until something serves it. What the
-    /// document publishes is therefore the intersection of §5.4 with the
-    /// columns every user row has, plus the ID token's own claims.
+    /// `preferred_username` was removed for exactly that (`ast-8p1`) and came
+    /// back only once something wrote it (`ast-2vk.8`). What the document
+    /// publishes is therefore the intersection of §5.4 with the columns every
+    /// user row has, plus that one claim, plus the ID token's own.
     #[test]
-    fn a_scope_claim_is_advertised_only_when_a_user_column_backs_it() {
+    fn a_scope_claim_is_advertised_only_when_this_server_can_produce_it() {
         // Arrange.
         let advertised = claims_supported();
-        let columns = crate::claims::claims_from_user_columns();
+        let mut producible = crate::claims::claims_from_user_columns();
+        producible.push(SELF_CHOSEN_CLAIM);
+        producible.sort_unstable();
 
         // Act.
-        let from_scopes: Vec<&str> = crate::claims::claims_from_scopes()
+        let mut from_scopes: Vec<&str> = crate::claims::claims_from_scopes()
             .into_iter()
             .filter(|name| advertised.contains(name))
             .collect();
+        from_scopes.sort_unstable();
 
         // Assert.
-        assert_eq!(from_scopes, columns);
-        assert!(!advertised.contains(&"preferred_username"));
+        assert_eq!(from_scopes, producible);
         assert!(advertised.contains(&"sub"), "`sub` is always supplied");
+    }
+
+    /// `ast-pew`: what is advertised is the *chosen* name, never the login
+    /// identifier. A `preferred_username` projected from `users.username`
+    /// would answer a question about display with a fact about
+    /// authentication, and `claims::claims_from_user_columns` is where that
+    /// would show up.
+    #[test]
+    fn preferred_username_is_not_a_user_column() {
+        assert!(
+            !crate::claims::claims_from_user_columns().contains(&SELF_CHOSEN_CLAIM),
+            "the login identifier is not a display preference"
+        );
+        assert!(claims_supported().contains(&SELF_CHOSEN_CLAIM));
     }
 
     /// The `claims` parameter is advertised because `authorize::validate`

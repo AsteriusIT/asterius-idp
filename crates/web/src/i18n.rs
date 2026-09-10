@@ -180,6 +180,16 @@ catalogue! {
         LoginOr => login_or, "login.or",
             en: "or",
             fr: "ou";
+        // ast-ndk.4, decided with the maquette of ast-9li: the sign-in page
+        // carries the link to account recovery. A function nobody can find is
+        // a function that gets replaced by a support ticket, and the page it
+        // leads to is not an oracle — `/recovery` answers the same page for an
+        // address that has an account, an address that has a disabled one and
+        // an address nobody has, so a link to it discloses nothing that typing
+        // the URL would not. See `docs/threat-model.md`.
+        LoginForgotPassword => login_forgot_password, "login.forgot-password",
+            en: "Forgot your password?",
+            fr: "Mot de passe oublié ?";
         LoginNoScript => login_no_script, "login.no-script",
             en: "Signing in with a passkey needs JavaScript, because it is a browser API that a \
                  page has to call. JavaScript is switched off here, so use your username and \

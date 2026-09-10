@@ -2581,6 +2581,7 @@ mod tests {
             dpop_nonce: true,
             request_object: true,
             dynamic_client_registration: true,
+            self_registration: true,
         }
     }
 

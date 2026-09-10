@@ -895,7 +895,7 @@ async fn pushed_authorization_request_inner(
             resource_servers: &resource_servers,
             authorization_details_types: &authorization_details_types,
             keys: endpoints.keys.as_ref(),
-            policy: authorization_policy().with_grant_management(grant_management),
+            policy: authorization_policy(capabilities).with_grant_management(grant_management),
             lifetime: endpoints.par_lifetime,
             certificate,
             request_objects,
@@ -1940,13 +1940,35 @@ fn acr_policy() -> &'static asterius_domain::AcrPolicy {
 /// the discovery document must agree: a tenant that advertises a `prompt` value
 /// its validator refuses has told clients to send something it will reject.
 ///
-/// `prompt=create` is off. OpenID Connect Prompt Create 1.0 §3 sends the user
-/// to a registration screen, and this server has none — `ast-2vk.5` and the
-/// enrolment story own that — so the honest answer is the default one. When a
-/// tenant grows self-service registration this is the line that changes, and
-/// `prompt_values_supported` follows it without being edited.
-const fn authorization_policy() -> asterius_oidc::authorize::AuthorizationPolicy {
-    asterius_oidc::authorize::AuthorizationPolicy::new(false)
+/// `prompt=create` follows [`Feature::SelfRegistration`], narrowed to this
+/// tenant before it gets here. OpenID Connect Prompt Create 1.0 §3 sends the
+/// user to a registration screen, and a tenant that provisions its accounts has
+/// none to send them to: refusing the value is what §4 asks an OP that does not
+/// support it to do. `metadata::provider_metadata` builds its policy from the
+/// same flag, so the document and this validator cannot disagree (`ast-2vk.8`).
+const fn authorization_policy(
+    capabilities: Capabilities,
+) -> asterius_oidc::authorize::AuthorizationPolicy {
+    asterius_oidc::authorize::AuthorizationPolicy::new(
+        capabilities.is_enabled(asterius_domain::Feature::SelfRegistration),
+    )
+}
+
+/// Where a self-service sign-up is written, for a tenant that offers one.
+///
+/// `None` unless [`asterius_domain::Feature::SelfRegistration`] survives this
+/// tenant's own subtraction — the same value `authorization_policy` builds the
+/// `prompt=create` decision from and the same one the discovery document
+/// advertises. One read, three uses: a tenant cannot advertise the value,
+/// accept it at the push and then have no registrar behind the page.
+fn registrar<'a>(
+    users: &'a asterius_store_pg::PgUserRepository,
+    passwords: Option<&'a asterius_store_pg::PgPasswordVerifier>,
+    capabilities: Capabilities,
+) -> Option<crate::http::signup::Registrar<'a>> {
+    capabilities
+        .is_enabled(asterius_domain::Feature::SelfRegistration)
+        .then_some(crate::http::signup::Registrar { users, passwords })
 }
 
 /// This tenant's Grant Management posture (Grant Management ID1 §7.1).
@@ -2339,10 +2361,16 @@ async fn end_session_form(
 }
 
 /// `GET /interaction/{id}`.
+// Eight extractors, for the reason `interaction_submit` below gives: axum
+// builds every one of them from the request, so the count costs no caller
+// anything. The query is here for one link — the sign-up page's way to the
+// sign-in page (`interaction::SIGN_IN_QUERY`).
+#[allow(clippy::too_many_arguments)]
 async fn interaction_show(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Path(id): Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
@@ -2403,8 +2431,11 @@ async fn interaction_show(
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),
             mount: mount_of(mount),
+            registrar: registrar(&users, passwords.as_ref(), capabilities),
+            directory: &users,
         },
         &id,
+        query.as_deref(),
         &headers,
         time::OffsetDateTime::now_utc(),
     )
@@ -2488,6 +2519,8 @@ async fn interaction_submit(
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
             audit: endpoints.audit.as_ref(),
             mount: mount_of(mount),
+            registrar: registrar(&users, passwords.as_ref(), capabilities),
+            directory: &users,
         },
         &id,
         &headers,

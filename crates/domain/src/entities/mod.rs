@@ -13,6 +13,7 @@ pub mod password;
 pub mod recovery;
 pub mod registration_policy;
 pub mod resource_server;
+pub mod self_registration;
 pub mod role;
 pub mod session;
 pub mod tenant;
@@ -52,6 +53,10 @@ pub use registration_policy::{
     RegistrationPolicyError, RuleId, SoftwareStatementIssuer, SoftwareStatementRule,
 };
 pub use resource_server::{InvalidTarget, ResourceIdentifier, ResourceRegistry, ResourceServer};
+pub use self_registration::{
+    AcceptedRegistration, MAX_DISPLAY_NAME_LENGTH, MAX_REGISTRATION_EMAIL_LENGTH,
+    MAX_REGISTRATION_USERNAME_LENGTH, RegistrationError,
+};
 pub use role::{Role, RoleScope, UserRole};
 pub use tenant::{RefreshPolicy, RefreshPolicyError, Rotation, Tenant, TenantStatus};
 pub use tenant_settings::{TenantSettings, TenantSettingsError, TokenLifetimes};

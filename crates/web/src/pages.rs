@@ -177,6 +177,16 @@ pub struct LoginPage<'a> {
     ///
     /// Fixed strings chosen by this server, never a reason echoed from input.
     pub message: Option<&'a str>,
+    /// Where "forgot your password?" leads, when this deployment has account
+    /// recovery to lead to (`ast-ndk.4`).
+    ///
+    /// `None` renders no link at all rather than a dead one: a deployment with
+    /// no password method has nothing to recover, and a link to a page that
+    /// refuses everybody is worse than no link. The decision to *show* it when
+    /// there is one is in `docs/threat-model.md`: `/recovery` answers the same
+    /// bytes for every address, so a link to it is not an enumeration oracle
+    /// and hiding it only hides it from the people who need it.
+    pub recovery_href: Option<&'a str>,
     /// The CSP nonce attribute, rendered raw. See the module docs.
     pub nonce_attribute: String,
     /// The tenant's design tokens, as the CSS custom properties
@@ -609,10 +619,18 @@ pub struct RegistrationPage<'a> {
     pub username: Option<&'a str>,
     /// Likewise for the address.
     pub email: Option<&'a str>,
+    /// Likewise for the display name — OIDC Core §5.1's `preferred_username`,
+    /// which is what a person is *called* rather than what they sign in with
+    /// (`ast-pew`).
+    pub display_name: Option<&'a str>,
     /// The minimum this tenant accepts, stated in the markup and enforced
     /// again server-side — an attribute is a courtesy to the browser, never a
     /// control.
     pub minimum_password_length: usize,
+    /// The longest display name this server will store, stated in the markup
+    /// for the same reason and enforced again by
+    /// `asterius_domain::AcceptedRegistration::accept`.
+    pub maximum_display_name_length: usize,
     /// Where a user who already has an account goes instead.
     pub sign_in_href: &'a str,
     /// A previous failure, if this is a retry.
@@ -923,6 +941,7 @@ mod tests {
                 csrf: hostile,
                 login_hint: Some(hostile),
                 message: Some(hostile),
+                recovery_href: Some("/recovery"),
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
                 brand: brand(),
@@ -1111,6 +1130,7 @@ mod tests {
             csrf: "the-token",
             login_hint: Some("ada"),
             message: None,
+            recovery_href: Some("/recovery"),
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
             brand: brand(),
@@ -1153,6 +1173,7 @@ mod tests {
             csrf: "the-token",
             login_hint: None,
             message: None,
+            recovery_href: Some("/recovery"),
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
             brand: brand(),
@@ -1203,6 +1224,7 @@ mod tests {
             csrf: "t",
             login_hint: None,
             message: None,
+            recovery_href: Some("/recovery"),
             nonce_attribute: nonce_attribute(&nonce),
             theme_css: "",
             brand: brand(),
@@ -1454,6 +1476,7 @@ mod tests {
                 csrf: "the-token",
                 login_hint: None,
                 message: None,
+                recovery_href: Some("/recovery"),
                 nonce_attribute: nonce_attribute(&nonce),
                 theme_css: "",
                 brand: brand(),
@@ -1968,7 +1991,9 @@ mod tests {
             csrf: "token",
             username,
             email,
+            display_name: None,
             minimum_password_length: 12,
+            maximum_display_name_length: 64,
             sign_in_href: "/login",
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
@@ -2118,6 +2143,7 @@ mod tests {
                 csrf: "token",
                 login_hint: None,
                 message: Some("That did not match."),
+                recovery_href: Some("/recovery"),
                 nonce_attribute: nonce_attribute(&nonce()),
                 theme_css: "",
                 brand: brand(),

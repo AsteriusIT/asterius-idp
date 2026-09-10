@@ -58,6 +58,17 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use time::{Duration, OffsetDateTime};
 
+/// The query the sign-up page's "already have an account?" link carries.
+///
+/// A query rather than a second route, because it is the *same* interaction:
+/// the person is still completing one authorization and the browser still holds
+/// one cookie for it. All it does is move the stage from
+/// [`Stage::Register`] to [`Stage::Login`], which
+/// [`Stage::may_advance_to`] permits for the reason it permits the step-up's
+/// backward move — it discards progress rather than granting any. Nothing else
+/// reads it, and at any other stage it does nothing at all.
+pub const SIGN_IN_QUERY: &str = "signin";
+
 /// What the handlers need.
 pub struct InteractionContext<'a> {
     /// The tenant the request arrived at.
@@ -151,6 +162,24 @@ pub struct InteractionContext<'a> {
     /// paths the sign-in script fetches — has to carry it back, because
     /// `/interaction/{id}` is mounted under the tenant and nowhere else.
     pub mount: MountPrefix,
+    /// Where a self-service sign-up is written, for a tenant that offers one.
+    ///
+    /// `Some` exactly when
+    /// [`asterius_domain::Feature::SelfRegistration`] is on for this tenant,
+    /// and `None` otherwise — which is the same flag the pushed-request
+    /// endpoint read to accept `prompt=create` and the same one the discovery
+    /// document advertised it under. A stored request cannot ask for
+    /// [`Stage::Register`] unless that flag was on, so `None` here and a
+    /// stored `Register` stage together are a request that outlived the flag
+    /// being switched off: it is refused rather than honoured, in
+    /// [`create_account`].
+    pub registrar: Option<crate::http::signup::Registrar<'a>>,
+    /// The account behind a user id, for the name a screen puts on a person.
+    ///
+    /// Read once, after a credential has been accepted, so that
+    /// `StoredState::signed_in_as` carries the display name rather than the
+    /// login identifier (`ast-pew`, `ast-bo5`).
+    pub directory: &'a dyn asterius_domain::UserDirectory,
 }
 
 impl std::fmt::Debug for InteractionContext<'_> {
@@ -245,6 +274,7 @@ pub async fn record_registered_passkey(
 pub async fn show(
     context: InteractionContext<'_>,
     id: &str,
+    query: Option<&str>,
     headers: &HeaderMap,
     now: OffsetDateTime,
 ) -> Response {
@@ -252,6 +282,17 @@ pub async fn show(
         Ok(resumed) => resumed,
         Err(response) => return *response,
     };
+
+    // The sign-up page's way out (`SIGN_IN_QUERY`). Asked for by a person
+    // pressing a link, and it only ever asks for *more* authentication: the
+    // move is refused by the stage machine from anywhere but `Register`, so a
+    // link followed at consent time cannot undo a decision.
+    if state.stage == Stage::Register
+        && query.is_some_and(asks_for_sign_in)
+        && state.stage.may_advance_to(Stage::Login, &record.continuation)
+    {
+        state.stage = Stage::Login;
+    }
 
     // A first-party interaction whose sign-in is finished has nowhere left to
     // go but its destination, and the passkey path is how it gets here: that
@@ -311,6 +352,7 @@ pub async fn show(
             message: None,
             offer: offer.as_ref(),
             signed_in: state.username.as_deref(),
+            typed: None,
         },
     )
 }
@@ -478,6 +520,9 @@ pub async fn submit(
         Stage::Login | Stage::StepUp => {
             sign_in(&context, &presented, state, id, &form, &record, now).await
         }
+        Stage::Register => {
+            create_account(&context, &presented, state, id, &form, &record, now).await
+        }
         Stage::Consent => decide(&context, &presented, state, &form, &record, now).await,
         // A submission at `Response` has nothing left to submit: the request
         // was spent when the response was sent.
@@ -539,7 +584,25 @@ async fn sign_in(
             // The name that was just proved, kept for the screens that follow
             // (`ast-bo5`). The passkey path fills the same field through the
             // same function, so neither can drift from the other.
-            state.signed_in_as(username);
+            //
+            // What goes in it is the *display* name — OIDC Core §5.1's
+            // `preferred_username` when the account has one, the login
+            // identifier when it does not (`ast-pew`). Resolved from the
+            // account rather than from what was typed: the two differ in case
+            // and in whitespace even when they name the same person, and a
+            // consent screen that echoed the typed form would be showing
+            // attacker-chosen text on a successful sign-in. A read that fails
+            // falls back to the identifier rather than failing the sign-in —
+            // this is a caption, not a decision.
+            let named = match context.directory.by_id(asterius_domain::UserId::new(user)).await {
+                Ok(Some(account)) => crate::http::signup::display_name(&account).to_owned(),
+                Ok(None) => username.to_owned(),
+                Err(error) => {
+                    tracing::warn!(%error, tenant = %context.tenant.id, "cannot read the account just signed in");
+                    username.to_owned()
+                }
+            };
+            state.signed_in_as(&named);
             // The credential verified, so the failures counted against this
             // identifier are stale: the person proved they are who the counter
             // was about (`ast-b3u`). Only reachable from here, where something
@@ -706,6 +769,7 @@ async fn authenticated(
             message: None,
             offer: offer.as_ref(),
             signed_in: state.username.as_deref(),
+            typed: None,
         },
     );
     set_session_cookie(&mut response, &id_value);
@@ -1626,8 +1690,234 @@ async fn retry(
             message: Some(message),
             offer: None,
             signed_in: state.username.as_deref(),
+            typed: None,
         },
     )
+}
+
+/// Whether a query string asks for the sign-in page instead of the sign-up one.
+///
+/// Parsed as a form-urlencoded query rather than matched as a substring: a
+/// value carrying `signin` inside another parameter is not a person pressing
+/// the link, and `contains` cannot tell them apart.
+fn asks_for_sign_in(query: &str) -> bool {
+    url::form_urlencoded::parse(query.as_bytes()).any(|(key, _)| key == SIGN_IN_QUERY)
+}
+
+/// The registration stage: create the account, then sign the person in.
+///
+/// OpenID Connect Prompt Create 1.0 §3. The order is the one that cannot leave
+/// a person stranded: the account is written first, and only then does this
+/// become the ordinary authenticated path — §3 treats a successful creation as
+/// an authentication, and [`authenticated`] is the one implementation of what
+/// follows one. So a sign-up that succeeds reaches the consent screen through
+/// exactly the code a password sign-in reaches it through, and there is no
+/// second session-creation path to review.
+///
+/// The address is **not** verified here and the flow is not blocked on it.
+/// Prompt Create §3 does not require it, and a flow that refused to continue
+/// until a mailbox was read would strand the client's authorization on
+/// something no browser can finish. `email_verified` stays `false`.
+async fn create_account(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    state: StoredState,
+    id: &str,
+    form: &[(String, String)],
+    record: &InteractionRecord,
+    now: OffsetDateTime,
+) -> Response {
+    let field = |name: &str| {
+        form.iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    };
+    let typed = TypedSignup {
+        username: field("username").unwrap_or_default().to_owned(),
+        display_name: field("display_name").unwrap_or_default().to_owned(),
+        email: field("email").unwrap_or_default().to_owned(),
+    };
+
+    // The flag, checked where the row would be written. A stored request can
+    // only have reached `Stage::Register` if the tenant offered `create` when
+    // it was pushed; a tenant that has switched it off since must not have an
+    // account created for it anyway. The error page rather than a form that
+    // will refuse: there is nothing the person can type to fix it.
+    let Some(registrar) = context.registrar.as_ref() else {
+        tracing::warn!(
+            tenant = %context.tenant.id,
+            "a sign-up reached this server for a tenant that does not offer registration"
+        );
+        return error_page(
+            context,
+            StatusCode::NOT_IMPLEMENTED,
+            InteractionError::NotAvailable,
+        );
+    };
+
+    // Every sign-up is counted, not only the refused ones. This form is an
+    // unauthenticated way to write rows into `users`, so the bucket the login
+    // form counts wrong guesses in is the bucket that bounds it (`ast-2vk.9`).
+    let attempt = context.throttle.attempt(field("email"));
+    let state = match gate(context, presented, state, id, &attempt, now).await {
+        Ok(state) => state,
+        Err(response) => return *response,
+    };
+    context
+        .throttle
+        .record_failure(&context.tenant.id, &attempt, now)
+        .await;
+
+    let accepted = match asterius_domain::AcceptedRegistration::accept(
+        field("username").unwrap_or_default(),
+        field("display_name"),
+        field("email").unwrap_or_default(),
+        field("password").unwrap_or_default(),
+    ) {
+        Ok(accepted) => accepted,
+        // The domain's own sentence, which names the field that has to change
+        // (WCAG 2.2 SC 3.3.1) and says nothing about any account: every one of
+        // these is a statement about what was typed.
+        Err(refusal) => {
+            return retry_signup(
+                context,
+                presented,
+                state,
+                id,
+                &typed,
+                now,
+                &refusal.to_string(),
+            )
+            .await;
+        }
+    };
+
+    let created = match registrar.create(context.tenant, &accepted, now).await {
+        Ok(user) => user,
+        Err(crate::http::signup::SignupRefusal::Taken) => {
+            // One sentence for a taken username and a taken address. A sign-up
+            // page cannot avoid saying that *something* is in use, but it does
+            // not have to say which — see `http::signup`.
+            return retry_signup(
+                context,
+                presented,
+                state,
+                id,
+                &typed,
+                now,
+                "That username or email address is not available.",
+            )
+            .await;
+        }
+        Err(crate::http::signup::SignupRefusal::NoPasswordMethod) => {
+            tracing::error!(
+                tenant = %context.tenant.id,
+                "a sign-up reached this server with no password method configured"
+            );
+            return error_page(
+                context,
+                StatusCode::NOT_IMPLEMENTED,
+                InteractionError::NotAvailable,
+            );
+        }
+        Err(crate::http::signup::SignupRefusal::Storage(error)) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot create an account");
+            return error_page(
+                context,
+                StatusCode::SERVICE_UNAVAILABLE,
+                InteractionError::NotAvailable,
+            );
+        }
+    };
+
+    // Two records, because two things came into existence: an account, and a
+    // credential on it. `credential.created` is the same event the passkey
+    // path writes, so "what credentials does this account have, and when did
+    // they appear" is one query rather than two.
+    let subject = created.id.as_uuid().to_string();
+    record_event(
+        context,
+        AuditEvent::new(
+            context.tenant.id.clone(),
+            EventType::USER_CREATED,
+            Outcome::Success,
+            Actor::System,
+            now,
+        )
+        .subject(subject.clone())
+        .detail(Detail::new().label("path", "self-registration")),
+    )
+    .await;
+    record_event(
+        context,
+        AuditEvent::new(
+            context.tenant.id.clone(),
+            EventType::CREDENTIAL_CREATED,
+            Outcome::Success,
+            Actor::User(subject.clone()),
+            now,
+        )
+        .subject(subject)
+        .detail(Detail::new().label("credential", "password")),
+    )
+    .await;
+
+    let mut state = state;
+    // The name the screens that follow use, through the one field `ast-bo5`
+    // named: the display name when the person gave one, the login identifier
+    // otherwise.
+    state.signed_in_as(crate::http::signup::display_name(&created));
+    authenticated(
+        context,
+        presented,
+        state,
+        id,
+        record,
+        *created.id.as_uuid(),
+        now,
+    )
+    .await
+}
+
+/// Re-renders the sign-up form with what was typed and why it was refused.
+///
+/// The password is not carried back; see [`TypedSignup`].
+async fn retry_signup(
+    context: &InteractionContext<'_>,
+    presented: &InteractionId,
+    mut state: StoredState,
+    id: &str,
+    typed: &TypedSignup,
+    now: OffsetDateTime,
+    message: &str,
+) -> Response {
+    let token = state.issue_csrf();
+    if let Err(error) = save(context, presented, &state, None, now).await {
+        return *error;
+    }
+    render(
+        context,
+        &Screen {
+            locale: locale_of(context, &state),
+            stage: state.stage,
+            csrf: &token,
+            id,
+            message: Some(message),
+            offer: None,
+            signed_in: state.username.as_deref(),
+            typed: Some(typed),
+        },
+    )
+}
+
+/// Writes one event, or says in the log that it could not.
+///
+/// A helper because this module writes several, and a trail with a hole in it
+/// is worse than one that says where the hole is.
+async fn record_event(context: &InteractionContext<'_>, event: AuditEvent) {
+    if let Err(error) = context.audit.record(event).await {
+        tracing::error!(%error, tenant = %context.tenant.id, "cannot record an interaction event");
+    }
 }
 
 /// The limiter, before the credential is looked at.
@@ -1698,6 +1988,7 @@ async fn no_method(
             message: Some("Signing in is not available on this server."),
             offer: None,
             signed_in: state.username.as_deref(),
+            typed: None,
         },
     )
 }
@@ -1874,6 +2165,24 @@ struct Screen<'a> {
     offer: Option<&'a ConsentOffer>,
     /// Who is signed in, once somebody is.
     signed_in: Option<&'a str>,
+    /// What was typed into the sign-up form last time, when this is a retry of
+    /// it. Their own text, escaped by the template like anyone else's.
+    typed: Option<&'a TypedSignup>,
+}
+
+/// The three sign-up fields worth handing back after a refusal.
+///
+/// The password is not among them, and never will be: a rejected form that
+/// re-rendered the password would put it in the HTML, in the browser's cache
+/// and in any proxy that logs bodies. Retyping it is the cost.
+#[derive(Debug, Default)]
+struct TypedSignup {
+    /// The login identifier they chose.
+    username: String,
+    /// The display name, if they gave one.
+    display_name: String,
+    /// The address.
+    email: String,
 }
 
 /// Renders the page for a stage.
@@ -1886,6 +2195,7 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
         message,
         offer,
         signed_in,
+        typed,
     } = screen;
     // Under the prefix the tenancy layer removed: this page is served at
     // `/t/{tenant}/interaction/{id}` and posts back to itself (`ast-295`).
@@ -1896,6 +2206,10 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
     let (passkey_options, passkey_finish) = crate::http::passkeys::login_paths(&context.mount, id);
     // The face this page draws itself in, under the same prefix (`ast-vn7`).
     let font_url = crate::http::font_url(&context.mount);
+    // Account recovery and the sign-up page's way out, both under the prefix
+    // for the reason the action is.
+    let recovery_href = context.mount.absolute(crate::http::recovery::REQUEST_PATH);
+    let sign_in_href = format!("{action}?{SIGN_IN_QUERY}");
     // One catalogue per rendering, and the `lang` attribute comes out of it
     // too: a page cannot say `fr` over English words.
     let text = &context.language.catalog(locale);
@@ -1909,6 +2223,38 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
                 passkey_finish_action: &passkey_finish,
                 csrf: csrf.expose(),
                 login_hint: None,
+                message,
+                // `ast-ndk.4`: the way back into an account, offered where a
+                // person discovers they cannot get in. Only where there is a
+                // password to recover — a deployment with no password method
+                // has nothing for `/recovery` to reset, and a link to a page
+                // that refuses everybody is worse than no link.
+                recovery_href: context
+                    .credentials
+                    .is_some()
+                    .then(|| recovery_href.as_str()),
+                nonce_attribute: nonce_attribute(nonce),
+                theme_css: "",
+                brand: Brand::new(&font_url),
+            })
+        })
+        .into_response(),
+        // Prompt Create 1.0 §3. The same form action as every other stage —
+        // this is one interaction and the browser posts back to it — and the
+        // "already have an account?" link is the same URL with a query that
+        // asks for the login page instead. See `sign_in_instead`.
+        Stage::Register => Document::render(context.nonce, |nonce| {
+            pages::render(&pages::RegistrationPage {
+                text,
+                tenant_name: &context.tenant.display_name,
+                action: &action,
+                csrf: csrf.expose(),
+                username: typed.map(|typed| typed.username.as_str()),
+                email: typed.map(|typed| typed.email.as_str()),
+                display_name: typed.map(|typed| typed.display_name.as_str()),
+                minimum_password_length: asterius_domain::entities::password::MIN_LENGTH,
+                maximum_display_name_length: asterius_domain::MAX_DISPLAY_NAME_LENGTH,
+                sign_in_href: &sign_in_href,
                 message,
                 nonce_attribute: nonce_attribute(nonce),
                 theme_css: "",

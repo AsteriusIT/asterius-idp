@@ -612,6 +612,29 @@ fn context_with<'a>(
         // the tenancy layer, so nothing removed a prefix. The tests that do
         // exercise a prefix set this field themselves.
         mount: MountPrefix::root(),
+        // No registrar: `Feature::SelfRegistration` is off for these tenants,
+        // which is what the flag defaults to. The sign-up stage is exercised
+        // where the flag is on, in `crates/server/tests/self_registration.rs`.
+        registrar: None,
+        directory: &FakeDirectory,
+    }
+}
+
+/// An account directory that holds nobody.
+///
+/// The sign-in path reads it only to put a display name on the screens that
+/// follow, and `None` is the answer that makes it fall back to the identifier
+/// that was typed — which is what these tests assert.
+#[derive(Debug)]
+struct FakeDirectory;
+
+#[async_trait::async_trait]
+impl asterius_domain::UserDirectory for FakeDirectory {
+    async fn by_id(
+        &self,
+        _id: asterius_domain::UserId,
+    ) -> Result<Option<asterius_domain::User>, DomainError> {
+        Ok(None)
     }
 }
 
@@ -709,6 +732,7 @@ async fn a_matching_path_and_cookie_render_the_login_page() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -735,6 +759,7 @@ async fn a_url_without_the_cookie_does_not_render_a_form() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &HeaderMap::new(),
         OffsetDateTime::now_utc(),
     )
@@ -765,6 +790,7 @@ async fn a_cookie_for_another_interaction_destroys_this_one() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(other.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -799,6 +825,7 @@ async fn an_unknown_interaction_is_indistinguishable_from_an_expired_one() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -1026,6 +1053,7 @@ async fn reloading_the_page_issues_a_fresh_token() {
         show(
             context(&tenant, &store, &nonce, None, &sessions, &issued),
             id.expose(),
+            None,
             &cookie_header(id.expose()),
             OffsetDateTime::now_utc(),
         )
@@ -1036,6 +1064,7 @@ async fn reloading_the_page_issues_a_fresh_token() {
         show(
             context(&tenant, &store, &nonce, None, &sessions, &issued),
             id.expose(),
+            None,
             &cookie_header(id.expose()),
             OffsetDateTime::now_utc(),
         )
@@ -1334,6 +1363,7 @@ async fn a_first_party_interaction_renders_the_ordinary_login_page() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -1375,6 +1405,7 @@ async fn a_first_party_interaction_cannot_be_shown_a_consent_screen() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -1856,6 +1887,7 @@ async fn render_stage(at: &Consenting, issued: &Issued) -> axum::response::Respo
     show(
         context(&tenant, &at.store, &nonce, None, &at.sessions, issued),
         at.id.expose(),
+        None,
         &cookie_header(at.id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -2328,6 +2360,7 @@ async fn show_page(at: &Consenting, issued: &Issued) -> axum::response::Response
     show(
         context(&tenant, &at.store, &nonce, None, &at.sessions, issued),
         at.id.expose(),
+        None,
         &cookie_header(at.id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -2386,6 +2419,7 @@ async fn no_other_page_inherits_the_widened_form_action() {
     let response = show(
         context(&tenant, &store, &nonce, None, &sessions, &issued),
         id.expose(),
+        None,
         &cookie_header(id.expose()),
         OffsetDateTime::now_utc(),
     )
@@ -2645,7 +2679,7 @@ async fn show_route(
         &issued,
     );
     context.mount = mount.map_or_else(MountPrefix::root, |axum::Extension(prefix)| prefix);
-    show(context, &id, &headers, OffsetDateTime::now_utc()).await
+    show(context, &id, None, &headers, OffsetDateTime::now_utc()).await
 }
 
 /// `POST /interaction/{id}`, likewise.

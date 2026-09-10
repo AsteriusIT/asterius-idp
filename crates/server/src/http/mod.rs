@@ -47,6 +47,7 @@ pub mod request_id;
 pub mod request_object;
 pub mod revocation;
 pub mod security_headers;
+pub mod signup;
 pub mod server;
 pub mod software_statement;
 mod source_audit;

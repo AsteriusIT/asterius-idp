@@ -106,6 +106,7 @@ ssf = false              # Shared Signals Framework transmitter, CAEP/RISC
 authzen = false          # AuthZEN Authorization API 1.0
 dpop_nonce = false       # server-issued DPoP nonces (RFC 9449 §8)
 request_object = false   # signed request objects in PAR (JAR, RFC 9101)
+self_registration = false # sign-up page and prompt=create (Prompt Create 1.0 §3)
 
 # Dynamic client registration — POST /register (RFC 7591 §3).
 #
