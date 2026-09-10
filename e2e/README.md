@@ -24,6 +24,16 @@ Nothing is left behind except rows in the development database.
   attributes in `asterius_web::interaction` earn the prefix.
 - **No page provokes a CSP violation**, in either the no-JS or the JS suite, and
   a page that does fails the run — see the negative proof below.
+- **A rotation an operator performs really rotates.** `tests/key-rotation.spec.ts`
+  presses the console's button and then fetches the published JWK Set the way a
+  relying party would: the new `kid` is signing and the previous one is still
+  published (OIDC Core §10.1.1). The API-level proof (`ast-f7m.7`) cannot say
+  what the button does.
+- **Every page a route really renders passes axe** at WCAG 2.1 AA —
+  `tests/accessibility.spec.ts` for the server-rendered ones, `console.spec.ts`
+  and `key-rotation.spec.ts` for the console's screens. The templates that are
+  wired to no handler yet (device flow, registration, password recovery) are
+  deliberately absent: a test of an unreachable page is a test of nothing.
 
 ## The suites
 

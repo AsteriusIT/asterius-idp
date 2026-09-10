@@ -65,10 +65,16 @@ export default defineConfig({
       // *is* script, and what a browser without it sees is the `<noscript>`
       // block, which `crates/admin-api/src/console.rs` asserts from the
       // template side.
+      // The key-rotation spec drives the console, so it belongs to the same
+      // exclusion. The accessibility sweep is excluded for a different reason
+      // (`ast-rna`): axe-core is itself script, injected into the page and run
+      // there, so a browser that will not run script cannot analyse anything.
       testIgnore: [
         '**/passkey-signin.spec.ts',
         '**/passkey-ceremony.spec.ts',
         '**/console.spec.ts',
+        '**/key-rotation.spec.ts',
+        '**/accessibility.spec.ts',
       ],
     },
     {

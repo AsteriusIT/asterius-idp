@@ -45,29 +45,14 @@
  */
 import AxeBuilder from '@axe-core/playwright';
 import { type APIRequestContext, type Page, expect, test } from '@playwright/test';
+import { CONSOLE_URL, signIn } from '../src/console.js';
 import { CspWatcher } from '../src/csp.js';
-import { BASE_URL, PASSWORD, USERNAME } from '../src/environment.js';
+import { BASE_URL } from '../src/environment.js';
 
 const ORIGIN = new URL(BASE_URL).origin;
-const CONSOLE_URL = `${BASE_URL}/admin/`;
 
 /** Where the console reads who it is; the one API call the shell makes. */
 const SESSION_ENDPOINT = '/admin/api/v1/session';
-
-/**
- * Walks the console's door: `/admin/` → login → back at `/admin/`.
- *
- * The credentials are the sweep fixture's, and the navigation is the server's
- * own: no URL is constructed here beyond the console's, so the redirect chain
- * under test is the one `ast-wr4` built.
- */
-async function signIn(page: Page): Promise<void> {
-  await page.goto(CONSOLE_URL);
-  await page.locator('input[name="username"]').fill(USERNAME);
-  await page.locator('input[name="password"]').fill(PASSWORD);
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.waitForURL(CONSOLE_URL);
-}
 
 /**
  * Puts the shell in front of this server's refusal, and returns its status.

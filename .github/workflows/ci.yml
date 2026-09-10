@@ -106,6 +106,21 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest,sqlx-cli@0.8.6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      # Before cargo, because `crates/admin-api/build.rs` embeds `console/dist`
+      # at compile time and this job never built it (`ast-rna`, absorbing
+      # `ast-k3x`). The tests that serve the console were therefore running
+      # against an empty asset table — passing while checking nothing. The
+      # bundle is now built here, and
+      # `admin_api::console::tests::the_embedded_bundle_names_no_third_party_origin_it_could_fetch`
+      # fails under `CI` if it is empty, so the two cannot drift apart again.
+      - name: build the console bundle
+        run: ./scripts/build-console.sh
 
       # Acceptance for ast-83p.3: migrations apply to an empty database and are
       # idempotent on a second run.
@@ -190,24 +205,39 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features
 
   # -------------------------------------------------------------------------
-  # The only job that runs a browser (`ast-2vk.14`).
+  # The jobs that run a browser (`ast-2vk.14`, split by project in `ast-rna`).
   #
-  # Everything else in this pipeline asserts what the source says. This one
-  # asserts what Chromium does with it: that login and consent work with
-  # JavaScript disabled, that the browser keeps the `__Host-` cookie we write —
-  # the prefix's guarantees are browser-enforced, so nothing else can check
-  # them — and that no page provokes a Content-Security-Policy violation, in
-  # the no-JS suite and in the JS one. `e2e/tests/csp-gate.spec.ts` breaks a
-  # page on purpose and asserts the gate refuses it, so a green run here is not
-  # a browser that has stopped reporting.
+  # Everything else in this pipeline asserts what the source says. These assert
+  # what Chromium does with it: that login and consent work with JavaScript
+  # disabled, that the browser keeps the `__Host-` cookie we write — the
+  # prefix's guarantees are browser-enforced, so nothing else can check them —
+  # and that no page provokes a Content-Security-Policy violation, in the no-JS
+  # suite and in the JS one. `e2e/tests/csp-gate.spec.ts` breaks a page on
+  # purpose and asserts the gate refuses it, so a green run here is not a
+  # browser that has stopped reporting.
+  #
+  # One leg per Playwright project, and not for speed. The `js` leg is where
+  # the admin console lives — `console.spec.ts`, `key-rotation.spec.ts` and the
+  # axe sweep over every page a route really renders — and it can only run with
+  # script enabled. Naming it means a red console reports as a console failure
+  # rather than as one line inside a sweep about the no-JS flow, and it is the
+  # job `ast-rna` exists to add: those specs were green and nothing replayed
+  # them.
+  #
+  # `fail-fast: false`, for the reason the fuzz matrix records: one red leg
+  # must not hide another.
   #
   # Kept short deliberately (`ast-83p.15`): one browser rather than three, a
   # debug build off the shared cache rather than a container image, and the flow
   # runs in one project rather than both. It is nowhere near the critical path.
   # -------------------------------------------------------------------------
   browser:
-    name: browser sweep (no-JS and CSP)
+    name: browser sweep (${{ matrix.project }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [no-js, js]
     services:
       postgres:
         image: postgres:16-alpine
@@ -252,13 +282,13 @@ jobs:
       # fixtures. Running it here rather than reimplementing the steps is the
       # point: what CI runs and what a developer runs are the same file.
       - name: browser sweep
-        run: ./scripts/browser-tests.sh
+        run: ./scripts/browser-tests.sh --project=${{ matrix.project }}
 
       - name: upload the traces of any failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.project }}
           path: |
             e2e/test-results/
             e2e/playwright-report/

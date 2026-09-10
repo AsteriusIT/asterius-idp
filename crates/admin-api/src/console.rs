@@ -534,12 +534,24 @@ mod tests {
 
     /// The bundle that is actually compiled in, when there is one.
     ///
-    /// Vacuous on a checkout where nobody has run `npm run build`, and that is
-    /// deliberate: the check belongs to the build that ships, and CI builds
-    /// the console before it runs this.
+    /// Vacuous on a checkout where nobody has run `npm run build`: a Rust
+    /// developer is not required to have a JavaScript toolchain, and
+    /// `build.rs` emits an empty table for them on purpose.
+    ///
+    /// It is *not* allowed to be vacuous where it matters (`ast-rna`). An
+    /// empty table made this test pass while checking nothing, for as long as
+    /// nobody noticed that the CI jobs running it never built the console. So
+    /// under `CI` — set by every GitHub Actions runner — an empty bundle is a
+    /// failure naming the step that should have produced it, and the workflow
+    /// runs `scripts/build-console.sh` before the tests so that it does.
     #[test]
     fn the_embedded_bundle_names_no_third_party_origin_it_could_fetch() {
         let embedded = Bundle::embedded();
+        assert!(
+            !(std::env::var_os("CI").is_some() && embedded.assets.is_empty()),
+            "no console asset is embedded, so this check has nothing to read: \
+             run ./scripts/build-console.sh before cargo"
+        );
         for asset in embedded.assets {
             let Ok(text) = std::str::from_utf8(asset.bytes) else {
                 continue;

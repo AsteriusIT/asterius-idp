@@ -21,6 +21,13 @@ export interface Discovery {
   readonly authorization_endpoint: string;
   readonly pushed_authorization_request_endpoint: string;
   readonly registration_endpoint?: string;
+  /**
+   * OIDC Discovery §3 makes this REQUIRED, and `ast-rna`'s rotation spec
+   * reads it rather than assuming `/jwks`: a relying party never knows that
+   * path either, and a sweep that hard-coded it would keep passing after the
+   * endpoint moved.
+   */
+  readonly jwks_uri: string;
 }
 
 /** A client registered for the duration of one test run. */
