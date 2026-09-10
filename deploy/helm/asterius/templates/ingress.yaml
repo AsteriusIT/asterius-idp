@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled }}
+{{- $fullName := include "asterius.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+{{/*
+The Ingress carries no rules of its own beyond routing. Everything that makes
+an Asterius deployment correct behind a proxy — the host it must forward, the
+headers it must overwrite, the path it must not rewrite — is controller-specific
+and lives in `ingress.annotations`, with the reasoning in values.yaml and the
+full account in docs/deployment/tls-and-proxy.md.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "asterius.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
+    {{- end }}
+{{- end }}

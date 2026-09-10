@@ -1,0 +1,31 @@
+apiVersion: v2
+name: asterius
+description: >-
+  Asterius, a FAPI 2.0 OpenID Provider. One binary and one PostgreSQL; this
+  chart deploys the binary and expects the database to exist already.
+type: application
+
+# The chart is versioned independently of the application: a change to a
+# template is a chart release even when the image has not moved.
+version: 0.1.0
+
+# PLACEHOLDER. `release.yml` publishes and signs an image on every `v*` tag, but
+# no tag has been cut and Cargo.toml is still 0.0.0, so this names nothing that
+# exists in the registry. Set `image.digest` (or `image.tag`) until it does.
+appVersion: "0.0.0"
+
+kubeVersion: ">=1.25.0-0"
+
+home: https://github.com/AsteriusIT/asterius-idp
+sources:
+  - https://github.com/AsteriusIT/asterius-idp
+keywords:
+  - oidc
+  - oauth2
+  - fapi
+  - identity-provider
+maintainers:
+  - name: Asterius
+    url: https://github.com/AsteriusIT/asterius-idp
+annotations:
+  artifacthub.io/license: Apache-2.0

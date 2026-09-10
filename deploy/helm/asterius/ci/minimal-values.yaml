@@ -1,0 +1,48 @@
+# The smallest set of values that renders: a configuration file and a KEK.
+# `helm lint` and `helm template` are run with this file, because the chart
+# deliberately refuses to render without a configuration rather than installing
+# a pod that crash-loops on an empty one.
+#
+# Everything here is a development value. It is not an example to copy.
+image:
+  tag: "0.0.0-dev"
+
+config:
+  contents: |
+    log_format = "json"
+
+    [server]
+    bind = "0.0.0.0:9443"
+    mode = "behind_proxy"
+
+    [server.proxy]
+    trusted_cidrs = ["10.42.0.0/16"]
+
+    [keys]
+    kek_file = "/etc/asterius-secrets/kek"
+
+    [database]
+    max_connections = 8
+
+    [[tenant]]
+    id = "demo"
+    issuer = "https://as.example/t/demo"
+
+    [admin]
+    tenant = "admin"
+    issuer = "https://as.example/t/admin"
+    username = "admin"
+    password_file = "/etc/asterius-secrets/admin-password"
+
+secrets:
+  kek:
+    existingSecret: asterius-kek
+    existingSecretKey: kek
+  adminPassword:
+    existingSecret: asterius-admin
+    existingSecretKey: password
+
+database:
+  urlSecret:
+    existingSecret: asterius-database
+    existingSecretKey: url
