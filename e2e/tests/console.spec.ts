@@ -220,6 +220,127 @@ test('the console screen has no accessibility violation', async ({ page }, testI
   expect(results.violations).toEqual([]);
 });
 
+/**
+ * Walks the navigation to the tenant settings screen (`ast-bfn`).
+ *
+ * By its link and not by a fragment typed into the address bar: the criterion
+ * is that the screen is *reachable through the navigation*, and a `goto` would
+ * assert the router while skipping the thing that was missing.
+ */
+async function openSettings(page: Page): Promise<void> {
+  await page.getByRole('link', { name: 'Tenant settings' }).click();
+  await expect(page.getByRole('heading', { name: 'Tenant settings' })).toBeVisible();
+  // The form is drawn from the document the API answered with, so a visible
+  // field means the read succeeded rather than that a skeleton rendered.
+  await expect(page.getByLabel('Authorization code lifetime (seconds)')).toBeVisible();
+}
+
+test('the tenant settings screen is reachable and reads the admin API', async ({
+  context,
+  page,
+}) => {
+  // Arrange
+  const watcher = await CspWatcher.attach(context, true);
+  const offOrigin: string[] = [];
+  context.on('request', (request) => {
+    if (!request.url().startsWith(ORIGIN)) {
+      offOrigin.push(`${request.method()} ${request.url()}`);
+    }
+  });
+  await signIn(page);
+
+  // Act
+  await openSettings(page);
+
+  // Assert: values, not placeholders. The seeded tenant runs on the defaults,
+  // and what matters here is that both lifetimes arrived as numbers.
+  await expect(page.getByLabel('Authorization code lifetime (seconds)')).not.toHaveValue('');
+  await expect(page.getByLabel('Access token lifetime (seconds)')).not.toHaveValue('');
+  await expect(page.getByRole('checkbox', { name: 'device_flow' })).toBeVisible();
+  expect(offOrigin, 'the settings screen reached a third party').toEqual([]);
+  watcher.assertClean('the tenant settings screen');
+});
+
+/**
+ * **The FAPI half of `ast-bfn`.**
+ *
+ * The ceiling is the server's — `asterius_domain::TenantSettings::validated`,
+ * below the API — and the console's job is only to show what the server said.
+ * The `max` attribute on the field is a courtesy, so the value is put in with
+ * `fill` and the form submitted, which is what a `curl` would do too.
+ */
+test('a lifetime above the profile ceiling is refused and the reason is shown', async ({
+  page,
+}) => {
+  // Arrange
+  await signIn(page);
+  await openSettings(page);
+  const field = page.getByLabel('Authorization code lifetime (seconds)');
+  const ceiling = Number(await field.getAttribute('max'));
+  expect(ceiling, 'the server sent no ceiling with its document').toBeGreaterThan(0);
+
+  // Act
+  await field.fill(String(ceiling + 1));
+  await page.getByRole('button', { name: 'Save settings' }).click();
+
+  // Assert: the server's sentence, which names the profile clause, and no
+  // claim that anything was saved.
+  const refusal = page.getByRole('alert');
+  await expect(refusal).toBeVisible();
+  await expect(refusal).toContainText(/FAPI/i);
+  // And no success notice: the screen's `status` region is where "Saved."
+  // would appear, and it must not be there next to a refusal.
+  await expect(page.getByRole('status')).toHaveCount(0);
+});
+
+test('the tenant settings screen has no accessibility violation', async ({ page }, testInfo) => {
+  // Arrange
+  await signIn(page);
+  await openSettings(page);
+
+  // Act
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze();
+
+  // Assert
+  await testInfo.attach('axe', {
+    body: JSON.stringify(results.violations, null, 2),
+    contentType: 'application/json',
+  });
+  expect(results.violations).toEqual([]);
+});
+
+/**
+ * **The logout half of `ast-bfn`.**
+ *
+ * Before this bead the signed-out screen was reachable only by a session that
+ * expired in flight (`ast-xka`): an administrator could not end their own. The
+ * assertion is not that the console changed screens — it could do that by
+ * forgetting — but that the session is gone *at the server*, checked with an
+ * isolated request context carrying the browser's cookies.
+ */
+test('an administrator can sign out, and the session is dead afterwards', async ({
+  context,
+  page,
+}) => {
+  // Arrange
+  await signIn(page);
+  await expect(page.getByRole('heading', { name: 'Asterius console' })).toBeVisible();
+
+  // Act
+  await page.getByRole('button', { name: 'Sign out' }).click();
+
+  // Assert: the screen an administrator lands on, and no navigation loop.
+  await expect(page.getByRole('heading', { name: 'Signed out' })).toBeVisible();
+  expect(page.url()).toBe(CONSOLE_URL);
+
+  // And the credential itself: whatever cookies the browser still holds, the
+  // server no longer knows this session.
+  const after = await context.request.get(`${BASE_URL}${SESSION_ENDPOINT}`);
+  expect(after.status(), 'the session survived a sign-out').toBe(401);
+});
+
 test('the signed-out screen has no accessibility violation either', async ({
   page,
   request,

@@ -47,6 +47,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'keys', label: 'Signing keys', reach: 'tenant', bead: 'ast-f7m.7' },
   { route: 'ssf', label: 'Shared signals', reach: 'tenant', bead: 'ast-f7m.8' },
   { route: 'policy', label: 'Policy', reach: 'tenant', bead: 'ast-f7m.9' },
+  { route: 'settings', label: 'Tenant settings', reach: 'tenant', bead: 'ast-bfn' },
 ];
 
 /** Whether `roles` reach `destination`. */

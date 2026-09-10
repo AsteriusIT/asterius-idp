@@ -76,6 +76,8 @@ pub const BASE_PATH: &str = "/admin/api/v1";
 
 /// The `operationId` of `GET /session`.
 pub const SESSION_READ_ID: &str = "session.read";
+/// The `operationId` of `DELETE /session`.
+pub const SESSION_END_ID: &str = "session.end";
 /// The `operationId` of `GET /openapi.json`.
 pub const OPENAPI_READ_ID: &str = "openapi.read";
 /// The `operationId` of `GET /tenants`.
@@ -110,6 +112,28 @@ pub const SESSION_READ: Operation = Operation::read(
     S::Get,
     A::new(R::Authenticated, "admin.session:read"),
     "The signed-in administrator, their roles, and this session's CSRF token",
+);
+
+/// Ends the caller's own session: the console's "Sign out".
+///
+/// [`Reach::Authenticated`], for the same reason [`SESSION_READ`] is: the
+/// operation is about the caller and reaches nothing else. There is no session
+/// id in the path and none in a body — the *only* session this route can end
+/// is the one the request authenticated with, so there is no identifier a
+/// caller could aim at somebody else's session. Ending another person's
+/// session is an administrative act on a user and belongs to a route about
+/// users, not to this one.
+///
+/// A mutation, so the console's synchroniser token is required: a cross-site
+/// page that could sign an administrator out at will is a nuisance attack, and
+/// the CSRF check that already covers every other state change covers this one
+/// by declaring it here.
+pub const SESSION_END: Operation = Operation::mutation(
+    SESSION_END_ID,
+    "/session",
+    M::Delete,
+    A::new(R::Authenticated, "admin.session:write"),
+    "Ends the session this request was made with",
 );
 
 /// The `OpenAPI` 3.1 document, generated from this registry.
@@ -251,8 +275,9 @@ pub const KEYS_SCHEDULE: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 12] = [
+static REGISTRY: [Operation; 13] = [
     SESSION_READ,
+    SESSION_END,
     OPENAPI_READ,
     TENANTS_LIST,
     TENANT_READ,

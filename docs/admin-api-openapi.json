@@ -580,6 +580,84 @@
       }
     },
     "/admin/api/v1/session": {
+      "delete": {
+        "operationId": "session.end",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.session:write"
+            ]
+          }
+        ],
+        "summary": "Ends the session this request was made with",
+        "x-asterius-reach": "authenticated",
+        "x-asterius-scope": "admin.session:write"
+      },
       "get": {
         "operationId": "session.read",
         "responses": {

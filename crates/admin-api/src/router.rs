@@ -19,6 +19,7 @@
 //! authority its own [`Operation`] declares, so there is no per-handler
 //! authorization to forget.
 
+use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
     Activation, Actor, AuditEvent, Detail, DomainError, EventType, Kid, Outcome, RefreshPolicy,
     Tenant, TenantId, TenantSettings, TenantStatus,
@@ -244,6 +245,7 @@ async fn handle(
     // match the compiler refuses.
     match operation.id() {
         crate::SESSION_READ_ID => context.session_document(),
+        crate::SESSION_END_ID => context.end_session().await,
         crate::OPENAPI_READ_ID => Ok(openapi_response()),
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
@@ -316,6 +318,57 @@ impl Handling<'_> {
                 "csrf_token": csrf::token(session_id),
             }),
         ))
+    }
+
+    /// `DELETE /session` — ends the session this request was made with.
+    ///
+    /// Two things have to happen and neither one is enough alone. The row is
+    /// revoked, so the id stops resolving for anybody holding a copy of the
+    /// cookie; and the browser is sent the clearing `Set-Cookie`, so the next
+    /// navigation to `/admin/` meets the door `ast-wr4` put there rather than
+    /// carrying a dead id around. A console cannot do either itself: the
+    /// cookie is `HttpOnly`, which is the point.
+    ///
+    /// The session ended is the one that authenticated the request and no
+    /// other. There is no identifier anywhere in this route, so "sign out"
+    /// cannot be aimed.
+    async fn end_session(&self) -> Result<Response, AdminError> {
+        let Principal::Console {
+            tenant, session_id, ..
+        } = self.principal
+        else {
+            // A token caller has no session to end. Refused rather than
+            // answered with "done": a client that believes it signed something
+            // out would stop looking for the credential that is still live.
+            return Err(AdminError::Forbidden);
+        };
+
+        let digest = SessionId::from_presented(session_id.clone()).digest();
+
+        self.state
+            .backend
+            .end_session(tenant, &digest, SessionRevocation::UserLogout, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SESSION_END_ID, &error))?;
+
+        // `session.revoked` and not `admin.changed`: this is a session ending,
+        // which is what somebody asking "why was I signed out" filters on, and
+        // nothing about the deployment's configuration changed.
+        self.record(
+            EventType::SESSION_REVOKED,
+            Detail::new()
+                .label("operation", crate::SESSION_END_ID)
+                .label("reason", SessionRevocation::UserLogout.as_str()),
+        )
+        .await;
+
+        let mut response = json_no_store(StatusCode::OK, &serde_json::json!({"ended": true}));
+        response.headers_mut().insert(
+            header::SET_COOKIE,
+            axum::http::HeaderValue::from_str(&asterius_web::session::clear_cookie())
+                .map_err(|_| AdminError::Unavailable)?,
+        );
+        Ok(response)
     }
 
     /// `GET /tenants` — the deployment's tenants, one cursor page at a time.
@@ -1369,6 +1422,29 @@ mod tests {
                 .cloned())
         }
 
+        async fn end_session(
+            &self,
+            tenant: &TenantId,
+            id_digest: &str,
+            reason: SessionRevocation,
+            now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            // The store's own rule, kept here so the fake cannot be gentler
+            // than PostgreSQL: the first reason for a revocation stands.
+            if let Some(session) = self
+                .0
+                .sessions
+                .lock()
+                .expect("an uncontended lock")
+                .get_mut(id_digest)
+                .filter(|session| &session.tenant == tenant)
+                && session.revoked.is_none()
+            {
+                session.revoked = Some((now, reason));
+            }
+            Ok(())
+        }
+
         async fn roles(&self, tenant: &TenantId, user: UserId) -> Result<Vec<Role>, DomainError> {
             Ok(self
                 .0
@@ -1679,9 +1755,12 @@ mod tests {
     async fn a_tenant_admin_is_refused_exactly_the_deployment_scoped_routes() {
         // Arrange
         let world = World::new();
-        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
 
         for operation in world.api().operations() {
+            // One session per route, because `session.end` is a route: reusing
+            // a cookie across the loop would have every operation after it
+            // answer 401 for a reason that has nothing to do with authority.
+            let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
             // Act
             let response = world
                 .send(
@@ -1719,9 +1798,12 @@ mod tests {
     async fn every_registered_operation_has_a_handler() {
         // Arrange
         let world = World::new().routed_at("asterius-admin");
-        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
 
         for operation in world.api().operations() {
+            // A fresh session per route: `session.end` ends the one it is
+            // called with, and a shared cookie would turn every later route
+            // into a 401 that says nothing about whether it has a handler.
+            let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
             // Act
             let response = world
                 .send(
@@ -3071,5 +3153,123 @@ mod tests {
         // Assert
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         assert_eq!(Feature::from_key("telepathy"), None);
+    }
+
+    // ---- signing out (`ast-bfn`) ------------------------------------------
+
+    /// **The acceptance criterion of `ast-bfn`'s logout half.**
+    ///
+    /// An administrator who presses "Sign out" must end up with a session this
+    /// server refuses, not merely with a console that has forgotten it. The
+    /// cookie is `HttpOnly`, so script cannot remove it: the server has to
+    /// send the clearing `Set-Cookie` *and* revoke the row, and the second is
+    /// what makes a cookie already copied out of a browser worthless.
+    #[tokio::test]
+    async fn signing_out_revokes_the_session_and_clears_the_cookie() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::SESSION_END, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert: the browser is told to drop it, with the attributes it was
+        // set with — a `Set-Cookie` whose attributes differ is one the browser
+        // keeps (`asterius_web::session`).
+        assert_eq!(response.status(), StatusCode::OK);
+        let cleared = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|value| value.to_str().ok())
+            .expect("a clearing Set-Cookie")
+            .to_owned();
+        assert!(cleared.contains("Max-Age=0"), "{cleared}");
+        assert!(
+            cleared.starts_with(asterius_domain::entities::session::COOKIE_NAME),
+            "{cleared}"
+        );
+
+        // And the id itself is dead: the same cookie no longer reads a
+        // session.
+        let after = world
+            .send(
+                request_for(&crate::SESSION_READ)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Ending a session is recorded, and as a session event rather than as a
+    /// configuration change: "why was I signed out" is answered from this
+    /// trail, and `admin.changed` is where somebody looks for a settings edit.
+    #[tokio::test]
+    async fn signing_out_is_recorded_in_the_audit_trail() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::SESSION_END, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let events = world.handle.0.events.lock().expect("a lock");
+        assert!(
+            events
+                .iter()
+                .any(|event| event.event_type == EventType::SESSION_REVOKED),
+            "signing out left no record: {events:?}"
+        );
+    }
+
+    /// Signing out twice with the same cookie is a 401, not a second logout:
+    /// the first call revoked the row, so the credential is already gone by
+    /// the time the gate looks at it.
+    #[tokio::test]
+    async fn a_second_sign_out_with_the_same_cookie_is_refused() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let first = world
+            .send(
+                as_console(&crate::SESSION_END, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(first.status(), StatusCode::OK);
+
+        // Act
+        let second = world
+            .send(
+                as_console(&crate::SESSION_END, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(second.status(), StatusCode::UNAUTHORIZED);
     }
 }

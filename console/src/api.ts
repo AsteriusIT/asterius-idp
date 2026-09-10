@@ -133,6 +133,19 @@ export async function mutate(
   });
 }
 
+/**
+ * Ends this session, server-side (`ast-bfn`).
+ *
+ * The session cookie is `HttpOnly`, so nothing in this bundle can remove it and
+ * a console that only forgot its own state would leave a live session id in the
+ * browser. `DELETE /session` revokes the row and sends the clearing
+ * `Set-Cookie`; there is no session identifier in the call, because the only
+ * session it can end is the one the request is made with.
+ */
+export async function endSession(session: Session): Promise<void> {
+  await mutate('session', 'DELETE', session);
+}
+
 /** Who is signed in, or an {@link ApiError} with status 401 if nobody is. */
 export async function loadSession(): Promise<Session> {
   const document = (await read('session')) as Session;

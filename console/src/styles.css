@@ -97,6 +97,55 @@ dd {
   margin: 0 0 0.75rem;
 }
 
+/* The settings form (`ast-bfn`). No colour carries meaning on its own: the
+   refusal is marked by its rule and its weight as well as its hue, because a
+   message that is only red is a message a colour-blind operator does not
+   see (WCAG 2.2 §1.4.1). */
+fieldset {
+  border: 1px solid var(--rule);
+  border-radius: 0.25rem;
+  margin: 0 0 1.5rem;
+}
+
+legend {
+  font-weight: 700;
+}
+
+label {
+  font-weight: 600;
+}
+
+input[type='number'] {
+  font: inherit;
+  display: block;
+  margin-top: 0.25rem;
+  padding: 0.3rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 0.25rem;
+}
+
+.switches {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.switches li {
+  margin-bottom: 0.75rem;
+}
+
+.switches label {
+  font-weight: 400;
+}
+
+.refusal {
+  font-weight: 700;
+  border-left: 4px solid var(--accent);
+  padding-left: 0.75rem;
+}
+
 button {
   font: inherit;
   padding: 0.4rem 0.9rem;
