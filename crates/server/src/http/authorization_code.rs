@@ -189,7 +189,12 @@ impl AuthorizationCode<'_> {
             client,
             grant,
             &requested,
-            self.grant_management,
+            issuance::ImplicitResources {
+                grant_management: self.grant_management,
+                // A user-delegated token is never audienced at the SSF
+                // management API; see `issuance::ImplicitResources`.
+                ssf: false,
+            },
         )
         .await
         .map_err(|error| match error {

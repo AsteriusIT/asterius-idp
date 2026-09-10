@@ -252,10 +252,27 @@ impl std::fmt::Debug for DpopEndpoint {
 /// length why the URL is never taken from the request.
 #[derive(Debug, Clone, Copy)]
 pub struct ProofTarget<'a> {
-    /// The endpoint, from the registry the metadata is rendered from.
-    endpoint: Endpoint,
+    /// The path under the issuer this request was made to.
+    base: Base<'a>,
     /// One path segment under it, when the request addresses a resource.
     segment: Option<&'a str>,
+}
+
+/// Where a target's path comes from.
+///
+/// Two sources, because this server has two documents. Almost every endpoint
+/// is in the registry the OP metadata is rendered from; the SSF management
+/// endpoints are not, because SSF 1.0 §7.1 advertises them in the
+/// transmitter's own document instead, and putting them in the OP registry
+/// would publish them in a document that does not define them.
+#[derive(Debug, Clone, Copy)]
+enum Base<'a> {
+    /// An endpoint of [`Endpoint`], and therefore of the discovery document.
+    Registry(Endpoint),
+    /// A path this server mounts outside the registry, owned by the module
+    /// that mounts it. Still not taken from the request: the caller passes a
+    /// constant, and the URL is built from the tenant's issuer as ever.
+    Mounted(&'a str),
 }
 
 impl<'a> ProofTarget<'a> {
@@ -264,7 +281,7 @@ impl<'a> ProofTarget<'a> {
     #[must_use]
     pub const fn at(endpoint: Endpoint) -> Self {
         Self {
-            endpoint,
+            base: Base::Registry(endpoint),
             segment: None,
         }
     }
@@ -273,16 +290,35 @@ impl<'a> ProofTarget<'a> {
     #[must_use]
     pub const fn under(endpoint: Endpoint, segment: &'a str) -> Self {
         Self {
-            endpoint,
+            base: Base::Registry(endpoint),
             segment: Some(segment),
+        }
+    }
+
+    /// A path this server mounts that is not in the endpoint registry
+    /// (`ast-0ju.3`).
+    ///
+    /// `path` is a constant belonging to the module that mounts the route —
+    /// [`crate::http::ssf::CONFIGURATION_PATH`] is the only one today — so the
+    /// URL a proof is compared against is the URL the router matched, and
+    /// neither is derived from anything the caller sent.
+    #[must_use]
+    pub const fn at_path(path: &'a str) -> Self {
+        Self {
+            base: Base::Mounted(path),
+            segment: None,
         }
     }
 
     /// The URL, built from the tenant's issuer and nothing the caller sent.
     fn url(self, issuer: &asterius_domain::Issuer) -> String {
+        let base = match self.base {
+            Base::Registry(endpoint) => endpoint.url(issuer),
+            Base::Mounted(path) => format!("{}{path}", issuer.as_str()),
+        };
         match self.segment {
-            None => self.endpoint.url(issuer),
-            Some(segment) => format!("{}/{segment}", self.endpoint.url(issuer)),
+            None => base,
+            Some(segment) => format!("{base}/{segment}"),
         }
     }
 }

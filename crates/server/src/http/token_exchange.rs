@@ -669,7 +669,15 @@ impl TokenExchange<'_> {
             client,
             grant,
             &request.targets,
-            self.grant_management,
+            issuance::ImplicitResources {
+                grant_management: self.grant_management,
+                // Never, whatever the tenant has switched on: an exchanged
+                // token stands on a subject token, and SSF 1.0 §8 makes the
+                // receiver a client acting for itself. Only
+                // `client_credentials` may be audienced at the stream
+                // configuration endpoint (`ast-0ju.3`).
+                ssf: false,
+            },
         )
         .await
         .map_err(|error| match error {

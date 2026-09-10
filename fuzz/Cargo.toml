@@ -498,6 +498,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ssf_stream_configuration"
+path = "fuzz_targets/ssf_stream_configuration.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "tenant_message_overrides"
 path = "fuzz_targets/tenant_message_overrides.rs"
 test = false

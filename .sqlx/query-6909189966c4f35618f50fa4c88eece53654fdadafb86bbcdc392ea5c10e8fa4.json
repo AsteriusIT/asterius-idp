@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select stream_id, audience, events_requested, delivery_method,\n                    delivery_endpoint_url, description, inactivity_timeout_seconds\n               from ssf_streams\n              where tenant_id = $1 and client_id = $2\n              order by created_at, stream_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stream_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "audience",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "events_requested",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "delivery_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "delivery_endpoint_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "inactivity_timeout_seconds",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "6909189966c4f35618f50fa4c88eece53654fdadafb86bbcdc392ea5c10e8fa4"
+}

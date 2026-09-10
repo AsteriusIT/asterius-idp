@@ -605,6 +605,20 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "ssf_streams",
+        rule: Rule::Kept(
+            "a stream is a receiver's standing configuration (SSF 1.0 §8.1.1), \
+             not an artefact of one request: it is created by a `POST` and \
+             removed by the `DELETE` of §8.1.1.5, and a sweep that removed one \
+             would silently stop a continuous-access signal a security team \
+             believes it is still receiving. `inactivity_timeout` is not a \
+             cutoff for this policy either — §8.1.1 makes it grounds for the \
+             transmitter to *pause* a stream and say so with a \
+             stream-updated event (`ast-0ju.5`), which is a decision with a \
+             notification attached and not a delete",
+        ),
+    },
+    Retention {
         table: "tenant_theme_assets",
         rule: Rule::Kept(
             "a logo lives as long as the tenant that uploaded it. Content \

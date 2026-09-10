@@ -357,8 +357,7 @@ async fn sender_constrained(
             dpop: context.dpop,
             // §6.3: the resource is the endpoint plus the grant id, and that
             // is the URL the client made its proof over.
-            endpoint: Endpoint::GrantManagement,
-            segment: Some(grant_id),
+            target: dpop::ProofTarget::under(Endpoint::GrantManagement, grant_id),
             certificate: context.certificate,
             method,
             headers,
