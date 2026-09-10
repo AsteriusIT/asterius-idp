@@ -17,7 +17,7 @@ use asterius_domain::ports::JwksFetcher;
 use asterius_domain::{
     Capabilities, Client, ClientConfiguration, ClientId, ClientRegistration, ClientRepository,
     ClientStatus, DomainError, Issuer, KeyStore, Kid, ManagedClient, OpaqueToken, PublicKeyRecord,
-    Tenant, TenantId, TenantStatus, sha256,
+    SubjectType, Tenant, TenantId, TenantStatus, sha256,
 };
 use asterius_server::http::client_configuration::{ConfigurationContext, read, remove, update};
 use axum::body::Bytes;
@@ -1631,5 +1631,62 @@ async fn an_update_onto_an_algorithm_the_tenant_cannot_sign_with_is_refused() {
         after.registration.id_token_signed_response_alg,
         before.registration.id_token_signed_response_alg,
         "a refused update still replaced the row"
+    );
+}
+
+/// The same rule as `POST /register`, at the endpoint that replaces a whole
+/// registration — `ast-m9c.10`.
+///
+/// OIDC Core §8.1 derives the sector from "the host component of the registered
+/// `redirect_uri`" and RFC 8252 §7.3 gives every native client the same loopback
+/// host, so a pairwise client whose only callbacks are loopback and which names
+/// no `sector_identifier_uri` has no sector of its own. Refusing that at
+/// registration but not at the update would make RFC 7592 §2.2 the way round
+/// the rule: register with an https callback, then replace it.
+#[tokio::test]
+async fn an_update_to_pairwise_with_only_loopback_callbacks_is_refused() {
+    let fixture = Fixture::new();
+    let body = Bytes::from(
+        serde_json::to_vec(&json!({
+            "client_id": "c.alpha",
+            "client_name": "Billing",
+            "application_type": "native",
+            "redirect_uris": ["http://127.0.0.1:51004/cb"],
+            "grant_types": ["authorization_code"],
+            "subject_type": "pairwise",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        }))
+        .expect("serialise"),
+    );
+
+    let response = update(
+        &fixture.context(),
+        "c.alpha",
+        &bearer(&fixture.alpha),
+        &body,
+        now(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let document = body_of(response).await;
+    assert_eq!(document["error"], json!("invalid_client_metadata"));
+    assert!(
+        document["error_description"]
+            .as_str()
+            .expect("a description")
+            .contains("sector_identifier_uri"),
+        "the client is not told what to register instead: {document}"
+    );
+    assert_eq!(
+        fixture
+            .clients
+            .row("c.alpha")
+            .expect("alpha")
+            .client
+            .registration
+            .subject_type,
+        SubjectType::Public,
+        "a refused update replaced the row anyway"
     );
 }

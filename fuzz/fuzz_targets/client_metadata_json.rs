@@ -22,7 +22,9 @@
 //!   comparison the authorization endpoint depends on.
 #![no_main]
 
-use asterius_domain::{ApplicationType, Capabilities, ClientRegistration, RedirectUri};
+use asterius_domain::{
+    ApplicationType, Capabilities, ClientRegistration, RedirectUri, SectorIdentifier, SubjectType,
+};
 use libfuzzer_sys::fuzz_target;
 
 /// Every flag on. Anything gated must be reachable, or half the validator is
@@ -70,6 +72,32 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let Ok(client) = outcome else { return };
+
+    // `ast-m9c.10`: the registration endpoints ask this of every document the
+    // validator accepted, so it is reached here with whatever shape the fuzzer
+    // produced — no redirect URI, one loopback callback, twenty of them — and
+    // it must decide rather than panic.
+    let refused = SectorIdentifier::check_registration(&client).is_err();
+    assert_eq!(
+        refused,
+        SectorIdentifier::demands_sector_identifier_uri(&client),
+        "the predicate and the registration check disagree about one document"
+    );
+    if refused {
+        assert_eq!(
+            client.subject_type,
+            SubjectType::Pairwise,
+            "a client that is not pairwise was told to register a sector"
+        );
+        assert!(
+            client.sector_identifier_uri.is_none(),
+            "a client that named a sector was told to register one"
+        );
+        assert!(
+            !client.redirect_uris.is_empty(),
+            "a client with no callback at all was refused for its callbacks"
+        );
+    }
 
     assert!(
         client.token_binding.is_dpop_bound() || client.token_binding.is_certificate_bound(),

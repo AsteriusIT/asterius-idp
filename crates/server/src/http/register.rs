@@ -472,7 +472,9 @@ pub async fn register(
     // one, and this is where the claim is checked. It is the only outbound
     // fetch a registration makes, and it is deliberately blocking: accepting
     // the client first and confirming the sector later would mint `sub` values
-    // in a sector nobody confirmed, and those cannot be taken back.
+    // in a sector nobody confirmed, and those cannot be taken back. The same
+    // call also refuses, without any fetch, a pairwise document that has no
+    // sector to name — see `SectorIdentifier::check_registration`.
     if let Err(failure) = sector::verify(context.outbound, &registration).await {
         record(&context, now, Outcome::Failure, None, Some(failure.code())).await;
         return metadata_error(&failure);

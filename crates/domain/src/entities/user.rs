@@ -52,7 +52,7 @@ use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
 
-use super::client::{Client, SubjectType};
+use super::client::{Client, ClientMetadataError, ClientRegistration, SubjectType};
 
 // ---------------------------------------------------------------------------
 // Identity
@@ -751,6 +751,15 @@ pub enum SubjectError {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SectorIdentifier(String);
 
+/// Why a pairwise client with nothing but loopback callbacks is refused, in the
+/// one wording both the registration endpoints and the authorization path use.
+///
+/// It names the field to add, because a client told only that its document is
+/// invalid has no way to find out which of twenty members was the problem.
+const NO_SECTOR_OF_ITS_OWN: &str = "a pairwise client whose redirect URIs are all on the loopback \
+     interface shares that host with every native client (RFC 8252 §7.3), so it has no sector of \
+     its own; register a sector_identifier_uri (OIDC Core §8.1)";
+
 impl SectorIdentifier {
     /// The sector every public subject shares.
     ///
@@ -839,6 +848,14 @@ impl SectorIdentifier {
         if let Some(uri) = client.registration.sector_identifier_uri.as_deref() {
             return Self::of_uri(uri);
         }
+        // The same rule the registration endpoint applies, called rather than
+        // restated, so the two cannot drift apart. Since `ast-m9c.10` a
+        // registration carrying this shape is refused outright; what reaches
+        // here is a row written before that, and refusing it is the defence in
+        // depth that keeps such a row from minting a shared `sub`.
+        if Self::demands_sector_identifier_uri(&client.registration) {
+            return Err(SubjectError::Sector(NO_SECTOR_OF_ITS_OWN));
+        }
         let redirect = client
             .registration
             .redirect_uris
@@ -847,12 +864,61 @@ impl SectorIdentifier {
                 "the client registered no redirect URI",
             ))?;
         let sector = Self::of_uri(redirect.as_str())?;
+        // Reachable only for a stored row whose *first* redirect URI is
+        // loopback while another is not — a shape the check above deliberately
+        // does not cover, because there the client does have a host of its own
+        // and the sector must simply not be taken from the loopback entry.
         if sector.is_shared_by_every_native_client() {
-            return Err(SubjectError::Sector(
-                "a loopback redirect URI is not a sector; register a sector_identifier_uri",
-            ));
+            return Err(SubjectError::Sector(NO_SECTOR_OF_ITS_OWN));
         }
         Ok(sector)
+    }
+
+    /// Whether this registration has no sector of its own, and so may not be
+    /// accepted without a `sector_identifier_uri` — OIDC Core §8.1.
+    ///
+    /// True for a pairwise client that named no `sector_identifier_uri` and
+    /// whose registered redirect URIs are *all* on a loopback host. §8.1
+    /// derives the sector from "the host component of the registered
+    /// `redirect_uri`", and RFC 8252 §7.3 gives every native client on earth the
+    /// same loopback host: such a registration would put every native client of
+    /// the deployment into one sector and hand them one correlatable `sub` per
+    /// user, which is exactly what `pairwise` is asked for to prevent.
+    ///
+    /// The single source of truth for the rule. [`Self::of_client`] consults it
+    /// at authorization time and the registration endpoints consult it through
+    /// [`Self::check_registration`], so a document refused at `POST /register`
+    /// and a stored row refused at authorization are refused for one reason.
+    #[must_use]
+    pub fn demands_sector_identifier_uri(registration: &ClientRegistration) -> bool {
+        registration.subject_type == SubjectType::Pairwise
+            && registration.sector_identifier_uri.is_none()
+            && !registration.redirect_uris.is_empty()
+            && registration.redirect_uris.iter().all(|uri| {
+                Self::of_uri(uri.as_str())
+                    .is_ok_and(|sector| sector.is_shared_by_every_native_client())
+            })
+    }
+
+    /// The registration-time form of [`Self::demands_sector_identifier_uri`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientMetadataError::Rejected`] against `sector_identifier_uri`
+    /// — RFC 7591 §3.2.2's `invalid_client_metadata` — naming the field the
+    /// client has to add, so that the refusal arrives while the client can
+    /// still act on it rather than at an authorization request it cannot see
+    /// the reason for.
+    pub fn check_registration(
+        registration: &ClientRegistration,
+    ) -> Result<(), ClientMetadataError> {
+        if Self::demands_sector_identifier_uri(registration) {
+            return Err(ClientMetadataError::Rejected {
+                field: "sector_identifier_uri",
+                reason: NO_SECTOR_OF_ITS_OWN.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Whether this host is one RFC 8252 §7.3 gives to every native client.
@@ -1314,6 +1380,68 @@ mod tests {
             .as_str(),
             "desktop.example"
         );
+    }
+
+    /// The registration-time face of the same rule (`ast-m9c.10`): the
+    /// document is refused as RFC 7591 §3.2.2 `invalid_client_metadata` against
+    /// `sector_identifier_uri`, rather than accepted and then found
+    /// unauthorizable.
+    #[test]
+    fn a_registration_with_no_sector_of_its_own_is_refused_naming_the_field_to_add() {
+        let refusal = SectorIdentifier::check_registration(
+            &client(&json!({
+                "client_name": "Desktop",
+                "redirect_uris": ["http://127.0.0.1:51004/cb"],
+                "jwks": {"keys": [{"kty": "OKP"}]},
+                "application_type": "native",
+                "subject_type": "pairwise",
+            }))
+            .registration,
+        )
+        .expect_err("a loopback-only pairwise document has no sector");
+
+        assert_eq!(refusal.code(), "invalid_client_metadata");
+        assert_eq!(refusal.field(), "sector_identifier_uri");
+        assert!(
+            refusal.to_string().contains("sector_identifier_uri"),
+            "{refusal}"
+        );
+    }
+
+    /// The rule is that the sector is underivable, not that loopback is
+    /// suspicious: a public client, a pairwise one that named a sector, and a
+    /// pairwise one with a host of its own all register unchanged.
+    #[test]
+    fn a_registration_that_has_a_sector_is_accepted() {
+        for accepted in [
+            // Loopback, but public: no `sub` is derived from a sector at all.
+            json!({
+                "client_name": "Desktop",
+                "redirect_uris": ["http://127.0.0.1:51004/cb"],
+                "jwks": {"keys": [{"kty": "OKP"}]},
+                "application_type": "native",
+            }),
+            // Loopback and pairwise, with a sector it will have to prove it
+            // controls (OIDC Registration §5).
+            json!({
+                "client_name": "Desktop",
+                "redirect_uris": ["http://127.0.0.1:51004/cb"],
+                "jwks": {"keys": [{"kty": "OKP"}]},
+                "application_type": "native",
+                "subject_type": "pairwise",
+                "sector_identifier_uri": "https://desktop.example/sector.json",
+            }),
+            // Pairwise on a host of its own.
+            json!({
+                "client_name": "Billing",
+                "redirect_uris": ["https://rp.example/cb"],
+                "jwks": {"keys": [{"kty": "OKP"}]},
+                "subject_type": "pairwise",
+            }),
+        ] {
+            let outcome = SectorIdentifier::check_registration(&client(&accepted).registration);
+            assert!(outcome.is_ok(), "{accepted}: {outcome:?}");
+        }
     }
 
     /// The row is the record of which sector a `sub` belongs to, so a second
