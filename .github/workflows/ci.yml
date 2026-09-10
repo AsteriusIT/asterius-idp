@@ -42,10 +42,15 @@ jobs:
 
       # Offline: clippy must not need a database. The committed .sqlx data is
       # what makes that possible, and `sqlx-check` below proves it is current.
+      #
+      # `--keep-going` so a lint failure in one crate does not cancel the
+      # crates that were still to be checked (`ast-j51`): with -D warnings the
+      # first denied lint ends the build, and the rest of the workspace is
+      # only ever seen one push later.
       - name: cargo clippy
         env:
           SQLX_OFFLINE: "true"
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --keep-going -- -D warnings
 
       # ADR-0001: protocol crates must not reach sqlx, axum, tokio, hyper,
       # reqwest or askama, directly or transitively. Also asserts
@@ -131,11 +136,19 @@ jobs:
           sqlx migrate run
           sqlx migrate info
 
+      # `--no-fail-fast`, and the same reason as the fuzz matrix below
+      # (`ast-j51`): nextest stops the run at the first failing test by
+      # default, so a red push reports one failure and hides the rest. On
+      # `main` 72eb594 this job showed one; `--no-fail-fast` locally showed
+      # five, three of them in crates the run never reached. Each hidden
+      # failure costs a full CI round trip to discover.
       - name: cargo test
-        run: cargo nextest run --workspace --all-features
+        run: cargo nextest run --workspace --all-features --no-fail-fast
 
+      # Same reason: `cargo test` aborts after the first failing doctest
+      # binary otherwise.
       - name: doctests
-        run: cargo test --workspace --doc
+        run: cargo test --workspace --doc --no-fail-fast
 
   # -------------------------------------------------------------------------
   # The committed .sqlx data must match the queries in the tree, or an offline
@@ -252,7 +265,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo doc --workspace --no-deps --all-features
+      # `--keep-going`: cargo stops documenting at the first crate that
+      # errors, so `-D warnings` turns one broken intra-doc link into a
+      # report that hides every other one. `ast-cts` saw 2 reported and 11
+      # actual. Documenting the whole workspace before concluding costs
+      # nothing when the job is green.
+      - run: cargo doc --workspace --no-deps --all-features --keep-going
 
   # -------------------------------------------------------------------------
   # The jobs that run a browser (`ast-2vk.14`, split by project in `ast-rna`).
