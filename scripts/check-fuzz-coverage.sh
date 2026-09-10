@@ -32,10 +32,6 @@ while read -r target; do
     echo "  a parser declares '// fuzz-target: $target' but fuzz/fuzz_targets/$target.rs does not exist" >&2
     status=1
   fi
-  if ! grep -q "name = \"$target\"" fuzz/Cargo.toml; then
-    echo "UNREGISTERED FUZZ TARGET: $target is not a [[bin]] in fuzz/Cargo.toml" >&2
-    status=1
-  fi
 done <<<"$declared"
 
 while read -r target; do
@@ -60,7 +56,10 @@ done <<<"$present"
 # and reports every difference. The gate asks the generator rather than parsing
 # the manifest a second time here, so the two cannot drift apart in their idea
 # of what is registered — and it fails closed when the enumeration is empty or
-# the manifest unreadable.
+# the manifest unreadable. It is also why the loop above no longer greps
+# `fuzz/Cargo.toml` for a `[[bin]]` per marker: two checks doing the same work
+# are two places one can drift from the other, which is the defect this
+# delegation was introduced to close.
 if ! ./scripts/sync-fuzz-registry.sh --check; then
   status=1
 fi
