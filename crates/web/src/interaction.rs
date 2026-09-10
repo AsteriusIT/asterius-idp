@@ -975,16 +975,23 @@ mod tests {
 
     #[test]
     fn the_state_machine_allows_exactly_these_moves() {
-        use Stage::{Consent, Login, Response, StepUp};
+        use Stage::{Consent, Login, Register, Response, StepUp};
         let legal = [
+            // Prompt Create 1.0 §3: creating an account authenticates the
+            // person who created it, so `Register` leaves by the doors
+            // `Login` leaves by — and by the one back to `Login` itself,
+            // which is the "already have an account?" link.
+            (Register, StepUp),
+            (Register, Consent),
+            (Register, Login),
             (Login, StepUp),
             (Login, Consent),
             (StepUp, Consent),
             (StepUp, Login),
             (Consent, Response),
         ];
-        for from in [Login, StepUp, Consent, Response] {
-            for to in [Login, StepUp, Consent, Response] {
+        for from in [Register, Login, StepUp, Consent, Response] {
+            for to in [Register, Login, StepUp, Consent, Response] {
                 let expected = legal.contains(&(from, to));
                 assert_eq!(
                     from.may_advance_to(to, &authorization()),
@@ -1002,15 +1009,18 @@ mod tests {
     /// skipped by a flag — it is unreachable.
     #[test]
     fn a_first_party_interaction_allows_exactly_these_moves() {
-        use Stage::{Consent, Login, Response, StepUp};
+        use Stage::{Consent, Login, Register, Response, StepUp};
         let legal = [
+            (Register, StepUp),
+            (Register, Response),
+            (Register, Login),
             (Login, StepUp),
             (Login, Response),
             (StepUp, Response),
             (StepUp, Login),
         ];
-        for from in [Login, StepUp, Consent, Response] {
-            for to in [Login, StepUp, Consent, Response] {
+        for from in [Register, Login, StepUp, Consent, Response] {
+            for to in [Register, Login, StepUp, Consent, Response] {
                 let expected = legal.contains(&(from, to));
                 assert_eq!(
                     from.may_advance_to(to, &console()),
@@ -1027,7 +1037,13 @@ mod tests {
     /// `Consent`, and the stage after login is the destination.
     #[test]
     fn a_first_party_interaction_can_never_reach_consent() {
-        for from in [Stage::Login, Stage::StepUp, Stage::Consent, Stage::Response] {
+        for from in [
+            Stage::Register,
+            Stage::Login,
+            Stage::StepUp,
+            Stage::Consent,
+            Stage::Response,
+        ] {
             assert!(
                 !from.may_advance_to(Stage::Consent, &console()),
                 "{from:?} reached a consent screen with nobody to consent to"

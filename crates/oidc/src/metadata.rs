@@ -1410,6 +1410,20 @@ mod tests {
     /// tenant-wide document promises has to hold for the emptiest account the
     /// schema permits, because the document is written before anyone knows
     /// which account will authenticate.
+    ///
+    /// [`SELF_CHOSEN_CLAIM`] is the one exception, and it is an exception
+    /// stated here rather than a hole. `preferred_username` is a *chosen*
+    /// name: the sign-up page asks for one and the account pages change one,
+    /// so this deployment produces it — but an account that never chose one has
+    /// none, and OIDC Core §5.3.2 says a claim that is not available is
+    /// omitted. Discovery §3 licenses exactly that reading: the member lists
+    /// the names an OP "MAY be able to supply values for", with the note that
+    /// "this might not be an exhaustive list". The claim below is what keeps
+    /// the exception from becoming a promise nobody keeps:
+    /// [`the_chosen_name_resolves_for_an_account_that_chose_one`] asserts the
+    /// converse, and `e2e/fixtures/seed.sql` gives the conformance user a
+    /// display name so the suite that reported `ast-8p1` asks for a claim this
+    /// deployment can answer.
     #[test]
     fn every_identity_claim_advertised_resolves_for_a_user_with_no_stored_claims() {
         // Arrange.
@@ -1426,7 +1440,7 @@ mod tests {
         };
         let identity: Vec<&str> = claims_supported()
             .into_iter()
-            .filter(|name| !ID_TOKEN_CLAIMS.contains(name))
+            .filter(|name| !ID_TOKEN_CLAIMS.contains(name) && *name != SELF_CHOSEN_CLAIM)
             .collect();
         assert!(
             !identity.is_empty(),
@@ -1459,6 +1473,56 @@ mod tests {
         assert!(
             missing.is_empty(),
             "advertised but not delivered: {missing:?}"
+        );
+    }
+
+    /// The other half of the exception above: the claim is advertised because
+    /// an account that chose a display name gets it, through the ordinary
+    /// resolver and with no special case anywhere in it.
+    ///
+    /// If this stops holding, the member has to come out of the document
+    /// again — that is what `ast-8p1` was.
+    #[test]
+    fn the_chosen_name_resolves_for_an_account_that_chose_one() {
+        // Arrange: one claim in the bag, which is what the sign-up page of
+        // `ast-2vk.8` writes.
+        let mut claims = ClaimSet::new();
+        claims.insert(
+            asterius_domain::ClaimName::parse(SELF_CHOSEN_CLAIM).expect("a claim name"),
+            asterius_domain::Claim::new(
+                Value::String("Ada L.".to_owned()),
+                asterius_domain::ClaimSource::Local,
+            )
+            .expect("a claim"),
+        );
+        let user = User {
+            tenant: TenantId::new("demo"),
+            id: UserId::generate(),
+            username: "ada".to_owned(),
+            email: Some("ada@example.test".to_owned()),
+            email_verified: true,
+            status: UserStatus::Active,
+            claims,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        };
+        let requested = crate::claims::ClaimsRequest::from_json(&json!({
+            "userinfo": { SELF_CHOSEN_CLAIM: Value::Null },
+        }))
+        .expect("the advertised name is requestable");
+
+        // Act.
+        let resolved = crate::claims::resolve(
+            &user,
+            &std::collections::BTreeSet::new(),
+            &requested,
+            &crate::claims::ClaimsLocales::default(),
+        );
+
+        // Assert: the chosen name, and not the login identifier (`ast-pew`).
+        assert_eq!(
+            resolved.userinfo.get(SELF_CHOSEN_CLAIM),
+            Some(&Value::String("Ada L.".to_owned()))
         );
     }
 

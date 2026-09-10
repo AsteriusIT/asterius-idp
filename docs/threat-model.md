@@ -411,6 +411,80 @@ repeatedly can reach the sixteen-element bound and be refused. The refusal is
 it; the alternative — silently dropping elements — would leave the client
 believing it holds an authorization nobody recorded.
 
+### Self-registration and `prompt=create` (`ast-2vk.8`)
+
+**The boundary moved, and this section exists to say where it moved to.**
+
+Before self-registration, every row in `users` was put there by an
+administrator, a seed or an import: creating an account required an
+authenticated caller with a role. With `features.self_registration` on for a
+tenant, anybody who can reach that tenant's authorization endpoint can create
+one, by pushing a request with `prompt=create` (OpenID Connect Prompt Create
+1.0 §3) and filling in a form.
+
+> **For a tenant that switches this on, the directory becomes attacker-writable
+> within the limits below.** Row count, usernames, display names and the set of
+> addresses this server will send mail to are all chosen by strangers. A
+> deployment whose access control asks "is there an account?" rather than "what
+> is this account allowed to do?" is a deployment this flag breaks.
+
+That is why the flag is off by default and why it is a *feature*, read in one
+place and used in three: the discovery document advertises `create` from it,
+the pushed-request validator accepts `create` from it, and the registrar behind
+the page is absent without it. A tenant may subtract it like any other feature,
+so a tenant that registers nobody neither advertises the value nor answers the
+form.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G3** | **Filling the directory.** An unauthenticated form that writes a row and can be posted in a loop. | Every submission — accepted or refused — is counted against the per-address and per-account buckets of `ast-2vk.9`, the same limiter the login form uses. A full bucket refuses before the form is parsed; a limiter that cannot be read fails closed. The submission also needs a live interaction and its synchroniser token, so it cannot be posted without first pushing an authorization request as a registered client. |
+| **A1** | **G1** | **Registering over somebody.** A sign-up that *replaced* an existing row would hand over the account under a username the attacker typed. | A creation is never a replacement: the username and the address are read first and a match refuses, and the unique indexes close the race the two reads cannot — a conflicting insert is the same refusal. The same guard `crate::admin` puts in front of an administrator's creation. |
+| **A1** | **G3** | **Enumerating accounts through the sign-up form.** The mirror of the reset-form oracle. | A sign-up page cannot avoid disclosing that *something* on the form is in use — it has to refuse a duplicate to work at all — so this discloses more than `/recovery` does and the file says so rather than claiming otherwise. What it does not do is say *which*: a taken username and a taken address are one refusal with one sentence, so the form is not an address checker, and the limiter bounds sweeping it. |
+| **A1** | **G4** | **Asserting an identity by typing it.** A `preferred_username`, a display name or an address the attacker chose, rendered by every relying party that reads the claim. | The claim is stored with `ClaimSource::Local` and **no** `verified_at`: it is a preference the account asserted about itself, and OIDC Core §5.1 already tells RPs it is neither unique nor stable. `email_verified` is `false` at creation whatever was typed — §5.1 makes that claim an assertion *the provider* verified the address, and nothing has. The login identifier is never projected into `preferred_username`; the two are separate fields for exactly this reason (`ast-pew`). |
+| **A1** | **G4** | **Reordering what a person reads.** A right-to-left override in a username or display name renders on the consent screen as somebody else's name. Escaping does not touch it — it is legal text that survives every encoder. | Both names refuse control characters and the UAX #9 bidirectional set, in the domain parser every door into `users` goes through, and the property is fuzzed (`registration_form`). |
+| **A1** | **G1** | **Creating an account nobody can hold.** A weak or breached password chosen at sign-up. | The same `AcceptedPassword::accept_locally` a recovery uses: NIST SP 800-63B §5.1.1.2 normalisation, the length floor, the deny list, no composition rules. There is no constructor that skips it. |
+| **A1** | **G3** | **Using the sign-up form as a mail cannon**, once the verification half is wired. | The limiter above counts against the address bucket, so the address an attacker chose is the address that runs out of budget. |
+
+**Residual, and deliberately so:** an account created here starts with an
+unverified address and is nonetheless authenticated for the interaction that
+created it — Prompt Create §3 asks the OP to treat the creation as an
+authentication, and a flow that blocked on a mailbox would strand the client's
+authorization on something no browser can finish. A relying party that needs a
+proven address must read `email_verified`, which is what it is for.
+
+**Not built yet:** the verification link itself, the "unverified users cannot
+complete a login where the tenant requires it" rule, and the account
+self-service pages. Until they land, `email_verified` is only ever set by an
+administrator, and a tenant that switches self-registration on is accepting
+unverified addresses in its directory.
+
+### The "forgot your password?" link on the sign-in page (`ast-ndk.4`)
+
+The sign-in page now links to `/recovery`. The question the ticket left open
+was whether it should: a link makes the function discoverable, and a link is
+also an invitation to a page that sends mail.
+
+It is there, and the reason it is safe to put it there is a property the
+recovery page already has rather than a judgement about how many people will
+click it. **`/recovery` is not an oracle.** `POST /recovery` renders one page,
+byte for byte, for an address with an account, an address with a disabled
+account and an address nobody has; the page type has no field that could
+differ, and the audit trail records every request identically. So a visitor who
+follows the link learns exactly what a visitor who typed the URL learns, which
+is nothing about anybody.
+
+What the link does change is traffic: more people reach a form that sends mail.
+That is bounded by the limiter above, which counts every request against the
+per-address and per-account buckets whether or not it matched an account, and
+which fails closed. And it is weighed against the cost of the alternative — a
+recovery function reachable only by typing a URL is a recovery function
+answered by a support desk, which is the weakest identity-proofing channel any
+deployment has.
+
+The link is rendered only where there is something to recover: a deployment
+with no password method configured gets no link, because `/recovery` would
+refuse everybody and a link to a page that cannot work is worse than none.
+
 ### Account recovery (`ast-2vk.10`)
 
 **The boundary moved, and this section exists to say where it moved to.**

@@ -48,6 +48,7 @@ use asterius_oidc::consent::{ConsentRequest, Decision, DetailRequest};
 use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
 use asterius_oidc::decision::Requirements;
 use asterius_web::Brand;
+use asterius_web::i18n::Catalog;
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
 };
@@ -171,8 +172,8 @@ pub struct InteractionContext<'a> {
     /// document advertised it under. A stored request cannot ask for
     /// [`Stage::Register`] unless that flag was on, so `None` here and a
     /// stored `Register` stage together are a request that outlived the flag
-    /// being switched off: it is refused rather than honoured, in
-    /// [`create_account`].
+    /// being switched off: it is refused rather than honoured, by the handler
+    /// that would otherwise write the row.
     pub registrar: Option<crate::http::signup::Registrar<'a>>,
     /// The account behind a user id, for the name a screen puts on a person.
     ///
@@ -289,7 +290,9 @@ pub async fn show(
     // link followed at consent time cannot undo a decision.
     if state.stage == Stage::Register
         && query.is_some_and(asks_for_sign_in)
-        && state.stage.may_advance_to(Stage::Login, &record.continuation)
+        && state
+            .stage
+            .may_advance_to(Stage::Login, &record.continuation)
     {
         state.stage = Stage::Login;
     }
@@ -594,7 +597,11 @@ async fn sign_in(
             // attacker-chosen text on a successful sign-in. A read that fails
             // falls back to the identifier rather than failing the sign-in —
             // this is a caption, not a decision.
-            let named = match context.directory.by_id(asterius_domain::UserId::new(user)).await {
+            let named = match context
+                .directory
+                .by_id(asterius_domain::UserId::new(user))
+                .await
+            {
                 Ok(Some(account)) => crate::http::signup::display_name(&account).to_owned(),
                 Ok(None) => username.to_owned(),
                 Err(error) => {
@@ -1830,10 +1837,40 @@ async fn create_account(
         }
     };
 
-    // Two records, because two things came into existence: an account, and a
-    // credential on it. `credential.created` is the same event the passkey
-    // path writes, so "what credentials does this account have, and when did
-    // they appear" is one query rather than two.
+    record_account_created(context, &created, now).await;
+
+    let mut state = state;
+    // The name the screens that follow use, through the one field `ast-bo5`
+    // named: the display name when the person gave one, the login identifier
+    // otherwise.
+    state.signed_in_as(crate::http::signup::display_name(&created));
+    authenticated(
+        context,
+        presented,
+        state,
+        id,
+        record,
+        *created.id.as_uuid(),
+        now,
+    )
+    .await
+}
+
+/// Records the two things a sign-up brings into existence.
+///
+/// Two events, because they are two facts: an account, and a credential on it.
+/// `credential.created` is the same event the passkey path writes, so "what
+/// credentials does this account have, and when did they appear" is one query
+/// rather than two.
+///
+/// `user.created` is `Actor::System`: nobody with a name did this, which is
+/// exactly what distinguishes a self-registration from an administrator's
+/// creation in the trail. The detail says which door it came through.
+async fn record_account_created(
+    context: &InteractionContext<'_>,
+    created: &asterius_domain::User,
+    now: OffsetDateTime,
+) {
     let subject = created.id.as_uuid().to_string();
     record_event(
         context,
@@ -1861,22 +1898,6 @@ async fn create_account(
         .detail(Detail::new().label("credential", "password")),
     )
     .await;
-
-    let mut state = state;
-    // The name the screens that follow use, through the one field `ast-bo5`
-    // named: the display name when the person gave one, the login identifier
-    // otherwise.
-    state.signed_in_as(crate::http::signup::display_name(&created));
-    authenticated(
-        context,
-        presented,
-        state,
-        id,
-        record,
-        *created.id.as_uuid(),
-        now,
-    )
-    .await
 }
 
 /// Re-renders the sign-up form with what was typed and why it was refused.
@@ -2185,6 +2206,184 @@ struct TypedSignup {
     email: String,
 }
 
+/// The parts of the consent screen that are not the offer itself.
+///
+/// The offer is [`ConsentOffer`] and travels separately, because it is the one
+/// thing on this page that came from the client rather than from this server.
+struct ConsentChrome<'a> {
+    /// The words, and the language they are in.
+    text: &'a Catalog,
+    /// Where the decision posts.
+    action: &'a str,
+    /// The face this page draws itself in (`ast-vn7`).
+    font_url: &'a str,
+    /// The synchroniser token issued with this rendering.
+    csrf: &'a CsrfToken,
+    /// Who is signed in, so a person on a shared machine can see it is them
+    /// (`ast-bo5`).
+    signed_in: Option<&'a str>,
+}
+
+/// Draws the consent screen, and widens `form-action` for it alone.
+///
+/// This form posts back to the interaction, but its answer is a 303 to the
+/// client — and `form-action` governs that redirect too, so the consent screen
+/// is the one page that names the client's origin (`ast-jsq`). No other stage
+/// does: the widening is attached here and nowhere else.
+fn consent_page(
+    context: &InteractionContext<'_>,
+    offer: &ConsentOffer,
+    chrome: &ConsentChrome<'_>,
+) -> Response {
+    let request = &offer.request;
+    let document = Document::render(context.nonce, |nonce| {
+        pages::render(&ConsentPage {
+            text: chrome.text,
+            tenant_name: &context.tenant.display_name,
+            client_name: &request.client_name,
+            username: chrome.signed_in.unwrap_or_default(),
+            redirect_host: &request.redirect_host,
+            scopes: request
+                .scopes
+                .iter()
+                .map(|scope| ScopeLine {
+                    name: scope.name.clone(),
+                    description: scope.description.clone(),
+                    required: scope.required,
+                })
+                .collect(),
+            offline_access: request.offline_access,
+            resources: request.resources.iter().cloned().collect(),
+            authorization_details: request
+                .authorization_details
+                .iter()
+                .map(|detail| pages::DetailLine {
+                    name: detail.name.clone(),
+                    description: detail.description.clone(),
+                    locations: detail.locations.clone(),
+                    actions: detail.actions.clone(),
+                    datatypes: detail.datatypes.clone(),
+                })
+                .collect(),
+            action: chrome.action,
+            csrf: chrome.csrf.expose(),
+            nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
+            brand: Brand::new(chrome.font_url),
+        })
+    });
+    match offer.form_action.clone() {
+        Some(origin) => document.with_form_post_to(origin).into_response(),
+        None => document.into_response(),
+    }
+}
+
+/// What the sign-in page is drawn from.
+///
+/// A struct for the reason [`SignUpPage`] is one: the fields are all `&str`,
+/// and a renderer taking eight of them positionally is a renderer whose call
+/// site can transpose two.
+struct SignInPage<'a> {
+    /// The words, and the language they are in.
+    text: &'a Catalog,
+    /// Where the form posts, and where a passkey sign-in navigates.
+    action: &'a str,
+    /// Where the script asks for its assertion options.
+    passkey_options: &'a str,
+    /// Where it posts the assertion back.
+    passkey_finish: &'a str,
+    /// Account recovery, for the "forgot your password?" link.
+    recovery_href: &'a str,
+    /// The face this page draws itself in (`ast-vn7`).
+    font_url: &'a str,
+    /// The synchroniser token issued with this rendering.
+    csrf: &'a CsrfToken,
+    /// Why the previous submission was refused, if there was one.
+    message: Option<&'a str>,
+}
+
+/// Draws the sign-in page, which is also the step-up page.
+fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Response {
+    Document::render(context.nonce, |nonce| {
+        pages::render(&LoginPage {
+            text: page.text,
+            tenant_name: &context.tenant.display_name,
+            action: page.action,
+            passkey_options_action: page.passkey_options,
+            passkey_finish_action: page.passkey_finish,
+            csrf: page.csrf.expose(),
+            login_hint: None,
+            message: page.message,
+            // `ast-ndk.4`: the way back into an account, offered where a
+            // person discovers they cannot get in. Only where there is a
+            // password to recover — a deployment with no password method has
+            // nothing for `/recovery` to reset, and a link to a page that
+            // refuses everybody is worse than no link.
+            recovery_href: context.credentials.is_some().then_some(page.recovery_href),
+            nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
+            brand: Brand::new(page.font_url),
+        })
+    })
+    .into_response()
+}
+
+/// What the sign-up page is drawn from.
+///
+/// A struct rather than seven arguments, for the reason the lint that asked
+/// for it gives: a renderer with seven positional parameters is a renderer
+/// whose call site can transpose two of them.
+struct SignUpPage<'a> {
+    /// The words, and the language they are in.
+    text: &'a Catalog,
+    /// Where the form posts: this interaction, at whatever stage it is.
+    action: &'a str,
+    /// The same URL, asking for the sign-in page instead.
+    sign_in_href: &'a str,
+    /// The face this page draws itself in (`ast-vn7`).
+    font_url: &'a str,
+    /// The synchroniser token issued with this rendering.
+    csrf: &'a CsrfToken,
+    /// Why the previous submission was refused, if there was one.
+    message: Option<&'a str>,
+    /// What was typed into it, so a refusal does not make somebody type it
+    /// all again. Never the password; see [`TypedSignup`].
+    typed: Option<&'a TypedSignup>,
+}
+
+/// Draws the sign-up page (OpenID Connect Prompt Create 1.0 §3).
+///
+/// Lifted out of [`render`] rather than inlined in its arm: the page has more
+/// fields than any other stage's, and every one of them is a value a stranger
+/// influenced. It posts to the same action as every other stage — this is one
+/// interaction and the browser posts back to it — and the "already have an
+/// account?" link is that same URL with the query
+/// [`SIGN_IN_QUERY`] on it.
+fn sign_up_page(context: &InteractionContext<'_>, page: &SignUpPage<'_>) -> Response {
+    Document::render(context.nonce, |nonce| {
+        pages::render(&pages::RegistrationPage {
+            text: page.text,
+            tenant_name: &context.tenant.display_name,
+            action: page.action,
+            csrf: page.csrf.expose(),
+            username: page.typed.map(|typed| typed.username.as_str()),
+            email: page.typed.map(|typed| typed.email.as_str()),
+            display_name: page.typed.map(|typed| typed.display_name.as_str()),
+            // Both stated in the markup and both enforced again by
+            // `AcceptedRegistration::accept`: an attribute is a courtesy to
+            // the browser, never a control.
+            minimum_password_length: asterius_domain::entities::password::MIN_LENGTH,
+            maximum_display_name_length: asterius_domain::MAX_DISPLAY_NAME_LENGTH,
+            sign_in_href: page.sign_in_href,
+            message: page.message,
+            nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
+            brand: Brand::new(page.font_url),
+        })
+    })
+    .into_response()
+}
+
 /// Renders the page for a stage.
 fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
     let &Screen {
@@ -2214,54 +2413,32 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
     // too: a page cannot say `fr` over English words.
     let text = &context.language.catalog(locale);
     match stage {
-        Stage::Login | Stage::StepUp => Document::render(context.nonce, |nonce| {
-            pages::render(&LoginPage {
+        Stage::Login | Stage::StepUp => sign_in_page(
+            context,
+            &SignInPage {
                 text,
-                tenant_name: &context.tenant.display_name,
                 action: &action,
-                passkey_options_action: &passkey_options,
-                passkey_finish_action: &passkey_finish,
-                csrf: csrf.expose(),
-                login_hint: None,
+                passkey_options: &passkey_options,
+                passkey_finish: &passkey_finish,
+                recovery_href: &recovery_href,
+                font_url: &font_url,
+                csrf,
                 message,
-                // `ast-ndk.4`: the way back into an account, offered where a
-                // person discovers they cannot get in. Only where there is a
-                // password to recover — a deployment with no password method
-                // has nothing for `/recovery` to reset, and a link to a page
-                // that refuses everybody is worse than no link.
-                recovery_href: context
-                    .credentials
-                    .is_some()
-                    .then(|| recovery_href.as_str()),
-                nonce_attribute: nonce_attribute(nonce),
-                theme_css: "",
-                brand: Brand::new(&font_url),
-            })
-        })
-        .into_response(),
-        // Prompt Create 1.0 §3. The same form action as every other stage —
-        // this is one interaction and the browser posts back to it — and the
-        // "already have an account?" link is the same URL with a query that
-        // asks for the login page instead. See `sign_in_instead`.
-        Stage::Register => Document::render(context.nonce, |nonce| {
-            pages::render(&pages::RegistrationPage {
+            },
+        ),
+        // Prompt Create 1.0 §3.
+        Stage::Register => sign_up_page(
+            context,
+            &SignUpPage {
                 text,
-                tenant_name: &context.tenant.display_name,
                 action: &action,
-                csrf: csrf.expose(),
-                username: typed.map(|typed| typed.username.as_str()),
-                email: typed.map(|typed| typed.email.as_str()),
-                display_name: typed.map(|typed| typed.display_name.as_str()),
-                minimum_password_length: asterius_domain::entities::password::MIN_LENGTH,
-                maximum_display_name_length: asterius_domain::MAX_DISPLAY_NAME_LENGTH,
                 sign_in_href: &sign_in_href,
+                font_url: &font_url,
+                csrf,
                 message,
-                nonce_attribute: nonce_attribute(nonce),
-                theme_css: "",
-                brand: Brand::new(&font_url),
-            })
-        })
-        .into_response(),
+                typed,
+            },
+        ),
         Stage::Consent => {
             let Some(offer) = offer else {
                 // The stage says consent but nothing loaded the request. That
@@ -2277,52 +2454,17 @@ fn render(context: &InteractionContext<'_>, screen: &Screen<'_>) -> Response {
                     InteractionError::NotAvailable,
                 );
             };
-            let request = &offer.request;
-            let document = Document::render(context.nonce, |nonce| {
-                pages::render(&ConsentPage {
+            consent_page(
+                context,
+                offer,
+                &ConsentChrome {
                     text,
-                    tenant_name: &context.tenant.display_name,
-                    client_name: &request.client_name,
-                    username: signed_in.unwrap_or_default(),
-                    redirect_host: &request.redirect_host,
-                    scopes: request
-                        .scopes
-                        .iter()
-                        .map(|scope| ScopeLine {
-                            name: scope.name.clone(),
-                            description: scope.description.clone(),
-                            required: scope.required,
-                        })
-                        .collect(),
-                    offline_access: request.offline_access,
-                    resources: request.resources.iter().cloned().collect(),
-                    authorization_details: request
-                        .authorization_details
-                        .iter()
-                        .map(|detail| pages::DetailLine {
-                            name: detail.name.clone(),
-                            description: detail.description.clone(),
-                            locations: detail.locations.clone(),
-                            actions: detail.actions.clone(),
-                            datatypes: detail.datatypes.clone(),
-                        })
-                        .collect(),
                     action: &action,
-                    csrf: csrf.expose(),
-                    nonce_attribute: nonce_attribute(nonce),
-                    theme_css: "",
-                    brand: Brand::new(&font_url),
-                })
-            });
-            // This form posts back here, but its answer is a 303 to the
-            // client — and `form-action` governs that redirect too, so the
-            // consent screen is the one page that names the client's origin
-            // (`ast-jsq`). No other stage does: the widening is attached here
-            // and nowhere else in this function.
-            match offer.form_action.clone() {
-                Some(origin) => document.with_form_post_to(origin).into_response(),
-                None => document.into_response(),
-            }
+                    font_url: &font_url,
+                    csrf,
+                    signed_in,
+                },
+            )
         }
         // Unreachable in practice: reaching `Response` spends the request in
         // the same call that sends the redirect, so a later `GET` finds

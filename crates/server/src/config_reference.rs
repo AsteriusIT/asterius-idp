@@ -990,7 +990,9 @@ fn features() -> Vec<Key> {
                         "Self-service account registration: `prompt=create` (OpenID Connect \
                          Prompt Create 1.0 §3) and the sign-up page it lands on. With it off, \
                          `prompt_values_supported` does not name `create`, a pushed request \
-                         asking for it is refused, and the registration page answers 404."
+                         asking for it is refused, and no interaction can reach the sign-up \
+                         page — so a tenant that provisions its accounts neither advertises \
+                         the value nor creates an account for one."
                     }
                     // `Feature` is `#[non_exhaustive]`: a flag added without a
                     // sentence here still gets documented, and the row says so

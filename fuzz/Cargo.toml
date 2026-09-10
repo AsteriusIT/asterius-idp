@@ -435,6 +435,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "registration_form"
+path = "fuzz_targets/registration_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "registration_policy"
 path = "fuzz_targets/registration_policy.rs"
 test = false

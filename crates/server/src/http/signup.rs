@@ -207,7 +207,11 @@ pub fn display_name(user: &User) -> &str {
 /// as the conversion the admin API's own creation goes through, so the two
 /// doors into `users` produce the same row from the same accepted form.
 #[must_use]
-pub fn new_account(tenant: &Tenant, accepted: AcceptedRegistration, now: OffsetDateTime) -> NewAccount {
+pub fn new_account(
+    tenant: &Tenant,
+    accepted: AcceptedRegistration,
+    now: OffsetDateTime,
+) -> NewAccount {
     let claims = claims_of(&accepted);
     NewAccount {
         user: User {

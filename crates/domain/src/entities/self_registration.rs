@@ -234,7 +234,9 @@ fn accept_email(raw: &str) -> Result<String, RegistrationError> {
         return Err(RegistrationError::EmailMissing);
     }
     if trimmed.len() > MAX_REGISTRATION_EMAIL_LENGTH
-        || trimmed.chars().any(|c| is_unreadable(c) || c.is_whitespace())
+        || trimmed
+            .chars()
+            .any(|c| is_unreadable(c) || c.is_whitespace())
         || !trimmed.contains('@')
         || trimmed.starts_with('@')
         || trimmed.ends_with('@')
@@ -350,7 +352,8 @@ mod tests {
     #[test]
     fn a_common_password_is_refused() {
         assert_eq!(
-            AcceptedRegistration::accept("ada", None, "ada@example.test", "administrator").expect_err("a refusal"),
+            AcceptedRegistration::accept("ada", None, "ada@example.test", "administrator")
+                .expect_err("a refusal"),
             RegistrationError::Password(PasswordError::TooCommon)
         );
     }
@@ -358,7 +361,8 @@ mod tests {
     #[test]
     fn a_short_password_is_refused() {
         assert_eq!(
-            AcceptedRegistration::accept("ada", None, "ada@example.test", "short").expect_err("a refusal"),
+            AcceptedRegistration::accept("ada", None, "ada@example.test", "short")
+                .expect_err("a refusal"),
             RegistrationError::Password(PasswordError::TooShort)
         );
     }

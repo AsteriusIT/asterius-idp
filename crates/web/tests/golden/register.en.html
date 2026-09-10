@@ -534,6 +534,16 @@ input.code {
          >
 </label>
 <label>
+  
+  <span>Display name <span class="muted">(optional)</span></span>
+  <input type="text" name="display_name" id="display_name" autocomplete="nickname"
+         maxlength="64"
+         aria-describedby="display-name-hint"
+         >
+  <span class="muted" id="display-name-hint">What applications should call you.
+  It does not have to be unique, and you can change it later.</span>
+</label>
+<label>
   <span>Email address</span>
   <input type="email" name="email" id="email" autocomplete="email"
          autocapitalize="none" spellcheck="false" required
