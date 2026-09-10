@@ -305,7 +305,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 45] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
