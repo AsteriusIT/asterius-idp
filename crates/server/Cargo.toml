@@ -20,6 +20,7 @@ uuid.workspace = true
 time.workspace = true
 asterius-jose.workspace = true
 asterius-oidc.workspace = true
+asterius-ssf.workspace = true
 asterius-store-pg.workspace = true
 asterius-web.workspace = true
 asterius-webauthn.workspace = true

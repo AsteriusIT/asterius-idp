@@ -81,10 +81,12 @@
 #![forbid(unsafe_code)]
 
 pub mod event;
+pub mod metadata;
 pub mod set;
 pub mod subject;
 
 pub use event::{EventError, EventUri, MAX_EVENT_URI_LEN, SecurityEvent};
+pub use metadata::{SPEC_VERSION, WELL_KNOWN_DOCUMENT, transmitter_metadata};
 pub use set::{
     AudienceError, MAX_SET_CLAIMS_BYTES, ReadySet, SET_TYP, Set, SetError, SetId, SetSubject,
     SignedSet, StreamAudience, Txn, UnsignedSet,
