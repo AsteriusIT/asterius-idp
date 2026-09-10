@@ -64,6 +64,84 @@ fn is_at(path: &str, tail: &str) -> bool {
     path.replace('\\', "/").ends_with(tail)
 }
 
+/// Macros that compare a value rather than build one.
+const ASSERTION_MACROS: &[&str] = &["assert_eq!(", "assert_ne!(", "assert!(", "matches!("];
+
+/// True for a path under an integration-test directory (`crates/*/tests/`).
+fn is_integration_test(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.starts_with("tests/") || normalized.contains("/tests/")
+}
+
+/// True when the `SEE_OTHER` on `lines[index]` is an argument being compared
+/// by an assertion macro, rather than a value being constructed.
+///
+/// Two conditions, both required: the constant sits in argument position (it
+/// is alone on its line, or directly after a `,` or after the macro's own
+/// paren — never after a call such as `.status(`), and the statement it
+/// belongs to opens with an assertion macro.
+fn is_assertion_argument(lines: &[&str], index: usize) -> bool {
+    let head = lines[index]
+        .split("StatusCode::SEE_OTHER")
+        .next()
+        .unwrap_or("")
+        .trim_end();
+    let argument_position = head.is_empty()
+        || head.ends_with(',')
+        || ASSERTION_MACROS
+            .iter()
+            .any(|macro_name| head.ends_with(macro_name));
+    if !argument_position {
+        return false;
+    }
+
+    let mut current = index;
+    loop {
+        let line = lines[current].trim();
+        if ASSERTION_MACROS
+            .iter()
+            .any(|macro_name| line.contains(macro_name))
+        {
+            return true;
+        }
+        if current == 0 {
+            return false;
+        }
+        // A previous statement ended, so this one did not open with an assertion.
+        let previous = lines[current - 1].trim_end();
+        if previous.ends_with(';') || previous.ends_with('{') || previous.ends_with('}') {
+            return false;
+        }
+        current -= 1;
+    }
+}
+
+/// Lines of `source` that open-code a `SEE_OTHER` redirect.
+///
+/// The rule this serves is that a *handler* must never build a redirect by
+/// hand; `http::redirect::SeeOther` is the one reviewed place that guarantees
+/// 303 (FAPI 2.0 SP §5.3.2.2 items 10–11). An integration test that asserts a
+/// response *is* a 303 compares a status, it does not construct one, so it is
+/// exempt — and the exemption is kept as narrow as that sentence: this audit
+/// only, `tests/` directories only, assertion arguments only. A constructed
+/// `SEE_OTHER` under `tests/`, and any use at all under `src/`, still fail.
+fn open_coded_see_other(path: &str, source: &str) -> Vec<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    let exempt_assertions = is_integration_test(path);
+
+    let mut offenders = Vec::new();
+    for (number, line) in code_lines(source) {
+        if !line.contains("StatusCode::SEE_OTHER") {
+            continue;
+        }
+        if exempt_assertions && is_assertion_argument(&lines, number - 1) {
+            continue;
+        }
+        offenders.push(format!("{path}:{number}"));
+    }
+    offenders
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,11 +203,7 @@ mod tests {
             if is_at(&path, "http/redirect.rs") || is_at(&path, "http/source_audit.rs") {
                 continue;
             }
-            for (number, line) in code_lines(&source) {
-                if line.contains("StatusCode::SEE_OTHER") {
-                    offenders.push(format!("{path}:{number}"));
-                }
-            }
+            offenders.extend(open_coded_see_other(&path, &source));
         }
         assert!(
             offenders.is_empty(),
@@ -235,6 +309,55 @@ mod tests {
             !tower_http.contains("\"cors\""),
             "tower-http must not enable the cors feature: {tower_http}"
         );
+    }
+
+    #[test]
+    fn a_handler_under_src_that_open_codes_see_other_still_fails_the_audit() {
+        let hostile = "        Response::builder().status(StatusCode::SEE_OTHER)\n";
+
+        let offenders = open_coded_see_other("server/src/http/authorize.rs", hostile);
+
+        assert_eq!(
+            offenders,
+            vec!["server/src/http/authorize.rs:1".to_string()]
+        );
+    }
+
+    /// The exemption is for comparing a status, not for the word: a source
+    /// file under `src/` gets none of it, even inside an assertion.
+    #[test]
+    fn an_assertion_under_src_is_not_exempt() {
+        let unit_test = "        assert_eq!(response.status(), StatusCode::SEE_OTHER);\n";
+
+        let offenders = open_coded_see_other("server/src/http/redirect_test.rs", unit_test);
+
+        assert_eq!(offenders.len(), 1, "found: {offenders:?}");
+    }
+
+    #[test]
+    fn an_integration_test_asserting_on_see_other_is_exempt() {
+        let assertion = concat!(
+            "        let started = self.get(&path).await;\n",
+            "        assert_eq!(\n",
+            "            started.status,\n",
+            "            StatusCode::SEE_OTHER,\n",
+            "            \"the request did not start an interaction\"\n",
+            "        );\n",
+        );
+
+        let offenders = open_coded_see_other("server/tests/end_to_end.rs", assertion);
+
+        assert!(offenders.is_empty(), "found: {offenders:?}");
+    }
+
+    #[test]
+    fn an_integration_test_that_constructs_see_other_is_not_exempt() {
+        let construction =
+            "        let stub = Response::builder().status(StatusCode::SEE_OTHER);\n";
+
+        let offenders = open_coded_see_other("server/tests/end_to_end.rs", construction);
+
+        assert_eq!(offenders, vec!["server/tests/end_to_end.rs:1".to_string()]);
     }
 
     /// The audit is only worth having if it can fail, so prove the matcher
