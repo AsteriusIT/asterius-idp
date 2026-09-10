@@ -20,6 +20,7 @@ pub mod recovery;
 pub mod session;
 mod snapshots;
 mod source_audit;
+pub mod theme;
 
 pub use csp::{FormActionOrigin, InvalidOrigin, Nonce, Policy};
 pub use document::Document;

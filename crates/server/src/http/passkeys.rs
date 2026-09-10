@@ -262,6 +262,7 @@ pub async fn page(
             csrf: token.expose(),
             message: None,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     });
     (StatusCode::OK, no_store(), document).into_response()
@@ -1389,6 +1390,7 @@ fn error_page(context: &PasskeyContext<'_>, status: StatusCode) -> Response {
             message: "Something went wrong, and this request cannot continue.",
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     });
     (status, no_store(), document).into_response()

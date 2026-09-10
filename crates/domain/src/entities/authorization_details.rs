@@ -513,17 +513,51 @@ impl Schema {
     /// bounded, so a document nested deeper than the schema is simply not
     /// described by it. The document's own depth is bounded separately, by
     /// [`AuthorizationDetails::parse`], before this is ever called.
+    ///
+    /// One mechanism with [`Schema::validate`], deliberately: a predicate and a
+    /// validator that walked separately would eventually disagree, and the
+    /// disagreement would read as "the form said it was fine and the server
+    /// refused it".
     #[must_use]
     pub fn accepts(&self, value: &Value) -> bool {
+        self.validate(value).is_ok()
+    }
+
+    /// Validates `value`, naming the member that failed.
+    ///
+    /// RFC 9396's caller wants a yes or no ([`Schema::accepts`]) because
+    /// telling a client *which* member of its `authorization_details` failed
+    /// would let it enumerate a tenant's registered schemas. A tenant
+    /// administrator editing a document in the console is the opposite case:
+    /// the document is theirs, they are authenticated, and "invalid" without a
+    /// path makes them guess. So the walk carries a JSON pointer and the two
+    /// callers choose how much of it to show.
+    ///
+    /// # Errors
+    ///
+    /// [`SchemaViolation`] with the pointer of the first member that fails, in
+    /// the schema's own order.
+    pub fn validate(&self, value: &Value) -> Result<(), SchemaViolation> {
+        self.validate_at(value, "")
+    }
+
+    fn validate_at(&self, value: &Value, path: &str) -> Result<(), SchemaViolation> {
+        let here = || SchemaViolation {
+            path: if path.is_empty() {
+                "/".to_owned()
+            } else {
+                path.to_owned()
+            },
+        };
         if let Some(types) = &self.types
             && !types.iter().any(|kind| kind.matches(value))
         {
-            return false;
+            return Err(here());
         }
         if let Some(allowed) = &self.enumeration
             && !allowed.contains(value)
         {
-            return false;
+            return Err(here());
         }
         if let Some(max) = self.max_length
             && let Some(text) = value.as_str()
@@ -531,41 +565,58 @@ impl Schema {
             // refuse a compliant document written in a non-Latin script.
             && text.chars().count() > max
         {
-            return false;
+            return Err(here());
         }
         if let Some(items) = value.as_array() {
             if let Some(max) = self.max_items
                 && items.len() > max
             {
-                return false;
+                return Err(here());
             }
-            if let Some(schema) = &self.items
-                && !items.iter().all(|item| schema.accepts(item))
-            {
-                return false;
-            }
-        }
-        if let Some(members) = value.as_object() {
-            if !self.required.iter().all(|name| members.contains_key(name)) {
-                return false;
-            }
-            if !self.additional_properties
-                && members
-                    .keys()
-                    .any(|name| !self.properties.contains_key(name))
-            {
-                return false;
-            }
-            for (name, sub) in &self.properties {
-                if let Some(member) = members.get(name)
-                    && !sub.accepts(member)
-                {
-                    return false;
+            if let Some(schema) = &self.items {
+                for (index, item) in items.iter().enumerate() {
+                    schema.validate_at(item, &format!("{path}/{index}"))?;
                 }
             }
         }
-        true
+        if let Some(members) = value.as_object() {
+            for name in &self.required {
+                if !members.contains_key(name) {
+                    return Err(SchemaViolation {
+                        path: format!("{path}/{name}"),
+                    });
+                }
+            }
+            if !self.additional_properties
+                && let Some(unknown) = members
+                    .keys()
+                    .find(|name| !self.properties.contains_key(*name))
+            {
+                return Err(SchemaViolation {
+                    path: format!("{path}/{unknown}"),
+                });
+            }
+            for (name, sub) in &self.properties {
+                if let Some(member) = members.get(name) {
+                    sub.validate_at(member, &format!("{path}/{name}"))?;
+                }
+            }
+        }
+        Ok(())
     }
+}
+
+/// Where a document stopped fitting a [`Schema`].
+///
+/// One field, and it is a JSON pointer (RFC 6901) into the *document*: it
+/// names a member of a schema this deployment wrote, never a value the
+/// document carried, so it can be shown to whoever submitted the document
+/// without reflecting their input back at them.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("`{path}` does not fit the schema")]
+pub struct SchemaViolation {
+    /// JSON pointer of the member at fault; `/` for the document itself.
+    pub path: String,
 }
 
 fn parse_types(value: &Value) -> Result<Vec<JsonType>, SchemaError> {

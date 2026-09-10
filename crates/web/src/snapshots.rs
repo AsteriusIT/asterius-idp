@@ -55,6 +55,18 @@ fn nonce() -> String {
     nonce_attribute(&Nonce::fixed_for_test("snapshot-nonce"))
 }
 
+/// The design tokens every snapshot is pinned with.
+///
+/// The *default* theme, not an exotic one: these files exist to catch a page
+/// that changed by accident, and a themed page and an unthemed one should
+/// differ only in the tokens. What the pinning buys here is that the theme
+/// rule is inside the one nonce-carrying `<style>` element and nowhere else —
+/// a change that moved it to a second element, or to a `style=` attribute,
+/// shows up as a diff in fifteen files at once.
+fn theme() -> String {
+    crate::theme::custom_properties(&asterius_domain::Theme::default())
+}
+
 /// Where a page's pinned rendering lives.
 fn golden_path(name: &str, locale: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -118,6 +130,7 @@ fn login(locale: &str) -> String {
         login_hint: Some("ada@example.test"),
         message: Some("That username and password did not match."),
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -169,6 +182,7 @@ fn consent(locale: &str) -> String {
         action: "/interaction/abc/consent",
         csrf: CSRF,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -179,6 +193,7 @@ fn error(locale: &str) -> String {
         message: "We could not complete that request.",
         correlation_id: "01JQ0000000000000000000000",
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -189,6 +204,7 @@ fn logout_confirmation(locale: &str) -> String {
         action: "/logout",
         csrf: CSRF,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -198,6 +214,7 @@ fn logged_out(locale: &str, signed_out: bool) -> String {
         tenant_name: TENANT,
         signed_out,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -213,6 +230,7 @@ fn passkey(locale: &str) -> String {
         csrf: CSRF,
         message: None,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -233,6 +251,7 @@ fn form_post(locale: &str) -> String {
             },
         ],
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -245,6 +264,7 @@ fn device(locale: &str, user_code: Option<&str>) -> String {
         user_code,
         message: None,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -258,6 +278,7 @@ fn device_confirmation(locale: &str) -> String {
         csrf: CSRF,
         message: None,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -268,6 +289,7 @@ fn device_outcome(locale: &str, connected: bool) -> String {
         connected,
         client_name: CLIENT,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -283,6 +305,7 @@ fn registration(locale: &str) -> String {
         sign_in_href: "/login",
         message: None,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -297,6 +320,7 @@ fn email_verification(locale: &str, verified: bool) -> String {
         csrf: CSRF,
         message: None,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -309,6 +333,7 @@ fn password_reset_request(locale: &str) -> String {
         sign_in_href: "/login",
         message: None,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -318,6 +343,7 @@ fn password_reset_sent(locale: &str) -> String {
         tenant_name: TENANT,
         sign_in_href: "/login",
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -332,6 +358,7 @@ fn new_password(locale: &str) -> String {
         minimum_password_length: 12,
         message: None,
         nonce_attribute: nonce(),
+        theme_css: &theme(),
     })
 }
 
@@ -395,6 +422,60 @@ mod tests {
                 assert!(
                     rendered.contains(&format!("<html lang=\"{locale}\">")),
                     "{name} does not declare lang=\"{locale}\""
+                );
+            }
+        }
+    }
+
+    /// A theme changes tokens, never markup (`ast-ndk.1`).
+    ///
+    /// The product rule is that a tenant supplies no HTML and no stylesheet,
+    /// and the shape that rule would fail in is an inline `style=` attribute:
+    /// it is the one place CSS can appear that no nonce covers, and a policy
+    /// that has no `'unsafe-inline'` blocks it in the browser — so a page that
+    /// grew one would render without the styling somebody meant it to have,
+    /// and the CSP sweep in `e2e/console.spec.ts` would report a violation
+    /// rather than a diff. This catches it here instead.
+    #[test]
+    fn no_page_rendered_with_a_theme_carries_an_inline_style_attribute() {
+        for locale in LOCALES {
+            for (name, rendered) in every_page(locale) {
+                assert!(
+                    !rendered.contains("style="),
+                    "{name} carries an inline style attribute"
+                );
+            }
+        }
+    }
+
+    /// One `<style>` element per page, nonced, with the tenant's tokens in it.
+    ///
+    /// Two elements would be two chances to forget the nonce; tokens outside
+    /// it would be CSS reaching the browser by some route the policy does not
+    /// describe.
+    #[test]
+    fn every_page_carries_its_theme_inside_one_nonce_carrying_style_element() {
+        let expected = theme();
+        let attribute = Nonce::fixed_for_test("snapshot-nonce").attribute();
+        for locale in LOCALES {
+            for (name, rendered) in every_page(locale) {
+                assert_eq!(
+                    rendered.matches("<style ").count(),
+                    1,
+                    "{name} has more than one style element"
+                );
+                let open = rendered
+                    .find("<style ")
+                    .expect("a page has a style element");
+                let close = rendered.find("</style>").expect("it is closed");
+                let block = &rendered[open..close];
+                assert!(
+                    block.contains(&attribute),
+                    "{name}'s style element does not carry the page nonce"
+                );
+                assert!(
+                    block.contains(&expected),
+                    "{name} does not render its design tokens inside its style element"
                 );
             }
         }

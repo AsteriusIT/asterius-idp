@@ -56,6 +56,15 @@ base64 = "0.22"
 aws-lc-rs = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 toml = "0.9"
+# Raster decoding for a tenant's logo (`ast-ndk.1`), in the admin API adapter
+# and nowhere else: the domain never sees bytes an administrator uploaded.
+#
+# Only the three formats the product accepts are compiled in - no GIF, no
+# TIFF, no ICO, no AVIF - because a decoder that is not built is a decoder
+# that cannot be reached by a file pretending to be something else. `rayon` is
+# off deliberately: decoding happens on a request thread and a thread pool per
+# upload is a denial-of-service amplifier.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 serde_path_to_error = "0.1"
 getrandom = "0.3"
 subtle = "2.6"

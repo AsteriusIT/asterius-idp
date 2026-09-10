@@ -1760,6 +1760,7 @@ fn render(
                 login_hint: None,
                 message,
                 nonce_attribute: nonce_attribute(nonce),
+                theme_css: "",
             })
         })
         .into_response(),
@@ -1811,6 +1812,7 @@ fn render(
                     action: &action,
                     csrf: csrf.expose(),
                     nonce_attribute: nonce_attribute(nonce),
+                    theme_css: "",
                 })
             });
             // This form posts back here, but its answer is a 303 to the
@@ -1860,6 +1862,7 @@ fn error_page(
             message: "Something went wrong, and this request cannot continue.",
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     });
     (status, document).into_response()

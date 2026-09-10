@@ -1,9 +1,14 @@
-:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc; }
+/* The defaults. A tenant's design tokens are appended to this same <style>
+   element as one more :root rule, so they win on document order. */
+:root { color-scheme: light dark; --fg: #111; --bg: #fff; --muted: #555; --line: #ccc;
+        --accent: #2f6fdb; --accent-fg: #fff; --danger: #c0392b;
+        --radius: 4px; --space: 8px;
+        --font: system-ui, -apple-system, Segoe UI, sans-serif; }
 @media (prefers-color-scheme: dark) {
   :root { --fg: #eee; --bg: #16181c; --muted: #aaa; --line: #444; }
 }
 body { margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--fg);
-       font: 16px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+       font: 16px/1.5 var(--font); }
 main { max-width: 26rem; margin: 0 auto; }
 h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 1.5rem; }
 h2 { font-size: 1rem; font-weight: 600; margin: 0 0 .75rem; }
@@ -11,16 +16,16 @@ label { display: block; margin: 0 0 1rem; }
 label span { display: block; margin-bottom: .25rem; }
 input[type=text], input[type=password], input[type=email] {
   width: 100%; box-sizing: border-box; padding: .5rem;
-  border: 1px solid var(--line); border-radius: 4px;
+  border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--bg); color: var(--fg); font: inherit;
 }
-button { padding: .55rem 1rem; border: 0; border-radius: 4px; font: inherit;
-         cursor: pointer; background: #2f6fdb; color: #fff; }
+button { padding: .55rem 1rem; border: 0; border-radius: var(--radius); font: inherit;
+         cursor: pointer; background: var(--accent); color: var(--accent-fg); }
 button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
-.actions { display: flex; gap: .5rem; margin-top: 1.5rem; }
+.actions { display: flex; gap: var(--space); margin-top: 1.5rem; }
 .scopes { margin: 0 0 1.5rem; padding-left: 1.25rem; }
 .muted { color: var(--muted); font-size: .875rem; }
-.error { border-left: 3px solid #c0392b; padding-left: .75rem; margin-bottom: 1.5rem; }
+.error { border-left: 3px solid var(--danger); padding-left: .75rem; margin-bottom: 1.5rem; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .875rem; }
 label.inline { display: inline; margin: 0; }
 label.inline span { display: inline; }
@@ -34,8 +39,8 @@ input.code { letter-spacing: .15em; text-transform: uppercase;
 /* A link that acts as the page's one forward step. It is a link and not a
    button because it navigates; this only makes it look like the rest. */
 a.button { display: inline-block; text-decoration: none; padding: .55rem 1rem;
-           border-radius: 4px; background: #2f6fdb; color: #fff; }
+           border-radius: var(--radius); background: var(--accent); color: var(--accent-fg); }
 /* SC 2.4.7: the error summary takes the focus after a failed submission, and a
    focused element a user cannot see is a focus indicator that is not there. */
-[tabindex="-1"]:focus { outline: 2px solid #c0392b; outline-offset: 4px; }
+[tabindex="-1"]:focus { outline: 2px solid var(--danger); outline-offset: 4px; }
 .error p { margin: 0 0 .25rem; }

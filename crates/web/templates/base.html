@@ -22,7 +22,13 @@
    authorization page in someone's Downloads folder should still not leak. #}
 <meta name="referrer" content="no-referrer">
 <title>{% block title %}{{ tenant_name }}{% endblock %}</title>
-<style {{ nonce_attribute|safe }}>{% include "style.css" %}</style>
+{# One <style> element, one nonce. The tenant's design tokens are appended to
+   it — after the defaults, so they win on document order — and they are
+   rendered *escaped*, like any other value: `asterius_web::theme` emits only
+   characters the escaper leaves alone, so a token that ever carried markup
+   would come out broken rather than injected. That is why there is still
+   exactly one `|safe` in this tree. -#}
+<style {{ nonce_attribute|safe }}>{% include "style.css" %}{{ theme_css }}</style>
 </head>
 <body>
 <main>

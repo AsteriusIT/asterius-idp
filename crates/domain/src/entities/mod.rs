@@ -16,6 +16,7 @@ pub mod role;
 pub mod session;
 pub mod tenant;
 pub mod tenant_settings;
+pub mod theme;
 pub mod user;
 
 pub use acr_policy::{AcrLevel, AcrPolicy, AcrPolicyError};
@@ -23,7 +24,7 @@ pub use admin_access::{AdminAdmission, PasskeyEnrolment};
 pub use authorization_details::{
     AuthorizationDetail, AuthorizationDetails, AuthorizationDetailsRegistry,
     AuthorizationDetailsType, InvalidAuthorizationDetails, Schema as JsonSchema,
-    SchemaError as JsonSchemaError,
+    SchemaError as JsonSchemaError, SchemaViolation as JsonSchemaViolation,
 };
 pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
@@ -49,6 +50,10 @@ pub use resource_server::{InvalidTarget, ResourceIdentifier, ResourceRegistry, R
 pub use role::{Role, RoleScope, UserRole};
 pub use tenant::{RefreshPolicy, RefreshPolicyError, Rotation, Tenant, TenantStatus};
 pub use tenant_settings::{TenantSettings, TenantSettingsError, TokenLifetimes};
+pub use theme::{
+    AssetRef, Colour, FontStack, ImageFormat, MIN_CONTRAST_RATIO, Palette, SupportLinks, Theme,
+    ThemeError,
+};
 pub use user::{
     Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier,
     SubjectError, User, UserId, UserStatus,
