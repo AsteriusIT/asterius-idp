@@ -322,7 +322,7 @@ impl PgOutbox {
 
     /// Writes several rows in one transaction of this adapter's own.
     ///
-    /// The [`OutboxQueue`] port's implementation, and the one enqueue path
+    /// The [`asterius_domain::outbox::OutboxQueue`] port's implementation, and the one enqueue path
     /// that does *not* take the caller's transaction — because its callers are
     /// protocol handlers above the adapter layer, which cannot name a
     /// [`PgTransaction`]. The property the `&mut` transaction on
@@ -337,7 +337,7 @@ impl PgOutbox {
     /// that were not told — which is a logout that under-notifies, not one
     /// that announces a session that is still live. The other order would be
     /// worse, and a single transaction is not available: revoking a session is
-    /// [`crate::sessions`]' statement, not this one's.
+    /// the private `sessions` module's statement, not this one's.
     ///
     /// Every row gets this deployment's attempt budget, exactly as
     /// [`Self::enqueue`] gives it.
