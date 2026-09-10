@@ -104,6 +104,12 @@ l'orchestrateur gagnent sur tout.
 - Pas de `#[allow(clippy::...)]` sans commentaire justificatif.
 - Tests unitaires dans le module (`#[cfg(test)]`), tests d'intégration lents marqués
   `#[ignore]` et lancés par la CI avec `--run-ignored all`.
+- Nouvelle fonction ou correctif : écrire le test d'abord, le voir échouer, puis
+  implémenter. Un test écrit après coup décrit ce que le code fait, pas ce que la
+  spec exige — sur les chemins OIDC, JOSE et WebAuthn c'est là que les bugs de
+  sécurité se logent.
+- Bug, test rouge ou comportement inattendu : reproduire d'abord par un test qui
+  échoue, corriger ensuite. Pas de correctif sur hypothèse.
 - Voir le skill `rust-projet` pour les conventions détaillées.
 
 ## Architecture Overview
