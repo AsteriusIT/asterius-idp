@@ -19,10 +19,16 @@ name: Release gate
 # depend on this job (`needs: gate`) instead of repeating it: two places that
 # decide what "releasable" means will disagree, and the day they disagree is the
 # day a release goes out on the wrong one.
+#
+# That workflow now exists — `release.yml`, `ast-9mg` — and this file is what it
+# calls. Hence `workflow_call`, and hence the *absence* of a `push: tags`
+# trigger: `release.yml` owns the `v*` tag and this job is its first job, so the
+# gate still runs on every tag and runs exactly once. Restoring the tag trigger
+# here would not make a tag safer, only judged twice.
 on:
-  push:
-    tags:
-      - "v*"
+  # Called by release.yml as `jobs.gate.uses`. The caller declares the
+  # permissions; the block below is what a manual run gets.
+  workflow_call:
   # So that the answer can be had *before* tagging, which is when it is useful.
   workflow_dispatch:
 

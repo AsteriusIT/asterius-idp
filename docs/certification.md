@@ -94,3 +94,10 @@ or if the report is more than 24 hours old.
 So, before tagging: run the conformance workflow on the commit, wait for it to
 be green, tag within the day. The gate can be run from the Actions tab
 beforehand to find out the answer while it is still cheap to act on.
+
+The gate is no longer triggered by the tag directly. `release.yml` owns the
+`v*` trigger and calls `release-gate.yml` as a reusable workflow
+(`jobs.gate.uses`), so the verdict is still applied to every tag and applied
+once, and no image is built or signed behind a red one. What a tag then
+publishes, and how anyone can check it from the outside, is
+[`deployment/verifying-a-release.md`](deployment/verifying-a-release.md).

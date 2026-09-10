@@ -101,21 +101,28 @@ Never half of each.
 
 ## 3. The procedure
 
-1. **Take a backup first**, per [`backup-restore.md`](backup-restore.md) §2, and
+1. **Verify the build you are about to deploy**, per
+   [`../deployment/verifying-a-release.md`](../deployment/verifying-a-release.md):
+   `cosign verify` against the expected identity, then pull **by digest**. This
+   is the cheapest step in the procedure and the only one that has to happen
+   before anything else — an upgrade to an image nobody can attribute is not an
+   upgrade, and the same page says where to read the SBOM if you are here
+   because of an advisory.
+2. **Take a backup**, per [`backup-restore.md`](backup-restore.md) §2, and
    confirm you can read the current KEK. §5 explains why: for most of these
    migrations, restoring that backup is the only rollback there is.
-2. **Read §4 for the migrations you are crossing.** `select version from
+3. **Read §4 for the migrations you are crossing.** `select version from
    _sqlx_migrations order by version` says where the database is; the new
    build's `crates/store-pg/migrations/` says where it is going.
-3. **Roll one replica** onto the new build and let it start. It takes the
+4. **Roll one replica** onto the new build and let it start. It takes the
    advisory lock, applies the migrations, loads the KEK and binds.
-4. **Read its first lines.** They are the check, in order:
+5. **Read its first lines.** They are the check, in order:
    * `starting`, with `version`, `config`, `mode`, `tenants` and `features` —
      confirm `version` is the build you meant and `features` is the flag set you
      expect.
    * `key-encryption key loaded`, with the `kek` id.
    * one `tenant ready` per configured tenant.
-5. **Wait for readiness before sending traffic.**
+6. **Wait for readiness before sending traffic.**
    ```sh
    curl -fsS "$BASE_URL/readyz"
    ```
@@ -127,13 +134,13 @@ Never half of each.
    database, deliberately, so that a database outage does not get every replica
    killed — and it carries the running `version`, which makes it the cheapest
    way to see which build a replica is on.
-6. **Prove one signature end to end** before rolling the rest: fetch
+7. **Prove one signature end to end** before rolling the rest: fetch
    `/.well-known/openid-configuration` and the JWKS for one tenant and mint a
    token for a test client. `./scripts/smoke-test.sh` is that check written down
    (`BASE_URL`, `ISSUER`, `TENANT`, `TIMEOUT` in the environment); it is aimed at
    the example compose stack, so against a real deployment read it and take the
    requests, rather than pointing it at production and trusting the defaults.
-7. **Roll the remaining replicas.** Their migration is a no-op — the first one
+8. **Roll the remaining replicas.** Their migration is a no-op — the first one
    did it — so they are an ordinary restart.
 
 ---
@@ -222,7 +229,7 @@ Two consequences worth knowing before you choose it:
 * Restoring a dump *newer* than the binary is the case that corrupts. Going back
   a version and restoring a backup taken after the upgrade is that case.
 
-Which is why §3 step 1 is a backup, and why it is worth a moment to confirm the
+Which is why §3 step 2 is a backup, and why it is worth a moment to confirm the
 backup and the KEK are the pair they are supposed to be before an upgrade rather
 than after one.
 
