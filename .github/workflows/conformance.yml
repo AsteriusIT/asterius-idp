@@ -1,0 +1,203 @@
+name: Conformance
+
+# The OpenID Foundation's own suite, against a build of this tree (`ast-83p.8`),
+# and the report a release is cut on (`ast-p2l.1`).
+#
+# Nightly, on demand, and on every push to a release branch — not per PR. It
+# builds the release image and then drives a browser through every module of the
+# FAPI 2.0 Security Profile Final plan: tens of minutes, against a pipeline whose
+# other jobs finish in three. `ast-83p.15` exists because one job once took 91 %
+# of the run; this one would take more than that, and `ci.yml` is left exactly as
+# it was — a separate file, so that the two never conflict.
+#
+# What it proves is different in kind from everything in `ci.yml`. Those jobs
+# check the server against our reading of the specifications. This one checks it
+# against the software that decides whether a server may call itself certified.
+#
+# The verdict is not this workflow's opinion and not `run-test-plan.py`'s exit
+# code: `scripts/conformance.sh` ends by running
+# `scripts/conformance-verdict.py`, which reads the run's `verdict.json` against
+# the versioned waiver list. PASSED, REVIEW, WARNING and SKIPPED are green;
+# FAILED is red unless `conformance/waivers.json` names the module and an open
+# ticket for it. `release-gate.yml` refuses to tag on a report from here that is
+# red or more than 24 h old.
+on:
+  schedule:
+    # After the nightly fuzzing run, so two long jobs do not contend for the
+    # same runner minutes.
+    - cron: "41 3 * * *"
+  push:
+    branches:
+      - "release/**"
+  workflow_dispatch:
+    inputs:
+      plan:
+        description: "Plan name with variants (blank: the FAPI2 SP Final plan)"
+        required: false
+        type: string
+      mtls:
+        description: "Also run the mTLS variant (needs features.mtls; ast-m9c.3)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  # The failure step opens an issue; see the note in fuzz-nightly.yml for why
+  # GitHub and not beads.
+  issues: write
+
+jobs:
+  conformance:
+    name: FAPI 2.0 SP Final (private_key_jwt + DPoP)
+    runs-on: ubuntu-latest
+    # Generous, because the whole point is a run that finishes rather than one
+    # that is convenient. A run that hits this has hung, and the artefacts
+    # below say where.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # The suite is a Git checkout pinned by tag *and* commit, and two
+      # container images pinned by digest. Cached on the tag: a new tag is a
+      # cold clone, which is the point at which somebody moved the pin on
+      # purpose.
+      - name: cache the pinned conformance suite
+        uses: actions/cache@v4
+        with:
+          path: conformance/.suite
+          key: conformance-suite-${{ hashFiles('scripts/conformance.sh') }}
+
+      # The script is what a contributor runs locally. Running it here rather
+      # than reimplementing its steps is the same rule the browser sweep
+      # follows in ci.yml: what CI runs and what a developer runs are one file.
+      # It applies the waivers itself and exits non-zero on an unwaived failure,
+      # so this step is the gate as well as the run.
+      - name: run the conformance plan
+        env:
+          CONFORMANCE_PLAN: ${{ inputs.plan }}
+        run: ./scripts/conformance.sh
+
+      # Always: a failing run is the one whose report somebody needs. The
+      # archive holds the suite's HTML report per plan and the machine-readable
+      # export a certification submission is made of.
+      - name: upload the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report
+          path: conformance/.run/results/
+          if-no-files-found: error
+          retention-days: 30
+
+      # The verdict alone, as a second and much smaller artefact. `release-gate`
+      # downloads this one: a tag must not wait on tens of megabytes of HTML to
+      # answer a question that fits in a kilobyte.
+      - name: upload the verdict
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-verdict
+          path: conformance/.run/results/verdict.json
+          if-no-files-found: error
+          retention-days: 90
+
+      # A red conformance run at 3am that nobody is told about is a
+      # non-conformance nobody fixes. One issue, reopened by comment: the same
+      # module tends to fail every night until it is dealt with, and thirty
+      # identical issues train people to ignore the label.
+      - name: open an issue for the failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="conformance: the nightly FAPI 2.0 SP Final run failed"
+          matches=$(gh issue list --state open --search "\"$title\" in:title" \
+                      --json number,title \
+                      --jq ".[] | select(.title == \"$title\") | .number")
+          existing=$(head -n1 <<<"$matches")
+          body=$(printf '%s\n' \
+            "The OpenID Foundation conformance suite reported a failure." \
+            "" \
+            "Run: $RUN_URL" \
+            "Reports: the \`conformance-report\` artefact on that run — one HTML" \
+            "report per plan, plus the machine-readable export. The verdict this" \
+            "job gated on is \`conformance-verdict\`." \
+            "" \
+            "Reproduce locally, with no account and no secret:" \
+            "" \
+            "    make conformance-keep" \
+            "" \
+            "Read conformance/README.md before assuming the server is wrong: an" \
+            "exit code of 69, 70, 71, 72 or 73 is the harness failing, not a" \
+            "finding, and each of them names what it could not do. 74 is a module" \
+            "that failed with no waiver — that one is a finding." \
+            "" \
+            "Until this is green again, release-gate.yml will refuse to tag." \
+            "" \
+            "Opened automatically. The tracker of record is beads: file the bead" \
+            "and link it here.")
+          if [[ -n "$existing" ]]; then
+            gh issue comment "$existing" --body "$body"
+            echo "commented on #$existing"
+          else
+            gh label create conformance --color 0E8A16 \
+              --description "Found by the OIDF conformance suite" --force
+            gh issue create --title "$title" --body "$body" --label conformance
+            echo "opened a new issue"
+          fi
+
+  # The other half of the profile. FAPI 2.0 SP allows either private_key_jwt +
+  # DPoP or mTLS for client authentication and sender constraining, and a
+  # submission that claims both has to run both plans.
+  #
+  # Off by default and asked for by hand, because the server cannot serve it
+  # yet: `features.mtls` is off, the discovery document announces
+  # `private_key_jwt` alone, and the suite needs a client certificate per run on
+  # a second ingress (`ast-m9c.3`, in flight). The job is written now so that
+  # turning the flag on is one line here rather than a workflow somebody has to
+  # invent under time pressure, and it refuses loudly rather than running a plan
+  # that would fail for a reason that is not a finding.
+  mtls:
+    name: FAPI 2.0 SP Final (mTLS) — behind features.mtls
+    if: ${{ inputs.mtls }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check the server can serve the mTLS variant
+        run: |
+          set -euo pipefail
+          if ! grep -Eq '^[[:space:]]*mtls[[:space:]]*=[[:space:]]*true' conformance/asterius.toml; then
+            echo "conformance/asterius.toml does not set features.mtls = true." >&2
+            echo "The mTLS variant needs the flag, a client certificate issued per" >&2
+            echo "run and a second ingress on 8444 — ast-m9c.3. Running the plan" >&2
+            echo "now would report a non-conformance that is really a feature we" >&2
+            echo "have not shipped, which is the most expensive kind of false" >&2
+            echo "finding. Enable it there, add the ingress, then re-run." >&2
+            exit 1
+          fi
+
+      - name: cache the pinned conformance suite
+        uses: actions/cache@v4
+        with:
+          path: conformance/.suite
+          key: conformance-suite-${{ hashFiles('scripts/conformance.sh') }}
+
+      - name: run the conformance plan
+        env:
+          CONFORMANCE_PLAN: >-
+            fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=mtls][sender_constrain=mtls][fapi_profile=plain_fapi][authorization_request_type=simple]
+        run: ./scripts/conformance.sh
+
+      - name: upload the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-report-mtls
+          path: conformance/.run/results/
+          if-no-files-found: error
+          retention-days: 30

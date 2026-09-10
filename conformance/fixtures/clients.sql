@@ -1,9 +1,9 @@
 -- The two clients the OIDF FAPI2 Security Profile plan drives. Development
 -- values only, for a database that is destroyed at the end of the run.
 --
--- Applied by `scripts/conformance.sh` *after* Asterius has started, for the
--- reason `e2e/fixtures/seed.sql` records: booting upserts the configured
--- tenants and that upsert overwrites `custom_host`.
+-- Applied by `scripts/conformance.sh` after Asterius has started, for the
+-- reason `e2e/fixtures/seed.sql` records: the rows below reference a tenant the
+-- server upserts at boot.
 --
 -- Idempotent, and parameterised with `psql -v`; nothing here is interpolated by
 -- a shell.
@@ -21,16 +21,6 @@
 -- announces `private_key_jwt` alone).
 
 \set ON_ERROR_STOP on
-
--- --------------------------------------------------------------------------
--- The tenant answers to a hostname as well as to a path.
---
--- Same reason as the browser sweep: `/authorize` redirects to
--- `/interaction/{id}`, which is root-relative and carries no tenant prefix, so
--- a tenant reachable only at `/t/{id}/…` loses its tenant on the second hop.
--- The suite's browser walks exactly that hop.
--- --------------------------------------------------------------------------
-update tenants set custom_host = :'host' where tenant_id = :'tenant';
 
 -- --------------------------------------------------------------------------
 -- Client 1 and client 2.

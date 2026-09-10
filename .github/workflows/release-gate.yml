@@ -1,0 +1,95 @@
+name: Release gate
+
+# Nothing else in this repository releases anything yet: there is no publish
+# workflow, no crates.io step and no image push — `ast-p2l.1` looked, and a tag
+# is the whole of the release process today. So this is the minimum that makes
+# the tag mean something: a tag may not stand unless the OIDF conformance suite
+# has recently said this server is what it claims to be.
+#
+# The rule, and only this rule:
+#
+#   * the newest completed run of `conformance.yml` — preferring one on the very
+#     commit being tagged — must have left a `conformance-verdict` artefact;
+#   * that verdict must be green under `conformance/waivers.json`: no module
+#     FAILED without a waiver naming an open ticket;
+#   * and it must be less than 24 hours old, because a verdict from last week
+#     describes a different tree.
+#
+# It gates rather than releases. When a publish workflow appears it should
+# depend on this job (`needs: gate`) instead of repeating it: two places that
+# decide what "releasable" means will disagree, and the day they disagree is the
+# day a release goes out on the wrong one.
+on:
+  push:
+    tags:
+      - "v*"
+  # So that the answer can be had *before* tagging, which is when it is useful.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Reading another workflow's runs and downloading its artefacts.
+  actions: read
+
+jobs:
+  gate:
+    name: the last conformance report clears this tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # For scripts/conformance-verdict.py and conformance/waivers.json: the
+      # waiver list that applies is the one in the tree being tagged, not the
+      # one that happened to be in the tree when the report was produced.
+      - uses: actions/checkout@v4
+
+      - name: find the conformance report
+        id: report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          runs=$(gh run list --workflow conformance.yml --limit 20 \
+                   --json databaseId,headSha,status,conclusion,createdAt,url)
+          # A run on this very commit if there is one, otherwise the newest
+          # completed run. `gh run list` is already newest first.
+          chosen=$(jq -r --arg sha "$TAG_SHA" '
+            map(select(.status == "completed"))
+            | (map(select(.headSha == $sha)) + .)
+            | .[0] // empty' <<<"$runs")
+          if [[ -z "$chosen" ]]; then
+            echo "No completed run of conformance.yml exists. A tag cannot claim" >&2
+            echo "conformance on the strength of a run that never happened: start" >&2
+            echo "the workflow from the Actions tab, wait for it, then tag." >&2
+            exit 1
+          fi
+          id=$(jq -r .databaseId <<<"$chosen")
+          echo "run:        $(jq -r .url <<<"$chosen")"
+          echo "conclusion: $(jq -r .conclusion <<<"$chosen")"
+          echo "commit:     $(jq -r .headSha <<<"$chosen")"
+          if [[ "$(jq -r .headSha <<<"$chosen")" != "$TAG_SHA" ]]; then
+            echo "::warning::the report is from another commit; the 24 h window is what bounds this"
+          fi
+          echo "id=$id" >>"$GITHUB_OUTPUT"
+
+      # A run that fell over before writing a verdict leaves no artefact, and
+      # "no artefact" must read as "no answer" rather than as "no problem".
+      - name: download the verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh run download "${{ steps.report.outputs.id }}" \
+                 --name conformance-verdict --dir verdict; then
+            echo "That run left no conformance-verdict artefact: it did not get as" >&2
+            echo "far as judging anything, or the artefact has expired. Re-run the" >&2
+            echo "conformance workflow." >&2
+            exit 1
+          fi
+          ls -l verdict/
+
+      # The same script, and the same waiver file, that scripts/conformance.sh
+      # ends with. Exit 74 is an unwaived failure, 75 a stale report; both are
+      # a refusal to tag.
+      - name: apply the waivers, and the 24-hour window
+        run: python3 scripts/conformance-verdict.py verdict/verdict.json --max-age-hours 24
