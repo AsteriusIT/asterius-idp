@@ -14,6 +14,7 @@ use crate::client_auth::ClientAuthenticator;
 use crate::http::authorization_code::AuthorizationCode;
 use crate::http::authorize::{self, AuthorizeContext};
 use crate::http::client_configuration::{self, ConfigurationContext};
+use crate::http::client_credentials::ClientCredentials;
 use crate::http::dpop::DpopEndpoint;
 use crate::http::interaction::{self, InteractionContext};
 use crate::http::logout;
@@ -830,8 +831,10 @@ impl userinfo::UserInfoSource for StoredClaims {
 /// Wiring only, like the PAR handler: everything that decides anything is in
 /// [`crate::http::token::token`].
 ///
-/// No grant handlers are registered yet, so every dispatched grant answers
-/// 501. `ast-a05.2` and its siblings add them without touching this function.
+/// Three grants are registered: `authorization_code`, `refresh_token` and
+/// `client_credentials`. Anything else this deployment advertises but has not
+/// built answers 501, and a fourth handler joins the list below without
+/// touching the dispatch, the error shape or the caching rules.
 async fn token_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
@@ -928,6 +931,18 @@ async fn token_endpoint_inner(
     // The same repositories, and deliberately the same `now` and proof key:
     // whichever grant the request turns out to be, it is judged against one
     // clock reading and one proven key.
+    // The third grant, on the same clock reading and the same proven key. It
+    // needs neither codes nor sessions nor users: a client-only token is about
+    // the client and nothing else (RFC 9068 §2.2).
+    let client_credentials = ClientCredentials {
+        grants: &grants,
+        resource_servers: &resource_servers,
+        signer: endpoints.signer.as_ref(),
+        audit: endpoints.audit.as_ref(),
+        lifetimes,
+        proof_key: binding.as_ref().map(|binding| &binding.jkt),
+        now,
+    };
     let refresh_token = RefreshToken {
         tokens: &refresh_tokens,
         grants: &grants,
@@ -946,7 +961,7 @@ async fn token_endpoint_inner(
             tenant,
             clients: &clients,
             capabilities: endpoints.capabilities,
-            grants: &[&authorization_code, &refresh_token],
+            grants: &[&authorization_code, &refresh_token, &client_credentials],
         },
         headers,
         body,

@@ -151,8 +151,10 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
 /// A DPoP-bound access token, resolved to what it authorises.
 ///
 /// Separate from [`AdminBackend`] because the thing that implements it does
-/// not exist yet: `ast-a05.8` (`client_credentials` for service tokens) is not
-/// merged, so no admin token can be minted. Wiring `None` therefore means the
+/// not exist yet. `ast-a05.8` has since made the `client_credentials` grant
+/// real, so a service token can now be *minted*; what is still missing is the
+/// resolver that turns one back into what it authorises here. Wiring `None`
+/// therefore means the
 /// automation mode answers 401 rather than pretending — see
 /// [`crate::auth::authenticate`] — while every decision the mode makes is
 /// implemented, exercised and tested here against a fake.
