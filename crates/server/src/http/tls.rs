@@ -28,7 +28,7 @@ pub const PROTOCOL_VERSIONS: &[&SupportedProtocolVersion] =
 /// For TLS 1.2 the list is narrower than "AEAD with forward secrecy": it is
 /// exactly the four suites RFC 9325 §4.2 *recommends*. FAPI 2.0 SP §5.2.2 says
 /// a server using TLS 1.2 "shall only permit the cipher suites recommended in
-/// [BCP195]" on endpoints not used by web browsers, while §5.2.3 only requires
+/// \[BCP195\]" on endpoints not used by web browsers, while §5.2.3 only requires
 /// the wider *allowed* set on browser endpoints — a distinction §5.2.3 NOTE 1
 /// makes explicit. One listener carries both the token endpoint and
 /// `/authorize`, so the stricter of the two governs the whole socket and
