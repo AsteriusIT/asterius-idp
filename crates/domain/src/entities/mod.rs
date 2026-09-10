@@ -8,6 +8,7 @@ pub mod password;
 pub mod role;
 pub mod session;
 pub mod tenant;
+pub mod tenant_settings;
 pub mod user;
 
 pub use client::{
@@ -20,6 +21,7 @@ pub use grant::{
 };
 pub use role::{Role, RoleScope, UserRole};
 pub use tenant::{RefreshPolicy, RefreshPolicyError, Rotation, Tenant, TenantStatus};
+pub use tenant_settings::{TenantSettings, TenantSettingsError, TokenLifetimes};
 pub use user::{
     Claim, ClaimError, ClaimName, ClaimSet, ClaimSource, PairwiseSalt, SectorIdentifier,
     SubjectError, User, UserId, UserStatus,

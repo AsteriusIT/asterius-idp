@@ -20,10 +20,11 @@ use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
 use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
+use asterius_server::tenant_settings::SettingsDirectory;
 use asterius_server::{Config, VERSION};
 use asterius_store_pg::{
     DeploymentAdmin, PgAdminSeed, PgAuditSink, PgKekRewrap, PgReplayGuard, PgRetention,
-    PgTenantRepository, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
+    PgTenantRepository, PgTenantSettings, ProvisionedTenants, RewrapOutcome, Store, TenantKeyStore,
 };
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -110,6 +111,12 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // `ProvisionedTenants`: see `admin_routes` for why that matters.
         let tenants: Arc<dyn asterius_domain::ports::TenantRepository> = Arc::new(repository);
         let directory = TenantDirectory::new(Arc::clone(&tenants));
+        // One settings cache for the process, held by the discovery handler
+        // and by the admin API, so that a write through the second is visible
+        // to the first at once (`ast-f7m.4`). Two instances would each hold
+        // their own copy and the invalidation would reach neither.
+        let settings =
+            SettingsDirectory::new(Arc::new(PgTenantSettings::new(store.pool().clone())));
         let tenant_state = TenantState::new(directory.clone(), &config.server);
         let operations = operational_routes(&store, &config, metrics);
 
@@ -150,6 +157,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         let routes = protocol::routes(ProtocolState {
             keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
             capabilities: config.features,
+            tenant_settings: Some(settings.clone()),
             clients: Some(Arc::new(ClientEndpoints {
                 authenticator,
                 store: store.clone(),
@@ -185,7 +193,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         });
 
         let routes = routes
-            .merge(admin_routes(&store, &tenants, directory))
+            .merge(admin_routes(&store, &tenants, directory, settings))
             .merge(console_routes(&store))
             .fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
@@ -245,12 +253,14 @@ fn admin_routes(
     store: &Store,
     tenants: &Arc<dyn asterius_domain::ports::TenantRepository>,
     directory: TenantDirectory,
+    settings: SettingsDirectory,
 ) -> axum::Router {
     asterius_admin_api::AdminApi::new(&asterius_admin_api::AdminState {
         backend: Arc::new(asterius_server::admin::Deployment::new(
             store.clone(),
             Arc::clone(tenants),
             directory,
+            settings,
         )),
         // `ast-a05.8` mints the tokens an automation caller would present.
         // Until it lands the mode answers 401 rather than accepting something

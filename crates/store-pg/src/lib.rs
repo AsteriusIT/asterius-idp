@@ -30,6 +30,7 @@ mod scope;
 mod sessions;
 mod sql_audit;
 mod store;
+mod tenant_settings;
 mod tenants;
 mod users;
 
@@ -54,5 +55,6 @@ pub use roles::PgRoleRepository;
 pub use scope::TenantScope;
 pub use sessions::PgSessionRepository;
 pub use store::{MIGRATOR, Store};
+pub use tenant_settings::PgTenantSettings;
 pub use tenants::PgTenantRepository;
 pub use users::PgUserRepository;

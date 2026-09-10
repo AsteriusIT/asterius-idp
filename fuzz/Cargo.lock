@@ -95,7 +95,9 @@ dependencies = [
 name = "asterius-admin-api"
 version = "0.0.0"
 dependencies = [
+ "askama",
  "asterius-domain",
+ "asterius-web",
  "async-trait",
  "axum",
  "base64",

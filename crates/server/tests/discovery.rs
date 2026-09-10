@@ -6,7 +6,7 @@
 //! turned off and its key stays. Both are silent. Asserting the two agree is
 //! the only thing that keeps them agreeing.
 
-use asterius_domain::ports::TenantRepository;
+use asterius_domain::ports::{TenantRepository, TenantSettingsRepository as _};
 use asterius_domain::{
     Capabilities, DomainError, Issuer, KeyStore, SigningAlgorithm, Tenant, TenantId, TenantStatus,
 };
@@ -16,6 +16,7 @@ use asterius_server::config::{Config, ServerConfig};
 use asterius_server::http::protocol::{self, ProtocolState};
 use asterius_server::http::server::{app, not_found};
 use asterius_server::tenancy::{TenantDirectory, TenantState};
+use asterius_server::tenant_settings::SettingsDirectory;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -67,8 +68,39 @@ impl TenantRepository for OneTenant {
     }
 }
 
+/// A settings repository whose answer a test can change under a running
+/// server, which is what "the change is visible immediately" needs to mean
+/// something.
+#[derive(Debug, Default)]
+struct EditableSettings(std::sync::RwLock<asterius_domain::TenantSettings>);
+
+#[async_trait::async_trait]
+impl asterius_domain::ports::TenantSettingsRepository for EditableSettings {
+    async fn settings(
+        &self,
+        _tenant: &TenantId,
+    ) -> Result<asterius_domain::TenantSettings, DomainError> {
+        Ok(self.0.read().expect("an uncontended lock").clone())
+    }
+
+    async fn save(
+        &self,
+        _tenant: &TenantId,
+        settings: &asterius_domain::TenantSettings,
+    ) -> Result<(), DomainError> {
+        *self.0.write().expect("an uncontended lock") = settings.clone();
+        Ok(())
+    }
+}
+
 /// The whole server, for one tenant, with one signing key.
 fn server(capabilities: Capabilities) -> Router {
+    server_with(capabilities, None)
+}
+
+/// The same server, with a per-tenant settings cache the caller keeps a handle
+/// on.
+fn server_with(capabilities: Capabilities, settings: Option<SettingsDirectory>) -> Router {
     let tenant = Tenant {
         id: TenantId::parse("demo").expect("tenant id"),
         issuer: Issuer::parse(ISSUER).expect("issuer"),
@@ -90,6 +122,7 @@ fn server(capabilities: Capabilities) -> Router {
     let routes = protocol::routes(ProtocolState {
         keys: Arc::clone(&keys) as Arc<dyn KeyStore>,
         capabilities,
+        tenant_settings: settings,
         // The discovery and JWKS handlers need no database; leaving this
         // `None` is what lets this suite run without one.
         clients: None,
@@ -485,4 +518,76 @@ async fn the_document_matches_the_golden_file() {
         "the discovery document changed.\nIf that was deliberate, regenerate with \
          UPDATE_GOLDEN=1 and read the diff before committing."
     );
+}
+
+// ---- per-tenant feature flags (`ast-f7m.4`) --------------------------------
+
+/// A tenant that switches a deployment feature off stops advertising it, and
+/// the change is visible to the *next* request rather than when a cache
+/// expires — which is `ast-f7m.4`'s second acceptance criterion. The
+/// invalidation is the one the admin API performs after a write
+/// (`AdminBackend::tenant_directory_changed`).
+#[tokio::test]
+async fn a_flag_switched_off_leaves_the_discovery_document_at_once() {
+    // Arrange
+    let repository = Arc::new(EditableSettings::default());
+    let directory = SettingsDirectory::new(Arc::clone(&repository) as _);
+    let capabilities = Capabilities {
+        device_flow: true,
+        ..Capabilities::default()
+    };
+    let path = "/t/demo/.well-known/openid-configuration";
+
+    let (_, _, before) = get(server_with(capabilities, Some(directory.clone())), path).await;
+    let before: Value = serde_json::from_str(&before).expect("a JSON document");
+    assert!(
+        before.get("device_authorization_endpoint").is_some(),
+        "the deployment does not advertise the feature this test switches off"
+    );
+
+    // Act
+    repository
+        .save(
+            &TenantId::parse("demo").expect("tenant id"),
+            &asterius_domain::TenantSettings::validated(
+                std::collections::BTreeSet::from([asterius_domain::Feature::DeviceFlow]),
+                asterius_domain::entities::tenant_settings::DEFAULT_AUTHORIZATION_CODE_LIFETIME,
+                asterius_domain::entities::tenant_settings::DEFAULT_ACCESS_TOKEN_LIFETIME,
+            )
+            .expect("within the caps"),
+        )
+        .await
+        .expect("a write");
+    directory.invalidate();
+
+    let (status, _, after) = get(server_with(capabilities, Some(directory)), path).await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    let after: Value = serde_json::from_str(&after).expect("a JSON document");
+    assert!(
+        after.get("device_authorization_endpoint").is_none(),
+        "the document still advertises a feature this tenant switched off: {after}"
+    );
+}
+
+/// The subtraction rule at the edge: a tenant cannot advertise a feature the
+/// deployment does not run, whatever its settings say.
+#[tokio::test]
+async fn a_tenant_cannot_advertise_a_feature_the_deployment_lacks() {
+    // Arrange
+    let repository = Arc::new(EditableSettings::default());
+    let directory = SettingsDirectory::new(Arc::clone(&repository) as _);
+
+    // Act
+    let (status, _, body) = get(
+        server_with(Capabilities::default(), Some(directory)),
+        "/t/demo/.well-known/openid-configuration",
+    )
+    .await;
+
+    // Assert
+    assert_eq!(status, StatusCode::OK);
+    let document: Value = serde_json::from_str(&body).expect("a JSON document");
+    assert!(document.get("device_authorization_endpoint").is_none());
 }

@@ -18,18 +18,21 @@
 //! handed one.
 
 use asterius_admin_api::{AdminBackend, ClientAddress};
-use asterius_domain::ports::TenantRepository;
+use asterius_domain::ports::{TenantRepository, TenantSettingsRepository};
 use asterius_domain::{
     AuditSink, DomainError, RateLimitStore, ReplayGuard, Role, Session, SessionRepository as _,
     TenantId, UserId,
 };
-use asterius_store_pg::{PgAuditSink, PgRateLimitStore, PgReplayGuard, PgRoleRepository, Store};
+use asterius_store_pg::{
+    PgAuditSink, PgRateLimitStore, PgReplayGuard, PgRoleRepository, PgTenantSettings, Store,
+};
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 use std::sync::Arc;
 
 use crate::tenancy::TenantDirectory;
+use crate::tenant_settings::SettingsDirectory;
 
 /// This deployment, as the admin API sees it.
 #[derive(Clone)]
@@ -37,6 +40,7 @@ pub struct Deployment {
     store: Store,
     tenants: Arc<dyn TenantRepository>,
     directory: TenantDirectory,
+    settings: SettingsDirectory,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -56,11 +60,13 @@ impl Deployment {
         store: Store,
         tenants: Arc<dyn TenantRepository>,
         directory: TenantDirectory,
+        settings: SettingsDirectory,
     ) -> Self {
         Self {
             store,
             tenants,
             directory,
+            settings,
         }
     }
 }
@@ -90,6 +96,10 @@ impl AdminBackend for Deployment {
         Arc::clone(&self.tenants)
     }
 
+    fn tenant_settings(&self) -> Arc<dyn TenantSettingsRepository> {
+        Arc::new(PgTenantSettings::new(self.store.pool().clone()))
+    }
+
     fn audit(&self) -> Arc<dyn AuditSink> {
         Arc::new(PgAuditSink::new(self.store.pool().clone()))
     }
@@ -104,6 +114,10 @@ impl AdminBackend for Deployment {
 
     fn tenant_directory_changed(&self) {
         self.directory.invalidate();
+        // The settings cache too, and in the same call: a feature flag is
+        // published in the discovery document, so an administrator who has
+        // just switched one off will look there to check.
+        self.settings.invalidate();
     }
 }
 

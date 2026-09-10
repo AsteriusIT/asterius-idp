@@ -39,8 +39,9 @@ pub use entities::{
     ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus, Grant, GrantError,
     GrantRecord, GrantStatus, GrantType, JwksSource, LiveAccessToken, PairwiseSalt, RedirectUri,
     RedirectUriError, RefreshPolicy, RefreshPolicyError, RevocationReason, Role, RoleScope,
-    Rotation, SectorIdentifier, SubjectError, SubjectType, Tenant, TenantStatus, TokenBinding,
-    TokenEndpointAuthMethod, User, UserId, UserRole, UserStatus,
+    Rotation, SectorIdentifier, SubjectError, SubjectType, Tenant, TenantSettings,
+    TenantSettingsError, TenantStatus, TokenBinding, TokenEndpointAuthMethod, TokenLifetimes, User,
+    UserId, UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
@@ -52,7 +53,8 @@ pub use keys::{CompactJws, KeyState, KeyStore, Kid, PublicKeyRecord, Signer, Sig
 pub use ports::{
     AuthRequestRepository, ClientConfiguration, ClientRegistry, ClientRepository, CodeIssuer,
     CredentialVerifier, GrantRepository, InteractionRepository, ManagedClient, PasskeyRepository,
-    ReplayCheck, ReplayGuard, ReplayPurpose, SessionRepository, SubjectResolver, UserDirectory,
+    ReplayCheck, ReplayGuard, ReplayPurpose, SessionRepository, SubjectResolver,
+    TenantSettingsRepository, UserDirectory,
 };
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,

@@ -16,6 +16,7 @@ pub mod retention;
 pub mod rotation;
 pub mod signing;
 pub mod tenancy;
+pub mod tenant_settings;
 
 pub use config::{Config, ConfigError};
 pub use tenancy::{TenantDirectory, TenantState};
