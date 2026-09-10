@@ -146,7 +146,6 @@ fn request(client: &str, digest: &str, expires_at: OffsetDateTime) -> PushedRequ
         request_uri_digest: digest.to_owned(),
         client: ClientId::new(client),
         parameters: serde_json::json!({"redirect_uri": "https://rp.example/cb"}),
-        dpop_jkt: None,
         pushed_at: OffsetDateTime::now_utc(),
         expires_at,
     }

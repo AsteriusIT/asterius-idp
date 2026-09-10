@@ -239,7 +239,6 @@ async fn stored(
         request_uri_digest: minted.digest().to_owned(),
         client: client.id.clone(),
         parameters: serialise(request, hinted_subject.as_deref(), dpop_jkt.as_deref()),
-        dpop_jkt,
         pushed_at: now,
         expires_at,
     };
@@ -566,9 +565,15 @@ fn serialise(
         // to the push, and `reconcile_par_key` has already decided which key
         // that is. Storing the raw parameter here would drop the pin of every
         // client that used the header spelling: the code issuer builds the
-        // binding from these parameters and never sees the column beside them,
-        // so the code would be issued unpinned and the token endpoint would
-        // have nothing to compare the presented proof against (`ast-36g`).
+        // binding from these parameters, so the code would be issued unpinned
+        // and the token endpoint would have nothing to compare the presented
+        // proof against (`ast-36g`).
+        //
+        // This is now the *only* place the pin is stored. `auth_requests` used
+        // to carry a `dpop_jkt` column beside these parameters, written here
+        // and selected by nothing; `ast-rno` dropped it in migration 0005,
+        // because a second copy of the answer is a second thing to keep in
+        // step and the first reader to trust the wrong one reopens `ast-36g`.
         "dpop_jkt": dpop_jkt,
         // The *parsed* request, canonically serialised, and not the document
         // the client sent. This is what will be copied onto the grant when the

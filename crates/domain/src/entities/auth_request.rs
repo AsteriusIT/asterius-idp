@@ -22,9 +22,14 @@ pub struct PushedRequest {
     /// was issued to (RFC 9126 §2.2).
     pub client: ClientId,
     /// The validated parameters, exactly as they will be executed.
+    ///
+    /// RFC 9449 §10's pin lives in here, under `dpop_jkt`, and nowhere else
+    /// (`ast-rno`): the endpoint reconciles the `dpop_jkt` parameter with the
+    /// thumbprint of any proof on the push, and the code issuer builds the
+    /// binding from these parameters. A column beside them holding a second
+    /// copy is a second answer to "which key is this code for", which is the
+    /// shape `ast-36g` was found in.
     pub parameters: Value,
-    /// RFC 9449 §10: the key the eventual code is bound to.
-    pub dpop_jkt: Option<String>,
     /// When it was pushed.
     pub pushed_at: OffsetDateTime,
     /// When the reference stops working.

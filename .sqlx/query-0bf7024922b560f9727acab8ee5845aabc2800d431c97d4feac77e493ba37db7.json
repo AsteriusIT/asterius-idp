@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update auth_requests\n                set consumed_at = $3\n              where tenant_id = $1\n                and request_uri_hash = $2\n                and consumed_at is null\n                and expires_at > $3\n             returning client_id, parameters, dpop_jkt, pushed_at, expires_at",
+  "query": "select client_id, parameters, pushed_at, expires_at\n               from auth_requests\n              where tenant_id = $1\n                and request_uri_hash = $2\n                and consumed_at is null\n                and expires_at > $3",
   "describe": {
     "columns": [
       {
@@ -15,16 +15,11 @@
       },
       {
         "ordinal": 2,
-        "name": "dpop_jkt",
-        "type_info": "Text"
-      },
-      {
-        "ordinal": 3,
         "name": "pushed_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "expires_at",
         "type_info": "Timestamptz"
       }
@@ -39,10 +34,9 @@
     "nullable": [
       false,
       false,
-      true,
       false,
       false
     ]
   },
-  "hash": "9d37f39a60a62af39de1a22e56ce40d92475ede63d50f496fb6990a97dee07eb"
+  "hash": "0bf7024922b560f9727acab8ee5845aabc2800d431c97d4feac77e493ba37db7"
 }

@@ -64,14 +64,13 @@ impl AuthRequestRepository for PgAuthRequestRepository {
         let digest = Self::digest_bytes(&request.request_uri_digest)?;
         sqlx::query!(
             "insert into auth_requests
-                 (tenant_id, request_uri_hash, client_id, parameters, dpop_jkt,
+                 (tenant_id, request_uri_hash, client_id, parameters,
                   pushed_at, expires_at)
-             values ($1, $2, $3, $4, $5, $6, $7)",
+             values ($1, $2, $3, $4, $5, $6)",
             self.tenant.as_str(),
             digest,
             request.client.as_str(),
             request.parameters,
-            request.dpop_jkt.as_deref(),
             request.pushed_at,
             request.expires_at,
         )
@@ -101,7 +100,7 @@ impl AuthRequestRepository for PgAuthRequestRepository {
                 and request_uri_hash = $2
                 and consumed_at is null
                 and expires_at > $3
-             returning client_id, parameters, dpop_jkt, pushed_at, expires_at",
+             returning client_id, parameters, pushed_at, expires_at",
             self.tenant.as_str(),
             digest,
             now,
@@ -116,7 +115,6 @@ impl AuthRequestRepository for PgAuthRequestRepository {
                 request_uri_digest: hex::encode(&digest),
                 client: ClientId::new(row.client_id),
                 parameters: row.parameters,
-                dpop_jkt: row.dpop_jkt,
                 pushed_at: row.pushed_at,
                 expires_at: row.expires_at,
             })));
@@ -149,7 +147,7 @@ impl AuthRequestRepository for PgAuthRequestRepository {
     ) -> Result<Option<PushedRequest>, DomainError> {
         let digest = Self::digest_bytes(digest)?;
         let row = sqlx::query!(
-            "select client_id, parameters, dpop_jkt, pushed_at, expires_at
+            "select client_id, parameters, pushed_at, expires_at
                from auth_requests
               where tenant_id = $1
                 and request_uri_hash = $2
@@ -168,7 +166,6 @@ impl AuthRequestRepository for PgAuthRequestRepository {
             request_uri_digest: hex::encode(&digest),
             client: ClientId::new(row.client_id),
             parameters: row.parameters,
-            dpop_jkt: row.dpop_jkt,
             pushed_at: row.pushed_at,
             expires_at: row.expires_at,
         }))
