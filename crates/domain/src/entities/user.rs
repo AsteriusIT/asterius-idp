@@ -52,7 +52,9 @@ use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
 
-use super::client::{Client, ClientMetadataError, ClientRegistration, SubjectType};
+use super::client::{
+    Client, ClientMetadataError, ClientRegistration, GrantType, JwksSource, SubjectType,
+};
 
 // ---------------------------------------------------------------------------
 // Identity
@@ -848,6 +850,18 @@ impl SectorIdentifier {
         if let Some(uri) = client.registration.sector_identifier_uri.as_deref() {
             return Self::of_uri(uri);
         }
+        // CIBA Core 1.0 §4: "if no sector_identifier_uri is registered, the
+        // host component of the jwks_uri is used as the sector identifier".
+        // Before the redirect-URI rule, because a poll or ping client has no
+        // redirect URI at all — §8.1's host would be read off nothing — and
+        // because a client that has both is held to one sector by
+        // `check_ciba_sector`, which refuses at registration any document whose
+        // callbacks are on another host.
+        if client.registration.allows(GrantType::Ciba)
+            && let JwksSource::Uri(jwks_uri) = &client.registration.jwks
+        {
+            return Self::of_uri(jwks_uri);
+        }
         // The same rule the registration endpoint applies, called rather than
         // restated, so the two cannot drift apart. Since `ast-m9c.10` a
         // registration carrying this shape is refused outright; what reaches
@@ -1146,9 +1160,14 @@ mod tests {
     /// registration validator, so a document these tests could not register is
     /// not a client these tests can ask about.
     fn client(document: &serde_json::Value) -> Client {
+        client_with(document, crate::Capabilities::default())
+    }
+
+    /// The same, for a client whose grant is behind a flag.
+    fn client_with(document: &serde_json::Value, capabilities: crate::Capabilities) -> Client {
         let registration = crate::ClientRegistration::from_json(
             serde_json::to_vec(document).expect("serialise").as_slice(),
-            crate::Capabilities::default(),
+            capabilities,
         )
         .expect("a valid registration");
         Client {
@@ -1343,6 +1362,49 @@ mod tests {
             })))
             .expect("a named sector")
             .as_str(),
+            "group.example"
+        );
+    }
+
+    /// CIBA Core 1.0 §4: "if no `sector_identifier_uri` is registered, the host
+    /// component of the `jwks_uri` is used as the sector identifier". A poll or
+    /// ping client has no redirect URI, so OIDC Core §8.1's host would be read
+    /// off nothing and a pairwise CIBA client would have no `sub` at all
+    /// (`ast-lh3.7`).
+    #[test]
+    fn a_pairwise_ciba_client_takes_its_sector_from_the_jwks_uri_host() {
+        // Arrange
+        let capabilities = crate::Capabilities {
+            ciba: true,
+            ..crate::Capabilities::default()
+        };
+        let document = json!({
+            "client_name": "Teller",
+            "grant_types": ["urn:openid:params:grant-type:ciba"],
+            "response_types": [],
+            "jwks_uri": "https://keys.rp.example/jwks",
+            "backchannel_token_delivery_mode": "poll",
+            "subject_type": "pairwise",
+        });
+
+        // Act
+        let sector = SectorIdentifier::of_client(&client_with(&document, capabilities))
+            .expect("the jwks_uri host is a sector");
+
+        // Assert
+        assert_eq!(sector.as_str(), "keys.rp.example");
+
+        // A registered sector still wins: §4 makes the jwks_uri host the
+        // fallback, not the rule.
+        let mut named = document.clone();
+        named.as_object_mut().expect("object").insert(
+            "sector_identifier_uri".to_owned(),
+            json!("https://group.example/sector.json"),
+        );
+        assert_eq!(
+            SectorIdentifier::of_client(&client_with(&named, capabilities))
+                .expect("a named sector")
+                .as_str(),
             "group.example"
         );
     }

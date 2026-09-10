@@ -1767,6 +1767,77 @@ mod tests {
 
     /// The response of a read re-registers as the same client.
     ///
+    /// The same round trip for CIBA Core 1.0 §4's members (`ast-lh3.7`).
+    ///
+    /// RFC 7592 §2.2 makes a read the only correct basis for an update, and
+    /// §4's members are the ones an update could silently drop: a delivery mode
+    /// that did not come back would turn a ping client into a poll client on
+    /// the client's own round trip, and one that came back on a document the
+    /// validator refuses would make a CIBA client unupdatable. The update path
+    /// runs [`ClientRegistration::from_json`] with the same capabilities, so
+    /// this is that whole chain in one assertion.
+    #[test]
+    fn a_ciba_clients_read_document_re_registers_as_the_same_client() {
+        // Arrange
+        let capabilities = Capabilities {
+            ciba: true,
+            ..Capabilities::default()
+        };
+        let document = json!({
+            "client_name": "Teller",
+            "grant_types": ["urn:openid:params:grant-type:ciba"],
+            "response_types": [],
+            "jwks_uri": "https://rp.example/jwks",
+            "subject_type": "pairwise",
+            "backchannel_token_delivery_mode": "ping",
+            "backchannel_client_notification_endpoint": "https://rp.example/ciba",
+            "backchannel_authentication_request_signing_alg": "ES256",
+            "backchannel_user_code_parameter": true,
+        });
+        let stored = Client {
+            tenant: TenantId::new("demo"),
+            id: ClientId::new("c.ciba"),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&document).expect("serialise"),
+                capabilities,
+            )
+            .expect("a valid CIBA registration"),
+            status: ClientStatus::Active,
+            created_at: OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("instant"),
+            updated_at: OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("instant"),
+        };
+
+        // Act
+        let rendered = client_information(&stored, &tenant(), None, OffsetDateTime::UNIX_EPOCH);
+        let round_tripped = ClientRegistration::from_json(
+            &serde_json::to_vec(&rendered).expect("serialise"),
+            capabilities,
+        )
+        .expect("the read document must itself be a valid registration");
+
+        // Assert
+        assert_eq!(rendered["backchannel_token_delivery_mode"], json!("ping"));
+        assert_eq!(
+            rendered["backchannel_client_notification_endpoint"],
+            json!("https://rp.example/ciba")
+        );
+        assert_eq!(rendered["backchannel_user_code_parameter"], json!(true));
+        assert_eq!(
+            round_tripped, stored.registration,
+            "a read describes a different CIBA client than the one stored"
+        );
+
+        // And the flag still decides: the same document against a deployment
+        // that does not run CIBA is refused at the update as at the
+        // registration, rather than replacing the client with a lesser one.
+        let refused = ClientRegistration::from_json(
+            &serde_json::to_vec(&rendered).expect("serialise"),
+            Capabilities::default(),
+        )
+        .expect_err("the ciba flag is off");
+        assert_eq!(refused.field(), "grant_types");
+    }
+
     /// The same assertion `ast-m9c.4` makes about its own response, and for a
     /// stronger reason here: RFC 7592 §2.2 requires an update to "include all
     /// client metadata fields as returned to the client from a previous

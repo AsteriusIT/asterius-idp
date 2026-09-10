@@ -1058,6 +1058,27 @@ pub(crate) fn client_information(
     if let Some(uri) = &registration.sector_identifier_uri {
         object.insert("sector_identifier_uri".to_owned(), json!(uri));
     }
+    // CIBA Core 1.0 §4, echoed exactly as it was stored and only when it was:
+    // the delivery mode is present for a CIBA client and absent for every other
+    // one, the notification endpoint only in ping mode, and
+    // `backchannel_user_code_parameter` only when the client asked for it —
+    // §4's default is false, and a member the client did not send must not come
+    // back as one it did (`ast-lh3.7`).
+    if let Some(mode) = registration.backchannel_token_delivery_mode {
+        object.insert(
+            "backchannel_token_delivery_mode".to_owned(),
+            json!(mode.as_str()),
+        );
+    }
+    if let Some(url) = &registration.backchannel_client_notification_endpoint {
+        object.insert(
+            "backchannel_client_notification_endpoint".to_owned(),
+            json!(url),
+        );
+    }
+    if registration.backchannel_user_code_parameter {
+        object.insert("backchannel_user_code_parameter".to_owned(), json!(true));
+    }
 
     document
 }
@@ -1759,6 +1780,12 @@ mod tests {
             "backchannel_authentication_request_signing_alg",
             "userinfo_signed_response_alg",
             "sector_identifier_uri",
+            // CIBA Core 1.0 §4's members, which only a CIBA client has —
+            // `backchannel_user_code_parameter` included, whose §4 default is
+            // false: a `false` here would be a member this client never sent.
+            "backchannel_token_delivery_mode",
+            "backchannel_client_notification_endpoint",
+            "backchannel_user_code_parameter",
         ] {
             assert!(
                 body.get(absent).is_none(),

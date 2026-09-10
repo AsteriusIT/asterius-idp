@@ -1492,6 +1492,21 @@ async fn client_registration_inner(
             return unavailable();
         }
     };
+    // What *this tenant* can do, not what the deployment can. A grant behind a
+    // flag the tenant switched off reaches an endpoint that answers 404
+    // (`tenant_feature_guard`) and a document that does not advertise it, so
+    // registering a client for it mints a client that fails at first use —
+    // which is the failure `GrantType::required_feature` exists to move to
+    // registration time, where the client can still read why. A settings read
+    // that fails is an error and never the deployment's answer, as everywhere
+    // else here (`ast-lh3.7`).
+    let capabilities = match capabilities_for(endpoints, tenant).await {
+        Ok(capabilities) => capabilities,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
     register::register(
@@ -1500,7 +1515,7 @@ async fn client_registration_inner(
             tenant_policy: &tenant_policy,
             clients: &clients,
             keys: endpoints.keys.as_ref(),
-            capabilities: endpoints.capabilities,
+            capabilities,
             outbound: endpoints.outbound.as_ref(),
             policy: &endpoints.registration,
             initial_access_tokens: endpoints
@@ -1524,6 +1539,7 @@ fn configuration_context<'a>(
     clients: &'a asterius_store_pg::PgClientRepository,
     request_id: &'a crate::http::request_id::RequestId,
     tenant_policy: &'a asterius_domain::RegistrationPolicy,
+    capabilities: Capabilities,
 ) -> ConfigurationContext<'a> {
     ConfigurationContext {
         tenant,
@@ -1531,7 +1547,7 @@ fn configuration_context<'a>(
         clients,
         configuration: clients,
         keys: endpoints.keys.as_ref(),
-        capabilities: endpoints.capabilities,
+        capabilities,
         outbound: endpoints.outbound.as_ref(),
         audit: endpoints.audit.as_ref(),
         request_id: Some(request_id.as_str()),
@@ -1575,7 +1591,17 @@ async fn client_configuration_read(
             let scope = endpoints.store.scope(tenant.id.clone());
             let clients = scope.clients(endpoints.capabilities);
             client_configuration::read(
-                &configuration_context(&endpoints, &tenant, &clients, &request_id, &tenant_policy),
+                &configuration_context(
+                    &endpoints,
+                    &tenant,
+                    &clients,
+                    &request_id,
+                    &tenant_policy,
+                    // A read validates no document, so the deployment's flags
+                    // are the whole answer: narrowing them here would refuse a
+                    // client its own record.
+                    endpoints.capabilities,
+                ),
                 &client_id,
                 &headers,
                 time::OffsetDateTime::now_utc(),
@@ -1616,10 +1642,26 @@ async fn client_configuration_update(
                     return unavailable();
                 }
             };
+            // RFC 7592 §2.2 replaces the whole document, so an update *is* a
+            // registration and is held to the tenant's flags exactly as one is.
+            let capabilities = match capabilities_for(&endpoints, &tenant).await {
+                Ok(capabilities) => capabilities,
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                    return unavailable();
+                }
+            };
             let scope = endpoints.store.scope(tenant.id.clone());
             let clients = scope.clients(endpoints.capabilities);
             client_configuration::update(
-                &configuration_context(&endpoints, &tenant, &clients, &request_id, &tenant_policy),
+                &configuration_context(
+                    &endpoints,
+                    &tenant,
+                    &clients,
+                    &request_id,
+                    &tenant_policy,
+                    capabilities,
+                ),
                 &client_id,
                 &headers,
                 &body,
@@ -1663,7 +1705,17 @@ async fn client_configuration_remove(
             let scope = endpoints.store.scope(tenant.id.clone());
             let clients = scope.clients(endpoints.capabilities);
             client_configuration::remove(
-                &configuration_context(&endpoints, &tenant, &clients, &request_id, &tenant_policy),
+                &configuration_context(
+                    &endpoints,
+                    &tenant,
+                    &clients,
+                    &request_id,
+                    &tenant_policy,
+                    // A deletion validates no document either, and a client
+                    // must be able to delete itself whatever the tenant has
+                    // switched off since.
+                    endpoints.capabilities,
+                ),
                 &client_id,
                 &headers,
                 time::OffsetDateTime::now_utc(),

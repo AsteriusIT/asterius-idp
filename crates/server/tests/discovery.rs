@@ -272,6 +272,107 @@ async fn a_disabled_feature_is_neither_advertised_nor_routed() {
     );
 }
 
+/// `ast-lh3.7`: CIBA has no handler yet, so the `ciba` flag buys a client
+/// validator and nothing else. In **both** flag states the document says
+/// nothing about CIBA and the URL answers 404 — the parity `ast-o0t.3` asserts,
+/// held on the side where an endpoint would otherwise be advertised ahead of
+/// its implementation.
+///
+/// CIBA Core 1.0 §4 is why it is the whole block rather than the URL alone:
+/// `backchannel_token_delivery_modes_supported` is REQUIRED beside
+/// `backchannel_authentication_endpoint`, so a document carrying one without
+/// the other is not a smaller CIBA document but an invalid one. `ast-lh3.4`
+/// flips `Endpoint::has_a_handler` and this test becomes the ordinary
+/// on/off pair.
+#[tokio::test]
+async fn ciba_is_neither_advertised_nor_routed_in_either_flag_state() {
+    for capabilities in [
+        Capabilities::default(),
+        Capabilities {
+            ciba: true,
+            ..Capabilities::default()
+        },
+    ] {
+        // Arrange
+        let path = format!("/t/demo{}", Endpoint::BackchannelAuthentication.path());
+
+        // Act
+        let document = document(capabilities).await;
+        let (status, ..) = get(server(capabilities), &path).await;
+
+        // Assert
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "a backchannel authentication route exists with no handler behind it"
+        );
+        for member in [
+            "backchannel_authentication_endpoint",
+            "backchannel_token_delivery_modes_supported",
+            "backchannel_user_code_parameter_supported",
+        ] {
+            assert!(
+                document.get(member).is_none(),
+                "{member} is advertised with nothing routed: {document}"
+            );
+        }
+        assert!(
+            !document["grant_types_supported"]
+                .as_array()
+                .expect("array")
+                .contains(&Value::String(
+                    "urn:openid:params:grant-type:ciba".to_owned()
+                )),
+            "the CIBA grant is advertised with no endpoint to take it to"
+        );
+    }
+}
+
+/// RFC 8628 §4: `device_authorization_endpoint` is the member a device client
+/// reads, and §3.4's grant is how it finishes. Both appear together, both point
+/// at something routed, and both vanish together — the same statement as the
+/// CIBA test above, on a feature that *is* implemented.
+#[tokio::test]
+async fn the_device_endpoint_and_its_grant_are_advertised_and_routed_together() {
+    // Arrange
+    let on = Capabilities {
+        device_flow: true,
+        ..Capabilities::default()
+    };
+    let path = format!("/t/demo{}", Endpoint::DeviceAuthorization.path());
+    let grant = Value::String("urn:ietf:params:oauth:grant-type:device_code".to_owned());
+
+    // Act
+    let advertised = document(on).await;
+    let (reached, ..) = get(server(on), &path).await;
+    let silent = document(Capabilities::default()).await;
+    let (unreachable, ..) = get(server(Capabilities::default()), &path).await;
+
+    // Assert
+    assert_ne!(reached, StatusCode::NOT_FOUND);
+    assert_eq!(
+        advertised["device_authorization_endpoint"],
+        Value::String("https://as.example/t/demo/device_authorization".to_owned()),
+        "{advertised}"
+    );
+    assert!(
+        advertised["grant_types_supported"]
+            .as_array()
+            .expect("array")
+            .contains(&grant),
+        "the endpoint is advertised without the grant that finishes it"
+    );
+    assert_eq!(unreachable, StatusCode::NOT_FOUND);
+    assert!(silent.get("device_authorization_endpoint").is_none());
+    assert!(
+        !silent["grant_types_supported"]
+            .as_array()
+            .expect("array")
+            .contains(&grant),
+        "the device grant is advertised with the flag off: {silent}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Discovery — ast-o0t.1, ast-o0t.2
 // ---------------------------------------------------------------------------

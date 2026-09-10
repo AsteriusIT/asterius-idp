@@ -148,6 +148,12 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
          the digest in previous_registration_access_token_hash, not a token",
     ),
     (
+        "clients",
+        "backchannel_token_delivery_mode",
+        "CIBA Core 1.0 §4's `poll` or `ping` — how the client is handed its tokens, not one \
+         of them",
+    ),
+    (
         "credentials",
         "credential_id",
         "a row identifier, not the credential",
@@ -1173,6 +1179,120 @@ db_test! {
         // downgrade this test exists to catch.
         assert_eq!(reloaded.registration.token_binding, TokenBinding::Certificate);
         assert_eq!(reloaded.registration, original.registration);
+    }
+}
+
+db_test! {
+    /// CIBA Core 1.0 §4's members survive the round trip through the row
+    /// (`ast-lh3.7`).
+    ///
+    /// A stored CIBA client is read back by rebuilding its registration
+    /// document and re-validating it, so a column that was written and not read
+    /// — or read into the wrong member — turns a ping client into a poll client
+    /// at the next process start, silently. The delivery mode is the one that
+    /// matters most: it decides whether the client is ever called back at all.
+    async fn a_ciba_client_round_trips_through_its_row(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let capabilities = Capabilities { ciba: true, ..Capabilities::default() };
+        let repo = store.scope(TenantId::new("demo")).clients(capabilities);
+
+        let document = json!({
+            "client_name": "Teller",
+            "grant_types": ["urn:openid:params:grant-type:ciba"],
+            "response_types": [],
+            "jwks_uri": "https://rp.example/jwks",
+            "subject_type": "pairwise",
+            "backchannel_token_delivery_mode": "ping",
+            "backchannel_client_notification_endpoint": "https://rp.example/ciba",
+            "backchannel_authentication_request_signing_alg": "ES256",
+            "backchannel_user_code_parameter": true,
+        });
+        let original = client_with("demo", "teller", &document, capabilities);
+        repo.upsert(&original).await.expect("a valid CIBA client must be storable");
+
+        let reloaded = repo
+            .find(&asterius_domain::ClientId::new("teller"))
+            .await
+            .expect("read")
+            .expect("present");
+
+        assert_eq!(
+            reloaded.registration.backchannel_token_delivery_mode,
+            Some(asterius_domain::TokenDeliveryMode::Ping),
+            "a ping client came back in another mode"
+        );
+        assert_eq!(reloaded.registration, original.registration);
+    }
+}
+
+db_test! {
+    /// The validator's CIBA rules, restated by the schema because a row is
+    /// reachable by paths the validator is not on — a fixture, a migration, a
+    /// hand-edited row. Each of these is a client the backchannel endpoint
+    /// could not answer, or one carrying a value nothing would ever read.
+    async fn the_schema_refuses_a_ciba_client_the_validator_would_have_refused(db) {
+        seed_tenant(&db.pool, "demo").await;
+
+        // CIBA Core 1.0 §4: the grant and the delivery mode arrive together.
+        let no_mode = sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks_uri, grant_types)
+             values ('demo', 'no-mode', 'T', 'private_key_jwt', 'https://rp.example/jwks',
+                     '{urn:openid:params:grant-type:ciba}')",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(no_mode.is_err(), "a CIBA client was stored with no delivery mode");
+
+        let stray_mode = sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks_uri, grant_types,
+                                  backchannel_token_delivery_mode)
+             values ('demo', 'stray-mode', 'T', 'private_key_jwt', 'https://rp.example/jwks',
+                     '{authorization_code}', 'poll')",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(stray_mode.is_err(), "a delivery mode was stored on a client without the grant");
+
+        // §10.3: push is not a mode this server has, so it is not a value the
+        // column can hold.
+        let push = sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks_uri, grant_types,
+                                  backchannel_token_delivery_mode)
+             values ('demo', 'push', 'T', 'private_key_jwt', 'https://rp.example/jwks',
+                     '{urn:openid:params:grant-type:ciba}', 'push')",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(push.is_err(), "push delivery was stored");
+
+        // §10.1: a poll client is never notified, so it registers no endpoint.
+        let polling_notifier = sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks_uri, grant_types,
+                                  backchannel_token_delivery_mode,
+                                  backchannel_client_notification_endpoint)
+             values ('demo', 'poll-notify', 'T', 'private_key_jwt', 'https://rp.example/jwks',
+                     '{urn:openid:params:grant-type:ciba}', 'poll', 'https://rp.example/ciba')",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(polling_notifier.is_err(), "a poll client kept a notification endpoint");
+
+        // And ping without one is the same defect from the other side.
+        let silent_ping = sqlx::query(
+            "insert into clients (tenant_id, client_id, client_name,
+                                  token_endpoint_auth_method, jwks_uri, grant_types,
+                                  backchannel_token_delivery_mode)
+             values ('demo', 'silent-ping', 'T', 'private_key_jwt', 'https://rp.example/jwks',
+                     '{urn:openid:params:grant-type:ciba}', 'ping')",
+        )
+        .execute(&db.pool)
+        .await;
+        assert!(silent_ping.is_err(), "a ping client was stored with nowhere to notify");
     }
 }
 

@@ -601,6 +601,67 @@ impl ClientStatus {
     }
 }
 
+/// How a CIBA client is handed its tokens — CIBA Core 1.0 §7.1.
+///
+/// Two of the three modes the specification defines. `push` is absent by
+/// construction rather than refused by a check further down: §10.3 delivers the
+/// tokens themselves to a client-supplied HTTPS endpoint, which makes the
+/// authorization server post an access token, a refresh token and an ID token
+/// to a URL a registration document named. Nothing else in this profile sends a
+/// credential anywhere but to the client that has just authenticated for it
+/// (FAPI 2.0 SP §5.3.2.1), and a mode that does cannot be made safe by whatever
+/// endpoint would implement it. A document asking for it is
+/// `invalid_client_metadata`, and there is no variant for the rest of the
+/// server to have to handle.
+///
+/// In `ping` mode the notification carries only the `auth_req_id` (§10.2) and
+/// the client still comes to the token endpoint and authenticates for what it
+/// gets — which is why `ping` is here and `push` is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TokenDeliveryMode {
+    /// CIBA Core 1.0 §10.1: the client polls the token endpoint.
+    Poll,
+    /// CIBA Core 1.0 §10.2: the server tells the client the request is ready,
+    /// and the client then polls the token endpoint as in `poll`.
+    Ping,
+}
+
+impl TokenDeliveryMode {
+    /// Every mode this server implements, in the order §7.1 lists them. Also
+    /// what `backchannel_token_delivery_modes_supported` will render from.
+    pub const ALL: [Self; 2] = [Self::Poll, Self::Ping];
+
+    /// The wire spelling, in `backchannel_token_delivery_mode` and in the
+    /// stored column of the same name.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Poll => "poll",
+            Self::Ping => "ping",
+        }
+    }
+
+    /// Parses a `backchannel_token_delivery_mode` value. `None` for anything
+    /// outside the set, `push` included.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == value)
+    }
+
+    /// Whether this mode makes the server call the client back, and so requires
+    /// a `backchannel_client_notification_endpoint` (CIBA Core 1.0 §4).
+    #[must_use]
+    pub const fn notifies_the_client(self) -> bool {
+        matches!(self, Self::Ping)
+    }
+}
+
+impl std::fmt::Display for TokenDeliveryMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Redirect URIs
 // ---------------------------------------------------------------------------
@@ -995,6 +1056,15 @@ pub struct ClientMetadata {
     /// OIDC Registration §2. Absent means OIDC Core §5.3.2's default, a plain
     /// JSON UserInfo response.
     pub userinfo_signed_response_alg: Option<String>,
+    /// CIBA Core 1.0 §4, REQUIRED of a client registering the CIBA grant.
+    /// `poll` or `ping`; see [`TokenDeliveryMode`] for why `push` is neither.
+    pub backchannel_token_delivery_mode: Option<String>,
+    /// CIBA Core 1.0 §4, REQUIRED in `ping` mode: the https URL the
+    /// notification is posted to.
+    pub backchannel_client_notification_endpoint: Option<String>,
+    /// CIBA Core 1.0 §4. Whether the client will send a `user_code` with its
+    /// backchannel authentication requests.
+    pub backchannel_user_code_parameter: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1071,6 +1141,20 @@ pub struct ClientRegistration {
     /// which is why registering one is checked against the tenant's keys
     /// (`register::unsignable`) as `id_token_signed_response_alg` is.
     pub userinfo_signed_response_alg: Option<SigningAlgorithm>,
+    /// CIBA Core 1.0 §4. `Some` exactly when `grant_types` contains the CIBA
+    /// grant: §4 makes the member REQUIRED of such a client, and
+    /// [`ClientMetadata::validate`] refuses it on any other — the invariant the
+    /// backchannel endpoint (`ast-lh3.4`) will rely on to know how a client
+    /// expects to be answered without asking a second time.
+    pub backchannel_token_delivery_mode: Option<TokenDeliveryMode>,
+    /// CIBA Core 1.0 §4. `Some` exactly when the mode is `ping`, and then an
+    /// https URL: nothing is notified in `poll` mode, so a URL registered there
+    /// would be one nothing ever calls.
+    pub backchannel_client_notification_endpoint: Option<String>,
+    /// CIBA Core 1.0 §4. Whether the client sends a `user_code` with its
+    /// backchannel authentication requests. `false` for every client that is
+    /// not a CIBA client.
+    pub backchannel_user_code_parameter: bool,
 }
 
 impl ClientRegistration {
@@ -1229,6 +1313,21 @@ impl ClientRegistration {
             )
         })?;
         let listed: BTreeSet<&str> = listed.iter().map(String::as_str).collect();
+        // CIBA Core 1.0 §4: a pairwise CIBA client "MUST register a
+        // sector_identifier_uri that contains the jwks_uri". The reason is the
+        // same one §5 gives for the redirect URIs, and it is the only one that
+        // applies at all to a poll or ping client, which has no redirect URI to
+        // be listed: without it, a client could name any sector it liked and be
+        // handed another client's `sub` values for the same users.
+        if self.grant_types.contains(&GrantType::Ciba)
+            && let JwksSource::Uri(jwks_uri) = &self.jwks
+            && !listed.contains(jwks_uri.as_str())
+        {
+            return Err(ClientMetadataError::rejected(
+                FIELD,
+                "must list the registered jwks_uri for a CIBA client (CIBA Core 1.0 §4)",
+            ));
+        }
         if self
             .redirect_uris
             .iter()
@@ -1364,6 +1463,14 @@ impl ClientMetadata {
         let jwks = self.jwks()?;
         let (subject_type, sector_identifier_uri) = self.subject(&redirect_uris)?;
         let token_binding = self.token_binding(capabilities)?;
+        let backchannel = self.backchannel(&grant_types)?;
+        check_ciba_sector(
+            &grant_types,
+            subject_type,
+            sector_identifier_uri.as_deref(),
+            &jwks,
+            &redirect_uris,
+        )?;
 
         self.check_par()?;
         let use_mtls_endpoint_aliases = self.mtls_endpoint_aliases(capabilities)?;
@@ -1403,6 +1510,115 @@ impl ClientMetadata {
                 .as_deref()
                 .map(|raw| signing_algorithm("userinfo_signed_response_alg", raw))
                 .transpose()?,
+            backchannel_token_delivery_mode: backchannel.delivery_mode,
+            backchannel_client_notification_endpoint: backchannel.notification_endpoint,
+            backchannel_user_code_parameter: backchannel.user_code_parameter,
+        })
+    }
+
+    /// CIBA Core 1.0 §4's client metadata, as one decision.
+    ///
+    /// Four members that only mean anything together: the mode decides whether
+    /// a notification endpoint is required or forbidden, and all four are
+    /// refused outright on a client that did not register the CIBA grant. They
+    /// are read here rather than field by field in [`Self::validate`] because
+    /// splitting them would let a document register a notification endpoint in
+    /// `poll` mode, or a signing algorithm on a client that will never send a
+    /// backchannel authentication request — values nothing reads, which is the
+    /// shape an operator can believe is in force.
+    ///
+    /// Whether the *deployment* runs CIBA at all is already settled by the time
+    /// this is reached: the grant carries [`Feature::Ciba`]
+    /// ([`GrantType::required_feature`]), so with the flag off `grant_types`
+    /// has already refused the document and nothing here is reachable.
+    fn backchannel(
+        &self,
+        grants: &BTreeSet<GrantType>,
+    ) -> Result<Backchannel, ClientMetadataError> {
+        const MODE: &str = "backchannel_token_delivery_mode";
+        const NOTIFICATION: &str = "backchannel_client_notification_endpoint";
+        const USER_CODE: &str = "backchannel_user_code_parameter";
+
+        let presented: [(&'static str, bool); 4] = [
+            (MODE, self.backchannel_token_delivery_mode.is_some()),
+            (
+                NOTIFICATION,
+                self.backchannel_client_notification_endpoint.is_some(),
+            ),
+            (USER_CODE, self.backchannel_user_code_parameter.is_some()),
+            (
+                "backchannel_authentication_request_signing_alg",
+                self.backchannel_authentication_request_signing_alg
+                    .is_some(),
+            ),
+        ];
+
+        if !grants.contains(&GrantType::Ciba) {
+            if let Some((field, _)) = presented.into_iter().find(|(_, present)| *present) {
+                return Err(ClientMetadataError::rejected(
+                    field,
+                    "is only registered by a client whose grant_types contain \
+                     urn:openid:params:grant-type:ciba (CIBA Core 1.0 §4)",
+                ));
+            }
+            return Ok(Backchannel::none());
+        }
+
+        // §4: "backchannel_token_delivery_mode ... REQUIRED". A CIBA client
+        // that does not say how it expects to be answered is not a client this
+        // server can answer at all.
+        let raw = self
+            .backchannel_token_delivery_mode
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or(ClientMetadataError::Missing { field: MODE })?;
+        // The value is not echoed, as nowhere in this validator is.
+        let delivery_mode = TokenDeliveryMode::parse(raw).ok_or_else(|| {
+            ClientMetadataError::rejected(
+                MODE,
+                "must be `poll` or `ping`; `push` delivers the tokens themselves to a \
+                 client-supplied endpoint (CIBA Core 1.0 §10.3) and this server issues \
+                 tokens only to a client that has authenticated for them \
+                 (FAPI 2.0 SP §5.3.2.1)",
+            )
+        })?;
+
+        let notification = self
+            .backchannel_client_notification_endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let notification_endpoint = match (delivery_mode.notifies_the_client(), notification) {
+            // §4: REQUIRED "if the Client is registered to use Ping ... mode".
+            (true, None) => {
+                return Err(ClientMetadataError::Missing {
+                    field: NOTIFICATION,
+                });
+            }
+            (true, Some(url)) => {
+                // §10.2 posts a notification to it, so it is a URL this server
+                // dereferences: https, with a host, and no fragment.
+                https_url(NOTIFICATION, url)?;
+                Some(url.to_owned())
+            }
+            // Nothing is notified in poll mode, so a registered endpoint here
+            // is a URL that would never be called — and one that would start
+            // being called by a later switch to ping that nobody reviewed.
+            (false, Some(_)) => {
+                return Err(ClientMetadataError::rejected(
+                    NOTIFICATION,
+                    "is only registered in ping mode; in poll mode the client comes to \
+                     the token endpoint and is never called back (CIBA Core 1.0 §10.1)",
+                ));
+            }
+            (false, None) => None,
+        };
+
+        Ok(Backchannel {
+            delivery_mode: Some(delivery_mode),
+            notification_endpoint,
+            user_code_parameter: self.backchannel_user_code_parameter.unwrap_or(false),
         })
     }
 
@@ -2000,6 +2216,95 @@ impl ClientMetadata {
     }
 }
 
+/// What CIBA Core 1.0 §4's members came to, once they have been read together.
+///
+/// A private carrier between [`ClientMetadata::backchannel`] and the
+/// registration it fills in: the three values are decided as one and must be
+/// written as one, since a delivery mode without its notification endpoint —
+/// or an endpoint without its mode — is exactly the state §4 forbids.
+struct Backchannel {
+    /// `backchannel_token_delivery_mode`, `Some` only for a CIBA client.
+    delivery_mode: Option<TokenDeliveryMode>,
+    /// `backchannel_client_notification_endpoint`, `Some` only in ping mode.
+    notification_endpoint: Option<String>,
+    /// `backchannel_user_code_parameter`, §4's default being `false`.
+    user_code_parameter: bool,
+}
+
+impl Backchannel {
+    /// What a client that registered no CIBA grant carries: nothing.
+    const fn none() -> Self {
+        Self {
+            delivery_mode: None,
+            notification_endpoint: None,
+            user_code_parameter: false,
+        }
+    }
+}
+
+/// CIBA Core 1.0 §4's sector rule, for a pairwise client using the CIBA grant.
+///
+/// §4: "In case the Client registers with `subject_type` value `pairwise` ...
+/// the Client MUST register a `sector_identifier_uri` that contains the
+/// `jwks_uri`, or, if no `sector_identifier_uri` is registered, the host
+/// component of the `jwks_uri` is used as the sector identifier."
+///
+/// The reason it is a rule at all is that a CIBA client need not have a
+/// redirect URI: poll and ping never reach the authorization endpoint, so OIDC
+/// Core §8.1's "host component of the registered `redirect_uri`" has nothing to
+/// read, and a pairwise client with no sector is a client whose `sub` cannot be
+/// derived — a registration accepted here and failing later at a place the
+/// client cannot see the reason for.
+///
+/// Three states, and each is refused where it can still be corrected:
+///
+/// 1. No `jwks_uri` at all. An inline `jwks` is a perfectly good key source,
+///    but it has no host, so it names no sector.
+/// 2. A `sector_identifier_uri` was registered: the sector is its host, and
+///    that the document it serves lists the `jwks_uri` is checked over the
+///    network by [`ClientRegistration::check_sector_identifier_document`].
+/// 3. None was: the sector is the `jwks_uri` host, and any redirect URI on
+///    another host would be in a second sector — two `sub` values for one
+///    client, decided by which grant the request came in on.
+fn check_ciba_sector(
+    grants: &BTreeSet<GrantType>,
+    subject_type: SubjectType,
+    sector_identifier_uri: Option<&str>,
+    jwks: &JwksSource,
+    redirect_uris: &[RedirectUri],
+) -> Result<(), ClientMetadataError> {
+    if !grants.contains(&GrantType::Ciba) || subject_type != SubjectType::Pairwise {
+        return Ok(());
+    }
+    let JwksSource::Uri(jwks_uri) = jwks else {
+        return Err(ClientMetadataError::rejected(
+            "jwks_uri",
+            "a pairwise CIBA client takes its sector from the host of its jwks_uri, so an \
+             inline jwks leaves it with no sector at all (CIBA Core 1.0 §4)",
+        ));
+    };
+    if sector_identifier_uri.is_some() {
+        return Ok(());
+    }
+    let sector = Url::parse(jwks_uri)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .ok_or_else(|| ClientMetadataError::rejected("jwks_uri", "must contain a host"))?;
+    if redirect_uris.iter().any(|uri| {
+        Url::parse(uri.as_str())
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .is_none_or(|host| host != sector)
+    }) {
+        // Naming a sector explicitly is the way out, so the refusal names the
+        // member to add rather than the hosts that disagreed.
+        return Err(ClientMetadataError::Missing {
+            field: "sector_identifier_uri",
+        });
+    }
+    Ok(())
+}
+
 /// Parses an `alg` from client metadata against ADR-0003's allow-list.
 ///
 /// `none` fails here like any other unknown name, because it is not a variant
@@ -2374,7 +2679,18 @@ mod tests {
             ),
             ("urn:openid:params:grant-type:ciba", Feature::Ciba),
         ] {
-            let document = with("grant_types", json!(["authorization_code", grant]));
+            let mut document = with("grant_types", json!(["authorization_code", grant]));
+            // CIBA Core 1.0 §4 makes the delivery mode REQUIRED of a CIBA
+            // client, so a document without one would be refused for that
+            // rather than for the flag — and this test is about the flag.
+            if grant == "urn:openid:params:grant-type:ciba" {
+                let object = document.as_object_mut().expect("object");
+                object.insert("backchannel_token_delivery_mode".to_owned(), json!("poll"));
+                // §4 again: the sector of a pairwise CIBA client is its
+                // jwks_uri host, and `minimal()` carries an inline JWKS.
+                object.remove("jwks");
+                object.insert("jwks_uri".to_owned(), json!("https://rp.example/jwks"));
+            }
             let error =
                 validate_with(&document, Capabilities::default()).expect_err("the flag is off");
             assert_eq!(error.field(), "grant_types");
@@ -2967,6 +3283,17 @@ mod tests {
     /// credentials, and `none` is not a value that exists.
     #[test]
     fn no_signing_algorithm_outside_the_allow_list_can_be_registered() {
+        // `backchannel_authentication_request_signing_alg` is CIBA Core 1.0
+        // §4's, so it is carried on a CIBA document; a client that cannot make
+        // a backchannel authentication request may not register it at all,
+        // which is `the_backchannel_members_are_refused_on_a_client_that_does_not_use_ciba`.
+        let document = |field: &str, alg: &str| {
+            if field == "backchannel_authentication_request_signing_alg" {
+                ciba_with(field, json!(alg))
+            } else {
+                with(field, json!(alg))
+            }
+        };
         for field in [
             "id_token_signed_response_alg",
             "userinfo_signed_response_alg",
@@ -2976,13 +3303,14 @@ mod tests {
             for alg in [
                 "none", "None", "HS256", "RS256", "ES384", "PS512", "eddsa", "",
             ] {
-                let error = rejection(&with(field, json!(alg)));
+                let error = validate_with(&document(field, alg), everything_on())
+                    .expect_err("outside the allow-list");
                 assert_eq!(error.field(), field, "{field} accepted {alg}");
                 assert_eq!(error.code(), "invalid_client_metadata");
             }
             for alg in SigningAlgorithm::ALL {
                 assert!(
-                    validate(&with(field, json!(alg.as_str()))).is_ok(),
+                    validate_with(&document(field, alg.as_str()), everything_on()).is_ok(),
                     "{field} refused {alg}"
                 );
             }
@@ -3584,6 +3912,380 @@ mod tests {
         for status in [ClientStatus::Active, ClientStatus::Disabled] {
             assert_eq!(ClientStatus::parse(status.as_str()), Some(status));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // CIBA client metadata (CIBA Core 1.0 §4) and the device grant
+    // (RFC 8628 §3.4) — `ast-lh3.7`
+    // -----------------------------------------------------------------------
+
+    /// A CIBA client: no redirect URI, since poll and ping never reach the
+    /// authorization endpoint, and keys by reference, since §4 derives a
+    /// pairwise sector from the `jwks_uri` host.
+    fn ciba() -> serde_json::Value {
+        json!({
+            "client_name": "Teller",
+            "grant_types": ["urn:openid:params:grant-type:ciba"],
+            "response_types": [],
+            "jwks_uri": "https://rp.example/jwks",
+            "backchannel_token_delivery_mode": "poll",
+        })
+    }
+
+    /// [`ciba`] with one member set — or removed, when the value is `null`.
+    fn ciba_with(field: &str, value: serde_json::Value) -> serde_json::Value {
+        let mut document = ciba();
+        let object = document.as_object_mut().expect("object");
+        if value.is_null() {
+            object.remove(field);
+        } else {
+            object.insert(field.to_owned(), value);
+        }
+        document
+    }
+
+    fn ciba_rejection(document: &serde_json::Value) -> ClientMetadataError {
+        validate_with(document, everything_on()).expect_err("should have been rejected")
+    }
+
+    /// A ping-mode document, with whatever notification endpoint the case is
+    /// about — or none.
+    fn ping(notification: Option<&str>) -> serde_json::Value {
+        let mut document = ciba_with("backchannel_token_delivery_mode", json!("ping"));
+        if let Some(url) = notification {
+            document.as_object_mut().expect("object").insert(
+                "backchannel_client_notification_endpoint".to_owned(),
+                json!(url),
+            );
+        }
+        document
+    }
+
+    /// CIBA Core 1.0 §4: "`backchannel_token_delivery_mode` ... REQUIRED". A
+    /// client that does not say how it expects to be answered is one the
+    /// backchannel endpoint could not answer.
+    #[test]
+    fn a_ciba_client_must_register_a_token_delivery_mode() {
+        // Arrange
+        let document = ciba_with("backchannel_token_delivery_mode", json!(null));
+
+        // Act
+        let error = ciba_rejection(&document);
+
+        // Assert
+        assert_eq!(error.field(), "backchannel_token_delivery_mode");
+        assert_eq!(error.code(), "invalid_client_metadata");
+    }
+
+    /// §7.1 defines three modes; this server implements two. `push` (§10.3)
+    /// delivers the tokens themselves to a client-supplied URL, which is not a
+    /// place this server sends a credential — so the document is refused rather
+    /// than quietly downgraded to poll.
+    #[test]
+    fn push_delivery_is_refused_as_invalid_client_metadata() {
+        for mode in ["push", "Poll", "PING", "poll ping", ""] {
+            // Arrange
+            let document = ciba_with("backchannel_token_delivery_mode", json!(mode));
+
+            // Act
+            let error = ciba_rejection(&document);
+
+            // Assert
+            assert_eq!(error.code(), "invalid_client_metadata", "{mode}");
+            assert_eq!(error.field(), "backchannel_token_delivery_mode", "{mode}");
+            // The message names the three modes §7.1 defines, `push`
+            // included, as fixed text — that is what tells a client which of
+            // them it may have. What must never happen is the *document's*
+            // value being interpolated, which is why every other spelling here
+            // has to be absent from the message.
+            let echoed = error.to_string().contains(mode);
+            assert!(
+                !echoed || mode.is_empty() || mode == "push",
+                "the rejected value was echoed back: {error}"
+            );
+        }
+        for mode in TokenDeliveryMode::ALL {
+            // Ping cannot be registered without its notification endpoint;
+            // what this loop is about is the mode, so the endpoint is supplied.
+            let document = match mode {
+                TokenDeliveryMode::Poll => ciba(),
+                TokenDeliveryMode::Ping => ping(Some("https://rp.example/ciba")),
+            };
+            let accepted =
+                validate_with(&document, everything_on()).expect("a mode this server implements");
+            assert_eq!(accepted.backchannel_token_delivery_mode, Some(mode));
+        }
+    }
+
+    /// §4: `backchannel_client_notification_endpoint` is "REQUIRED if the
+    /// Client is registered to use Ping ... mode", and it is a URL this server
+    /// posts to — so https, as everything it dereferences is.
+    #[test]
+    fn ping_mode_requires_an_https_client_notification_endpoint() {
+        // Act, Assert: absent
+        let error = ciba_rejection(&ping(None));
+        assert_eq!(error.field(), "backchannel_client_notification_endpoint");
+        assert_eq!(error.code(), "invalid_client_metadata");
+
+        // Act, Assert: not a URL this server would post to
+        for value in [
+            "http://rp.example/ciba",
+            "rp.example/ciba",
+            "https://",
+            "https://rp.example/ciba#done",
+        ] {
+            let error = ciba_rejection(&ping(Some(value)));
+            assert_eq!(
+                error.field(),
+                "backchannel_client_notification_endpoint",
+                "{value}"
+            );
+        }
+
+        // Act, Assert: https
+        let accepted = validate_with(&ping(Some("https://rp.example/ciba")), everything_on())
+            .expect("ping with an https notification endpoint");
+        assert_eq!(
+            accepted.backchannel_client_notification_endpoint.as_deref(),
+            Some("https://rp.example/ciba")
+        );
+        assert_eq!(
+            accepted.backchannel_token_delivery_mode,
+            Some(TokenDeliveryMode::Ping)
+        );
+    }
+
+    /// §10.1: in poll mode the client comes to the token endpoint and is never
+    /// called back. A notification endpoint registered there is a URL nothing
+    /// reads — until a later switch to ping nobody reviewed starts posting to
+    /// it.
+    #[test]
+    fn a_poll_client_may_not_register_a_notification_endpoint() {
+        // Arrange
+        let document = ciba_with(
+            "backchannel_client_notification_endpoint",
+            json!("https://rp.example/ciba"),
+        );
+
+        // Act
+        let error = ciba_rejection(&document);
+
+        // Assert
+        assert_eq!(error.field(), "backchannel_client_notification_endpoint");
+        assert_eq!(error.code(), "invalid_client_metadata");
+    }
+
+    /// §4's members describe a backchannel authentication request. A client
+    /// that cannot make one has no use for them, and storing them would
+    /// describe an exchange that cannot happen.
+    #[test]
+    fn the_backchannel_members_are_refused_on_a_client_that_does_not_use_ciba() {
+        for (field, value) in [
+            ("backchannel_token_delivery_mode", json!("poll")),
+            (
+                "backchannel_client_notification_endpoint",
+                json!("https://rp.example/ciba"),
+            ),
+            ("backchannel_user_code_parameter", json!(true)),
+            (
+                "backchannel_authentication_request_signing_alg",
+                json!("ES256"),
+            ),
+        ] {
+            // Arrange
+            let document = with(field, value);
+
+            // Act
+            let error = validate_with(&document, everything_on()).expect_err("not a CIBA client");
+
+            // Assert
+            assert_eq!(error.field(), field);
+            assert_eq!(error.code(), "invalid_client_metadata");
+            assert!(error.to_string().contains("ciba"), "{error}");
+        }
+    }
+
+    /// The flag decides before any of §4 is read: with `ciba` off the grant is
+    /// refused, and a document carrying the whole backchannel set is refused
+    /// for the flag rather than accepted for its shape. Today that is every
+    /// deployment — the endpoint has no handler (`ast-lh3.4`).
+    #[test]
+    fn a_ciba_client_cannot_register_while_the_flag_is_off() {
+        // Arrange
+        let document = ciba();
+
+        // Act
+        let error = validate_with(&document, Capabilities::default()).expect_err("the flag is off");
+
+        // Assert
+        assert_eq!(error.field(), "grant_types");
+        assert!(error.to_string().contains("ciba"), "{error}");
+        assert!(validate_with(&document, everything_on()).is_ok());
+    }
+
+    /// §4: "the Client MUST register a `sector_identifier_uri` that contains
+    /// the `jwks_uri`, or, if no `sector_identifier_uri` is registered, the
+    /// host component of the `jwks_uri` is used as the sector identifier". An
+    /// inline JWKS has no host, so it names no sector at all.
+    #[test]
+    fn a_pairwise_ciba_client_takes_its_sector_from_its_jwks_uri() {
+        // Arrange
+        let mut inline = ciba_with("subject_type", json!("pairwise"));
+        let object = inline.as_object_mut().expect("object");
+        object.remove("jwks_uri");
+        object.insert("jwks".to_owned(), json!({"keys": [{"kty": "OKP"}]}));
+
+        // Act
+        let error = ciba_rejection(&inline);
+
+        // Assert
+        assert_eq!(error.field(), "jwks_uri");
+        assert_eq!(error.code(), "invalid_client_metadata");
+
+        let by_reference = validate_with(
+            &ciba_with("subject_type", json!("pairwise")),
+            everything_on(),
+        )
+        .expect("a jwks_uri is a sector");
+        assert_eq!(by_reference.subject_type, SubjectType::Pairwise);
+        assert_eq!(by_reference.sector_identifier_uri, None);
+    }
+
+    /// A client that is both a CIBA client and an authorization-code client
+    /// would have two sectors — the `jwks_uri` host and the redirect host — and
+    /// which `sub` a user got would depend on the grant the request arrived on.
+    /// It has to name one sector explicitly.
+    #[test]
+    fn a_pairwise_ciba_client_whose_callback_is_elsewhere_must_name_its_sector() {
+        // Arrange
+        let both_grants = |callback: &str| {
+            let mut document = ciba_with("subject_type", json!("pairwise"));
+            let object = document.as_object_mut().expect("object");
+            object.insert(
+                "grant_types".to_owned(),
+                json!(["authorization_code", "urn:openid:params:grant-type:ciba"]),
+            );
+            object.insert("response_types".to_owned(), json!(["code"]));
+            object.insert("redirect_uris".to_owned(), json!([callback]));
+            document
+        };
+
+        // Act
+        let error = ciba_rejection(&both_grants("https://app.example/cb"));
+
+        // Assert
+        assert_eq!(error.field(), "sector_identifier_uri");
+        assert_eq!(error.code(), "invalid_client_metadata");
+
+        // Same client, one host: one sector, and nothing to name.
+        assert!(validate_with(&both_grants("https://rp.example/cb"), everything_on()).is_ok());
+    }
+
+    /// §4 again, on the fetched side: the sector document must list the
+    /// `jwks_uri`, which for a poll or ping client is the only thing tying it
+    /// to the sector it claimed — there is no redirect URI to be listed.
+    #[test]
+    fn a_ciba_sector_document_must_list_the_jwks_uri() {
+        // Arrange
+        let mut document = ciba_with("subject_type", json!("pairwise"));
+        document.as_object_mut().expect("object").insert(
+            "sector_identifier_uri".to_owned(),
+            json!("https://sector.example/clients.json"),
+        );
+        let registration =
+            validate_with(&document, everything_on()).expect("a pairwise CIBA client");
+
+        // Act
+        let without = registration.check_sector_identifier_document(b"[]");
+        let with_it =
+            registration.check_sector_identifier_document(br#"["https://rp.example/jwks"]"#);
+
+        // Assert
+        let error = without.expect_err("the jwks_uri is not listed");
+        assert_eq!(error.field(), "sector_identifier_uri");
+        assert_eq!(error.code(), "invalid_client_metadata");
+        assert!(with_it.is_ok(), "{with_it:?}");
+    }
+
+    /// §4: `backchannel_user_code_parameter` is the client's statement that it
+    /// will send a `user_code`. It is stored as registered, and defaults to
+    /// false — the value `backchannel_user_code_parameter_supported` will be
+    /// compared against once there is an endpoint to compare it at.
+    #[test]
+    fn the_user_code_parameter_is_stored_as_registered() {
+        // Arrange
+        let asking = ciba_with("backchannel_user_code_parameter", json!(true));
+
+        // Act
+        let default = validate_with(&ciba(), everything_on()).expect("valid");
+        let asked = validate_with(&asking, everything_on()).expect("valid");
+
+        // Assert
+        assert!(!default.backchannel_user_code_parameter);
+        assert!(asked.backchannel_user_code_parameter);
+    }
+
+    /// RFC 8628 §3.4's grant, at registration: a device client reaches no
+    /// authorization endpoint, so it registers no redirect URI — and it is
+    /// still a confidential client with an authentication method, because
+    /// FAPI 2.0 SP §5.3.2.1 item 3 has no exception for a device.
+    #[test]
+    fn a_device_client_registers_no_callback_and_still_authenticates() {
+        // Arrange
+        let document = json!({
+            "client_name": "Kiosk",
+            "grant_types": ["urn:ietf:params:oauth:grant-type:device_code"],
+            "response_types": [],
+            "jwks_uri": "https://rp.example/jwks",
+        });
+        let capabilities = Capabilities {
+            device_flow: true,
+            ..Capabilities::default()
+        };
+
+        // Act
+        let accepted = validate_with(&document, capabilities).expect("the flag is on");
+
+        // Assert
+        assert!(accepted.allows(GrantType::DeviceCode));
+        assert!(accepted.redirect_uris.is_empty());
+        assert_eq!(
+            accepted.token_endpoint_auth_method,
+            TokenEndpointAuthMethod::PrivateKeyJwt
+        );
+        assert!(accepted.token_binding.is_dpop_bound());
+
+        // And `none` is no more registrable for a device than for anything
+        // else: there is no public client here.
+        let mut public = document.clone();
+        public
+            .as_object_mut()
+            .expect("object")
+            .insert("token_endpoint_auth_method".to_owned(), json!("none"));
+        let error = validate_with(&public, capabilities).expect_err("no public clients");
+        assert_eq!(error.field(), "token_endpoint_auth_method");
+    }
+
+    /// RFC 8628 §3.1 is behind a flag, and a tenant with the flag off cannot be
+    /// registered into it: the grant is refused where the client can still read
+    /// why, rather than at its first `POST /device_authorization`.
+    #[test]
+    fn the_device_grant_is_refused_at_registration_while_the_flag_is_off() {
+        // Arrange
+        let document = json!({
+            "client_name": "Kiosk",
+            "grant_types": ["urn:ietf:params:oauth:grant-type:device_code"],
+            "response_types": [],
+            "jwks_uri": "https://rp.example/jwks",
+        });
+
+        // Act
+        let error = validate_with(&document, Capabilities::default()).expect_err("the flag is off");
+
+        // Assert
+        assert_eq!(error.field(), "grant_types");
+        assert_eq!(error.code(), "invalid_client_metadata");
+        assert!(error.to_string().contains("device_flow"), "{error}");
     }
 
     // -----------------------------------------------------------------------

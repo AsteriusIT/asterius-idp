@@ -966,7 +966,18 @@ fn features() -> Vec<Key> {
                     Feature::GrantManagement => {
                         "Grant Management for OAuth 2.0 (Implementer's Draft)."
                     }
-                    Feature::Ciba => "CIBA Core 1.0 backchannel authentication, poll and ping.",
+                    // `ast-lh3.7`: on today, this validates and stores CIBA
+                    // client metadata and advertises nothing, because there is
+                    // no backchannel authentication endpoint yet (`ast-lh3.4`)
+                    // and CIBA Core 1.0 §4's OP metadata is REQUIRED as a set.
+                    // The sentence changes when the endpoint does.
+                    Feature::Ciba => {
+                        "CIBA Core 1.0 backchannel authentication, poll and ping. There is no \
+                         backchannel authentication endpoint yet, so switching this on \
+                         validates and stores CIBA client metadata and advertises nothing: the \
+                         discovery document names neither the endpoint, nor the delivery modes, \
+                         nor the grant type."
+                    }
                     Feature::DeviceFlow => "Device Authorization Grant (RFC 8628).",
                     Feature::TokenExchange => "Token Exchange (RFC 8693) with delegation chains.",
                     Feature::Ssf => "Shared Signals Framework transmitter and CAEP/RISC events.",
