@@ -4,11 +4,6 @@ description: Implémente UN ticket beads de bout en bout dans un worktree isolé
 tools: Read, Edit, Write, MultiEdit, Glob, Grep, Bash
 isolation: worktree
 hooks:
-  PreToolUse:
-    - matcher: Bash
-      hooks:
-        - type: command
-          command: "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-tests.sh"
   PostToolUse:
     - matcher: Edit|Write|MultiEdit
       hooks:

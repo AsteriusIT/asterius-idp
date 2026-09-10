@@ -18,7 +18,6 @@
 | Fichier | Rôle |
 |---|---|
 | `.claude/settings.json` | Liste blanche de permissions (plus de prompts pour le travail normal) + déclaration des hooks |
-| `hooks/guard-tests.sh` | Refuse `cargo test`, limite `nextest` à 3 par session |
 | `hooks/cargo-check.sh` | `cargo check` automatique après chaque `.rs` modifié, erreurs renvoyées à Claude |
 | `hooks/grind-stop.sh` | Boucle : relance l'orchestrateur avec le ticket suivant, détecte backlog vide / ticket qui tourne en rond / CI rouge |
 | `agents/ticket-worker.md` | Subagent isolé (worktree) qui implémente un ticket et rend un résumé de 10 lignes |
