@@ -471,6 +471,199 @@ async fn post_to(
     .await
 }
 
+/// [`post`], against a deployment — or, since `ast-lh3.7`, a *tenant* — with
+/// `capabilities`.
+///
+/// `crates/server/src/http/protocol.rs` passes the tenant's effective
+/// capabilities here rather than the deployment's, so what this parameter
+/// stands for at the endpoint is "what this tenant can do": the same narrowing
+/// the discovery document is rendered from and `tenant_feature_guard` refuses
+/// requests by.
+async fn post_with_capabilities(
+    capabilities: Capabilities,
+    registry: &FakeRegistry,
+    audit: &FakeAudit,
+    body: &[u8],
+) -> Response {
+    register(
+        RegisterContext {
+            tenant_policy: &asterius_domain::RegistrationPolicy::default(),
+            tenant: &tenant(),
+            clients: registry,
+            keys: &FakeKeys::provisioned(),
+            capabilities,
+            policy: &RegistrationPolicy::Open,
+            initial_access_tokens: None,
+            audit,
+            outbound: &FakeOutbound::default(),
+            request_id: Some("req-1"),
+        },
+        &json_headers(None),
+        &Bytes::copy_from_slice(body),
+        now(),
+    )
+    .await
+}
+
+/// A device client, RFC 8628 §3.4: the device-code grant, and no callback,
+/// because a device with no browser never reaches the authorization endpoint.
+fn device_document() -> Value {
+    json!({
+        "client_name": "Kiosk",
+        "grant_types": ["urn:ietf:params:oauth:grant-type:device_code"],
+        "response_types": [],
+        "jwks_uri": "https://rp.example/jwks",
+    })
+}
+
+/// `ast-lh3.7`: a tenant that has switched RFC 8628 off answers 404 at
+/// `/device_authorization` and does not advertise it, so a client registered
+/// for the grant there is one whose first request cannot work. It is refused
+/// while the client can still read why — RFC 7591 §3.2.2
+/// `invalid_client_metadata`, naming `grant_types` — and nothing is written.
+#[tokio::test]
+async fn the_device_grant_is_refused_when_the_tenants_flag_is_off() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let body = serde_json::to_vec(&device_document()).expect("serialise");
+
+    // Act
+    let response = post_with_capabilities(Capabilities::default(), &registry, &audit, &body).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let document = body_of(response).await;
+    assert_eq!(document["error"], json!("invalid_client_metadata"));
+    assert!(
+        document["error_description"]
+            .as_str()
+            .is_some_and(|text| text.contains("device_flow")),
+        "the refusal does not name the flag: {document}"
+    );
+    assert!(
+        registry.written().is_empty(),
+        "a refused registration wrote a row"
+    );
+}
+
+/// The same document against a tenant that runs the flow: registered, with the
+/// grant it asked for and the client authentication FAPI 2.0 SP §5.3.2.1
+/// item 3 requires of every client here, device or not.
+#[tokio::test]
+async fn a_device_client_registers_where_the_flow_is_enabled() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let capabilities = Capabilities {
+        device_flow: true,
+        ..Capabilities::default()
+    };
+    let body = serde_json::to_vec(&device_document()).expect("serialise");
+
+    // Act
+    let response = post_with_capabilities(capabilities, &registry, &audit, &body).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let written = registry.written();
+    assert_eq!(written.len(), 1);
+    let stored = &written[0].0;
+    assert!(
+        stored
+            .registration
+            .allows(asterius_domain::GrantType::DeviceCode)
+    );
+    assert!(stored.registration.redirect_uris.is_empty());
+    let document = body_of(response).await;
+    assert_eq!(
+        document["token_endpoint_auth_method"],
+        json!("private_key_jwt")
+    );
+}
+
+/// `ast-lh3.7`: CIBA Core 1.0 §4's members are registrable — and only
+/// together, and only behind the flag. The endpoint runs the same validator as
+/// everything else, so what is asserted here is that a CIBA client survives the
+/// whole path and comes back described as it was stored.
+#[tokio::test]
+async fn a_ciba_client_registers_and_is_echoed_with_its_delivery_mode() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let capabilities = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let document = json!({
+        "client_name": "Teller",
+        "grant_types": ["urn:openid:params:grant-type:ciba"],
+        "response_types": [],
+        "jwks_uri": "https://rp.example/jwks",
+        "backchannel_token_delivery_mode": "ping",
+        "backchannel_client_notification_endpoint": "https://rp.example/ciba",
+    });
+    let body = serde_json::to_vec(&document).expect("serialise");
+
+    // Act
+    let accepted = post_with_capabilities(capabilities, &registry, &audit, &body).await;
+    let refused = post_with_capabilities(
+        Capabilities::default(),
+        &FakeRegistry::default(),
+        &FakeAudit::default(),
+        &body,
+    )
+    .await;
+
+    // Assert
+    assert_eq!(accepted.status(), StatusCode::CREATED);
+    let echoed = body_of(accepted).await;
+    assert_eq!(echoed["backchannel_token_delivery_mode"], json!("ping"));
+    assert_eq!(
+        echoed["backchannel_client_notification_endpoint"],
+        json!("https://rp.example/ciba")
+    );
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let denial = body_of(refused).await;
+    assert_eq!(denial["error"], json!("invalid_client_metadata"));
+}
+
+/// CIBA Core 1.0 §10.3's push mode delivers the tokens themselves to a URL the
+/// client named. It is refused at the endpoint with §3.2.2's code, not silently
+/// downgraded to poll — a client that believed it had registered push would
+/// wait for a delivery that never comes.
+#[tokio::test]
+async fn push_delivery_is_refused_by_the_endpoint() {
+    // Arrange
+    let registry = FakeRegistry::default();
+    let audit = FakeAudit::default();
+    let capabilities = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let document = json!({
+        "client_name": "Teller",
+        "grant_types": ["urn:openid:params:grant-type:ciba"],
+        "response_types": [],
+        "jwks_uri": "https://rp.example/jwks",
+        "backchannel_token_delivery_mode": "push",
+        "backchannel_client_notification_endpoint": "https://rp.example/ciba",
+    });
+    let body = serde_json::to_vec(&document).expect("serialise");
+
+    // Act
+    let response = post_with_capabilities(capabilities, &registry, &audit, &body).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let denial = body_of(response).await;
+    assert_eq!(denial["error"], json!("invalid_client_metadata"));
+    assert!(
+        registry.written().is_empty(),
+        "a push-mode client was written"
+    );
+}
+
 async fn body_of(response: Response) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
         .await

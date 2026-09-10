@@ -219,6 +219,24 @@ pub fn document(client: &Client) -> Value {
     if let Some(uri) = &registration.sector_identifier_uri {
         object.insert("sector_identifier_uri".to_owned(), json!(uri));
     }
+    // CIBA Core 1.0 §4, on the same terms as `POST /register` renders it
+    // (`ast-lh3.7`): the console shows a client the way its own record reads
+    // back, and a member the operator cannot see is one they cannot check.
+    if let Some(mode) = registration.backchannel_token_delivery_mode {
+        object.insert(
+            "backchannel_token_delivery_mode".to_owned(),
+            json!(mode.as_str()),
+        );
+    }
+    if let Some(url) = &registration.backchannel_client_notification_endpoint {
+        object.insert(
+            "backchannel_client_notification_endpoint".to_owned(),
+            json!(url),
+        );
+    }
+    if registration.backchannel_user_code_parameter {
+        object.insert("backchannel_user_code_parameter".to_owned(), json!(true));
+    }
 
     rendered
 }

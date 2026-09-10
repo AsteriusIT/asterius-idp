@@ -1116,6 +1116,9 @@ mod tests {
             authorization_details_types: BTreeSet::new(),
             use_mtls_endpoint_aliases: false,
             userinfo_signed_response_alg: None,
+            backchannel_token_delivery_mode: None,
+            backchannel_client_notification_endpoint: None,
+            backchannel_user_code_parameter: false,
         }
     }
 

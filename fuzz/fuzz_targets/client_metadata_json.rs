@@ -23,7 +23,8 @@
 #![no_main]
 
 use asterius_domain::{
-    ApplicationType, Capabilities, ClientRegistration, RedirectUri, SectorIdentifier, SubjectType,
+    ApplicationType, Capabilities, ClientRegistration, GrantType, JwksSource, RedirectUri,
+    SectorIdentifier, SubjectType, TokenDeliveryMode,
 };
 use libfuzzer_sys::fuzz_target;
 
@@ -123,6 +124,59 @@ fuzz_target!(|data: &[u8]| {
                 .required_feature()
                 .is_none_or(|feature| capabilities.is_enabled(feature)),
             "the grant {grant} survived with its feature off"
+        );
+    }
+
+    // CIBA Core 1.0 §4, on whatever the fuzzer got through: the four members
+    // only exist together, and only on a client that can make a backchannel
+    // authentication request.
+    let uses_ciba = client.grant_types.contains(&GrantType::Ciba);
+    assert_eq!(
+        client.backchannel_token_delivery_mode.is_some(),
+        uses_ciba,
+        "backchannel_token_delivery_mode is REQUIRED of a CIBA client and of nothing else"
+    );
+    assert!(
+        uses_ciba || client.backchannel_client_notification_endpoint.is_none(),
+        "a notification endpoint survived on a client that does not use CIBA"
+    );
+    assert!(
+        uses_ciba || !client.backchannel_user_code_parameter,
+        "backchannel_user_code_parameter survived on a client that does not use CIBA"
+    );
+    assert!(
+        uses_ciba
+            || client
+                .backchannel_authentication_request_signing_alg
+                .is_none(),
+        "a backchannel signing algorithm survived on a client that does not use CIBA"
+    );
+    match client.backchannel_token_delivery_mode {
+        // §4: REQUIRED in ping mode, and an https URL, because §10.2 posts to
+        // it.
+        Some(TokenDeliveryMode::Ping) => {
+            let endpoint = client
+                .backchannel_client_notification_endpoint
+                .as_deref()
+                .expect("ping mode without a notification endpoint");
+            assert!(
+                endpoint.starts_with("https://") && !endpoint.contains('#'),
+                "a ping client registered a notification endpoint this server would not post to"
+            );
+        }
+        // §10.1: nothing is notified, so nothing may be registered to notify.
+        Some(TokenDeliveryMode::Poll) => assert!(
+            client.backchannel_client_notification_endpoint.is_none(),
+            "a poll client registered a notification endpoint nothing would call"
+        ),
+        None => {}
+    }
+    if uses_ciba && client.subject_type == SubjectType::Pairwise {
+        // §4: the sector is the `sector_identifier_uri` or the `jwks_uri` host,
+        // and a pairwise client with neither has no `sub` to derive.
+        assert!(
+            client.sector_identifier_uri.is_some() || matches!(&client.jwks, JwksSource::Uri(_)),
+            "a pairwise CIBA client was accepted with no sector to derive a sub in"
         );
     }
     for uri in &client.redirect_uris {

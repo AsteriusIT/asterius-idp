@@ -202,15 +202,25 @@ mod tests {
     use serde_json::json;
 
     fn registration(grants: &[&str]) -> ClientRegistration {
+        let mut document = json!({
+            "client_name": "Billing",
+            "redirect_uris": ["https://rp.example/cb"],
+            "grant_types": grants,
+            "scope": "openid",
+            "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+        });
+        // CIBA Core 1.0 §4 makes a delivery mode REQUIRED of a CIBA client, and
+        // takes its pairwise sector from the `jwks_uri` host — so a CIBA client
+        // is registered by reference. A test about grants must not be a test
+        // about §4 (`ast-lh3.7`).
+        if grants.contains(&GrantType::Ciba.as_str()) {
+            let object = document.as_object_mut().expect("object");
+            object.remove("jwks");
+            object.insert("jwks_uri".to_owned(), json!("https://rp.example/jwks"));
+            object.insert("backchannel_token_delivery_mode".to_owned(), json!("poll"));
+        }
         ClientRegistration::from_json(
-            &serde_json::to_vec(&json!({
-                "client_name": "Billing",
-                "redirect_uris": ["https://rp.example/cb"],
-                "grant_types": grants,
-                "scope": "openid",
-                "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
-            }))
-            .expect("serialise"),
+            &serde_json::to_vec(&document).expect("serialise"),
             everything(),
         )
         .expect("a valid registration")

@@ -29,7 +29,7 @@ pub use authorization_details::{
 pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
     GrantType, JwksSource, RedirectUri, RedirectUriError, SubjectType, TlsClientAuthSubject,
-    TokenBinding, TokenEndpointAuthMethod,
+    TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod,
 };
 pub use grant::{
     ClaimedGrant, Grant, GrantAuthentication, GrantError, GrantRecord, GrantStatus,
