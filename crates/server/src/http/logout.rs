@@ -525,6 +525,7 @@ fn confirmation_page(context: &LogoutContext<'_>, session_id: &str) -> Response 
                 .absolute(asterius_oidc::metadata::Endpoint::EndSession.path()),
             csrf: &confirmation_token(session_id),
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     })
     .into_response()
@@ -538,6 +539,7 @@ fn logged_out_page(context: &LogoutContext<'_>, signed_out: bool) -> Response {
             tenant_name: &context.tenant.display_name,
             signed_out,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     })
     .into_response()
@@ -573,6 +575,7 @@ fn error_page(
             message: "Something went wrong, and this request cannot continue.",
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     });
     (status, document).into_response()

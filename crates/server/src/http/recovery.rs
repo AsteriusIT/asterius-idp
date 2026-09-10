@@ -597,6 +597,7 @@ fn request_page(
             sign_in_href: context.tenant.issuer.as_str(),
             message,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     })
     .into_response()
@@ -620,6 +621,7 @@ fn sent_page(context: &RecoveryContext<'_>) -> Response {
             tenant_name: &context.tenant.display_name,
             sign_in_href: context.tenant.issuer.as_str(),
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     })
     .into_response();
@@ -648,6 +650,7 @@ fn new_password_page(
             minimum_password_length: MINIMUM_PASSWORD_LENGTH,
             message,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     })
     .into_response()
@@ -705,6 +708,7 @@ async fn refused(context: &RecoveryContext<'_>, reason: &str, now: OffsetDateTim
             message: "That link is no longer usable. Ask for a new one.",
             correlation_id: &asterius_web::interaction::correlation_id(),
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     })
     .into_response();
@@ -738,6 +742,7 @@ fn error_page(context: &RecoveryContext<'_>, status: StatusCode) -> Response {
             message: "Something went wrong. Please try again.",
             correlation_id: &asterius_web::interaction::correlation_id(),
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     })
     .into_response();

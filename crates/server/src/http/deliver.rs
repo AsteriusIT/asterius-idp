@@ -134,6 +134,7 @@ fn form_post(
             action: &action,
             fields,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     })
     .with_form_post_to(origin);

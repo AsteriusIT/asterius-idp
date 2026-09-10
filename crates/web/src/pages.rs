@@ -165,6 +165,11 @@ pub struct LoginPage<'a> {
     pub message: Option<&'a str>,
     /// The CSP nonce attribute, rendered raw. See the module docs.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and by construction unchanged by escaping; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The consent screen.
@@ -195,6 +200,11 @@ pub struct ConsentPage<'a> {
     pub csrf: &'a str,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The logout confirmation question.
@@ -217,6 +227,11 @@ pub struct LogoutConfirmationPage<'a> {
     pub csrf: &'a str,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The neutral end of a logout.
@@ -234,6 +249,11 @@ pub struct LoggedOutPage<'a> {
     pub signed_out: bool,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The passkey enrolment page: the one page in this tree that runs script.
@@ -279,6 +299,11 @@ pub struct PasskeyPage<'a> {
     pub message: Option<&'a str>,
     /// The CSP nonce attribute — here it is the script's, not only the style's.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// One response parameter, as a hidden input on the `form_post` page.
@@ -342,6 +367,11 @@ pub struct FormPostPage<'a> {
     pub fields: Vec<ResponseField>,
     /// The CSP nonce attribute — here it is the auto-submit script's.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The code-entry page of the device authorization grant.
@@ -381,6 +411,11 @@ pub struct DevicePage<'a> {
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The "is this the code your device is showing?" page.
@@ -410,6 +445,11 @@ pub struct DeviceConfirmationPage<'a> {
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The end of the device flow, in the browser.
@@ -434,6 +474,11 @@ pub struct DeviceOutcomePage<'a> {
     pub client_name: &'a str,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The account creation page.
@@ -467,6 +512,11 @@ pub struct RegistrationPage<'a> {
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The email confirmation page, in both of its states.
@@ -497,6 +547,11 @@ pub struct EmailVerificationPage<'a> {
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The "email me a reset link" form.
@@ -521,6 +576,11 @@ pub struct PasswordResetRequestPage<'a> {
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The neutral answer to a reset request.
@@ -542,6 +602,11 @@ pub struct PasswordResetSentPage<'a> {
     pub sign_in_href: &'a str,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The page a reset link leads to.
@@ -575,6 +640,11 @@ pub struct NewPasswordPage<'a> {
     pub message: Option<&'a str>,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// The error page.
@@ -595,6 +665,11 @@ pub struct ErrorPage<'a> {
     pub correlation_id: &'a str,
     /// The CSP nonce attribute.
     pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders. Escaped like any other
+    /// value, and unchanged by escaping by construction; empty for a tenant
+    /// that has set no theme.
+    pub theme_css: &'a str,
 }
 
 /// Renders a page, or an empty document if it somehow cannot.
@@ -674,6 +749,7 @@ mod tests {
                 login_hint: Some(hostile),
                 message: Some(hostile),
                 nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
             };
             let html = page.render().expect("render");
             // One script: the sign-in bootstrap the template carries. None of
@@ -712,6 +788,7 @@ mod tests {
                 action: "/interaction/x/consent",
                 csrf: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
             };
             let html = page.render().expect("render");
             assert_no_injection(&html, hostile);
@@ -728,6 +805,7 @@ mod tests {
                 message: hostile,
                 correlation_id: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
             };
             let html = page.render().expect("render");
             assert_no_injection(&html, hostile);
@@ -747,6 +825,7 @@ mod tests {
             csrf: "the-token",
             message,
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         }
     }
 
@@ -772,6 +851,7 @@ mod tests {
         let nonce = nonce();
         let html = PasskeyPage {
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
             ..passkey("ada", None)
         }
         .render()
@@ -852,6 +932,7 @@ mod tests {
             login_hint: Some("ada"),
             message: None,
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render");
@@ -892,6 +973,7 @@ mod tests {
             login_hint: None,
             message: None,
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render");
@@ -940,6 +1022,7 @@ mod tests {
             login_hint: None,
             message: None,
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render");
@@ -996,6 +1079,7 @@ mod tests {
                 action: "/logout",
                 csrf: hostile,
                 nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
             }
             .render()
             .expect("render");
@@ -1007,6 +1091,7 @@ mod tests {
                     tenant_name: hostile,
                     signed_out,
                     nonce_attribute: nonce_attribute(&nonce),
+                    theme_css: "",
                 }
                 .render()
                 .expect("render");
@@ -1027,6 +1112,7 @@ mod tests {
             action: "/logout",
             csrf: "the-token",
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render");
@@ -1105,6 +1191,7 @@ mod tests {
             message: "Something went wrong.",
             correlation_id: "abc123",
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         };
         let html = page.render().expect("render");
         assert!(
@@ -1142,6 +1229,7 @@ mod tests {
                 action: "/x",
                 csrf: "t",
                 nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
             }
             .render()
             .expect("render"),
@@ -1151,6 +1239,7 @@ mod tests {
                 message: "Something went wrong.",
                 correlation_id: "abc",
                 nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
             }
             .render()
             .expect("render"),
@@ -1177,6 +1266,7 @@ mod tests {
                 login_hint: None,
                 message: None,
                 nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
             }
             .render()
             .expect("render"),
@@ -1193,6 +1283,7 @@ mod tests {
                 action: "/x",
                 csrf: "the-token",
                 nonce_attribute: nonce_attribute(&nonce),
+                theme_css: "",
             }
             .render()
             .expect("render"),
@@ -1222,6 +1313,7 @@ mod tests {
             action: "/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render");
@@ -1249,6 +1341,7 @@ mod tests {
             action: "/interaction/x",
             csrf: "t",
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render")
@@ -1388,6 +1481,7 @@ mod tests {
                 })
                 .collect(),
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render")
@@ -1474,6 +1568,7 @@ mod tests {
                 value: "the-code".into(),
             }],
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render");
@@ -1516,6 +1611,7 @@ mod tests {
             user_code,
             message,
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         })
     }
 
@@ -1529,6 +1625,7 @@ mod tests {
             csrf: "token",
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         })
     }
 
@@ -1582,6 +1679,7 @@ mod tests {
             connected: false,
             client_name: "Example App",
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         });
         assert!(!refused.contains("Example App"), "{refused}");
         for oracle in ["expired", "cancelled", "unknown", "already"] {
@@ -1597,6 +1695,7 @@ mod tests {
             connected: true,
             client_name: "Example App",
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         });
         assert!(connected.contains("Example App"), "{connected}");
     }
@@ -1617,6 +1716,7 @@ mod tests {
             sign_in_href: "/login",
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         })
     }
 
@@ -1631,6 +1731,7 @@ mod tests {
             csrf: "token",
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         })
     }
 
@@ -1645,6 +1746,7 @@ mod tests {
             minimum_password_length: 12,
             message: None,
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         })
     }
 
@@ -1673,6 +1775,7 @@ mod tests {
             tenant_name: "Demo",
             sign_in_href: "/login",
             nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
         });
         // The body only: the shared stylesheet in the head has an `@media`
         // rule in it, and a check that tripped on it would have to be relaxed
@@ -1756,6 +1859,7 @@ mod tests {
                 login_hint: None,
                 message: Some("That did not match."),
                 nonce_attribute: nonce_attribute(&nonce()),
+                theme_css: "",
             }),
         ] {
             assert_eq!(
@@ -1776,6 +1880,7 @@ mod tests {
             message: "x",
             correlation_id: "y",
             nonce_attribute: nonce_attribute(&nonce),
+            theme_css: "",
         }
         .render()
         .expect("render");

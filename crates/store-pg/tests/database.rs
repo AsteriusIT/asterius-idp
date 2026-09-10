@@ -11500,3 +11500,281 @@ mod recovery {
         }
     }
 }
+
+/// A tenant's design tokens and the images they name (`ast-ndk.1`).
+mod themes {
+    use super::*;
+    use asterius_domain::entities::theme::ImageFormat;
+    use asterius_domain::ports::{StoredAsset, ThemeRepository as _};
+    use asterius_domain::{DomainError, Theme};
+    use asterius_store_pg::PgThemes;
+
+    /// A theme a tenant could plausibly have chosen: not the defaults, so a
+    /// read that quietly fell back to them fails the assertion.
+    fn chosen() -> Theme {
+        Theme::from_json(&serde_json::json!({
+            "palette": {
+                "background": "#fffdf7",
+                "text": "#1a1a1a",
+                "muted_text": "#4a4a4a",
+                "accent": "#7b2d8e",
+                "accent_text": "#ffffff",
+                "danger": "#8b1a1a"
+            },
+            "font": "system-serif",
+            "radius_px": 12,
+            "spacing_px": 10,
+            "product_name": "Acme Identity",
+            "support": {"help_url": "https://help.example.com/"}
+        }))
+        .expect("the fixture clears WCAG AA on every pair")
+    }
+
+    /// Bytes standing in for a re-encoded logo. Their digest is computed the
+    /// way the upload adapter computes it, over what is stored.
+    fn asset(bytes: &[u8]) -> StoredAsset {
+        use sha2::{Digest, Sha256};
+        StoredAsset {
+            digest: hex::encode(Sha256::digest(bytes)),
+            format: ImageFormat::Png,
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    db_test! {
+        /// What was saved is what comes back, tokens and all.
+        async fn a_theme_survives_the_round_trip(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repository = PgThemes::new(db.pool.clone());
+
+            repository
+                .save_theme(&TenantId::new("demo"), &chosen())
+                .await
+                .expect("save");
+
+            let read = repository
+                .theme(&TenantId::new("demo"))
+                .await
+                .expect("read back");
+            assert_eq!(read, chosen());
+        }
+    }
+
+    db_test! {
+        /// A second save replaces the theme rather than adding a row: a tenant
+        /// has one look, and two rows would make which one renders a matter of
+        /// ordering.
+        async fn saving_twice_replaces_the_theme(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repository = PgThemes::new(db.pool.clone());
+
+            repository.save_theme(&TenantId::new("demo"), &Theme::default()).await.expect("first");
+            repository.save_theme(&TenantId::new("demo"), &chosen()).await.expect("second");
+
+            let rows: i64 = sqlx::query_scalar("select count(*) from tenant_themes where tenant_id = $1")
+                .bind("demo")
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
+            assert_eq!(rows, 1);
+            assert_eq!(
+                repository.theme(&TenantId::new("demo")).await.expect("read"),
+                chosen()
+            );
+        }
+    }
+
+    db_test! {
+        /// A tenant that has never set a theme reads the shipped one, without
+        /// needing a write first.
+        async fn a_tenant_that_never_chose_reads_the_default_theme(db) {
+            seed_tenant(&db.pool, "demo").await;
+
+            let read = PgThemes::new(db.pool.clone())
+                .theme(&TenantId::new("demo"))
+                .await
+                .expect("an unset tenant is readable");
+
+            assert_eq!(read, Theme::default());
+        }
+    }
+
+    db_test! {
+        /// A theme saved for a tenant that does not exist is `NotFound`, not a
+        /// storage error and not a silent success.
+        async fn an_unknown_tenant_cannot_be_themed(db) {
+            let error = PgThemes::new(db.pool.clone())
+                .save_theme(&TenantId::new("ghost"), &chosen())
+                .await
+                .expect_err("no such tenant");
+
+            assert!(matches!(error, DomainError::NotFound), "{error:?}");
+        }
+    }
+
+    db_test! {
+        /// A stored document this build refuses fails the read rather than
+        /// falling back to the defaults: a palette that reverted on its own is
+        /// a brand an administrator believes is in force and is not — and it
+        /// is the one way an unvalidated palette could reach a page.
+        async fn a_stored_document_that_fails_validation_fails_the_read(db) {
+            seed_tenant(&db.pool, "demo").await;
+            // Written past the repository, as a migration or a psql session
+            // would: #999999 on white is 2.85:1, below WCAG AA.
+            let mut document = chosen().to_json();
+            document["palette"]["text"] = serde_json::json!("#999999");
+            sqlx::query("insert into tenant_themes (tenant_id, document) values ($1, $2)")
+                .bind("demo")
+                .bind(&document)
+                .execute(&db.pool)
+                .await
+                .expect("write behind the repository's back");
+
+            let error = PgThemes::new(db.pool.clone())
+                .theme(&TenantId::new("demo"))
+                .await
+                .expect_err("an unreadable palette is not served");
+
+            assert!(matches!(error, DomainError::Invalid { .. }), "{error:?}");
+        }
+    }
+
+    db_test! {
+        /// An asset is stored under the digest of its bytes and read back
+        /// whole.
+        async fn an_asset_round_trips_under_its_digest(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repository = PgThemes::new(db.pool.clone());
+            let logo = asset(b"not really a png, but it is what was stored");
+
+            repository.store_asset(&TenantId::new("demo"), &logo).await.expect("store");
+
+            let read = repository
+                .asset(&TenantId::new("demo"), &logo.digest)
+                .await
+                .expect("read")
+                .expect("the asset is there");
+            assert_eq!(read, logo);
+        }
+    }
+
+    db_test! {
+        /// Storing the same bytes twice is one row and not an error: the
+        /// digest is over the bytes, so the second write has nothing to change
+        /// and a retried upload must not fail.
+        async fn storing_the_same_asset_twice_is_idempotent(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repository = PgThemes::new(db.pool.clone());
+            let logo = asset(b"the same logo, uploaded twice");
+
+            repository.store_asset(&TenantId::new("demo"), &logo).await.expect("first");
+            repository.store_asset(&TenantId::new("demo"), &logo).await.expect("second");
+
+            let rows: i64 = sqlx::query_scalar(
+                "select count(*) from tenant_theme_assets where tenant_id = $1",
+            )
+            .bind("demo")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count");
+            assert_eq!(rows, 1);
+        }
+    }
+
+    db_test! {
+        /// One tenant cannot read another's asset by naming its digest.
+        ///
+        /// A digest is not a secret — anybody who has seen a logo can compute
+        /// it — so the isolation has to come from the query, not from the
+        /// difficulty of guessing.
+        async fn an_asset_is_not_readable_across_tenants(db) {
+            seed_tenant(&db.pool, "one").await;
+            seed_tenant(&db.pool, "two").await;
+            let repository = PgThemes::new(db.pool.clone());
+            let logo = asset(b"tenant one's logo");
+            repository.store_asset(&TenantId::new("one"), &logo).await.expect("store");
+
+            let read = repository
+                .asset(&TenantId::new("two"), &logo.digest)
+                .await
+                .expect("the read succeeds");
+
+            assert!(read.is_none(), "tenant two read tenant one's asset");
+        }
+    }
+
+    db_test! {
+        /// A digest nothing stored is `None`, not an error: a theme naming an
+        /// asset that is gone renders a page without a logo.
+        async fn an_unknown_digest_is_not_an_error(db) {
+            seed_tenant(&db.pool, "demo").await;
+
+            let read = PgThemes::new(db.pool.clone())
+                .asset(&TenantId::new("demo"), &"a".repeat(64))
+                .await
+                .expect("the read succeeds");
+
+            assert!(read.is_none());
+        }
+    }
+
+    db_test! {
+        /// Deleting a tenant takes its theme and its assets with it. A blob
+        /// that outlived the tenant it belonged to would be a logo nobody can
+        /// reach and nobody can delete.
+        async fn deleting_a_tenant_takes_its_theme_and_assets(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repository = PgThemes::new(db.pool.clone());
+            repository.save_theme(&TenantId::new("demo"), &chosen()).await.expect("save");
+            repository
+                .store_asset(&TenantId::new("demo"), &asset(b"a logo"))
+                .await
+                .expect("store");
+
+            sqlx::query("delete from tenants where tenant_id = $1")
+                .bind("demo")
+                .execute(&db.pool)
+                .await
+                .expect("delete the tenant");
+
+            for table in ["tenant_themes", "tenant_theme_assets"] {
+                let rows: i64 = sqlx::query_scalar(&format!("select count(*) from {table}"))
+                    .fetch_one(&db.pool)
+                    .await
+                    .expect("count");
+                assert_eq!(rows, 0, "{table} kept a row past its tenant");
+            }
+        }
+    }
+
+    db_test! {
+        /// The check constraints are the last line: a row written past the
+        /// repository still cannot name a media type this server will not
+        /// serve, and cannot carry a digest that is not a safe path segment.
+        async fn the_column_constraints_refuse_svg_and_a_traversable_digest(db) {
+            seed_tenant(&db.pool, "demo").await;
+
+            let svg = sqlx::query(
+                "insert into tenant_theme_assets (tenant_id, digest, content_type, bytes)
+                 values ($1, $2, 'image/svg+xml', $3)",
+            )
+            .bind("demo")
+            .bind("a".repeat(64))
+            .bind(b"<svg onload=alert(1)></svg>".to_vec())
+            .execute(&db.pool)
+            .await;
+            assert!(svg.is_err(), "an SVG row was accepted");
+
+            let traversal = sqlx::query(
+                "insert into tenant_theme_assets (tenant_id, digest, content_type, bytes)
+                 values ($1, $2, 'image/png', $3)",
+            )
+            .bind("demo")
+            .bind("../../etc/passwd")
+            .bind(b"bytes".to_vec())
+            .execute(&db.pool)
+            .await;
+            assert!(traversal.is_err(), "a digest that is not hex was accepted");
+        }
+    }
+}

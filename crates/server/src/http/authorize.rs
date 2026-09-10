@@ -547,6 +547,7 @@ fn error_page(context: &AuthorizeContext<'_>, status: StatusCode) -> Response {
             message: "This sign-in request cannot be continued.",
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
+            theme_css: "",
         })
     });
     (status, document).into_response()

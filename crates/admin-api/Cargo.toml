@@ -13,6 +13,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+image.workspace = true
+hex.workspace = true
+sha2.workspace = true
 askama.workspace = true
 asterius-domain.workspace = true
 # The console's entry document is HTML, and `asterius_web::Document` is the one

@@ -56,6 +56,7 @@ pub mod operations;
 pub mod pagination;
 pub mod rbac;
 pub mod router;
+pub mod theme_image;
 pub mod throttle;
 
 pub use backend::{AdminBackend, AdminTokens, PresentedToken, TokenPrincipal};
@@ -64,6 +65,7 @@ pub use error::AdminError;
 pub use operations::{Effect, Method, Mutating, Operation, Safe};
 pub use rbac::{Authority, Held, Reach};
 pub use router::{AdminApi, AdminState, ClientAddress};
+pub use theme_image::{ImageError, ReEncodedImage};
 
 use operations::{Mutating as M, Safe as S};
 use rbac::{Authority as A, Reach as R};
