@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update tenants\n             set settings = coalesce(settings, '{}'::jsonb)\n                            || jsonb_build_object('options', $2::jsonb),\n                 updated_at = now()\n             where tenant_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a3ba2c7d0fb58d8bedba01364f6f761a39b90908d43729418ce0e30b1184b55c"
+}

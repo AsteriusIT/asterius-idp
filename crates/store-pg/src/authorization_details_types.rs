@@ -1,20 +1,18 @@
 //! One tenant's registered authorization details types, over `PostgreSQL`
 //! (RFC 9396 §2.1).
 //!
-//! # These are runtime queries, not `query!`
+//! # Checked against the schema, not just against the tests
 //!
-//! The same trade [`crate::resource_servers`] states, and for the same reason:
-//! `sqlx::query!` checks a statement against a live database at compile time
-//! and records the result in `.sqlx/`, so a statement added with it cannot be
-//! compiled without a migrated database to hand. The statements here are a
-//! single-table read and a single-row upsert over a table this crate owns
-//! outright, and what compile-time checking would catch is caught by the
-//! database tests in `crates/store-pg/tests/database.rs`.
+//! Every statement here is `sqlx::query!`, like [`crate::resource_servers`]
+//! beside it: the column list and the bind types are checked against a
+//! migrated database at compile time and recorded in `.sqlx/`. The `schema`
+//! column is the reason it earns its keep — it is `jsonb`, and a bind that
+//! drifted to `text` would store a registered type nothing could ever read
+//! back.
 
 use crate::error::to_domain_error;
 use asterius_domain::ports::AuthorizationDetailsTypeRepository;
 use asterius_domain::{AuthorizationDetailsType, DomainError, JsonSchema, TenantId};
-use sqlx::Row as _;
 use sqlx::postgres::PgPool;
 
 /// [`AuthorizationDetailsTypeRepository`] over `PostgreSQL`, scoped to one
@@ -59,18 +57,18 @@ impl PgAuthorizationDetailsTypes {
         JsonSchema::parse(schema).map_err(|failure| {
             DomainError::invalid("authorization_details_types.schema", failure.to_string())
         })?;
-        sqlx::query(
+        sqlx::query!(
             "insert into authorization_details_types
                  (tenant_id, type_name, schema, consent_template)
              values ($1, $2, $3, $4)
              on conflict (tenant_id, type_name) do update
              set schema = excluded.schema,
                  consent_template = excluded.consent_template",
+            self.tenant.as_str(),
+            kind.name,
+            schema,
+            kind.consent_template.as_deref()
         )
-        .bind(self.tenant.as_str())
-        .bind(&kind.name)
-        .bind(schema)
-        .bind(kind.consent_template.as_deref())
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?;
@@ -88,12 +86,12 @@ impl PgAuthorizationDetailsTypes {
     ///
     /// [`DomainError::Storage`] if the delete fails.
     pub async fn withdraw(&self, name: &str) -> Result<bool, DomainError> {
-        let affected = sqlx::query(
+        let affected = sqlx::query!(
             "delete from authorization_details_types
               where tenant_id = $1 and type_name = $2",
+            self.tenant.as_str(),
+            name
         )
-        .bind(self.tenant.as_str())
-        .bind(name)
         .execute(&self.pool)
         .await
         .map_err(to_domain_error)?
@@ -105,23 +103,22 @@ impl PgAuthorizationDetailsTypes {
 #[async_trait::async_trait]
 impl AuthorizationDetailsTypeRepository for PgAuthorizationDetailsTypes {
     async fn list(&self) -> Result<Vec<AuthorizationDetailsType>, DomainError> {
-        let rows = sqlx::query(
+        let rows = sqlx::query!(
             "select type_name, schema, consent_template
                from authorization_details_types
               where tenant_id = $1
               order by type_name",
+            self.tenant.as_str()
         )
-        .bind(self.tenant.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(to_domain_error)?;
 
         let mut types = Vec::with_capacity(rows.len());
         for row in rows {
-            let name: String = row.try_get("type_name").map_err(to_domain_error)?;
-            let schema: serde_json::Value = row.try_get("schema").map_err(to_domain_error)?;
-            let consent_template: Option<String> =
-                row.try_get("consent_template").map_err(to_domain_error)?;
+            let name = row.type_name;
+            let schema = row.schema;
+            let consent_template = row.consent_template;
             // A stored schema this server cannot validate against fails the
             // read rather than being replaced by an empty one: an unparseable
             // schema silently read as `{}` would admit every element it was

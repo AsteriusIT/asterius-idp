@@ -10799,3 +10799,268 @@ mod previous_kek {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tenant settings
+// ---------------------------------------------------------------------------
+
+/// The `options` member of `tenants.settings`, over a real column.
+///
+/// What only a database can answer about this adapter is where the document
+/// lands and what it displaces: the settings share one `jsonb` column with the
+/// refresh policy `PgTenantRepository` writes, so "saved" has to mean "saved
+/// beside", not "saved over". The rest of these assert the two halves of the
+/// port agree about the member name — a reader and a writer that disagree
+/// produce a tenant whose settings are written and never read, which from the
+/// outside is indistinguishable from a cache that will not invalidate.
+mod tenant_settings {
+    use super::*;
+    use asterius_domain::entities::tenant_settings::{
+        MAX_ACCESS_TOKEN_LIFETIME, MAX_AUTHORIZATION_CODE_LIFETIME,
+    };
+    use asterius_domain::ports::TenantSettingsRepository as _;
+    use asterius_domain::{DomainError, Feature, TenantSettings};
+    use asterius_store_pg::PgTenantSettings;
+    use std::collections::BTreeSet;
+    use time::Duration;
+
+    /// Settings a tenant could plausibly have chosen: not the defaults, so a
+    /// read that quietly fell back to them fails the assertion.
+    fn chosen() -> TenantSettings {
+        let mut disabled = BTreeSet::new();
+        disabled.insert(Feature::Mtls);
+        disabled.insert(Feature::DeviceFlow);
+        TenantSettings::validated(disabled, Duration::seconds(30), Duration::minutes(10))
+            .expect("both lifetimes are under the profile's ceilings")
+    }
+
+    /// The raw `settings` document, as the column holds it.
+    async fn document(pool: &PgPool, tenant: &str) -> serde_json::Value {
+        sqlx::query_scalar("select settings from tenants where tenant_id = $1")
+            .bind(tenant)
+            .fetch_one(pool)
+            .await
+            .expect("read the settings column")
+    }
+
+    db_test! {
+        /// What was saved is what comes back.
+        async fn settings_survive_the_column(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repository = PgTenantSettings::new(db.pool.clone());
+
+            repository
+                .save(&TenantId::new("demo"), &chosen())
+                .await
+                .expect("save");
+
+            let read = repository
+                .settings(&TenantId::new("demo"))
+                .await
+                .expect("read back");
+            assert_eq!(read, chosen());
+        }
+    }
+
+    db_test! {
+        /// A tenant that has never expressed an opinion reads the defaults.
+        ///
+        /// The absent member is the whole point: it is not the same as a
+        /// stored document this build refuses, and a fresh tenant must not
+        /// need a write before it can be read.
+        async fn a_tenant_that_never_chose_reads_the_defaults(db) {
+            seed_tenant(&db.pool, "demo").await;
+
+            let read = PgTenantSettings::new(db.pool.clone())
+                .settings(&TenantId::new("demo"))
+                .await
+                .expect("an unset tenant is readable");
+
+            assert_eq!(read, TenantSettings::default());
+        }
+    }
+
+    db_test! {
+        /// A tenant that is not there is `NotFound`, not the defaults.
+        ///
+        /// Defaults for a row that does not exist would let a request for a
+        /// deleted tenant answer as if it were live.
+        async fn an_absent_tenant_is_not_found(db) {
+            let outcome = PgTenantSettings::new(db.pool.clone())
+                .settings(&TenantId::new("never-provisioned"))
+                .await;
+
+            assert!(matches!(outcome, Err(DomainError::NotFound)), "got {outcome:?}");
+        }
+    }
+
+    db_test! {
+        /// Saving for a tenant that is not there is `NotFound`, not a silent
+        /// no-op: an update matching no row still "succeeds" in SQL, and an
+        /// operator told "saved" about a tenant that does not exist would go
+        /// looking for the setting anywhere but here.
+        async fn saving_for_an_absent_tenant_is_not_found(db) {
+            let outcome = PgTenantSettings::new(db.pool.clone())
+                .save(&TenantId::new("never-provisioned"), &chosen())
+                .await;
+
+            assert!(matches!(outcome, Err(DomainError::NotFound)), "got {outcome:?}");
+        }
+    }
+
+    db_test! {
+        /// A save merges into the document rather than replacing it.
+        ///
+        /// `refresh` belongs to `PgTenantRepository`, and the two write the
+        /// same column. A write of the whole document would revoke the tenant's
+        /// refresh policy as a side effect of switching a feature off.
+        async fn a_save_leaves_the_neighbouring_members_alone(db) {
+            seed_tenant(&db.pool, "demo").await;
+            sqlx::query(
+                "update tenants
+                    set settings = jsonb_build_object('refresh', $2::jsonb)
+                  where tenant_id = $1",
+            )
+            .bind("demo")
+            .bind(serde_json::json!({"rotation": "always"}))
+            .execute(&db.pool)
+            .await
+            .expect("seed a refresh policy beside the options");
+
+            PgTenantSettings::new(db.pool.clone())
+                .save(&TenantId::new("demo"), &chosen())
+                .await
+                .expect("save");
+
+            let document = document(&db.pool, "demo").await;
+            assert_eq!(
+                document.get("refresh"),
+                Some(&serde_json::json!({"rotation": "always"})),
+                "the refresh policy was displaced by an options write"
+            );
+            assert!(document.get("options").is_some(), "options were not written");
+        }
+    }
+
+    db_test! {
+        /// A second save replaces the `options` member whole.
+        ///
+        /// Merged members here would leave settings read half from one write
+        /// and half from another — settings nobody chose. A feature switched
+        /// back on has to actually come back on.
+        async fn a_second_save_replaces_the_member_rather_than_merging_it(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let repository = PgTenantSettings::new(db.pool.clone());
+            repository
+                .save(&TenantId::new("demo"), &chosen())
+                .await
+                .expect("first save");
+
+            repository
+                .save(&TenantId::new("demo"), &TenantSettings::default())
+                .await
+                .expect("second save");
+
+            let read = repository
+                .settings(&TenantId::new("demo"))
+                .await
+                .expect("read back");
+            assert_eq!(read, TenantSettings::default());
+            assert!(
+                read.disabled_features().is_empty(),
+                "a feature disabled by the first save survived the second"
+            );
+        }
+    }
+
+    db_test! {
+        /// The adapter offers no route around the profile's ceilings.
+        ///
+        /// FAPI 2.0's ceilings are enforced by `TenantSettings::validated`, so
+        /// the proof the store cannot bypass them is that there is nothing
+        /// above the ceiling to hand it: `save` takes a `TenantSettings`, and
+        /// the only way to build one refuses. This asserts the refusal so that
+        /// a widened `save` signature — a `Value`, a lifetime pair — fails
+        /// here rather than in production.
+        async fn a_lifetime_past_the_fapi_ceiling_cannot_be_handed_to_the_store(db) {
+            seed_tenant(&db.pool, "demo").await;
+
+            let too_long = TenantSettings::validated(
+                BTreeSet::new(),
+                MAX_AUTHORIZATION_CODE_LIFETIME,
+                MAX_ACCESS_TOKEN_LIFETIME + Duration::seconds(1),
+            );
+
+            assert!(too_long.is_err(), "the store would have been handed an over-long lifetime");
+            let document = document(&db.pool, "demo").await;
+            assert!(
+                document.get("options").is_none(),
+                "nothing should have reached the column"
+            );
+        }
+    }
+
+    db_test! {
+        /// A hand-edited row above the ceiling fails the read.
+        ///
+        /// Rows get edited during incidents. A lifetime that quietly reverted
+        /// to this build's default is a setting an operator believes is in
+        /// force and is not, so the read refuses rather than falling back.
+        async fn a_stored_lifetime_above_the_ceiling_is_refused_on_the_way_out(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let mut smuggled = chosen().to_json();
+            smuggled["access_token_lifetime_seconds"] =
+                serde_json::json!(MAX_ACCESS_TOKEN_LIFETIME.whole_seconds() + 1);
+            sqlx::query(
+                "update tenants
+                    set settings = coalesce(settings, '{}'::jsonb)
+                                   || jsonb_build_object('options', $2::jsonb)
+                  where tenant_id = $1",
+            )
+            .bind("demo")
+            .bind(&smuggled)
+            .execute(&db.pool)
+            .await
+            .expect("smuggle a row past the domain");
+
+            let outcome = PgTenantSettings::new(db.pool.clone())
+                .settings(&TenantId::new("demo"))
+                .await;
+
+            assert!(
+                matches!(outcome, Err(DomainError::Invalid { field, .. }) if field == "settings.options"),
+                "got {outcome:?}"
+            );
+        }
+    }
+
+    db_test! {
+        /// The writer's member name is the one the reader looks under.
+        ///
+        /// `save` spells `'options'` inside a `query!` statement, which cannot
+        /// take it from the module's constant; `settings` reads through that
+        /// constant. This is what keeps the two from drifting apart.
+        async fn the_written_member_is_the_one_read_back(db) {
+            seed_tenant(&db.pool, "demo").await;
+            PgTenantSettings::new(db.pool.clone())
+                .save(&TenantId::new("demo"), &chosen())
+                .await
+                .expect("save");
+
+            let document = document(&db.pool, "demo").await;
+            let member = document
+                .as_object()
+                .expect("settings is an object")
+                .keys()
+                .find(|key| key.as_str() != "refresh")
+                .expect("the save wrote a member")
+                .clone();
+
+            assert_eq!(member, "options");
+            assert_eq!(
+                TenantSettings::from_json(document.get(&member)).expect("parses"),
+                chosen()
+            );
+        }
+    }
+}
