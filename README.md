@@ -107,6 +107,9 @@ development value; [`deploy/README.md`](deploy/README.md) lists what has to
 change before the shape is safe anywhere real, and
 [`docs/configuration.md`](docs/configuration.md) documents every configuration
 key with its type, its default and where its secrets should come from.
+[`docs/deployment/tls-and-proxy.md`](docs/deployment/tls-and-proxy.md) covers
+TLS, HSTS and what a reverse proxy in front of this server must set — and must
+strip.
 
 Once it is running, [`docs/runbooks/`](docs/runbooks/README.md) holds the
 operational procedures: [upgrading](docs/runbooks/upgrade.md),
