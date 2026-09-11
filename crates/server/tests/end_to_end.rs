@@ -1370,6 +1370,18 @@ fn csrf_from(html: &str) -> String {
     rest[..end].to_owned()
 }
 
+/// The request a decision form names: the `auth_req_id` digest, hex.
+fn approval_reference_from(html: &str) -> String {
+    let marker = r#"name="approval" value=""#;
+    let start = html
+        .find(marker)
+        .unwrap_or_else(|| panic!("no approval field in the rendered page:\n{html}"))
+        + marker.len();
+    let rest = &html[start..];
+    let end = rest.find('"').expect("the approval value is quoted");
+    rest[..end].to_owned()
+}
+
 /// One query parameter of a URL.
 fn parameter(url: &str, name: &str) -> Option<String> {
     let query = url.split_once('?')?.1;
@@ -5622,6 +5634,7 @@ impl Flow {
             .ciba_requests(Arc::clone(&self.kek))
             .approve(
                 &asterius_domain::sha256_hex(auth_req_id.as_bytes()),
+                &self.user,
                 &grant.id,
                 now,
             )
@@ -5638,11 +5651,98 @@ impl Flow {
             .ciba_requests(Arc::clone(&self.kek))
             .deny(
                 &asterius_domain::sha256_hex(auth_req_id.as_bytes()),
+                &self.user,
                 OffsetDateTime::now_utc(),
             )
             .await
             .expect("deny the request");
         assert!(moved, "the request was not pending");
+    }
+
+    /// Gives this flow's person an address, so the approvals notification has
+    /// somewhere to go (`ast-lh3.6`).
+    async fn give_the_user_an_address(&self, address: &str) {
+        let now = OffsetDateTime::now_utc();
+        PgUserRepository::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+            Arc::clone(&self.kek),
+        )
+        .upsert(&User {
+            tenant: self.tenant.id.clone(),
+            id: self.user,
+            username: self.user.as_uuid().to_string(),
+            email: Some(address.to_owned()),
+            email_verified: true,
+            status: UserStatus::Active,
+            claims: ClaimSet::default(),
+            created_at: now,
+            updated_at: now,
+        })
+        .await
+        .expect("store the address");
+    }
+
+    /// What the journal sender has been handed for this tenant.
+    async fn queued_notifications(&self) -> Vec<asterius_store_pg::QueuedNotification> {
+        asterius_store_pg::PgOutboxMailSender::new(
+            self.store.pool().clone(),
+            self.tenant.id.clone(),
+        )
+        .queued()
+        .await
+        .expect("read the outbox")
+    }
+
+    /// The approvals inbox, signed in: RFC 8628's answer to a visitor with no
+    /// session applies here too, so the journey starts at the interaction
+    /// pages and comes back.
+    async fn open_the_approvals_inbox(&mut self) -> String {
+        let path = format!("{}/account/approvals", self.prefix());
+
+        let unauthenticated = self.get(&path).await;
+        assert_eq!(
+            unauthenticated.status,
+            StatusCode::SEE_OTHER,
+            "an unauthenticated visitor was shown the approvals inbox: {}",
+            unauthenticated.text()
+        );
+        let interaction = format!(
+            "{}/{}",
+            self.prefix(),
+            unauthenticated
+                .location()
+                .trim_start_matches("../")
+                .to_owned()
+        );
+        self.sign_in(&interaction).await;
+        let arrived = self.get(&interaction).await;
+        assert_eq!(arrived.status, StatusCode::SEE_OTHER, "{}", arrived.text());
+        assert!(
+            arrived.location().contains("account/approvals"),
+            "the first-party interaction did not end at the inbox: {}",
+            arrived.location()
+        );
+
+        let page = self.get(&path).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+        page.text()
+    }
+
+    /// One decision, as the page's form makes it.
+    async fn decide_approval(&mut self, html: &str, verdict: &str) -> Reply {
+        let csrf = csrf_from(html);
+        let approval = approval_reference_from(html);
+        self.post_form(
+            &format!("{}/account/approvals/decide", self.prefix()),
+            &[
+                ("csrf", &csrf),
+                ("approval", &approval),
+                ("decision", verdict),
+            ],
+            None,
+        )
+        .await
     }
 
     /// The `ciba.ping` rows this tenant has queued.
@@ -6124,6 +6224,228 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for QueryLog {
             .expect("no test panicked holding the log")
             .push(summary.0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The approvals inbox (CIBA Core 1.0 §8, §7.1; RFC 8628 §5.3 — `ast-lh3.6`)
+// ---------------------------------------------------------------------------
+
+/// CIBA Core 1.0 §8: the decision is taken by the person, on a device of their
+/// own, and §10.1's poll only succeeds afterwards. §7.1: the `binding_message`
+/// is shown here so it can be compared against the device that started the
+/// flow.
+#[tokio::test]
+async fn a_backchannel_request_is_listed_approved_once_and_then_redeemable() {
+    let capabilities = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = flow.register_ciba_client(CIBA_POLL_CLIENT, "poll").await;
+    let proof = ProofKey::generate();
+    flow.give_the_user_an_address("ada@example.test").await;
+
+    // Arrange: §7.1 — a request with a binding message, asking for the
+    // authentication class this person's passkey reaches.
+    let asked = flow
+        .backchannel_authenticate(
+            CIBA_POLL_CLIENT,
+            &key,
+            "ciba-inbox-1",
+            &[
+                ("binding_message", "W4SCT"),
+                ("acr_values", asterius_domain::entities::acr_policy::PASSKEY),
+            ],
+        )
+        .await;
+    let auth_req_id = auth_req_id_of(&asked);
+
+    // Assert: the person was told, through the notification port. The message
+    // carries the binding message, because §7.1 has them compare two screens.
+    let queued = flow.queued_notifications().await;
+    let approval = queued
+        .iter()
+        .find(|message| message.kind == "approval_requested")
+        .expect("the person was not notified that something was waiting");
+    assert_eq!(approval.recipient, "ada@example.test");
+    assert_eq!(approval.payload["binding_message"], "W4SCT");
+    assert!(
+        approval.payload["link"]
+            .as_str()
+            .expect("a link")
+            .ends_with("/account/approvals"),
+        "the notification does not lead to the inbox: {}",
+        approval.payload
+    );
+
+    // Act: the person opens the inbox.
+    let html = flow.open_the_approvals_inbox().await;
+
+    // Assert: §7.1's binding message, the client that asked, what it asked
+    // for, and RFC 8628 §5.3's warning.
+    assert!(
+        html.contains("W4SCT"),
+        "the binding message was not rendered:\n{html}"
+    );
+    assert!(
+        html.contains("Teller agent"),
+        "the client was not named:\n{html}"
+    );
+    assert!(
+        html.contains("openid"),
+        "the scopes were not shown:\n{html}"
+    );
+    assert!(
+        html.contains("If you did not start this yourself"),
+        "no anti-phishing warning:\n{html}"
+    );
+    assert!(
+        html.contains("Expires in"),
+        "no countdown, which a page with no script has to render itself:\n{html}"
+    );
+
+    // Act: the decision.
+    let approved = flow.decide_approval(&html, "approve").await;
+    assert_eq!(approved.status, StatusCode::OK, "{}", approved.text());
+    assert!(
+        approved.text().contains("Approved."),
+        "the decision was not confirmed:\n{}",
+        approved.text()
+    );
+
+    // Assert: a request cannot be approved twice. The same form again finds
+    // nothing pending, and says the one thing this page says about a request
+    // that is no longer waiting.
+    let again = flow.decide_approval(&html, "approve").await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.text());
+    assert!(
+        again.text().contains("no longer waiting"),
+        "a second approval was not refused as gone:\n{}",
+        again.text()
+    );
+
+    // Assert: §10.1 — and only now — the client redeems.
+    let issued = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-inbox-2", &auth_req_id)
+        .await;
+    assert_eq!(issued.status, StatusCode::OK, "{}", issued.text());
+    assert!(
+        issued.json()["access_token"].is_string(),
+        "no token after an approval: {}",
+        issued.text()
+    );
+}
+
+/// §7.1's `acr_values` is what the client asked this person's authentication to
+/// be worth, and the approval is the only moment a person is present to reach
+/// it. A session that reaches none of the requested classes is told to sign in
+/// again rather than being allowed to approve — and a refusal, which grants
+/// nothing, is answered with §11's `access_denied`.
+#[tokio::test]
+async fn an_approval_below_the_requested_acr_is_refused_and_a_denial_still_answers_the_client() {
+    let capabilities = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = flow.register_ciba_client(CIBA_POLL_CLIENT, "poll").await;
+    let proof = ProofKey::generate();
+
+    // Arrange: a request that asks for a password authentication, which this
+    // person's passkey session has not done.
+    let asked = flow
+        .backchannel_authenticate(
+            CIBA_POLL_CLIENT,
+            &key,
+            "ciba-acr-1",
+            &[(
+                "acr_values",
+                asterius_domain::entities::acr_policy::PASSWORD,
+            )],
+        )
+        .await;
+    let auth_req_id = auth_req_id_of(&asked);
+    let html = flow.open_the_approvals_inbox().await;
+
+    // Act: the person tries to approve it anyway.
+    let refused = flow.decide_approval(&html, "approve").await;
+
+    // Assert: not approved, and the page says what is missing.
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text());
+    assert!(
+        refused.text().contains("stronger sign-in"),
+        "the page did not ask for a step-up:\n{}",
+        refused.text()
+    );
+    let still_waiting = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-acr-2", &auth_req_id)
+        .await;
+    assert_eq!(still_waiting.json()["error"], "authorization_pending");
+
+    // Act: the same person refuses it, which needs no step-up at all.
+    let denied = flow.decide_approval(&html, "deny").await;
+
+    // Assert: §11's `access_denied` reaches the client on its next poll.
+    assert_eq!(denied.status, StatusCode::OK, "{}", denied.text());
+    let answered = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-acr-3", &auth_req_id)
+        .await;
+    assert_eq!(
+        answered.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        answered.text()
+    );
+    assert_eq!(answered.json()["error"], "access_denied");
+}
+
+/// The decision is a cross-site request worth forging: it hands a credential
+/// on this account to somebody who is not here. A form without the
+/// session-derived token changes nothing.
+#[tokio::test]
+async fn a_decision_without_the_synchroniser_token_is_refused() {
+    let capabilities = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = flow.register_ciba_client(CIBA_POLL_CLIENT, "poll").await;
+    let proof = ProofKey::generate();
+    let asked = flow
+        .backchannel_authenticate(CIBA_POLL_CLIENT, &key, "ciba-csrf-1", &[])
+        .await;
+    let auth_req_id = auth_req_id_of(&asked);
+    let html = flow.open_the_approvals_inbox().await;
+    let approval = approval_reference_from(&html);
+
+    // Act: the forged post — the cookie rides along, the token does not.
+    let forged = flow
+        .post_form(
+            &format!("{}/account/approvals/decide", flow.prefix()),
+            &[
+                ("csrf", "0".repeat(64).as_str()),
+                ("approval", approval.as_str()),
+                ("decision", "approve"),
+            ],
+            None,
+        )
+        .await;
+
+    // Assert: refused, and nothing was decided.
+    assert_eq!(forged.status, StatusCode::BAD_REQUEST, "{}", forged.text());
+    let still_waiting = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-csrf-2", &auth_req_id)
+        .await;
+    assert_eq!(still_waiting.json()["error"], "authorization_pending");
 }
 
 /// Runs `work` with every `sqlx` statement it executes recorded.

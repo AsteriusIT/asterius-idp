@@ -43,9 +43,9 @@
 use crate::csp::Nonce;
 use crate::i18n::Catalog;
 use crate::pages::{
-    ConsentPage, DetailLine, DeviceConfirmationPage, DeviceOutcomePage, DevicePage,
-    EmailVerificationPage, ErrorPage, FormPostPage, LoggedOutPage, LoginPage,
-    LogoutConfirmationPage, NewPasswordPage, PasskeyPage, PasswordResetRequestPage,
+    ApprovalLine, ApprovalsPage, ConsentPage, DetailLine, DeviceConfirmationPage,
+    DeviceOutcomePage, DevicePage, EmailVerificationPage, ErrorPage, FormPostPage, LoggedOutPage,
+    LoginPage, LogoutConfirmationPage, NewPasswordPage, PasskeyPage, PasswordResetRequestPage,
     PasswordResetSentPage, RegistrationPage, ResponseField, ScopeLine, nonce_attribute, render,
 };
 use asterius_domain::Locale;
@@ -335,6 +335,46 @@ fn device_outcome(text: &Catalog, connected: bool) -> String {
     })
 }
 
+fn approvals(text: &Catalog, waiting: bool) -> String {
+    let approvals = if waiting {
+        vec![ApprovalLine {
+            reference: "0f9d".repeat(16),
+            client_name: CLIENT.to_owned(),
+            binding_message: Some("W4SCT".to_owned()),
+            scopes: vec![ScopeLine {
+                name: "payments".to_owned(),
+                description: Some("read your payment history".to_owned()),
+                required: true,
+            }],
+            authorization_details: vec![DetailLine {
+                name: "payment_initiation".to_owned(),
+                description: Some("move money on your behalf".to_owned()),
+                locations: vec!["https://api.example/payments".to_owned()],
+                actions: vec!["initiate".to_owned()],
+                datatypes: vec!["account".to_owned()],
+            }],
+            expires_in: "4 min 12 s".to_owned(),
+            expires_at: "2026-01-01T00:04:12Z".to_owned(),
+        }]
+    } else {
+        Vec::new()
+    };
+    render(&ApprovalsPage {
+        text,
+        tenant_name: TENANT,
+        approvals,
+        action: "/account/approvals/decide",
+        device_action: "/device",
+        sign_in_href: "/account/approvals?sign_in=1",
+        csrf: CSRF,
+        device_csrf: "snapshot-device-csrf",
+        message: None,
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
+
 fn registration(text: &Catalog) -> String {
     render(&RegistrationPage {
         text,
@@ -416,13 +456,17 @@ fn new_password(text: &Catalog) -> String {
 /// `ast-ndk.5` moved the authorization journey. Everything else in
 /// [`every_page`] is still English under whatever `lang` it is handed; see this
 /// module's documentation.
-const TRANSLATED: [&str; 6] = [
+const TRANSLATED: [&str; 8] = [
     "login",
     "consent",
     "error",
     "logout_confirm",
     "logged_out",
     "logged_out.still_signed_in",
+    // `ast-lh3.6`'s inbox is in the catalogue from its first day: it is the
+    // page most likely to be read in a hurry on somebody's own phone.
+    "approvals",
+    "approvals.empty",
 ];
 
 /// Every snapshot this crate keeps, as `(name, locale, rendering)`.
@@ -446,6 +490,8 @@ fn every_page(locale: Locale) -> Vec<(&'static str, String)> {
         ("device_confirm", device_confirmation(text)),
         ("device_done", device_outcome(text, true)),
         ("device_done.refused", device_outcome(text, false)),
+        ("approvals", approvals(text, true)),
+        ("approvals.empty", approvals(text, false)),
         ("register", registration(text)),
         ("verify_email", email_verification(text, false)),
         ("verify_email.confirmed", email_verification(text, true)),
