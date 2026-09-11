@@ -68,7 +68,8 @@ the workspace manifest and inherited with `[lints] workspace = true`.
 
 ## Security posture
 
-- [`docs/threat-model.md`](docs/threat-model.md) derives from the FAPI 2.0 Attacker Model (A1, A1a, A2, A3a, A4, A5) plus agent-specific threats (delegation-chain abuse, confused-deputy MCP servers, approval fatigue). Every control links to a spec clause, a bead and a test.
+- [`docs/threat-model.md`](docs/threat-model.md) derives from the FAPI 2.0 Attacker Model (A1, A1a, A2, A3a, A4, A5) plus agent-specific threats (prompt-injected scope requests, delegation-chain abuse, agent DPoP proof replay, approval fatigue, confused-deputy MCP servers). Every control links to a spec clause, a bead and a test; §5 lists the residual risks we accept, §7 the decisions still open, and §8 what an external reviewer should be handed.
+- **Found a vulnerability?** [`SECURITY.md`](SECURITY.md) is the reporting channel, the disclosure policy (90 days, coordinated), the safe harbour and the scope. Please do not open a public issue for one.
 - No refresh-token rotation (FAPI 2.0 SP §5.3.2.1), authorization codes ≤ 60 s, single-use codes with replay revocation, `jti` replay protection for client assertions and DPoP proofs.
 - `#![forbid(unsafe_code)]` in every crate; constant-time comparison for every secret; opaque credentials stored only as hashes; private keys encrypted at rest.
 - Definition of done for any protocol task: conformance-suite or spec-derived test passes, a fuzz target exists for every new parser/validator, the threat-model note is updated, no new `unsafe` — and generated crypto/parsing code is never "done" until a human has read the RFC.
@@ -126,7 +127,7 @@ operational procedures: [upgrading](docs/runbooks/upgrade.md),
 
 Contributions are welcome once the foundation epics land. Until then, the most useful help is reviewing the backlog against the specs and opening issues where a MUST is missing or misread.
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) first; the decision log lives in [`docs/adr/`](docs/adr/).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first; the decision log lives in [`docs/adr/`](docs/adr/), and vulnerabilities go through [SECURITY.md](SECURITY.md) rather than the issue tracker.
 
 Ground rules:
 
