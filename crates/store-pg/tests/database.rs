@@ -7749,20 +7749,10 @@ mod client_configuration {
             .await
             .expect("seed an authorization code");
 
-            let audit = PgAuditSink::new(db.pool.clone());
-            audit
-                .record(
-                    AuditEvent::new(
-                        TenantId::new("demo"),
-                        EventType::CLIENT_REGISTERED,
-                        Outcome::Success,
-                        Actor::Client(ClientId::new("c.abc")),
-                        OffsetDateTime::now_utc(),
-                    )
-                    .client(ClientId::new("c.abc")),
-                )
-                .await
-                .expect("record");
+            // No record is seeded here: since `ast-zq9` the registration above
+            // wrote its own `client.registered` in the transaction that wrote
+            // the row, so the trail entry this test is about is the real one
+            // rather than one the test appended beside it.
 
             repo.deprovision(&ClientId::new("c.abc"), OffsetDateTime::now_utc())
                 .await
@@ -7800,7 +7790,10 @@ mod client_configuration {
             assert_eq!(others, 3, "deleting one client took another's rows with it");
 
             // The trail survives. It is the only record left that the client
-            // ever existed, which is exactly why it has no foreign key here.
+            // ever existed, which is exactly why it has no foreign key here —
+            // and the one record is the `client.registered` the registration
+            // committed with the row, so what survives the delete is the entry
+            // the production path writes.
             let recorded: i64 = sqlx::query_scalar(
                 "select count(*) from audit_events where tenant_id = 'demo' and client_id = 'c.abc'",
             )
