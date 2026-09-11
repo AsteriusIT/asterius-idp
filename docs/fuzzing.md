@@ -106,6 +106,7 @@ The 81 targets below cover 100 declared entry points. Generated from the
 | `authorization_hints` | `parse_login_hint` | `crates/oidc/src/authorize.rs` |
 | `authorization_hints` | `parse_max_age` | `crates/oidc/src/authorize.rs` |
 | `ciba_form` | `validate` | `crates/oidc/src/ciba.rs` |
+| `ciba_token_request` | `token_request` | `crates/oidc/src/ciba.rs` |
 | `claim_name` | `ClaimName::parse` | `crates/domain/src/entities/user.rs` |
 | `claims_request` | `ClaimsRequest::parse` | `crates/oidc/src/claims.rs` |
 | `client_assertion` | `check_assertion` | `crates/oidc/src/client_auth.rs` |

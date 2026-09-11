@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ciba_requests\n                set redeemed_at = $3\n              where tenant_id = $1 and auth_req_id_hash = $2\n                and status = 'approved' and redeemed_at is null and expires_at > $3\n          returning client_id, grant_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "c1cbfddc379506fc702046066bb61ba8f859a2404d912f3c713c156b065db134"
+}

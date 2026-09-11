@@ -86,6 +86,13 @@ pub struct Rewrap {
     pub pairwise_salt: bool,
     /// How many SSF push credentials were re-sealed (`ast-0ju.6`).
     pub ssf_push_credentials: u64,
+    /// How many CIBA ping envelopes were re-sealed (`ast-lh3.5`).
+    ///
+    /// Usually zero: a backchannel authentication request lives five minutes
+    /// at most, and a rotation is an operator's ceremony. Counted all the same,
+    /// because a sealed row the sweep does not know about is a sealed row an
+    /// operator would strand by destroying the old key.
+    pub ciba_ping_envelopes: u64,
     /// Rows still sealed under the old KEK when the transaction committed.
     ///
     /// Normally zero. It is not zero when a replica still running on the old
@@ -107,7 +114,10 @@ impl Rewrap {
     /// Whether this pass had anything to do.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.signing_keys == 0 && !self.pairwise_salt && self.ssf_push_credentials == 0
+        self.signing_keys == 0
+            && !self.pairwise_salt
+            && self.ssf_push_credentials == 0
+            && self.ciba_ping_envelopes == 0
     }
 
     /// Whether the tenant is now wholly on the new KEK.
@@ -184,6 +194,8 @@ impl PgKekRewrap {
             signing_keys: Self::signing_keys(&mut transaction, tenant, from, to).await?,
             pairwise_salt: Self::pairwise_salt(&mut transaction, tenant, from, to).await?,
             ssf_push_credentials: Self::ssf_push_credentials(&mut transaction, tenant, from, to)
+                .await?,
+            ciba_ping_envelopes: Self::ciba_ping_envelopes(&mut transaction, tenant, from, to)
                 .await?,
             left_behind: Self::count_under(&mut transaction, tenant, from.id()).await?,
             stranded: Self::count_stranded(&mut transaction, tenant, from, to).await?,
@@ -471,6 +483,71 @@ impl PgKekRewrap {
         Ok(moved)
     }
 
+    /// Re-seals every CIBA ping envelope still under the old KEK
+    /// (`ast-lh3.5`).
+    ///
+    /// The same shape as `ssf_push_credentials`, and the binding is rebuilt
+    /// from the `auth_req_id` digest the row already has — the hex spelling
+    /// `PgCibaRequestRepository` seals under — so the re-sealed envelope is
+    /// bound to exactly the request it goes back into.
+    async fn ciba_ping_envelopes(
+        transaction: &mut Transaction<'_>,
+        tenant: &TenantId,
+        from: &dyn Kek,
+        to: &dyn Kek,
+    ) -> Result<u64, DomainError> {
+        let rows = sqlx::query!(
+            "select auth_req_id_hash,
+                    ping_ciphertext as \"ciphertext!\",
+                    ping_nonce as \"nonce!\",
+                    ping_kek_id as \"kek_id!\"
+               from ciba_requests
+              where tenant_id = $1 and ping_kek_id = $2
+              for update",
+            tenant.as_str(),
+            from.id()
+        )
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        let mut moved = 0_u64;
+        for row in rows {
+            let wrapped = WrappedKey::from_parts(row.kek_id, row.nonce, row.ciphertext)
+                .map_err(storage_error)?;
+            let digest = hex::encode(&row.auth_req_id_hash);
+            let binding = KeyBinding::row_secret(tenant, RowSecret::CibaPing, &digest);
+
+            // Two credentials exist in this process for the width of these two
+            // calls and are never named in a log line or an error.
+            let plaintext = from
+                .unwrap(binding, &wrapped)
+                .await
+                .map_err(storage_error)?;
+            let resealed = to.wrap(binding, &plaintext).await.map_err(storage_error)?;
+
+            moved += sqlx::query!(
+                "update ciba_requests
+                    set ping_ciphertext = $1,
+                        ping_nonce = $2,
+                        ping_kek_id = $3
+                  where tenant_id = $4 and auth_req_id_hash = $5
+                    and ping_kek_id = $6",
+                resealed.ciphertext(),
+                resealed.nonce(),
+                resealed.kek_id(),
+                tenant.as_str(),
+                row.auth_req_id_hash,
+                from.id()
+            )
+            .execute(&mut **transaction)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected();
+        }
+        Ok(moved)
+    }
+
     /// How many of the tenant's sealed rows still name `kek_id`.
     async fn count_under(
         transaction: &mut Transaction<'_>,
@@ -504,7 +581,19 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
-        Ok(keys.unsigned_abs() + salts.unsigned_abs() + credentials.unsigned_abs())
+        let envelopes = sqlx::query_scalar!(
+            "select count(*) as \"count!\" from ciba_requests
+              where tenant_id = $1 and ping_kek_id = $2",
+            tenant.as_str(),
+            kek_id
+        )
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(keys.unsigned_abs()
+            + salts.unsigned_abs()
+            + credentials.unsigned_abs()
+            + envelopes.unsigned_abs())
     }
 
     /// How many of the tenant's sealed rows name neither key.
@@ -550,7 +639,21 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
-        Ok(keys.unsigned_abs() + salts.unsigned_abs() + credentials.unsigned_abs())
+        let envelopes = sqlx::query_scalar!(
+            "select count(*) as \"count!\" from ciba_requests
+              where tenant_id = $1 and ping_kek_id is not null
+                and ping_kek_id <> $2 and ping_kek_id <> $3",
+            tenant.as_str(),
+            from.id(),
+            to.id()
+        )
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(keys.unsigned_abs()
+            + salts.unsigned_abs()
+            + credentials.unsigned_abs()
+            + envelopes.unsigned_abs())
     }
 }
 
@@ -623,11 +726,26 @@ mod tests {
             signing_keys: 3,
             pairwise_salt: true,
             ssf_push_credentials: 0,
+            ciba_ping_envelopes: 0,
             left_behind: 1,
             stranded: 0,
         };
 
         assert!(!interrupted.is_complete());
+    }
+
+    /// A pass that moved only a CIBA ping envelope still moved something, for
+    /// the reason the push-credential case below gives: "nothing to do" must
+    /// mean nothing was sealed, not that the sweep did not look.
+    #[test]
+    fn a_pass_that_moved_only_a_ping_envelope_is_not_empty() {
+        let moved = Rewrap {
+            ciba_ping_envelopes: 1,
+            ..Rewrap::default()
+        };
+
+        assert!(!moved.is_empty());
+        assert!(moved.is_complete());
     }
 
     /// A pass that moved only a push credential still moved something. Without

@@ -17,7 +17,8 @@ use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::outbound::HttpsClientUrlFetcher;
 use asterius_server::outbox::{
-    HttpDeliverer, JournalDeliverer, OutboxWorker, PgPushStreams, SsfPushDeliverer,
+    CibaPingDeliverer, HttpDeliverer, JournalDeliverer, OutboxWorker, PgPingRequests,
+    PgPushStreams, SsfPushDeliverer,
 };
 use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
@@ -620,11 +621,21 @@ fn outbox_worker(
 
     match asterius_server::outbound::HttpsPoster::new() {
         Ok(poster) => {
+            let poster = Arc::new(poster);
             worker = worker
-                .with(Arc::new(HttpDeliverer::new("logout", poster.clone())))
+                .with(Arc::new(HttpDeliverer::new("logout", (*poster).clone())))
                 .with(Arc::new(SsfPushDeliverer::new(
                     Arc::new(PgPushStreams::new(store.clone(), Arc::clone(kek))),
-                    Arc::new(poster),
+                    Arc::clone(&poster) as Arc<dyn asterius_server::outbox::SetPoster>,
+                    Arc::clone(&audit),
+                    Arc::clone(&clock),
+                )))
+                // CIBA Core 1.0 §10.2 ping notifications (`ast-lh3.5`): a
+                // `POST` through the same outbound path, reading the sealed
+                // credentials off the request at delivery time.
+                .with(Arc::new(CibaPingDeliverer::new(
+                    Arc::new(PgPingRequests::new(store.clone(), Arc::clone(kek))),
+                    poster,
                     audit,
                     clock,
                 )));
@@ -746,6 +757,12 @@ fn rewrap_kek(path: &std::path::Path, new_kek: Option<&KekSource>) -> Result<(),
                         pass.left_behind,
                         pass.stranded
                     );
+                    if pass.ssf_push_credentials > 0 || pass.ciba_ping_envelopes > 0 {
+                        println!(
+                            "{}: SSF push credentials {}, CIBA ping envelopes {}",
+                            tenant.id, pass.ssf_push_credentials, pass.ciba_ping_envelopes
+                        );
+                    }
                 }
             }
         }

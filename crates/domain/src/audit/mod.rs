@@ -333,6 +333,16 @@ impl EventType {
     /// counting them must not mean filtering an outcome out of the accepted
     /// ones.
     pub const BACKCHANNEL_REFUSED: Self = Self("backchannel.refused");
+    /// A §10.2 ping notification was posted to a client's notification
+    /// endpoint (CIBA Core 1.0 §10.2), or gave up trying.
+    ///
+    /// One type, two outcomes, as [`Self::TOKEN_ISSUED`] does for a token:
+    /// a success is the transmitter's own record that the client was told to
+    /// come and fetch its result, and a failure is written once — when the
+    /// delivery worker has spent its retries or met a refusal it will not
+    /// retry — so that a client that says it was never called back is
+    /// answered from the trail rather than from the dead-letter screen.
+    pub const BACKCHANNEL_NOTIFIED: Self = Self("backchannel.notified");
 
     /// A receiver configured a new SSF stream (SSF 1.0 §8.1.1.1).
     ///
@@ -391,7 +401,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 59] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -441,6 +451,7 @@ impl EventType {
         Self::AUDIT_PURGED,
         Self::BACKCHANNEL_REQUESTED,
         Self::BACKCHANNEL_REFUSED,
+        Self::BACKCHANNEL_NOTIFIED,
         Self::SSF_STREAM_CREATED,
         Self::SSF_STREAM_UPDATED,
         Self::SSF_STREAM_DELETED,
