@@ -156,7 +156,7 @@ pub struct Presented<'a> {
     /// The URL the proof's `htu` is compared against, as this server derives
     /// it (RFC 9449 §4.3 item 8).
     ///
-    /// A [`dpop::ProofTarget`] rather than an [`Endpoint`], because not every
+    /// A [`dpop::ProofTarget`] rather than an [`Endpoint`](asterius_oidc::metadata::Endpoint), because not every
     /// endpoint that takes an access token is one URL of the registry: the
     /// Grant Management API addresses a resource *under* its endpoint (ID1
     /// §6.3), and the SSF management API is mounted outside the registry
