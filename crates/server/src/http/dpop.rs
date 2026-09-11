@@ -310,6 +310,23 @@ impl<'a> ProofTarget<'a> {
         }
     }
 
+    /// A resource under a mounted path, at `issuer` + `path` + `/` + `segment`
+    /// (`ast-0ju.7`).
+    ///
+    /// The polling endpoint is the caller: SSF 1.0 §6.1.2 makes a poll URL
+    /// unique per stream, so the URL a proof is compared against carries the
+    /// stream identifier. `segment` is the identifier *this server issued* and
+    /// has already recognised — `StreamId::parse` ran before this point — and
+    /// not the path the request arrived with, so a proof is still never
+    /// compared against a string a caller composed.
+    #[must_use]
+    pub const fn under_path(path: &'a str, segment: &'a str) -> Self {
+        Self {
+            base: Base::Mounted(path),
+            segment: Some(segment),
+        }
+    }
+
     /// The URL, built from the tenant's issuer and nothing the caller sent.
     fn url(self, issuer: &asterius_domain::Issuer) -> String {
         let base = match self.base {

@@ -655,6 +655,49 @@ configures a stream today is told, in `events_delivered`, that it will receive
 nothing. The second is deliberate: the alternative is a receiver believing it
 has continuous-access coverage it has not got.
 
+### SSF poll delivery (`ast-0ju.7`)
+
+**Why this needs a section: this is where the signals actually leave the
+building.** Stream configuration arranges a subscription; poll delivery is the
+endpoint that hands a third party a batch of SETs about a tenant's users, on
+request, with no human anywhere in the loop. Three new things exist because of
+it: a URL per stream (RFC 8936; SSF 1.0 §6.1.2), a queue of signed tokens
+waiting to be collected (`ssf_poll_queue`), and a request body a receiver
+writes that this server parses (§2.1).
+
+**The frontier: the URL names the stream, the token names the receiver, and the
+row is read under both.** `POST /ssf/poll/{stream_id}` looks the stream up by
+`(tenant, client_id, stream_id)` — the same `WHERE` clause the management API
+uses, for the same reason — so another receiver's stream is not a queue this
+endpoint drains and then refuses to return; it is a stream that does not come
+back, and the 404 is truthful. The identifier is 128 CSPRNG bits, so the URL
+space is not enumerable, but nothing rests on that: a receiver that somehow
+learned another's URL still gets a 404.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Polling somebody else's stream.** A receiver with a valid token calls another stream's polling URL and collects signals about users it has never seen. | The stream is resolved under the token's `client_id` before a single row of the queue is read, so the attacker's own token is what makes the stream invisible. A `stream_id` that is not one this server issues is a 404 before the token is even looked at. |
+| **A1** | **G1** | **Polling with a token minted for something else.** A management token, or a business-API token, presented at the polling endpoint. | `aud` must be this tenant's *polling* endpoint and the token must carry `ssf.poll` — a second implicit resource server with a scope of its own (`issuance::ssf_poll_resource`), deliberately not the same one the management API uses. A receiver's event consumer therefore cannot delete the stream it reads, and its stream administrator cannot read its events (RFC 8707 §2). The token is sender-constrained, and the DPoP `htu` is rebuilt from the tenant's issuer and the identifier this server recognised — so a proof made for one stream's URL does not authorize a poll of another. |
+| **A1** | **G2** | **Silencing a stream by acknowledging what it never received.** An `ack` naming every plausible `jti`, or a `setErrs` report for SETs the receiver never saw, to make signals disappear before anyone acts on them. | Acknowledgement and error reports are scoped to the stream in the URL, which is already scoped to the caller, so this is a receiver silencing *its own* stream — which it may already do by deleting the stream. Both are bounded (`MAX_ACK`, `MAX_SET_ERRS`) and a rejection is written to the trail before the row goes. |
+| **A2** | **G2** | **Losing a signal to a crash.** A receiver reads a response and dies before processing it; a transmitter that had already deleted the rows has lost the events. | Delivery removes nothing. §2.4's acknowledgement is the only thing that does, so an unacknowledged SET is handed over again on the next poll — at-least-once, as everywhere else in this server, with the receiver deduplicating on `jti`. |
+| **A1**, **A3** | **G3** | **Holding connections open.** A receiver opens long polls (`returnImmediately: false`) and never closes them, or asks for an unbounded `maxEvents` to make one request read a whole backlog into memory. | The wait is capped at `MAX_LONG_POLL` (30 s) and then answers with an empty `sets`; the batch is capped at `MAX_EVENTS` (100) whatever `maxEvents` asks for, with `moreAvailable` telling the receiver to come back. The request body is bounded before it is parsed, and every member is bounded after. |
+| **A5** | **G1** | **Collecting signals and leaving no trace.** | Every poll that carried SETs, every acknowledgement and every rejection is an audit event (`ssf.sets_delivered`, `ssf.sets_acknowledged`, `ssf.set_rejected`), with the receiver as the actor and the stream as a fingerprint. The queue also counts deliveries per SET, so a receiver being handed the same token forty times is visible to an operator. |
+
+**A choice §2.4 leaves open, made here: a reported SET is retired, not
+redelivered.** A receiver that reports `setErrs` for a SET will not be given it
+again. The alternative — redeliver until acknowledged — is a queue that never
+drains behind a SET the receiver cannot verify, and every later signal stuck
+behind it. The cost is that a receiver whose verifier was briefly
+misconfigured loses those events, so the report is written to the audit trail,
+with the receiver's own error code, *before* the row is removed: that entry is
+the only record left that the signal existed.
+
+**Residual, stated rather than closed:** nothing queues a SET yet — the
+emitters are `ast-0ju.8` — so today this endpoint is a correct, tested and
+permanently empty queue; and a receiver that never polls leaves its SETs in
+`ssf_poll_queue` for ever, because §8.1.1's `inactivity_timeout` is stored but
+nothing sweeps on it yet.
+
 ### Back-channel logout (`ast-o4u.2`)
 
 **Why this needs a section: the server now signs a JWT it sends to somebody

@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with taken as (\n                 select jti\n                   from ssf_poll_queue\n                  where tenant_id = $1 and stream_id = $2\n                  order by queued_at, jti\n                  limit $3\n             )\n             update ssf_poll_queue queued\n                set deliveries = queued.deliveries + 1,\n                    delivered_at = $4\n               from taken\n              where queued.tenant_id = $1\n                and queued.stream_id = $2\n                and queued.jti = taken.jti\n             returning queued.jti as \"jti!\",\n                       queued.set_jws as \"set_jws!\",\n                       queued.queued_at as \"queued_at!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "jti!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "set_jws!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "queued_at!",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8195ac57f1aca5d1cf450c6f6c481f1f96c65aedebde6b7829cdc9366c9e8053"
+}

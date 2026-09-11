@@ -343,10 +343,28 @@ impl EventType {
     /// A stream was deleted, and whatever it still owed was abandoned
     /// (§8.1.1.5).
     pub const SSF_STREAM_DELETED: Self = Self("ssf.stream_deleted");
+    /// SETs were handed to a receiver that polled for them (RFC 8936 §2.3).
+    ///
+    /// One entry per poll and not one per SET: a busy stream answers a poll
+    /// with a hundred tokens, and a trail that recorded each of them would
+    /// drown the entries above — the ones about a *standing arrangement*
+    /// changing — in routine traffic. The count is the detail.
+    pub const SSF_SETS_DELIVERED: Self = Self("ssf.sets_delivered");
+    /// A receiver acknowledged SETs, which is what stops this transmitter
+    /// holding them (RFC 8936 §2.4).
+    pub const SSF_SETS_ACKNOWLEDGED: Self = Self("ssf.sets_acknowledged");
+    /// A receiver reported that it could not process a SET (§2.4's `setErrs`).
+    ///
+    /// One entry *per SET* here, unlike the two above, and a failure outcome:
+    /// this is the receiver saying a security signal did not land, it carries
+    /// the receiver's own error code, and the SET is retired rather than
+    /// redelivered — so this entry is the only record that the signal existed
+    /// at all.
+    pub const SSF_SET_REJECTED: Self = Self("ssf.set_rejected");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 55] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -399,6 +417,9 @@ impl EventType {
         Self::SSF_STREAM_CREATED,
         Self::SSF_STREAM_UPDATED,
         Self::SSF_STREAM_DELETED,
+        Self::SSF_SETS_DELIVERED,
+        Self::SSF_SETS_ACKNOWLEDGED,
+        Self::SSF_SET_REJECTED,
     ];
 
     /// The wire and storage spelling.
