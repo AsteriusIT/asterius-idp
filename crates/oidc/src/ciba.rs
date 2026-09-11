@@ -68,6 +68,26 @@ pub const MAX_LIFETIME: Duration = Duration::seconds(300);
 /// server that granted it would produce an `expired_token` every time.
 pub const MIN_LIFETIME: Duration = Duration::seconds(30);
 
+/// How many undecided requests one person may have waiting at once
+/// (`ast-5lw`).
+///
+/// Five. Above it, a further request about that person is refused with §13's
+/// `invalid_request` — the closest code the specification has, since §13 names
+/// none for "this person already has enough to answer".
+///
+/// **The oldest is not replaced.** Silently dropping a pending request to make
+/// room would mean a client could cancel another client's approval by asking
+/// for six of its own, and it would mean the person is looking at a screen
+/// whose contents an attacker chooses the moment before they press approve.
+/// Refusing the *new* request is the direction in which nothing already shown
+/// to a person changes under them; CIBA Core §7.3's lifetime is five minutes
+/// ([`MAX_LIFETIME`]), so a full inbox empties itself without anybody acting.
+///
+/// Five rather than one, because a person may legitimately be asked by several
+/// clients at once — a bank, a workstation, a call centre — and a cap of one
+/// would let any of them deny the others.
+pub const MAX_PENDING_PER_USER: usize = 5;
+
 /// §7.3's `interval`, in poll and ping mode alike.
 ///
 /// Five seconds, the same value the device flow advertises and the same one
@@ -364,6 +384,18 @@ pub enum CibaError {
     /// person, whatever it says.
     #[error("this request will not be put to the user")]
     AccessDenied,
+    /// The person already has [`MAX_PENDING_PER_USER`] requests waiting
+    /// (`ast-5lw`).
+    ///
+    /// `invalid_request`, because §13 has no code for it and this is the
+    /// closest: the request is refused for what it is rather than for who
+    /// asked. The description says so, so a client that reads it learns to
+    /// wait rather than to retry.
+    #[error(
+        "the user already has {MAX_PENDING_PER_USER} authentication requests waiting; \
+         try again once one of them has been answered or has expired"
+    )]
+    TooManyPending,
 }
 
 impl CibaError {
@@ -371,7 +403,9 @@ impl CibaError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::Invalid(_) | Self::Duplicated(_) | Self::HintCount => "invalid_request",
+            Self::Invalid(_) | Self::Duplicated(_) | Self::HintCount | Self::TooManyPending => {
+                "invalid_request"
+            }
             Self::InvalidScope => "invalid_scope",
             Self::UnauthorizedClient => "unauthorized_client",
             Self::InvalidBindingMessage => "invalid_binding_message",
@@ -393,6 +427,17 @@ impl CibaError {
             _ => 400,
         }
     }
+}
+
+/// Whether a person with `waiting` undecided requests may be given another
+/// (`ast-5lw`).
+///
+/// The whole of [`MAX_PENDING_PER_USER`]'s rule, in one place a test can
+/// reach: the caller counts the rows and this decides, so "how full is full"
+/// is not a comparison written at a call site where it could drift.
+#[must_use]
+pub const fn room_for_another_pending(waiting: usize) -> bool {
+    waiting < MAX_PENDING_PER_USER
 }
 
 impl From<Duplicated> for CibaError {
@@ -1653,6 +1698,50 @@ mod tests {
             parsed,
             serde_json::json!({ "auth_req_id": minted.expose() })
         );
+    }
+
+    /// `ast-5lw`: a person who has nothing waiting, and one who is one short
+    /// of the ceiling, are both asked.
+    #[test]
+    fn a_person_below_the_ceiling_may_be_asked_again() {
+        // Arrange
+        let empty = 0;
+        let nearly_full = MAX_PENDING_PER_USER - 1;
+
+        // Act & Assert
+        assert!(room_for_another_pending(empty));
+        assert!(room_for_another_pending(nearly_full));
+    }
+
+    /// The refusal is of the *new* request: nothing already waiting is
+    /// dropped, because a client must not be able to cancel another client's
+    /// approval — or change what a person is looking at — by asking for more
+    /// of its own.
+    #[test]
+    fn a_full_inbox_refuses_the_new_request() {
+        // Arrange
+        let full = MAX_PENDING_PER_USER;
+
+        // Act & Assert
+        assert!(!room_for_another_pending(full));
+        assert!(!room_for_another_pending(full + 1));
+    }
+
+    /// §13 has no code for "this person already has enough to answer", so the
+    /// closest one carries it — and the description says what happened, so a
+    /// client learns to wait rather than to retry at once.
+    #[test]
+    fn a_full_inbox_is_reported_as_an_invalid_request() {
+        // Arrange
+        let failure = CibaError::TooManyPending;
+
+        // Act
+        let (code, status, description) = (failure.code(), failure.status(), failure.to_string());
+
+        // Assert
+        assert_eq!(code, "invalid_request");
+        assert_eq!(status, 400);
+        assert!(description.contains("waiting"), "{description}");
     }
 
     /// §10.2: the callback "MUST use the `client_notification_token` as a

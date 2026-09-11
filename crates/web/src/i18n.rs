@@ -373,6 +373,12 @@ catalogue! {
         ApprovalsGone => approvals_gone, "approvals.gone",
             en: "That request is no longer waiting for a decision.",
             fr: "Cette demande n'attend plus de décision.";
+        // `ast-5lw`: the decision form has a budget of its own, and a person
+        // who hits it is told so rather than shown a page that silently did
+        // nothing.
+        ApprovalsThrottled => approvals_throttled, "approvals.throttled",
+            en: "Too many decisions in a short time. Wait a moment and try again.",
+            fr: "Trop de décisions en peu de temps. Patientez un instant et réessayez.";
         ApprovalsApproved => approvals_approved, "approvals.approved",
             en: "Approved.",
             fr: "Approuvé.";

@@ -461,6 +461,9 @@ struct RawLimits {
     userinfo_per_address: Option<u32>,
     ssf_subjects_per_address: Option<u32>,
     ssf_subjects_per_client: Option<u32>,
+    backchannel_per_address: Option<u32>,
+    backchannel_per_client: Option<u32>,
+    backchannel_per_user: Option<u32>,
 }
 
 /// The `[outbox]` table: how delivery is paced and when it gives up.
@@ -779,6 +782,32 @@ pub(crate) const DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS: u32 = 60;
 /// should not be bounded by traffic it did not make. A receiver bringing a new
 /// deployment online adds its subjects in a burst and then goes quiet.
 pub(crate) const DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT: u32 = 600;
+
+/// `POST /bc-authorize` — per address, per window.
+///
+/// Tighter than `/token`'s, because a backchannel authentication request is
+/// not a machine exchanging a code: each one ends in a message to a person and
+/// a decision they have to take (CIBA Core 1.0 §7.3, §8). Thirty a minute from
+/// one address is a client driving a call centre and is not a client working
+/// through a directory.
+pub(crate) const DEFAULT_LIMIT_BACKCHANNEL_PER_ADDRESS: u32 = 30;
+
+/// The same, per authenticated client.
+///
+/// Above the address limit, for the reason `/token`'s is: several clients can
+/// share one address, and a client that has proven who it is should not be
+/// bounded by traffic it did not make.
+pub(crate) const DEFAULT_LIMIT_BACKCHANNEL_PER_CLIENT: u32 = 120;
+
+/// `POST /bc-authorize` — per *person named*, per window (`ast-5lw`).
+///
+/// The number that bounds approval fatigue, and the only limit here that
+/// counts something a third party pays for. Three requests a minute about one
+/// account covers a client retrying after a mistyped binding message and a
+/// person taking two goes at a decision; it does not cover a client — or a
+/// stolen client credential — pushing a notification at somebody until they
+/// press approve to make it stop.
+pub(crate) const DEFAULT_LIMIT_BACKCHANNEL_PER_USER: u32 = 3;
 
 /// The seeded admin's login identifier when `[admin]` does not name one.
 pub(crate) const DEFAULT_ADMIN_USERNAME: &str = "admin";
@@ -1165,6 +1194,22 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
         }
     };
 
+    configured_endpoint_limits(raw, &mut limit)
+}
+
+/// One field per endpoint, out of the maxima this deployment wrote.
+///
+/// Split from [`validate_limits`], which decides the *window* and what a
+/// missing or zero maximum means; this is the list those decisions are applied
+/// to. One function for both was long enough that adding an endpoint meant
+/// scrolling past the rules to reach the list.
+///
+/// `limit` reports its own problems into the collector its caller holds, so a
+/// configuration with four bad numbers still reports four.
+fn configured_endpoint_limits(
+    raw: &RawLimits,
+    limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
+) -> EndpointLimits {
     EndpointLimits {
         registration: EndpointLimit {
             per_address: limit(
@@ -1175,6 +1220,7 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
             // No client bucket: RFC 7591 §3 registration has no client yet, by
             // definition. There is nothing authenticated to charge.
             per_client: None,
+            per_subject: None,
         },
         client_configuration: EndpointLimit {
             per_address: limit(
@@ -1183,6 +1229,7 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
                 DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS,
             ),
             per_client: None,
+            per_subject: None,
         },
         par: EndpointLimit {
             per_address: limit(
@@ -1195,6 +1242,7 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
                 raw.par_per_client,
                 DEFAULT_LIMIT_PAR_PER_CLIENT,
             )),
+            per_subject: None,
         },
         token: EndpointLimit {
             per_address: limit(
@@ -1207,6 +1255,7 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
                 raw.token_per_client,
                 DEFAULT_LIMIT_TOKEN_PER_CLIENT,
             )),
+            per_subject: None,
         },
         userinfo: EndpointLimit {
             per_address: limit(
@@ -1218,6 +1267,28 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
             // client out of a token before it is verified would be trusting a
             // string the caller wrote, so the address bucket holds it alone.
             per_client: None,
+            per_subject: None,
+        },
+        backchannel: EndpointLimit {
+            per_address: limit(
+                "limits.backchannel_per_address",
+                raw.backchannel_per_address,
+                DEFAULT_LIMIT_BACKCHANNEL_PER_ADDRESS,
+            ),
+            // The client is authenticated before the limiter is reached
+            // (`private_key_jwt` or mTLS, ADR-0002), so the client charged is
+            // one that proved who it is.
+            per_client: Some(limit(
+                "limits.backchannel_per_client",
+                raw.backchannel_per_client,
+                DEFAULT_LIMIT_BACKCHANNEL_PER_CLIENT,
+            )),
+            // The only endpoint with one: see `EndpointLimit::per_subject`.
+            per_subject: Some(limit(
+                "limits.backchannel_per_user",
+                raw.backchannel_per_user,
+                DEFAULT_LIMIT_BACKCHANNEL_PER_USER,
+            )),
         },
         ssf_subjects: EndpointLimit {
             per_address: limit(
@@ -1235,6 +1306,9 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
                 raw.ssf_subjects_per_client,
                 DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT,
             )),
+            // No subject bucket: the SSF endpoints name a subject but do not
+            // bother them with anything. Nothing is sent to a person here.
+            per_subject: None,
         },
     }
 }

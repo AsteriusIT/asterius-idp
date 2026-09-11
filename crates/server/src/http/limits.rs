@@ -37,6 +37,18 @@
 //! bucket is safe for the same reason: nobody but that client can have filled
 //! it.
 //!
+//! # The one bucket that is not about the caller
+//!
+//! [`guard_subject`] counts requests *about a person* (`ast-5lw`), and only
+//! `/bc-authorize` has one. Every other endpoint here costs the caller and the
+//! server; a backchannel authentication request costs a third party a message
+//! and a decision, so "how many times may this client bother this human" is a
+//! number neither the address bucket nor the client bucket holds. It is
+//! charged from the handler rather than from the wiring because the person is
+//! not known until the hint has been resolved, and it is charged whether or
+//! not the request went on to succeed: the notification has already been sent
+//! by the time an answer exists.
+//!
 //! # Why there is no per-tenant bucket
 //!
 //! A counter shared by every caller of a tenant is a denial of service anybody
@@ -122,6 +134,9 @@ impl<'a> EndpointThrottle<'a> {
                 limit: limit.per_address,
             });
         }
+        // `per_subject` is deliberately absent: the person a request is about
+        // is not known here, and `guard_subject` is where that bucket is
+        // consulted.
         if let (Some(client_id), Some(per_client)) = (client_id, limit.per_client) {
             buckets.push(Full {
                 scope: Scope::Client,
@@ -321,6 +336,90 @@ where
     response
 }
 
+/// Counts one request *about a person*, or refuses it (`ast-5lw`).
+///
+/// `Some(response)` is the answer to send and means the request must not
+/// proceed: either the bucket is full — 429, in the same shape [`guard`]
+/// refuses with, so a client cannot tell which bucket it ran into — or the
+/// counter could not be read, which is a 503 for the reason [`guard`] fails
+/// closed.
+///
+/// `None` means the request may proceed, and the bucket has already been
+/// charged for it. Charged on the way *in* rather than on the way out, unlike
+/// [`guard`]: what this bounds is the notification an accepted request sends,
+/// and by the time the handler has an answer the person has already been
+/// written to.
+///
+/// The endpoint must have a `per_subject` limit; one that has none admits
+/// everything here, which is what every endpoint but `/bc-authorize` wants.
+pub async fn guard_subject(
+    context: &LimitContext<'_>,
+    endpoint: LimitedEndpoint,
+    subject: &str,
+) -> Option<Response> {
+    let limit = context.throttle.limits.for_endpoint(endpoint).per_subject?;
+    let full = Full {
+        scope: Scope::Subject,
+        bucket: asterius_domain::endpoint_subject_bucket(endpoint, subject),
+        limit,
+    };
+    let counted = match context
+        .throttle
+        .store
+        .count(
+            context.tenant,
+            &full.bucket,
+            limit.window_start(context.now),
+        )
+        .await
+    {
+        Ok(counted) => counted,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                tenant = %context.tenant,
+                %endpoint,
+                "a rate limit about a person could not be read"
+            );
+            return Some(unavailable());
+        }
+    };
+    if !limit.admits(counted) {
+        let refused = Refused {
+            scope: full.scope,
+            retry_after: limit.retry_after(context.now),
+        };
+        crate::observability::metrics::endpoint_throttled(endpoint.as_str(), full.scope.as_str());
+        if context
+            .throttle
+            .first_refusal_in_window(context.tenant, &full, context.now)
+            .await
+        {
+            record_throttled(context, endpoint, refused).await;
+        }
+        return Some(too_many_requests(refused));
+    }
+    if let Err(error) = context
+        .throttle
+        .store
+        .record(
+            context.tenant,
+            &full.bucket,
+            limit.window_start(context.now),
+            limit.window_end(context.now),
+        )
+        .await
+    {
+        tracing::error!(
+            %error,
+            tenant = %context.tenant,
+            %endpoint,
+            "a request about a person was not counted"
+        );
+    }
+    None
+}
+
 /// The refusal, in the shape the login limiter already answers with.
 ///
 /// 429 with `Retry-After` in seconds and the same JSON body the throttled
@@ -328,7 +427,7 @@ where
 /// a client that learned to back off at one endpoint backs off at all of them.
 /// `no-store`, because a cached 429 would keep refusing a client after the
 /// window rolled over.
-fn too_many_requests(refused: Refused) -> Response {
+pub(crate) fn too_many_requests(refused: Refused) -> Response {
     let seconds = refused.retry_after_seconds();
     (
         StatusCode::TOO_MANY_REQUESTS,
@@ -507,6 +606,7 @@ mod tests {
         let plain = asterius_domain::EndpointLimit {
             per_address: limit(2),
             per_client: None,
+            per_subject: None,
         };
         EndpointLimits {
             registration: plain,
@@ -514,13 +614,20 @@ mod tests {
             par: asterius_domain::EndpointLimit {
                 per_address: limit(2),
                 per_client: Some(limit(5)),
+                per_subject: None,
             },
             token: asterius_domain::EndpointLimit {
                 per_address: limit(2),
                 per_client: Some(limit(5)),
+                per_subject: None,
             },
             userinfo: plain,
             ssf_subjects: plain,
+            backchannel: asterius_domain::EndpointLimit {
+                per_address: limit(2),
+                per_client: Some(limit(5)),
+                per_subject: Some(limit(3)),
+            },
         }
     }
 
@@ -763,6 +870,129 @@ mod tests {
         // Assert
         assert_eq!(statuses[0], statuses[1]);
         assert_eq!(statuses[0], StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// `ast-5lw`, the whole point: a client with budget left at its own bucket
+    /// is still refused once it has asked about one person often enough.
+    #[tokio::test]
+    async fn a_client_with_budget_left_is_refused_about_one_person() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+        let person = "5f2b1c1e-0b5e-4f39-9f0a-8f1a0d6a2c11";
+        for _ in 0..3 {
+            assert!(
+                guard_subject(&context, LimitedEndpoint::Backchannel, person)
+                    .await
+                    .is_none()
+            );
+        }
+
+        // Act
+        let refused = guard_subject(&context, LimitedEndpoint::Backchannel, person).await;
+
+        // Assert
+        let refused = refused.expect("the fourth request about one person is refused");
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(refused.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    /// A budget spent on one person is not spent on another: the limit bounds
+    /// approval fatigue, not the client's ordinary traffic.
+    #[tokio::test]
+    async fn one_persons_budget_is_not_another_persons() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+        for _ in 0..4 {
+            guard_subject(&context, LimitedEndpoint::Backchannel, "ada").await;
+        }
+
+        // Act
+        let elsewhere = guard_subject(&context, LimitedEndpoint::Backchannel, "grace").await;
+
+        // Assert
+        assert!(elsewhere.is_none());
+    }
+
+    /// The refusal must be the one `guard` renders, byte for byte: a client
+    /// that could tell the subject bucket from the client bucket could read
+    /// "this hint named somebody real" off a 429.
+    #[tokio::test]
+    async fn a_subject_refusal_is_indistinguishable_from_a_client_refusal() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+        for _ in 0..3 {
+            guard_subject(&context, LimitedEndpoint::Backchannel, "ada").await;
+        }
+
+        // Act
+        let by_subject = guard_subject(&context, LimitedEndpoint::Backchannel, "ada")
+            .await
+            .expect("the subject bucket is full");
+        let by_client = too_many_requests(Refused {
+            scope: Scope::Client,
+            // The same clock and the same window: what is asserted is that the
+            // *scope* leaves no trace in the answer, not that two different
+            // limits happen to expire together.
+            retry_after: limits()
+                .for_endpoint(LimitedEndpoint::Backchannel)
+                .per_client
+                .expect("the fixture gives the backchannel endpoint a client limit")
+                .retry_after(now()),
+        });
+
+        // Assert
+        assert_eq!(by_subject.status(), by_client.status());
+        assert_eq!(by_subject.headers(), by_client.headers());
+    }
+
+    /// Every endpoint but `/bc-authorize` has no subject bucket, and must not
+    /// acquire one by accident: a `None` limit admits everything here.
+    #[tokio::test]
+    async fn an_endpoint_without_a_subject_limit_counts_nobody() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+
+        // Act
+        let mut admitted = true;
+        for _ in 0..50 {
+            admitted &= guard_subject(&context, LimitedEndpoint::Token, "ada")
+                .await
+                .is_none();
+        }
+
+        // Assert
+        assert!(admitted);
+    }
+
+    /// A trail that grows with the flood is a place to bury everything else:
+    /// one record per window here too.
+    #[tokio::test]
+    async fn a_flood_about_one_person_is_audited_once_per_window() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+
+        // Act
+        for _ in 0..20 {
+            guard_subject(&context, LimitedEndpoint::Backchannel, "ada").await;
+        }
+
+        // Assert
+        let records = trail.0.lock().expect("the test sink is not poisoned");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].event_type, EventType::REQUEST_THROTTLED);
+        let rendered = format!("{:?}", records[0].detail);
+        assert!(rendered.contains("subject"), "{rendered}");
+        assert!(!rendered.contains("ada"), "{rendered}");
     }
 
     #[test]

@@ -4114,6 +4114,7 @@ async fn backchannel_authentication_endpoint(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(request_id): Extension<crate::http::request_id::RequestId>,
+    client_address: Option<Extension<crate::http::forwarded::ClientAddr>>,
     certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -4150,6 +4151,18 @@ async fn backchannel_authentication_endpoint(
     // wired gets everywhere else it sends a person a message.
     let mail = scope.mail();
 
+    // `ast-5lw`. The limiter is handed to the handler rather than wrapped
+    // around it here, because the bucket that matters is keyed by the person
+    // the hint resolves to and only the handler resolves one.
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client_address.as_deref(),
+        now,
+    );
+
     backchannel_authentication::authorize(
         BackchannelContext {
             tenant: &tenant,
@@ -4162,6 +4175,7 @@ async fn backchannel_authentication_endpoint(
             mail: &mail,
             certificate,
             grant_management,
+            limits,
             request_id: Some(request_id.as_str()),
         },
         &headers,
@@ -4324,6 +4338,9 @@ struct ApprovalsParts {
     clients: asterius_store_pg::PgClientRepository,
     grants: asterius_store_pg::PgGrantRepository,
     users: asterius_store_pg::PgUserRepository,
+    /// The decision budget's counters (`ast-5lw`), over the same table and the
+    /// same pool every other limiter here uses.
+    limits: asterius_store_pg::PgRateLimitStore,
 }
 
 fn approvals_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> ApprovalsParts {
@@ -4335,6 +4352,7 @@ fn approvals_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> Ap
         clients: scope.clients(endpoints.capabilities),
         grants: scope.grants(),
         users: scope.users(Arc::clone(&endpoints.kek)),
+        limits: asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone()),
     }
 }
 
@@ -4358,6 +4376,7 @@ fn approvals_context<'a>(
         text,
         nonce,
         audit,
+        limits: &parts.limits,
         mount: mount_of(mount),
     }
 }
@@ -4677,6 +4696,7 @@ mod tests {
                 LimitedEndpoint::Token => "LimitedEndpoint::Token",
                 LimitedEndpoint::UserInfo => "LimitedEndpoint::UserInfo",
                 LimitedEndpoint::SsfSubjects => "LimitedEndpoint::SsfSubjects",
+                LimitedEndpoint::Backchannel => "LimitedEndpoint::Backchannel",
             };
 
             // The SSF subject endpoints count the *authenticated receiver*,
@@ -4684,8 +4704,16 @@ mod tests {
             // checks of `crate::http::ssf`, so its call site is in that
             // module rather than in this file's wiring. The assertion follows
             // the code instead of pretending it is somewhere it is not.
+            // Two endpoints count something only their handler knows — the
+            // authenticated receiver at the SSF endpoints, the person a hint
+            // resolved to at `/bc-authorize` — so their call site is in that
+            // module rather than in this file's wiring. The assertion follows
+            // the code instead of pretending it is somewhere it is not.
             let wired_in = match endpoint {
                 LimitedEndpoint::SsfSubjects => include_str!("ssf_management.rs"),
+                LimitedEndpoint::Backchannel => {
+                    include_str!("backchannel_authentication.rs")
+                }
                 _ => source,
             };
 

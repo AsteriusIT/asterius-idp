@@ -26,6 +26,35 @@
 //!   acknowledgement: the approvals inbox (`ast-lh3.6`) reads it, the token
 //!   endpoint (`ast-lh3.5`) spends it.
 //!
+//! # Three limits, because three different things are being spent
+//!
+//! `ast-5lw`. An authenticated client used to be able to raise an unbounded
+//! number of approval requests against one person: every one of them sends a
+//! message and puts another line in their inbox, which is
+//! approval fatigue — press approve to make it stop — and a way to flood a
+//! mailbox. So:
+//!
+//! * the address and client buckets of [`crate::http::limits`], through
+//!   `guard`, after client authentication so the client charged is one that
+//!   proved who it is;
+//! * a bucket keyed by the *person the hint resolved to*
+//!   ([`LimitedEndpoint::Backchannel`]'s `per_subject`), which is the only
+//!   limit here counting something a third party pays for. Keyed by the
+//!   resolved account rather than by the hint as it was typed, so that an
+//!   address, a username and an `id_token_hint` naming one person are one
+//!   budget;
+//! * a ceiling on how many requests may be *waiting* for one person at once
+//!   ([`ciba::MAX_PENDING_PER_USER`]), which is what the two rate limits
+//!   cannot express: a window that rolls over lets a slow, patient client keep
+//!   an inbox permanently full.
+//!
+//! The refusals are §13 error objects, and the two rate-limit refusals are
+//! byte-identical: a client cannot tell the client bucket from the subject
+//! bucket, and so cannot use a 429 to learn that a hint named somebody real.
+//! It never learns anything new from them anyway — §13's `unknown_user_id` is
+//! the oracle the specification mandates, and it is already documented in
+//! `docs/threat-model.md`.
+//!
 //! # The client-assertion audience is wider here, and only here
 //!
 //! §7.1: an OP that takes JWT client assertions at this endpoint "MUST accept
@@ -40,6 +69,7 @@
 
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::entities::client::GrantType;
+use asterius_domain::rate_limit::LimitedEndpoint;
 use asterius_domain::{AuditSink, Client, ClientRepository, KeyStore, Tenant, User};
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::verify::{Policy, TypRule};
@@ -96,6 +126,9 @@ pub struct BackchannelContext<'a> {
     /// Whether this tenant offers Grant Management, and whether it requires an
     /// action (ID1 §7.1).
     pub grant_management: asterius_oidc::grant_management::Policy,
+    /// The per-endpoint limiter (`ast-5lw`), carrying this request's address,
+    /// the trail and one clock reading.
+    pub limits: crate::http::limits::LimitContext<'a>,
     /// The request identifier, for correlating the audit record with the logs.
     pub request_id: Option<&'a str>,
 }
@@ -177,7 +210,18 @@ pub async fn authorize(
         return refused(&context, &client, None, &CibaError::UnauthorizedClient, now).await;
     }
 
-    recorded(&context, &client, Parameters::from_pairs(pairs), now).await
+    // After authentication, like the SSF management endpoints': the client
+    // charged is one that proved who it is, so nobody can spend a competitor's
+    // budget by naming them. The address bucket still holds everything that
+    // did not succeed.
+    let params = Parameters::from_pairs(pairs);
+    crate::http::limits::guard(
+        &context.limits,
+        LimitedEndpoint::Backchannel,
+        Some(client.id.as_str()),
+        async || recorded(&context, &client, params, now).await,
+    )
+    .await
 }
 
 /// Everything after client authentication: validate, resolve, record, answer.
@@ -203,6 +247,24 @@ async fn recorded(
         Ok(user) => user,
         Err(failure) => return refused(context, client, None, &failure, now).await,
     };
+
+    // Both limits about the *person*, before anything is written or sent.
+    // The order is: count this request against them, then refuse if their
+    // inbox is already full. A request refused by either has still cost the
+    // subject bucket, which is deliberate — the budget is "attempts to bother
+    // this person", not "times we succeeded".
+    if let Some(refusal) = crate::http::limits::guard_subject(
+        &context.limits,
+        LimitedEndpoint::Backchannel,
+        &user.id.as_uuid().to_string(),
+    )
+    .await
+    {
+        return refusal;
+    }
+    if let Err(failure) = self::room_for_one_more(context, &user, now).await {
+        return refused(context, client, None, &failure, now).await;
+    }
 
     let minted = MintedAuthReqId::generate();
     // Unreachable: the grant and the mode are registered together
@@ -279,6 +341,43 @@ async fn recorded(
         })),
     )
         .into_response()
+}
+
+/// Whether this person has room for another pending request (`ast-5lw`).
+///
+/// [`ciba::MAX_PENDING_PER_USER`] and its documentation carry the decision:
+/// the *new* request is refused, and nothing already waiting is touched.
+///
+/// Counted from the same read the approvals inbox renders itself from, rather
+/// than from a `count(*)` of its own, so "what is waiting" means one thing in
+/// this server: a row that is pending, unexpired and this person's. A store
+/// that cannot be read is [`CibaError::AccessDenied`] for the reason
+/// [`directory_failure`] gives — "we could not look" is not "there is room".
+///
+/// The refusal names no user in the trail and says nothing about the person to
+/// the client beyond what the request already asserted about them.
+async fn room_for_one_more(
+    context: &BackchannelContext<'_>,
+    user: &User,
+    now: OffsetDateTime,
+) -> Result<(), CibaError> {
+    let waiting = context
+        .ciba_requests
+        .pending_for_user(&user.id, now)
+        .await
+        .map_err(|failure| {
+            tracing::error!(
+                %failure,
+                tenant = %context.tenant.id,
+                "cannot count the approvals already waiting for a user"
+            );
+            CibaError::AccessDenied
+        })?;
+    if ciba::room_for_another_pending(waiting.len()) {
+        Ok(())
+    } else {
+        Err(CibaError::TooManyPending)
+    }
 }
 
 /// Tells the person that something is waiting for them (`ast-lh3.6`).

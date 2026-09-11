@@ -1344,6 +1344,7 @@ fn generous_endpoint_limits() -> EndpointLimits {
             window: time::Duration::minutes(15),
         },
         per_client: None,
+        per_subject: None,
     };
     EndpointLimits {
         registration: limit,
@@ -1352,6 +1353,16 @@ fn generous_endpoint_limits() -> EndpointLimits {
         token: limit,
         userinfo: limit,
         ssf_subjects: limit,
+        // Generous here too, and present rather than absent: a fixture that
+        // left `/bc-authorize` without a subject bucket would be a fixture
+        // that could not notice `ast-5lw` regressing.
+        backchannel: EndpointLimit {
+            per_subject: Some(RateLimit {
+                max: 1_000,
+                window: time::Duration::minutes(15),
+            }),
+            ..limit
+        },
     }
 }
 

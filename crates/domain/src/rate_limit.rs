@@ -247,6 +247,15 @@ pub enum Scope {
     /// Too many requests to one endpoint from one authenticated client
     /// (`ast-p2l.3`).
     Client,
+    /// Too many requests to one endpoint *about one person* (`ast-5lw`).
+    ///
+    /// The bucket the backchannel endpoint needs and the other endpoints have
+    /// no use for: a CIBA request costs the person it names a notification and
+    /// a decision, so the quantity to bound is "requests about this human",
+    /// which neither the address nor the client bucket measures. A client with
+    /// a generous budget spread over a thousand accounts is ordinary traffic;
+    /// the same budget aimed at one account is approval fatigue.
+    Subject,
 }
 
 impl Scope {
@@ -257,6 +266,7 @@ impl Scope {
             Self::Address => "ip",
             Self::Account => "account",
             Self::Client => "client",
+            Self::Subject => "subject",
         }
     }
 }
@@ -382,18 +392,27 @@ pub enum LimitedEndpoint {
     /// identifiers with, and two counters would let it spend the budget
     /// twice.
     SsfSubjects,
+    /// `POST /bc-authorize` — CIBA Core 1.0 §7.1.
+    ///
+    /// The one endpoint here whose cost is paid by somebody who is not making
+    /// the request: every accepted request sends a person a message and puts
+    /// a decision in front of them (`ast-lh3.6`). That is why it is also the
+    /// only one with a [`Scope::Subject`] bucket — see
+    /// [`EndpointLimit::per_subject`].
+    Backchannel,
 }
 
 impl LimitedEndpoint {
     /// Every endpoint that has limits, so a caller can iterate over them
     /// without writing the list a second time.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Registration,
         Self::ClientConfiguration,
         Self::PushedAuthorizationRequest,
         Self::Token,
         Self::UserInfo,
         Self::SsfSubjects,
+        Self::Backchannel,
     ];
 
     /// The name used in bucket keys, metric labels and audit details.
@@ -406,6 +425,7 @@ impl LimitedEndpoint {
             Self::Token => "token",
             Self::UserInfo => "userinfo",
             Self::SsfSubjects => "ssf_subjects",
+            Self::Backchannel => "backchannel",
         }
     }
 }
@@ -449,6 +469,58 @@ pub fn endpoint_client_bucket(endpoint: LimitedEndpoint, client_id: &str) -> Buc
     ))
 }
 
+/// The bucket for requests to one endpoint *about one person* (`ast-5lw`).
+///
+/// The key is the resolved account identifier, hashed like
+/// [`account_bucket`]'s is, so the table does not become a list of who has
+/// been the target of an approval request.
+///
+/// Keyed by the *resolved* person rather than by the hint as it was typed,
+/// unlike [`account_bucket`], and the difference is deliberate. A login is
+/// limited before anything is resolved, so there may be no account to key by;
+/// a backchannel request has already resolved one by the time this bucket is
+/// consulted, and keying by the hint instead would leave the limit open to
+/// whoever writes the same person three ways — an address, a username, and an
+/// `id_token_hint` whose `sub` is theirs. One person is one budget however
+/// they were named.
+///
+/// A hint that resolves to nobody fills no bucket here, which is not an
+/// oracle: that request is refused by CIBA Core §13's `unknown_user_id` before
+/// this is reached, and the client bucket counts it either way.
+#[must_use]
+// fuzz-target: endpoint_bucket
+pub fn endpoint_subject_bucket(endpoint: LimitedEndpoint, subject: &str) -> Bucket {
+    Bucket(format!(
+        "ep:{}:subject:{}",
+        endpoint.as_str(),
+        crate::credentials::sha256_hex(subject.as_bytes())
+    ))
+}
+
+/// The bucket for one person's decisions at the approvals inbox (`ast-5lw`).
+///
+/// Keyed by the session the decision is posted from, which is the only thing
+/// `/account/approvals/decide` has: the page is first-party and
+/// session-authenticated, so there is no `client_id` to charge and the address
+/// behind it is a person's home connection rather than a caller's.
+///
+/// Not a [`LimitedEndpoint`], for the reason [`admin_api_bucket`] is not one:
+/// that enum is the protocol surface an operator tunes against traffic they do
+/// not control, and this is a form a signed-in person submits. What it bounds
+/// is a script that has obtained a session replaying decisions — and the
+/// budget for that is a constant rather than a knob, because no deployment has
+/// a legitimate reason to answer a hundred approvals a minute.
+///
+/// The session identifier is hashed: it is a credential in a cookie, and a
+/// limiter's table is not a place to keep one.
+#[must_use]
+pub fn approval_decision_bucket(session: &str) -> Bucket {
+    Bucket(format!(
+        "approval:decide:{}",
+        crate::credentials::sha256_hex(session.as_bytes())
+    ))
+}
+
 /// The marker that says "this bucket has already been written to the trail in
 /// this window".
 ///
@@ -477,6 +549,15 @@ pub struct EndpointLimit {
     /// Requests permitted from one authenticated client, where the endpoint
     /// has one to charge.
     pub per_client: Option<RateLimit>,
+    /// Requests permitted *about one person*, where the endpoint resolves one
+    /// (`ast-5lw`).
+    ///
+    /// Only [`LimitedEndpoint::Backchannel`] has one. It is charged by the
+    /// handler rather than by the wiring, because the person is not known
+    /// until the hint has been resolved — and it is charged whatever the
+    /// answer, because by then the request has already cost that person the
+    /// notification it triggers.
+    pub per_subject: Option<RateLimit>,
 }
 
 /// Every endpoint's limits, as one deployment configured them.
@@ -497,6 +578,8 @@ pub struct EndpointLimits {
     pub userinfo: EndpointLimit,
     /// The SSF add-subject and remove-subject endpoints.
     pub ssf_subjects: EndpointLimit,
+    /// `POST /bc-authorize`.
+    pub backchannel: EndpointLimit,
 }
 
 impl EndpointLimits {
@@ -510,6 +593,7 @@ impl EndpointLimits {
             LimitedEndpoint::Token => self.token,
             LimitedEndpoint::UserInfo => self.userinfo,
             LimitedEndpoint::SsfSubjects => self.ssf_subjects,
+            LimitedEndpoint::Backchannel => self.backchannel,
         }
     }
 }
@@ -517,6 +601,136 @@ impl EndpointLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ast-5lw`: one person is one budget however a client named them, so the
+    /// key is the resolved account and two hints for the same person share a
+    /// bucket.
+    #[test]
+    fn one_person_has_one_backchannel_bucket() {
+        // Arrange
+        let person = "5f2b1c1e-0b5e-4f39-9f0a-8f1a0d6a2c11";
+
+        // Act
+        let first = endpoint_subject_bucket(LimitedEndpoint::Backchannel, person);
+        let second = endpoint_subject_bucket(LimitedEndpoint::Backchannel, person);
+
+        // Assert
+        assert_eq!(first, second);
+        assert_ne!(
+            first,
+            endpoint_subject_bucket(LimitedEndpoint::Backchannel, "somebody-else")
+        );
+    }
+
+    /// The key says nothing about who was targeted: the table is not a list of
+    /// the people a client has asked about.
+    #[test]
+    fn a_subject_bucket_names_a_digest_and_not_the_person() {
+        // Arrange
+        let person = "ada@example.test";
+
+        // Act
+        let bucket = endpoint_subject_bucket(LimitedEndpoint::Backchannel, person);
+
+        // Assert
+        assert!(!bucket.as_str().contains(person));
+        assert_eq!(
+            bucket.as_str(),
+            format!(
+                "ep:backchannel:subject:{}",
+                crate::credentials::sha256_hex(person.as_bytes())
+            )
+        );
+    }
+
+    /// Three buckets at one endpoint, and no input may make one spend
+    /// another's: a client id must not name the bucket a person is counted in.
+    #[test]
+    fn the_three_backchannel_buckets_are_disjoint() {
+        // Arrange
+        let shared = "5f2b1c1e";
+        let endpoint = LimitedEndpoint::Backchannel;
+
+        // Act
+        let subject = endpoint_subject_bucket(endpoint, shared);
+        let client = endpoint_client_bucket(endpoint, shared);
+        let address = endpoint_address_bucket(endpoint, "198.51.100.7".parse().expect("literal"));
+
+        // Assert
+        assert_ne!(subject, client);
+        assert_ne!(subject, address);
+        assert_ne!(audited_once_bucket(&subject), subject);
+    }
+
+    /// One endpoint's counter is not spendable from another's, subject buckets
+    /// included.
+    #[test]
+    fn a_subject_bucket_is_namespaced_per_endpoint() {
+        // Arrange
+        let person = "5f2b1c1e";
+
+        // Act
+        let backchannel = endpoint_subject_bucket(LimitedEndpoint::Backchannel, person);
+
+        // Assert
+        for other in LimitedEndpoint::ALL {
+            assert_eq!(
+                endpoint_subject_bucket(other, person) == backchannel,
+                other == LimitedEndpoint::Backchannel
+            );
+        }
+    }
+
+    /// The decision budget is per session, and the session identifier — a
+    /// credential — is hashed rather than stored.
+    #[test]
+    fn a_decision_bucket_is_one_session_and_hides_it() {
+        // Arrange
+        let session = "3f1c-session-digest";
+
+        // Act
+        let bucket = approval_decision_bucket(session);
+
+        // Assert
+        assert_eq!(bucket, approval_decision_bucket(session));
+        assert_ne!(bucket, approval_decision_bucket("another-session"));
+        assert!(!bucket.as_str().contains(session));
+    }
+
+    /// `/bc-authorize` is the only endpoint that counts something a third
+    /// party pays for; an accidental `per_subject` elsewhere would be a limit
+    /// nothing charges and nobody notices.
+    #[test]
+    fn the_backchannel_endpoint_is_the_only_one_with_a_subject_limit() {
+        // Arrange
+        let window = Duration::seconds(60);
+        let plain = EndpointLimit {
+            per_address: RateLimit { max: 10, window },
+            per_client: None,
+            per_subject: None,
+        };
+        let limits = EndpointLimits {
+            registration: plain,
+            client_configuration: plain,
+            par: plain,
+            token: plain,
+            userinfo: plain,
+            ssf_subjects: plain,
+            backchannel: EndpointLimit {
+                per_subject: Some(RateLimit { max: 3, window }),
+                ..plain
+            },
+        };
+
+        // Act & Assert
+        for endpoint in LimitedEndpoint::ALL {
+            assert_eq!(
+                limits.for_endpoint(endpoint).per_subject.is_some(),
+                endpoint == LimitedEndpoint::Backchannel,
+                "{endpoint}"
+            );
+        }
+    }
 
     fn now() -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("a valid timestamp")

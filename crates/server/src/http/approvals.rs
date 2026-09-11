@@ -71,6 +71,7 @@
 
 use asterius_domain::audit::trail::keys;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
+use asterius_domain::rate_limit::{RateLimit, RateLimitStore, approval_decision_bucket};
 use asterius_domain::{
     AcrPolicy, ClientRepository, FirstPartyDestination, Grant, GrantRepository,
     InteractionRepository, SectorIdentifier, Session, SessionId as DomainSessionId,
@@ -114,6 +115,26 @@ pub const FRESHNESS: Duration = Duration::seconds(120);
 /// The device page's ten minutes, for its reason: long enough for somebody
 /// typing a password, short enough that an abandoned login goes away.
 const ENTRY_LIFETIME: Duration = Duration::minutes(10);
+
+/// Decisions one session may post per [`DECISION_WINDOW`] (`ast-5lw`).
+///
+/// Twenty, which is four times the number of requests one person may have
+/// waiting ([`asterius_oidc::ciba::MAX_PENDING_PER_USER`]) and so leaves room for a person
+/// clearing a full inbox, changing their mind, and reloading the page. What it
+/// refuses is a script: an approval posted in a loop, either by somebody who
+/// has stolen a session or by a page that has found a way to post one.
+///
+/// A constant rather than a configuration key, for the reason
+/// [`asterius_domain::admin_api_bucket`] has no key either: this is a
+/// first-party form a signed-in person submits, not a protocol surface an
+/// operator tunes against traffic they do not control.
+pub const DECISIONS_PER_WINDOW: u32 = 20;
+
+/// The window those decisions are counted in.
+///
+/// The device verification page's ten minutes, so the two pages a person may
+/// be moving between behave the same way.
+pub const DECISION_WINDOW: Duration = Duration::minutes(10);
 
 /// The largest decision body this page will read.
 ///
@@ -246,6 +267,8 @@ pub struct ApprovalsContext<'a> {
     pub nonce: &'a Nonce,
     /// Where a decision is recorded.
     pub audit: &'a dyn AuditSink,
+    /// Where this session's decision budget is counted (`ast-5lw`).
+    pub limits: &'a dyn RateLimitStore,
     /// The prefix routing removed from this request's path (`ast-295`).
     pub mount: MountPrefix,
 }
@@ -289,6 +312,13 @@ pub async fn decide(
     let Some(session) = admitted(context, headers, now).await else {
         return begin(context, now).await;
     };
+    // Before the body is read, so a flood of malformed submissions costs the
+    // same budget as a flood of well-formed ones. Keyed by the session rather
+    // than by the address: the address is a person's home connection, and a
+    // household behind one of them is several approvers.
+    if self::throttled(context.limits, &context.tenant.id, &session, now).await {
+        return too_many_decisions(context, &session, now).await;
+    }
     let Some(form) = decision(body) else {
         return refused(context, &session, now).await;
     };
@@ -715,6 +745,133 @@ async fn client_name(context: &ApprovalsContext<'_>, client_id: &str) -> String 
     }
 }
 
+/// Whether this session has spent its decision budget (`ast-5lw`).
+///
+/// Counted on the way in, so a refusal costs the budget as much as an approval
+/// does — what is bounded is submissions, not outcomes.
+///
+/// A counter that cannot be read is reported as spent, the direction
+/// `crate::http::device`'s budget fails in: the alternative is a limiter an
+/// attacker switches off by loading the database.
+async fn throttled(
+    limits: &dyn RateLimitStore,
+    tenant: &asterius_domain::TenantId,
+    session: &Session,
+    now: OffsetDateTime,
+) -> bool {
+    let limit = decision_limit();
+    let bucket = approval_decision_bucket(&session.id_digest);
+    match limits
+        .record(
+            tenant,
+            &bucket,
+            limit.window_start(now),
+            limit.window_end(now),
+        )
+        .await
+    {
+        Ok(counted) => !limit.admits(counted.saturating_sub(1)),
+        Err(error) => {
+            tracing::error!(%error, %tenant, "cannot count an approval decision");
+            true
+        }
+    }
+}
+
+/// The per-session budget, as the limiter's own type.
+const fn decision_limit() -> RateLimit {
+    RateLimit {
+        max: DECISIONS_PER_WINDOW,
+        window: DECISION_WINDOW,
+    }
+}
+
+/// The page a session that has spent its budget produces.
+///
+/// 429 with `Retry-After`, like every other throttled surface here, and the
+/// inbox itself underneath it: a person who waited out the window presses the
+/// button again on a page that is still correct.
+///
+/// One trail record per window rather than one per submission
+/// ([`asterius_domain::audited_once_bucket`]), for the reason
+/// `crate::http::limits` keeps to it: a trail that grows with the flood is a
+/// place to bury everything else.
+async fn too_many_decisions(
+    context: &ApprovalsContext<'_>,
+    session: &Session,
+    now: OffsetDateTime,
+) -> Response {
+    let limit = decision_limit();
+    let retry_after = limit.retry_after(now).whole_seconds().max(1);
+    if self::first_refusal_in_window(context, session, now).await {
+        let record = AuditEvent::new(
+            context.tenant.id.clone(),
+            EventType::REQUEST_THROTTLED,
+            Outcome::Failure,
+            Actor::User(session.user.to_string()),
+            now,
+        )
+        .session(DomainSessionId::new(session.id_digest.clone()))
+        .detail(
+            Detail::new()
+                .label("endpoint", "approval_decision")
+                .label("limit", "session")
+                .number("retry_after_seconds", retry_after),
+        );
+        if let Err(error) = context.audit.record(record).await {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot record a throttled approval decision");
+        }
+    }
+    let page = rendered(
+        context,
+        session,
+        Some(context.text.approvals_throttled()),
+        StatusCode::TOO_MANY_REQUESTS,
+        now,
+    )
+    .await;
+    with_retry_after(page, retry_after)
+}
+
+/// Whether this is the first refusal for this session in this window.
+///
+/// A marker counter beside the one that was full, written once: the first
+/// write returns `1`, and a marker that cannot be written is reported as "not
+/// the first", which loses a record rather than risking a flood of them.
+async fn first_refusal_in_window(
+    context: &ApprovalsContext<'_>,
+    session: &Session,
+    now: OffsetDateTime,
+) -> bool {
+    let limit = decision_limit();
+    let marker =
+        asterius_domain::audited_once_bucket(&approval_decision_bucket(&session.id_digest));
+    match context
+        .limits
+        .record(
+            &context.tenant.id,
+            &marker,
+            limit.window_start(now),
+            limit.window_end(now),
+        )
+        .await
+    {
+        Ok(counted) => counted == 1,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "a throttle marker was not written");
+            false
+        }
+    }
+}
+
+/// Adds `Retry-After` to a response that is already rendered.
+fn with_retry_after(mut response: Response, seconds: i64) -> Response {
+    if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    response
+}
+
 /// The page a submission this server would not read produces.
 async fn refused(
     context: &ApprovalsContext<'_>,
@@ -887,6 +1044,153 @@ mod tests {
 
         // Assert
         assert_eq!(parsed, None);
+    }
+
+    /// Counters in memory. Enough to assert what the decision budget decides;
+    /// the server counts in the `rate_limits` table, because a per-process
+    /// counter limits nothing across replicas.
+    #[derive(Debug, Default)]
+    struct Counters(std::sync::Mutex<std::collections::BTreeMap<String, u32>>);
+
+    #[async_trait::async_trait]
+    impl RateLimitStore for Counters {
+        async fn count(
+            &self,
+            _tenant: &asterius_domain::TenantId,
+            bucket: &asterius_domain::Bucket,
+            _window_start: OffsetDateTime,
+        ) -> Result<u32, asterius_domain::DomainError> {
+            let counters = self.0.lock().expect("the test store is not poisoned");
+            Ok(counters.get(bucket.as_str()).copied().unwrap_or(0))
+        }
+
+        async fn record(
+            &self,
+            _tenant: &asterius_domain::TenantId,
+            bucket: &asterius_domain::Bucket,
+            _window_start: OffsetDateTime,
+            _expires_at: OffsetDateTime,
+        ) -> Result<u32, asterius_domain::DomainError> {
+            let mut counters = self.0.lock().expect("the test store is not poisoned");
+            let entry = counters.entry(bucket.as_str().to_owned()).or_default();
+            *entry += 1;
+            Ok(*entry)
+        }
+
+        async fn clear(
+            &self,
+            _tenant: &asterius_domain::TenantId,
+            _bucket: &asterius_domain::Bucket,
+        ) -> Result<(), asterius_domain::DomainError> {
+            Ok(())
+        }
+    }
+
+    /// A store that is down. A limiter that cannot be read must not be a
+    /// limiter that is off.
+    #[derive(Debug)]
+    struct Broken;
+
+    #[async_trait::async_trait]
+    impl RateLimitStore for Broken {
+        async fn count(
+            &self,
+            _tenant: &asterius_domain::TenantId,
+            _bucket: &asterius_domain::Bucket,
+            _window_start: OffsetDateTime,
+        ) -> Result<u32, asterius_domain::DomainError> {
+            Err(asterius_domain::DomainError::Storage("down".into()))
+        }
+
+        async fn record(
+            &self,
+            _tenant: &asterius_domain::TenantId,
+            _bucket: &asterius_domain::Bucket,
+            _window_start: OffsetDateTime,
+            _expires_at: OffsetDateTime,
+        ) -> Result<u32, asterius_domain::DomainError> {
+            Err(asterius_domain::DomainError::Storage("down".into()))
+        }
+
+        async fn clear(
+            &self,
+            _tenant: &asterius_domain::TenantId,
+            _bucket: &asterius_domain::Bucket,
+        ) -> Result<(), asterius_domain::DomainError> {
+            Err(asterius_domain::DomainError::Storage("down".into()))
+        }
+    }
+
+    fn tenant_id() -> asterius_domain::TenantId {
+        asterius_domain::TenantId::parse("demo").expect("`demo` is a valid tenant id")
+    }
+
+    fn a_session() -> Session {
+        Session::begin(
+            tenant_id(),
+            &session::SessionId::generate(),
+            uuid::Uuid::from_u128(1),
+            vec![],
+            OffsetDateTime::UNIX_EPOCH,
+            session::Lifetimes::default(),
+        )
+    }
+
+    /// `ast-5lw`: a person clearing a full inbox is not throttled, and the
+    /// submission after the budget is spent is.
+    #[tokio::test]
+    async fn a_session_may_decide_until_its_budget_is_spent() {
+        // Arrange
+        let store = Counters::default();
+        let session = a_session();
+        let now = OffsetDateTime::UNIX_EPOCH;
+
+        // Act
+        let mut admitted = 0;
+        for _ in 0..DECISIONS_PER_WINDOW {
+            if !throttled(&store, &tenant_id(), &session, now).await {
+                admitted += 1;
+            }
+        }
+        let refused = throttled(&store, &tenant_id(), &session, now).await;
+
+        // Assert
+        assert_eq!(admitted, DECISIONS_PER_WINDOW);
+        assert!(refused);
+    }
+
+    /// The budget is one session's, not one deployment's: a person who has
+    /// spent theirs cannot stop anybody else deciding.
+    #[tokio::test]
+    async fn one_sessions_budget_is_not_another_sessions() {
+        // Arrange
+        let store = Counters::default();
+        let spent = a_session();
+        let other = a_session();
+        let now = OffsetDateTime::UNIX_EPOCH;
+        for _ in 0..=DECISIONS_PER_WINDOW {
+            throttled(&store, &tenant_id(), &spent, now).await;
+        }
+
+        // Act
+        let elsewhere = throttled(&store, &tenant_id(), &other, now).await;
+
+        // Assert
+        assert!(!elsewhere);
+    }
+
+    /// A counter that cannot be read is not permission to stop counting.
+    #[tokio::test]
+    async fn a_limiter_that_cannot_be_read_refuses() {
+        // Arrange
+        let store = Broken;
+        let session = a_session();
+
+        // Act
+        let refused = throttled(&store, &tenant_id(), &session, OffsetDateTime::UNIX_EPOCH).await;
+
+        // Assert
+        assert!(refused);
     }
 
     /// The reference is a digest or it is nothing: the store is not asked to
