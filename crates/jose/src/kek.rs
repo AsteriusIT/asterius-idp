@@ -161,11 +161,56 @@ enum Material<'a> {
     },
     /// A secret a tenant holds exactly one of.
     TenantSecret(TenantSecret),
+    /// A secret belonging to one row that a tenant has many of.
+    ///
+    /// Identified by *which* kind of secret and by the row's own identifier,
+    /// so two rows of the same kind seal under different additional
+    /// authenticated data.
+    RowSecret { kind: RowSecret, row: &'a str },
+}
+
+/// A secret a tenant may hold many of, one per row.
+///
+/// Separate from [`TenantSecret`] because the binding needs a row identifier
+/// as well as a tenant: "the tenant's pairwise salt" names a row on its own,
+/// "an SSF push credential" does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RowSecret {
+    /// The `authorization_header` a push receiver registered for one stream
+    /// (RFC 8935 §2.2; SSF 1.0 §6.1.1). The row is the `stream_id`.
+    SsfPushAuthorization,
+}
+
+impl RowSecret {
+    /// Every secret this enum names, so a test can be exhaustive over them.
+    pub const ALL: [Self; 1] = [Self::SsfPushAuthorization];
+
+    /// The value that goes into the additional authenticated data.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SsfPushAuthorization => "ssf-push-authorization",
+        }
+    }
+}
+
+impl fmt::Display for RowSecret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// The label for a private key envelope. Unchanged since the first ciphertext
 /// was written: changing it would make every stored signing key unopenable.
 const KEY_LABEL: &[u8] = b"asterius.kek.v1";
+
+/// The label for a per-row secret envelope.
+///
+/// A third space beside the two below, chosen so that no label is a prefix of
+/// another: a reader of an envelope never has to guess which field layout
+/// produced it, because a mismatched guess fails to authenticate.
+const ROW_SECRET_LABEL: &[u8] = b"asterius.kek.row-secret.v1";
 
 /// The label for a tenant secret envelope.
 ///
@@ -192,6 +237,22 @@ impl<'a> KeyBinding<'a> {
                 purpose,
                 algorithm,
             },
+        }
+    }
+
+    /// Binds a per-row secret to the tenant and the row that own it.
+    ///
+    /// The row is the point. An SSF push credential sealed for one stream and
+    /// pasted into another stream's row would otherwise be presented to that
+    /// stream's endpoint — a receiver would be handed another receiver's
+    /// credential by a single `UPDATE`. With the identifier in the additional
+    /// authenticated data the copy does not decrypt, so the delivery fails
+    /// loudly instead of leaking.
+    #[must_use]
+    pub const fn row_secret(tenant: &'a TenantId, kind: RowSecret, row: &'a str) -> Self {
+        Self {
+            tenant,
+            material: Material::RowSecret { kind, row },
         }
     }
 
@@ -234,6 +295,12 @@ impl<'a> KeyBinding<'a> {
             Material::TenantSecret(secret) => {
                 format!("tenant_secret[tenant={tenant}, secret={secret}]")
             }
+            // The row identifier is a `stream_id` — 128 bits this server drew
+            // and handed to the receiver in a URL — so it is an identifier
+            // like a `kid` and not derived from the plaintext.
+            Material::RowSecret { kind, row } => {
+                format!("row_secret[tenant={tenant}, secret={kind}, row={row}]")
+            }
         }
     }
 
@@ -266,6 +333,10 @@ impl<'a> KeyBinding<'a> {
             Material::TenantSecret(secret) => {
                 encode(TENANT_SECRET_LABEL, &[tenant, secret.as_str().as_bytes()])
             }
+            Material::RowSecret { kind, row } => encode(
+                ROW_SECRET_LABEL,
+                &[tenant, kind.as_str().as_bytes(), row.as_bytes()],
+            ),
         }
     }
 }
@@ -940,20 +1011,27 @@ mod tests {
         );
     }
 
-    /// The two binding shapes have different field counts, so they must not
+    /// The three binding shapes have different field counts, so they must not
     /// share an encoding space: a tenant secret must never be openable as a
-    /// private key, whatever the tenant id, `kid` or secret name happens to be.
-    /// The labels are what separate them, and they diverge inside the constant
-    /// rather than relying on what follows.
+    /// private key, nor a row secret as either, whatever the tenant id, `kid`,
+    /// secret name or row identifier happens to be. The labels are what
+    /// separate them, and they diverge inside the constant rather than relying
+    /// on what follows.
     #[test]
     fn a_key_binding_and_a_tenant_secret_binding_never_collide() {
-        // The labels differ before either can be a prefix of the other.
-        let at = KEY_LABEL
-            .iter()
-            .zip(TENANT_SECRET_LABEL)
-            .position(|(a, b)| a != b)
-            .expect("the two labels must differ");
-        assert!(at < KEY_LABEL.len() && at < TENANT_SECRET_LABEL.len());
+        // No label is a prefix of another.
+        for (left, right) in [
+            (KEY_LABEL, TENANT_SECRET_LABEL),
+            (KEY_LABEL, ROW_SECRET_LABEL),
+            (TENANT_SECRET_LABEL, ROW_SECRET_LABEL),
+        ] {
+            let at = left
+                .iter()
+                .zip(right)
+                .position(|(a, b)| a != b)
+                .expect("the labels must differ");
+            assert!(at < left.len() && at < right.len());
+        }
 
         // And exhaustively, over values chosen to be confusable.
         let tenants = [
@@ -962,6 +1040,7 @@ mod tests {
             TenantId::new("pairwise-salt"),
         ];
         let kids = [Kid::new(""), Kid::new("pairwise-salt"), Kid::new("sig")];
+        let rows = ["", "sig", "ssf-push-authorization"];
         let mut seen = std::collections::HashSet::new();
         for tenant in &tenants {
             for secret in TenantSecret::ALL {
@@ -969,6 +1048,14 @@ mod tests {
                     seen.insert(KeyBinding::tenant_secret(tenant, secret).aad()),
                     "{tenant}/{secret} collides with another binding"
                 );
+            }
+            for kind in RowSecret::ALL {
+                for row in rows {
+                    assert!(
+                        seen.insert(KeyBinding::row_secret(tenant, kind, row).aad()),
+                        "{tenant}/{kind}/{row} collides with another binding"
+                    );
+                }
             }
             for kid in &kids {
                 for purpose in KeyPurpose::ALL {
@@ -981,6 +1068,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The row identifier is authenticated, not merely stored beside the
+    /// ciphertext: a push credential sealed for one stream must not open under
+    /// another stream's binding, or one `UPDATE` hands a receiver another
+    /// receiver's credential.
+    #[test]
+    fn a_row_secret_does_not_open_under_another_rows_binding() {
+        // Arrange
+        let tenant = tenant();
+        let kek = kek();
+        let sealed = kek
+            .seal(
+                KeyBinding::row_secret(&tenant, RowSecret::SsfPushAuthorization, "stream-a"),
+                b"Bearer t",
+            )
+            .expect("seal");
+
+        // Act
+        let elsewhere = kek.open(
+            KeyBinding::row_secret(&tenant, RowSecret::SsfPushAuthorization, "stream-b"),
+            &sealed,
+        );
+
+        // Assert
+        assert_eq!(
+            kek.open(
+                KeyBinding::row_secret(&tenant, RowSecret::SsfPushAuthorization, "stream-a"),
+                &sealed
+            )
+            .expect("open")
+            .as_slice(),
+            b"Bearer t"
+        );
+        assert!(matches!(elsewhere, Err(JoseError::Unwrap)));
     }
 
     /// A salt is 256 bits, so its envelope is 256 bits plus a GCM tag — the

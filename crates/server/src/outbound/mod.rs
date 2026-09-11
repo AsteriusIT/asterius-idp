@@ -25,4 +25,4 @@ pub mod sector;
 pub mod ssrf;
 
 pub use jwks::HttpsClientUrlFetcher;
-pub use post::{HttpsPoster, PostError};
+pub use post::{HttpsPoster, PostError, PostRequest};

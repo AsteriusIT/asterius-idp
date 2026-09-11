@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"count!\" from ssf_streams\n              where tenant_id = $1 and authorization_header_kek_id is not null\n                and authorization_header_kek_id <> $2\n                and authorization_header_kek_id <> $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a4350b0fbaedd460eb44487212ff5fb9b7442b6b3b11aeaafc135d8743432ae0"
+}

@@ -16,7 +16,9 @@ use asterius_server::http::server::{OperationalRoutes, app, not_found, serve, sh
 use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::outbound::HttpsClientUrlFetcher;
-use asterius_server::outbox::{HttpDeliverer, JournalDeliverer, OutboxWorker};
+use asterius_server::outbox::{
+    HttpDeliverer, JournalDeliverer, OutboxWorker, PgPushStreams, SsfPushDeliverer,
+};
 use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
 use asterius_server::signing::CachedSigner;
@@ -551,7 +553,14 @@ fn spawn_workers(
 
     let rotation = RotationSweep::new(keys, tenants_for_rotation, Arc::clone(&clock));
     let retention = RetentionSweep::new(retention, tenants_for_retention, Arc::clone(&clock));
-    let delivery = outbox_worker(outbox, schedule, clock);
+    let delivery = outbox_worker(
+        outbox,
+        schedule,
+        Arc::clone(&clock),
+        store,
+        kek,
+        Arc::new(PgAuditSink::new(store.pool().clone())),
+    );
 
     let (stop, stopping) = tokio::sync::watch::channel(false);
     let handles = vec![
@@ -585,12 +594,13 @@ fn outbox_handle(
 
 /// The outbox delivery worker, with the deliverers this build registers.
 ///
-/// Two, and neither is speculative: the journal, which is `ast-2vk.10`'s mail
+/// Three, and none is speculative: the journal, which is `ast-2vk.10`'s mail
 /// table becoming a consumer of this worker rather than a table nothing reads;
-/// and a generic HTTP `POST` through ADR-0006's outbound path, registered for
-/// the `logout` family that back-channel logout will queue into. SSF and CIBA
-/// register their own when they land — the machinery is what this ticket
-/// owed them, not an implementation of a payload format nobody has written.
+/// a generic HTTP `POST` through ADR-0006's outbound path, registered for the
+/// `logout` family back-channel logout queues into; and SSF push delivery
+/// (`ast-0ju.6`), which is a `POST` too but reads the receiver's answer
+/// against RFC 8935 §2.3 and stops a stream that has run out of retries. CIBA
+/// registers its own when it lands.
 ///
 /// A worker name per process, so two replicas' claims are distinguishable in a
 /// log. Random rather than the hostname: a hostname is an operational detail
@@ -599,15 +609,25 @@ fn outbox_worker(
     outbox: asterius_store_pg::PgOutbox,
     schedule: asterius_server::config::OutboxConfig,
     clock: Arc<dyn asterius_domain::ports::Clock>,
+    store: &Store,
+    kek: &Arc<dyn Kek>,
+    audit: Arc<dyn asterius_domain::audit::AuditSink>,
 ) -> OutboxWorker {
     let name = format!("worker-{}", uuid::Uuid::new_v4());
-    let mut worker = OutboxWorker::new(outbox, clock, name)
+    let mut worker = OutboxWorker::new(outbox, Arc::clone(&clock), name)
         .with_pace(schedule.poll, schedule.batch)
         .with(Arc::new(JournalDeliverer));
 
     match asterius_server::outbound::HttpsPoster::new() {
         Ok(poster) => {
-            worker = worker.with(Arc::new(HttpDeliverer::new("logout", poster)));
+            worker = worker
+                .with(Arc::new(HttpDeliverer::new("logout", poster.clone())))
+                .with(Arc::new(SsfPushDeliverer::new(
+                    Arc::new(PgPushStreams::new(store.clone(), Arc::clone(kek))),
+                    Arc::new(poster),
+                    audit,
+                    clock,
+                )));
         }
         Err(error) => {
             // Not fatal, and not silent. A build whose TLS provider will not

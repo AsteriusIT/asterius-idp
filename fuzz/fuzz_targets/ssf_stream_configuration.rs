@@ -18,6 +18,7 @@
 //!   two reads of one body cannot disagree.
 #![no_main]
 
+use asterius_ssf::push::MAX_AUTHORIZATION_HEADER_LEN;
 use asterius_ssf::stream::{
     DeliveryRequest, MAX_AUDIENCE, MAX_DESCRIPTION_LEN, MAX_EVENTS_REQUESTED,
     MAX_INACTIVITY_TIMEOUT, MAX_URL_LEN, MIN_INACTIVITY_TIMEOUT, StreamRequest,
@@ -78,7 +79,11 @@ fuzz_target!(|data: &[u8]| {
         );
     }
 
-    if let Some(DeliveryRequest::Push { endpoint_url }) = &request.delivery {
+    if let Some(DeliveryRequest::Push {
+        endpoint_url,
+        authorization_header,
+    }) = &request.delivery
+    {
         let url = url::Url::parse(endpoint_url).expect("an accepted push endpoint must be a URL");
         assert_eq!(url.scheme(), "https", "accepted a push endpoint over {url}");
         assert!(url.has_host(), "accepted a push endpoint with no host");
@@ -91,14 +96,36 @@ fuzz_target!(|data: &[u8]| {
             endpoint_url.chars().count() <= MAX_URL_LEN,
             "push endpoint over the guard"
         );
-    }
 
-    // A body that carries a push authorization header is refused above, so no
-    // accepted request can be holding one.
-    if let Some(delivery) = body.get("delivery")
-        && delivery.get("authorization_header").is_some()
-    {
-        panic!("a push authorization header was accepted rather than refused");
+        // SSF 1.0 §6.1.1's credential goes into a request header on every
+        // delivery, so an accepted one is a value HTTP can carry and nothing
+        // else: no control character, no leading or trailing whitespace, and
+        // bounded. A value with a `\r\n` in it would be a second header in
+        // every request this server then makes to that receiver.
+        if let Some(header) = authorization_header {
+            let value = header.expose();
+            assert!(
+                value.chars().count() <= MAX_AUTHORIZATION_HEADER_LEN,
+                "accepted an unbounded authorization_header"
+            );
+            assert!(!value.is_empty(), "accepted an empty authorization_header");
+            assert!(
+                value
+                    .bytes()
+                    .all(|byte| (0x21..=0x7e).contains(&byte) || byte == b' ' || byte == b'\t'),
+                "accepted an authorization_header that is not a field value"
+            );
+            assert_eq!(
+                value.trim(),
+                value,
+                "accepted a padded authorization_header"
+            );
+            // And it never renders itself, wherever it is written.
+            assert!(
+                !format!("{header:?}").contains(value),
+                "a credential rendered itself in Debug output"
+            );
+        }
     }
 
     let again = StreamRequest::parse(&body).expect("an accepted body must parse again");

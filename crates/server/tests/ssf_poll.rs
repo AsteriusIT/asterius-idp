@@ -692,6 +692,7 @@ async fn a_push_stream_cannot_be_polled() {
     let fixture = Fixture::new().await;
     let pushed = stream_of(Delivery::Push {
         endpoint_url: "https://receiver.example/push".to_owned(),
+        authorization_header: None,
     });
     fixture.store.add_stream(RECEIVER, &pushed);
 

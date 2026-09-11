@@ -83,6 +83,7 @@
 pub mod event;
 pub mod metadata;
 pub mod poll;
+pub mod push;
 pub mod set;
 pub mod stream;
 pub mod subject;
@@ -90,6 +91,10 @@ pub mod subject;
 pub use event::{EventError, EventUri, MAX_EVENT_URI_LEN, SecurityEvent};
 pub use metadata::{SPEC_VERSION, WELL_KNOWN_DOCUMENT, transmitter_metadata};
 pub use poll::{MAX_LONG_POLL, PollError, PollRequest, PollResponse, RejectedSet};
+pub use push::{
+    Disposition, MAX_DESCRIPTION_CHARS, MAX_ERROR_BODY_BYTES, PUSH_ACCEPT, PUSH_CONTENT_TYPE,
+    ReceiverError, ReceiverErrorCode, disposition,
+};
 pub use set::{
     AudienceError, MAX_SET_CLAIMS_BYTES, ReadySet, SET_TYP, Set, SetError, SetId, SetSubject,
     SignedSet, StreamAudience, Txn, UnsignedSet,

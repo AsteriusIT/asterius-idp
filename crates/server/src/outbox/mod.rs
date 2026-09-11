@@ -47,6 +47,7 @@
 
 pub mod http;
 pub mod journal;
+pub mod ssf;
 
 use asterius_domain::DomainError;
 use asterius_domain::outbox::OutboxEvent;
@@ -59,6 +60,7 @@ use time::Duration;
 
 pub use http::HttpDeliverer;
 pub use journal::JournalDeliverer;
+pub use ssf::{PgPushStreams, PushStreams, SetPoster, SsfPushDeliverer, push_event};
 
 /// What a deliverer did with an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -460,6 +460,44 @@ async fn a_push_delivery_must_be_https() {
     );
 }
 
+/// SSF 1.0 §6.1.1: a receiver may hand the transmitter a credential to present
+/// on every push. It is accepted and sealed — and it is not in what comes back:
+/// a stream read is authorized by a token, not by holding the credential, so
+/// echoing it would put a secret in a response body for a caller that already
+/// had it.
+#[tokio::test]
+async fn a_push_authorization_header_is_accepted_and_never_echoed() {
+    // Arrange
+    let fixture = Fixture::new().await;
+
+    // Act
+    let created = fixture
+        .post(json!({"delivery": {
+            "method": "urn:ietf:rfc:8935",
+            "endpoint_url": "https://receiver.example/events",
+            "authorization_header": "Bearer receiver-secret",
+        }}))
+        .await;
+    let injected = fixture
+        .post(json!({"delivery": {
+            "method": "urn:ietf:rfc:8935",
+            "endpoint_url": "https://receiver.example/other",
+            "authorization_header": "Bearer t\r\nX-Admin: 1",
+        }}))
+        .await;
+
+    // Assert
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let rendered = serde_json::to_string(&body_of(created).await).expect("serialises");
+    assert!(!rendered.contains("receiver-secret"), "{rendered}");
+    assert!(!rendered.contains("authorization_header"), "{rendered}");
+    assert_eq!(
+        injected.status(),
+        StatusCode::BAD_REQUEST,
+        "a credential that would smuggle a second header was stored"
+    );
+}
+
 /// §8.1.1.1: a delivery method this transmitter does not support is a 400.
 #[tokio::test]
 async fn an_unsupported_delivery_method_is_refused() {

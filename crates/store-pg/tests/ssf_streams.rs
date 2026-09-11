@@ -39,7 +39,13 @@ struct TestDb {
 
 impl TestDb {
     fn streams(&self) -> PgSsfStreams {
-        PgSsfStreams::new(self.pool.clone(), self.tenant.clone())
+        PgSsfStreams::new(
+            self.pool.clone(),
+            self.tenant.clone(),
+            std::sync::Arc::new(
+                asterius_jose::LocalKek::from_bytes(&[0x5a; 32]).expect("a 32-byte KEK"),
+            ),
+        )
     }
 }
 
@@ -173,6 +179,10 @@ db_test! {
         ];
         created.delivery = Delivery::Push {
             endpoint_url: "https://receiver.example/push".to_owned(),
+            authorization_header: Some(
+                asterius_ssf::push::AuthorizationHeader::parse("Bearer receiver-token")
+                    .expect("a field value"),
+            ),
         };
 
         // Act
@@ -299,6 +309,7 @@ db_test! {
         updated.description = Some("staging".to_owned());
         updated.delivery = Delivery::Push {
             endpoint_url: "https://receiver.example/push".to_owned(),
+            authorization_header: None,
         };
 
         // Act

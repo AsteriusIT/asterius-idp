@@ -23,21 +23,33 @@
 //! `POST` away. The guard is the same guard; it is simply less forgiving of a
 //! gap.
 //!
-//! # No redirects, and no response body
+//! # No redirects, and a response body only where a specification defines one
 //!
 //! A 3xx is a failure, for the reason [`super::jwks`] gives: following one
-//! means a new origin that has not been through the guard. And the response
-//! body is drained and discarded rather than returned. None of the three
-//! protocols above define anything a receiver may say back that changes what
-//! the transmitter does — a status code is the whole answer — and a body from
-//! a client-nominated host is an attacker-controlled string that would end up
-//! in a `last_error` column and then on an operator's screen.
+//! means a new origin that has not been through the guard.
+//!
+//! The response body of a *successful* delivery is drained and discarded:
+//! none of the three protocols above define anything a receiver may say back
+//! that changes what the transmitter does with a SET it has accepted. A
+//! *refusal* is different, and only since RFC 8935 §2.3, which defines a JSON
+//! object with an `err` code the transmitter acts on — `invalid_key` says the
+//! receiver could not use this server's signing key. So the first
+//! [`MAX_RESPONSE_BYTES`] of a refusal are kept and handed to the caller,
+//! still as bytes.
+//!
+//! They stay bytes on purpose. They are a string an outsider chose, at a URL
+//! another party configured, and the only thing entitled to turn them into
+//! something this deployment stores is the parser that owns the specification
+//! — [`asterius_ssf::push::ReceiverError::parse`], which maps the code onto a
+//! closed set and bounds the free text. Nothing in this module renders them,
+//! and [`PostError`]'s `Display` still names a host and a status and nothing
+//! else.
 
 use crate::outbound::jwks::{FetchError, HttpsClientUrlFetcher, TOTAL_TIMEOUT, vetted_addresses};
 use crate::outbound::ssrf::{self, Target};
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Bytes;
-use hyper::header::{CONTENT_TYPE, HOST, USER_AGENT};
+use hyper::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HOST, HeaderValue, USER_AGENT};
 use hyper_util::rt::TokioIo;
 
 /// The most bytes this server will send in one delivery.
@@ -50,9 +62,11 @@ pub const MAX_REQUEST_BYTES: usize = 128 * 1024;
 
 /// The most bytes read back before the connection is dropped.
 ///
-/// The body is discarded either way; this only bounds how long a receiver can
-/// hold the connection by answering slowly and forever.
-const MAX_RESPONSE_BYTES: usize = 8 * 1024;
+/// It bounds two things: how long a receiver can hold the connection by
+/// answering slowly and forever, and how much of a refusal is handed to the
+/// caller that parses it (RFC 8935 §2.3). Public because that second bound is
+/// part of what a caller is promised.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024;
 
 /// Why a delivery did not happen.
 ///
@@ -83,7 +97,82 @@ pub enum PostError {
         host: String,
         /// The status code it answered with.
         status: u16,
+        /// The first [`MAX_RESPONSE_BYTES`] of what it said, unparsed.
+        ///
+        /// Present so that RFC 8935 §2.3's error object can be read by the
+        /// caller that owns that specification. Deliberately not part of
+        /// `Display`: these bytes are a third party's, and nothing renders
+        /// them until a parser has reduced them to a closed set.
+        body: Vec<u8>,
     },
+    /// A header value this server was asked to send is not one HTTP can carry.
+    ///
+    /// The only header whose value comes from outside this binary is the
+    /// `Authorization` a push receiver registered (SSF 1.0 §6.1.1), and a
+    /// stream holding one that cannot be sent is a misconfiguration rather
+    /// than a receiver having a bad minute.
+    #[error("the configured {header} header is not a value HTTP can carry")]
+    BadHeader {
+        /// Which header, as a constant of this binary — never the value.
+        header: &'static str,
+    },
+}
+
+/// What a delivery sends beside the body.
+///
+/// A struct rather than four arguments because two of the three are optional
+/// and a call site with `None, None` says nothing about which is which.
+#[derive(Clone, Copy)]
+pub struct PostRequest<'a> {
+    /// The body's media type.
+    pub content_type: &'a str,
+    /// What the transmitter will read back, if the protocol defines an answer.
+    pub accept: Option<&'a str>,
+    /// The `Authorization` header value the receiver registered, if any.
+    ///
+    /// SSF 1.0 §6.1.1: "the transmitter MUST send this value in every
+    /// request". It is the receiver's credential, so it is never logged and
+    /// never part of an error.
+    pub authorization: Option<&'a str>,
+}
+
+/// Written by hand so that the credential is reported as present or absent and
+/// never as itself. A derived `Debug` would put a receiver's bearer token in
+/// the first `tracing` field anybody adds.
+impl std::fmt::Debug for PostRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PostRequest")
+            .field("content_type", &self.content_type)
+            .field("accept", &self.accept)
+            .field("authorization", &self.authorization.map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl<'a> PostRequest<'a> {
+    /// A delivery that sends only a media type, as back-channel logout does.
+    #[must_use]
+    pub const fn of(content_type: &'a str) -> Self {
+        Self {
+            content_type,
+            accept: None,
+            authorization: None,
+        }
+    }
+
+    /// The same delivery, saying what it will read back.
+    #[must_use]
+    pub const fn accepting(mut self, accept: &'a str) -> Self {
+        self.accept = Some(accept);
+        self
+    }
+
+    /// The same delivery, authenticated as the receiver asked.
+    #[must_use]
+    pub const fn authorized_by(mut self, authorization: Option<&'a str>) -> Self {
+        self.authorization = authorization;
+        self
+    }
 }
 
 impl PostError {
@@ -97,9 +186,30 @@ impl PostError {
     #[must_use]
     pub const fn is_permanent(&self) -> bool {
         match self {
-            Self::TooLarge { .. } => true,
+            Self::TooLarge { .. } | Self::BadHeader { .. } => true,
             Self::Refused { status, .. } => *status >= 400 && *status < 500 && *status != 429,
             Self::Reach(_) => false,
+        }
+    }
+
+    /// The status the receiver answered with, where one was read.
+    ///
+    /// `None` for a failure that never got an answer — a refused connection, a
+    /// timeout, a body this server would not send.
+    #[must_use]
+    pub const fn status(&self) -> Option<u16> {
+        match self {
+            Self::Refused { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
+    /// What the receiver said, unparsed, where it said anything.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        match self {
+            Self::Refused { body, .. } => body,
+            _ => &[],
         }
     }
 }
@@ -145,6 +255,28 @@ impl HttpsPoster {
     /// [`PostError`], whose `is_permanent` says whether a retry is worth an
     /// attempt.
     pub async fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<u16, PostError> {
+        self.post_with(url, PostRequest::of(content_type), body)
+            .await
+    }
+
+    /// The same delivery, with the headers a protocol asks for.
+    ///
+    /// RFC 8935 §2.1 wants an `Accept`, and SSF 1.0 §6.1.1 obliges the
+    /// transmitter to present the receiver's `authorization_header` on every
+    /// request. Both are per-delivery values, so they are arguments rather
+    /// than fields of the poster: one process has one poster and many streams.
+    ///
+    /// # Errors
+    ///
+    /// [`PostError`], whose `is_permanent` says whether a retry is worth an
+    /// attempt and whose `body` carries a refusal's bytes for the caller that
+    /// owns the specification defining them.
+    pub async fn post_with(
+        &self,
+        url: &str,
+        request: PostRequest<'_>,
+        body: &[u8],
+    ) -> Result<u16, PostError> {
         if body.len() > MAX_REQUEST_BYTES {
             return Err(PostError::TooLarge {
                 size: body.len(),
@@ -152,7 +284,7 @@ impl HttpsPoster {
             });
         }
 
-        match tokio::time::timeout(TOTAL_TIMEOUT, self.send(url, content_type, body)).await {
+        match tokio::time::timeout(TOTAL_TIMEOUT, self.send(url, request, body)).await {
             Ok(outcome) => outcome,
             Err(_) => Err(PostError::Reach(FetchError::TimedOut {
                 host: ssrf::check_url(url).map_or_else(|_| "the URL".to_owned(), |t| t.host),
@@ -161,18 +293,23 @@ impl HttpsPoster {
     }
 
     /// The exchange, minus the timeout that wraps it.
-    async fn send(&self, url: &str, content_type: &str, body: &[u8]) -> Result<u16, PostError> {
+    async fn send(
+        &self,
+        url: &str,
+        request: PostRequest<'_>,
+        body: &[u8],
+    ) -> Result<u16, PostError> {
         let target = ssrf::check_url(url).map_err(FetchError::from)?;
         let addresses = vetted_addresses(&target).await?;
         let stream = self.connections.connect(&target, &addresses).await?;
-        exchange(&target, content_type, body, stream).await
+        exchange(&target, request, body, stream).await
     }
 }
 
 /// Sends the request and reads just enough of the answer to know the verdict.
 async fn exchange(
     target: &Target,
-    content_type: &str,
+    request: PostRequest<'_>,
     body: &[u8],
     stream: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
 ) -> Result<u16, PostError> {
@@ -191,32 +328,54 @@ async fn exchange(
         let _ = connection.await;
     });
 
-    let request = hyper::Request::builder()
+    let mut builder = hyper::Request::builder()
         .method(hyper::Method::POST)
         .uri(&target.request_target)
         .header(HOST, &target.authority)
-        .header(CONTENT_TYPE, content_type)
+        .header(CONTENT_TYPE, request.content_type)
         .header(USER_AGENT, format!("asterius/{}", crate::VERSION))
         // One request per connection, as in `super::jwks`: nothing here reuses
         // it, and saying so lets the receiver close rather than hold a socket.
-        .header(hyper::header::CONNECTION, "close")
+        .header(hyper::header::CONNECTION, "close");
+    if let Some(accept) = request.accept {
+        builder = builder.header(ACCEPT, accept);
+    }
+    if let Some(authorization) = request.authorization {
+        // Built rather than pushed through the builder's error, so that a
+        // stored credential HTTP cannot carry is named as what it is instead
+        // of becoming the same "the exchange failed" a broken socket produces.
+        // `from_str` is what rejects a value with a newline in it, which is
+        // the header-injection case.
+        let value = HeaderValue::from_str(authorization).map_err(|_| PostError::BadHeader {
+            header: "Authorization",
+        })?;
+        // The one header value that is a credential: marking it sensitive
+        // keeps it out of hyper's own debug output.
+        let mut value = value;
+        value.set_sensitive(true);
+        builder = builder.header(AUTHORIZATION, value);
+    }
+    let request = builder
         .body(Full::<Bytes>::new(Bytes::copy_from_slice(body)))
         .map_err(|_| failed())?;
 
     let response = sender.send_request(request).await.map_err(|_| failed())?;
     let status = response.status();
 
-    // Drained rather than read: a receiver that answers 200 and then never
-    // finishes its body would otherwise keep the connection until the timeout,
-    // and the bytes themselves are of no interest to anybody.
-    let mut remaining = MAX_RESPONSE_BYTES;
+    // Read to a bound rather than to the end, and kept only to hand to the
+    // caller when the answer was a refusal: RFC 8935 §2.3 is the one body in
+    // this direction a specification defines. A receiver that answers and then
+    // never finishes would otherwise keep the connection until the timeout.
+    let mut kept: Vec<u8> = Vec::new();
     let mut incoming = response.into_body();
     while let Some(Ok(frame)) = incoming.frame().await {
         if let Some(chunk) = frame.data_ref() {
-            remaining = remaining.saturating_sub(chunk.len());
-            if remaining == 0 {
+            let room = MAX_RESPONSE_BYTES - kept.len();
+            if chunk.len() >= room {
+                kept.extend_from_slice(&chunk[..room]);
                 break;
             }
+            kept.extend_from_slice(chunk);
         }
     }
     pump.abort();
@@ -231,6 +390,7 @@ async fn exchange(
         return Err(PostError::Refused {
             host: target.host.clone(),
             status: status.as_u16(),
+            body: kept,
         });
     }
     Ok(status.as_u16())
@@ -290,14 +450,16 @@ mod tests {
         assert!(
             PostError::Refused {
                 host: host.clone(),
-                status: 400
+                status: 400,
+                body: Vec::new()
             }
             .is_permanent()
         );
         assert!(
             !PostError::Refused {
                 host: host.clone(),
-                status: 503
+                status: 503,
+                body: Vec::new()
             }
             .is_permanent()
         );
@@ -311,6 +473,7 @@ mod tests {
         let throttled = PostError::Refused {
             host: "rp.example".to_owned(),
             status: 429,
+            body: Vec::new(),
         };
 
         // Assert
@@ -326,6 +489,7 @@ mod tests {
         let refused = PostError::Refused {
             host: "rp.example".to_owned(),
             status: 502,
+            body: Vec::new(),
         };
 
         // Act
@@ -333,5 +497,91 @@ mod tests {
 
         // Assert
         assert_eq!(rendered, "rp.example answered 502");
+    }
+
+    /// A receiver's refusal body is carried to the caller and never rendered
+    /// by this module: RFC 8935 §2.3 defines it, and only the parser that owns
+    /// that section may read it.
+    #[test]
+    fn a_refusal_carries_the_receivers_body_without_rendering_it() {
+        // Arrange
+        let refused = PostError::Refused {
+            host: "rp.example".to_owned(),
+            status: 400,
+            body: br#"{"err":"invalid_key"}"#.to_vec(),
+        };
+
+        // Act
+        let rendered = refused.to_string();
+
+        // Assert
+        assert_eq!(refused.body(), br#"{"err":"invalid_key"}"#);
+        assert_eq!(refused.status(), Some(400));
+        assert!(!rendered.contains("invalid_key"), "{rendered}");
+    }
+
+    /// A failure that never reached a receiver has no status and no body, so a
+    /// caller cannot mistake "we did not get there" for "it said nothing".
+    #[test]
+    fn a_failure_with_no_answer_reports_neither_status_nor_body() {
+        // Arrange
+        let timed_out = PostError::Reach(FetchError::TimedOut {
+            host: "rp.example".to_owned(),
+        });
+
+        // Act / Assert
+        assert_eq!(timed_out.status(), None);
+        assert!(timed_out.body().is_empty());
+    }
+
+    /// A stored `Authorization` that HTTP cannot carry is a misconfiguration,
+    /// not a receiver having a bad minute: retrying it ten times would only
+    /// delay the moment somebody is told.
+    #[test]
+    fn an_unsendable_authorization_header_is_permanent() {
+        // Arrange
+        let refused = PostError::BadHeader {
+            header: "Authorization",
+        };
+
+        // Act / Assert
+        assert!(refused.is_permanent());
+        assert!(
+            !refused.to_string().contains("Bearer"),
+            "the value must never be rendered"
+        );
+    }
+
+    /// The headers a protocol asks for are per-delivery, and a request that
+    /// names none sends none — back-channel logout has no `Accept` and no
+    /// credential of the receiver's.
+    #[test]
+    fn a_request_sends_only_the_headers_it_was_given() {
+        // Arrange / Act
+        let plain = PostRequest::of("application/jwt");
+        let pushed = PostRequest::of("application/secevent+jwt")
+            .accepting("application/json")
+            .authorized_by(Some("Bearer t"));
+
+        // Assert
+        assert_eq!(plain.accept, None);
+        assert_eq!(plain.authorization, None);
+        assert_eq!(pushed.accept, Some("application/json"));
+        assert_eq!(pushed.authorization, Some("Bearer t"));
+    }
+
+    /// A credential never renders itself, wherever it is written: this struct
+    /// is in a `tracing` field or a `Debug` line sooner or later.
+    #[test]
+    fn a_request_does_not_render_its_credential() {
+        // Arrange
+        let request =
+            PostRequest::of("application/secevent+jwt").authorized_by(Some("Bearer secret-value"));
+
+        // Act
+        let rendered = format!("{request:?}");
+
+        // Assert
+        assert!(!rendered.contains("secret-value"), "{rendered}");
     }
 }
