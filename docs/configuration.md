@@ -192,6 +192,8 @@ Requests — not failures — are counted per endpoint, in the same fixed window
 | `limits.token_per_address` | integer | 120 | Requests per window to `POST /token` from one address, for requests that do not end in a token. Every attempt costs a signature verification, and replaying an authorization code revokes the grant it belongs to, so abuse here has a side effect as well as a cost. |
 | `limits.token_per_client` | integer | 1200 | Successful token responses per window for one authenticated client. The busiest endpoint a working deployment has — every authorization and every refresh passes through it — so this is the number to raise first when a large client is refused. |
 | `limits.userinfo_per_address` | integer | 600 | Requests per window to UserInfo from one address. The most generous of the five: its callers are resource servers rather than browsers, so one address is legitimately a fleet making a request per API call. There is no per-client limit, because the caller presents an access token and reading a client out of it before verifying it would be trusting a string the caller wrote. |
+| `limits.ssf_subjects_per_address` | integer | 60 | Requests per window from one address to the SSF add-subject and remove-subject endpoints (SSF 1.0 §8.1.3.2, §8.1.3.3). Tight, because those endpoints answer the same way whether or not a subject exists (§9.1) and the remaining way to probe for one is volume. |
+| `limits.ssf_subjects_per_client` | integer | 600 | The same, per authenticated receiver. Higher than the address limit, because several receivers can share one address and a receiver bringing a deployment online adds its subjects in a burst. |
 
 ## Account recovery and mail — read this before enabling passwords
 

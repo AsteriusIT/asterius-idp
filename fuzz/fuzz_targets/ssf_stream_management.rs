@@ -21,8 +21,8 @@
 //!   which stream is addressed or what is being asked for.
 #![no_main]
 
-use asterius_ssf::management::{MAX_REASON_LEN, StatusRequest, StreamStatus, SubjectRequest};
-use asterius_ssf::stream::StreamId;
+use asterius_ssf::management::{MAX_REASON_LEN, StatusRequest, SubjectRequest};
+use asterius_ssf::stream::{StreamId, StreamStatus};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

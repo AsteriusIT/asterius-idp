@@ -18,8 +18,7 @@
 //! ```
 
 use asterius_domain::{ClientId, TenantId};
-use asterius_ssf::management::StreamStatus;
-use asterius_ssf::stream::{Delivery, StreamConfiguration, StreamId};
+use asterius_ssf::stream::{Delivery, StreamConfiguration, StreamId, StreamStatus};
 use asterius_ssf::subject::{ComplexSubject, SimpleSubject, Subject};
 use asterius_store_pg::{
     Added, Discarded, Enqueued, MIGRATOR, PgSsfPoll, PgSsfStreams, PgSsfSubjects,
@@ -42,8 +41,18 @@ struct TestDb {
 }
 
 impl TestDb {
+    /// The stream repository, with the KEK that would seal a push
+    /// credential (`ast-0ju.6`). Every stream here is a *poll* stream, which
+    /// stores none, so the key is a fixed one: nothing in this file depends on
+    /// what it is, only that the repository has one.
     fn streams(&self) -> PgSsfStreams {
-        PgSsfStreams::new(self.pool.clone(), self.tenant.clone())
+        PgSsfStreams::new(
+            self.pool.clone(),
+            self.tenant.clone(),
+            std::sync::Arc::new(
+                asterius_jose::LocalKek::from_bytes(&[0x5a; 32]).expect("a 32-byte KEK"),
+            ),
+        )
     }
 
     fn subjects(&self) -> PgSsfSubjects {

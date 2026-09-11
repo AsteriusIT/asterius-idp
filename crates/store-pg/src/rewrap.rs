@@ -3,10 +3,18 @@
 //! A KEK is the one secret in this system that is deliberately *not* in the
 //! database, so rotating it is not a schema change and not a re-issue: the
 //! plaintexts stay exactly what they were and only the envelope around them
-//! changes. Two kinds of row are sealed — `signing_keys.private_key_ciphertext`
-//! and `tenant_pairwise_salts.salt_ciphertext` — and both have to move, because
-//! a deployment that rotated half of them still needs the old key to boot,
-//! which is the same as not having rotated at all.
+//! changes. Three kinds of row are sealed — `signing_keys.private_key_ciphertext`,
+//! `tenant_pairwise_salts.salt_ciphertext` and
+//! `ssf_streams.authorization_header_ciphertext` — and all of them have to
+//! move, because a deployment that rotated some still needs the old key to
+//! boot, which is the same as not having rotated at all.
+//!
+//! The third is a push receiver's `authorization_header` (RFC 8935 §2.2;
+//! `ast-0ju.6`). `0025_ssf_streams.sql` refused to store it at all until this
+//! arm existed, and the reason is the failure it would otherwise have: a
+//! credential stranded by a rotation is not noticed at rotation time. It is
+//! noticed when the next security event fails to reach its receiver, which is
+//! precisely the moment a deployment is relying on it.
 //!
 //! # Why the salt is not simply updated
 //!
@@ -59,7 +67,7 @@
 use crate::error::to_domain_error;
 use asterius_domain::keys::{KeyPurpose, Kid, SigningAlgorithm};
 use asterius_domain::{DomainError, PairwiseSalt, TenantId, ct_eq};
-use asterius_jose::{Kek, KeyBinding, TenantSecret, WrappedKey};
+use asterius_jose::{Kek, KeyBinding, RowSecret, TenantSecret, WrappedKey};
 use sqlx::postgres::PgPool;
 
 /// One tenant's transaction, for the helpers below.
@@ -76,6 +84,8 @@ pub struct Rewrap {
     /// Whether the tenant's pairwise salt was re-sealed. `false` also covers
     /// "already on the new KEK" and "the tenant has no salt".
     pub pairwise_salt: bool,
+    /// How many SSF push credentials were re-sealed (`ast-0ju.6`).
+    pub ssf_push_credentials: u64,
     /// Rows still sealed under the old KEK when the transaction committed.
     ///
     /// Normally zero. It is not zero when a replica still running on the old
@@ -97,7 +107,7 @@ impl Rewrap {
     /// Whether this pass had anything to do.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.signing_keys == 0 && !self.pairwise_salt
+        self.signing_keys == 0 && !self.pairwise_salt && self.ssf_push_credentials == 0
     }
 
     /// Whether the tenant is now wholly on the new KEK.
@@ -173,6 +183,8 @@ impl PgKekRewrap {
         let rewrap = Rewrap {
             signing_keys: Self::signing_keys(&mut transaction, tenant, from, to).await?,
             pairwise_salt: Self::pairwise_salt(&mut transaction, tenant, from, to).await?,
+            ssf_push_credentials: Self::ssf_push_credentials(&mut transaction, tenant, from, to)
+                .await?,
             left_behind: Self::count_under(&mut transaction, tenant, from.id()).await?,
             stranded: Self::count_stranded(&mut transaction, tenant, from, to).await?,
         };
@@ -386,6 +398,79 @@ impl PgKekRewrap {
         }
     }
 
+    /// Re-seals every SSF push credential still under the old KEK
+    /// (`ast-0ju.6`).
+    ///
+    /// In place, as for `signing_keys`: nothing about the row's identity
+    /// changes and the binding is rebuilt from the `stream_id` the row already
+    /// has, so the re-sealed ciphertext is bound to exactly the stream it goes
+    /// back into — a credential cannot be moved to another stream by this pass
+    /// any more than by an `UPDATE`.
+    ///
+    /// The plaintext is not checked against a domain type here the way a salt
+    /// is: what it has to be is an HTTP field value, and that is checked where
+    /// it is read for a delivery (`crate::PgSsfStreams`). A rotation that
+    /// refused to move a credential it considers malformed would strand it
+    /// under a key the deployment is about to destroy, which is a worse
+    /// outcome than carrying it across unchanged.
+    async fn ssf_push_credentials(
+        transaction: &mut Transaction<'_>,
+        tenant: &TenantId,
+        from: &dyn Kek,
+        to: &dyn Kek,
+    ) -> Result<u64, DomainError> {
+        let rows = sqlx::query!(
+            "select stream_id,
+                    authorization_header_ciphertext as \"ciphertext!\",
+                    authorization_header_nonce as \"nonce!\",
+                    authorization_header_kek_id as \"kek_id!\"
+               from ssf_streams
+              where tenant_id = $1 and authorization_header_kek_id = $2
+              for update",
+            tenant.as_str(),
+            from.id()
+        )
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        let mut moved = 0_u64;
+        for row in rows {
+            let wrapped = WrappedKey::from_parts(row.kek_id, row.nonce, row.ciphertext)
+                .map_err(storage_error)?;
+            let binding =
+                KeyBinding::row_secret(tenant, RowSecret::SsfPushAuthorization, &row.stream_id);
+
+            // The credential exists in this process for the width of these two
+            // calls and is never named in a log line or an error.
+            let plaintext = from
+                .unwrap(binding, &wrapped)
+                .await
+                .map_err(storage_error)?;
+            let resealed = to.wrap(binding, &plaintext).await.map_err(storage_error)?;
+
+            moved += sqlx::query!(
+                "update ssf_streams
+                    set authorization_header_ciphertext = $1,
+                        authorization_header_nonce = $2,
+                        authorization_header_kek_id = $3
+                  where tenant_id = $4 and stream_id = $5
+                    and authorization_header_kek_id = $6",
+                resealed.ciphertext(),
+                resealed.nonce(),
+                resealed.kek_id(),
+                tenant.as_str(),
+                row.stream_id,
+                from.id()
+            )
+            .execute(&mut **transaction)
+            .await
+            .map_err(to_domain_error)?
+            .rows_affected();
+        }
+        Ok(moved)
+    }
+
     /// How many of the tenant's sealed rows still name `kek_id`.
     async fn count_under(
         transaction: &mut Transaction<'_>,
@@ -410,7 +495,16 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
-        Ok(keys.unsigned_abs() + salts.unsigned_abs())
+        let credentials = sqlx::query_scalar!(
+            "select count(*) as \"count!\" from ssf_streams
+              where tenant_id = $1 and authorization_header_kek_id = $2",
+            tenant.as_str(),
+            kek_id
+        )
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(keys.unsigned_abs() + salts.unsigned_abs() + credentials.unsigned_abs())
     }
 
     /// How many of the tenant's sealed rows name neither key.
@@ -440,7 +534,23 @@ impl PgKekRewrap {
         .fetch_one(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
-        Ok(keys.unsigned_abs() + salts.unsigned_abs())
+        // `is not null` rather than a bare inequality: a stream with no
+        // credential has no `kek_id` either, and a null compares to neither
+        // key — it would otherwise be counted as stranded material that does
+        // not exist.
+        let credentials = sqlx::query_scalar!(
+            "select count(*) as \"count!\" from ssf_streams
+              where tenant_id = $1 and authorization_header_kek_id is not null
+                and authorization_header_kek_id <> $2
+                and authorization_header_kek_id <> $3",
+            tenant.as_str(),
+            from.id(),
+            to.id()
+        )
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(keys.unsigned_abs() + salts.unsigned_abs() + credentials.unsigned_abs())
     }
 }
 
@@ -512,10 +622,26 @@ mod tests {
         let interrupted = Rewrap {
             signing_keys: 3,
             pairwise_salt: true,
+            ssf_push_credentials: 0,
             left_behind: 1,
             stranded: 0,
         };
 
         assert!(!interrupted.is_complete());
+    }
+
+    /// A pass that moved only a push credential still moved something. Without
+    /// this, `is_empty` would report "nothing to do" for a tenant whose only
+    /// sealed row is an SSF stream's, and an operator would read that as a
+    /// rotation that had already been done.
+    #[test]
+    fn a_pass_that_moved_only_a_push_credential_is_not_empty() {
+        let moved = Rewrap {
+            ssf_push_credentials: 1,
+            ..Rewrap::default()
+        };
+
+        assert!(!moved.is_empty());
+        assert!(moved.is_complete());
     }
 }

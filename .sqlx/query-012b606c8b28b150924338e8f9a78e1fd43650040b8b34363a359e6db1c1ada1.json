@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ssf_streams\n                    set authorization_header_ciphertext = $1,\n                        authorization_header_nonce = $2,\n                        authorization_header_kek_id = $3\n                  where tenant_id = $4 and stream_id = $5\n                    and authorization_header_kek_id = $6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "012b606c8b28b150924338e8f9a78e1fd43650040b8b34363a359e6db1c1ada1"
+}

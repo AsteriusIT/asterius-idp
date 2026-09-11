@@ -1284,7 +1284,7 @@ async fn ssf_streams(
 
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredStreams {
-        streams: scope.ssf_streams(),
+        streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
         grants: scope.grants(),
     };
     // What this build can emit. Empty today; see
@@ -1342,7 +1342,7 @@ async fn ssf_poll(
 
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredPoll {
-        streams: scope.ssf_streams(),
+        streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
         queue: scope.ssf_poll(),
         grants: scope.grants(),
     };
@@ -1530,7 +1530,7 @@ async fn ssf_management_context<'a>(
     let scope = endpoints.store.scope(tenant.id.clone());
     Some((
         StoredManagement {
-            streams: scope.ssf_streams(),
+            streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
             subjects: scope.ssf_subjects(),
             grants: scope.grants(),
         },
@@ -1556,7 +1556,7 @@ impl crate::http::ssf_management::SsfManagementStore for StoredManagement {
         &self,
         receiver: &asterius_domain::ClientId,
         stream: &asterius_ssf::stream::StreamId,
-    ) -> Result<Option<(asterius_ssf::StreamStatus, Option<String>)>, DomainError> {
+    ) -> Result<Option<(asterius_ssf::stream::StreamStatus, Option<String>)>, DomainError> {
         self.streams.status(receiver, stream).await
     }
 
@@ -1564,7 +1564,7 @@ impl crate::http::ssf_management::SsfManagementStore for StoredManagement {
         &self,
         receiver: &asterius_domain::ClientId,
         stream: &asterius_ssf::stream::StreamId,
-        status: asterius_ssf::StreamStatus,
+        status: asterius_ssf::stream::StreamStatus,
         reason: Option<&str>,
         now: time::OffsetDateTime,
     ) -> Result<bool, DomainError> {

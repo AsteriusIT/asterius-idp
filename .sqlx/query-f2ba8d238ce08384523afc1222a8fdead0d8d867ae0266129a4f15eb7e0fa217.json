@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select stream_id,\n                    authorization_header_ciphertext as \"ciphertext!\",\n                    authorization_header_nonce as \"nonce!\",\n                    authorization_header_kek_id as \"kek_id!\"\n               from ssf_streams\n              where tenant_id = $1 and authorization_header_kek_id = $2\n              for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stream_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "ciphertext!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "nonce!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "kek_id!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "f2ba8d238ce08384523afc1222a8fdead0d8d867ae0266129a4f15eb7e0fa217"
+}

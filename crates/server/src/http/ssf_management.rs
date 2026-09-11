@@ -9,7 +9,7 @@
 //! [`asterius_ssf::subject`], which have no database and no HTTP. What is here
 //! is who is calling, what they may reach, and what a refusal looks like on
 //! the wire. The credential checks are not a second copy either: they are
-//! [`crate::http::ssf::authorize_receiver`], the same five checks in the same
+//! `crate::http::ssf::authorize_receiver`, the same five checks in the same
 //! order the configuration and polling endpoints make, with this endpoint's
 //! own resource and proof target.
 //!
@@ -65,15 +65,13 @@
 
 use crate::http::dpop::{self, DpopEndpoint, NONCE_HEADER, USE_NONCE};
 use crate::http::limits::LimitContext;
-use crate::http::ssf::{
-    self, Credential, NotAuthorized, SsfTokenStatus, check_scope_challenge,
-};
+use crate::http::ssf::{self, Credential, NotAuthorized, SsfTokenStatus, check_scope_challenge};
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::keys::KeyStore;
 use asterius_domain::{ClientId, DomainError, LimitedEndpoint, Tenant};
 use asterius_oidc::userinfo::{self, UserInfoError};
-use asterius_ssf::management::{ManagementError, StatusRequest, StreamStatus, SubjectRequest};
-use asterius_ssf::stream::{self, StreamId};
+use asterius_ssf::management::{ManagementError, StatusRequest, SubjectRequest};
+use asterius_ssf::stream::{self, StreamId, StreamStatus};
 use asterius_ssf::subject::Subject;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};

@@ -18,7 +18,9 @@
 //!
 //! [`StreamStatus::delivers`] and [`StreamStatus::holds`] are those three
 //! sentences as two questions, so that the enqueue guard and the delivery read
-//! cannot disagree about what `paused` means.
+//! cannot disagree about what `paused` means. The type itself lives in
+//! [`crate::stream`], where push delivery already writes it: one enum, because
+//! two spellings of three states would be two things a stored row could mean.
 //!
 //! A held queue is bounded — [`MAX_HELD_WHILE_PAUSED`] — because "SHOULD hold"
 //! against an unbounded store is a receiver that pauses a stream and fills a
@@ -41,7 +43,7 @@
 //! by the subject matching of §8.1.3.1 against this tenant's own events, never
 //! by a boolean the caller set. See `docs/threat-model.md`.
 
-use crate::stream::StreamId;
+use crate::stream::{StreamId, StreamStatus};
 use crate::subject::{Subject, SubjectError};
 use serde_json::{Map, Value};
 use thiserror::Error;
@@ -69,70 +71,6 @@ pub const MAX_REASON_LEN: usize = 256;
 /// truthful record of what happened after the pause, and the drop is counted
 /// and recorded rather than silent.
 pub const MAX_HELD_WHILE_PAUSED: usize = 10_000;
-
-/// What a stream is doing (SSF 1.0 §8.1.2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StreamStatus {
-    /// Events are transmitted. The status a stream is created with: §8.1.1.1
-    /// creates a stream a receiver can use without a second request.
-    #[default]
-    Enabled,
-    /// Events are not transmitted and are held for when the stream is enabled
-    /// again.
-    Paused,
-    /// Events are neither transmitted nor held.
-    Disabled,
-}
-
-impl StreamStatus {
-    /// The wire and storage spelling (§8.1.2).
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Enabled => "enabled",
-            Self::Paused => "paused",
-            Self::Disabled => "disabled",
-        }
-    }
-
-    /// Reads a status back, from a request or a stored row.
-    ///
-    /// A closed set: `None` is a status this transmitter does not implement,
-    /// which the endpoint answers 400 to rather than storing a string nothing
-    /// downstream can read.
-    #[must_use]
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "enabled" => Some(Self::Enabled),
-            "paused" => Some(Self::Paused),
-            "disabled" => Some(Self::Disabled),
-            _ => None,
-        }
-    }
-
-    /// Whether an event may go out over a stream in this state (§8.1.2).
-    #[must_use]
-    pub const fn delivers(self) -> bool {
-        matches!(self, Self::Enabled)
-    }
-
-    /// Whether an event this stream cannot transmit is kept for later
-    /// (§8.1.2).
-    ///
-    /// True for `paused` and false for `disabled`, which is the whole
-    /// difference between the two: both stop delivery, and only one of them
-    /// promises the receiver will eventually hear what it missed.
-    #[must_use]
-    pub const fn holds(self) -> bool {
-        matches!(self, Self::Paused)
-    }
-}
-
-impl std::fmt::Display for StreamStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
 
 /// Why a status or subject request was refused.
 ///
@@ -352,43 +290,6 @@ mod tests {
 
     fn stream_id() -> StreamId {
         StreamId::generate()
-    }
-
-    /// §8.1.2.2: the three states, and nothing else.
-    #[test]
-    fn each_status_the_spec_defines_round_trips() {
-        for status in [
-            StreamStatus::Enabled,
-            StreamStatus::Paused,
-            StreamStatus::Disabled,
-        ] {
-            assert_eq!(StreamStatus::parse(status.as_str()), Some(status));
-        }
-        assert_eq!(StreamStatus::parse("ENABLED"), None, "spelled as §8.1.2 does");
-        assert_eq!(StreamStatus::parse("suspended"), None);
-    }
-
-    /// §8.1.2: only `enabled` transmits, and only `paused` holds.
-    #[test]
-    fn paused_holds_what_it_does_not_transmit_and_disabled_holds_nothing() {
-        // Arrange, Act & Assert
-        assert!(StreamStatus::Enabled.delivers());
-        assert!(!StreamStatus::Paused.delivers());
-        assert!(!StreamStatus::Disabled.delivers());
-
-        assert!(StreamStatus::Paused.holds());
-        assert!(!StreamStatus::Disabled.holds());
-        assert!(
-            !StreamStatus::Enabled.holds(),
-            "an enabled stream transmits rather than holds"
-        );
-    }
-
-    /// §8.1.1.1 creates a usable stream: a receiver that creates one and never
-    /// calls §8.1.2.2 still receives events.
-    #[test]
-    fn a_stream_starts_enabled() {
-        assert_eq!(StreamStatus::default(), StreamStatus::Enabled);
     }
 
     #[test]

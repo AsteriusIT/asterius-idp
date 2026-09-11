@@ -361,6 +361,30 @@ impl EventType {
     /// redelivered — so this entry is the only record that the signal existed
     /// at all.
     pub const SSF_SET_REJECTED: Self = Self("ssf.set_rejected");
+    /// A SET was pushed to a receiver and accepted (RFC 8935 §2.2).
+    ///
+    /// One entry per SET, because push delivery is one SET per request (§2.2)
+    /// and there is no batch to count. It is the transmitter's own record that
+    /// a signal left the building: a receiver that later says it never heard
+    /// about a revoked session is answered from here.
+    pub const SSF_SET_PUSHED: Self = Self("ssf.set_pushed");
+    /// A receiver refused a pushed SET (RFC 8935 §2.3).
+    ///
+    /// Carries the receiver's `err` code — reduced to the closed set of §2.3
+    /// by `asterius_ssf::push`, never the string as it arrived — because which
+    /// refusal it was decides what an operator does. `invalid_key` says the
+    /// receiver could not use this server's signing key, and the entry says so
+    /// in as many words: it is the one code that points at the transmitter's
+    /// published key set rather than at the SET.
+    pub const SSF_PUSH_REFUSED: Self = Self("ssf.push_refused");
+    /// A stream stopped delivering (SSF 1.0 §8.1.2).
+    ///
+    /// Written by the delivery worker when a SET has exhausted RFC 8935 §2.4's
+    /// retries. A standing arrangement to be told about a tenant's users has
+    /// just stopped working, and nothing else in this trail would say so: the
+    /// dead letter records one SET, and this records that the next ones are
+    /// not being attempted either.
+    pub const SSF_STREAM_PAUSED: Self = Self("ssf.stream_paused");
 
     /// A receiver changed a stream's status (SSF 1.0 §8.1.2.2).
     ///
@@ -383,7 +407,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 61] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -439,6 +463,9 @@ impl EventType {
         Self::SSF_SETS_DELIVERED,
         Self::SSF_SETS_ACKNOWLEDGED,
         Self::SSF_SET_REJECTED,
+        Self::SSF_SET_PUSHED,
+        Self::SSF_PUSH_REFUSED,
+        Self::SSF_STREAM_PAUSED,
         Self::SSF_STREAM_STATUS_CHANGED,
         Self::SSF_SUBJECT_ADDED,
         Self::SSF_SUBJECT_REMOVED,

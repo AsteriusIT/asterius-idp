@@ -19,8 +19,8 @@
 use crate::error::to_domain_error;
 use crate::outbox::PgTransaction;
 use asterius_domain::{DomainError, TenantId};
-use asterius_ssf::management::{MAX_HELD_WHILE_PAUSED, StreamStatus};
-use asterius_ssf::stream::StreamId;
+use asterius_ssf::management::MAX_HELD_WHILE_PAUSED;
+use asterius_ssf::stream::{StreamId, StreamStatus};
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
 

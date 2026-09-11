@@ -12,6 +12,7 @@
 //! to prove it against.
 
 use asterius_domain::audit::{AuditEvent, AuditSink, EventType};
+use asterius_domain::keys::Kid;
 use asterius_domain::keys::{Signer as _, SigningAlgorithm};
 use asterius_domain::rate_limit::{
     Bucket, EndpointLimit, EndpointLimits, RateLimit, RateLimitStore,
@@ -20,7 +21,6 @@ use asterius_domain::{
     ClientId, DomainError, Grant, GrantId, Issuer, ReplayCheck, ReplayGuard, ReplayPurpose, Tenant,
     TenantId, TenantStatus,
 };
-use asterius_domain::keys::Kid;
 use asterius_jose::{LocalKeyStore, SigningKey, thumbprint};
 use asterius_oidc::tokens::JwtId;
 use asterius_oidc::tokens::access::{AccessToken, Audience, Confirmation};
@@ -31,8 +31,7 @@ use asterius_server::http::ssf_management::{
     ADD_SUBJECT_PATH, Membership, REMOVE_SUBJECT_PATH, Recognised, STATUS_PATH,
     SsfManagementContext, SsfManagementStore, SubjectDirectory, SubjectOutcome, status, subjects,
 };
-use asterius_ssf::management::StreamStatus;
-use asterius_ssf::stream::{SCOPE_MANAGE, StreamId};
+use asterius_ssf::stream::{SCOPE_MANAGE, StreamId, StreamStatus};
 use asterius_ssf::subject::Subject;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::Response;
@@ -390,7 +389,11 @@ impl Fixture {
         stream
     }
 
-    fn context<'a>(&'a self, tenant: &'a Tenant, dpop: &'a DpopEndpoint) -> SsfManagementContext<'a> {
+    fn context<'a>(
+        &'a self,
+        tenant: &'a Tenant,
+        dpop: &'a DpopEndpoint,
+    ) -> SsfManagementContext<'a> {
         SsfManagementContext {
             tenant,
             store: &self.rows,
@@ -488,12 +491,7 @@ impl Fixture {
     }
 }
 
-async fn sign_token(
-    keys: &LocalKeyStore,
-    jkt: &Kid,
-    scopes: &[&str],
-    audience: &str,
-) -> String {
+async fn sign_token(keys: &LocalKeyStore, jkt: &Kid, scopes: &[&str], audience: &str) -> String {
     let mut grant = Grant::new(TenantId::new("demo"), ClientId::new(RECEIVER), now());
     grant.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
     grant.claimed_at = Some(now());
@@ -536,6 +534,16 @@ fn sign_by_hand(key: &SigningKey, header: &Value, claims: &Value) -> String {
 fn unique_jti() -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     format!("proof-{}", NEXT.fetch_add(1, Ordering::SeqCst))
+}
+
+/// The response body, whatever it is. §8.1.3.2's answers carry none at all,
+/// and "none" is exactly what has to be the same for a known subject and an
+/// unknown one — so this reads bytes rather than parsing JSON.
+async fn bytes_of(response: Response) -> Vec<u8> {
+    axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("body")
+        .to_vec()
 }
 
 async fn body_of(response: Response) -> Value {
@@ -609,7 +617,11 @@ async fn a_stream_this_receiver_does_not_own_is_not_found() {
 
     // Act
     let response = fixture
-        .status_request(Method::GET, Some(&format!("stream_id={theirs}")), Value::Null)
+        .status_request(
+            Method::GET,
+            Some(&format!("stream_id={theirs}")),
+            Value::Null,
+        )
         .await;
 
     // Assert
@@ -885,7 +897,11 @@ async fn a_known_and_an_unknown_subject_get_the_same_answer() {
     // Assert
     assert_eq!(known.status(), unknown.status());
     assert_eq!(known.headers(), unknown.headers());
-    assert_eq!(body_of(known).await, body_of(unknown).await);
+    assert_eq!(
+        bytes_of(known).await,
+        bytes_of(unknown).await,
+        "the two answers differ in their body"
+    );
 }
 
 /// A subject this server cannot resolve in this direction — an opaque

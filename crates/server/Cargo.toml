@@ -61,6 +61,12 @@ path = "src/main.rs"
 
 [dev-dependencies]
 base64.workspace = true
+# `tests/ssf_push.rs` only: the delivery worker claims across tenants by
+# design, so two of its tests running against one schema would each deliver the
+# other's rows. Isolation is a `create schema` and a `search_path`, which is
+# the same thing the store-pg tests do and needs a connection of its own. No
+# test here reads or writes an application row through it.
+sqlx.workspace = true
 # `tests/passkey_login.rs` runs a real ES256 authenticator: a fake signature
 # would prove nothing about the one part of that flow that is cryptography.
 aws-lc-rs.workspace = true

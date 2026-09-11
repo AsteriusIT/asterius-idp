@@ -150,9 +150,15 @@ impl<'a> TenantScope<'a> {
     ///
     /// Tenant-scoped like everything else here, and the receiver is the *other*
     /// half of every statement it makes: see [`crate::PgSsfStreams`].
+    ///
+    /// `kek` is what seals a push receiver's `authorization_header`
+    /// (`ast-0ju.6`). It is not optional for the same reason it is not on
+    /// [`Self::users`]: a repository that could not reach the key would be one
+    /// that writes the credential in the clear or drops it, and both are worse
+    /// than failing to build.
     #[must_use]
-    pub fn ssf_streams(&self) -> crate::PgSsfStreams {
-        crate::PgSsfStreams::new(self.pool.clone(), self.tenant.clone())
+    pub fn ssf_streams(&self, kek: Arc<dyn Kek>) -> crate::PgSsfStreams {
+        crate::PgSsfStreams::new(self.pool.clone(), self.tenant.clone(), kek)
     }
 
     /// The SETs this tenant's streams are holding for receivers that poll

@@ -23,9 +23,11 @@
 
 use crate::error::to_domain_error;
 use asterius_domain::{ClientId, DomainError, TenantId};
-use asterius_ssf::management::StreamStatus;
-use asterius_ssf::stream::{Delivery, StreamConfiguration, StreamId};
+use asterius_jose::{Kek, KeyBinding, RowSecret, WrappedKey};
+use asterius_ssf::push::AuthorizationHeader;
+use asterius_ssf::stream::{Delivery, StreamConfiguration, StreamId, StreamStatus};
 use sqlx::postgres::PgPool;
+use std::sync::Arc;
 use time::OffsetDateTime;
 
 /// The outbox `kind` a queued SET is written under.
@@ -35,18 +37,153 @@ use time::OffsetDateTime;
 /// queue under the same constant, with `destination` set to the `stream_id`.
 pub const SET_OUTBOX_KIND: &str = "ssf.set";
 
+/// What a push delivery needs to know about a stream, and nothing more.
+///
+/// Read by the delivery worker, which holds an outbox row naming a
+/// `stream_id` and no receiver. It carries the credential, so it does not
+/// derive `Debug`: see [`AuthorizationHeader`], which does not render itself
+/// either — belt and braces, because this type is the one that ends up in a
+/// `tracing` field by accident.
+#[derive(Clone)]
+pub struct PushTarget {
+    /// The receiver's endpoint (RFC 8935 §2.2).
+    pub endpoint_url: String,
+    /// What to present on every request (SSF 1.0 §6.1.1).
+    pub authorization_header: Option<AuthorizationHeader>,
+    /// Whether the stream is delivering (SSF 1.0 §8.1.2).
+    pub status: StreamStatus,
+}
+
+impl std::fmt::Debug for PushTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushTarget")
+            .field("status", &self.status)
+            .field(
+                "authorization_header",
+                &self.authorization_header.as_ref().map(|_| "<redacted>"),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// What one stream has delivered, failed and still owes.
+///
+/// The per-stream half of "metrics per stream": the Prometheus counters are
+/// per-family, because a stream identifier is a label a caller chooses and
+/// `crate::observability` in the server crate keeps those out of the metric
+/// store. See `0031_ssf_push_delivery.sql`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamStats {
+    /// Whether the stream is delivering.
+    pub status: StreamStatus,
+    /// Why it is not delivering, where this server stopped it.
+    ///
+    /// This server's own words: a receiver's response body reaches it only
+    /// through [`asterius_ssf::push::ReceiverError`], which has already reduced
+    /// the code to a closed set and bounded the free text.
+    pub reason: Option<String>,
+    /// SETs the receiver has accepted, since the stream was created.
+    pub delivered: i64,
+    /// Deliveries that failed, retries included.
+    pub failed: i64,
+    /// SETs still owed: queued, being retried, or claimed by a worker.
+    pub queue_depth: i64,
+}
+
 /// One tenant's SSF streams.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PgSsfStreams {
     pool: PgPool,
     tenant: TenantId,
+    kek: Arc<dyn Kek>,
+}
+
+impl std::fmt::Debug for PgSsfStreams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgSsfStreams")
+            .field("tenant", &self.tenant)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PgSsfStreams {
     /// Scopes a repository to `tenant`.
+    ///
+    /// `kek` is what seals and opens a push stream's `authorization_header`;
+    /// see [`asterius_jose::RowSecret::SsfPushAuthorization`].
     #[must_use]
-    pub const fn new(pool: PgPool, tenant: TenantId) -> Self {
-        Self { pool, tenant }
+    pub const fn new(pool: PgPool, tenant: TenantId, kek: Arc<dyn Kek>) -> Self {
+        Self { pool, tenant, kek }
+    }
+
+    /// Seals a receiver's credential for one stream, or nothing.
+    ///
+    /// The stream identifier is bound into the ciphertext, so a row copied
+    /// over another stream's row stops decrypting rather than presenting one
+    /// receiver's credential to another's endpoint.
+    async fn seal(
+        &self,
+        stream: &StreamId,
+        delivery: &Delivery,
+    ) -> Result<Option<WrappedKey>, DomainError> {
+        let Delivery::Push {
+            authorization_header: Some(header),
+            ..
+        } = delivery
+        else {
+            return Ok(None);
+        };
+        let binding = KeyBinding::row_secret(
+            &self.tenant,
+            RowSecret::SsfPushAuthorization,
+            stream.as_str(),
+        );
+        self.kek
+            .wrap(binding, header.expose().as_bytes())
+            .await
+            .map(Some)
+            .map_err(|e| DomainError::Storage(Box::new(e)))
+    }
+
+    /// Opens a stored credential.
+    ///
+    /// A row that does not open is an error and never a stream delivered
+    /// without its `Authorization`: SSF 1.0 §6.1.1 makes presenting it
+    /// mandatory, so a delivery that silently dropped it would be refused by
+    /// the receiver with `authentication_failed` and look like the receiver's
+    /// fault.
+    async fn open(
+        &self,
+        stream: &StreamId,
+        sealed: Option<WrappedKey>,
+    ) -> Result<Option<AuthorizationHeader>, DomainError> {
+        let Some(sealed) = sealed else {
+            return Ok(None);
+        };
+        let binding = KeyBinding::row_secret(
+            &self.tenant,
+            RowSecret::SsfPushAuthorization,
+            stream.as_str(),
+        );
+        let plaintext = self
+            .kek
+            .unwrap(binding, &sealed)
+            .await
+            .map_err(|e| DomainError::Storage(Box::new(e)))?;
+        let text = std::str::from_utf8(&plaintext).map_err(|_| {
+            DomainError::invalid(
+                "ssf_streams.authorization_header_ciphertext",
+                "a stored push credential is not text",
+            )
+        })?;
+        AuthorizationHeader::from_storage(text)
+            .map(Some)
+            .map_err(|_| {
+                DomainError::invalid(
+                    "ssf_streams.authorization_header_ciphertext",
+                    "a stored push credential is not a header value this server can send",
+                )
+            })
     }
 
     /// Stores a newly created stream (§8.1.1.1).
@@ -66,12 +203,15 @@ impl PgSsfStreams {
     ) -> Result<(), DomainError> {
         let audience = sorted(&stream.audience);
         let timeout = timeout_seconds(stream)?;
+        let sealed = self.seal(&stream.stream_id, &stream.delivery).await?;
         sqlx::query!(
             "insert into ssf_streams
                  (tenant_id, stream_id, client_id, audience, events_requested,
                   delivery_method, delivery_endpoint_url, description,
-                  inactivity_timeout_seconds)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                  inactivity_timeout_seconds,
+                  authorization_header_ciphertext, authorization_header_nonce,
+                  authorization_header_kek_id)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
             self.tenant.as_str(),
             stream.stream_id.as_str(),
             receiver.as_str(),
@@ -81,6 +221,9 @@ impl PgSsfStreams {
             stream.delivery.endpoint_url(),
             stream.description.as_deref(),
             timeout,
+            sealed.as_ref().map(WrappedKey::ciphertext),
+            sealed.as_ref().map(WrappedKey::nonce),
+            sealed.as_ref().map(WrappedKey::kek_id),
         )
         .execute(&self.pool)
         .await
@@ -106,7 +249,9 @@ impl PgSsfStreams {
     ) -> Result<Option<StreamConfiguration>, DomainError> {
         let row = sqlx::query!(
             "select stream_id, audience, events_requested, delivery_method,
-                    delivery_endpoint_url, description, inactivity_timeout_seconds
+                    delivery_endpoint_url, description, inactivity_timeout_seconds,
+                    authorization_header_ciphertext, authorization_header_nonce,
+                    authorization_header_kek_id
                from ssf_streams
               where tenant_id = $1 and client_id = $2 and stream_id = $3",
             self.tenant.as_str(),
@@ -117,16 +262,214 @@ impl PgSsfStreams {
         .await
         .map_err(to_domain_error)?;
 
-        row.map(|row| {
-            configuration(
-                &row.stream_id,
-                row.audience,
-                row.events_requested,
-                &row.delivery_method,
-                row.delivery_endpoint_url,
-                row.description,
-                row.inactivity_timeout_seconds,
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let sealed = wrapped(
+            row.authorization_header_kek_id,
+            row.authorization_header_nonce,
+            row.authorization_header_ciphertext,
+        )?;
+        let header = self.open(stream, sealed).await?;
+        configuration(
+            &row.stream_id,
+            row.audience,
+            row.events_requested,
+            delivery(&row.delivery_method, row.delivery_endpoint_url, header)?,
+            row.description,
+            row.inactivity_timeout_seconds,
+        )
+        .map(Some)
+    }
+
+    /// What a push delivery needs, by stream identifier alone (`ast-0ju.6`).
+    ///
+    /// The one read here with no `client_id` in its `WHERE` clause, and the
+    /// module's opening argument says why that is not a hole: the caller is
+    /// the delivery worker, holding an outbox row this server wrote, and the
+    /// receiver is not a party to the call — it is whoever the stream says it
+    /// is. A `client_id` argument here would have to come from the outbox row,
+    /// which is to say from this same server, so it would check a value
+    /// against itself.
+    ///
+    /// `None` covers "no such stream" and "not a push stream" in one answer:
+    /// a poll stream has nothing for a pusher to do, and a stream deleted
+    /// between the queueing and the delivery must not be delivered to
+    /// (§8.1.1.5).
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails or the credential does not
+    /// open, and [`DomainError::Invalid`] if the row holds a status this build
+    /// does not know.
+    pub async fn for_delivery(&self, stream: &StreamId) -> Result<Option<PushTarget>, DomainError> {
+        let row = sqlx::query!(
+            "select delivery_endpoint_url, status,
+                    authorization_header_ciphertext, authorization_header_nonce,
+                    authorization_header_kek_id
+               from ssf_streams
+              where tenant_id = $1 and stream_id = $2
+                and delivery_method = $3",
+            self.tenant.as_str(),
+            stream.as_str(),
+            asterius_ssf::stream::DELIVERY_PUSH,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let Some(endpoint_url) = row.delivery_endpoint_url else {
+            // The schema's own check makes a push stream without an endpoint
+            // impossible, so this is a row written around it.
+            return Err(DomainError::invalid(
+                "ssf_streams.delivery_endpoint_url",
+                "a stored push stream has no endpoint",
+            ));
+        };
+        let status = StreamStatus::parse(&row.status).ok_or_else(|| {
+            DomainError::invalid(
+                "ssf_streams.status",
+                "a stored stream status is not one SSF 1.0 §8.1.2 defines",
             )
+        })?;
+        let sealed = wrapped(
+            row.authorization_header_kek_id,
+            row.authorization_header_nonce,
+            row.authorization_header_ciphertext,
+        )?;
+        Ok(Some(PushTarget {
+            endpoint_url,
+            authorization_header: self.open(stream, sealed).await?,
+            status,
+        }))
+    }
+
+    /// Stops delivering on a stream, and says why (SSF 1.0 §8.1.2).
+    ///
+    /// Written by the delivery worker when a SET has exhausted RFC 8935
+    /// §2.4's retries: the SET itself is a dead letter either way, and pausing
+    /// is what stops the next hundred from becoming dead letters too.
+    ///
+    /// Idempotent, and it never *un*-pauses: `status = 'enabled'` is the only
+    /// row this touches, so a stream an operator disabled stays disabled and a
+    /// second failing delivery does not overwrite the first one's reason —
+    /// the reason an operator wants is the one that stopped the stream.
+    ///
+    /// `reason` is this server's own words. A receiver's response body reaches
+    /// it only through [`asterius_ssf::push::ReceiverError`], which reduces it
+    /// to a code and bounded text.
+    ///
+    /// `false` means the stream was already not enabled, or is gone.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    pub async fn pause(
+        &self,
+        stream: &StreamId,
+        reason: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let affected = sqlx::query!(
+            "update ssf_streams
+                set status = 'paused', status_reason = $3, status_changed_at = $4
+              where tenant_id = $1 and stream_id = $2 and status = 'enabled'",
+            self.tenant.as_str(),
+            stream.as_str(),
+            reason,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        Ok(affected > 0)
+    }
+
+    /// Counts one delivery attempt against its stream.
+    ///
+    /// Two counters rather than one signed number, because "nothing has ever
+    /// been delivered and forty have failed" and "forty have been delivered
+    /// and forty have failed" are different receivers and a difference would
+    /// render them the same.
+    ///
+    /// A stream that has been deleted counts nothing and is not an error: the
+    /// delivery that was in flight is the caller's to record in the outbox,
+    /// and §8.1.1.5 already says a deleted stream delivers nothing more.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    pub async fn count_attempt(
+        &self,
+        stream: &StreamId,
+        delivered: bool,
+    ) -> Result<(), DomainError> {
+        sqlx::query!(
+            "update ssf_streams
+                set delivered_count = delivered_count + case when $3 then 1 else 0 end,
+                    failed_count = failed_count + case when $3 then 0 else 1 end
+              where tenant_id = $1 and stream_id = $2",
+            self.tenant.as_str(),
+            stream.as_str(),
+            delivered,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(())
+    }
+
+    /// One receiver's view of how its stream is doing.
+    ///
+    /// The receiver is in the `WHERE` clause, as everywhere else in the
+    /// management direction: a stream's delivery history says how often this
+    /// server has reached that receiver, which is not another receiver's to
+    /// read.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails, [`DomainError::Invalid`]
+    /// for a status this build does not know.
+    pub async fn stats(
+        &self,
+        receiver: &ClientId,
+        stream: &StreamId,
+    ) -> Result<Option<StreamStats>, DomainError> {
+        let row = sqlx::query!(
+            "select s.status, s.status_reason, s.delivered_count, s.failed_count,
+                    (select count(*) from outbox o
+                      where o.tenant_id = s.tenant_id
+                        and o.kind = $4
+                        and o.destination = s.stream_id
+                        and o.status in ('pending', 'failed', 'claimed')) as \"queued!\"
+               from ssf_streams s
+              where s.tenant_id = $1 and s.client_id = $2 and s.stream_id = $3",
+            self.tenant.as_str(),
+            receiver.as_str(),
+            stream.as_str(),
+            SET_OUTBOX_KIND,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        row.map(|row| {
+            Ok(StreamStats {
+                status: StreamStatus::parse(&row.status).ok_or_else(|| {
+                    DomainError::invalid(
+                        "ssf_streams.status",
+                        "a stored stream status is not one SSF 1.0 §8.1.2 defines",
+                    )
+                })?,
+                reason: row.status_reason,
+                delivered: row.delivered_count,
+                failed: row.failed_count,
+                queue_depth: row.queued,
+            })
         })
         .transpose()
     }
@@ -143,7 +486,9 @@ impl PgSsfStreams {
     pub async fn list(&self, receiver: &ClientId) -> Result<Vec<StreamConfiguration>, DomainError> {
         let rows = sqlx::query!(
             "select stream_id, audience, events_requested, delivery_method,
-                    delivery_endpoint_url, description, inactivity_timeout_seconds
+                    delivery_endpoint_url, description, inactivity_timeout_seconds,
+                    authorization_header_ciphertext, authorization_header_nonce,
+                    authorization_header_kek_id
                from ssf_streams
               where tenant_id = $1 and client_id = $2
               order by created_at, stream_id",
@@ -154,19 +499,30 @@ impl PgSsfStreams {
         .await
         .map_err(to_domain_error)?;
 
-        rows.into_iter()
-            .map(|row| {
-                configuration(
-                    &row.stream_id,
-                    row.audience,
-                    row.events_requested,
-                    &row.delivery_method,
-                    row.delivery_endpoint_url,
-                    row.description,
-                    row.inactivity_timeout_seconds,
+        let mut streams = Vec::with_capacity(rows.len());
+        for row in rows {
+            let stream_id = StreamId::parse(&row.stream_id).ok_or_else(|| {
+                DomainError::invalid(
+                    "ssf_streams.stream_id",
+                    "a stored stream identifier is not one this server issues",
                 )
-            })
-            .collect()
+            })?;
+            let sealed = wrapped(
+                row.authorization_header_kek_id,
+                row.authorization_header_nonce,
+                row.authorization_header_ciphertext,
+            )?;
+            let header = self.open(&stream_id, sealed).await?;
+            streams.push(configuration(
+                &row.stream_id,
+                row.audience,
+                row.events_requested,
+                delivery(&row.delivery_method, row.delivery_endpoint_url, header)?,
+                row.description,
+                row.inactivity_timeout_seconds,
+            )?);
+        }
+        Ok(streams)
     }
 
     /// Writes an updated stream (§8.1.1.3 and §8.1.1.4).
@@ -187,13 +543,21 @@ impl PgSsfStreams {
         stream: &StreamConfiguration,
     ) -> Result<bool, DomainError> {
         let timeout = timeout_seconds(stream)?;
+        // Re-sealed rather than left alone: an update carries the whole
+        // `delivery` object (§8.1.1.3 and §8.1.1.4), so a stream that now has
+        // no credential must stop holding its old one — a secret nothing
+        // presents any more is a secret kept for no reason.
+        let sealed = self.seal(&stream.stream_id, &stream.delivery).await?;
         let affected = sqlx::query!(
             "update ssf_streams
                 set events_requested = $4,
                     delivery_method = $5,
                     delivery_endpoint_url = $6,
                     description = $7,
-                    inactivity_timeout_seconds = $8
+                    inactivity_timeout_seconds = $8,
+                    authorization_header_ciphertext = $9,
+                    authorization_header_nonce = $10,
+                    authorization_header_kek_id = $11
               where tenant_id = $1 and client_id = $2 and stream_id = $3",
             self.tenant.as_str(),
             receiver.as_str(),
@@ -203,6 +567,9 @@ impl PgSsfStreams {
             stream.delivery.endpoint_url(),
             stream.description.as_deref(),
             timeout,
+            sealed.as_ref().map(WrappedKey::ciphertext),
+            sealed.as_ref().map(WrappedKey::nonce),
+            sealed.as_ref().map(WrappedKey::kek_id),
         )
         .execute(&self.pool)
         .await
@@ -210,7 +577,6 @@ impl PgSsfStreams {
         .rows_affected();
         Ok(affected > 0)
     }
-
 
     /// This stream's status and the reason it was last given (§8.1.2.1).
     ///
@@ -380,13 +746,37 @@ fn timeout_seconds(stream: &StreamConfiguration) -> Result<Option<i32>, DomainEr
         .transpose()
 }
 
+/// §8.1.1's `delivery`, out of the three columns that carry it.
+///
+/// Its own function rather than three more arguments to [`configuration`]: the
+/// method, the endpoint and the credential are one member of §8.1.1 and are
+/// only ever read together.
+fn delivery(
+    delivery_method: &str,
+    delivery_endpoint_url: Option<String>,
+    authorization_header: Option<AuthorizationHeader>,
+) -> Result<Delivery, DomainError> {
+    match (delivery_method, delivery_endpoint_url) {
+        (asterius_ssf::stream::DELIVERY_POLL, None) => Ok(Delivery::Poll),
+        (asterius_ssf::stream::DELIVERY_PUSH, Some(endpoint_url)) => Ok(Delivery::Push {
+            endpoint_url,
+            authorization_header,
+        }),
+        // The schema's own check refuses both halves of this, so reaching it
+        // means the row was written by something other than this repository.
+        _ => Err(DomainError::invalid(
+            "ssf_streams.delivery_method",
+            "a stored delivery method has no endpoint this server can use",
+        )),
+    }
+}
+
 /// One row, as the model.
 fn configuration(
     stream_id: &str,
     audience: Vec<String>,
     events_requested: Vec<String>,
-    delivery_method: &str,
-    delivery_endpoint_url: Option<String>,
+    delivery: Delivery,
     description: Option<String>,
     inactivity_timeout_seconds: Option<i32>,
 ) -> Result<StreamConfiguration, DomainError> {
@@ -396,20 +786,6 @@ fn configuration(
             "a stored stream identifier is not one this server issues",
         )
     })?;
-    let delivery = match (delivery_method, delivery_endpoint_url) {
-        (asterius_ssf::stream::DELIVERY_POLL, None) => Delivery::Poll,
-        (asterius_ssf::stream::DELIVERY_PUSH, Some(endpoint_url)) => {
-            Delivery::Push { endpoint_url }
-        }
-        // The schema's own check refuses both halves of this, so reaching it
-        // means the row was written by something other than this repository.
-        _ => {
-            return Err(DomainError::invalid(
-                "ssf_streams.delivery_method",
-                "a stored delivery method has no endpoint this server can use",
-            ));
-        }
-    };
     // The column's check keeps this positive; a negative one would be a row
     // written around the schema, and it fails the read for the reason the
     // module gives — a stream this server cannot render is not one it hides.
@@ -431,6 +807,30 @@ fn configuration(
         description,
         inactivity_timeout,
     })
+}
+
+/// The three sealed columns as one envelope, or none of them.
+///
+/// The schema's `ssf_streams_authorization_header_is_whole` check makes the
+/// mixed case impossible, so reaching it means a row was written around the
+/// schema — which fails the read rather than delivering without the header.
+fn wrapped(
+    kek_id: Option<String>,
+    nonce: Option<Vec<u8>>,
+    ciphertext: Option<Vec<u8>>,
+) -> Result<Option<WrappedKey>, DomainError> {
+    match (kek_id, nonce, ciphertext) {
+        (None, None, None) => Ok(None),
+        (Some(kek_id), Some(nonce), Some(ciphertext)) => {
+            WrappedKey::from_parts(kek_id, nonce, ciphertext)
+                .map(Some)
+                .map_err(|e| DomainError::Storage(Box::new(e)))
+        }
+        _ => Err(DomainError::invalid(
+            "ssf_streams.authorization_header_ciphertext",
+            "a stored push credential is missing part of its envelope",
+        )),
+    }
 }
 
 /// A unique violation is §8.1.1.1's 409; everything else is a storage

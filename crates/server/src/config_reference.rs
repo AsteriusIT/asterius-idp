@@ -36,8 +36,8 @@ use crate::config::{
     DEFAULT_ADMIN_TENANT, DEFAULT_ADMIN_USERNAME, DEFAULT_BIND, DEFAULT_BODY_LIMIT,
     DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_ADDRESS,
     DEFAULT_LIMIT_PAR_PER_CLIENT, DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS,
-    DEFAULT_LIMIT_TOKEN_PER_ADDRESS, DEFAULT_LIMIT_TOKEN_PER_CLIENT,
     DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS, DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT,
+    DEFAULT_LIMIT_TOKEN_PER_ADDRESS, DEFAULT_LIMIT_TOKEN_PER_CLIENT,
     DEFAULT_LIMIT_USERINFO_PER_ADDRESS, DEFAULT_LIMIT_WINDOW_SECONDS,
     DEFAULT_LOGIN_MAX_PER_ACCOUNT, DEFAULT_LOGIN_MAX_PER_ADDRESS, DEFAULT_LOGIN_WINDOW_SECONDS,
     DEFAULT_MAX_CONNECTIONS, DEFAULT_MODE, DEFAULT_OUTBOX_BATCH, DEFAULT_OUTBOX_LEASE_SECONDS,
@@ -668,6 +668,12 @@ fn login() -> Section {
 }
 
 /// `[limits]`: what each protocol endpoint permits per window.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one key per configurable limit, each with the prose an operator reads before \
+              changing it; splitting the list in two would put half the table in another \
+              function and invite a key to be documented in neither"
+)]
 fn limits() -> Section {
     Section {
         table: "limits",

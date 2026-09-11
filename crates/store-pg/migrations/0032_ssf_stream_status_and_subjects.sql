@@ -1,34 +1,10 @@
--- Stream status (SSF 1.0 §8.1.2) and subject membership (§8.1.3), ast-0ju.4.
+-- Subject membership per stream (SSF 1.0 §8.1.3), ast-0ju.4.
 --
--- # Status is a column on the stream, not a table of transitions
+-- §8.1.2's status is not here: `0031_ssf_push_delivery.sql` added the column
+-- when push delivery first needed to *write* it, and this story is the one
+-- that lets a receiver read and change it. One column, because two would be
+-- two answers to "is this stream delivering".
 --
--- §8.1.2 gives a stream exactly one status at a time — `enabled`, `paused` or
--- `disabled` — and every question this server asks about it is "what is it
--- now": the enqueue guard asks before holding an event, the delivery read asks
--- before handing one over, and §8.1.2.1 answers a receiver asking the same
--- thing. The history of who paused what and why is the audit trail's job
--- (`ssf.stream_status_changed`), where it is already immutable and already
--- swept on a schedule an operator configures. A second history here would be
--- one nobody sweeps.
---
--- `status_reason` is receiver text (§8.1.2.2's `reason`) read back at
--- §8.1.2.1. It is bounded, because it is a string a client chose that this
--- server stores and echoes.
-
-alter table ssf_streams
-    add column status text not null default 'enabled'
-        check (status in ('enabled', 'paused', 'disabled')),
-    add column status_reason text
-        check (status_reason is null or length(status_reason) <= 256),
-    -- When the stream last changed state. Not a duplicate of `updated_at`: a
-    -- `PATCH` of the configuration touches that one, and "how long has this
-    -- stream been paused" is the question an operator asks during an incident.
-    add column status_changed_at timestamptz;
-
--- Existing streams are enabled, which is what `default` above gives them and
--- what §8.1.1.1 means by creating a usable stream: a receiver that created one
--- before this migration and never called §8.1.2.2 must keep receiving events.
-
 -- The subjects a stream carries events about (§8.1.3).
 --
 -- # Why every row is explicit

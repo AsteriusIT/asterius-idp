@@ -609,12 +609,14 @@ impl ComplexSubject {
             (&self.org_unit, &other.org_unit),
             (&self.group, &other.group),
         ];
-        pairs.into_iter().all(|(mine, theirs)| match (mine, theirs) {
-            (Some(mine), Some(theirs)) => mine == theirs,
-            // Undefined on one side or the other: §8.1.3.1 says nothing about
-            // that member, so it does not stop the match.
-            _ => true,
-        })
+        pairs
+            .into_iter()
+            .all(|(mine, theirs)| match (mine, theirs) {
+                (Some(mine), Some(theirs)) => mine == theirs,
+                // Undefined on one side or the other: §8.1.3.1 says nothing about
+                // that member, so it does not stop the match.
+                _ => true,
+            })
     }
 }
 

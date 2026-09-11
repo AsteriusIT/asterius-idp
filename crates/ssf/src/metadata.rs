@@ -296,12 +296,10 @@ mod tests {
     fn no_unbuilt_management_endpoint_is_advertised() {
         let document = document();
         let object = document.as_object().expect("an object");
-        for member in ["verification_endpoint"] {
-            assert!(
-                object.get(member).is_none(),
-                "{member} is advertised before it is routed"
-            );
-        }
+        assert!(
+            object.get("verification_endpoint").is_none(),
+            "the verification endpoint is advertised before it is routed"
+        );
         assert!(
             object.get("delivery_methods_supported").is_none(),
             "a delivery method is advertised before `ast-0ju.6` delivers one"
