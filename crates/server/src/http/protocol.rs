@@ -521,8 +521,9 @@ fn mount_ssf(
         )
 }
 
-/// Mounts the AuthZEN Access Evaluation endpoint (Authorization API 1.0 §6,
-/// §10.1, `ast-pj0.1`), where the deployment has it.
+/// Mounts the AuthZEN Access Evaluation and Access Evaluations endpoints
+/// (Authorization API 1.0 §6, §7, §10.1, `ast-pj0.1`, `ast-pj0.2`), where the
+/// deployment has them.
 ///
 /// From the registry, so the URL the router matches is the URL
 /// `access_evaluation_endpoint` advertises and the audience a PEP's token must
@@ -530,11 +531,18 @@ fn mount_ssf(
 /// to — `any` rather than `post` so the 405 carries this endpoint's own body
 /// and `no-store`, instead of axum's empty one.
 ///
-/// The *deployment's* flag decides whether the route exists at all; the
-/// per-tenant half is [`tenant_feature_guard`], which recognises the path as
-/// [`Endpoint::AccessEvaluation`] because [`gated_endpoint`] reads the registry
-/// rather than a list kept beside it. A tenant that has switched AuthZEN off
-/// gets the 404 its own discovery document implies.
+/// The *deployment's* flag decides whether the routes exist at all; the
+/// per-tenant half is [`tenant_feature_guard`], which recognises the paths as
+/// [`Endpoint::AccessEvaluation`] and [`Endpoint::AccessEvaluations`] because
+/// [`gated_endpoint`] reads the registry rather than a list kept beside it. A
+/// tenant that has switched AuthZEN off gets the 404 its own discovery
+/// document implies.
+///
+/// Two routes and one flag: §7's boxcar is §6's evaluation with an array, and
+/// a deployment that offered one without the other would be advertising half
+/// an API — a PEP that found `access_evaluation_endpoint` and not
+/// `access_evaluations_endpoint` would boxcar by hand, which is the round trip
+/// §7 exists to save.
 fn mount_access_evaluation(
     router: Router,
     capabilities: Capabilities,
@@ -543,10 +551,15 @@ fn mount_access_evaluation(
     if !Endpoint::AccessEvaluation.is_enabled(&capabilities) {
         return router;
     }
-    router.route(
-        Endpoint::AccessEvaluation.path(),
-        any(access_evaluation_endpoint).with_state(Arc::clone(endpoints)),
-    )
+    router
+        .route(
+            Endpoint::AccessEvaluation.path(),
+            any(access_evaluation_endpoint).with_state(Arc::clone(endpoints)),
+        )
+        .route(
+            Endpoint::AccessEvaluations.path(),
+            any(access_evaluations_endpoint).with_state(Arc::clone(endpoints)),
+        )
 }
 
 /// Mounts the backchannel authentication endpoint (CIBA Core 1.0 §7).
@@ -715,6 +728,7 @@ fn mount_the_unbuilt(
                         | Endpoint::DeviceAuthorization
                         | Endpoint::BackchannelAuthentication
                         | Endpoint::AccessEvaluation
+                        | Endpoint::AccessEvaluations
                 ))
         {
             continue;
@@ -1936,6 +1950,66 @@ async fn access_evaluation_endpoint(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    access_evaluation_dispatch(
+        &endpoints,
+        &tenant,
+        certificate.as_deref().map(|presented| &**presented),
+        client.as_deref(),
+        &method,
+        &headers,
+        &body,
+        false,
+    )
+    .await
+}
+
+/// `POST /access/v1/evaluations` — the AuthZEN Access Evaluations endpoint,
+/// the boxcar (Authorization API 1.0 §7.1, §10.1, `ast-pj0.2`).
+///
+/// The same wiring as [`access_evaluation_endpoint`], because it is the same
+/// endpoint with an array: what differs is in
+/// [`crate::http::access_evaluation::evaluate_many`], and so are the tests.
+// The same seven extractors, for the same reasons.
+#[allow(clippy::too_many_arguments)]
+async fn access_evaluations_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    access_evaluation_dispatch(
+        &endpoints,
+        &tenant,
+        certificate.as_deref().map(|presented| &**presented),
+        client.as_deref(),
+        &method,
+        &headers,
+        &body,
+        true,
+    )
+    .await
+}
+
+/// The PDP both AuthZEN endpoints are assembled from.
+///
+/// One function rather than two copies: the stores, the engine and the
+/// credential context are the same, and a second copy is a second place for
+/// the policy source to drift from what the admin API writes.
+// The extractors of two handlers, passed on as they arrived.
+#[allow(clippy::too_many_arguments)]
+async fn access_evaluation_dispatch(
+    endpoints: &Arc<ClientEndpoints>,
+    tenant: &Tenant,
+    certificate: Option<&crate::mtls::PresentedCertificate>,
+    client: Option<&crate::http::forwarded::ClientAddr>,
+    method: &axum::http::Method,
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+    boxcar: bool,
+) -> Response {
     let now = time::OffsetDateTime::now_utc();
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let scope = endpoints.store.scope(tenant.id.clone());
@@ -1951,25 +2025,25 @@ async fn access_evaluation_endpoint(
         grants: scope.grants(),
     };
 
-    access_evaluation::evaluate(
-        AccessEvaluationContext {
-            tenant: &tenant,
-            engine: &engine,
-            subjects: &subjects,
-            tokens: &tokens,
-            keys: endpoints.keys.as_ref(),
-            dpop: endpoints.dpop.as_ref(),
-            audit: endpoints.audit.as_ref(),
-            certificate: certificate.as_deref().map(|presented| &presented.leaf),
-            acr: acr_policy(),
-            limits: endpoint_limits(&endpoints, &tenant, &limiter, client.as_deref(), now),
-            now,
-        },
-        &method,
-        &headers,
-        &body,
-    )
-    .await
+    let context = AccessEvaluationContext {
+        tenant,
+        engine: &engine,
+        subjects: &subjects,
+        tokens: &tokens,
+        keys: endpoints.keys.as_ref(),
+        dpop: endpoints.dpop.as_ref(),
+        audit: endpoints.audit.as_ref(),
+        certificate: certificate.map(|presented| &presented.leaf),
+        acr: acr_policy(),
+        limits: endpoint_limits(endpoints, tenant, &limiter, client, now),
+        now,
+    };
+
+    if boxcar {
+        access_evaluation::evaluate_many(context, method, headers, body).await
+    } else {
+        access_evaluation::evaluate(context, method, headers, body).await
+    }
 }
 
 /// What this tenant knows about the subject a PEP named (`ast-pj0.1`).

@@ -60,11 +60,20 @@ pub enum Endpoint {
     GrantManagement,
     /// AuthZEN 1.0 §4. Gated on [`Feature::Authzen`].
     AccessEvaluation,
+    /// Authorization API 1.0 §7 — the boxcar. Gated on [`Feature::Authzen`].
+    ///
+    /// Its own registry entry rather than a second verb on
+    /// [`Self::AccessEvaluation`]: §10.1 gives it a path of its own, §12 gives
+    /// it a metadata member of its own, and a PEP's access token is audienced
+    /// at the URL it will be presented to. One entry, so the path the router
+    /// mounts, the URL the document advertises and the audience the token must
+    /// carry cannot come apart (`ast-o0t.3`).
+    AccessEvaluations,
 }
 
 impl Endpoint {
     /// Every endpoint, in the order metadata lists them.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Authorization,
         Self::PushedAuthorizationRequest,
         Self::Token,
@@ -78,6 +87,7 @@ impl Endpoint {
         Self::BackchannelAuthentication,
         Self::GrantManagement,
         Self::AccessEvaluation,
+        Self::AccessEvaluations,
     ];
 
     /// The path, relative to the tenant.
@@ -102,6 +112,7 @@ impl Endpoint {
             Self::BackchannelAuthentication => "/bc-authorize",
             Self::GrantManagement => "/grants",
             Self::AccessEvaluation => "/access/v1/evaluation",
+            Self::AccessEvaluations => "/access/v1/evaluations",
         }
     }
 
@@ -122,6 +133,7 @@ impl Endpoint {
             Self::BackchannelAuthentication => "backchannel_authentication_endpoint",
             Self::GrantManagement => "grant_management_endpoint",
             Self::AccessEvaluation => "access_evaluation_endpoint",
+            Self::AccessEvaluations => "access_evaluations_endpoint",
         }
     }
 
@@ -132,7 +144,7 @@ impl Endpoint {
             Self::DeviceAuthorization => Some(Feature::DeviceFlow),
             Self::BackchannelAuthentication => Some(Feature::Ciba),
             Self::GrantManagement => Some(Feature::GrantManagement),
-            Self::AccessEvaluation => Some(Feature::Authzen),
+            Self::AccessEvaluation | Self::AccessEvaluations => Some(Feature::Authzen),
             // RFC 7591. Follows `[registration] mode`, narrowed per tenant by
             // the stored registration policy (`ast-m9c.6`): a tenant that
             // registers nobody neither advertises the endpoint nor answers at
@@ -169,7 +181,8 @@ impl Endpoint {
             | Self::Registration
             | Self::EndSession
             | Self::GrantManagement
-            | Self::AccessEvaluation => false,
+            | Self::AccessEvaluation
+            | Self::AccessEvaluations => false,
         }
     }
 
@@ -210,7 +223,8 @@ impl Endpoint {
             | Self::DeviceAuthorization
             | Self::BackchannelAuthentication
             | Self::GrantManagement
-            | Self::AccessEvaluation => true,
+            | Self::AccessEvaluation
+            | Self::AccessEvaluations => true,
         }
     }
 
@@ -1125,7 +1139,13 @@ mod tests {
                     "grant_management_action_required",
                 ],
             ),
-            (Feature::Authzen, &["access_evaluation_endpoint"]),
+            // §7's boxcar is the same API in an array, so one flag carries
+            // both URLs: a document naming one and not the other would send a
+            // PEP to boxcar by hand (`ast-pj0.2`).
+            (
+                Feature::Authzen,
+                &["access_evaluation_endpoint", "access_evaluations_endpoint"],
+            ),
             (
                 Feature::Mtls,
                 &[

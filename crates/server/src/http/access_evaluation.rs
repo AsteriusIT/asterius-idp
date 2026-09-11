@@ -1,9 +1,32 @@
-//! `POST /access/v1/evaluation` — the AuthZEN Access Evaluation endpoint
-//! (Authorization API 1.0 §6, §10.1, `ast-pj0.1`).
+//! `POST /access/v1/evaluation` and `POST /access/v1/evaluations` — the
+//! AuthZEN Access Evaluation and Access Evaluations endpoints (Authorization
+//! API 1.0 §6, §7, §10.1, `ast-pj0.1`, `ast-pj0.2`).
 //!
 //! The authorization server as a Policy Decision Point. A policy enforcement
 //! point asks "may this subject do this to that", and this endpoint answers
 //! §5.5's Decision: a boolean, and the context that explains it.
+//!
+//! # The boxcar is this endpoint with an array (§7)
+//!
+//! [`evaluate_many`] is [`evaluate`] over a list: the same five credential
+//! checks, the same limiter, the same parser, the same engine and the same
+//! fail-closed rule, over §7.1's `evaluations` array with §7.1.1's defaults
+//! already merged in by [`authzen::parse_evaluations`]. What differs is only
+//! what §7 adds, and each of those is argued where it is decided:
+//!
+//! * **Who is charged.** One request is one token at the limiter, not one per
+//!   evaluation — a PEP's budget is a budget of *requests*, and an array
+//!   charged per item would make the compact syntax §7.1.1 recommends cost
+//!   more than writing the same requests out one at a time. The amplification
+//!   that buys is bounded by [`authzen::MAX_EVALUATIONS`], which is why that
+//!   bound is a constant and not a setting.
+//! * **What is recorded.** One `access.evaluated` entry per request, carrying
+//!   the semantic and the counts, not one per evaluation — see `record_many`,
+//!   which argues the trade.
+//! * **What happens when one of them cannot be decided.** §7.2.1: a per-item
+//!   failure is that item's `decision: false` with an `error` in its context,
+//!   and the rest of the array is still answered. Only a request that cannot
+//!   be *read* is a 400, and then it is a 400 for the whole of it.
 //!
 //! What is *not* here is the vocabulary or the decision. The wire format is
 //! [`asterius_oidc::authzen`], the rule language and the evaluator are
@@ -23,10 +46,11 @@
 //! 2. **The caller holds it** (RFC 9449 §7.1, RFC 8705 §3): the `cnf` decides
 //!    what must be presented beside it. A PEP's token is DPoP-bound, so the
 //!    proof is made over *this* method and *this* URL.
-//! 3. **The token is for this PDP** (RFC 9068 §3): `aud` must be this tenant's
-//!    access evaluation endpoint, which is the URL §12's metadata advertises
-//!    and the path the router mounts. A PEP's token for a business API is a
-//!    perfectly good token and is not one this endpoint answers.
+//! 3. **The token is for this PDP** (RFC 9068 §3): `aud` must be the URL of
+//!    *the endpoint the request arrived at* — §12's metadata advertises the
+//!    evaluation and the evaluations endpoints separately, and so the token
+//!    for one is not the token for the other. A PEP's token for a business API
+//!    is a perfectly good token and is not one this endpoint answers.
 //! 4. **It has not been withdrawn**: the `jti` denylist and the two cutoffs,
 //!    exactly as UserInfo reads them.
 //! 5. **It carries [`SCOPE_EVALUATE`]** — otherwise RFC 6750 §3.1's
@@ -76,7 +100,10 @@
 //! says `no-store`, like every other credential-adjacent answer this server
 //! gives.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Poll;
 
 use crate::http::access_token;
 use crate::http::dpop::{self, DpopEndpoint, NONCE_HEADER, USE_NONCE};
@@ -90,7 +117,9 @@ use asterius_domain::{
     AcrPolicy, ClientId, DomainError, Grant, GrantId, LimitedEndpoint, Tenant, TenantId,
 };
 use asterius_jose::verify::Verified;
-use asterius_oidc::authzen::{self, AuthzenError, SCOPE_EVALUATE};
+use asterius_oidc::authzen::{
+    self, AuthzenError, EvaluationsRequest, EvaluationsSemantic, SCOPE_EVALUATE,
+};
 use asterius_oidc::metadata::Endpoint;
 use asterius_oidc::userinfo::{self, Presentation, UserInfoError};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -230,6 +259,46 @@ impl std::fmt::Debug for AccessEvaluationContext<'_> {
     }
 }
 
+/// How many evaluations of one boxcar are decided at a time (§7.1).
+///
+/// §7.1 leaves it open — "these requests are independent from each other, and
+/// may be executed sequentially or in parallel, left to the discretion of each
+/// implementation" — and both extremes are wrong here. Sequential makes a
+/// hundred-item array a hundred round trips to the policy store, which is the
+/// latency the boxcar exists to avoid. Unbounded makes one request a hundred
+/// concurrent database reads, which is a PEP turning its rate-limit budget
+/// into this deployment's connection pool (§11.7).
+///
+/// Eight: enough that the array is decided in a few passes rather than a
+/// hundred, small enough that [`authzen::MAX_EVALUATIONS`] of them cannot
+/// crowd out the requests of every other tenant.
+const MAX_CONCURRENT: usize = 8;
+
+/// Which of the two APIs a request arrived at.
+///
+/// Carried rather than inferred, because two of the credential checks depend
+/// on it: the audience a token must name and the URL a DPoP proof is made
+/// over are the endpoint's own, and a token minted for §6.1's evaluation is
+/// not one §7's boxcar accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Api {
+    /// §6.1: one request, one Decision.
+    Single,
+    /// §7.1: an array of requests, an array of Decisions.
+    Boxcar,
+}
+
+impl Api {
+    /// The registry entry, which is the path, the metadata member and the
+    /// audience all at once (`ast-o0t.3`).
+    const fn endpoint(self) -> Endpoint {
+        match self {
+            Self::Single => Endpoint::AccessEvaluation,
+            Self::Boxcar => Endpoint::AccessEvaluations,
+        }
+    }
+}
+
 /// `POST /access/v1/evaluation` — §6.1, §6.2, §10.1.
 ///
 /// Never returns `Err`: every outcome is an HTTP response in §10.1.2's shape.
@@ -239,7 +308,30 @@ pub async fn evaluate(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Response {
-    let response = match answer(&context, method, headers, body).await {
+    answered(Api::Single, context, method, headers, body).await
+}
+
+/// `POST /access/v1/evaluations` — §7.1, §7.2, §10.1.
+///
+/// The boxcar. Never returns `Err`, for the same reason [`evaluate`] does not.
+pub async fn evaluate_many(
+    context: AccessEvaluationContext<'_>,
+    method: &Method,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    answered(Api::Boxcar, context, method, headers, body).await
+}
+
+/// Both endpoints, which differ only in [`Api`].
+async fn answered(
+    api: Api,
+    context: AccessEvaluationContext<'_>,
+    method: &Method,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    let response = match answer(api, &context, method, headers, body).await {
         Ok(response) => response,
         Err(refusal) => render(&context, refusal),
     };
@@ -295,6 +387,7 @@ impl From<AuthzenError> for Refused {
 
 /// The whole request: authenticate, admit, read, decide, record.
 async fn answer(
+    api: Api,
     context: &AccessEvaluationContext<'_>,
     method: &Method,
     headers: &HeaderMap,
@@ -309,17 +402,22 @@ async fn answer(
     // request this API defines.
     json_content_type(headers)?;
 
-    let pep = authorize(context, method, headers).await?;
+    let pep = authorize(api, context, method, headers).await?;
 
     // The limiter runs after the credential checks and before the policy walk,
     // so the PEP charged is one that proved who it is (§11.7). `guard` renders
     // its own 429, with the `Retry-After` every throttled endpoint here
     // answers with.
+    //
+    // One token per *request*, boxcar included, and one budget shared by the
+    // two endpoints: [`LimitedEndpoint::AccessEvaluation`] is the PDP's
+    // budget, and a PEP that could spend it twice by alternating between
+    // §6.1's path and §7.1's would have two budgets for one authority.
     let response = crate::http::limits::guard(
         &context.limits,
         LimitedEndpoint::AccessEvaluation,
         Some(pep.as_str()),
-        async || match decide(context, &pep, body).await {
+        async || match decide(api, context, &pep, body).await {
             Ok(response) => response,
             Err(refusal) => render(context, refusal),
         },
@@ -333,10 +431,14 @@ async fn answer(
 /// The only place a policy is read. Everything from here on that fails is a
 /// fail-closed deny rather than a status code — see the module documentation.
 async fn decide(
+    api: Api,
     context: &AccessEvaluationContext<'_>,
     pep: &ClientId,
     body: &[u8],
 ) -> Result<Response, Refused> {
+    if api == Api::Boxcar {
+        return decide_many(context, pep, body).await;
+    }
     let request = authzen::parse_evaluation(body)?;
     let started = std::time::Instant::now();
 
@@ -364,6 +466,226 @@ async fn decide(
     }
 }
 
+/// §7.1's array, decided under §7.1.2.1's semantics.
+///
+/// The parser has already merged §7.1.1's defaults, so what is left here is
+/// the *execution*: which evaluations to run, in what order, and when to stop.
+/// A request the parser refused is a 400 for the whole array (§7.2.1's first
+/// kind of error); everything from here on is the second kind, which is a
+/// `decision: false` in one element and no effect at all on the others.
+async fn decide_many(
+    context: &AccessEvaluationContext<'_>,
+    pep: &ClientId,
+    body: &[u8],
+) -> Result<Response, Refused> {
+    let request = authzen::parse_evaluations(body)?;
+    let started = std::time::Instant::now();
+
+    // One view of each distinct subject for the whole request, resolved before
+    // any decision is taken. Two reasons, and the second is the one that
+    // matters: a boxcar routinely names one subject a hundred times (§7.1.1's
+    // compact syntax is *for* that), so one read per item would be ninety-nine
+    // reads nobody asked for — and an array whose fifth evaluation saw a group
+    // membership its first did not would be a set of decisions no single state
+    // of this tenant ever justified.
+    let mut facts: BTreeMap<(&str, &str), Option<ResolvedSubject>> = BTreeMap::new();
+    for evaluation in &request.evaluations {
+        let key = (evaluation.subject.kind(), evaluation.subject.id());
+        if facts.contains_key(&key) {
+            continue;
+        }
+        let resolved = match context
+            .subjects
+            .resolve(&context.tenant.id, key.0, key.1)
+            .await
+        {
+            Ok(resolved) => Some(resolved),
+            Err(error) => {
+                // Fail closed, per subject rather than per request: the
+                // evaluations that name a subject this server could read are
+                // still answerable, and §7.2.1 gives the others their own
+                // `error` context.
+                tracing::error!(
+                    %error,
+                    tenant = %context.tenant.id,
+                    client = %pep,
+                    "a subject's facts could not be resolved for a boxcar evaluation"
+                );
+                None
+            }
+        };
+        facts.insert(key, resolved);
+    }
+
+    // Each evaluation with its facts attached, or `None` where they could not
+    // be had — which is already a fail-closed deny, decided before the engine
+    // is asked anything.
+    let prepared: Vec<Option<EvaluationRequest>> = request
+        .evaluations
+        .iter()
+        .map(|evaluation| {
+            let key = (evaluation.subject.kind(), evaluation.subject.id());
+            let resolved = facts.get(&key).and_then(Option::as_ref)?;
+            attach(context, evaluation.clone(), resolved)
+                .map_err(|error| {
+                    tracing::error!(
+                        %error,
+                        tenant = %context.tenant.id,
+                        "an evaluation's subject could not be completed"
+                    );
+                })
+                .ok()
+        })
+        .collect();
+
+    let decisions = match request.semantic {
+        EvaluationsSemantic::ExecuteAll => execute_all(context, &prepared).await,
+        semantic => short_circuit(context, &prepared, semantic).await,
+    };
+
+    record_many(context, pep, &request, started, &decisions).await;
+
+    let body = if request.boxcar {
+        authzen::evaluations_response(
+            decisions
+                .iter()
+                .map(|decision| rendered(decision.as_ref()))
+                .collect(),
+        )
+    } else {
+        // §7.1: an absent or empty array is §6.1's request, and §6.2's single
+        // Decision is what a PEP that sent one is waiting for.
+        rendered(decisions.first().and_then(Option::as_ref))
+    };
+    Ok(json(StatusCode::OK, &body))
+}
+
+/// What one evaluation of a boxcar came to.
+///
+/// `None` is §7.2.1's per-item error — the facts or the engine were not there
+/// — and is rendered as [`authzen::engine_failure_response`]: a deny that says
+/// it is a failure, so that a PEP can alert instead of showing somebody a
+/// permission dialogue.
+type Outcomes = Vec<Option<asterius_domain::policy::Decision>>;
+
+/// One element of §7.2's array.
+fn rendered(decision: Option<&asterius_domain::policy::Decision>) -> Value {
+    decision.map_or_else(authzen::engine_failure_response, authzen::decision_response)
+}
+
+/// §7.1.2.1's default: "execute all of the requests (potentially in parallel),
+/// return all of the results".
+///
+/// In parallel, [`MAX_CONCURRENT`] at a time, and the results in the order
+/// they were asked — §7.2 requires the array to line up with the request's,
+/// and a PEP matching decisions to resources by position is the whole point of
+/// that requirement.
+async fn execute_all(
+    context: &AccessEvaluationContext<'_>,
+    prepared: &[Option<EvaluationRequest>],
+) -> Outcomes {
+    let mut decisions = Vec::with_capacity(prepared.len());
+    for batch in prepared.chunks(MAX_CONCURRENT) {
+        let pending: Vec<_> = batch
+            .iter()
+            .map(|request| evaluate_one(context, request.as_ref()))
+            .collect();
+        decisions.extend(in_order(pending).await);
+    }
+    decisions
+}
+
+/// §7.1.2.1's two short circuits, which are sequential by definition.
+///
+/// "Deny on first denial (or failure)" and its converse: the PEP asked for the
+/// evaluations *in an order*, and the array that comes back is truncated at
+/// the one that decided the answer. Nothing after it is evaluated, which is
+/// the saving the semantic exists for — a PDP that ran them all and then
+/// truncated the reply would have spent exactly what the PEP asked it not to.
+async fn short_circuit(
+    context: &AccessEvaluationContext<'_>,
+    prepared: &[Option<EvaluationRequest>],
+    semantic: EvaluationsSemantic,
+) -> Outcomes {
+    let mut decisions = Vec::new();
+    for request in prepared {
+        let decision = evaluate_one(context, request.as_ref()).await;
+        // A failure is a denial (§7.1.2.1 says so for `deny_on_first_deny`)
+        // and is never a permit, so it stops the first and not the second.
+        let permitted = decision
+            .as_ref()
+            .is_some_and(asterius_domain::policy::Decision::permit);
+        decisions.push(decision);
+        let stop = match semantic {
+            EvaluationsSemantic::DenyOnFirstDeny => !permitted,
+            EvaluationsSemantic::PermitOnFirstPermit => permitted,
+            EvaluationsSemantic::ExecuteAll => false,
+        };
+        if stop {
+            break;
+        }
+    }
+    decisions
+}
+
+/// One evaluation, with every failure already turned into a fail-closed deny.
+async fn evaluate_one(
+    context: &AccessEvaluationContext<'_>,
+    request: Option<&EvaluationRequest>,
+) -> Option<asterius_domain::policy::Decision> {
+    let request = request?;
+    match context.engine.evaluate(&context.tenant.id, request).await {
+        Ok(decision) => Some(decision),
+        Err(error) => {
+            tracing::error!(
+                %error,
+                tenant = %context.tenant.id,
+                "one evaluation of a boxcar request could not be decided"
+            );
+            None
+        }
+    }
+}
+
+/// Awaits every future to completion, all at once, answers in argument order.
+///
+/// The bound on how many are in flight is the caller's — [`execute_all`]
+/// hands over one chunk at a time — so what this has to get right is the
+/// *order*: a `Vec` of answers indexed exactly as the futures were.
+///
+/// Written out rather than taken from `futures-util`, which this workspace
+/// does not depend on (the root manifest says why): a join over a vector is
+/// twenty lines of safe code, and the alternative is a dependency tree for one
+/// combinator. A wake polls every unfinished future in the batch, which for
+/// [`MAX_CONCURRENT`] of them is cheaper than the bookkeeping that would avoid
+/// it.
+async fn in_order<T, F: Future<Output = T>>(futures: Vec<F>) -> Vec<T> {
+    let mut pending: Vec<Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
+    let mut done: Vec<Option<T>> = pending.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut ready = true;
+        for (slot, future) in done.iter_mut().zip(pending.iter_mut()) {
+            // Never polled again once it has answered: a future that is polled
+            // after returning `Ready` is entitled to panic.
+            if slot.is_none() {
+                match future.as_mut().poll(cx) {
+                    Poll::Ready(value) => *slot = Some(value),
+                    Poll::Pending => ready = false,
+                }
+            }
+        }
+        if ready {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
+    done.into_iter()
+        .map(|slot| slot.expect("every future in the batch answered"))
+        .collect()
+}
+
 /// The request with this server's own facts attached (§5.1, §5.4).
 ///
 /// The PEP's `properties` are already on it and are left exactly as they
@@ -381,7 +703,20 @@ async fn resolved(
             request.subject.id(),
         )
         .await?;
+    attach(context, request, &facts)
+}
 
+/// The facts, attached — the half of [`resolved`] that reads no store.
+///
+/// Separate because §7's boxcar resolves each distinct subject once and then
+/// attaches the same facts to every evaluation that names it: one read, one
+/// view of the tenant, and no chance of two evaluations in one answer
+/// disagreeing about who the subject is.
+fn attach(
+    context: &AccessEvaluationContext<'_>,
+    request: EvaluationRequest,
+    facts: &ResolvedSubject,
+) -> Result<EvaluationRequest, DomainError> {
     // One clock reading decides which grants are live, and `ActiveGrant::of` is
     // the only thing that decides it.
     let active: Vec<ActiveGrant> = facts
@@ -390,6 +725,8 @@ async fn resolved(
         .filter_map(|grant| ActiveGrant::of(grant, context.now))
         .collect();
     let acr = authenticated_acr(context.acr, &facts.grants, context.now);
+    let groups = facts.groups.clone();
+    let roles = facts.roles.clone();
     let ladder: Vec<String> = context
         .acr
         .levels()
@@ -399,8 +736,8 @@ async fn resolved(
 
     let subject = request
         .subject
-        .with_groups(facts.groups)
-        .with_roles(facts.roles)
+        .with_groups(groups)
+        .with_roles(roles)
         .with_grants(active)
         .map_err(|error| DomainError::invalid("subject", error.to_string()))?;
     let context_entity =
@@ -493,6 +830,7 @@ async fn failed(
 /// Returns the PEP's `client_id`, which is what the limiter charges and what
 /// the trail names as the actor.
 async fn authorize(
+    api: Api,
     context: &AccessEvaluationContext<'_>,
     method: &Method,
     headers: &HeaderMap,
@@ -527,10 +865,10 @@ async fn authorize(
             })?;
 
     // Step 2.
-    sender_constrained(context, method, headers, &verified, presented).await?;
+    sender_constrained(api, context, method, headers, &verified, presented).await?;
 
     // Step 3.
-    if !audienced_here(context.tenant, &verified) {
+    if !audienced_here(api, context.tenant, &verified) {
         tracing::debug!(
             tenant = %context.tenant.id,
             "a token presented at the access evaluation endpoint is audienced elsewhere"
@@ -572,6 +910,7 @@ async fn authorize(
 
 /// Step 2, with UserInfo's rule and UserInfo's function.
 async fn sender_constrained(
+    api: Api,
     context: &AccessEvaluationContext<'_>,
     method: &Method,
     headers: &HeaderMap,
@@ -582,7 +921,7 @@ async fn sender_constrained(
         &access_token::Presented {
             tenant: context.tenant,
             dpop: context.dpop,
-            target: dpop::ProofTarget::at(Endpoint::AccessEvaluation),
+            target: dpop::ProofTarget::at(api.endpoint()),
             certificate: context.certificate,
             method,
             headers,
@@ -606,8 +945,8 @@ async fn sender_constrained(
 ///
 /// `aud` may be a string or an array (RFC 7519 §4.1.3), and both are accepted
 /// because both are what a token this server minted can carry.
-fn audienced_here(tenant: &Tenant, verified: &Verified) -> bool {
-    let resource = Endpoint::AccessEvaluation.url(&tenant.issuer);
+fn audienced_here(api: Api, tenant: &Tenant, verified: &Verified) -> bool {
+    let resource = api.endpoint().url(&tenant.issuer);
     match verified.claims.get("aud") {
         Some(Value::String(only)) => *only == resource,
         Some(Value::Array(values)) => values
@@ -720,6 +1059,104 @@ async fn record(
     }
 }
 
+/// One boxcar in the trail: one entry for the request, not one per evaluation
+/// (§7.1, `ast-pj0.2`).
+///
+/// **One entry, deliberately.** An array of a hundred evaluations written as a
+/// hundred `access.evaluated` rows would multiply the one table this
+/// deployment keeps forever by whatever compaction a PEP happens to use, and
+/// it would do it for no gain an investigator can name: the question asked of
+/// this trail is "what did this PEP ask, and what did this PDP answer", and a
+/// boxcar is one asking. What the entry has to carry, then, is what makes the
+/// request reconstructible in shape — how many evaluations, under which of
+/// §7.1.2.1's semantics, how many were actually decided (a short circuit
+/// stops early), and how they came out.
+///
+/// The price is that the individual `resource_id`s of a boxcar are not in the
+/// trail. That is the same trade the single endpoint already makes with
+/// `properties`, one level up, and the thing an investigator would use them
+/// for — "which documents did this PEP ask about" — is the PEP's own log to
+/// keep: it is the party that chose the list.
+///
+/// The subject *is* recorded when every evaluation shares one, which is the
+/// common case §7.1.1's defaults exist for, because "who was this about" is
+/// the one question the counts cannot answer.
+///
+/// The `outcome` is [`Outcome::Failure`] unless every decided evaluation
+/// permitted, so that an operator filtering the trail for refusals still finds
+/// the requests that contained one.
+async fn record_many(
+    context: &AccessEvaluationContext<'_>,
+    pep: &ClientId,
+    request: &EvaluationsRequest,
+    started: std::time::Instant,
+    decisions: &Outcomes,
+) {
+    let permits = decisions
+        .iter()
+        .filter(|decision| {
+            decision
+                .as_ref()
+                .is_some_and(asterius_domain::policy::Decision::permit)
+        })
+        .count();
+    let failures = decisions
+        .iter()
+        .filter(|decision| decision.is_none())
+        .count();
+    let micros = i64::try_from(started.elapsed().as_micros()).unwrap_or(i64::MAX);
+    let asked = i64::try_from(request.evaluations.len()).unwrap_or(i64::MAX);
+    let decided = i64::try_from(decisions.len()).unwrap_or(i64::MAX);
+    let permitted = i64::try_from(permits).unwrap_or(i64::MAX);
+
+    let mut detail = Detail::new()
+        .label("semantic", request.semantic.as_str())
+        .flag("boxcar", request.boxcar)
+        .number("evaluations", asked)
+        .number("decided", decided)
+        .number("permits", permitted)
+        .number("denies", decided.saturating_sub(permitted))
+        .number("latency_us", micros);
+    if failures > 0 {
+        detail = detail
+            .label("error", "engine_unavailable")
+            .number("failures", i64::try_from(failures).unwrap_or(i64::MAX));
+    }
+    if let Some(first) = request.evaluations.first()
+        && request.evaluations.iter().all(|evaluation| {
+            evaluation.subject.kind() == first.subject.kind()
+                && evaluation.subject.id() == first.subject.id()
+        })
+    {
+        detail = detail
+            .text("subject_type", first.subject.kind())
+            .pii("subject_id", first.subject.id());
+    }
+
+    let event = AuditEvent::new(
+        context.tenant.id.clone(),
+        EventType::ACCESS_EVALUATED,
+        if failures == 0 && permits == decisions.len() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        },
+        Actor::Client(pep.clone()),
+        context.now,
+    )
+    .client(pep.clone())
+    .detail(detail);
+
+    if let Err(error) = context.audit.record(event).await {
+        tracing::error!(
+            %error,
+            tenant = %context.tenant.id,
+            client = %pep,
+            "an access evaluations request was not written to the audit trail"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Responses
 // ---------------------------------------------------------------------------
@@ -735,6 +1172,7 @@ fn render(context: &AccessEvaluationContext<'_>, refusal: Refused) -> Response {
                 StatusCode::METHOD_NOT_ALLOWED,
                 "the access evaluation API is bound to POST",
             );
+            // Both endpoints: §10.1 binds the whole API to POST.
             response
                 .headers_mut()
                 .insert(header::ALLOW, HeaderValue::from_static("POST"));
@@ -935,8 +1373,13 @@ mod tests {
         let here = "https://as.example/t/demo/access/v1/evaluation";
 
         // Act / Assert
-        assert!(audienced_here(&tenant, &verified(json!({"aud": here}))));
         assert!(audienced_here(
+            Api::Single,
+            &tenant,
+            &verified(json!({"aud": here}))
+        ));
+        assert!(audienced_here(
+            Api::Single,
             &tenant,
             &verified(json!({"aud": ["https://api.example/", here]}))
         ));
@@ -947,10 +1390,79 @@ mod tests {
             json!({"sub": "no audience at all"}),
         ] {
             assert!(
-                !audienced_here(&tenant, &verified(wrong.clone())),
+                !audienced_here(Api::Single, &tenant, &verified(wrong.clone())),
                 "accepted {wrong} as this endpoint's audience"
             );
         }
+    }
+
+    /// §7's boxcar is a resource of its own (§10.1, §12): the token for one
+    /// endpoint is not the token for the other, in either direction.
+    #[test]
+    fn the_two_apis_do_not_accept_each_others_audiences() {
+        // Arrange
+        let tenant = tenant();
+        let single = verified(json!({"aud": "https://as.example/t/demo/access/v1/evaluation"}));
+        let boxcar = verified(json!({"aud": "https://as.example/t/demo/access/v1/evaluations"}));
+
+        // Act / Assert
+        assert!(audienced_here(Api::Boxcar, &tenant, &boxcar));
+        assert!(!audienced_here(Api::Boxcar, &tenant, &single));
+        assert!(!audienced_here(Api::Single, &tenant, &boxcar));
+    }
+
+    /// §7.2: the answers line up with the requests, whatever order they
+    /// finished in — a PEP matches decisions to resources by position.
+    #[tokio::test]
+    async fn a_batch_answers_in_the_order_it_was_asked() {
+        // Arrange: the last future is the one that is ready first.
+        let count = 8;
+        let pending: Vec<_> = (0..count)
+            .map(|index| async move {
+                for _ in 0..(count - index) {
+                    tokio::task::yield_now().await;
+                }
+                index
+            })
+            .collect();
+
+        // Act
+        let answers = in_order(pending).await;
+
+        // Assert
+        assert_eq!(answers, (0..count).collect::<Vec<_>>());
+    }
+
+    /// §11.7: a boxcar decides [`MAX_CONCURRENT`] evaluations at a time, so a
+    /// hundred-item array is not a hundred concurrent reads of the store.
+    #[tokio::test]
+    async fn no_more_than_the_bound_are_in_flight_at_once() {
+        // Arrange
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let live = std::sync::Arc::new(AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(AtomicUsize::new(0));
+        let items: Vec<Option<EvaluationRequest>> = (0..MAX_CONCURRENT * 3).map(|_| None).collect();
+
+        // Act: one chunk at a time, counting how many are awake together.
+        for batch in items.chunks(MAX_CONCURRENT) {
+            let pending: Vec<_> = batch
+                .iter()
+                .map(|_| {
+                    let live = std::sync::Arc::clone(&live);
+                    let peak = std::sync::Arc::clone(&peak);
+                    async move {
+                        let now = live.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        tokio::task::yield_now().await;
+                        live.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+                .collect();
+            in_order(pending).await;
+        }
+
+        // Assert
+        assert_eq!(peak.load(Ordering::SeqCst), MAX_CONCURRENT);
     }
 
     /// RFC 6749 §3.3: `scope` is a space-delimited list, and a prefix of a
