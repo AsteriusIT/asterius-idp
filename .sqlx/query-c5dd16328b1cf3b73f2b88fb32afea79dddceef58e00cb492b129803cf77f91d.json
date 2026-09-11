@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from email_verification_tokens where tenant_id = $1 and expires_at <= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c5dd16328b1cf3b73f2b88fb32afea79dddceef58e00cb492b129803cf77f91d"
+}

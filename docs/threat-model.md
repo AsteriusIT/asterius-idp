@@ -513,11 +513,15 @@ authentication, and a flow that blocked on a mailbox would strand the client's
 authorization on something no browser can finish. A relying party that needs a
 proven address must read `email_verified`, which is what it is for.
 
-**Not built yet:** the verification link itself, the "unverified users cannot
-complete a login where the tenant requires it" rule, and the account
-self-service pages. Until they land, `email_verified` is only ever set by an
-administrator, and a tenant that switches self-registration on is accepting
-unverified addresses in its directory.
+**Since `ast-vae`:** the verification link and the "unverified users cannot
+complete a login where the tenant requires it" rule are built — see *Email
+verification* below. A tenant that switches self-registration on and leaves
+`require_verified_email` off is still accepting unverified addresses in its
+directory, which is the documented default and is why `email_verified` says so.
+
+**Not built yet:** the account self-service pages. Until they land, an address
+is changed only by an administrator, so the only route that has to retire an
+outstanding confirmation link is the one that already does.
 
 ### The "forgot your password?" link on the sign-in page (`ast-ndk.4`)
 
@@ -592,6 +596,59 @@ recovered onto a weaker method. The enrolment page (`/passkeys`) exists and is
 reachable from the session that follows a sign-in, so the path is a redirect
 rather than a mechanism — but until it is wired here, that downgrade is real
 and is the reason a deployment may prefer to leave passwords off entirely.
+
+### Email verification (`ast-vae`)
+
+**The boundary moved, and this section exists to say where it moved to.**
+
+Two things changed. The first is that OIDC Core §5.1's `email_verified` can now
+become `true` without an administrator: a stranger following a link sets a claim
+that relying parties act on, and some of them provision accounts from it. The
+second is that a tenant may put a mailbox in the path of every sign-in
+(`require_verified_email`), which makes the mail provider a *availability*
+dependency for that tenant on top of the confidentiality one recovery already
+created.
+
+> **A confirmation link is a proof about a mailbox, and it must never become a
+> proof about a person.** Following one signs nobody in, sets no credential and
+> starts no session. The moment it did any of those, it would be a second
+> recovery flow with no password step, reachable from a sign-up form — and
+> "prove you can read this mailbox" would have become "take this account".
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Turning a confirmation into a session.** The whole class above. | The confirm handler writes one column and renders one page. It has no session repository, no credential verifier and no code issuer in its context, so the escalation is absent by construction rather than by a check somebody remembered. |
+| **A1** | **G4** | **Moving a proof onto somebody else's mailbox.** Sign up as `attacker@evil.test`, ask for a link, change the address on the account to `victim@bank.test`, then follow the link — and `email_verified` lands on a mailbox nobody proved. | The address the message went to is a column on the token row, not something recomputed at spend time. `spend` returns it, the handler compares it with the address the account holds now, and the write itself carries `lower(email) = lower($3)` as a predicate so an address that moves between the read and the write loses the race rather than winning it. Drawing a new link also supersedes every outstanding one, which closes the same door from the other side. |
+| **A1** | **G1** | **Guessing a confirmation link.** | 256 bits from the OS CSPRNG, unpadded `base64url`, twice the FAPI 2.0 SP §5.4.1 item 4 floor. The parser accepts exactly the 43 characters this server issues, with no trimming, padding tolerance or case folding, and runs before any database work. Fuzzed (`email_verification_token`). |
+| **A2**, and anyone with a database copy | **G3** | **Reading live links — and a list of addresses — out of storage.** | Rows hold the SHA-256 digest and never the token, asserted against the whole row. The address column is swept the moment the link expires (`retention.rs`), so the table holds a mailbox only as long as the link it belongs to can do anything. |
+| **A1** | **G1** | **Racing one link**, or replaying it. | `spend` is a single `update … returning` whose predicates — unspent, unexpired — are inside the statement. Fifteen minutes, enforced in SQL against a clock the caller does not choose. |
+| **A1** | **G3** | **Using the resend as a mail cannon**, or as an address checker. | `POST /verify-email` renders one page for an address with an unconfirmed account, one with a *confirmed* account, one with a disabled account and one nobody has; the four are one code path with one answer. Every request is counted against the per-address and per-account buckets of `ast-2vk.9` — the same limiter the login form uses — and a limiter that cannot be read fails closed. The POST is behind the same `__Host-`, `SameSite=Lax`, `HttpOnly` double-submit synchroniser the recovery pages use, so it cannot be fired from a page on the internet. |
+| **A1** | **G2** | **Locking a tenant out.** With `require_verified_email` on, an account whose mailbox stops working can no longer sign in at all. | Off by default, documented as a decision rather than an oversight, and narrowed: an account with **no** address is not blocked, because the setting is about proving an address rather than requiring one. A tenant that provisioned passkey-only accounts therefore does not lock them all out by switching it on. |
+| **A1** | **G3** | **Learning that an account exists from the gate.** The gate is reached only after a credential was accepted, so it discloses nothing the sign-in did not — but the page it renders names an address. | The address it names is the one on the account that has just authenticated, echoed to the person who just proved a credential for it. It is escaped like every other value, and the page is reachable no other way: a visitor who has not authenticated cannot make this server render it. |
+
+**A GET that writes, on purpose.** `GET /verify-email?token=…` consumes a
+single-use token. A mail client follows this link as a top-level navigation
+with no form and no script, and the alternative — an interstitial with a
+*Confirm* button — is the pattern that trains people to press buttons on pages
+that arrived from a message. It is safe here because the write is harmless when
+unintended and moves no other state: a link prefetched by a mail scanner
+confirms the address slightly earlier than the person would have. CSRF has
+nothing to protect, because an attacker who can make a browser issue this
+request is an attacker holding the token, and holding the token is the whole of
+the authorisation. The resend, which *sends mail*, is a POST for exactly the
+opposite reason.
+
+**Residual, and deliberately so:** this repository still ships no real mail
+sender, so the same warning the recovery section gives applies to the
+`email_verification` rows in the outbox — they contain a live link until the
+token behind them expires.
+
+**Not built yet:** no CAEP signal is emitted when an address is proved. A
+confirmed address is recorded as `email_verification.verified` in the audit
+trail and nothing more; it is deliberately *not* a `credential-change`, which
+would tell every receiver to end sessions over an event that ended no
+credential. When `crates/ssf` grows an assurance signal, that is where this
+goes.
 
 ### Tenant string overrides and `ui_locales` (`ast-ndk.5`)
 

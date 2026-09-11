@@ -181,6 +181,16 @@ pub struct InteractionContext<'a> {
     /// `StoredState::signed_in_as` carries the display name rather than the
     /// login identifier (`ast-pew`, `ast-bo5`).
     pub directory: &'a dyn asterius_domain::UserDirectory,
+    /// The email-verification gate, for a tenant that requires a proved
+    /// address (`ast-vae`).
+    ///
+    /// `Some` exactly when `TenantSettings::require_verified_email` is on, and
+    /// `None` otherwise. Shaped like [`Self::registrar`] and for the same
+    /// reason: the setting is read where the context is built, so there is no
+    /// state in which a handler holds the token store and forgets to consult
+    /// the flag — and no state in which the flag is on and the store is
+    /// missing.
+    pub verification: Option<crate::http::verify_email::Gate<'a>>,
 }
 
 impl std::fmt::Debug for InteractionContext<'_> {
@@ -673,6 +683,21 @@ async fn authenticated(
     user: uuid::Uuid,
     now: OffsetDateTime,
 ) -> Response {
+    // `ast-vae`: an address this tenant requires to be proved, and has not
+    // been. Before the session is established, which is the requirement — a
+    // session is precisely what an unverified account must not get, so this
+    // cannot be a check the caller makes afterwards and then decides what to
+    // do about. The interaction is left where it is: nothing advances, no
+    // cookie is written, and no code is ever issued, which is what "does not
+    // finish an OIDC login" means.
+    //
+    // The person is not told their credential was wrong — it was not, and
+    // saying so would send them to the recovery form to reset a password that
+    // works. They are shown the confirmation page, with a link already sent.
+    if let Some(response) = blocked_by_verification(context, user, now).await {
+        return *response;
+    }
+
     // What the request asked for about `acr`, read off the stored parameters
     // rather than guessed: an essential value (OIDC Core §5.5.1.1) has to be
     // the value written onto the session, or the ID token would report a class
@@ -781,6 +806,59 @@ async fn authenticated(
     );
     set_session_cookie(&mut response, &id_value);
     response
+}
+
+/// The email-verification gate, as a page to return or nothing (`ast-vae`).
+///
+/// Split out of [`authenticated`] rather than inlined, and boxed like every
+/// other early return there, so that the one line at the call site reads as
+/// what it is: a decision taken *before* a session exists, whose only two
+/// outcomes are "carry on" and "this response instead".
+///
+/// `None` is "carry on", which covers the tenant that does not require a
+/// proved address, the account that has one, and the account that has no
+/// address at all — see [`crate::http::verify_email::gate`] for why the last
+/// of those is not blocked.
+async fn blocked_by_verification(
+    context: &InteractionContext<'_>,
+    user: uuid::Uuid,
+    now: OffsetDateTime,
+) -> Option<Box<Response>> {
+    let gate = context.verification.as_ref()?;
+    let account = match context
+        .directory
+        .by_id(asterius_domain::UserId::new(user))
+        .await
+    {
+        Ok(account) => account,
+        Err(error) => {
+            // A read that fails must not open the gate. This tenant has asked
+            // for an address to be proved, and "the database was briefly
+            // unavailable" is not a proof.
+            tracing::error!(
+                %error,
+                tenant = %context.tenant.id,
+                "cannot read an account at the email verification gate"
+            );
+            return Some(Box::new(error_page(
+                context,
+                StatusCode::SERVICE_UNAVAILABLE,
+                InteractionError::NotAvailable,
+            )));
+        }
+    }?;
+
+    crate::http::verify_email::gate(
+        gate,
+        context.tenant,
+        context.audit,
+        context.nonce,
+        &context.mount,
+        &account,
+        now,
+    )
+    .await
+    .map(Box::new)
 }
 
 /// Where the consent behind a grant came from.

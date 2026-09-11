@@ -123,6 +123,10 @@ fn payload(kind: &NotificationKind) -> serde_json::Value {
         NotificationKind::AccountRecovery {
             link,
             valid_for_minutes,
+        }
+        | NotificationKind::EmailVerification {
+            link,
+            valid_for_minutes,
         } => json!({ "link": link, "valid_for_minutes": valid_for_minutes }),
         NotificationKind::CredentialChanged => json!({}),
         // `ast-lh3.6`. The binding message is a value a real sender has to be

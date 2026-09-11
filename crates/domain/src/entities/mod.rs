@@ -7,6 +7,7 @@ pub mod application_role;
 pub mod auth_request;
 pub mod authorization_details;
 pub mod client;
+pub mod email_verification;
 pub mod grant;
 pub mod initial_access_token;
 pub mod passkey;
@@ -41,6 +42,10 @@ pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
     GrantType, JwksSource, RedirectUri, RedirectUriError, RolesInIdToken, SubjectType,
     TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod,
+};
+pub use email_verification::{
+    EMAIL_VERIFICATION_LIFETIME, EMAIL_VERIFICATION_TOKEN_BITS, EmailVerificationToken,
+    EmailVerificationTokenError, IssuedEmailVerification, VerifiedAddress,
 };
 pub use grant::{
     ClaimedGrant, Grant, GrantAuthentication, GrantError, GrantRecord, GrantStatus,

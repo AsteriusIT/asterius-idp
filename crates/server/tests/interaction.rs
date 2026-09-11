@@ -617,6 +617,10 @@ fn context_with<'a>(
         // where the flag is on, in `crates/server/tests/self_registration.rs`.
         registrar: None,
         directory: &FakeDirectory,
+        // No gate: `require_verified_email` is off for these tenants, which is
+        // what the setting defaults to (`ast-vae`). The gate is exercised where
+        // it is on, in `crates/server/tests/email_verification.rs`.
+        verification: None,
     }
 }
 

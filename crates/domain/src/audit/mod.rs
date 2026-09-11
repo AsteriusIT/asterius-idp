@@ -123,6 +123,30 @@ impl EventType {
     /// reason is in the log line beside it, not in a separate event type an
     /// attacker could count.
     pub const RECOVERY_REFUSED: Self = Self("recovery.refused");
+    /// An address-confirmation link was handed to a sender (`ast-vae`).
+    ///
+    /// Only ever emitted for an account that exists and has an address, so
+    /// this event *is* account-existence information, like
+    /// [`Self::RECOVERY_SENT`] — which is why it says nothing a browser can
+    /// see. It is what answers "was a link actually sent" when somebody says
+    /// none arrived.
+    pub const EMAIL_VERIFICATION_SENT: Self = Self("email_verification.sent");
+    /// A confirmation link was followed and `email_verified` became true.
+    ///
+    /// The fact a relying party acts on (OIDC Core §5.1), so it is recorded as
+    /// its own type rather than as a detail on an account update: "when was
+    /// this address proved, and against which link" is the question asked
+    /// after an RP provisioned an account from the claim.
+    pub const EMAIL_VERIFIED: Self = Self("email_verification.verified");
+    /// A confirmation token was presented and refused: unknown, spent,
+    /// expired, superseded, or proving an address the account no longer holds.
+    ///
+    /// One type for all five, matching the one answer the browser gets. The
+    /// reason is in the log line beside it, not in a separate event type an
+    /// attacker could count. The last of the five is the one worth an alert:
+    /// it is the shape of somebody trying to move a proof from the mailbox
+    /// they control onto one they do not.
+    pub const EMAIL_VERIFICATION_REFUSED: Self = Self("email_verification.refused");
     /// A user granted consent.
     pub const CONSENT_GRANTED: Self = Self("consent.granted");
     /// A user refused consent.
@@ -427,7 +451,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 62] = [
+    pub const ALL: [Self; 65] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -440,6 +464,9 @@ impl EventType {
         Self::RECOVERY_SENT,
         Self::RECOVERY_USED,
         Self::RECOVERY_REFUSED,
+        Self::EMAIL_VERIFICATION_SENT,
+        Self::EMAIL_VERIFIED,
+        Self::EMAIL_VERIFICATION_REFUSED,
         Self::CONSENT_GRANTED,
         Self::CONSENT_DENIED,
         Self::CODE_ISSUED,

@@ -151,6 +151,17 @@ impl<'a> TenantScope<'a> {
         crate::PgRecoveryTokens::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// The email-verification tokens for this tenant (`ast-vae`).
+    ///
+    /// A second accessor beside [`Self::recovery_tokens`] rather than a
+    /// parameter on it: the two token spaces are separate tables on purpose,
+    /// and a scope that handed out one store for both would be the place that
+    /// undid it.
+    #[must_use]
+    pub fn email_verification_tokens(&self) -> crate::PgEmailVerificationTokens {
+        crate::PgEmailVerificationTokens::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// This tenant's SSF streams (SSF 1.0 §8.1.1, `ast-0ju.3`).
     ///
     /// Tenant-scoped like everything else here, and the receiver is the *other*

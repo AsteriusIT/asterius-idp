@@ -302,6 +302,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "email_verification_token"
+path = "fuzz_targets/email_verification_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "endpoint_bucket"
 path = "fuzz_targets/endpoint_bucket.rs"
 test = false
