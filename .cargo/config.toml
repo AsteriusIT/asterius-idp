@@ -1,0 +1,34 @@
+# Repository-wide cargo configuration.
+#
+# Everything here must work on a machine that has nothing installed but a Rust
+# toolchain, and on a CI runner. Anything that depends on a local binary --
+# `mold`, `sccache` -- belongs in your own `~/.cargo/config.toml`, never here:
+# a repository config that names a missing linker fails every build with
+# "linker not found" for whoever does not have it. `scripts/local-toolchain.sh`
+# prints the snippet for this machine; CONTRIBUTING.md, "Disk space", explains
+# the reasoning.
+
+[build]
+# Incremental compilation off by default, because of what it costs on disk,
+# not because of what it costs in time. Measured on this workspace
+# (2026-09-10): an 8.8 GB `target/`, of which `debug/incremental` was 5.6 GB --
+# 64% of the whole thing -- against 2.8 GB of `debug/deps`. Seven finished
+# agent worktrees held 51 GB between them and filled the disk, which broke an
+# unrelated worker mid-run (`ast-9em`). A worktree lives for one ticket and
+# recompiles a given crate two or three times; incremental buys a few seconds
+# there and costs gigabytes that nothing reclaims.
+#
+# This is a default, not a rule. The environment variable wins over the config
+# file, so anyone who edits the same crate all day long can keep the
+# incremental cache:
+#
+#     CARGO_INCREMENTAL=1 cargo check          # one command
+#     export CARGO_INCREMENTAL=1               # one shell
+#
+# (Putting `incremental = true` in `~/.cargo/config.toml` does *not* work: of
+# two config files the one closest to the working directory wins, and that is
+# this one. The environment variable is the documented escape hatch.)
+#
+# Side benefit: sccache refuses to cache incremental compilation, so turning it
+# off is also what makes a shared `RUSTC_WRAPPER` worth setting up.
+incremental = false

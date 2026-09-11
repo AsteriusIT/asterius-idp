@@ -18,6 +18,14 @@
 #   - Only ever descends into `deps/`, `build/`, `incremental/` and
 #     `.fingerprint/` under a `target/` directory. Never touches sources,
 #     never touches `target/` roots (binaries you may be running).
+#
+# `incremental/` used to be the biggest of the four by far: 5.6 GB out of an
+# 8.8 GB `target/`, 64%, against 2.8 GB of `deps/`. Since `ast-9em` the
+# committed `.cargo/config.toml` sets `build.incremental = false`, so on a
+# fresh build there is nothing left in it and this script finds mostly `deps/`.
+# It keeps scanning `incremental/` all the same: the directory survives the
+# builds that predate the change, and anyone who exports `CARGO_INCREMENTAL=1`
+# — which is a supported choice, see CONTRIBUTING.md, "Disk space" — refills it.
 #   - Leaves every registered git worktree alone unless `--worktrees` is
 #     passed: another agent may be compiling in it right now.
 #   - Directories under `.claude/worktrees/` that git no longer knows about are
