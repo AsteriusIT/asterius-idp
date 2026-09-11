@@ -69,6 +69,18 @@ pub const DELIVERY_PUSH: &str = "urn:ietf:rfc:8935";
 /// `aud` does.
 pub const SCOPE_MANAGE: &str = "ssf.manage";
 
+/// The scope a receiver's access token must carry to poll for its SETs
+/// (RFC 8936; SSF 1.0 §7.1.1, which SHOULD protect the polling endpoint).
+///
+/// Its own scope, separate from [`SCOPE_MANAGE`], because the two are
+/// different powers held by different parts of a receiver: configuring a
+/// stream is an administrative act done once, and polling it is what the
+/// component that consumes signals does all day. A deployment that hands its
+/// event consumer a token which can also delete the stream has given a
+/// long-lived credential more than it needs — and §7.1.1's point is that these
+/// endpoints are protected, not that one token opens both.
+pub const SCOPE_POLL: &str = "ssf.poll";
+
 /// How many event type URIs a receiver may request on one stream.
 ///
 /// Not a specification limit. `events_requested` is stored, echoed and
@@ -293,12 +305,21 @@ pub enum DeliveryRequest {
 impl DeliveryRequest {
     /// The delivery this request asks for, given what the transmitter offers.
     ///
+    /// `current` is the stream being updated, where there is one: a receiver
+    /// that read its stream back echoes the *per-stream* polling URL
+    /// (SSF 1.0 §6.1.2), and only a creation — which has no identifier yet —
+    /// may echo the transmitter's base polling endpoint.
+    ///
     /// # Errors
     ///
     /// [`StreamError::TransmitterSupplied`] when a poll `endpoint_url` is not
     /// the transmitter's own — §8.1.1.3's rule, applied to the one
     /// receiver-supplied member that has a transmitter-supplied half.
-    pub fn resolve(&self, transmitter: &Transmitter<'_>) -> Result<Delivery, StreamError> {
+    pub fn resolve(
+        &self,
+        transmitter: &Transmitter<'_>,
+        current: Option<&StreamId>,
+    ) -> Result<Delivery, StreamError> {
         match self {
             Self::Poll {
                 echoed_endpoint_url: None,
@@ -306,7 +327,11 @@ impl DeliveryRequest {
             Self::Poll {
                 echoed_endpoint_url: Some(echoed),
             } => {
-                if echoed == transmitter.poll_endpoint {
+                let ours = echoed == transmitter.poll_endpoint
+                    || current.is_some_and(|stream| {
+                        *echoed == poll_endpoint_for(transmitter.poll_endpoint, stream)
+                    });
+                if ours {
                     Ok(Delivery::Poll)
                 } else {
                     Err(StreamError::TransmitterSupplied {
@@ -650,7 +675,7 @@ impl StreamConfiguration {
                 .clone()
                 .unwrap_or_else(|| vec![default_audience.to_owned()]),
             events_requested: request.events_requested.clone().unwrap_or_default(),
-            delivery: resolve_delivery(request, transmitter)?,
+            delivery: resolve_delivery(request, transmitter, None)?,
             description: request.description.clone(),
             inactivity_timeout: request.inactivity_timeout,
         })
@@ -674,7 +699,7 @@ impl StreamConfiguration {
             updated.events_requested = events;
         }
         if let Some(delivery) = &request.delivery {
-            updated.delivery = delivery.resolve(transmitter)?;
+            updated.delivery = delivery.resolve(transmitter, Some(&self.stream_id))?;
         }
         if let Some(description) = request.description.clone() {
             updated.description = Some(description);
@@ -707,7 +732,7 @@ impl StreamConfiguration {
             stream_id: self.stream_id.clone(),
             audience: self.audience.clone(),
             events_requested: request.events_requested.clone().unwrap_or_default(),
-            delivery: resolve_delivery(request, transmitter)?,
+            delivery: resolve_delivery(request, transmitter, Some(&self.stream_id))?,
             description: request.description.clone(),
             inactivity_timeout: request.inactivity_timeout,
         })
@@ -797,7 +822,7 @@ impl StreamConfiguration {
         match &self.delivery {
             Delivery::Poll => json!({
                 "method": DELIVERY_POLL,
-                "endpoint_url": transmitter.poll_endpoint,
+                "endpoint_url": poll_endpoint_for(transmitter.poll_endpoint, &self.stream_id),
             }),
             Delivery::Push { endpoint_url } => json!({
                 "method": DELIVERY_PUSH,
@@ -816,11 +841,28 @@ impl StreamConfiguration {
 fn resolve_delivery(
     request: &StreamRequest,
     transmitter: &Transmitter<'_>,
+    current: Option<&StreamId>,
 ) -> Result<Delivery, StreamError> {
     match &request.delivery {
         None => Ok(Delivery::Poll),
-        Some(delivery) => delivery.resolve(transmitter),
+        Some(delivery) => delivery.resolve(transmitter, current),
     }
+}
+
+/// The polling URL of one stream (RFC 8936; SSF 1.0 §6.1.2).
+///
+/// > The URL ... is unique per stream and per receiver.
+///
+/// One URL per stream rather than one per transmitter, because a poll request
+/// (RFC 8936 §2.1) carries no stream identifier: the *address* is what says
+/// which stream is being polled, and a shared address would leave a receiver
+/// holding two streams unable to say which one it means. The identifier is
+/// already 128 unguessable bits ([`StreamId`]), so the URL a receiver holds is
+/// not a handle another receiver stumbles on — the endpoint checks the
+/// receiver anyway, and the shape of the URL is not what does that work.
+#[must_use]
+pub fn poll_endpoint_for(base: &str, stream: &StreamId) -> String {
+    format!("{base}/{}", stream.as_str())
 }
 
 /// What the transmitter contributes to a rendered stream: the members §8.1.1
@@ -919,8 +961,78 @@ mod tests {
         assert_eq!(rendered["delivery"]["method"], json!(DELIVERY_POLL));
         assert_eq!(
             rendered["delivery"]["endpoint_url"],
-            json!("https://as.example/t/demo/ssf/poll"),
-            "the transmitter supplies the polling endpoint"
+            json!(format!(
+                "https://as.example/t/demo/ssf/poll/{}",
+                stream.stream_id.as_str()
+            )),
+            "SSF 1.0 §6.1.2: the polling URL is unique per stream"
+        );
+    }
+
+    /// §6.1.2 again, from the other side: two streams of one receiver are
+    /// polled at two different URLs, because a poll request (RFC 8936 §2.1)
+    /// carries nothing else that could say which stream it means.
+    #[test]
+    fn two_streams_are_polled_at_two_different_urls() {
+        // Arrange
+        let events = supported(&[]);
+        let one = stream(&json!({}));
+        let other = stream(&json!({}));
+
+        // Act
+        let rendered = one.render(&transmitter(&events));
+        let rendered_other = other.render(&transmitter(&events));
+
+        // Assert
+        assert_ne!(
+            rendered["delivery"]["endpoint_url"],
+            rendered_other["delivery"]["endpoint_url"]
+        );
+    }
+
+    /// A receiver that read its stream back and echoed the per-stream polling
+    /// URL on a `PATCH` has changed nothing (§8.1.1.3).
+    #[test]
+    fn a_receiver_may_echo_the_per_stream_poll_endpoint() {
+        // Arrange
+        let events = supported(&[]);
+        let current = stream(&json!({}));
+        let url = poll_endpoint_for("https://as.example/t/demo/ssf/poll", &current.stream_id);
+        let parsed = request(&json!({
+            "stream_id": current.stream_id.as_str(),
+            "delivery": {"method": DELIVERY_POLL, "endpoint_url": url},
+        }));
+
+        // Act
+        let patched = current.patch(&parsed, &transmitter(&events));
+
+        // Assert
+        assert_eq!(patched.map(|stream| stream.delivery), Ok(Delivery::Poll));
+    }
+
+    /// And the receiver next door cannot: §6.1.2's URL names a stream, so
+    /// echoing another one's is the §8.1.1.3 error rather than a change.
+    #[test]
+    fn a_receiver_may_not_echo_another_streams_poll_endpoint() {
+        // Arrange
+        let events = supported(&[]);
+        let current = stream(&json!({}));
+        let other = stream(&json!({}));
+        let url = poll_endpoint_for("https://as.example/t/demo/ssf/poll", &other.stream_id);
+        let parsed = request(&json!({
+            "stream_id": current.stream_id.as_str(),
+            "delivery": {"method": DELIVERY_POLL, "endpoint_url": url},
+        }));
+
+        // Act
+        let refused = current.patch(&parsed, &transmitter(&events));
+
+        // Assert
+        assert_eq!(
+            refused,
+            Err(StreamError::TransmitterSupplied {
+                member: "endpoint_url"
+            })
         );
     }
 

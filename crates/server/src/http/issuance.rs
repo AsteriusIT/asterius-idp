@@ -523,6 +523,7 @@ pub async fn targeting(
         grant_management_resource(tenant, implicit.grant_management)
             .into_iter()
             .chain(ssf_resource(tenant, implicit.ssf))
+            .chain(ssf_poll_resource(tenant, implicit.ssf))
             .chain(resource_servers.list().await?),
     );
 
@@ -597,6 +598,38 @@ fn ssf_resource(tenant: &Tenant, offered: bool) -> Option<asterius_domain::Resou
                 .collect(),
         ),
         // No opinion: the tenant's own access-token lifetime applies.
+        default_token_lifetime: None,
+    })
+}
+
+/// The SSF polling endpoint as a resource server of this tenant (RFC 8936,
+/// SSF 1.0 §7.1.1, `ast-0ju.7`).
+///
+/// A *second* implicit resource rather than a second scope on the first, and
+/// the separation is the point. Configuring a stream and reading its events
+/// are done by different parts of a receiver — one an administrative act, the
+/// other a loop that runs all day — so they are two audiences and two scopes
+/// (RFC 8707 §2): a polling token cannot delete the stream it polls, and a
+/// management token cannot read its events.
+///
+/// The identifier is the *base* polling endpoint, not the per-stream URL of
+/// §6.1.2: a receiver holds one token for this transmitter and polls every
+/// stream it owns with it, and which streams those are is decided by the
+/// `client_id` the endpoint looks up rather than by a copy of that decision
+/// baked into an audience.
+fn ssf_poll_resource(tenant: &Tenant, offered: bool) -> Option<asterius_domain::ResourceServer> {
+    if !offered {
+        return None;
+    }
+    let url = format!("{}{}", tenant.issuer.as_str(), crate::http::ssf::POLL_PATH);
+    let identifier = asterius_domain::ResourceIdentifier::parse(&url).ok()?;
+    Some(asterius_domain::ResourceServer {
+        identifier,
+        scopes: Some(
+            [asterius_ssf::stream::SCOPE_POLL.to_owned()]
+                .into_iter()
+                .collect(),
+        ),
         default_token_lifetime: None,
     })
 }
@@ -778,6 +811,59 @@ mod tests {
     use time::{Duration, OffsetDateTime};
 
     const DIGEST: &str = "the-lookup-digest-of-a-session";
+
+    // -----------------------------------------------------------------------
+    // The SSF implicit resources (SSF 1.0 §7.1.1, `ast-0ju.7`)
+    // -----------------------------------------------------------------------
+
+    /// A tenant, for the two tests below and nothing else.
+    fn ssf_tenant() -> Tenant {
+        Tenant {
+            id: TenantId::new("demo"),
+            issuer: asterius_domain::Issuer::parse("https://as.example/t/demo").expect("issuer"),
+            default_resource: "https://api.example/".to_owned(),
+            custom_host: None,
+            display_name: "demo".to_owned(),
+            status: asterius_domain::TenantStatus::Active,
+            refresh: asterius_domain::RefreshPolicy::default(),
+            created_at: epoch(),
+            updated_at: epoch(),
+        }
+    }
+
+    /// §7.1.1: the polling endpoint is protected, so a receiver must be able
+    /// to ask for a token audienced at it — and that token carries the poll
+    /// scope and not the management one.
+    #[test]
+    fn the_polling_endpoint_is_an_audience_a_receiver_can_ask_for() {
+        // Arrange, act
+        let resource = ssf_poll_resource(&ssf_tenant(), true).expect("an implicit resource");
+
+        // Assert
+        assert_eq!(
+            resource.identifier.as_str(),
+            "https://as.example/t/demo/ssf/poll"
+        );
+        assert_eq!(
+            resource.scopes,
+            Some(
+                [asterius_ssf::stream::SCOPE_POLL.to_owned()]
+                    .into_iter()
+                    .collect()
+            )
+        );
+    }
+
+    /// A resource nobody can call is an audience no token should carry: a
+    /// deployment without SSF offers neither of the two.
+    #[test]
+    fn a_deployment_without_ssf_offers_no_polling_audience() {
+        // Arrange, act
+        let resource = ssf_poll_resource(&ssf_tenant(), false);
+
+        // Assert
+        assert!(resource.is_none());
+    }
 
     // -----------------------------------------------------------------------
     // Sender constraining

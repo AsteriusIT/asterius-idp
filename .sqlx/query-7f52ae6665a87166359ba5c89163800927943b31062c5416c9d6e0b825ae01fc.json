@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ssf_poll_queue (tenant_id, stream_id, jti, set_jws, queued_at)\n             values ($1, $2, $3, $4, $5)\n             on conflict (tenant_id, stream_id, jti) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7f52ae6665a87166359ba5c89163800927943b31062c5416c9d6e0b825ae01fc"
+}

@@ -23,7 +23,7 @@ use asterius_oidc::tokens::JwtId;
 use asterius_oidc::tokens::access::{AccessToken, Audience, Confirmation};
 use asterius_server::http::dpop::{DpopEndpoint, HEADER as DPOP_HEADER};
 use asterius_server::http::ssf::{
-    CONFIGURATION_PATH, POLL_PATH, SsfContext, SsfStreamStore, streams,
+    CONFIGURATION_PATH, POLL_PATH, SsfContext, SsfStreamStore, SsfTokenStatus, streams,
 };
 use asterius_ssf::stream::{
     Delivery, MIN_VERIFICATION_INTERVAL, SCOPE_MANAGE, StreamConfiguration, StreamId,
@@ -162,7 +162,10 @@ impl SsfStreamStore for FakeStreams {
             .remove(&Self::key(receiver, stream))
             .is_some())
     }
+}
 
+#[async_trait::async_trait]
+impl SsfTokenStatus for FakeStreams {
     async fn is_denylisted(&self, _jti: &str) -> Result<bool, DomainError> {
         Ok(false)
     }
@@ -420,7 +423,12 @@ async fn a_creation_without_a_delivery_gets_a_poll_stream_with_our_endpoint() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let body = body_of(response).await;
     assert_eq!(body["delivery"]["method"], json!("urn:ietf:rfc:8936"));
-    assert_eq!(body["delivery"]["endpoint_url"], json!(poll_url()));
+    let stream_id = body["stream_id"].as_str().expect("a stream_id");
+    assert_eq!(
+        body["delivery"]["endpoint_url"],
+        json!(format!("{}/{stream_id}", poll_url())),
+        "SSF 1.0 §6.1.2: the polling URL is unique per stream"
+    );
 }
 
 /// RFC 8935 §2.2: a push delivery is configured over https and nothing else.

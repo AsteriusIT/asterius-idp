@@ -98,8 +98,41 @@ const STREAM_ID_PARAMETER: &str = "stream_id";
 /// Narrow on purpose, like UserInfo's and Grant Management's ports: every
 /// method takes the receiver, so there is no call this endpoint can make that
 /// is not already scoped to the caller.
+/// What an SSF endpoint asks about the token a receiver presented, beyond
+/// verifying it.
+///
+/// Its own trait because both SSF endpoints ask exactly these two questions
+/// and nothing else about a credential: the stream configuration endpoint here
+/// and the polling endpoint in [`crate::http::ssf_poll`], which shares this
+/// module's `authorize_receiver` with it. Splitting it out is what lets one
+/// function
+/// hold the five checks for both, rather than each endpoint holding its own
+/// copy — and a copy that drifts is a copy that stops checking something.
 #[async_trait::async_trait]
-pub trait SsfStreamStore: std::fmt::Debug + Send + Sync {
+pub trait SsfTokenStatus: std::fmt::Debug + Send + Sync {
+    /// Whether this `jti` was revoked before its own expiry.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] when the denylist cannot be read. Never `false` for an
+    /// unavailable store.
+    async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError>;
+
+    /// The instant before which this client and this grant withdrew every
+    /// access token they had issued, if either of them did.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] when the mark cannot be read.
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &ClientId,
+        grant: Option<&GrantId>,
+    ) -> Result<Option<OffsetDateTime>, DomainError>;
+}
+
+#[async_trait::async_trait]
+pub trait SsfStreamStore: SsfTokenStatus {
     /// Stores a new stream (§8.1.1.1).
     ///
     /// # Errors
@@ -151,26 +184,6 @@ pub trait SsfStreamStore: std::fmt::Debug + Send + Sync {
     /// [`DomainError`] when the transaction fails, in which case nothing was
     /// removed and the caller must not answer 204.
     async fn delete(&self, receiver: &ClientId, stream: &StreamId) -> Result<bool, DomainError>;
-
-    /// Whether this `jti` was revoked before its own expiry.
-    ///
-    /// # Errors
-    ///
-    /// [`DomainError`] when the denylist cannot be read. Never `false` for an
-    /// unavailable store.
-    async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError>;
-
-    /// The instant before which this client and this grant withdrew every
-    /// access token they had issued, if either of them did.
-    ///
-    /// # Errors
-    ///
-    /// [`DomainError`] when the mark cannot be read.
-    async fn access_tokens_revoked_before(
-        &self,
-        client: &ClientId,
-        grant: Option<&GrantId>,
-    ) -> Result<Option<OffsetDateTime>, DomainError>;
 }
 
 /// What one stream configuration request needs.
@@ -273,6 +286,17 @@ impl From<StreamError> for Refused {
     }
 }
 
+impl From<NotAuthorized> for Refused {
+    fn from(refusal: NotAuthorized) -> Self {
+        match refusal {
+            NotAuthorized::Client(error) => Self::Client(error),
+            NotAuthorized::MissingScope => Self::MissingScope,
+            NotAuthorized::Dpop(refusal) => Self::Dpop(refusal),
+            NotAuthorized::Server(error) => Self::Server(error),
+        }
+    }
+}
+
 /// The whole endpoint: `POST`, `GET`, `PATCH`, `PUT` and `DELETE` at
 /// [`CONFIGURATION_PATH`].
 ///
@@ -319,13 +343,98 @@ enum Change {
     Replace,
 }
 
-/// The five checks the module documentation lists, in that order.
+/// The five checks the module documentation lists, for this endpoint.
 async fn authorize(
     context: &SsfContext<'_>,
     urls: &Urls,
     method: &Method,
     headers: &HeaderMap,
 ) -> Result<ClientId, Refused> {
+    authorize_receiver(
+        &Credential {
+            tenant: context.tenant,
+            keys: context.keys,
+            dpop: context.dpop,
+            certificate: context.certificate,
+            tokens: context.store,
+            resource: &urls.configuration,
+            target: dpop::ProofTarget::at_path(CONFIGURATION_PATH),
+            scope: stream::SCOPE_MANAGE,
+            now: context.now,
+        },
+        method,
+        headers,
+    )
+    .await
+    .map_err(Refused::from)
+}
+
+/// What one SSF endpoint's authorization needs, whichever endpoint it is.
+///
+/// The *resource*, the *proof target* and the *scope* are the three things
+/// that differ between the stream configuration endpoint and the polling
+/// endpoint; everything else about the five checks is the same, so everything
+/// else is [`authorize_receiver`]'s.
+pub(crate) struct Credential<'a> {
+    /// The tenant the request arrived at.
+    pub tenant: &'a Tenant,
+    /// Where the tenant's published keys come from.
+    pub keys: &'a dyn KeyStore,
+    /// Checks the DPoP proof (RFC 9449 §7.1).
+    pub dpop: &'a DpopEndpoint,
+    /// The client certificate this request arrived with, if any (RFC 8705 §2).
+    pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
+    /// The denylist and the revocation cutoffs.
+    pub tokens: &'a dyn SsfTokenStatus,
+    /// The `aud` the token must carry: this endpoint's URL.
+    pub resource: &'a str,
+    /// The URL a DPoP proof is made over, built from the issuer and never from
+    /// the request.
+    pub target: dpop::ProofTarget<'a>,
+    /// The scope SSF 1.0 §7.1.1 requires here.
+    pub scope: &'a str,
+    /// One clock reading for the whole request.
+    pub now: OffsetDateTime,
+}
+
+/// Why an SSF request was not authorized.
+///
+/// Three client-visible shapes and one server failure, which each endpoint
+/// renders in its own error vocabulary.
+#[derive(Debug)]
+pub(crate) enum NotAuthorized {
+    /// An RFC 6750 §3 refusal: 400, 401 or 403.
+    Client(UserInfoError),
+    /// The token verified and does not carry the scope this endpoint needs.
+    MissingScope,
+    /// A DPoP proof that did not check out (RFC 9449 §7.1).
+    Dpop(dpop::Refusal),
+    /// This deployment could not finish. Logged, never described.
+    Server(DomainError),
+}
+
+impl From<DomainError> for NotAuthorized {
+    fn from(error: DomainError) -> Self {
+        Self::Server(error)
+    }
+}
+
+impl From<UserInfoError> for NotAuthorized {
+    fn from(error: UserInfoError) -> Self {
+        Self::Client(error)
+    }
+}
+
+/// The five checks the module documentation lists, in that order, for either
+/// SSF endpoint.
+///
+/// Returns the receiver: the `client_id` the token names, which every
+/// subsequent statement of either endpoint is scoped to.
+pub(crate) async fn authorize_receiver(
+    credential: &Credential<'_>,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Result<ClientId, NotAuthorized> {
     let offered = headers.get_all(header::AUTHORIZATION).iter().count();
     let authorizations: Vec<&str> = headers
         .get_all(header::AUTHORIZATION)
@@ -341,29 +450,32 @@ async fn authorize(
     let presented = userinfo::present(&authorizations, None)?;
 
     // Step 1.
-    let verified =
-        access_token::verify(context.tenant, context.keys, presented.token(), context.now)
-            .await
-            .map_err(|rejected| match rejected {
-                access_token::Rejected::Unavailable(error) => Refused::Server(error),
-                access_token::Rejected::Token(error) => {
-                    // Debug, not warn: a rejected token is routine at a
-                    // resource server, and which check failed is a description
-                    // of this server's state an unauthenticated caller has not
-                    // earned.
-                    tracing::debug!(%error, "an SSF management access token did not verify");
-                    UserInfoError::InvalidToken.into()
-                }
-            })?;
+    let verified = access_token::verify(
+        credential.tenant,
+        credential.keys,
+        presented.token(),
+        credential.now,
+    )
+    .await
+    .map_err(|rejected| match rejected {
+        access_token::Rejected::Unavailable(error) => NotAuthorized::Server(error),
+        access_token::Rejected::Token(error) => {
+            // Debug, not warn: a rejected token is routine at a resource
+            // server, and which check failed is a description of this server's
+            // state an unauthenticated caller has not earned.
+            tracing::debug!(%error, "an SSF access token did not verify");
+            UserInfoError::InvalidToken.into()
+        }
+    })?;
 
     // Step 2.
-    sender_constrained(context, method, headers, &verified, presented).await?;
+    sender_constrained(credential, method, headers, &verified, presented).await?;
 
     // Step 3.
-    if !audienced_here(&urls.configuration, &verified) {
+    if !audienced_here(credential.resource, &verified) {
         tracing::debug!(
-            tenant = %context.tenant.id,
-            "a token presented at the SSF management endpoint is audienced elsewhere"
+            tenant = %credential.tenant.id,
+            "a token presented at an SSF endpoint is audienced elsewhere"
         );
         return Err(UserInfoError::InvalidToken.into());
     }
@@ -372,7 +484,7 @@ async fn authorize(
     let jti = verified
         .claim_str("jti")
         .ok_or(UserInfoError::InvalidToken)?;
-    if context.store.is_denylisted(jti).await? {
+    if credential.tokens.is_denylisted(jti).await? {
         return Err(UserInfoError::InvalidToken.into());
     }
     let client = verified
@@ -382,8 +494,8 @@ async fn authorize(
     let own_grant = verified
         .claim_str("grant_id")
         .map(|id| GrantId::new(id.to_owned()));
-    let cutoff = context
-        .store
+    let cutoff = credential
+        .tokens
         .access_tokens_revoked_before(&client, own_grant.as_ref())
         .await?;
     if access_token::withdrawn(&verified, cutoff) {
@@ -391,43 +503,43 @@ async fn authorize(
     }
 
     // Step 5.
-    if !carries_scope(&verified, stream::SCOPE_MANAGE) {
-        return Err(Refused::MissingScope);
+    if !carries_scope(&verified, credential.scope) {
+        return Err(NotAuthorized::MissingScope);
     }
     Ok(client)
 }
 
 /// Step 2, with UserInfo's rule and UserInfo's function.
 async fn sender_constrained(
-    context: &SsfContext<'_>,
+    credential: &Credential<'_>,
     method: &Method,
     headers: &HeaderMap,
     verified: &Verified,
     presented: Presentation<'_>,
-) -> Result<(), Refused> {
+) -> Result<(), NotAuthorized> {
     access_token::check_sender_constraint(
         &access_token::Presented {
-            tenant: context.tenant,
-            dpop: context.dpop,
+            tenant: credential.tenant,
+            dpop: credential.dpop,
             // The URL the router mounts, built from the issuer here as
             // everywhere: never from the request.
-            target: dpop::ProofTarget::at_path(CONFIGURATION_PATH),
-            certificate: context.certificate,
+            target: credential.target,
+            certificate: credential.certificate,
             method,
             headers,
             presented,
-            now: context.now,
+            now: credential.now,
         },
         verified,
     )
     .await
     .map_err(|refusal| match refusal {
         access_token::NotBound::Refused => UserInfoError::InvalidToken.into(),
-        access_token::NotBound::Dpop(refusal) => Refused::Dpop(refusal),
+        access_token::NotBound::Dpop(refusal) => NotAuthorized::Dpop(refusal),
     })
 }
 
-/// Step 3: the resource is this tenant's stream configuration endpoint.
+/// Step 3: the resource is the endpoint the token was presented at.
 ///
 /// `aud` may be a string or an array (RFC 7519 §4.1.3), and both are accepted
 /// because both are what a token this server minted can carry.
@@ -775,13 +887,23 @@ fn refuse(error: &UserInfoError) -> Response {
     no_store(response)
 }
 
+/// RFC 6750 §3.1's `insufficient_scope` challenge, naming the scope the
+/// endpoint needs.
+///
+/// Shared with [`crate::http::ssf_poll`], which needs the same challenge with
+/// [`stream::SCOPE_POLL`] in it: SSF 1.0 §7.1.1 protects both endpoints, and a
+/// receiver reading "you need this scope" should read the same sentence
+/// whichever of them it called.
+pub(crate) fn check_scope_challenge(scope: &str) -> String {
+    format!(
+        r#"DPoP error="insufficient_scope", error_description="the access token does not carry the scope this request needs", scope="{scope}""#
+    )
+}
+
 /// RFC 6750 §3.1's `insufficient_scope`, naming the scope §8 needs.
 fn insufficient_scope() -> Response {
     let mut response = empty(StatusCode::FORBIDDEN);
-    if let Ok(value) = HeaderValue::from_str(&format!(
-        r#"DPoP error="insufficient_scope", error_description="the access token does not carry the scope this request needs", scope="{}""#,
-        stream::SCOPE_MANAGE
-    )) {
+    if let Ok(value) = HeaderValue::from_str(&check_scope_challenge(stream::SCOPE_MANAGE)) {
         response
             .headers_mut()
             .append(header::WWW_AUTHENTICATE, value);
