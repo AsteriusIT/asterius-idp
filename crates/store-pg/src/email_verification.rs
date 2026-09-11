@@ -1,7 +1,7 @@
 //! Email-verification tokens, over PostgreSQL.
 //!
 //! Three statements, shaped exactly like `crate::recovery`'s and against a
-//! different table for the reason `0027_email_verification.sql` gives:
+//! different table for the reason `0028_email_verification.sql` gives:
 //!
 //! * `issue` writes the new token and supersedes the user's earlier ones in
 //!   one transaction, so a mailbox never holds two live links and an old
