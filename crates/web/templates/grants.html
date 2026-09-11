@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}{{ text.grants_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# Grant Management ID1 §3's dashboard use case: "the user can see the grants
+   that are active and revoke them". OIDC Core §3.1.2.4 is the other half —
+   what a person agreed to is a decision they keep, so it has to be visible and
+   reversible in one place.
+
+   Nothing here can be narrowed. A grant is the unit a token traces back to
+   (FAPI 2.0 SP §6.8 item 4), and a half-withdrawn one would leave a client
+   holding a token it cannot explain: the answer to "not that any more" is to
+   withdraw the whole grant and let the application ask again.
+
+   Every name on this page is a claim the client made about itself at
+   registration (FAPI 2.0 SP §7), escaped like any other value and trusted as
+   little.
+
+   No script: the dates are text this server formatted, and every withdrawal is
+   an ordinary form post. #}
+{% include "error_summary.html" %}
+
+<div class="stack tight">
+<h2>{{ text.grants_heading() }}</h2>
+</div>
+
+{% if grants.is_empty() %}
+<p class="muted">{{ text.grants_empty() }}</p>
+{% else %}
+<p class="muted">{{ text.grants_revoke_explains() }}</p>
+{% for grant in grants %}
+<p class="separator"></p>
+<div class="stack tight">
+<p>{{ text.grants_granted_to(grant.client_name) }}</p>
+
+{# An agent is the one client whose access a person may not recognise from
+   having used it, so the account it acts for is named where the name is
+   (`asterius_domain::AgentOwner`). #}
+{% if let Some(owner) = grant.agent_owner %}
+<p class="muted">{{ text.grants_agent_owner(owner) }}</p>
+{% endif %}
+
+{# The two facts Grant Management ID1 §6.4 keeps on a grant: when it was made,
+   and when it was last written to — which here is when a credential was last
+   taken from it. Both in a `<time>` element so a user agent can present the
+   instant its own way. #}
+<p class="muted">
+  <time datetime="{{ grant.granted_at }}">{{ text.grants_allowed_on(grant.granted_at) }}</time>
+</p>
+<p class="muted">
+{% if let Some(used) = grant.last_used %}
+  <time datetime="{{ used }}">{{ text.grants_last_used(used) }}</time>
+{% else %}
+  {{ text.grants_never_used() }}
+{% endif %}
+</p>
+{% if let Some(exchanged) = grant.last_exchange %}
+<p class="muted">
+  <time datetime="{{ exchanged }}">{{ text.grants_last_exchange(exchanged) }}</time>
+</p>
+{% endif %}
+
+{% if !grant.scopes.is_empty() %}
+<p class="muted">{{ text.grants_covers() }}</p>
+<ul class="scopes">
+{% for scope in grant.scopes %}
+  <li>
+    {% if let Some(description) = scope.description %}{{ description }}{% else %}{{ scope.name }}{% endif %}
+    <span class="muted">({{ scope.name }})</span>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if !grant.authorization_details.is_empty() %}
+<p class="muted">{{ text.grants_also_covers() }}</p>
+<ul class="scopes">
+{% for detail in grant.authorization_details %}
+  <li>
+    {% if let Some(description) = detail.description %}{{ description }}{% else %}{{ text.grants_undescribed_detail() }}{% endif %}
+    <span class="muted">({{ detail.name }})</span>
+    {% if !detail.actions.is_empty() %}
+    <br><span class="muted">{{ text.grants_detail_actions() }} {% for action in detail.actions %}{{ action }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if !detail.datatypes.is_empty() %}
+    <br><span class="muted">{{ text.grants_detail_datatypes() }} {% for datatype in detail.datatypes %}{{ datatype }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if !detail.locations.is_empty() %}
+    <br><span class="muted">{{ text.grants_detail_locations() }} {% for location in detail.locations %}{{ location }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{# RFC 8707 §2: what the access is audience-bound to. A person deciding whether
+   to keep an authorization needs to know which API it reaches. #}
+{% if !grant.resources.is_empty() %}
+<p class="muted">{{ text.grants_resources() }}</p>
+<ul class="scopes">
+{% for resource in grant.resources %}
+  <li>{{ resource }}</li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{# RFC 8693 §4.1's `act` chain, as the audit trail records it (`ast-lh3.9`):
+   what this access was passed on to, and through whom. Listed under the grant
+   it came from, because withdrawing that grant is what stops it. #}
+{% if !grant.delegations.is_empty() %}
+<p class="muted">{{ text.grants_delegations() }}</p>
+<ul class="scopes">
+{% for delegation in grant.delegations %}
+  <li>
+    <time datetime="{{ delegation.delegated_at }}">{{ text.grants_delegated_to(delegation.client_name) }}</time>
+    {% if !delegation.actors.is_empty() %}
+    <br><span class="muted">{% for actor in delegation.actors %}{{ actor }}{% if !loop.last %} → {% endif %}{% endfor %}</span>
+    {% endif %}
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{# The withdrawal. A `POST` under the session's synchroniser token, naming the
+   grant by its id; the server checks that the row belongs to the person
+   pressing the button before it revokes anything, so a guessed id is answered
+   exactly as an id that does not exist. #}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="grant" value="{{ grant.reference }}">
+<div class="actions">
+  <button type="submit" class="secondary">{{ text.grants_revoke() }}</button>
+</div>
+</form>
+</div>
+{% endfor %}
+{% endif %}
+
+{# Offered on every rendering rather than only on a stale one: withdrawing
+   access needs a fresh sign-in (`crate::http::account_grants::FRESHNESS`), and
+   a person who finds the link already there does not have to discover it from
+   a refusal. #}
+<p class="link-row"><a href="{{ sign_in_href }}">{{ text.grants_sign_in_again() }}</a></p>
+{% endblock %}

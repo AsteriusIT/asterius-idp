@@ -1106,6 +1106,44 @@ of pending request; this server has a CIBA row and a device code, and no agent
 step-up mechanism to list. When one exists it belongs on this page, under the
 same freshness and `acr` rules.
 
+### Grants dashboard (`ast-uwv.6`)
+
+**Why this needs a section: this is the page where a person reads what stands
+open in their name, and closes it.** `/account/grants` lists the standing
+authorizations Grant Management ID1 §3 says a person must be able to see and
+revoke, with the scopes, the RFC 9396 elements, the RFC 8707 resources, the
+last use and the delegations minted from each (RFC 8693 §4.1). The button
+beside each row makes the same revocation call `DELETE /grants/{id}` makes, in
+the same transaction.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G2** | **Enumerating grants, or reading somebody else's.** A guessed `grant_id` in the withdrawal form, or a hope that the list is keyed by something a caller supplies. | The list comes from `PgGrantRepository::list_for_user` with the session's account in the predicate and the repository scoped to the tenant; nothing about which rows are listed comes from the request. A withdrawal re-reads the row and compares `grant.user` against the signed-in account before it writes, and a grant belonging to somebody else is answered *exactly* as one that does not exist — §6.6's reasoning, because distinguishing them is an oracle over identifiers this server mints. The shape check (`account_grants::withdrawal`, fuzzed) means an identifier that could never name a row never reaches a query. |
+| **A1** | **G3** | **Cross-site forgery of a withdrawal.** A page on another origin makes the browser post a revocation; the session cookie rides along, and somebody's integrations stop working. | The form carries a synchroniser token derived from the session's *digest* — a value the browser never holds — compared in constant time, under a domain separator of this page's own, so a token lifted from the approvals inbox or the device form is not one this endpoint accepts. The route is `POST` only and unreachable by top-level navigation (ADR-0009). |
+| **A1** | **G3** | **Withdrawing from a session somebody walked away from.** A browser left open, or one an attacker reached hours after the person authenticated. | A withdrawal requires an authentication within `account_grants::FRESHNESS` (two minutes), checked before the row is read, so a stale session also learns nothing about whether the id it submitted names anything. It is not refused with an error: it is sent through the interaction pages and comes back, so the authentication and the withdrawal are one act. A session this tenant's ladder cannot classify does not reach the page at all. |
+| **A1** | **G2** | **Reading the dashboard out of a cache or a shared browser.** | Every response is `no-store`: the page carries a synchroniser token and a list of every application and agent this person has authorised. |
+| **A1** | **G1** | **Misreading who is asking.** Client names and agent identities are chosen at registration. | Every name is rendered as a claim, escaped like any other value (FAPI 2.0 SP §7), and an agent's row names the *account* it acts for, read from the profile's owner rather than from anything the agent said at the token endpoint. `authorization_details` are rendered as the operator's sentence for the type and never as the client's JSON (RFC 9396 §12); an `act` chain entry this server cannot read as an identifier is dropped rather than displayed. |
+
+**Residual — revocation under coercion, and the absent `acr` floor.** A person
+withdrawing access under duress is indistinguishable from one doing it freely,
+and the reverse case decided the design: this page deliberately does *not*
+require the session to reach the `acr` the grant was made at. Such a rule reads
+as prudent and fails in one direction only — somebody whose passkey has been
+lost or stolen is exactly the person who most needs to withdraw everything and
+would be the one locked out of doing it. Revocation is the safe direction, so
+the tenant's ladder is applied as admission and freshness as a bound on how
+stale a session may be, and nothing else stands between a person and closing
+their own door. Every withdrawal is written to the trail as `grant.revoked`
+with the deciding session and `reason=account_grants_page`, so one made under
+coercion is visible afterwards to the person and to an operator.
+
+**Residual — a withdrawal does not reach a resource server on its own.** An
+access token minted from a withdrawn grant is a signed JWT that still verifies;
+what refuses it is the cutoff the revocation writes, read on the resource path
+(`ast-m9c.13`). A resource server that does not consult this server sees
+nothing until the token expires. The transmitter that would tell it is
+`ast-0ju.8`, and the seam this page calls is named for whoever builds it.
+
 ### Load, and the token endpoint as a denial-of-service surface (`ast-p2l.8`)
 
 **Why this needs a section: FAPI 2.0 SP §6.1 moves the load onto this

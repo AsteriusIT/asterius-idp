@@ -337,6 +337,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "grant_withdrawal_form"
+path = "fuzz_targets/grant_withdrawal_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "id_token_claims"
 path = "fuzz_targets/id_token_claims.rs"
 test = false

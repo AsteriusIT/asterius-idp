@@ -43,10 +43,11 @@
 use crate::csp::Nonce;
 use crate::i18n::Catalog;
 use crate::pages::{
-    ApprovalLine, ApprovalsPage, ConsentPage, DetailLine, DeviceConfirmationPage,
-    DeviceOutcomePage, DevicePage, EmailVerificationPage, ErrorPage, FormPostPage, LoggedOutPage,
-    LoginPage, LogoutConfirmationPage, NewPasswordPage, PasskeyPage, PasswordResetRequestPage,
-    PasswordResetSentPage, RegistrationPage, ResponseField, ScopeLine, nonce_attribute, render,
+    ApprovalLine, ApprovalsPage, ConsentPage, DelegationLine, DetailLine, DeviceConfirmationPage,
+    DeviceOutcomePage, DevicePage, EmailVerificationPage, ErrorPage, FormPostPage, GrantLine,
+    GrantsPage, LoggedOutPage, LoginPage, LogoutConfirmationPage, NewPasswordPage, PasskeyPage,
+    PasswordResetRequestPage, PasswordResetSentPage, RegistrationPage, ResponseField, ScopeLine,
+    nonce_attribute, render,
 };
 use asterius_domain::Locale;
 use std::path::{Path, PathBuf};
@@ -375,6 +376,57 @@ fn approvals(text: &Catalog, waiting: bool) -> String {
     })
 }
 
+/// The grants dashboard (`ast-uwv.6`), with and without anything standing.
+///
+/// The populated rendering is deliberately the awkward one: an agent grant,
+/// owned by somebody, with RAR elements, resources and a delegation under it.
+/// A snapshot of the easy case would not notice the day the owner or the `act`
+/// chain stopped rendering.
+fn grants(text: &Catalog, standing: bool) -> String {
+    let grants = if standing {
+        vec![GrantLine {
+            reference: "9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f".to_owned(),
+            client_name: CLIENT.to_owned(),
+            agent_owner: Some(USER.to_owned()),
+            scopes: vec![ScopeLine {
+                name: "payments".to_owned(),
+                description: Some("read your payment history".to_owned()),
+                required: true,
+            }],
+            authorization_details: vec![DetailLine {
+                name: "payment_initiation".to_owned(),
+                description: Some("move money on your behalf".to_owned()),
+                locations: vec!["https://api.example/payments".to_owned()],
+                actions: vec!["initiate".to_owned()],
+                datatypes: vec!["account".to_owned()],
+            }],
+            resources: vec!["https://api.example/".to_owned()],
+            granted_at: "2026-01-01T00:00:00Z".to_owned(),
+            last_used: Some("2026-01-02T09:30:00Z".to_owned()),
+            last_exchange: Some("2026-01-02T09:31:00Z".to_owned()),
+            delegations: vec![DelegationLine {
+                client_name: "Reporting".to_owned(),
+                actors: vec!["ada".to_owned(), "assistant".to_owned()],
+                delegated_at: "2026-01-02T09:31:00Z".to_owned(),
+            }],
+        }]
+    } else {
+        Vec::new()
+    };
+    render(&GrantsPage {
+        text,
+        tenant_name: TENANT,
+        grants,
+        action: "/account/grants/revoke",
+        sign_in_href: "/account/grants/sign-in",
+        csrf: CSRF,
+        message: None,
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
+
 fn registration(text: &Catalog) -> String {
     render(&RegistrationPage {
         text,
@@ -456,7 +508,7 @@ fn new_password(text: &Catalog) -> String {
 /// `ast-ndk.5` moved the authorization journey. Everything else in
 /// [`every_page`] is still English under whatever `lang` it is handed; see this
 /// module's documentation.
-const TRANSLATED: [&str; 8] = [
+const TRANSLATED: [&str; 10] = [
     "login",
     "consent",
     "error",
@@ -467,6 +519,11 @@ const TRANSLATED: [&str; 8] = [
     // page most likely to be read in a hurry on somebody's own phone.
     "approvals",
     "approvals.empty",
+    // `ast-uwv.6`'s dashboard, for the inbox's reason and one of its own: a
+    // page whose buttons withdraw access has to be readable by the person
+    // pressing them.
+    "grants",
+    "grants.empty",
 ];
 
 /// Every snapshot this crate keeps, as `(name, locale, rendering)`.
@@ -492,6 +549,8 @@ fn every_page(locale: Locale) -> Vec<(&'static str, String)> {
         ("device_done.refused", device_outcome(text, false)),
         ("approvals", approvals(text, true)),
         ("approvals.empty", approvals(text, false)),
+        ("grants", grants(text, true)),
+        ("grants.empty", grants(text, false)),
         ("register", registration(text)),
         ("verify_email", email_verification(text, false)),
         ("verify_email.confirmed", email_verification(text, true)),

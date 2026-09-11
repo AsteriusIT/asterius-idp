@@ -17,6 +17,7 @@ pub fn font_url(mount: &crate::tenancy::MountPrefix) -> String {
 }
 
 pub mod access_token;
+pub mod account_grants;
 pub mod approvals;
 pub mod assets;
 pub mod authorization_code;
