@@ -5,15 +5,16 @@
 //! > Event Receiver MAY include a `state` value in the request, and the
 //! > Event Transmitter MUST include that value in the Verification Event.
 //!
-//! §8.1.4 gives the receiver a request endpoint for this. This build has no
-//! such endpoint yet (`ast-0ju.4`); what it has is an operator, in the
-//! console, who wants to know whether a stream still reaches its receiver.
-//! The event they trigger is the *same* event §8.1.4 defines — the same
-//! type URI, the same `sub_id` (the stream, as an `opaque` identifier, which
-//! is what the section's example carries) and the same optional `state` — so
-//! a receiver written to §8.1.4 handles it without knowing who asked. When
-//! `ast-0ju.4` lands the endpoint, it builds the same event through
-//! [`verification_event`].
+//! §8.1.4.2 gives the receiver a request endpoint for this, and `ast-0ju.5`
+//! built it: a receiver posts `{stream_id, state}`
+//! ([`crate::management::VerificationRequest`]) and gets 204, or 429 if it
+//! asked again inside `min_verification_interval`. An *operator* can trigger
+//! the same event from the console (`ast-f7m.8`). Both build it through
+//! [`verification_event`], so the SET a receiver gets is the same one either
+//! way — the same type URI, the same `sub_id` (the stream, as an `opaque`
+//! identifier, which is what the section's example carries) and the same
+//! optional `state` — and a receiver written to §8.1.4 handles it without
+//! knowing who asked.
 //!
 //! # `state` is a correlation value, not free text
 //!
@@ -40,7 +41,7 @@ pub const VERIFICATION: &str = "https://schemas.openid.net/secevent/ssf/event-ty
 pub const MAX_STATE_LEN: usize = 256;
 
 /// Why a `state` was refused.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum StateError {
     /// Given and empty. Absent is fine; empty is a value nothing can match.
     #[error("state must not be empty")]

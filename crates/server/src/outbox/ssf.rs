@@ -136,6 +136,32 @@ pub trait PushStreams: std::fmt::Debug + Send + Sync {
         stream: &StreamId,
     ) -> Result<Option<PushTarget>, DomainError>;
 
+    /// Tells the receiver that its stream is about to stop (SSF 1.0 §8.1.5).
+    ///
+    /// Called immediately *before* [`Self::pause`], because §8.1.5 requires
+    /// the stream-updated event to be sent "before the stream is paused or
+    /// disabled". Queued while the stream is still enabled, it is a SET the
+    /// queue accepts; announced after the pause, it would be one the pause
+    /// itself holds back.
+    ///
+    /// The SET bypasses `events_requested` and the stream's subject
+    /// membership, as §8.1.4's verification event does — see
+    /// [`crate::ssf::StreamSignals`].
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] if the stream cannot be read, or the SET cannot be
+    /// built, signed or queued. The caller logs it and pauses the stream
+    /// anyway: a receiver that cannot be told is usually the reason the
+    /// stream is being paused.
+    async fn announce_pause(
+        &self,
+        tenant: &TenantId,
+        stream: &StreamId,
+        reason: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
     /// Stops delivery on the stream, recording why (SSF 1.0 §8.1.2).
     ///
     /// # Errors
@@ -163,10 +189,17 @@ pub trait PushStreams: std::fmt::Debug + Send + Sync {
 }
 
 /// [`PushStreams`] over `PostgreSQL`.
+///
+/// It holds a signer and the tenant directory as well as the rows, because
+/// §8.1.5's announcement is a *signed* SET: the worker that pauses a stream
+/// has to be able to tell the receiver so, and the key that signs that SET is
+/// the tenant's own — the same one the emitters and the console sign with.
 #[derive(Clone)]
 pub struct PgPushStreams {
     store: Store,
     kek: Arc<dyn Kek>,
+    signer: Arc<dyn asterius_domain::keys::Signer>,
+    tenants: Arc<dyn asterius_domain::ports::TenantRepository>,
 }
 
 impl std::fmt::Debug for PgPushStreams {
@@ -176,10 +209,21 @@ impl std::fmt::Debug for PgPushStreams {
 }
 
 impl PgPushStreams {
-    /// Builds the adapter over the process's store and key-encryption key.
+    /// Builds the adapter over the process's store, key-encryption key,
+    /// signer and tenant directory.
     #[must_use]
-    pub const fn new(store: Store, kek: Arc<dyn Kek>) -> Self {
-        Self { store, kek }
+    pub const fn new(
+        store: Store,
+        kek: Arc<dyn Kek>,
+        signer: Arc<dyn asterius_domain::keys::Signer>,
+        tenants: Arc<dyn asterius_domain::ports::TenantRepository>,
+    ) -> Self {
+        Self {
+            store,
+            kek,
+            signer,
+            tenants,
+        }
     }
 
     fn streams(&self, tenant: &TenantId) -> asterius_store_pg::PgSsfStreams {
@@ -197,6 +241,43 @@ impl PushStreams for PgPushStreams {
         stream: &StreamId,
     ) -> Result<Option<PushTarget>, DomainError> {
         self.streams(tenant).for_delivery(stream).await
+    }
+
+    async fn announce_pause(
+        &self,
+        tenant: &TenantId,
+        stream: &StreamId,
+        reason: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let Some(subscription) = self.streams(tenant).subscription(stream).await? else {
+            // The stream was deleted under the delivery (§8.1.1.5). There is
+            // nobody to announce a pause to, and `pause` will report the same.
+            return Ok(());
+        };
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let queues = crate::outbox::PgSsfQueues::new(
+            self.store.clone(),
+            tenant.clone(),
+            Arc::clone(&self.kek),
+        );
+        crate::ssf::StreamSignals {
+            tenant,
+            issuer: &tenant_entity.issuer,
+            queues: &queues,
+            signer: self.signer.as_ref(),
+        }
+        .announce_status(
+            &subscription,
+            asterius_ssf::stream::StreamStatus::Paused,
+            Some(reason),
+            now,
+        )
+        .await
     }
 
     async fn pause(
@@ -286,12 +367,37 @@ impl SsfPushDeliverer {
         let _ = stream;
     }
 
-    /// Pauses the stream and says so in the trail (SSF 1.0 §8.1.2).
+    /// Pauses the stream and says so in the trail (SSF 1.0 §8.1.2), having
+    /// first told the receiver (§8.1.5).
     ///
     /// Called when a SET has spent RFC 8935 §2.4's retries. The dead letter
     /// records the one SET; this is what records that the rest are not being
     /// attempted either.
+    ///
+    /// The stream-updated event is queued **before** the status is written,
+    /// which is the order §8.1.5 requires: while the stream is still enabled
+    /// the queue takes the SET, and a paused stream then holds it (§8.1.2)
+    /// until somebody re-enables the stream — at which point the receiver
+    /// learns both that it was paused and that it is back. Announcing after
+    /// the write would queue the same SET into a stream that is already
+    /// holding everything, with nothing to distinguish it from the backlog.
+    ///
+    /// An announcement that cannot be made does not stop the pause: the
+    /// receiver has just failed every retry, so being unable to tell it
+    /// anything is the expected case here, not a reason to keep delivering.
     async fn pause(&self, tenant: &TenantId, stream: &StreamId, reason: &str) {
+        if let Err(error) = self
+            .streams
+            .announce_pause(tenant, stream, reason, self.clock.now())
+            .await
+        {
+            tracing::warn!(
+                %error,
+                tenant = %tenant,
+                stream = %stream.as_str(),
+                "an SSF stream was paused without the receiver being told",
+            );
+        }
         match self
             .streams
             .pause(tenant, stream, reason, self.clock.now())
@@ -662,6 +768,11 @@ mod tests {
         target: Mutex<Option<PushTarget>>,
         paused: Mutex<Option<String>>,
         counted: Mutex<Vec<bool>>,
+        /// What this stream was told and when, in order: `"announced"` for
+        /// §8.1.5's stream-updated event and `"paused"` for the write. The
+        /// order is the assertion — §8.1.5 requires the first before the
+        /// second.
+        trail: Mutex<Vec<&'static str>>,
     }
 
     impl FakeStreams {
@@ -670,6 +781,7 @@ mod tests {
                 target: Mutex::new(target),
                 paused: Mutex::new(None),
                 counted: Mutex::new(Vec::new()),
+                trail: Mutex::new(Vec::new()),
             })
         }
 
@@ -689,6 +801,10 @@ mod tests {
         fn counts(&self) -> Vec<bool> {
             self.counted.lock().expect("not poisoned").clone()
         }
+
+        fn trail(&self) -> Vec<&'static str> {
+            self.trail.lock().expect("not poisoned").clone()
+        }
     }
 
     #[async_trait::async_trait]
@@ -701,6 +817,17 @@ mod tests {
             Ok(self.target.lock().expect("not poisoned").clone())
         }
 
+        async fn announce_pause(
+            &self,
+            _tenant: &TenantId,
+            _stream: &StreamId,
+            _reason: &str,
+            _now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            self.trail.lock().expect("not poisoned").push("announced");
+            Ok(())
+        }
+
         async fn pause(
             &self,
             _tenant: &TenantId,
@@ -708,6 +835,7 @@ mod tests {
             reason: &str,
             _now: OffsetDateTime,
         ) -> Result<bool, DomainError> {
+            self.trail.lock().expect("not poisoned").push("paused");
             let mut paused = self.paused.lock().expect("not poisoned");
             if paused.is_some() {
                 return Ok(false);
@@ -781,7 +909,7 @@ mod tests {
     }
 
     fn deliverer(
-        streams: Arc<FakeStreams>,
+        streams: Arc<dyn PushStreams>,
         receiver: Arc<FakeReceiver>,
         trail: Arc<Trail>,
     ) -> SsfPushDeliverer {
@@ -804,7 +932,7 @@ mod tests {
         let trail = Arc::new(Trail::default());
         let stream = stream();
         let deliverer = deliverer(
-            Arc::clone(&streams),
+            Arc::clone(&streams) as Arc<dyn PushStreams>,
             Arc::clone(&receiver),
             Arc::clone(&trail),
         );
@@ -857,7 +985,11 @@ mod tests {
         ))]);
         let streams = FakeStreams::pushing(None);
         let trail = Arc::new(Trail::default());
-        let deliverer = deliverer(Arc::clone(&streams), receiver, Arc::clone(&trail));
+        let deliverer = deliverer(
+            Arc::clone(&streams) as Arc<dyn PushStreams>,
+            receiver,
+            Arc::clone(&trail),
+        );
 
         // Act
         let refused = deliverer
@@ -907,7 +1039,11 @@ mod tests {
             // Arrange
             let receiver = FakeReceiver::answering(vec![Err((status, Vec::new()))]);
             let streams = FakeStreams::pushing(None);
-            let deliverer = deliverer(Arc::clone(&streams), receiver, Arc::new(Trail::default()));
+            let deliverer = deliverer(
+                Arc::clone(&streams) as Arc<dyn PushStreams>,
+                receiver,
+                Arc::new(Trail::default()),
+            );
 
             // Act
             let failed = deliverer
@@ -934,7 +1070,11 @@ mod tests {
         let receiver = FakeReceiver::answering(vec![Err((503, Vec::new()))]);
         let streams = FakeStreams::pushing(None);
         let trail = Arc::new(Trail::default());
-        let deliverer = deliverer(Arc::clone(&streams), receiver, Arc::clone(&trail));
+        let deliverer = deliverer(
+            Arc::clone(&streams) as Arc<dyn PushStreams>,
+            receiver,
+            Arc::clone(&trail),
+        );
 
         // Act
         let failed = deliverer
@@ -951,13 +1091,101 @@ mod tests {
         assert!(trail.types().contains(&EventType::SSF_STREAM_PAUSED));
     }
 
+    /// **SSF 1.0 §8.1.5**: the receiver is told *before* the stream stops.
+    ///
+    /// > The Transmitter MUST send this event to the Receiver before the
+    /// > stream is paused or disabled.
+    ///
+    /// Announced first, the SET is queued while the stream still takes
+    /// events; announced after the write, it would be queued into a stream
+    /// that is already holding everything.
+    #[tokio::test]
+    async fn a_transmitter_initiated_pause_announces_itself_before_it_takes_effect() {
+        // Arrange
+        let receiver = FakeReceiver::answering(vec![Err((503, Vec::new()))]);
+        let streams = FakeStreams::pushing(None);
+        let deliverer = deliverer(
+            Arc::clone(&streams) as Arc<dyn PushStreams>,
+            receiver,
+            Arc::new(Trail::default()),
+        );
+
+        // Act
+        let _ = deliverer.deliver(&row(&stream(), 10, 10)).await;
+
+        // Assert
+        assert_eq!(streams.trail(), vec!["announced", "paused"]);
+    }
+
+    /// A receiver that cannot be told is usually *why* the stream is being
+    /// paused, so a failed announcement must not leave it delivering.
+    #[tokio::test]
+    async fn a_pause_that_cannot_be_announced_still_pauses_the_stream() {
+        // Arrange
+        #[derive(Debug)]
+        struct Mute(Arc<FakeStreams>);
+
+        #[async_trait::async_trait]
+        impl PushStreams for Mute {
+            async fn target(
+                &self,
+                tenant: &TenantId,
+                stream: &StreamId,
+            ) -> Result<Option<PushTarget>, DomainError> {
+                self.0.target(tenant, stream).await
+            }
+
+            async fn announce_pause(
+                &self,
+                _tenant: &TenantId,
+                _stream: &StreamId,
+                _reason: &str,
+                _now: OffsetDateTime,
+            ) -> Result<(), DomainError> {
+                Err(DomainError::invalid("ssf.set", "the receiver is gone"))
+            }
+
+            async fn pause(
+                &self,
+                tenant: &TenantId,
+                stream: &StreamId,
+                reason: &str,
+                now: OffsetDateTime,
+            ) -> Result<bool, DomainError> {
+                self.0.pause(tenant, stream, reason, now).await
+            }
+
+            async fn count_attempt(
+                &self,
+                tenant: &TenantId,
+                stream: &StreamId,
+                delivered: bool,
+            ) -> Result<(), DomainError> {
+                self.0.count_attempt(tenant, stream, delivered).await
+            }
+        }
+
+        let inner = FakeStreams::pushing(None);
+        let deliverer = deliverer(
+            Arc::new(Mute(Arc::clone(&inner))),
+            FakeReceiver::answering(vec![Err((503, Vec::new()))]),
+            Arc::new(Trail::default()),
+        );
+
+        // Act
+        let _ = deliverer.deliver(&row(&stream(), 10, 10)).await;
+
+        // Assert
+        assert!(inner.pause_reason().is_some());
+    }
+
     /// §8.1.1.5: a stream that is gone is not delivered to, and the SET is not
     /// retried into a stream that is not coming back.
     #[tokio::test]
     async fn a_deleted_stream_is_a_permanent_failure() {
         // Arrange
         let deliverer = deliverer(
-            FakeStreams::holding(None),
+            FakeStreams::holding(None) as Arc<dyn PushStreams>,
             FakeReceiver::answering(Vec::new()),
             Arc::new(Trail::default()),
         );
@@ -1039,6 +1267,16 @@ mod tests {
                 _tenant: &TenantId,
                 _stream: &StreamId,
             ) -> Result<Option<PushTarget>, DomainError> {
+                Err(DomainError::invalid("ssf_streams", "the store is down"))
+            }
+
+            async fn announce_pause(
+                &self,
+                _tenant: &TenantId,
+                _stream: &StreamId,
+                _reason: &str,
+                _now: OffsetDateTime,
+            ) -> Result<(), DomainError> {
                 Err(DomainError::invalid("ssf_streams", "the store is down"))
             }
 
@@ -1129,7 +1367,7 @@ mod tests {
         // Arrange
         let streams = FakeStreams::pushing(Some("Bearer secret-value"));
         let deliverer = deliverer(
-            Arc::clone(&streams),
+            Arc::clone(&streams) as Arc<dyn PushStreams>,
             FakeReceiver::answering(Vec::new()),
             Arc::new(Trail::default()),
         );

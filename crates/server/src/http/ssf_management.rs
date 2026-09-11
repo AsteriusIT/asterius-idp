@@ -1,9 +1,35 @@
-//! The SSF stream status and subject endpoints (SSF 1.0 §8.1.2, §8.1.3).
+//! The SSF stream status, subject and verification endpoints (SSF 1.0
+//! §8.1.2, §8.1.3, §8.1.4.2).
 //!
-//! Three URLs beside the stream configuration endpoint: the status endpoint
+//! Four URLs beside the stream configuration endpoint: the status endpoint
 //! ([`STATUS_PATH`], `GET` for §8.1.2.1 and `POST` for §8.1.2.2), the
-//! add-subject endpoint ([`ADD_SUBJECT_PATH`], §8.1.3.2) and the
-//! remove-subject endpoint ([`REMOVE_SUBJECT_PATH`], §8.1.3.3).
+//! add-subject endpoint ([`ADD_SUBJECT_PATH`], §8.1.3.2), the
+//! remove-subject endpoint ([`REMOVE_SUBJECT_PATH`], §8.1.3.3) and the
+//! verification endpoint ([`VERIFICATION_PATH`], §8.1.4.2).
+//!
+//! # The verification endpoint (§8.1.4.2)
+//!
+//! > The Event Receiver [...] makes a request to the verification endpoint
+//! > with the `stream_id` and an optional `state`. [...] a successful
+//! > response is 204 No Content. [...] the Event Transmitter MAY transmit the
+//! > verification event asynchronously.
+//!
+//! This one is asynchronous: the SET is built, signed and put on the stream's
+//! own queue — the poll table or the outbox, whichever the stream uses — and
+//! the endpoint answers 204 once the queue has it. What it does *not* do is
+//! consult `events_requested` or the stream's subject membership. §8.1.4's
+//! event is about the stream, its `sub_id` is the stream as an `opaque`
+//! identifier, and a receiver cannot sensibly have to subscribe to the answer
+//! to a question it just asked. The same is true of §8.1.5's stream-updated
+//! event, which [`asterius_ssf::stream_updated`] documents.
+//!
+//! §8.1.4.2's rate is the *stream's*, not the caller's: a second request
+//! inside `min_verification_interval` is 429 with a `Retry-After`, decided by
+//! one `UPDATE` on the stream's row
+//! ([`asterius_store_pg::PgSsfStreams::claim_verification`]) so that two
+//! requests arriving together cannot both be admitted. The endpoint-wide
+//! limiter of §9.1 is not involved: it counts a *receiver's* requests across
+//! its streams, and §8.1.4.2's rule is per stream.
 //!
 //! The *semantics* are [`asterius_ssf::management`] and
 //! [`asterius_ssf::subject`], which have no database and no HTTP. What is here
@@ -70,7 +96,9 @@ use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Ou
 use asterius_domain::keys::KeyStore;
 use asterius_domain::{ClientId, DomainError, LimitedEndpoint, Tenant};
 use asterius_oidc::userinfo::{self, UserInfoError};
-use asterius_ssf::management::{ManagementError, StatusRequest, SubjectRequest};
+use asterius_ssf::management::{
+    ManagementError, StatusRequest, SubjectRequest, VerificationRequest,
+};
 use asterius_ssf::stream::{self, StreamId, StreamStatus};
 use asterius_ssf::subject::Subject;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -91,6 +119,9 @@ pub const ADD_SUBJECT_PATH: &str = "/ssf/streams/subjects:add";
 
 /// Where a receiver removes a subject (§8.1.3.3).
 pub const REMOVE_SUBJECT_PATH: &str = "/ssf/streams/subjects:remove";
+
+/// Where a receiver asks for a verification event (§8.1.4.2).
+pub const VERIFICATION_PATH: &str = "/ssf/streams/verification";
 
 /// The largest body either endpoint reads.
 ///
@@ -216,7 +247,52 @@ pub trait SsfManagementStore: SsfTokenStatus {
     ) -> Result<bool, DomainError>;
 }
 
-/// What one status or subject request needs.
+/// What a verification request did (§8.1.4.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verified {
+    /// The SET is on the stream's queue. §8.1.4.2's 204.
+    Queued,
+    /// Asked for again inside `min_verification_interval`. §8.1.4.2's 429,
+    /// with the seconds left as the `Retry-After`.
+    TooSoon {
+        /// Seconds to wait, never below one.
+        retry_after: i64,
+    },
+    /// No such stream for this receiver. §8.1.4.2's 404.
+    NoSuchStream,
+}
+
+/// Signs and queues §8.1.4's verification event for one receiver.
+///
+/// A port of its own rather than a method on [`SsfManagementStore`], because
+/// this is the one management operation that is not a row: it builds a SET,
+/// signs it with the tenant's key and puts it on the stream's queue. The
+/// production implementation is in `crate::http::protocol`, over the same
+/// [`crate::ssf::SsfTransmitter`] the emitters and the console use — one
+/// place that decides what a verification event looks like.
+///
+/// The interval of §8.1.4.2 is the implementation's to enforce *before* it
+/// signs anything, so a receiver cannot use this endpoint as a signing oracle
+/// by asking faster than it is answered.
+#[async_trait::async_trait]
+pub trait SsfVerifier: std::fmt::Debug + Send + Sync {
+    /// Queues one verification event on this receiver's stream.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] if the stream cannot be read, or the SET cannot be
+    /// built, signed or queued — in which case nothing was queued and the
+    /// caller must not answer 204.
+    async fn verify(
+        &self,
+        receiver: &ClientId,
+        stream: &StreamId,
+        state: Option<&asterius_ssf::VerificationState>,
+        now: OffsetDateTime,
+    ) -> Result<Verified, DomainError>;
+}
+
+/// What one status, subject or verification request needs.
 pub struct SsfManagementContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
@@ -224,6 +300,8 @@ pub struct SsfManagementContext<'a> {
     pub store: &'a dyn SsfManagementStore,
     /// Who a subject identifier names, if this server can tell.
     pub directory: &'a dyn SubjectDirectory,
+    /// Signs and queues §8.1.4's verification event.
+    pub verifier: &'a dyn SsfVerifier,
     /// Where the tenant's published keys come from.
     pub keys: &'a dyn KeyStore,
     /// Checks the DPoP proof (RFC 9449 §7.1).
@@ -270,6 +348,12 @@ enum Refused {
     /// The stream holds as many subjects as it may (§8.1.3.2's 400 case that
     /// is about the receiver's own quota rather than about a subject).
     TooManySubjects,
+    /// §8.1.4.2's 429: this stream was verified less than
+    /// `min_verification_interval` ago.
+    TooSoon {
+        /// Seconds until the next verification is admitted.
+        retry_after: i64,
+    },
     /// A verb this endpoint does not answer.
     MethodNotAllowed,
     /// A DPoP proof that did not check out (RFC 9449 §7.1).
@@ -337,6 +421,66 @@ pub async fn subjects(
     match answer_subjects(&context, membership, method, headers, body).await {
         Ok(response) => response,
         Err(refusal) => render(&context, refusal),
+    }
+}
+
+/// The verification endpoint: `POST` at [`VERIFICATION_PATH`] (§8.1.4.2).
+///
+/// Never returns `Err`: every failure is an HTTP response.
+pub async fn verification(
+    context: SsfManagementContext<'_>,
+    method: &Method,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    match answer_verification(&context, method, headers, body).await {
+        Ok(response) => response,
+        Err(refusal) => render(&context, refusal),
+    }
+}
+
+/// §8.1.4.2.
+async fn answer_verification(
+    context: &SsfManagementContext<'_>,
+    method: &Method,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<Response, Refused> {
+    if method != Method::POST {
+        return Err(Refused::MethodNotAllowed);
+    }
+    let receiver = authorize(context, VERIFICATION_PATH, method, headers).await?;
+    let request = VerificationRequest::parse(&parse(body)?)?;
+    let stream = request.addressed_stream()?.clone();
+
+    match context
+        .verifier
+        .verify(&receiver, &stream, request.state.as_ref(), context.now)
+        .await?
+    {
+        Verified::Queued => {
+            record(
+                context,
+                &receiver,
+                EventType::SSF_VERIFICATION_REQUESTED,
+                &stream,
+                // Whether a `state` was given, never which: it is the
+                // receiver's correlation value and the trail has no use for
+                // it — the same rule the console's route follows.
+                Detail::new().label(
+                    "state",
+                    if request.state.is_some() {
+                        "given"
+                    } else {
+                        "absent"
+                    },
+                ),
+            )
+            .await;
+            Ok(no_store(StatusCode::NO_CONTENT.into_response()))
+        }
+        Verified::TooSoon { retry_after } => Err(Refused::TooSoon { retry_after }),
+        Verified::NoSuchStream => Err(Refused::NotFound),
     }
 }
 
@@ -650,6 +794,21 @@ fn render(context: &SsfManagementContext<'_>, refusal: Refused) -> Response {
             "invalid_request",
             "this stream already holds as many subjects as this transmitter allows",
         ),
+        // §8.1.4.2: the refusal is about this stream's schedule and says so,
+        // with the wait a well-behaved receiver honours. No `state` and no
+        // stream identifier in the sentence: the caller sent both and the
+        // message reaches a log.
+        Refused::TooSoon { retry_after } => {
+            let mut response = problem(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_requests",
+                "this stream was verified less than min_verification_interval ago",
+            );
+            if let Ok(value) = HeaderValue::from_str(&retry_after.to_string()) {
+                response.headers_mut().insert(header::RETRY_AFTER, value);
+            }
+            response
+        }
         Refused::MethodNotAllowed => no_store(StatusCode::METHOD_NOT_ALLOWED.into_response()),
         Refused::Dpop(refusal) => dpop_challenge(&refusal),
         Refused::Server(error) => {

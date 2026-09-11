@@ -332,7 +332,7 @@ it, and a rule about what it will not touch.
 | Attacker | Goal | Attack it enables | Control | Bead |
 |---|---|---|---|---|
 | A1, A5 | G2, G3 | **Requeue as a replay engine, or a way to reorder.** A retry makes this server post a signed statement about a person to a receiver again; a retry of a `notification.account_recovery` re-sends a reset link nobody asked for twice; and a row put back behind the rows that overtook it while it was abandoned arrives out of the order its ordering key promised | The two routes accept `ssf.*` rows and answer 409 for any other family (`asterius_admin_api::outbox::is_retryable`; the listing reports `retryable` so the console cannot offer what the server refuses). An SSF receiver deduplicates on `jti` (RFC 8417 §1.2) and orders on `event_timestamp`, so a late SET is a late signal and not a wrong one — which is the property the family rule is stated on, and why extending it to another family is a decision and not an edit. `admin.outbox:write` is a scope of its own beside the read the dead-letter screen is granted on, and each retry or drop is `outbox.retried` / `outbox.dropped` with the row, its kind, its attempt count and the receiver's last word under the operator's name; the drop's record is the only trace of the row once it is gone. The retry raises the budget rather than resetting the attempt counter, so the attempts trail keyed on `(row, attempt)` keeps the first run's history beside the second's | `ast-f7m.8`, `ast-0ju.9` |
-| A1, A3 | G2 | **Verification as a signal flood.** §8.1.4's event is a signed SET posted to a receiver; a button that sends one per click, from a session an attacker holds, is a way to make this server post to a receiver at will | `admin.ssf:write`, held by the administrators and not by the auditor or support; a `POST` with an `Idempotency-Key`, so a retried click is one SET; the admin API's per-address and per-operation fixed-window buckets (`ast-f7m.1`); and the SET goes on the stream's own queue, where the push worker's attempt budget, backoff and pause rule bound what one stream costs (`ast-0ju.6`). `min_verification_interval` is advertised for the receiver's endpoint (`ast-0ju.4`) and is not enforced against the operator: the operator is the party the interval protects. Recorded as `ssf.verification_requested` with the stream fingerprinted and whether a `state` was given — never the `state`, which is a correlation value the receiver compares against | `ast-f7m.8`, `ast-0ju.6` |
+| A1, A3 | G2 | **Verification as a signal flood.** §8.1.4's event is a signed SET posted to a receiver; a button that sends one per click, from a session an attacker holds, is a way to make this server post to a receiver at will | `admin.ssf:write`, held by the administrators and not by the auditor or support; a `POST` with an `Idempotency-Key`, so a retried click is one SET; the admin API's per-address and per-operation fixed-window buckets (`ast-f7m.1`); and the SET goes on the stream's own queue, where the push worker's attempt budget, backoff and pause rule bound what one stream costs (`ast-0ju.6`). `min_verification_interval` is enforced at the receiver's own endpoint (`ast-0ju.5`) and deliberately not against the operator: the operator is the party the interval protects, and an operator's verification does not consume the receiver's. Recorded as `ssf.verification_requested` with the stream fingerprinted and whether a `state` was given — never the `state`, which is a correlation value the receiver compares against | `ast-f7m.8`, `ast-0ju.6` |
 | A1 | G1 | **A `state` or a reason as an injection.** Both are operator-typed text; `state` is copied verbatim into a signed token a receiver parses, and a reason is written to the stream row, shown on the console and read back by the receiver when `ast-0ju.4` lands | `VerificationState::parse` and `parse_status_request` are the only ways in, both fuzzed (`ssf_verification_state`, `admin_stream_status`): bounded to 256 characters, refused on a control character, a status other than `enabled` or `paused` refused — `disabled` is the receiver's state (§8.1.2) and an operator does not write it — and every refusal names the rule without echoing the value. The rendered stream document has no endpoint and no credential member at all (a test asserts on the serialized member set), because a push endpoint may carry a token in its query string and the credential is sealed for a reason | `ast-f7m.8` |
 | A1, A5 | G4 | **Export from a screen that shows it to everybody.** The console draws an "Export as NDJSON" link; a link the wrong session can follow is a download prompt for the whole trail | The link is a same-origin anchor and not a fetch — the browser's downloader streams it, so the tab never holds a hundred thousand lines — and it is drawn only for a session whose `GET /session` scopes carry `admin.audit:read`, which is also what the screen opens with. None of that is the control: `GET /audit/events/export` answers 403 to a support agent's session and 401 to no session, asserted in the admin API's handler tests and in the browser sweep, and the export's own bounds and rendering are unchanged from `ast-lh3.9` above | `ast-f7m.8`, `ast-lh3.9` |
 
@@ -937,8 +937,43 @@ costs is a bounded number of rows naming identifiers no event will match.
 (`ast-0ju.8`), so a membership is today a subscription to a stream that is
 correct, tested and permanently empty; the status of a stream is not yet
 something *this server* changes on its own, so §8.1.1's `inactivity_timeout`
-still leads to no automatic pause and the stream-updated event that would
-announce one is `ast-0ju.5`.
+still leads to no automatic pause; the stream-updated event that announces a
+pause is the section below.
+
+### SSF verification and stream-updated events (`ast-0ju.5`)
+
+**Why this needs a section: a receiver can now make this server sign a token
+on demand, and this server now tells a receiver when it stops delivering.**
+§8.1.4.2 adds an endpoint whose whole effect is "mint a signed SET and queue
+it", which is a signing oracle unless it is rated; §8.1.5 adds a SET this
+server sends *about the stream itself*, which is the one signal a receiver
+must get even when it has subscribed to nothing.
+
+**The frontier: both SETs are about a stream, never about a person.** The
+`sub_id` of each is the stream as an `opaque` identifier (§8.1.4, §8.1.5), so
+no subject is derived, no receiver sector is consulted, and neither event can
+carry a personal identifier to anybody. That is also why both bypass
+`events_requested` and the subject membership without widening anything: there
+is nothing in them a receiver was not already entitled to know.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1**, **A3** | **G3** | **Verification as a signing oracle.** A receiver posts to the verification endpoint in a loop, making the tenant's key sign a token per request and filling the stream's queue. | §8.1.4.2's `min_verification_interval` is enforced per *stream*, in one `UPDATE` that both checks and records the instant (`PgSsfStreams::claim_verification`), so two concurrent requests cannot both be admitted — and the interval is claimed **before** anything is signed, so a refused request costs a statement rather than a signature. Over the interval the answer is 429 with `Retry-After`. The column survives a restart, which a window in process memory would not. |
+| **A1** | **G1** | **Verifying somebody else's stream.** A receiver names another receiver's `stream_id` to learn that it exists, or to make this server post to it. | The `client_id` is in the `WHERE` clause of the claiming statement, so another receiver's stream is not a row it can reach: the answer is 404, the same as for a stream that never existed, and nothing is written. The token is audienced at the verification endpoint itself and sender-constrained like every other management call. |
+| **A1** | **G1** | **`state` as an injection into a signed token.** The `state` a receiver sends is echoed verbatim into a SET a third party parses and logs. | `VerificationRequest::parse` is the only way in, fuzzed (`ssf_verification_request`) on top of `ssf_verification_state`: bounded to 256 characters, refused on a control character, refused before anything is queued, and every refusal names the rule without echoing the value. The trail records *whether* a `state` was given, never which — it is the receiver's correlation value. |
+| **A2** | **G2** | **A silent stop.** The transmitter pauses a stream — an operator in the console, or the delivery worker after a receiver has spent its retries — and the receiver keeps assuming it is being told about revocations that are in fact piling up. | §8.1.5's event is queued **before** the status change takes effect, in both paths, so it is enqueued while the stream still accepts events; a re-enable announces after the write, so the announcement leaves rather than joining the backlog it ends. Neither announcement is filtered by `events_requested`. An announcement that cannot be queued is logged and never blocks the pause: a receiver that cannot be told is usually the reason the stream is stopping. |
+| **A5** | **G1** | **Verifying a stream and leaving no trace.** | Each admitted request is `ssf.verification_requested` with the receiver as the actor and the stream as a fingerprint, the same event the console's route writes — so an operator reading the trail cannot tell a flood apart from a schedule only by who asked, which is the distinction that matters. |
+
+**Residual, stated rather than closed:** a stream-updated event announcing a
+*pause* is queued, then held by the pause it announces (§8.1.2's "SHOULD
+hold"), so a receiver that polls learns of the pause when the stream is
+enabled again rather than at the moment it stops. Delivering it ahead of the
+pause would mean a synchronous push from a status change, which is the
+coupling `ast-0ju.6` exists to avoid; the honest reading is that a paused
+stream's receiver learns from its own verification request (§8.1.4.2), which
+is what that endpoint is for. A receiver-initiated status change (§8.1.2.2)
+emits nothing: the receiver already knows what it just asked for, and §8.1.5's
+MUST is about the transmitter's own decisions.
 
 ### Back-channel logout (`ast-o4u.2`)
 

@@ -37,7 +37,7 @@ use asterius_domain::ports::{Clock, TenantRepository as _};
 use asterius_domain::{
     Capabilities, ClientId, DomainError, Issuer, Tenant, TenantId, TenantStatus,
 };
-use asterius_jose::{Kek, LocalKek};
+use asterius_jose::{Kek, LocalKek, LocalKeyStore};
 use asterius_server::outbound::{PostError, PostRequest};
 use asterius_server::outbox::{
     OutboxWorker, PgPushStreams, SetPoster, SsfPushDeliverer, push_event,
@@ -160,6 +160,10 @@ struct Fixture {
     kek: Arc<dyn Kek>,
     receiver: Arc<FakeReceiver>,
     trail: Arc<Trail>,
+    /// The tenant's signing key. The worker signs now: SSF 1.0 §8.1.5 makes a
+    /// stream it pauses something the receiver is told about, and telling a
+    /// receiver is a signed SET (`ast-0ju.5`).
+    keys: Arc<LocalKeyStore>,
 }
 
 impl Fixture {
@@ -239,12 +243,17 @@ impl Fixture {
             .await
             .expect("register the receiver");
 
+        let keys = Arc::new(LocalKeyStore::new());
+        keys.generate(&tenant.id, asterius_domain::SigningAlgorithm::DEFAULT)
+            .expect("a tenant signing key");
+
         Some(Self {
             store,
             tenant,
             kek,
             receiver: FakeReceiver::answering(answers),
             trail: Arc::new(Trail::default()),
+            keys,
         })
     }
 
@@ -313,6 +322,11 @@ impl Fixture {
                 Arc::new(PgPushStreams::new(
                     self.store.clone(),
                     Arc::clone(&self.kek),
+                    Arc::clone(&self.keys) as Arc<dyn asterius_domain::keys::Signer>,
+                    Arc::new(PgTenantRepository::new(
+                        self.store.pool().clone(),
+                        Arc::clone(&self.kek),
+                    )),
                 )),
                 Arc::clone(&self.receiver) as Arc<dyn SetPoster>,
                 Arc::clone(&self.trail) as Arc<dyn asterius_domain::audit::AuditSink>,
@@ -432,7 +446,12 @@ db_test! {
 
         // Assert
         assert!(first.abandoned >= 1, "§2.4: a 4xx was retried: {first:?}");
-        assert_eq!(second.retrying, 1, "the next SET was not held: {second:?}");
+        // Two rows are held rather than one: the SET queued after the refusal,
+        // and SSF 1.0 §8.1.5's stream-updated event, which the worker queues
+        // *before* the pause takes effect (`ast-0ju.5`) and which the pause
+        // then holds like everything else (§8.1.2's "SHOULD hold"). Neither is
+        // posted, which is what the pause is for.
+        assert_eq!(second.retrying, 2, "the next SET was not held: {second:?}");
         let stats = fixture.stats(&stream).await;
         assert!(!stats.status.delivers(), "the stream kept delivering");
         assert!(

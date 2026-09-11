@@ -155,6 +155,29 @@ pub struct Subscription {
     pub delivery: DeliveryMethod,
 }
 
+/// What §8.1.4.2's interval check decided.
+///
+/// Three answers rather than an `Option`, because "no such stream for this
+/// receiver" is §8.1.4.2's 404 and "not yet" is its 429, and an endpoint that
+/// could not tell them apart would answer one of them wrongly — either
+/// telling a receiver that somebody else's stream exists, or hiding a real
+/// stream behind a rate limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerificationClaim {
+    /// The interval has elapsed and the instant has been written: the caller
+    /// owes this stream one verification event.
+    Granted(Box<Subscription>),
+    /// Verified too recently. How long until the next one is admitted, never
+    /// less than a second so that a `Retry-After` of `0` cannot invite an
+    /// immediate retry.
+    TooSoon {
+        /// Seconds to wait.
+        retry_after: i64,
+    },
+    /// No such stream for this receiver.
+    NoSuchStream,
+}
+
 /// One tenant's SSF streams.
 #[derive(Clone)]
 pub struct PgSsfStreams {
@@ -867,6 +890,87 @@ impl PgSsfStreams {
         .map_err(to_domain_error)?
         .rows_affected();
         Ok(affected > 0)
+    }
+
+    /// Claims one receiver-requested verification (SSF 1.0 §8.1.4.2).
+    ///
+    /// One statement, and that is the point: the interval check and the
+    /// instant it is measured from next time are the same `UPDATE`, so two
+    /// requests arriving together cannot both read "last verified long ago"
+    /// and both be admitted. A read followed by a write would make
+    /// `min_verification_interval` advisory under concurrency, which is the
+    /// one condition a receiver can create on purpose.
+    ///
+    /// The `client_id` is in the predicate for the reason the module
+    /// documentation gives: another receiver's stream is not a row this
+    /// statement can reach, so §8.1.4.2's 404 falls out rather than being
+    /// enforced above.
+    ///
+    /// A `paused` or `disabled` stream is claimed like any other: §8.1.4 is
+    /// how a receiver finds out whether a stream that is not delivering
+    /// could, and the queue decides what happens to the SET afterwards
+    /// (§8.1.2 holds it while paused).
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the statement fails, in which case nothing
+    /// was written and no verification is owed.
+    pub async fn claim_verification(
+        &self,
+        receiver: &ClientId,
+        stream: &StreamId,
+        min_interval: time::Duration,
+        now: OffsetDateTime,
+    ) -> Result<VerificationClaim, DomainError> {
+        let earliest = now - min_interval;
+        let claimed = sqlx::query!(
+            "update ssf_streams
+                set last_verification_at = $4
+              where tenant_id = $1 and client_id = $2 and stream_id = $3
+                and (last_verification_at is null or last_verification_at <= $5)
+          returning stream_id, client_id, audience, delivery_method",
+            self.tenant.as_str(),
+            receiver.as_str(),
+            stream.as_str(),
+            now,
+            earliest,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        if let Some(row) = claimed {
+            return Ok(VerificationClaim::Granted(Box::new(Subscription {
+                stream_id: parse_stream_id(&row.stream_id)?,
+                receiver: ClientId::new(&row.client_id),
+                audience: row.audience,
+                delivery: parse_delivery_method(&row.delivery_method)?,
+            })));
+        }
+
+        // Nothing was updated: either the stream is not this receiver's, or
+        // the interval has not elapsed. The second read is what tells them
+        // apart, and it runs only on the path that is already refusing.
+        let existing = sqlx::query!(
+            "select last_verification_at
+               from ssf_streams
+              where tenant_id = $1 and client_id = $2 and stream_id = $3",
+            self.tenant.as_str(),
+            receiver.as_str(),
+            stream.as_str(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        let Some(row) = existing else {
+            return Ok(VerificationClaim::NoSuchStream);
+        };
+        let last = row.last_verification_at.unwrap_or(now);
+        let wait = (last + min_interval) - now;
+        Ok(VerificationClaim::TooSoon {
+            retry_after: wait.whole_seconds().max(1),
+        })
     }
 
     /// The streams that asked for `event`, across every receiver of the tenant.

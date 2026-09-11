@@ -69,6 +69,7 @@ use asterius_domain::{
     ClientId, ClientRepository, DomainError, Issuer, SectorIdentifier, TenantId, UserId,
 };
 use asterius_ssf::caep::{self, EventDetails};
+use asterius_ssf::stream_updated::stream_updated_event;
 use asterius_ssf::verification::{VerificationState, verification_event};
 use asterius_ssf::{
     ComplexSubject, SecurityEvent, Set, SimpleSubject, StreamAudience, Subject, Txn,
@@ -434,9 +435,165 @@ impl SsfTransmitter<'_> {
         state: Option<&VerificationState>,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
+        self.about_streams().verify(subscription, state, now).await
+    }
+
+    /// Queues SSF 1.0 §8.1.5's stream-updated event on one stream
+    /// (`ast-0ju.5`).
+    ///
+    /// Delegates to [`StreamSignals::announce_status`], which is where the
+    /// ordering contract is written down.
+    ///
+    /// # Errors
+    ///
+    /// As [`StreamSignals::announce_status`].
+    pub async fn announce_status(
+        &self,
+        subscription: &Subscription,
+        status: asterius_ssf::stream::StreamStatus,
+        reason: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.about_streams()
+            .announce_status(subscription, status, reason, now)
+            .await
+    }
+
+    /// The half of this transmitter that needs no receiver and no subject.
+    const fn about_streams(&self) -> StreamSignals<'_> {
+        StreamSignals {
+            tenant: self.tenant,
+            issuer: self.issuer,
+            queues: self.queues,
+            signer: self.signer,
+        }
+    }
+}
+
+/// The two SETs that are about a *stream* rather than about a person: SSF 1.0
+/// §8.1.4's verification event and §8.1.5's stream-updated event
+/// (`ast-0ju.5`).
+///
+/// Its own type, and not merely two more methods on [`SsfTransmitter`],
+/// because of what it does *not* need: no receiver registration, no sector
+/// identifier, no subject resolver. Both events carry the stream as an
+/// `opaque` `sub_id`, so there is no person to derive an identifier for — and
+/// a caller that only has to announce a pause (the delivery worker) should
+/// not have to assemble the machinery for deriving pairwise subjects in order
+/// to do it.
+///
+/// Neither event consults `events_requested` or the stream's subject
+/// membership. §8.1.4 is the answer to a question the receiver just asked, and
+/// §8.1.5 is news about the receiver's own stream; a filter on either would be
+/// a receiver that can silently unsubscribe from being told that it is no
+/// longer being told anything.
+pub struct StreamSignals<'a> {
+    /// The tenant these signals belong to.
+    pub tenant: &'a TenantId,
+    /// The tenant's issuer, which SSF 1.0 §4.1.6 makes the SET's `iss`.
+    pub issuer: &'a Issuer,
+    /// The queues a SET is put on.
+    pub queues: &'a dyn SsfQueues,
+    /// The tenant's active signing key.
+    pub signer: &'a dyn Signer,
+}
+
+impl std::fmt::Debug for StreamSignals<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamSignals")
+            .field("tenant", &self.tenant)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StreamSignals<'_> {
+    /// Queues SSF 1.0 §8.1.4's verification event on one stream.
+    ///
+    /// Not best-effort: whoever asked — a receiver at §8.1.4.2's endpoint, or
+    /// an operator in the console — is waiting for an answer, and a
+    /// verification that was silently not queued would be read as "the stream
+    /// is fine".
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] if the SET cannot be built, signed or queued. Nothing
+    /// was queued.
+    pub async fn verify(
+        &self,
+        subscription: &Subscription,
+        state: Option<&VerificationState>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.queue_about_the_stream(subscription, verification_event(state), now)
+            .await?;
+        tracing::info!(
+            tenant = %self.tenant,
+            stream = subscription.stream_id.as_str(),
+            "a verification event was queued",
+        );
+        Ok(())
+    }
+
+    /// Queues SSF 1.0 §8.1.5's stream-updated event on one stream.
+    ///
+    /// > The Transmitter MUST send this event to the Receiver before the
+    /// > stream is paused or disabled, and upon the stream being re-enabled.
+    ///
+    /// Hence the contract: this is **not** best-effort and the caller is
+    /// expected to run it *before* it writes the new status, so that the SET
+    /// is enqueued while the stream still accepts events. A transmitter that
+    /// paused first and announced afterwards would be announcing a pause over
+    /// a stream that, by then, is holding or dropping what it is handed —
+    /// which is exactly the order §8.1.5 forbids.
+    ///
+    /// Like the verification event, it ignores `events_requested` and the
+    /// stream's subject membership: the `sub_id` is the stream itself as an
+    /// `opaque` identifier, so the event is about no person, and a receiver
+    /// cannot subscribe or unsubscribe from news about its own stream.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] if the SET cannot be built, signed or queued. Nothing
+    /// was queued, and the caller must decide whether the status change is
+    /// still worth making — [`crate::admin`] and the delivery worker both do,
+    /// because a stream nobody can be told about is still a stream that has
+    /// to stop.
+    pub async fn announce_status(
+        &self,
+        subscription: &Subscription,
+        status: asterius_ssf::stream::StreamStatus,
+        reason: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        self.queue_about_the_stream(subscription, stream_updated_event(status, reason), now)
+            .await?;
+        tracing::info!(
+            tenant = %self.tenant,
+            stream = subscription.stream_id.as_str(),
+            status = status.as_str(),
+            "a stream-updated event was queued",
+        );
+        Ok(())
+    }
+
+    /// Signs one event *about a stream* and puts it on that stream's queue.
+    ///
+    /// The two events of §8.1.4 and §8.1.5 share every decision here: one SET
+    /// for one stream, no `txn` — there is no wider cause to correlate with —
+    /// and a `sub_id` that is the stream as an `opaque` identifier, which is
+    /// what both sections' examples carry and what makes the event about no
+    /// person. No receiver sector is consulted and no subject is derived. The
+    /// ordering key of a push SET is therefore the stream alone: one of these
+    /// is ordered behind nothing but earlier events about the same stream.
+    async fn queue_about_the_stream(
+        &self,
+        subscription: &Subscription,
+        event: SecurityEvent,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
         let stream = subscription.stream_id.as_str();
         let subject = SimpleSubject::opaque(stream)
-            .map_err(|error| DomainError::invalid("ssf.verification.sub_id", error.to_string()))?;
+            .map_err(|error| DomainError::invalid("ssf.stream.sub_id", error.to_string()))?;
         let audience = StreamAudience::new(subscription.audience.iter().map(String::as_str))
             .map_err(|_| {
                 DomainError::invalid(
@@ -445,7 +602,7 @@ impl SsfTransmitter<'_> {
                 )
             })?;
         let signed = Set::about(subject)
-            .reporting(verification_event(state))
+            .reporting(event)
             .issue(self.issuer, &audience, now)
             .map_err(|error| DomainError::invalid("ssf.set", error.to_string()))?
             .sign(self.signer, self.tenant)
@@ -470,14 +627,11 @@ impl SsfTransmitter<'_> {
                 self.queues.queue_push(&[event], now).await?;
             }
         }
-        tracing::info!(
-            tenant = %self.tenant,
-            stream,
-            "a verification event was queued at an operator's request",
-        );
         Ok(())
     }
+}
 
+impl SsfTransmitter<'_> {
     /// Builds and signs the SET for one subscription, or `None` if the
     /// receiver's registration has gone.
     async fn sign_for(
@@ -569,11 +723,18 @@ mod tests {
         subscriptions: Vec<Subscription>,
         polled: Mutex<Vec<(String, String, String)>>,
         pushed: Mutex<Vec<QueuedEvent>>,
+        /// Every event type the stream list was asked about, so a test can
+        /// assert that a SET about a *stream* never asks (§8.1.4, §8.1.5).
+        asked: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
     impl SsfQueues for FakeQueues {
-        async fn subscribed(&self, _event: &str) -> Result<Vec<Subscription>, DomainError> {
+        async fn subscribed(&self, event: &str) -> Result<Vec<Subscription>, DomainError> {
+            self.asked
+                .lock()
+                .expect("not poisoned")
+                .push(event.to_owned());
             Ok(self.subscriptions.clone())
         }
 
@@ -761,6 +922,143 @@ mod tests {
             serde_json::json!({ asterius_ssf::VERIFICATION: {} })
         );
         assert!(queues.polled.lock().expect("not poisoned").is_empty());
+    }
+
+    /// **SSF 1.0 §8.1.5, on a poll stream.** The event type is the
+    /// stream-updated URI, the payload is the new status and the reason, and
+    /// the `sub_id` is the stream as an `opaque` identifier — no person is
+    /// named by a SET about a stream.
+    #[tokio::test]
+    async fn a_status_change_is_announced_as_a_stream_updated_set() {
+        // Arrange
+        let keys = keys();
+        let queues = FakeQueues::default();
+        let transmitter = SsfTransmitter {
+            tenant: &tenant(),
+            issuer: &issuer(),
+            queues: &queues,
+            clients: &FakeClients,
+            subjects: &FakeSubjects,
+            signer: &keys,
+        };
+
+        // Act
+        transmitter
+            .announce_status(
+                &subscription(POLL_STREAM, DeliveryMethod::Poll),
+                asterius_ssf::stream::StreamStatus::Paused,
+                Some("Disabled by administrator action."),
+                now(),
+            )
+            .await
+            .expect("queued");
+
+        // Assert
+        let polled = queues.polled.lock().expect("not poisoned");
+        assert_eq!(polled.len(), 1);
+        let claims = claims_of(&polled[0].2);
+        assert_eq!(claims["iss"], ISSUER);
+        assert_eq!(claims["aud"], "https://receiver.example");
+        assert_eq!(
+            claims["sub_id"],
+            serde_json::json!({"format": "opaque", "id": POLL_STREAM})
+        );
+        assert_eq!(
+            claims["events"],
+            serde_json::json!({
+                asterius_ssf::STREAM_UPDATED: {
+                    "status": "paused",
+                    "reason": "Disabled by administrator action.",
+                },
+            })
+        );
+    }
+
+    /// §8.1.5's re-enable: the same event with the new status, and no reason
+    /// left over from the pause it ends.
+    #[tokio::test]
+    async fn re_enabling_a_stream_is_announced_too() {
+        // Arrange
+        let keys = keys();
+        let queues = FakeQueues::default();
+        let transmitter = SsfTransmitter {
+            tenant: &tenant(),
+            issuer: &issuer(),
+            queues: &queues,
+            clients: &FakeClients,
+            subjects: &FakeSubjects,
+            signer: &keys,
+        };
+
+        // Act
+        transmitter
+            .announce_status(
+                &subscription(PUSH_STREAM, DeliveryMethod::Push),
+                asterius_ssf::stream::StreamStatus::Enabled,
+                None,
+                now(),
+            )
+            .await
+            .expect("queued");
+
+        // Assert
+        let pushed = queues.pushed.lock().expect("not poisoned");
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0].destination, PUSH_STREAM);
+        // Ordered behind the stream alone, like a verification: there is no
+        // subject to order it against.
+        assert_eq!(
+            pushed[0].ordering_key.as_deref(),
+            Some(format!("{PUSH_STREAM}\u{1f}{PUSH_STREAM}").as_str())
+        );
+        let claims = claims_of(pushed[0].payload["body"].as_str().expect("a jws"));
+        assert_eq!(
+            claims["events"],
+            serde_json::json!({ asterius_ssf::STREAM_UPDATED: {"status": "enabled"} })
+        );
+    }
+
+    /// Both events about a stream bypass §8.1.1's `events_requested`: the
+    /// stream list is never consulted, so a receiver that asked for nothing
+    /// still hears that its stream stopped and still gets the verification it
+    /// asked for.
+    #[tokio::test]
+    async fn the_two_stream_events_never_consult_events_requested() {
+        // Arrange: a queue whose subscription list is empty, so a call to
+        // `subscribed` would yield nothing to queue on.
+        let keys = keys();
+        let queues = FakeQueues::default();
+        let transmitter = SsfTransmitter {
+            tenant: &tenant(),
+            issuer: &issuer(),
+            queues: &queues,
+            clients: &FakeClients,
+            subjects: &FakeSubjects,
+            signer: &keys,
+        };
+        let stream = subscription(POLL_STREAM, DeliveryMethod::Poll);
+
+        // Act
+        transmitter
+            .verify(&stream, None, now())
+            .await
+            .expect("queued");
+        transmitter
+            .announce_status(
+                &stream,
+                asterius_ssf::stream::StreamStatus::Disabled,
+                None,
+                now(),
+            )
+            .await
+            .expect("queued");
+
+        // Assert
+        assert_eq!(queues.polled.lock().expect("not poisoned").len(), 2);
+        assert!(
+            queues.asked.lock().expect("not poisoned").is_empty(),
+            "a SET about a stream asked which streams subscribed"
+        );
     }
 
     /// A session revocation reaches a poll stream as a `session-revoked` SET

@@ -502,6 +502,18 @@ fn prepare_signer(keys: &Arc<TenantKeyStore>) -> Arc<dyn asterius_domain::keys::
     ))
 }
 
+/// What the SSF push deliverer needs in order to *speak* (`ast-0ju.5`).
+///
+/// One parameter rather than two, because they arrive together and mean one
+/// thing: SSF 1.0 §8.1.5 makes a stream the worker pauses something the
+/// receiver has to be told about, and telling a receiver is a SET signed with
+/// that tenant's key — so the worker needs the signer and the directory that
+/// says what a tenant's `iss` is.
+struct SsfSigning {
+    signer: Arc<dyn asterius_domain::keys::Signer>,
+    tenants: Arc<dyn asterius_domain::ports::TenantRepository>,
+}
+
 /// The periodic tasks, and the one handle that stops them all.
 ///
 /// They share a stop channel because they share a lifetime: both run for as
@@ -557,6 +569,16 @@ fn spawn_workers(
         Arc::clone(kek),
     ));
 
+    // The worker signs too: SSF 1.0 §8.1.5 makes a stream it pauses something
+    // the receiver must be *told* about, and telling a receiver is a signed
+    // SET. The same cached signer the endpoints use, over the same key store.
+    let signer: Arc<dyn asterius_domain::keys::Signer> =
+        Arc::new(CachedSigner::new(keys.clone(), Arc::clone(&clock)));
+    let tenants_for_streams = Arc::new(PgTenantRepository::new(
+        store.pool().clone(),
+        Arc::clone(kek),
+    ));
+
     let rotation = RotationSweep::new(keys, tenants_for_rotation, Arc::clone(&clock));
     let retention = RetentionSweep::new(retention, tenants_for_retention, Arc::clone(&clock));
     let delivery = outbox_worker(
@@ -566,6 +588,10 @@ fn spawn_workers(
         store,
         kek,
         Arc::new(PgAuditSink::new(store.pool().clone())),
+        SsfSigning {
+            signer,
+            tenants: tenants_for_streams,
+        },
     );
 
     let (stop, stopping) = tokio::sync::watch::channel(false);
@@ -618,6 +644,7 @@ fn outbox_worker(
     store: &Store,
     kek: &Arc<dyn Kek>,
     audit: Arc<dyn asterius_domain::audit::AuditSink>,
+    ssf: SsfSigning,
 ) -> OutboxWorker {
     let name = format!("worker-{}", uuid::Uuid::new_v4());
     let mut worker = OutboxWorker::new(outbox, Arc::clone(&clock), name)
@@ -630,7 +657,12 @@ fn outbox_worker(
             worker = worker
                 .with(Arc::new(HttpDeliverer::new("logout", (*poster).clone())))
                 .with(Arc::new(SsfPushDeliverer::new(
-                    Arc::new(PgPushStreams::new(store.clone(), Arc::clone(kek))),
+                    Arc::new(PgPushStreams::new(
+                        store.clone(),
+                        Arc::clone(kek),
+                        ssf.signer,
+                        ssf.tenants,
+                    )),
                     Arc::clone(&poster) as Arc<dyn asterius_server::outbox::SetPoster>,
                     Arc::clone(&audit),
                     Arc::clone(&clock),

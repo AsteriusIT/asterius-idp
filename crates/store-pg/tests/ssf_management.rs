@@ -21,7 +21,7 @@ use asterius_domain::{ClientId, TenantId};
 use asterius_ssf::stream::{Delivery, StreamConfiguration, StreamId, StreamStatus};
 use asterius_ssf::subject::{ComplexSubject, SimpleSubject, Subject};
 use asterius_store_pg::{
-    Added, Discarded, Enqueued, MIGRATOR, PgSsfPoll, PgSsfStreams, PgSsfSubjects,
+    Added, Discarded, Enqueued, MIGRATOR, PgSsfPoll, PgSsfStreams, PgSsfSubjects, VerificationClaim,
 };
 use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
@@ -34,6 +34,11 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 const RECEIVER: &str = "receiver";
 const OTHER_RECEIVER: &str = "other-receiver";
 const AUDIENCE: &str = "https://receiver.example/events";
+/// §7.1's `min_verification_interval`, as this transmitter advertises it.
+/// Spelled out rather than cast from the published constant, and checked
+/// against it below, so that changing one without the other fails a test
+/// rather than quietly testing a different interval.
+const MIN_INTERVAL: time::Duration = time::Duration::seconds(60);
 
 struct TestDb {
     pool: PgPool,
@@ -578,4 +583,153 @@ db_test! {
             !db.subjects().delivers_to(&stream, &mismatch).await.expect("match"),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// §8.1.4.2 — the verification interval
+// ---------------------------------------------------------------------------
+
+db_test! {
+    /// §8.1.4.2: the first verification a receiver asks for is admitted, and
+    /// what it gets back is the stream it must queue the SET on.
+    async fn a_first_verification_is_granted_with_the_stream_to_queue_on(db) {
+        // Arrange
+        let stream = db.stream().await;
+
+        // Act
+        let claim = db
+            .streams()
+            .claim_verification(&ClientId::new(RECEIVER), &stream, MIN_INTERVAL, at(0))
+            .await
+            .expect("claim a verification");
+
+        // Assert
+        let VerificationClaim::Granted(subscription) = claim else {
+            panic!("a first verification must be granted, got {claim:?}");
+        };
+        assert_eq!(subscription.stream_id, stream);
+        assert_eq!(subscription.receiver, ClientId::new(RECEIVER));
+        assert_eq!(subscription.audience, vec![format!("{AUDIENCE}/{RECEIVER}")]);
+    }
+}
+
+db_test! {
+    /// > If the Event Receiver requests verification more frequently than the
+    /// > `min_verification_interval`, the Event Transmitter MUST respond with
+    /// > 429.
+    ///
+    /// And the wait it reports is the time left, not the whole interval.
+    async fn a_second_verification_within_the_interval_is_refused_with_the_wait(db) {
+        // Arrange
+        let stream = db.stream().await;
+        let first = db
+            .streams()
+            .claim_verification(&ClientId::new(RECEIVER), &stream, MIN_INTERVAL, at(0))
+            .await
+            .expect("claim a verification");
+        assert!(matches!(first, VerificationClaim::Granted(_)));
+
+        // Act
+        let second = db
+            .streams()
+            .claim_verification(&ClientId::new(RECEIVER), &stream, MIN_INTERVAL, at(20))
+            .await
+            .expect("claim a verification");
+
+        // Assert
+        assert_eq!(second, VerificationClaim::TooSoon { retry_after: 40 });
+    }
+}
+
+db_test! {
+    /// Once the interval has elapsed the next request is admitted again, and
+    /// the clock restarts from the request that was admitted rather than from
+    /// the ones that were refused.
+    async fn a_verification_after_the_interval_is_granted_again(db) {
+        // Arrange
+        let stream = db.stream().await;
+        let receiver = ClientId::new(RECEIVER);
+        db.streams()
+            .claim_verification(&receiver, &stream, MIN_INTERVAL, at(0))
+            .await
+            .expect("claim");
+        db.streams()
+            .claim_verification(&receiver, &stream, MIN_INTERVAL, at(30))
+            .await
+            .expect("claim");
+
+        // Act
+        let after = db
+            .streams()
+            .claim_verification(&receiver, &stream, MIN_INTERVAL, at(60))
+            .await
+            .expect("claim");
+        let and_then = db
+            .streams()
+            .claim_verification(&receiver, &stream, MIN_INTERVAL, at(75))
+            .await
+            .expect("claim");
+
+        // Assert
+        assert!(matches!(after, VerificationClaim::Granted(_)));
+        assert_eq!(and_then, VerificationClaim::TooSoon { retry_after: 45 });
+    }
+}
+
+db_test! {
+    /// §8: another receiver's stream is not a row this statement can reach, so
+    /// the answer is "no such stream" and never a rate limit that would
+    /// confirm the stream exists.
+    async fn another_receivers_stream_cannot_be_verified(db) {
+        // Arrange
+        let theirs = db.stream_of(OTHER_RECEIVER).await;
+
+        // Act
+        let claim = db
+            .streams()
+            .claim_verification(&ClientId::new(RECEIVER), &theirs, MIN_INTERVAL, at(0))
+            .await
+            .expect("claim");
+
+        // Assert
+        assert_eq!(claim, VerificationClaim::NoSuchStream);
+        // And the refusal wrote nothing: the owner's own first request is
+        // still a first request.
+        let owner = db
+            .streams()
+            .claim_verification(&ClientId::new(OTHER_RECEIVER), &theirs, MIN_INTERVAL, at(1))
+            .await
+            .expect("claim");
+        assert!(matches!(owner, VerificationClaim::Granted(_)));
+    }
+}
+
+db_test! {
+    /// §8.1.4 is how a receiver finds out whether a stream that is not
+    /// delivering could, so a paused stream is verifiable.
+    async fn a_paused_stream_is_still_verifiable(db) {
+        // Arrange
+        let stream = db.stream().await;
+        db.set_status(&stream, StreamStatus::Paused).await;
+
+        // Act
+        let claim = db
+            .streams()
+            .claim_verification(&ClientId::new(RECEIVER), &stream, MIN_INTERVAL, at(10))
+            .await
+            .expect("claim");
+
+        // Assert
+        assert!(matches!(claim, VerificationClaim::Granted(_)));
+    }
+}
+
+/// The fixture's interval is the one §7.1 advertises.
+#[test]
+fn the_fixture_interval_is_the_advertised_one() {
+    // Arrange / Act / Assert
+    assert_eq!(
+        u64::try_from(MIN_INTERVAL.whole_seconds()).expect("a positive interval"),
+        asterius_ssf::stream::MIN_VERIFICATION_INTERVAL
+    );
 }

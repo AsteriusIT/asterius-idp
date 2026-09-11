@@ -589,6 +589,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ssf_verification_request"
+path = "fuzz_targets/ssf_verification_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ssf_verification_state"
 path = "fuzz_targets/ssf_verification_state.rs"
 test = false
