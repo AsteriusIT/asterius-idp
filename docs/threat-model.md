@@ -825,6 +825,36 @@ dropped: a client that sent one believes the person will be challenged, and a
 server that silently ignored it would put an unchallenged approval in front of
 them.
 
+### Load, and the token endpoint as a denial-of-service surface (`ast-p2l.8`)
+
+**Why this needs a section: FAPI 2.0 SP §6.1 moves the load onto this
+server on purpose.** Short-lived access tokens are a security property —
+they bound what a stolen token is worth — and their price is that every
+client comes back to `/token` once per lifetime. The endpoint that
+authenticates a client is therefore also the endpoint an attacker can make
+this server work hardest at, and the work is not cheap: two signature
+verifications before anything is looked up, two replay inserts, an audit
+record under a per-tenant lock. [`docs/performance.md`](performance.md) has
+the measured cost (about 430 token responses per second per process on the
+machine it names, saturating on CPU); this table has what bounds an attacker
+who tries to spend it.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A5** | **G3** | **Signature-verification exhaustion.** An unauthenticated caller posts token requests with well-formed but invalid assertions and proofs, each of which costs an ECDSA or RSA verification before it is refused. | `limits.token_per_address` (120 per minute by default) and `par_per_address` charge every request that does not end in a token to the address it came from, before the assertion is parsed; the bucket lives in the database so every replica sees the same count. The verification itself is bounded: `request_body_limit_bytes` (64 KiB) caps the assertion, and a client's `jwks_uri` is fetched through the cached, rate-limited outbound path rather than per request. |
+| **A1** | **G3** | **Spending another client's budget.** A caller names a competitor's `client_id` in requests that fail, to have that client throttled. | A failing request is charged to the address, never to the `client_id` it names; only a *successful* response is charged to the authenticated client (`limits.token_per_client`, 1200 per minute). A client can be throttled only by its own successes. |
+| **A5** | **G3** | **Filling a table.** Every accepted PAR stores a row; every accepted token request stores two replay rows and an audit event. | The per-address limits above bound the unauthenticated rate; `retention::POLICY` ages `auth_requests`, `jti_replay`, `rate_limits` and the codes on a stated schedule, and every one of those sweeps seeks on an `*_expiring` index (migration 0032 added the two that did not). The audit trail is append-only by design and grows with legitimate use; it is the one table sizing has to plan for. |
+| **A5** | **G3** | **Argon2 exhaustion at sign-in.** A caller posts passwords to the interaction endpoint; each costs an Argon2id verification at 19 MiB and two passes, by design (about 100 ms of one core here). | `[login]` counts failures per address (100 per window) and per typed identifier (10), in the database, and refuses with a retry hint before the hash is computed once a limit is reached. A single address therefore buys at most 100 verifications per window; the cost of a *successful* sign-in is paid by a person who holds the password. |
+| **A5** | **G3** | **Tight-loop polling.** An SSF receiver polls with `returnImmediately: true` as fast as it can. | Each poll costs one token verification and one indexed read (measured at 1 000 per second per process, 8 ms p95). The receiver is an authenticated client presenting a DPoP-bound token, so the cost is attributable and the stream can be paused or the client disabled; there is no unauthenticated poll. |
+| **A2** | **G3** | **Serialising a tenant on its audit lock.** Every state change writes an audit event under `pg_advisory_xact_lock(hashtext(tenant_id))`, so a tenant's audit writes are serial and their rate is bounded by the database's commit latency. | This is a ceiling, not an exploit: nothing lets a caller hold the lock beyond one insert, and the lock is per tenant so a busy tenant does not slow the others. It is recorded here because it is the number that bounds a single-tenant deployment before the pool or the CPU does, and a capacity plan that does not know it will be surprised. |
+
+**Residual:** the per-address limits are only as good as the address, which
+behind a proxy is whatever `[server.proxy] trusted_cidrs` allows a peer to
+assert (tls-and-proxy.md §1). A misconfigured proxy that forwards a spoofable
+`X-Forwarded-For` turns every per-address bucket into a per-request one. That
+is the proxy configuration's threat, stated there, and it applies to every
+row above.
+
 ### 4. Agent-specific threats (G4)
 
 FAPI's attacker model has no notion of a principal acting for another principal.
