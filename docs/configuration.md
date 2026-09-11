@@ -111,6 +111,14 @@ With `features.grant_management` off, `grant_id` and `grant_management_action` a
 
 With `features.grant_management` on, `GET` and `DELETE` are served at `grant_management_endpoint` + `/` + the grant id (§6.3). The endpoint is its own resource server: a client asks for a token with `resource` set to `grant_management_endpoint` and one of §6.1's two scopes, `grant_management_query` or `grant_management_revoke`, and nothing needs registering for that audience to exist. The client's own resource allow-list still applies, so a client that has one must have the grant management endpoint on it.
 
+### Per-tenant account settings
+
+| Setting | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `require_verified_email` | boolean | `false` | `ast-vae`. When true, an account whose address has not been proved cannot finish an OIDC login here: the credential is accepted, no session is created, no authorization code is issued, and the browser gets the confirmation page with a fresh link already sent. Off by default, and the default is a decision — turning it on puts a mailbox in the path of every sign-in, so an account whose address has stopped working can no longer be used at all. An account with **no** address is not blocked, because the setting is about proving an address rather than requiring one, and a tenant whose accounts were provisioned passkey-only would otherwise lock out everybody at once. OIDC Core §5.1's `email_verified` is reported honestly to relying parties either way; what this decides is whether an unproved address blocks. |
+
+The confirmation routes (`GET /verify-email?token=…` and `POST /verify-email`) are mounted whatever this setting says, so a tenant that switches the gate on after accounts exist does not invalidate the links its outstanding messages already carry, and one that switches it off does not strand the people mid-flow. The token is 256 bits, single use, fifteen minutes, stored as a digest, and handed to the outbox in the same transaction as the row that describes it.
+
 ## `[registration]` — dynamic client registration
 
 `POST /register` (RFC 7591 §3). Omit the table entirely and the endpoint registers nobody. That is a deliberate departure from RFC 7591 §3's SHOULD: the SHOULD exists so clients can interoperate with servers nobody has agreed with in advance, and a FAPI deployment's clients are counterparties rather than strangers. The cost of the other default is an internet-writable row in `clients`.

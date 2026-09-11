@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update email_verification_tokens\n                set consumed_at = $3, consumed_reason = $4\n              where tenant_id = $1 and user_id = $2 and consumed_at is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8e2726f770218fe1ced6ea60f1392d1591a2a4784be5026ad8ca02708bf4915f"
+}

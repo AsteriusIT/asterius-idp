@@ -27,6 +27,14 @@ the newest one works.</p>
    sends mail is a GET that any image tag on any page can fire. #}
 <form method="post" action="{{ resend_action }}">
 <input type="hidden" name="csrf" value="{{ csrf }}">
+{# The page carries the address rather than the server remembering it: this
+   form is reached with no session and no interaction — a person who has not
+   finished signing in has neither — so the only place it could come from is
+   the page, or a field asking them to type it again. The handler answers the
+   same page for an address it knows, one it does not, and one that is already
+   confirmed, so carrying it here is not an oracle; it is limited like the
+   recovery form, for the same reason. #}
+<input type="hidden" name="email" value="{{ email }}">
 <div class="actions"><button type="submit" class="secondary">Send it again</button></div>
 </form>
 {% endif %}

@@ -37,6 +37,7 @@ use crate::http::ssf_management::REMOVE_SUBJECT_PATH as SSF_REMOVE_SUBJECT_PATH;
 use crate::http::ssf_management::STATUS_PATH as SSF_STATUS_PATH;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
+use crate::http::verify_email;
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
 use asterius_domain::{Capabilities, DomainError, KeyStore, Tenant, TokenLifetimes};
@@ -384,28 +385,9 @@ pub fn routes(state: ProtocolState) -> Router {
             .route(
                 passkeys::LOGIN_FINISH_PATH,
                 post(passkey_login_finish).with_state(Arc::clone(&endpoints)),
-            )
-            // Account recovery (`ast-2vk.10`). Not in the endpoint registry,
-            // for the reason the interaction pages and the passkey pages are
-            // not: this is the server's own user interface. It is the one part
-            // of it a person reaches with no credential at all, which is why
-            // every request through it is limited and recorded.
-            //
-            // Both verbs on both paths, and no script on either: the whole
-            // flow is two forms and a link (`ast-ndk.4`).
-            .route(
-                recovery::REQUEST_PATH,
-                get(recovery_request_page)
-                    .post(recovery_request_submit)
-                    .with_state(Arc::clone(&endpoints)),
-            )
-            .route(
-                recovery::NEW_PASSWORD_PATH,
-                get(recovery_new_password_page)
-                    .post(recovery_new_password_submit)
-                    .with_state(Arc::clone(&endpoints)),
             );
 
+        router = mount_mailbox_pages(router, &endpoints);
         router = mount_features(router, capabilities, endpoints);
     }
 
@@ -414,6 +396,48 @@ pub fn routes(state: ProtocolState) -> Router {
     mount_the_unbuilt(router, capabilities, built_clients).layer(
         axum::middleware::from_fn_with_state(guard, tenant_feature_guard),
     )
+}
+
+/// Mounts the pages a person reaches through their mailbox.
+///
+/// Account recovery (`ast-2vk.10`) and email verification (`ast-vae`). One
+/// call rather than six chained routes at the call site, for the reason
+/// [`mount_features`] is one: [`routes`] is at clippy's line ceiling, and
+/// these belong together anyway — they are the whole of this server's user
+/// interface that is reached with **no credential at all**, which is why every
+/// request through either is limited and recorded.
+///
+/// Neither is in the endpoint registry, for the reason the interaction pages
+/// and the passkey pages are not: this is the server's own user interface and
+/// a client has no business linking into it. Every verb on every path is a
+/// form or a link, and no page here runs a line of script (`ast-ndk.4`).
+///
+/// Both are mounted whatever the tenant's settings say. `require_verified_email`
+/// decides whether an unproved address *blocks* a sign-in, not whether an
+/// address may be proved: switching it on must not invalidate the links already
+/// in people's mailboxes, and switching it off must not strand the ones
+/// mid-flow. `crate::http::verify_email` argues why its GET may write and its
+/// POST may not be a GET.
+fn mount_mailbox_pages(router: Router, endpoints: &Arc<ClientEndpoints>) -> Router {
+    router
+        .route(
+            recovery::REQUEST_PATH,
+            get(recovery_request_page)
+                .post(recovery_request_submit)
+                .with_state(Arc::clone(endpoints)),
+        )
+        .route(
+            recovery::NEW_PASSWORD_PATH,
+            get(recovery_new_password_page)
+                .post(recovery_new_password_submit)
+                .with_state(Arc::clone(endpoints)),
+        )
+        .route(
+            verify_email::PAGE_PATH,
+            get(verify_email_confirm)
+                .post(verify_email_resend)
+                .with_state(Arc::clone(endpoints)),
+        )
 }
 
 /// Mounts the routes of the features this deployment has switched on.
@@ -2926,6 +2950,30 @@ async fn capabilities_for(
     }
 }
 
+/// Whether this tenant refuses to finish a sign-in for an unproved address
+/// (`ast-vae`).
+///
+/// `None` settings repository means no tenant has an opinion, exactly as
+/// [`lifetimes_for`] reads it. A read that *fails* is an error and never the
+/// default, for the reason [`registration_policy_for`] gives: falling back
+/// would open a gate a tenant has just closed.
+///
+/// # Errors
+///
+/// Whatever the settings repository refused.
+async fn requires_a_verified_email(
+    endpoints: &ClientEndpoints,
+    tenant: &Tenant,
+) -> Result<bool, DomainError> {
+    match &endpoints.tenant_settings {
+        None => Ok(false),
+        Some(directory) => Ok(directory
+            .for_tenant(&tenant.id)
+            .await?
+            .require_verified_email()),
+    }
+}
+
 /// This tenant's registration policy, or the deployment's silence.
 ///
 /// `None` settings repository means no tenant has an opinion, exactly as
@@ -3209,6 +3257,17 @@ async fn interaction_show(
         .is_enabled(asterius_domain::Feature::GrantManagement)
         .then_some(&grants);
     let language = page_language(&endpoints, &tenant, &headers).await;
+    // `ast-vae`. Read before the context is built, so the two halves of the
+    // gate — the flag and the store — cannot be separated by a handler.
+    let gated = match requires_a_verified_email(&endpoints, &tenant).await {
+        Ok(gated) => gated,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let verification_tokens = scope.email_verification_tokens();
+    let mail = scope.mail();
     interaction::show(
         InteractionContext {
             tenant: &tenant,
@@ -3234,6 +3293,10 @@ async fn interaction_show(
             mount: mount_of(mount),
             registrar: registrar(&users, passwords.as_ref(), capabilities),
             directory: &users,
+            verification: gated.then_some(crate::http::verify_email::Gate {
+                tokens: &verification_tokens,
+                mail: &mail,
+            }),
         },
         &id,
         query.as_deref(),
@@ -3297,6 +3360,17 @@ async fn interaction_submit(
         .is_enabled(asterius_domain::Feature::GrantManagement)
         .then_some(&grants);
     let language = page_language(&endpoints, &tenant, &headers).await;
+    // `ast-vae`. See `interaction_show`: the flag and the store are read
+    // together so that a context cannot carry one without the other.
+    let gated = match requires_a_verified_email(&endpoints, &tenant).await {
+        Ok(gated) => gated,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+    let verification_tokens = scope.email_verification_tokens();
+    let mail = scope.mail();
     interaction::submit(
         InteractionContext {
             tenant: &tenant,
@@ -3322,6 +3396,10 @@ async fn interaction_submit(
             mount: mount_of(mount),
             registrar: registrar(&users, passwords.as_ref(), capabilities),
             directory: &users,
+            verification: gated.then_some(crate::http::verify_email::Gate {
+                tokens: &verification_tokens,
+                mail: &mail,
+            }),
         },
         &id,
         &headers,
@@ -3537,6 +3615,100 @@ async fn recovery_new_password_submit(
             &tokens,
             &mail,
             &sessions,
+            &limiter,
+            client.as_deref(),
+            &nonce,
+            mount_of(mount),
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// Builds the context the two verification routes share.
+///
+/// One helper for the reason `recovery_context` is one: two copies of an
+/// eight-field literal is two places for the limiter to drift.
+#[allow(clippy::too_many_arguments)]
+fn verification_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    users: &'a asterius_store_pg::PgUserRepository,
+    tokens: &'a asterius_store_pg::PgEmailVerificationTokens,
+    mail: &'a asterius_store_pg::PgOutboxMailSender,
+    limiter: &'a asterius_store_pg::PgRateLimitStore,
+    client: Option<&crate::http::forwarded::ClientAddr>,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: MountPrefix,
+) -> verify_email::VerificationContext<'a> {
+    verify_email::VerificationContext {
+        tenant,
+        users,
+        tokens,
+        mail,
+        audit: endpoints.audit.as_ref(),
+        throttle: throttle(endpoints, limiter, client),
+        nonce,
+        mount,
+    }
+}
+
+/// `GET /verify-email?token=…` — spend the token and confirm the address.
+async fn verify_email_confirm(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    request: axum::extract::RawQuery,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let tokens = scope.email_verification_tokens();
+    let mail = scope.mail();
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    verify_email::confirm(
+        &verification_context(
+            &endpoints,
+            &tenant,
+            &users,
+            &tokens,
+            &mail,
+            &limiter,
+            client.as_deref(),
+            &nonce,
+            mount_of(mount),
+        ),
+        request.0.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /verify-email` — send another link, and say the same thing either way.
+async fn verify_email_resend(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let users = scope.users(Arc::clone(&endpoints.kek));
+    let tokens = scope.email_verification_tokens();
+    let mail = scope.mail();
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    verify_email::resend(
+        &verification_context(
+            &endpoints,
+            &tenant,
+            &users,
+            &tokens,
+            &mail,
             &limiter,
             client.as_deref(),
             &nonce,

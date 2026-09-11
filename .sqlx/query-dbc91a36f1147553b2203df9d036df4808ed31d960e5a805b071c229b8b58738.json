@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update users\n                set email_verified = true\n              where tenant_id = $1\n                and user_id = $2\n                and lower(email) = lower($3)\n                and email_verified = false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dbc91a36f1147553b2203df9d036df4808ed31d960e5a805b071c229b8b58738"
+}
