@@ -163,7 +163,39 @@ pub fn sections() -> Vec<Section> {
         admin(),
         dpop(),
         mtls(),
+        authzen(),
     ]
+}
+
+/// `[authzen]`: how the PDP presents itself (`ast-pj0.3`).
+fn authzen() -> Section {
+    Section {
+        table: "authzen",
+        heading: "`[authzen]` — the policy decision point's own document",
+        blurb: "Read only when `[features] authzen` is on. Whether there is a PDP at \
+                all is the flag; this table says how the document that describes it \
+                — `/.well-known/authzen-configuration`, Authorization API 1.0 §9.2 — \
+                is served. The PDP identifier itself is not a key here and never \
+                will be: it is the tenant's issuer, which is the identifier the \
+                well-known URL is derived from and the one §9.2.3 has a PEP compare \
+                against. A second spelling would be a second identity for a tenant \
+                that already has one.",
+        after: "",
+        keys: vec![key(
+            "signed_metadata",
+            "boolean",
+            "`false`".to_owned(),
+            "Whether the document carries a `signed_metadata` JWT (§9.1.3, the shape \
+             RFC 8414 §2.1 defines), signed with the tenant's active key and \
+             verifiable against the `jwks_uri` the OP metadata publishes. OPTIONAL in \
+             the specification and off here, because a PEP fetching the document over \
+             TLS already knows who served it: what the signature adds is a document \
+             that stays checkable after it has been stored or passed on, which costs \
+             one signature per request and is worth it only where somebody asked. A \
+             tenant with no active key serves the document unsigned rather than \
+             failing, and says so in the log.",
+        )],
+    }
 }
 
 /// `[outbox]`: how queued deliveries are paced and when they are given up on.

@@ -437,6 +437,7 @@ fn assemble(
         keys: Arc::clone(&key_store),
         capabilities: Capabilities::default(),
         tenant_settings: Some(settings.clone()),
+        signed_metadata: None,
         clients: Some(Arc::new(ClientEndpoints {
             initial_access_tokens: None,
             authenticator,
