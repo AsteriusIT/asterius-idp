@@ -69,7 +69,7 @@
 use super::{
     IssuanceError, JwtId, MAX_ACCESS_TOKEN_CLAIMS_BYTES, UnsignedToken, bounded, usable_lifetime,
 };
-use asterius_domain::{ClaimedGrant, Grant, HeldRoles, Issuer, Kid, TokenBinding};
+use asterius_domain::{ClaimedGrant, Grant, HeldRoles, Issuer, Kid, RoleClaim, TokenBinding};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use time::{Duration, OffsetDateTime};
@@ -665,23 +665,16 @@ impl<'a> AccessToken<'a> {
 
         // The application roles (`ast-095`). Absent rather than empty when the
         // user holds none: an empty array is a statement a resource server may
-        // cache, and "no roles" is already what an absent claim means.
-        if !self.roles.tenant.is_empty() {
-            claims.insert(
-                "roles".to_owned(),
-                Value::Array(
-                    self.roles
-                        .tenant
-                        .iter()
-                        .map(|role| Value::String(role.as_str().to_owned()))
-                        .collect(),
-                ),
-            );
-        }
+        // cache, and "no roles" is already what an absent claim means. The
+        // rendering is `HeldRoles::claim`, which the ID token also uses
+        // (`ast-mqt`) — one shape, in one place.
+        //
         // Narrowed to this token's own client by `with_roles`; see there for
         // why that is the filter, and why it is applied there rather than here.
-        if let Some(resource_access) = resource_access_claim(&self.roles) {
-            claims.insert("resource_access".to_owned(), resource_access);
+        for claim in RoleClaim::ALL {
+            if let Some(value) = self.roles.claim(claim) {
+                claims.insert(claim.as_str().to_owned(), value);
+            }
         }
 
         if self.grant_id_claim {
@@ -699,37 +692,6 @@ impl<'a> AccessToken<'a> {
             claims: bounded(Value::Object(claims), MAX_ACCESS_TOKEN_CLAIMS_BYTES)?,
         })
     }
-}
-
-/// The `resource_access` claim, or `None` when there is nothing to say.
-///
-/// One member per client, each an object with a `roles` array — the shape a
-/// relying party's existing library expects. A client holding no roles is not
-/// rendered at all, so no token carries an empty `roles` array under a client
-/// name: that would read as "this person holds nothing in that application",
-/// which is a statement about a client the token is not even about.
-fn resource_access_claim(held: &HeldRoles) -> Option<Value> {
-    let mut members = Map::new();
-    for (client, roles) in &held.clients {
-        if roles.is_empty() {
-            continue;
-        }
-        let mut entry = Map::new();
-        entry.insert(
-            "roles".to_owned(),
-            Value::Array(
-                roles
-                    .iter()
-                    .map(|role| Value::String(role.as_str().to_owned()))
-                    .collect(),
-            ),
-        );
-        members.insert(client.as_str().to_owned(), Value::Object(entry));
-    }
-    if members.is_empty() {
-        return None;
-    }
-    Some(Value::Object(members))
 }
 
 /// Folds a grant's actor chain into the nested `act` claim (RFC 8693 §4.1).

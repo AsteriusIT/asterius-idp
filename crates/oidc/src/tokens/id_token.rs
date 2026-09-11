@@ -50,11 +50,14 @@ use super::{IssuanceError, MAX_ID_TOKEN_CLAIMS_BYTES, UnsignedToken, bounded, us
 use crate::authorize::MAX_NONCE_LEN;
 use crate::claims::ReleasableClaim;
 use crate::tokens::access::Authentication;
-use asterius_domain::{ClaimName, ClaimedGrant, Issuer, SessionId, SigningAlgorithm};
+use asterius_domain::{
+    ClaimName, ClaimedGrant, HeldRoles, Issuer, RoleClaim, SessionId, SigningAlgorithm,
+};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256, Sha512};
+use std::collections::BTreeSet;
 use time::{Duration, OffsetDateTime};
 
 /// The explicit type header of an ID token.
@@ -208,6 +211,8 @@ pub struct IdToken<'a> {
     nonce: Option<String>,
     session: Option<Session>,
     released: Map<String, Value>,
+    roles: HeldRoles,
+    role_claims: BTreeSet<RoleClaim>,
 }
 
 impl<'a> IdToken<'a> {
@@ -266,6 +271,8 @@ impl<'a> IdToken<'a> {
             nonce: None,
             session: None,
             released: Map::new(),
+            roles: HeldRoles::empty(),
+            role_claims: BTreeSet::new(),
         }
     }
 
@@ -310,6 +317,30 @@ impl<'a> IdToken<'a> {
     /// builder saw anything.
     pub fn releasing(mut self, released: Map<String, Value>) -> Self {
         self.released = released;
+        self
+    }
+
+    /// The application roles this token asserts, and which of the two claims
+    /// carry them (`ast-mqt`).
+    ///
+    /// **Nothing is emitted unless `claims` names it.** An ID token is an
+    /// authentication assertion; what somebody may *do* belongs in the access
+    /// token, which is sender-constrained under this profile and does not pass
+    /// through a browser. So the two role claims reach an ID token only when
+    /// the client asked for them under OIDC Core §5.5's `claims` parameter, or
+    /// registered `roles_in_id_token` — the same trade [`crate::claims`]
+    /// describes for every other claim that can be asked into the ID token,
+    /// made by the client for its own users.
+    ///
+    /// The disclosure is not widened by either route: `held` is narrowed to
+    /// this token's own client by [`HeldRoles::for_client`] here, exactly as
+    /// [`super::access::AccessToken::with_roles`] does it, so no call site can
+    /// name a second client in `resource_access`. And the rendering is
+    /// [`HeldRoles::claim`], shared with the access token, so a relying party
+    /// reading `roles` from one and the other finds one shape.
+    pub fn with_roles(mut self, held: &HeldRoles, claims: &BTreeSet<RoleClaim>) -> Self {
+        self.roles = held.for_client(self.claimed.client());
+        self.role_claims.clone_from(claims);
         self
     }
 
@@ -427,6 +458,18 @@ impl<'a> IdToken<'a> {
             "at_hash".to_owned(),
             Value::String(token_hash(self.algorithm, self.access_token)),
         );
+
+        // The application roles (`ast-mqt`), when this issuance asked for
+        // them. After the released claims and among the server-issued ones,
+        // because these are computed from the assignment tables and not read
+        // out of a user record: a claim bag cannot reach this name — a
+        // `ReleasableClaim` is never one of them — and writing them here means
+        // that would still be true if it could.
+        for claim in &self.role_claims {
+            if let Some(value) = self.roles.claim(*claim) {
+                claims.insert(claim.as_str().to_owned(), value);
+            }
+        }
 
         Ok(UnsignedToken {
             typ: ID_TOKEN_TYP,
@@ -1033,5 +1076,126 @@ mod tests {
                 "an ID token carried the access token claim {forbidden}"
             );
         }
+    }
+
+    // --- Application roles (`ast-mqt`) -------------------------------------
+
+    /// `billing` is the client `grant_with` issues to; `reporting` is the one
+    /// whose roles must never appear in its token.
+    fn held() -> HeldRoles {
+        let mut held = HeldRoles::default();
+        held.tenant
+            .insert(asterius_domain::RoleName::parse("auditor").expect("a name"));
+        held.clients.insert(
+            ClientId::new("billing"),
+            [asterius_domain::RoleName::parse("refund").expect("a name")]
+                .into_iter()
+                .collect(),
+        );
+        held.clients.insert(
+            ClientId::new("reporting"),
+            [asterius_domain::RoleName::parse("export").expect("a name")]
+                .into_iter()
+                .collect(),
+        );
+        held
+    }
+
+    fn built_with_roles(claims: &BTreeSet<RoleClaim>) -> Value {
+        let grant = grant_with(Some(SubjectId::new("SUBJECT-1")));
+        let claimed = grant.claim(now()).expect("a live grant");
+        IdToken::new(
+            &issuer(),
+            &claimed,
+            SigningAlgorithm::Es256,
+            authentication(),
+            ACCESS_TOKEN,
+            now(),
+        )
+        .with_roles(&held(), claims)
+        .build()
+        .expect("a buildable token")
+        .into_claims()
+    }
+
+    /// The default, and the one that matters: an ID token nobody asked to
+    /// carry authority carries none.
+    #[test]
+    fn an_id_token_carries_no_role_claim_unless_one_was_asked_for() {
+        let claims = built_with_roles(&BTreeSet::new());
+
+        assert!(claims.get("roles").is_none());
+        assert!(claims.get("resource_access").is_none());
+    }
+
+    #[test]
+    fn the_tenant_roles_are_emitted_when_the_claim_is_asked_for() {
+        let claims = built_with_roles(&[RoleClaim::Roles].into_iter().collect());
+
+        assert_eq!(claims["roles"], json!(["auditor"]));
+        assert!(claims.get("resource_access").is_none());
+    }
+
+    /// The same narrowing the access token gets, applied by the builder and
+    /// not by the caller: a token names its own client and no other.
+    #[test]
+    fn resource_access_names_only_the_client_the_token_is_for() {
+        let claims = built_with_roles(&[RoleClaim::ResourceAccess].into_iter().collect());
+
+        assert_eq!(
+            claims["resource_access"],
+            json!({"billing": {"roles": ["refund"]}})
+        );
+    }
+
+    /// A user record cannot assert authority, whatever a `claims` request
+    /// says: `roles` is not a releasable claim name, so a released map keyed
+    /// with it is refused rather than carried into the token.
+    #[test]
+    fn a_released_claim_named_roles_is_refused() {
+        let grant = grant_with(Some(SubjectId::new("SUBJECT-1")));
+        let claimed = grant.claim(now()).expect("a live grant");
+        let mut released = Map::new();
+        released.insert("roles".to_owned(), json!(["administrator"]));
+
+        let error = IdToken::new(
+            &issuer(),
+            &claimed,
+            SigningAlgorithm::Es256,
+            authentication(),
+            ACCESS_TOKEN,
+            now(),
+        )
+        .releasing(released)
+        .build()
+        .expect_err("a refusal");
+
+        assert_eq!(error, IssuanceError::UnreleasableClaim);
+    }
+
+    /// Absent rather than empty, for the reason `HeldRoles::claim` gives: an
+    /// empty array is a statement a relying party may cache.
+    #[test]
+    fn a_person_holding_nothing_gets_no_claim_even_when_asked_for() {
+        let grant = grant_with(Some(SubjectId::new("SUBJECT-1")));
+        let claimed = grant.claim(now()).expect("a live grant");
+        let claims = IdToken::new(
+            &issuer(),
+            &claimed,
+            SigningAlgorithm::Es256,
+            authentication(),
+            ACCESS_TOKEN,
+            now(),
+        )
+        .with_roles(
+            &HeldRoles::default(),
+            &RoleClaim::ALL.into_iter().collect::<BTreeSet<_>>(),
+        )
+        .build()
+        .expect("a buildable token")
+        .into_claims();
+
+        assert!(claims.get("roles").is_none());
+        assert!(claims.get("resource_access").is_none());
     }
 }

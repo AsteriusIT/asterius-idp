@@ -413,6 +413,11 @@ impl RefreshToken<'_> {
             issuance::TargetingError::Storage(error) => Failure::Server(error),
         })?;
 
+        // Read once for both tokens of this response; see the code grant. A
+        // refresh reads it afresh every time on purpose (`ast-095`): a token
+        // refreshed after a role was withdrawn must not still assert it.
+        let held = issuance::held_roles(self.roles, &narrowed).await?;
+
         let access = AccessToken::new(
             &tenant.issuer,
             &narrowed,
@@ -428,7 +433,7 @@ impl RefreshToken<'_> {
         // `ast-095`: the tenant's shared roles under `roles`, this client's own
         // under `resource_access.<client_id>.roles`. The builder narrows them
         // to this client; see `AccessToken::with_roles`.
-        .with_roles(&issuance::held_roles(self.roles, &narrowed).await?)
+        .with_roles(&held)
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
 
@@ -454,7 +459,7 @@ impl RefreshToken<'_> {
                 access_token: access_token.as_str(),
                 // §12.2: no new `nonce`. See `IdTokenParts::nonce`.
                 nonce: None,
-                released: issuance::released_claims(self.users, &narrowed).await?,
+                released: issuance::released_claims(self.users, &narrowed, client, &held).await?,
             };
             Some(
                 issuance::sign_id_token(self.signer, tenant, client, parts, self.now)

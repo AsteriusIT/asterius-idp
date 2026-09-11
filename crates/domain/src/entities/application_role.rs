@@ -288,6 +288,94 @@ impl HeldRoles {
                 .collect(),
         }
     }
+
+    /// One role claim's value, or `None` when there is nothing to say.
+    ///
+    /// The rendering lives here rather than in a token builder because two
+    /// builders issue these claims — the access token (`ast-095`) and, when a
+    /// client asks for them, the ID token (`ast-mqt`) — and a relying party
+    /// that read `roles` from one and `resource_access` from the other must
+    /// not find two shapes. `None` is the absent claim: an empty array says
+    /// "this person holds no roles", which a resource server may cache, and
+    /// an absent claim says nothing.
+    ///
+    /// [`RoleClaim::ResourceAccess`] renders no client that holds nothing, so
+    /// no token carries an empty `roles` array under a client name. Narrowing
+    /// to the token's own client is [`HeldRoles::for_client`]'s job and is not
+    /// repeated here: one place to narrow is one place to widen.
+    #[must_use]
+    pub fn claim(&self, claim: RoleClaim) -> Option<serde_json::Value> {
+        match claim {
+            RoleClaim::Roles => {
+                if self.tenant.is_empty() {
+                    return None;
+                }
+                Some(serde_json::Value::Array(as_json(&self.tenant)))
+            }
+            RoleClaim::ResourceAccess => {
+                let members: serde_json::Map<String, serde_json::Value> = self
+                    .clients
+                    .iter()
+                    .filter(|(_, roles)| !roles.is_empty())
+                    .map(|(client, roles)| {
+                        (
+                            client.as_str().to_owned(),
+                            serde_json::json!({ "roles": as_json(roles) }),
+                        )
+                    })
+                    .collect();
+                if members.is_empty() {
+                    return None;
+                }
+                Some(serde_json::Value::Object(members))
+            }
+        }
+    }
+}
+
+/// Role names as the JSON array a claim carries, in catalogue order.
+fn as_json(roles: &BTreeSet<RoleName>) -> Vec<serde_json::Value> {
+    roles
+        .iter()
+        .map(|role| serde_json::Value::String(role.as_str().to_owned()))
+        .collect()
+}
+
+/// A claim an authorization server computes from what an account holds.
+///
+/// Two names and no more: `roles` for the tenant's shared catalogue and
+/// `resource_access` for a client's own, which is the shape Keycloak
+/// deployments publish. An enum rather than two string literals spread across
+/// the access token, the ID token and the `claims` request parser, because
+/// those three have to agree on the same two names — a fourth spelling
+/// anywhere would be a claim a relying party's library never reads, or a name
+/// a user record could be made to assert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RoleClaim {
+    /// The tenant's roles, as a flat array.
+    Roles,
+    /// One member per client, each an object with a `roles` array.
+    ResourceAccess,
+}
+
+impl RoleClaim {
+    /// Both of them, which is the list every consumer walks.
+    pub const ALL: [Self; 2] = [Self::Roles, Self::ResourceAccess];
+
+    /// The member name the claim is issued under.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Roles => "roles",
+            Self::ResourceAccess => "resource_access",
+        }
+    }
+
+    /// Matches a claim name exactly, or nothing.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|claim| claim.as_str() == raw)
+    }
 }
 
 /// One assignment: which user holds which role.
@@ -406,5 +494,58 @@ mod tests {
 
         assert!(narrowed.is_empty());
         assert!(narrowed.clients.is_empty());
+    }
+
+    fn one_of_each() -> HeldRoles {
+        let mut held = HeldRoles::default();
+        held.tenant
+            .insert(RoleName::parse("auditor").expect("a name"));
+        held.clients.insert(
+            ClientId::new("billing"),
+            [RoleName::parse("refund").expect("a name")]
+                .into_iter()
+                .collect(),
+        );
+        held
+    }
+
+    #[test]
+    fn the_tenant_claim_is_a_flat_array_of_names() {
+        let rendered = one_of_each().claim(RoleClaim::Roles).expect("a claim");
+
+        assert_eq!(rendered, serde_json::json!(["auditor"]));
+    }
+
+    #[test]
+    fn the_client_claim_is_one_object_per_client() {
+        let rendered = one_of_each()
+            .claim(RoleClaim::ResourceAccess)
+            .expect("a claim");
+
+        assert_eq!(
+            rendered,
+            serde_json::json!({"billing": {"roles": ["refund"]}})
+        );
+    }
+
+    /// Absent, not empty: an empty array is a statement a resource server may
+    /// cache, and "holds nothing" is what an absent claim already means.
+    #[test]
+    fn nothing_held_renders_neither_claim() {
+        let held = HeldRoles::default();
+
+        for claim in RoleClaim::ALL {
+            assert_eq!(held.claim(claim), None, "{} was rendered", claim.as_str());
+        }
+    }
+
+    /// The names are the ones tokens carry; a third spelling would be a claim
+    /// no relying party's library reads.
+    #[test]
+    fn the_two_claim_names_round_trip_through_parse() {
+        for claim in RoleClaim::ALL {
+            assert_eq!(RoleClaim::parse(claim.as_str()), Some(claim));
+        }
+        assert_eq!(RoleClaim::parse("realm_access"), None);
     }
 }

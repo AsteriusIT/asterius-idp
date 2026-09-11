@@ -1194,6 +1194,7 @@ mod tests {
             agent: None,
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
+            roles_in_id_token: crate::RolesInIdToken::Omitted,
         }
     }
 

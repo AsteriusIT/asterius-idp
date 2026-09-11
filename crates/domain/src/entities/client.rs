@@ -1080,6 +1080,12 @@ pub struct ClientMetadata {
     /// OIDC Back-Channel Logout 1.0 §2.2. Whether the logout token this client
     /// receives must carry a `sid`. "If omitted, the default value is false."
     pub backchannel_logout_session_required: Option<bool>,
+    /// `ast-mqt`, an extension member in RFC 7591 §2's sense. Whether this
+    /// client's ID tokens carry the application-role claims (`ast-095`)
+    /// without the client having to send a `claims` parameter. Absent is
+    /// false: an ID token says who somebody is, and what they may do goes in
+    /// the access token unless a client asks otherwise.
+    pub roles_in_id_token: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1203,6 +1209,56 @@ pub struct ClientRegistration {
     /// `sid` gets one, and — §2.4 — a token that carries `sid` need not also
     /// carry `sub`.
     pub backchannel_logout_session_required: bool,
+    /// `ast-mqt`. Whether the application-role claims (`ast-095`) are issued
+    /// in this client's ID tokens as well as in its access tokens.
+    pub roles_in_id_token: RolesInIdToken,
+}
+
+/// Whether a client's ID tokens carry the application-role claims (`ast-mqt`).
+///
+/// A two-variant enum rather than a `bool`, and not only to keep this
+/// registration's flags countable: `with_roles(held, true)` at a call site
+/// says nothing about what `true` means, and the one thing a reader needs to
+/// know here is *which* of the two tokens the claims travel in.
+///
+/// [`Omitted`](Self::Omitted) unless the client registered otherwise, and even
+/// then only that client's own roles reach its own ID token — the narrowing is
+/// [`crate::HeldRoles::for_client`]'s and is the same one the access token
+/// gets. Self-declarable in a registration document on purpose: it discloses
+/// nothing the client cannot already read out of the access token it is handed
+/// (RFC 9068 §6), and the same request can be made per authorization with OIDC
+/// Core §5.5's `claims` parameter. What it changes is *where* the statement
+/// travels — an ID token passes through a browser and is stored by the client
+/// — which is a trade the client makes for its own users.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum RolesInIdToken {
+    /// The claims stay in the access token and at `/userinfo`.
+    #[default]
+    Omitted,
+    /// They are issued in this client's ID tokens too.
+    Issued,
+}
+
+impl RolesInIdToken {
+    /// Reads the registration document's member.
+    ///
+    /// Absent is [`Omitted`](Self::Omitted): a client registered before
+    /// `ast-mqt` did not ask for authority claims in the token that passes
+    /// through a browser, and a default of the other value would put them
+    /// there for every client at once.
+    #[must_use]
+    pub const fn registered(asked: Option<bool>) -> Self {
+        match asked {
+            Some(true) => Self::Issued,
+            _ => Self::Omitted,
+        }
+    }
+
+    /// Whether the claims are issued, for a column and for a document.
+    #[must_use]
+    pub const fn is_issued(self) -> bool {
+        matches!(self, Self::Issued)
+    }
 }
 
 impl ClientRegistration {
@@ -1568,6 +1624,7 @@ impl ClientMetadata {
             backchannel_logout_session_required: self
                 .backchannel_logout_session_required
                 .unwrap_or(false),
+            roles_in_id_token: RolesInIdToken::registered(self.roles_in_id_token),
         })
     }
 
@@ -3275,6 +3332,28 @@ mod tests {
 
         // Assert
         assert!(client.backchannel_logout_session_required);
+    }
+
+    // -----------------------------------------------------------------------
+    // Application roles in the ID token (`ast-mqt`)
+    // -----------------------------------------------------------------------
+
+    /// The default is what a client registered before `ast-mqt` consented to:
+    /// authority claims in the access token, and an ID token that says who
+    /// somebody is.
+    #[test]
+    fn a_client_carries_no_roles_in_its_id_token_unless_it_asks() {
+        let client = validate(&minimal()).expect("a valid registration");
+
+        assert_eq!(client.roles_in_id_token, RolesInIdToken::Omitted);
+    }
+
+    #[test]
+    fn a_client_may_register_for_role_claims_in_its_id_tokens() {
+        let client =
+            validate(&with("roles_in_id_token", json!(true))).expect("a valid registration");
+
+        assert_eq!(client.roles_in_id_token, RolesInIdToken::Issued);
     }
 
     // -----------------------------------------------------------------------
