@@ -512,6 +512,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ssf_push_error"
+path = "fuzz_targets/ssf_push_error.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ssf_stream_configuration"
 path = "fuzz_targets/ssf_stream_configuration.rs"
 test = false

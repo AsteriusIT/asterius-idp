@@ -34,19 +34,25 @@
 //! receiver's own client identifier, which is the only audience the
 //! transmitter can be sure the receiver recognises.
 //!
-//! # What is deliberately not accepted
+//! # The one member that is a credential
 //!
-//! `delivery.authorization_header` (RFC 8935 §2.2). It is a credential the
-//! receiver hands the transmitter to present on every push, and this server
-//! has nowhere to keep one: every other secret it stores is sealed under the
-//! tenant's key-encryption key and re-sealed by the rotation sweep
-//! (`asterius_store_pg::rewrap`), and a stream table outside that sweep would
-//! be a credential a KEK rotation silently strands. Push delivery itself is
-//! `ast-0ju.6`; until it exists there is nothing to present the header on
-//! either, so a request carrying one is refused with a reason rather than
-//! accepted and dropped. See `docs/threat-model.md`.
+//! `delivery.authorization_header` (RFC 8935 §2.2; SSF 1.0 §6.1.1) is a
+//! credential the receiver hands the transmitter to present on every push. It
+//! is accepted, validated as an HTTP field value
+//! ([`crate::push::AuthorizationHeader`]) and stored sealed under the tenant's
+//! key-encryption key, inside the sweep `asterius_store_pg::rewrap` re-seals —
+//! the condition `ast-0ju.3` set for accepting it at all.
+//!
+//! It is **never rendered back**. §8.1.1 lists it among `delivery`'s members,
+//! and a stream read (§8.1.1.2) is authorized by a token rather than by
+//! holding the credential: echoing it would turn every read into a second copy
+//! of a secret, in a response body and in whatever log captures one, for a
+//! caller that already had it. A receiver that has lost it registers a new
+//! one. That also settles §8.1.1.3 for this member: one this transmitter does
+//! not render is not one a request can be refused for echoing differently.
 
 use crate::event::EventUri;
+use crate::push::{AuthorizationHeader, AuthorizationHeaderError};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde_json::{Map, Value, json};
@@ -160,10 +166,15 @@ pub enum StreamError {
     /// A push delivery whose `endpoint_url` is not https (RFC 8935 §2.2).
     #[error("a push delivery endpoint must be an https URL")]
     InsecureEndpoint,
-    /// A push delivery carrying `authorization_header`. See the module
-    /// documentation.
-    #[error("this transmitter does not yet accept a push authorization header")]
-    AuthorizationHeaderUnsupported,
+    /// A push delivery whose `authorization_header` is not a value HTTP can
+    /// carry (SSF 1.0 §6.1.1).
+    #[error("`authorization_header` is not a header value this transmitter can send")]
+    BadAuthorizationHeader(
+        /// Which rule it broke. Names no part of the value: it is a
+        /// credential, and these messages reach logs.
+        #[from]
+        AuthorizationHeaderError,
+    ),
     /// A transmitter-supplied member was echoed with a value that is not the
     /// current one (§8.1.1.3).
     #[error("`{member}` is transmitter-supplied and was sent with a different value")]
@@ -177,6 +188,60 @@ pub enum StreamError {
     /// An `events_requested` entry is not a usable event type URI.
     #[error("an entry of `events_requested` is not an event type URI")]
     BadEventUri,
+}
+
+/// A stream's status (SSF 1.0 §8.1.2).
+///
+/// Three states and no fourth. The transmitter writes this as well as the
+/// receiver: RFC 8935 §2.4 bounds the retries of *one* SET and says nothing
+/// about a receiver that has refused every SET for a day, so a push delivery
+/// that exhausts its budget pauses the stream with a reason
+/// (`asterius_store_pg::PgSsfStreams::pause`).
+///
+/// [`Self::Paused`] rather than [`Self::Disabled`] for that, deliberately:
+/// §8.1.2 makes paused a state a stream is expected to leave, and events go on
+/// being queued while it lasts. Disabling is an act of the receiver's or of an
+/// operator's, and this server never does it on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamStatus {
+    /// Events are delivered as they are generated.
+    #[default]
+    Enabled,
+    /// Events are queued but not delivered.
+    Paused,
+    /// Events are neither queued nor delivered.
+    Disabled,
+}
+
+impl StreamStatus {
+    /// Every status, so a test can be exhaustive.
+    pub const ALL: [Self; 3] = [Self::Enabled, Self::Paused, Self::Disabled];
+
+    /// The value as §8.1.2 spells it, and as the column stores it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Paused => "paused",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// The status `raw` names, or `None` for anything else.
+    ///
+    /// `None` rather than a default: a stored value this build does not
+    /// recognise is a row it must not guess about, and guessing `enabled`
+    /// would resume delivery to a stream somebody stopped.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|status| status.as_str() == raw)
+    }
+
+    /// Whether a SET may go out on a stream in this state.
+    #[must_use]
+    pub const fn delivers(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
 }
 
 /// A stream identifier: 128 bits of entropy, base64url-encoded.
@@ -255,6 +320,9 @@ pub enum Delivery {
     Push {
         /// Where the transmitter POSTs each SET.
         endpoint_url: String,
+        /// What the transmitter presents on every push (SSF 1.0 §6.1.1), if
+        /// the receiver registered one.
+        authorization_header: Option<AuthorizationHeader>,
     },
 }
 
@@ -276,7 +344,7 @@ impl Delivery {
     pub fn endpoint_url(&self) -> Option<&str> {
         match self {
             Self::Poll => None,
-            Self::Push { endpoint_url } => Some(endpoint_url),
+            Self::Push { endpoint_url, .. } => Some(endpoint_url),
         }
     }
 }
@@ -299,6 +367,8 @@ pub enum DeliveryRequest {
     Push {
         /// The receiver's endpoint, already checked against RFC 8935 §2.2.
         endpoint_url: String,
+        /// The credential it registered, already checked as a field value.
+        authorization_header: Option<AuthorizationHeader>,
     },
 }
 
@@ -339,8 +409,12 @@ impl DeliveryRequest {
                     })
                 }
             }
-            Self::Push { endpoint_url } => Ok(Delivery::Push {
+            Self::Push {
+                endpoint_url,
+                authorization_header,
+            } => Ok(Delivery::Push {
                 endpoint_url: endpoint_url.clone(),
+                authorization_header: authorization_header.clone(),
             }),
         }
     }
@@ -541,16 +615,26 @@ fn parse_delivery(value: &Value) -> Result<DeliveryRequest, StreamError> {
             }),
         },
         DELIVERY_PUSH => {
-            if object.contains_key("authorization_header") {
-                return Err(StreamError::AuthorizationHeaderUnsupported);
-            }
             let url = endpoint
                 .and_then(Value::as_str)
                 .ok_or(StreamError::WrongType {
                     member: "endpoint_url",
                 })?;
+            // Absent and null are "no credential"; anything else has to be a
+            // string, because a receiver that meant to register one and sent a
+            // number must be told rather than quietly pushed to without it.
+            let authorization_header = match object.get("authorization_header") {
+                None | Some(Value::Null) => None,
+                Some(value) => {
+                    let raw = value.as_str().ok_or(StreamError::WrongType {
+                        member: "authorization_header",
+                    })?;
+                    Some(AuthorizationHeader::parse(raw)?)
+                }
+            };
             Ok(DeliveryRequest::Push {
                 endpoint_url: push_endpoint(url)?,
+                authorization_header,
             })
         }
         _ => Err(StreamError::UnsupportedDeliveryMethod),
@@ -824,7 +908,9 @@ impl StreamConfiguration {
                 "method": DELIVERY_POLL,
                 "endpoint_url": poll_endpoint_for(transmitter.poll_endpoint, &self.stream_id),
             }),
-            Delivery::Push { endpoint_url } => json!({
+            // `authorization_header` is deliberately absent; see the module
+            // documentation.
+            Delivery::Push { endpoint_url, .. } => json!({
                 "method": DELIVERY_PUSH,
                 "endpoint_url": endpoint_url,
             }),
@@ -1081,15 +1167,16 @@ mod tests {
         assert_eq!(
             parsed.delivery,
             Some(DeliveryRequest::Push {
-                endpoint_url: "https://receiver.example/events".to_owned()
+                endpoint_url: "https://receiver.example/events".to_owned(),
+                authorization_header: None,
             })
         );
     }
 
-    /// The module's stated refusal: a credential this server cannot seal is
-    /// not one it accepts and drops.
+    /// SSF 1.0 §6.1.1: the receiver's credential is kept, so that every push
+    /// can present it.
     #[test]
-    fn a_push_authorization_header_is_refused_rather_than_dropped() {
+    fn a_push_authorization_header_is_kept() {
         // Arrange
         let body = json!({"delivery": {
             "method": DELIVERY_PUSH,
@@ -1098,10 +1185,90 @@ mod tests {
         }});
 
         // Act
+        let parsed = request(&body);
+
+        // Assert
+        let Some(DeliveryRequest::Push {
+            authorization_header: Some(header),
+            ..
+        }) = parsed.delivery
+        else {
+            panic!("the credential was dropped");
+        };
+        assert_eq!(header.expose(), "Bearer secret");
+    }
+
+    /// A credential that HTTP cannot carry is refused where it is registered.
+    /// The alternative is a stream that exists, looks configured, and fails
+    /// every delivery at the socket.
+    #[test]
+    fn an_authorization_header_that_is_not_a_field_value_is_refused() {
+        // Arrange
+        let body = json!({"delivery": {
+            "method": DELIVERY_PUSH,
+            "endpoint_url": "https://receiver.example/events",
+            "authorization_header": "Bearer t\r\nX-Admin: 1",
+        }});
+
+        // Act
         let refused = StreamRequest::parse(&body);
 
         // Assert
-        assert_eq!(refused, Err(StreamError::AuthorizationHeaderUnsupported));
+        assert_eq!(
+            refused,
+            Err(StreamError::BadAuthorizationHeader(
+                AuthorizationHeaderError::NotAFieldValue
+            ))
+        );
+    }
+
+    /// A refusal names the member and never any part of the value: these
+    /// strings reach logs, and this one is a credential.
+    #[test]
+    fn a_refused_credential_is_not_echoed_in_the_error() {
+        // Arrange
+        let body = json!({"delivery": {
+            "method": DELIVERY_PUSH,
+            "endpoint_url": "https://receiver.example/events",
+            "authorization_header": "Bearer hunter2\nX: 1",
+        }});
+
+        // Act
+        let rendered = StreamRequest::parse(&body)
+            .expect_err("a header with a line break is refused")
+            .to_string();
+
+        // Assert
+        assert!(!rendered.contains("hunter2"), "{rendered}");
+    }
+
+    /// §8.1.1.2: a stream read is authorized by a token, not by holding the
+    /// credential, so the credential is not in what comes back.
+    #[test]
+    fn a_rendered_stream_does_not_echo_the_credential() {
+        // Arrange
+        let stream = StreamConfiguration {
+            stream_id: StreamId::generate(),
+            audience: vec!["https://receiver.example".to_owned()],
+            events_requested: Vec::new(),
+            delivery: Delivery::Push {
+                endpoint_url: "https://receiver.example/events".to_owned(),
+                authorization_header: Some(
+                    AuthorizationHeader::parse("Bearer secret-value").expect("a field value"),
+                ),
+            },
+            description: None,
+            inactivity_timeout: None,
+        };
+
+        // Act
+        let events = supported(&[]);
+        let rendered =
+            serde_json::to_string(&stream.render(&transmitter(&events))).expect("serialises");
+
+        // Assert
+        assert!(!rendered.contains("secret-value"), "{rendered}");
+        assert!(!rendered.contains("authorization_header"), "{rendered}");
     }
 
     /// §8.1.1: the poll endpoint is transmitter-supplied, so a receiver

@@ -637,15 +637,18 @@ either.
 | **A2** | **G2** | **Keeping the signals flowing after the stream is gone.** A deleted stream whose queued SETs are still in the outbox delivers events about people to a receiver that has been withdrawn. | §8.1.1.5 is one transaction: whatever the stream still owed is abandoned first, the row is removed last. A crash between the two leaves a stream whose events are already stopped, which is the safe half. |
 | **A5** | **G1** | **Configuring a stream and leaving no trace.** | Every creation, update and deletion is an audit event of its own (`ssf.stream_created`, `ssf.stream_updated`, `ssf.stream_deleted`), with the receiver as the actor and the stream recorded as a fingerprint rather than as its identifier — enough to correlate entries, not enough to act on if the trail leaks. |
 
-**A credential this server will not keep.** RFC 8935 §2.2 lets a receiver hand
-the transmitter an `authorization_header` to present on every push. This build
-refuses the member with a 400 rather than storing it: every other secret in
-this schema is sealed under the tenant's KEK and re-sealed by the rotation
-sweep (`asterius_store_pg::rewrap`), and a column outside that sweep would be a
-receiver's credential silently stranded by a KEK rotation — discovered, at the
-earliest, the first time a delivery is rejected. `ast-0ju.6` adds the sealed
-column, the rewrap arm and the member together, which is the only order in
-which they are safe.
+**A credential this server keeps, and the conditions it keeps it under.**
+RFC 8935 §2.2 lets a receiver hand the transmitter an `authorization_header` to
+present on every push. `ast-0ju.3` refused the member with a 400 and named the
+three things that had to land together before it could be accepted;
+`ast-0ju.6` landed them. It is sealed under the tenant's KEK with the
+`stream_id` as additional authenticated data
+(`asterius_jose::RowSecret::SsfPushAuthorization`), the rotation sweep
+(`asterius_store_pg::rewrap`) moves it with everything else the KEK seals, and
+the endpoint validates it as an HTTP field value before it is stored — a value
+carrying `\r\n` is a second header in every request this server would then make
+to that receiver. It is never rendered back: see the push delivery section
+below.
 
 **Residual, stated rather than closed:** one stream per receiver per audience is
 a unique index rather than a tenant setting, so a tenant that legitimately
@@ -697,6 +700,53 @@ emitters are `ast-0ju.8` — so today this endpoint is a correct, tested and
 permanently empty queue; and a receiver that never polls leaves its SETs in
 `ssf_poll_queue` for ever, because §8.1.1's `inactivity_timeout` is stored but
 nothing sweeps on it yet.
+
+### SSF push delivery (`ast-0ju.6`)
+
+**Why this needs a section: this is the one path where this server dials out
+carrying a secret, about a person, to an address a third party chose.** Poll
+delivery waits to be asked; push delivery is an outbound `POST` from inside the
+deployment's network to a URL a receiver registered, with the receiver's own
+credential on it and a signed statement about a user in the body. Three
+capabilities meet in one request: SSRF, credential handling, and a decision
+taken on the strength of what an outsider says back (RFC 8935 §2.3).
+
+**The frontier: the stream is the authority, and the outbound path is the same
+one.** The outbox row names a `stream_id` this server wrote; the endpoint, the
+credential and the "is this stream still delivering" question all come from
+that row at delivery time, so a receiver that changed its endpoint is not
+posted to at the old one and a deleted stream (§8.1.1.5) is not posted to at
+all. The request itself goes through ADR-0006's single outbound path
+(`asterius_server::outbound::post`), which is the same SSRF guard, the same
+trust anchors, the same refusal to follow a redirect and the same 10-second
+timeout as every other dereference of a client-supplied URL.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1**, **A3** | **G3** | **Using a push endpoint as an SSRF probe or an amplifier.** A receiver registers `https://169.254.169.254/…`, or a name that resolves into the cluster, and has the transmitter deliver to it from inside the network. | The endpoint must be `https` with a host and no userinfo or fragment at registration, and every delivery goes through `outbound::ssrf` — which refuses loopback, link-local, private and unique-local addresses *after* resolution, so a DNS answer that changes between registration and delivery is refused too. No redirect is followed: a 3xx is a failure, never a hop to an origin that has not been through the guard. |
+| **A1** | **G1** | **Smuggling a second header into every request the transmitter makes.** A receiver registers an `authorization_header` containing `\r\n`, turning each delivery into two requests of its choosing. | `asterius_ssf::push::AuthorizationHeader` accepts only visible ASCII with spaces and tabs, at registration and again when the row is read back, and the outbound path refuses a header value HTTP cannot carry rather than reporting it as a transport failure. |
+| **A2** | **G1** | **Reading another receiver's credential out of a database dump, or moving one between streams.** | The value is sealed under the tenant's KEK, never stored or logged in the clear, and the `stream_id` is in the additional authenticated data: a ciphertext pasted into another stream's row does not decrypt, so the delivery fails loudly instead of presenting one receiver's credential to another's endpoint. It is also never echoed by the management API — §8.1.1.2 is authorized by a token, not by holding the secret, so returning it would put a credential in a response body and a log for a caller that already had it. |
+| **A3** | **G2** | **Making the transmitter shout.** A receiver answers 503 to everything, or hangs, so that the worker spends itself retrying one stream while every other delivery waits. | One timeout over the whole exchange, a bounded attempt budget per row with exponential backoff (`ast-0ju.9`), and a stream whose delivery exhausts that budget is **paused** (§8.1.2) with the reason recorded — so a broken receiver costs a bounded number of attempts rather than an unbounded stream of dead letters. Deliveries within a batch run concurrently and are already ordering-disjoint, so one slow receiver does not serialise the others. |
+| **A3** | **G2** | **Steering the transmitter with the response body.** §2.3 gives the receiver a JSON object the transmitter acts on; a receiver could try to put a credential-looking string, a terminal escape or a megabyte of text into an operator's screen — or claim `invalid_key` to make the transmitter roll its signing keys. | The body is read to a bound and parsed by one total parser (`push::ReceiverError::parse`, fuzzed) that maps `err` onto §2.3's closed set and reduces `description` to bounded, control-character-free text. `invalid_key` records a *hint* in the audit trail and nothing else: no key is rotated, refreshed or withdrawn on a receiver's say-so, because that would be a denial of service by 400. |
+| **A5** | **G1** | **Signals leaving the building with no record.** | Every accepted SET is `ssf.set_pushed`, every §2.3 refusal is `ssf.push_refused` with the code and the key-refresh hint, and a stream that stops is `ssf.stream_paused` with its reason. The stream row also counts deliveries and failures, which is what a console shows per stream beside the queue depth. |
+
+**A choice RFC 8935 leaves open, made here: a refusal pauses the stream.**
+§2.4 bounds the retries of *one* SET and says nothing about the tenth in a row.
+A transmitter that keeps posting to an endpoint that has answered 400 all
+morning is manufacturing dead letters, so the first non-retryable refusal — and
+the last retry of a receiver that never recovered — stops the stream and
+records why. Events go on being queued: §8.1.2 makes `paused` a state a stream
+is expected to leave, and nothing here ever writes `disabled`.
+
+**Residual, stated rather than closed:** nothing queues a SET yet (the emitters
+are `ast-0ju.8`), so this path is exercised by its tests and by nothing else in
+a running deployment; a paused stream's backlog dead-letters as each row spends
+its own budget rather than waiting for the stream to be resumed; resuming a
+paused stream is an operator's `UPDATE` until the console screen lands
+(`ast-0ju.6` follow-up); and the push deliverer cannot be tested against a real
+socket, because the SSRF guard refuses every address a test could bind — the
+fake receiver sits at the transport port instead, and what the socket itself
+does is tested in `outbound::post`.
 
 ### Back-channel logout (`ast-o4u.2`)
 

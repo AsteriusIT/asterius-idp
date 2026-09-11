@@ -88,7 +88,7 @@ pub use roles::PgRoleRepository;
 pub use scope::TenantScope;
 pub use sessions::PgSessionRepository;
 pub use ssf_poll::{PgSsfPoll, PollBatch, QueuedSet};
-pub use ssf_streams::{PgSsfStreams, SET_OUTBOX_KIND};
+pub use ssf_streams::{PgSsfStreams, PushTarget, SET_OUTBOX_KIND, StreamStats};
 pub use store::{MIGRATOR, Store};
 pub use tenant_settings::PgTenantSettings;
 pub use tenants::PgTenantRepository;

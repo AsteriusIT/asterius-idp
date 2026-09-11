@@ -1250,7 +1250,7 @@ async fn ssf_streams(
 
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredStreams {
-        streams: scope.ssf_streams(),
+        streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
         grants: scope.grants(),
     };
     // What this build can emit. Empty today; see
@@ -1308,7 +1308,7 @@ async fn ssf_poll(
 
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredPoll {
-        streams: scope.ssf_streams(),
+        streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
         queue: scope.ssf_poll(),
         grants: scope.grants(),
     };

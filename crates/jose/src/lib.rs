@@ -24,7 +24,8 @@ pub use client_keys::{
 pub use dpop::{DpopError, Expectation, NonceIssuer, NonceRule, NormalisedUri, Proof};
 pub use jws::{Header, Unverified};
 pub use kek::{
-    CompositeKek, KEK_LEN, Kek, KeyBinding, LocalKek, NONCE_LEN, TenantSecret, WrappedKey,
+    CompositeKek, KEK_LEN, Kek, KeyBinding, LocalKek, NONCE_LEN, RowSecret, TenantSecret,
+    WrappedKey,
 };
 pub use key::{MIN_RSA_BITS, SigningKey, VerifyingKey};
 pub use store::{LocalKeyStore, thumbprint};

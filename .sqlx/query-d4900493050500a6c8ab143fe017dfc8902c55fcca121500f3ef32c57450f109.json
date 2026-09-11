@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ssf_streams\n                 (tenant_id, stream_id, client_id, audience, events_requested,\n                  delivery_method, delivery_endpoint_url, description,\n                  inactivity_timeout_seconds,\n                  authorization_header_ciphertext, authorization_header_nonce,\n                  authorization_header_kek_id)\n             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Bytea",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d4900493050500a6c8ab143fe017dfc8902c55fcca121500f3ef32c57450f109"
+}
