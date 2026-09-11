@@ -80,18 +80,28 @@
 //! to `ast-0ju.3`, and until it exists the caller is responsible for it.
 #![forbid(unsafe_code)]
 
+pub mod caep;
 pub mod event;
 pub mod metadata;
 pub mod poll;
+pub mod push;
 pub mod set;
 pub mod stream;
 pub mod subject;
+pub mod verification;
 
 pub use event::{EventError, EventUri, MAX_EVENT_URI_LEN, SecurityEvent};
 pub use metadata::{SPEC_VERSION, WELL_KNOWN_DOCUMENT, transmitter_metadata};
 pub use poll::{MAX_LONG_POLL, PollError, PollRequest, PollResponse, RejectedSet};
+pub use push::{
+    Disposition, MAX_DESCRIPTION_CHARS, MAX_ERROR_BODY_BYTES, PUSH_ACCEPT, PUSH_CONTENT_TYPE,
+    ReceiverError, ReceiverErrorCode, disposition,
+};
 pub use set::{
     AudienceError, MAX_SET_CLAIMS_BYTES, ReadySet, SET_TYP, Set, SetError, SetId, SetSubject,
     SignedSet, StreamAudience, Txn, UnsignedSet,
 };
 pub use subject::{ComplexSubject, MAX_MEMBER_LEN, SimpleSubject, Subject, SubjectError};
+pub use verification::{
+    MAX_STATE_LEN, StateError, VERIFICATION, VerificationState, verification_event,
+};

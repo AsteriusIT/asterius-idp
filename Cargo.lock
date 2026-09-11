@@ -94,10 +94,12 @@ version = "0.0.0"
 dependencies = [
  "askama",
  "asterius-domain",
+ "asterius-ssf",
  "asterius-web",
  "async-trait",
  "axum",
  "base64",
+ "futures-core",
  "hex",
  "http-body-util",
  "image",
@@ -204,6 +206,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "sqlx",
  "thiserror",
  "time",
  "tokio",
@@ -234,6 +237,7 @@ dependencies = [
  "time",
  "tokio",
  "url",
+ "uuid",
 ]
 
 [[package]]

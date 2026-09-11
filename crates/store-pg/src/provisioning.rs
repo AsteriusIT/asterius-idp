@@ -56,6 +56,33 @@
 //! tenant with no keys, which is the state that already existed for every
 //! tenant before this module and which the rotation sweep repairs within one
 //! interval.
+//!
+//! # Why the window is still open (`ast-zq9`)
+//!
+//! `ast-zq9` closed the other non-atomic admin write — a client registration
+//! and its `client.registered` record now commit together — and looked at this
+//! one with the same intent. It is not the same shape of problem, and the
+//! difference is not the foreign key: a transaction *can* insert the tenant and
+//! its keys in that order. It is that "write the keys" is
+//! `TenantKeyStore::apply_schedule`, which is three passes of
+//! `PgKeyRepository::run` — one per algorithm in `SigningAlgorithm::ALL` — each
+//! of which opens its own transaction, takes
+//! `pg_advisory_xact_lock(hashtext(tenant), hashtext('key-rotation'))` for the
+//! length of it, and records `key.rotated` after committing it. Sharing one
+//! transaction with the tenant row means every one of those passes accepting a
+//! caller's connection instead of the pool, which changes where the rotation
+//! lock is released, when the key-encryption key is exercised, and when the
+//! rotation records are written — for *every* caller of the sweep, not just
+//! this one. That is a refactor of the rotation path, and the rotation path is
+//! the one thing here with a working repair loop: the sweep already turns a
+//! keyless tenant into a signing one within a minute, and the audit trail
+//! records the keys when it does.
+//!
+//! So the gap this module documents stands, deliberately, with its cost
+//! restated: a tenant created by a process that dies in the window cannot sign
+//! until the next sweep, and no client registration succeeds against it in the
+//! meantime. Nothing is lost and nothing is unrecorded, which is what made the
+//! registration case worth a schema-free fix and this one worth leaving.
 
 use crate::key_store::TenantKeyStore;
 use crate::tenants::PgTenantRepository;

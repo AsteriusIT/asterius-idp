@@ -3,6 +3,7 @@
 //! Adapters live in `asterius-store-pg`, `asterius-jose` and the server crate.
 //! Protocol crates depend on these traits and never on an implementation.
 
+use crate::audit::AuditEvent;
 use crate::{
     ApplicationRole, AuthenticationMethod, AuthorizationDetailsType, Client, ClientId,
     ClientMetadataError, ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError,
@@ -410,16 +411,36 @@ pub trait ClientRegistry: Debug + Send + Sync {
     /// comes back here rather than from what it sent, and cannot describe a
     /// client that does not exist.
     ///
+    /// # The trail entry is an argument, not a later call (`ast-zq9`)
+    ///
+    /// `audit` is the `client.registered` record for this registration, and an
+    /// implementation must commit it with the row or commit neither. The
+    /// endpoint that calls this is reachable without a client credential, and
+    /// it used to append the record after the row had committed: a crash or an
+    /// audit-store failure in that window left a live client — with redirect
+    /// URIs and a registration access token — that the trail never mentions,
+    /// and the request still had to return 201 because the only copy of that
+    /// token was already gone. Making the record a parameter removes the
+    /// window instead of choosing which half of it to lose: there is no call a
+    /// caller can forget and no moment in which one half exists without the
+    /// other.
+    ///
+    /// A failure to write the record is therefore a failure to register, and
+    /// the client learns the registration did not happen — which is true,
+    /// because nothing was kept.
+    ///
     /// # Errors
     ///
     /// [`DomainError::Conflict`] if the `client_id` is already taken, or if the
     /// tenant does not exist. [`DomainError::Invalid`] if the entity belongs to
-    /// another tenant or the store refuses it. [`DomainError::Storage`]
-    /// otherwise.
+    /// another tenant, if `audit` is another tenant's record, or if the store
+    /// refuses either write. [`DomainError::Storage`] otherwise. In every case
+    /// neither the client nor the record was kept.
     async fn register(
         &self,
         client: &Client,
         registration_access_token: &[u8; 32],
+        audit: &AuditEvent,
     ) -> Result<Client, DomainError>;
 }
 

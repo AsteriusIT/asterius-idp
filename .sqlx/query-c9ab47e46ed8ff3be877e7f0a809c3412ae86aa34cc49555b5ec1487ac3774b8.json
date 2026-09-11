@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ciba_requests\n                set notified_at = $3\n              where tenant_id = $1 and auth_req_id_hash = $2\n                and delivery_mode = 'ping' and notified_at is null",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c9ab47e46ed8ff3be877e7f0a809c3412ae86aa34cc49555b5ec1487ac3774b8"
+}

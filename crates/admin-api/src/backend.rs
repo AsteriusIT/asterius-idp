@@ -205,6 +205,37 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// written that makes this server post to a URL of the caller's choosing.
     fn outbox(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterQuery>;
 
+    /// The operator's two mutations on a dead letter (`ast-f7m.8`).
+    ///
+    /// A second handle beside [`Self::outbox`] rather than a wider port, for
+    /// the reason the trail has a sink and a query: the listing is reached
+    /// with `admin.outbox:read`, and the object it reads through must not
+    /// be one that can requeue. The object behind this one is the same
+    /// `PgOutbox` the worker claims from, so a requeued row is claimed by
+    /// the schedule the screen reports.
+    fn dead_letter_operations(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterOperations>;
+
+    /// The deployment's SSF streams as an operator sees them, and the
+    /// transmitter that signs a verification event (`ast-f7m.8`).
+    ///
+    /// A handle for the reason [`Self::keys`] is one: the verification SET is
+    /// signed with the tenant's active key through the process's signer, and
+    /// queued on the same outbox or poll table the emitters use. A second
+    /// transmitter built here would sign with whatever key this crate could
+    /// reach and queue where nothing delivers from.
+    fn ssf(&self) -> Arc<dyn crate::ssf::SsfAdministration>;
+
+    /// The audit trail, for the query API and the export (`ast-lh3.9`).
+    ///
+    /// The port is the read-only [`asterius_domain::audit::AuditQuery`] and
+    /// not the sink beside it: there is no method on it that appends, so no
+    /// admin route built on this handle can be one that writes to the one
+    /// table nothing may rewrite. It is a second handle rather than a method
+    /// on [`Self::audit`] for the same reason the outbox's queue and its
+    /// dead-letter view are two: one object that could both read the trail
+    /// and append to it would give the export the authority to write.
+    fn audit_trail(&self) -> Arc<dyn asterius_domain::audit::AuditQuery>;
+
     /// This tenant's initial access tokens (`ast-cu3`).
     ///
     /// A handle for the same reason [`Self::tenants`] is one: the object

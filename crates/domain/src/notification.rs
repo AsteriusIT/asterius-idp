@@ -66,6 +66,39 @@ pub enum NotificationKind {
     /// the "was this you?" message, and a link in it would train the person
     /// receiving it to click links in messages about their password.
     CredentialChanged,
+    /// Something is waiting for a decision in the approvals inbox
+    /// (`ast-lh3.6`).
+    ///
+    /// CIBA Core 1.0 §8 has the OP "identify the end-user" and obtain an
+    /// authorization decision on the *authentication device*, which is a
+    /// device the client never touches: a backchannel request that nobody is
+    /// told about is a request that expires unseen. So this is the one
+    /// notification this server sends that is not about an account's
+    /// credentials.
+    ///
+    /// The link is to the inbox and **not** to a particular request. A link
+    /// that decided which approval was being answered would be a URL an
+    /// attacker who guessed it could aim somebody at — and §7.1's
+    /// `binding_message` exists precisely so that the person compares two
+    /// screens rather than trusting a link. The message carries the same
+    /// binding message the page will show, for that comparison.
+    ApprovalRequested {
+        /// Where the inbox is, absolute and carrying this tenant's prefix.
+        link: String,
+        /// The client's registered name, as the inbox will render it.
+        ///
+        /// Attacker-chosen at registration, like the name on the consent
+        /// screen, and treated the same way: it is a hint about who is asking
+        /// and never an identity.
+        client_name: String,
+        /// §7.1's `binding_message`, when the client sent one.
+        ///
+        /// The same string the consumption device is showing, so the person
+        /// can see the two are one transaction (§7.1).
+        binding_message: Option<String>,
+        /// How many minutes the request has left, so the message can say so.
+        valid_for_minutes: i64,
+    },
 }
 
 impl NotificationKind {
@@ -76,6 +109,7 @@ impl NotificationKind {
             Self::AccountRecovery { .. } => "account_recovery",
             Self::EmailVerification { .. } => "email_verification",
             Self::CredentialChanged => "credential_changed",
+            Self::ApprovalRequested { .. } => "approval_requested",
         }
     }
 }
@@ -114,6 +148,26 @@ impl Notification {
             to,
             kind: NotificationKind::EmailVerification {
                 link,
+                valid_for_minutes,
+            },
+        }
+    }
+
+    /// The "something is waiting for your decision" message (`ast-lh3.6`).
+    #[must_use]
+    pub fn approval_requested(
+        to: String,
+        link: String,
+        client_name: String,
+        binding_message: Option<String>,
+        valid_for_minutes: i64,
+    ) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::ApprovalRequested {
+                link,
+                client_name,
+                binding_message,
                 valid_for_minutes,
             },
         }
@@ -186,6 +240,37 @@ mod tests {
 
         // Assert
         assert_eq!(kind, "email_verification");
+    }
+
+    /// CIBA Core 1.0 §7.1: the `binding_message` is shown on the consumption
+    /// device *and* on the authentication device, so a person can see that the
+    /// two are one transaction. A notification that dropped it would leave
+    /// nothing to compare against.
+    #[test]
+    fn an_approval_notification_carries_the_binding_message_to_compare() {
+        // Arrange
+        let message = Notification::approval_requested(
+            "ada@example.test".to_owned(),
+            "https://as.example/t/a/account/approvals".to_owned(),
+            "Teller agent".to_owned(),
+            Some("W4SCT".to_owned()),
+            5,
+        );
+
+        // Act
+        let kind = message.kind.clone();
+
+        // Assert
+        assert_eq!(
+            kind,
+            NotificationKind::ApprovalRequested {
+                link: "https://as.example/t/a/account/approvals".to_owned(),
+                client_name: "Teller agent".to_owned(),
+                binding_message: Some("W4SCT".to_owned()),
+                valid_for_minutes: 5,
+            }
+        );
+        assert_eq!(message.kind.as_str(), "approval_requested");
     }
 
     /// A credential-change notice carries nothing to click. Asserted rather

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update outbox\n                set status = 'pending',\n                    available_at = $3,\n                    max_attempts = attempts + $4,\n                    last_error = null,\n                    claimed_by = null,\n                    claim_expires_at = null\n              where tenant_id = $1 and outbox_id = $2 and status = 'abandoned'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Timestamptz",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ddb2d7eb99689ad7927c9bf7ce12882b8d7ee50fcbc222d3b2c69e9269f46e0f"
+}

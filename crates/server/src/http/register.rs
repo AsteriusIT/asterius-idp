@@ -545,9 +545,21 @@ async fn registered(
         updated_at: now,
     };
 
+    // The trail entry travels *with* the row (`ast-zq9`): the store commits
+    // both or neither, so there is no window in which a live client exists
+    // that the trail does not mention.
+    let trail_entry = registration_record(
+        context,
+        now,
+        Outcome::Success,
+        Some(client_id.clone()),
+        None,
+        None,
+    );
+
     let stored = match context
         .clients
-        .register(&client, &sha256(token.expose().as_bytes()))
+        .register(&client, &sha256(token.expose().as_bytes()), &trail_entry)
         .await
     {
         Ok(stored) => stored,
@@ -579,16 +591,6 @@ async fn registered(
             );
         }
     };
-
-    record(
-        context,
-        now,
-        Outcome::Success,
-        Some(stored.id.clone()),
-        None,
-        None,
-    )
-    .await;
 
     // RFC 7591 §3.2.1: 201, `application/json`, `no-store`. The body carries a
     // credential exactly once; a cached 201 is that credential handed to
@@ -1203,16 +1205,16 @@ pub(crate) fn management_uri(tenant: &Tenant, client: &ClientId) -> String {
     )
 }
 
-/// Appends the registration decision to the audit trail.
+/// Appends a *refusal* to the audit trail.
 ///
-/// Written after the row is committed, and a failure here does **not** fail the
-/// request. That is the opposite of the choice `TenantKeyStore::apply_schedule`
-/// makes, and the difference is which way the damage runs: a rotation that is
-/// refused after the fact can be retried from the key rows, but a registration
-/// refused after the row exists strands a live client whose owner was told it
-/// failed and never received the only copy of its registration access token.
-/// The gap is logged at `error` and closing it properly needs the transactional
-/// outbox (`ast-0ju.9`), which is the same answer the key store reaches.
+/// Only refusals reach the sink from here. A registration that succeeds has
+/// its `client.registered` record written by the store, in the transaction
+/// that writes the row (`ast-zq9`), because those two must not be separable:
+/// a failure of this call cannot fail the request once the row is committed —
+/// the only copy of the registration access token is already in the response
+/// — so a trail entry written afterwards is one the server is obliged to lose
+/// quietly. A refusal has no row and no credential to lose, so a failure here
+/// is a line missing from the trail and nothing more, logged at `error`.
 async fn record(
     context: &RegisterContext<'_>,
     now: OffsetDateTime,
@@ -1221,6 +1223,30 @@ async fn record(
     reason: Option<&'static str>,
     rule: Option<&'static str>,
 ) {
+    let event = registration_record(context, now, outcome, client, reason, rule);
+    if let Err(failure) = context.audit.record(event).await {
+        tracing::error!(
+            %failure,
+            tenant = %context.tenant.id,
+            "a client registration decision was not written to the audit trail"
+        );
+    }
+}
+
+/// Builds the `client.registered` record for a decision, without writing it.
+///
+/// Separate from [`record`] because the success case does not write it here at
+/// all: it is handed to [`ClientRegistry::register`], which commits it with the
+/// row. Both cases build it the same way, so the trail cannot come to describe
+/// a success in one vocabulary and a refusal in another.
+fn registration_record(
+    context: &RegisterContext<'_>,
+    now: OffsetDateTime,
+    outcome: Outcome,
+    client: Option<ClientId>,
+    reason: Option<&'static str>,
+    rule: Option<&'static str>,
+) -> AuditEvent {
     // `Actor::System`, because there is no identity to name. The registrant is
     // either anonymous or holds an initial access token, and an initial access
     // token is authorization to use this endpoint rather than a statement about
@@ -1256,14 +1282,7 @@ async fn record(
     if let Some(request_id) = context.request_id {
         event = event.request_id(request_id);
     }
-
-    if let Err(failure) = context.audit.record(event).await {
-        tracing::error!(
-            %failure,
-            tenant = %context.tenant.id,
-            "a client registration was not written to the audit trail"
-        );
-    }
+    event
 }
 
 /// Whether the request body is JSON, ignoring any charset parameter.

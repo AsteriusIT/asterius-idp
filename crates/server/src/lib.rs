@@ -18,6 +18,7 @@ pub mod outbox;
 pub mod retention;
 pub mod rotation;
 pub mod signing;
+pub mod ssf;
 pub mod tenancy;
 pub mod tenant_settings;
 

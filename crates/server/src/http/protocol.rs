@@ -11,6 +11,7 @@
 //! from a document the specification says must contain it.
 
 use crate::client_auth::ClientAuthenticator;
+use crate::http::approvals::{self, ApprovalsContext};
 use crate::http::authorization_code::AuthorizationCode;
 use crate::http::authorize::{self, AuthorizeContext};
 use crate::http::backchannel_authentication::{self, BackchannelContext};
@@ -449,6 +450,7 @@ fn mount_features(
     let router = mount_grant_management(router, capabilities, &endpoints);
     let router = mount_backchannel_authentication(router, capabilities, &endpoints);
     let router = mount_ssf(router, capabilities, &endpoints);
+    let router = router.merge(approvals_pages(Arc::clone(&endpoints)));
     router.merge(device_pages(endpoints))
 }
 
@@ -573,6 +575,31 @@ fn device_pages(endpoints: Arc<ClientEndpoints>) -> Router {
         .route(
             device::CONFIRM_PATH,
             post(device_confirm).with_state(endpoints),
+        )
+}
+
+/// The approvals inbox (`ast-lh3.6`), which is three pages and no endpoint.
+///
+/// Not in the [`Endpoint`] registry and therefore not in the discovery
+/// document, for the reason the device verification pages are not: this is
+/// this server's own user interface, reached with a session cookie, and no
+/// client has business linking into it. Not behind the CIBA feature flag
+/// either — the page also carries RFC 8628's code entry, which a deployment
+/// with the device grant and no CIBA still needs — so where CIBA is off the
+/// list above the form is simply always empty.
+fn approvals_pages(endpoints: Arc<ClientEndpoints>) -> Router {
+    Router::new()
+        .route(
+            approvals::PAGE_PATH,
+            get(approvals_page).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            approvals::DECIDE_PATH,
+            post(approvals_decide).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            approvals::SIGN_IN_PATH,
+            get(approvals_sign_in).with_state(endpoints),
         )
 }
 
@@ -1274,7 +1301,7 @@ async fn ssf_streams(
 
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredStreams {
-        streams: scope.ssf_streams(),
+        streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
         grants: scope.grants(),
     };
     // What this build can emit. Empty today; see
@@ -1332,7 +1359,7 @@ async fn ssf_poll(
 
     let scope = endpoints.store.scope(tenant.id.clone());
     let store = StoredPoll {
-        streams: scope.ssf_streams(),
+        streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
         queue: scope.ssf_poll(),
         grants: scope.grants(),
     };
@@ -1868,6 +1895,15 @@ async fn dispatch_grants(
         endpoints.audit.as_ref(),
     );
     let refresh_token = RefreshToken::sharing(&authorization_code, endpoints.audit.as_ref());
+    // The sixth grant (CIBA Core 1.0 §10.1), on the same borrows as the device
+    // grant: the two flows are the same shape, and this one's redemption is
+    // the code grant's issuance with an `auth_req_id` spent in front of it.
+    let ciba_requests = scope.ciba_requests(Arc::clone(&endpoints.kek));
+    let ciba_grant = crate::http::ciba_grant::CibaGrant::sharing(
+        &authorization_code,
+        &ciba_requests,
+        endpoints.audit.as_ref(),
+    );
 
     let mut response = token::token(
         TokenContext {
@@ -1880,6 +1916,7 @@ async fn dispatch_grants(
                 &client_credentials,
                 &device_code,
                 &token_exchange,
+                &ciba_grant,
             ],
             certificate,
         },
@@ -3588,7 +3625,7 @@ async fn backchannel_authentication_endpoint(
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
     let users = scope.users(Arc::clone(&endpoints.kek));
-    let ciba_requests = scope.ciba_requests();
+    let ciba_requests = scope.ciba_requests(Arc::clone(&endpoints.kek));
     let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     let now = time::OffsetDateTime::now_utc();
 
@@ -3612,6 +3649,10 @@ async fn backchannel_authentication_endpoint(
     let authenticator = Arc::clone(&endpoints.authenticator);
     let tenant_for_auth = Arc::clone(&tenant);
     let clients_for_auth = scope.clients(endpoints.capabilities);
+    // The journal sender this repository ships (`ast-lh3.6`): a row in the
+    // outbox and a log line, which is what a deployment with no real sender
+    // wired gets everywhere else it sends a person a message.
+    let mail = scope.mail();
 
     backchannel_authentication::authorize(
         BackchannelContext {
@@ -3622,6 +3663,7 @@ async fn backchannel_authentication_endpoint(
             client_keys: endpoints.authenticator.client_keys().as_ref(),
             ciba_requests: &ciba_requests,
             audit: endpoints.audit.as_ref(),
+            mail: &mail,
             certificate,
             grant_management,
             request_id: Some(request_id.as_str()),
@@ -3774,6 +3816,135 @@ async fn device_confirm(
 /// A struct rather than seven locals at three call sites: the context borrows
 /// all of them, so they have to outlive it, and one owner is one lifetime to
 /// get right instead of seven.
+/// What the approvals inbox's three handlers borrow for one request.
+///
+/// Owned here and borrowed by the context, for `DeviceParts`' reason: a
+/// repository is per-tenant and therefore per-request, and a context of
+/// references needs something to reference.
+struct ApprovalsParts {
+    ciba_requests: asterius_store_pg::PgCibaRequestRepository,
+    sessions: asterius_store_pg::PgSessionRepository,
+    interactions: asterius_store_pg::PgAuthRequestRepository,
+    clients: asterius_store_pg::PgClientRepository,
+    grants: asterius_store_pg::PgGrantRepository,
+    users: asterius_store_pg::PgUserRepository,
+}
+
+fn approvals_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> ApprovalsParts {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    ApprovalsParts {
+        ciba_requests: scope.ciba_requests(Arc::clone(&endpoints.kek)),
+        sessions: scope.sessions(),
+        interactions: scope.auth_requests(),
+        clients: scope.clients(endpoints.capabilities),
+        grants: scope.grants(),
+        users: scope.users(Arc::clone(&endpoints.kek)),
+    }
+}
+
+fn approvals_context<'a>(
+    tenant: &'a Tenant,
+    parts: &'a ApprovalsParts,
+    text: &'a asterius_web::Catalog,
+    audit: &'a dyn asterius_domain::AuditSink,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: Option<Extension<MountPrefix>>,
+) -> ApprovalsContext<'a> {
+    ApprovalsContext {
+        tenant,
+        ciba_requests: &parts.ciba_requests,
+        sessions: &parts.sessions,
+        interactions: &parts.interactions,
+        clients: &parts.clients,
+        grants: &parts.grants,
+        subjects: &parts.users,
+        acr: acr_policy(),
+        text,
+        nonce,
+        audit,
+        mount: mount_of(mount),
+    }
+}
+
+/// `GET /account/approvals` — what is waiting for this person.
+async fn approvals_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = approvals_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    approvals::page(
+        &approvals_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /account/approvals/decide` — one answer.
+async fn approvals_decide(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = approvals_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    approvals::decide(
+        &approvals_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/approvals/sign-in` — authenticate again, and come back.
+async fn approvals_sign_in(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = approvals_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    approvals::sign_in(
+        &approvals_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
 struct DeviceParts {
     device_codes: asterius_store_pg::PgDeviceCodeRepository,
     sessions: asterius_store_pg::PgSessionRepository,

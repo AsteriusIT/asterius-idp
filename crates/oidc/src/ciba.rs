@@ -802,6 +802,131 @@ fn notification_token_of(
     }
 }
 
+// ---------------------------------------------------------------------------
+// §10: token delivery
+// ---------------------------------------------------------------------------
+
+/// How much a `slow_down` raises the interval (§11: "at least 5 seconds").
+///
+/// The device flow's constant, by name rather than by value copied: a client
+/// that implements RFC 8628 and CIBA polls both with one loop, and the two
+/// flows telling it two different numbers would be a bug it could not see.
+pub const SLOW_DOWN_INCREMENT: Duration = crate::device::SLOW_DOWN_INCREMENT;
+
+/// How many `slow_down` answers a client is given before polling too fast is
+/// `invalid_request` and it "MUST stop polling".
+///
+/// §11 makes `slow_down` "a variant of `authorization_pending`" — the request
+/// is still live and the client should carry on, slower. A client that has
+/// been told three times and still polls inside its interval is not slow to
+/// adjust; it is not adjusting, and every further `slow_down` is a poll it
+/// makes at a rate this server has already refused. Three is arbitrary in the
+/// way any ceiling is, and it is small: at five seconds a step, three raises
+/// cover a client whose clock or scheduler is coarse by up to fifteen seconds.
+pub const MAX_SLOW_DOWNS: u32 = 3;
+
+/// The interval past which polling too fast is no longer answered with
+/// `slow_down` (§10.1, §11).
+///
+/// [`POLL_INTERVAL`] plus [`MAX_SLOW_DOWNS`] increments — twenty seconds. The
+/// store compares a row's *current* interval against this before raising it:
+/// a row already at the ceiling that is polled inside its interval is a client
+/// that has ignored every `slow_down` it was given, and is told to stop.
+pub const POLL_CEILING: Duration = Duration::seconds(20);
+
+/// §10.1's token request, reduced to what the store is asked about.
+///
+/// Only the digest: the presented `auth_req_id` is a bearer credential and this
+/// is the value that lives on in a log line or an error. `Debug` is derived
+/// because there is nothing here that should not render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenRequest {
+    /// The SHA-256 of the presented `auth_req_id`, hex, as the row was stored.
+    pub auth_req_id_digest: String,
+}
+
+/// Why a §10.1 token request could not be read.
+///
+/// Three variants, two codes. The first two are about the *form* — a
+/// parameter missing or repeated — and are RFC 6749 §5.2's `invalid_request`.
+/// The third is about the *credential*: a value outside §7.3's charset or of a
+/// length this server never mints is "an `auth_req_id` that is invalid", which
+/// §11 answers with `invalid_grant`. The distinction matters because a client
+/// acts on the code: `invalid_request` says fix the request, `invalid_grant`
+/// says the request was fine and the credential is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TokenRequestError {
+    /// §10.1: `auth_req_id` is REQUIRED and was not sent.
+    #[error("auth_req_id is required")]
+    MissingAuthReqId,
+    /// RFC 6749 §3.2: sent more than once.
+    #[error("auth_req_id was sent more than once")]
+    DuplicateAuthReqId,
+    /// Not a value this server could have minted (§7.3's charset and this
+    /// server's length).
+    #[error("the auth_req_id is not valid")]
+    Malformed,
+}
+
+impl TokenRequestError {
+    /// The RFC 6749 §5.2 / CIBA §11 error code.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::MissingAuthReqId | Self::DuplicateAuthReqId => "invalid_request",
+            Self::Malformed => "invalid_grant",
+        }
+    }
+}
+
+/// Reads a §10.1 token request.
+///
+/// The grant type has already been dispatched by the token endpoint; what is
+/// left is the one parameter this grant defines. The shape check is
+/// [`auth_req_id_digest_of`]'s, so a value that could not have been issued here
+/// costs a comparison and never a query — at an endpoint whose protocol is
+/// polling, that is the difference between a cheap refusal and a table scan a
+/// client can trigger at will.
+///
+/// # Errors
+///
+/// [`TokenRequestError`], with the code a client should act on.
+// fuzz-target: ciba_token_request
+pub fn token_request(params: &Parameters) -> Result<TokenRequest, TokenRequestError> {
+    let presented = params
+        .get("auth_req_id")
+        .map_err(|_| TokenRequestError::DuplicateAuthReqId)?
+        .filter(|value| !value.is_empty())
+        .ok_or(TokenRequestError::MissingAuthReqId)?;
+    let auth_req_id_digest =
+        auth_req_id_digest_of(presented).map_err(|_| TokenRequestError::Malformed)?;
+    Ok(TokenRequest { auth_req_id_digest })
+}
+
+/// §10.2's callback body: a JSON object holding the `auth_req_id` and nothing
+/// else.
+///
+/// Nothing else on purpose. The ping "tells the Client that the authentication
+/// result is ready"; the result itself is fetched from the token endpoint,
+/// authenticated and proof-bound. A body that carried more would be push
+/// delivery (§10.3) — the mode FAPI-CIBA forbids and this server does not
+/// register.
+#[must_use]
+pub fn ping_body(auth_req_id: &str) -> String {
+    serde_json::json!({ "auth_req_id": auth_req_id }).to_string()
+}
+
+/// §10.2's `Authorization` header: the `client_notification_token` "as a
+/// bearer token".
+///
+/// The token was checked against RFC 6750 §2.1's `token68` alphabet when the
+/// request was accepted ([`validate`]), so the value built here is a header
+/// value by construction.
+#[must_use]
+pub fn ping_authorization(client_notification_token: &str) -> String {
+    format!("Bearer {client_notification_token}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1391,5 +1516,152 @@ mod tests {
             assert_eq!(error.code(), code);
             assert_eq!(error.status(), status, "{code}");
         }
+    }
+
+    // ----- §10.1: the token request -----------------------------------------
+
+    fn token_params(pairs: &[(&str, &str)]) -> Parameters {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        Parameters::from_pairs(pairs)
+    }
+
+    /// §10.1: `auth_req_id` is REQUIRED. A request without one is malformed,
+    /// and says so with `invalid_request` rather than with a code about a
+    /// credential that was never presented.
+    #[test]
+    fn a_token_request_without_an_auth_req_id_is_invalid_request() {
+        // Arrange
+        let params = token_params(&[("grant_type", "urn:openid:params:grant-type:ciba")]);
+
+        // Act
+        let refused = token_request(&params).expect_err("no auth_req_id");
+
+        // Assert
+        assert_eq!(refused, TokenRequestError::MissingAuthReqId);
+        assert_eq!(refused.code(), "invalid_request");
+    }
+
+    /// RFC 6749 §3.2: a parameter sent twice is a malformed request, and the
+    /// parser must not pick one of the two values.
+    #[test]
+    fn a_token_request_with_two_auth_req_ids_is_invalid_request() {
+        // Arrange
+        let minted = MintedAuthReqId::generate();
+        let params = token_params(&[
+            ("auth_req_id", minted.expose()),
+            ("auth_req_id", minted.expose()),
+        ]);
+
+        // Act
+        let refused = token_request(&params).expect_err("two auth_req_ids");
+
+        // Assert
+        assert_eq!(refused, TokenRequestError::DuplicateAuthReqId);
+        assert_eq!(refused.code(), "invalid_request");
+    }
+
+    /// §11: a value that "is invalid" is `invalid_grant`, and a value this
+    /// server could not have minted is decided without a query — it is the
+    /// same shape check every poll pays.
+    #[test]
+    fn a_token_request_with_a_malformed_auth_req_id_is_invalid_grant() {
+        // Arrange
+        let params = token_params(&[("auth_req_id", "not/an/auth_req_id")]);
+
+        // Act
+        let refused = token_request(&params).expect_err("malformed");
+
+        // Assert
+        assert_eq!(refused, TokenRequestError::Malformed);
+        assert_eq!(refused.code(), "invalid_grant");
+    }
+
+    /// A minted value parses back to the digest that was stored for it, which
+    /// is the whole round trip the token endpoint depends on.
+    #[test]
+    fn a_minted_auth_req_id_parses_to_its_own_digest() {
+        // Arrange
+        let minted = MintedAuthReqId::generate();
+        let params = token_params(&[("auth_req_id", minted.expose())]);
+
+        // Act
+        let request = token_request(&params).expect("a minted value parses");
+
+        // Assert
+        assert_eq!(request.auth_req_id_digest, minted.digest());
+    }
+
+    /// The parser never renders the value it was handed: a `TokenRequest` in
+    /// a log line is a digest, not a credential.
+    #[test]
+    fn a_parsed_token_request_does_not_render_the_auth_req_id() {
+        // Arrange
+        let minted = MintedAuthReqId::generate();
+        let params = token_params(&[("auth_req_id", minted.expose())]);
+        let request = token_request(&params).expect("parses");
+
+        // Act
+        let rendered = format!("{request:?}");
+
+        // Assert
+        assert!(!rendered.contains(minted.expose()));
+    }
+
+    // ----- §10.1, §11: the polling policy ------------------------------------
+
+    /// §11's `slow_down` raises the interval by "at least 5 seconds", and the
+    /// increment here is the same one the device flow uses, so a client that
+    /// implements both polls both the same way.
+    #[test]
+    fn slow_down_adds_five_seconds() {
+        assert_eq!(SLOW_DOWN_INCREMENT, Duration::seconds(5));
+        assert_eq!(SLOW_DOWN_INCREMENT, crate::device::SLOW_DOWN_INCREMENT);
+    }
+
+    /// The ceiling is where `slow_down` stops being the answer and
+    /// `invalid_request` starts: exactly `MAX_SLOW_DOWNS` increments above the
+    /// advertised interval, so the three numbers cannot drift apart.
+    #[test]
+    fn the_poll_ceiling_is_the_interval_plus_the_permitted_slow_downs() {
+        assert_eq!(
+            POLL_CEILING,
+            POLL_INTERVAL + SLOW_DOWN_INCREMENT * MAX_SLOW_DOWNS
+        );
+        assert_eq!(POLL_CEILING, Duration::seconds(20));
+    }
+
+    // ----- §10.2: the ping callback -------------------------------------------
+
+    /// §10.2: "a JSON object ... containing the `auth_req_id`" and nothing
+    /// else. A callback that carried scopes or a subject would be a token
+    /// response by another name, which is push delivery — the mode this server
+    /// refuses.
+    #[test]
+    fn the_ping_body_is_the_auth_req_id_and_nothing_else() {
+        // Arrange
+        let minted = MintedAuthReqId::generate();
+
+        // Act
+        let body = ping_body(minted.expose());
+
+        // Assert
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+        assert_eq!(
+            parsed,
+            serde_json::json!({ "auth_req_id": minted.expose() })
+        );
+    }
+
+    /// §10.2: the callback "MUST use the `client_notification_token` as a
+    /// bearer token in the `Authorization` header".
+    #[test]
+    fn the_ping_authorization_is_the_notification_token_as_a_bearer() {
+        assert_eq!(
+            ping_authorization("8d67dc78-7faa-4d41-aabd-67707b374255"),
+            "Bearer 8d67dc78-7faa-4d41-aabd-67707b374255"
+        );
     }
 }

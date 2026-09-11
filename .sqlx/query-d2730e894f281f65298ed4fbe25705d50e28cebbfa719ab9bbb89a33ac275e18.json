@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ssf_streams\n                set events_requested = $4,\n                    delivery_method = $5,\n                    delivery_endpoint_url = $6,\n                    description = $7,\n                    inactivity_timeout_seconds = $8,\n                    authorization_header_ciphertext = $9,\n                    authorization_header_nonce = $10,\n                    authorization_header_kek_id = $11\n              where tenant_id = $1 and client_id = $2 and stream_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Bytea",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d2730e894f281f65298ed4fbe25705d50e28cebbfa719ab9bbb89a33ac275e18"
+}

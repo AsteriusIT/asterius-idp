@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select stream_id, audience, events_requested, delivery_method,\n                    delivery_endpoint_url, description, inactivity_timeout_seconds\n               from ssf_streams\n              where tenant_id = $1 and client_id = $2 and stream_id = $3",
+  "query": "select stream_id, audience, events_requested, delivery_method,\n                    delivery_endpoint_url, description, inactivity_timeout_seconds,\n                    authorization_header_ciphertext, authorization_header_nonce,\n                    authorization_header_kek_id\n               from ssf_streams\n              where tenant_id = $1 and client_id = $2 and stream_id = $3",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,21 @@
         "ordinal": 6,
         "name": "inactivity_timeout_seconds",
         "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
+        "name": "authorization_header_ciphertext",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 8,
+        "name": "authorization_header_nonce",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 9,
+        "name": "authorization_header_kek_id",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -53,8 +68,11 @@
       false,
       true,
       true,
+      true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "aef81728a5c1c90af4c8db46594d5db1520c20aeb58f24d36c4f660619df58b1"
+  "hash": "b601cd6d730e017d8cf869ffd6a5abbe6835d63bd23f1a5345a0b5835be6f31f"
 }

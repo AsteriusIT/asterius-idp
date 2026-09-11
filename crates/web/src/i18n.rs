@@ -282,6 +282,103 @@ catalogue! {
         StillSignedInHeading => still_signed_in_heading, "still-signed-in.heading",
             en: "You are still signed in",
             fr: "Vous êtes toujours connecté";
+
+        // ---- approvals inbox (`ast-lh3.6`) --------------------------------
+        //
+        // CIBA Core 1.0 §8 has the decision taken on the *authentication
+        // device*, which is the person's own phone or laptop: this page is the
+        // one in this tree most likely to be read in a hurry, on a small
+        // screen, by somebody who did not navigate to it. So it is in the
+        // catalogue from the first day rather than in English literals like
+        // the device pages beside it.
+        ApprovalsTitle => approvals_title, "approvals.title",
+            en: "Approvals",
+            fr: "Approbations";
+        ApprovalsHeading => approvals_heading, "approvals.heading",
+            en: "Waiting for your decision",
+            fr: "En attente de votre décision";
+        ApprovalsEmpty => approvals_empty, "approvals.empty",
+            en: "Nothing is waiting for your decision.",
+            fr: "Rien n'attend votre décision.";
+        // §7.1: the same string is shown by whatever started the flow. The
+        // instruction is to *compare*, not to read: a person who is only told
+        // a code has been shown a code.
+        ApprovalsBindingMessage => approvals_binding_message, "approvals.binding-message",
+            en: "Check that this matches what you are seeing where you started:",
+            fr: "Vérifiez que ceci correspond à ce qui s'affiche là où vous avez commencé :";
+        ApprovalsAskingFor => approvals_asking_for, "approvals.asking-for",
+            en: "It is asking for:",
+            fr: "Voici ce qui est demandé :";
+        ApprovalsAlsoAsking => approvals_also_asking, "approvals.also-asking",
+            en: "It is also asking to:",
+            fr: "Il est également demandé de :";
+        ApprovalsUndescribedDetail => approvals_undescribed_detail,
+            "approvals.undescribed-detail",
+            en: "Perform an action this server has no description for",
+            fr: "Effectuer une action que ce serveur ne sait pas décrire";
+        ApprovalsDetailActions => approvals_detail_actions, "approvals.detail-actions",
+            en: "Operations:",
+            fr: "Opérations :";
+        ApprovalsDetailDatatypes => approvals_detail_datatypes, "approvals.detail-datatypes",
+            en: "Data:",
+            fr: "Données :";
+        ApprovalsDetailLocations => approvals_detail_locations, "approvals.detail-locations",
+            en: "At:",
+            fr: "Auprès de :";
+        ApprovalsApprove => approvals_approve, "approvals.approve",
+            en: "Approve",
+            fr: "Approuver";
+        ApprovalsDeny => approvals_deny, "approvals.deny",
+            en: "Deny",
+            fr: "Refuser";
+        // RFC 8628 §5.3's warning, said on this page too: a request nobody
+        // started is a request somebody else started.
+        ApprovalsWarning => approvals_warning, "approvals.warning",
+            en: "If you did not start this yourself, deny it: somebody else is asking to act as \
+                 you.",
+            fr: "Si vous n'êtes pas à l'origine de cette demande, refusez-la : quelqu'un d'autre \
+                 demande à agir en votre nom.";
+        // The device flow's code entry, on the same page (`ast-lh3.6`): a
+        // person who is told to "approve on your phone" should find both
+        // things in one place.
+        ApprovalsDeviceHeading => approvals_device_heading, "approvals.device-heading",
+            en: "Connecting a device?",
+            fr: "Vous connectez un appareil ?";
+        ApprovalsDeviceLabel => approvals_device_label, "approvals.device-label",
+            en: "Code from the device",
+            fr: "Code affiché par l'appareil";
+        ApprovalsDeviceSubmit => approvals_device_submit, "approvals.device-submit",
+            en: "Continue",
+            fr: "Continuer";
+        // The two refusals that are about the *approver* rather than about the
+        // request. Both are shown on the page rather than logged only: a
+        // person whose approval silently did nothing presses the button again.
+        ApprovalsStale => approvals_stale, "approvals.stale",
+            en: "Sign in again to approve: an approval has to be made within two minutes of \
+                 authenticating.",
+            fr: "Reconnectez-vous pour approuver : une approbation doit suivre l'authentification \
+                 dans les deux minutes.";
+        ApprovalsStepUp => approvals_step_up, "approvals.step-up",
+            en: "This request needs a stronger sign-in than the one you have. Sign in again with \
+                 the method it asks for.",
+            fr: "Cette demande exige une authentification plus forte que la vôtre. \
+                 Reconnectez-vous avec la méthode demandée.";
+        ApprovalsSignInAgain => approvals_sign_in_again, "approvals.sign-in-again",
+            en: "Sign in again",
+            fr: "Se reconnecter";
+        // One sentence for every way a decision can miss: expired, already
+        // answered, somebody else's, never existed. Four distinctions nobody
+        // on this page can act on, and each of them an answer to a question
+        // about a request this person may not hold.
+        ApprovalsGone => approvals_gone, "approvals.gone",
+            en: "That request is no longer waiting for a decision.",
+            fr: "Cette demande n'attend plus de décision.";
+        ApprovalsApproved => approvals_approved, "approvals.approved",
+            en: "Approved.",
+            fr: "Approuvé.";
+        ApprovalsDenied => approvals_denied, "approvals.denied",
+            en: "Denied.",
+            fr: "Refusé.";
     }
     filled {
         // ---- consent ------------------------------------------------------
@@ -315,6 +412,22 @@ catalogue! {
         StillSignedInBody => still_signed_in_body, "still-signed-in.body",
             en: "Nothing was changed. Your session with {0} continues.",
             fr: "Rien n'a été modifié. Votre session avec {0} se poursuit.";
+
+        // ---- approvals inbox (`ast-lh3.6`) --------------------------------
+        ApprovalsRequestedBy => approvals_requested_by, "approvals.requested-by",
+            en: "{0} is asking to act as you.",
+            fr: "{0} demande à agir en votre nom.";
+        // §7.3's `expires_in`, rendered server-side and without a script: the
+        // value is a duration already formatted as digits and unit symbols, so
+        // the sentence around it is the only part that needs a language.
+        ApprovalsExpiresIn => approvals_expires_in, "approvals.expires-in",
+            en: "Expires in {0}",
+            fr: "Expire dans {0}";
+        ApprovalsDeviceIntro => approvals_device_intro, "approvals.device-intro",
+            en: "Enter the code shown on the device you are setting up, and {0} will show you \
+                 what it is asking for.",
+            fr: "Saisissez le code affiché par l'appareil que vous configurez : {0} vous \
+                 indiquera ensuite ce qui est demandé.";
     }
 }
 

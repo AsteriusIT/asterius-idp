@@ -146,6 +146,14 @@ pub enum FirstPartyDestination {
     /// than a redirect parameter for the reason the console is one: a
     /// destination that is data is a destination somebody else can supply.
     DeviceVerification,
+    /// The approvals inbox (CIBA Core 1.0 §8, `ast-lh3.6`).
+    ///
+    /// A person who follows the notification about a pending approval, or who
+    /// comes back to re-authenticate because an approval needs a fresher
+    /// sign-in than they have, lands here. A destination rather than a
+    /// parameter for the reason the other two are: a destination that is data
+    /// is a destination somebody else can supply.
+    ApprovalsInbox,
 }
 
 impl FirstPartyDestination {
@@ -155,6 +163,7 @@ impl FirstPartyDestination {
         match self {
             Self::AdminConsole => "admin_console",
             Self::DeviceVerification => "device_verification",
+            Self::ApprovalsInbox => "approvals_inbox",
         }
     }
 
@@ -169,6 +178,7 @@ impl FirstPartyDestination {
         match value {
             "admin_console" => Some(Self::AdminConsole),
             "device_verification" => Some(Self::DeviceVerification),
+            "approvals_inbox" => Some(Self::ApprovalsInbox),
             _ => None,
         }
     }

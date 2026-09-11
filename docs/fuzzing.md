@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 77 targets below cover 96 declared entry points. Generated from the
+The 86 targets below cover 105 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -78,6 +78,7 @@ The 77 targets below cover 96 declared entry points. Generated from the
 | `access_token_claims` | `thumbprint` | `crates/oidc/src/tokens/access.rs` |
 | `acr_policy` | `AcrPolicy::assign` | `crates/domain/src/entities/acr_policy.rs` |
 | `acr_policy` | `AcrPolicy::from_json` | `crates/domain/src/entities/acr_policy.rs` |
+| `admin_audit_filter` | `parse_filter` | `crates/admin-api/src/audit.rs` |
 | `admin_client_request` | `requested_status` | `crates/admin-api/src/clients.rs` |
 | `admin_client_request` | `search_term` | `crates/admin-api/src/clients.rs` |
 | `admin_cursor` | `Cursor::decode` | `crates/admin-api/src/pagination.rs` |
@@ -89,9 +90,11 @@ The 77 targets below cover 96 declared entry points. Generated from the
 | `admin_key_request` | `RotationRequest::algorithm` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `ScheduleRequest::schedule` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `public_members` | `crates/admin-api/src/keys.rs` |
+| `admin_stream_status` | `parse_status_request` | `crates/admin-api/src/ssf.rs` |
 | `admin_user_claims` | `accept_claims` | `crates/admin-api/src/users.rs` |
 | `agent_profile` | `AgentLimits::from_json` | `crates/domain/src/entities/agent.rs` |
 | `agent_profile` | `AgentProfile::from_json` | `crates/domain/src/entities/agent.rs` |
+| `approval_decision` | `decision` | `crates/server/src/http/approvals.rs` |
 | `attestation_object` | `parse` | `crates/webauthn/src/attestation.rs` |
 | `audit_canonical` | `canonical_bytes` | `crates/domain/src/audit/chain.rs` |
 | `audit_record` | `read_event` | `crates/domain/src/audit/record.rs` |
@@ -105,6 +108,7 @@ The 77 targets below cover 96 declared entry points. Generated from the
 | `authorization_hints` | `parse_login_hint` | `crates/oidc/src/authorize.rs` |
 | `authorization_hints` | `parse_max_age` | `crates/oidc/src/authorize.rs` |
 | `ciba_form` | `validate` | `crates/oidc/src/ciba.rs` |
+| `ciba_token_request` | `token_request` | `crates/oidc/src/ciba.rs` |
 | `claim_name` | `ClaimName::parse` | `crates/domain/src/entities/user.rs` |
 | `claims_request` | `ClaimsRequest::parse` | `crates/oidc/src/claims.rs` |
 | `client_assertion` | `check_assertion` | `crates/oidc/src/client_auth.rs` |
@@ -157,9 +161,13 @@ The 77 targets below cover 96 declared entry points. Generated from the
 | `response_mode` | `ResponseMode::parse` | `crates/oidc/src/authorize.rs` |
 | `revocation_request` | `classify` | `crates/oidc/src/revocation.rs` |
 | `role_name` | `RoleName::parse` | `crates/domain/src/entities/application_role.rs` |
+| `ssf_caep_assurance_level_change` | `AssuranceLevelChange::new` | `crates/ssf/src/caep.rs` |
+| `ssf_caep_text` | `text` | `crates/ssf/src/caep.rs` |
 | `ssf_event_uri` | `EventUri::parse` | `crates/ssf/src/event.rs` |
 | `ssf_poll_request` | `PollRequest::parse` | `crates/ssf/src/poll.rs` |
+| `ssf_push_error` | `ReceiverError::parse` | `crates/ssf/src/push.rs` |
 | `ssf_stream_configuration` | `StreamRequest::parse` | `crates/ssf/src/stream.rs` |
+| `ssf_verification_state` | `VerificationState::parse` | `crates/ssf/src/verification.rs` |
 | `tenant_message_overrides` | `MessageOverrides::from_json` | `crates/domain/src/messages.rs` |
 | `tenant_route` | `route` | `crates/oidc/src/tenancy.rs` |
 | `tenant_settings` | `TenantSettings::from_json` | `crates/domain/src/entities/tenant_settings.rs` |

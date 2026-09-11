@@ -12,6 +12,8 @@
 //!   retried again, which is deliberately less than the row contains.
 //! * [`DeadLetterQuery`] — the port the admin API reads them through, because
 //!   `scripts/check-layering.sh` will not let that crate depend on `sqlx`.
+//! * [`DeadLetterOperations`] — the two things an operator may do to one
+//!   (`ast-f7m.8`): put it back on the schedule, or remove it for good.
 //!
 //! # Why a dead letter is not the row
 //!
@@ -160,11 +162,11 @@ pub struct DeadLetter {
 
 /// Reading the dead-letter queue.
 ///
-/// A read-only port with one method. There is no "retry this row" here on
-/// purpose: re-queueing is a mutation that has to decide what happens to the
-/// ordering key's other rows, and a button that quietly reorders a session's
-/// events is worse than no button. An operator who has fixed the receiver
-/// resets the row in SQL, which is a deliberate act with a record.
+/// A read-only port. The mutations live on [`DeadLetterOperations`], a
+/// second port rather than two more methods here, for the reason the audit
+/// trail has a sink and a query: the screen that lists dead letters is
+/// reached with `admin.outbox:read`, and a handle that could also requeue
+/// would give a read scope's route the means to write.
 #[async_trait::async_trait]
 pub trait DeadLetterQuery: Debug + Send + Sync {
     /// The tenant's abandoned rows, newest first, at most `limit` of them.
@@ -177,6 +179,66 @@ pub trait DeadLetterQuery: Debug + Send + Sync {
         tenant: &TenantId,
         limit: u32,
     ) -> Result<Vec<DeadLetter>, DomainError>;
+
+    /// One abandoned row of the tenant, or `None` if `id` names no such row
+    /// — including a row that exists and is not abandoned, which an operator
+    /// has no business acting on.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn dead_letter(
+        &self,
+        tenant: &TenantId,
+        id: i64,
+    ) -> Result<Option<DeadLetter>, DomainError>;
+}
+
+/// What an operator may do to a dead letter (`ast-f7m.8`).
+///
+/// Until `ast-f7m.8` this crate said, in as many words, that there would be
+/// no retry button: re-queueing has to decide what happens to the ordering
+/// key's other rows. The decision is now made and written down rather than
+/// avoided. A row that was abandoned stopped blocking its key the moment it
+/// was abandoned, so the rows behind it have gone out already; putting it
+/// back therefore delivers it *after* them, not before. For the one family
+/// the admin API lets an operator requeue — SSF SETs, whose receivers
+/// deduplicate on `jti` and order on `event_timestamp` (RFC 8417 §1.2, CAEP
+/// §2) — a late signal is strictly better than a lost one. Whether that
+/// holds for another family is that family's question, which is why the
+/// policy of *which kinds* may be requeued belongs to the caller and not to
+/// this port.
+///
+/// Both operations are recorded by the admin API that offers them: the row
+/// says nothing about who pressed the button, and the trail must.
+#[async_trait::async_trait]
+pub trait DeadLetterOperations: Debug + Send + Sync {
+    /// Puts an abandoned row back on the schedule with a fresh attempt
+    /// budget, to be claimed at `now`.
+    ///
+    /// `false` means the row was not abandoned — gone, or already picked up
+    /// — and nothing changed.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn requeue(
+        &self,
+        tenant: &TenantId,
+        id: i64,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError>;
+
+    /// Removes an abandoned row and its attempt trail for good, which is
+    /// what the retention sweep would have done a week later.
+    ///
+    /// `false` means the row was not abandoned and nothing was removed: a
+    /// row still owed is not a row an operator may delete from a screen.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    async fn drop_letter(&self, tenant: &TenantId, id: i64) -> Result<bool, DomainError>;
 }
 
 #[cfg(test)]

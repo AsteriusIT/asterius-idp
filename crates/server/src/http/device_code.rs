@@ -37,6 +37,11 @@
 //! RFC 8628 §3.4 defers to RFC 6749 §4.1.3 for the request, and single use is
 //! the property that makes a device code no more dangerous than the
 //! authorization code it stands in for.
+//!
+//! That single use is also why the sender constraint is decided *before* the
+//! spend: a poll that cannot be bound — no DPoP proof, no certificate — is
+//! refused with the code intact, so the device polls again with its proof
+//! rather than starting the whole flow over (`ast-6fa`).
 
 use asterius_domain::entities::client::GrantType;
 use asterius_domain::entities::grant::GrantStatus;
@@ -210,6 +215,17 @@ impl DeviceCode<'_> {
             ))?;
         let digest = device::device_code_digest_of(presented).map_err(|_| invalid_grant())?;
 
+        // Before the spend, not after it (`ast-6fa`). The confirmation is
+        // decided from the registration and what this request proved, so it
+        // costs nothing to decide first — and deciding it after `spent` would
+        // let a poll that forgot its DPoP proof burn the one redemption the
+        // code has (RFC 8628 §3.4) and leave the device with a refusal and no
+        // way back but a new flow. The same order `ciba_grant` keeps.
+        let confirmation = self
+            .constraint
+            .confirmation(client)
+            .map_err(Self::unbound)?;
+
         let redeemed = self.spent(client, &digest).await?;
 
         let grant = self
@@ -235,10 +251,6 @@ impl DeviceCode<'_> {
         let targeting = self.targeting(tenant, client, &grant, params).await?;
         // Read once for both tokens of this response; see the code grant.
         let held = issuance::held_roles(self.roles, &grant).await?;
-        let confirmation = self
-            .constraint
-            .confirmation(client)
-            .map_err(Self::unbound)?;
 
         let access = AccessToken::new(
             &tenant.issuer,

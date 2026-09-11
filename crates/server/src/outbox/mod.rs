@@ -45,8 +45,10 @@
 //! destination, and never the ordering key, which is built from a subject or a
 //! session id. `crates/server/tests/log_redaction.rs` holds the worker case.
 
+pub mod ciba;
 pub mod http;
 pub mod journal;
+pub mod ssf;
 
 use asterius_domain::DomainError;
 use asterius_domain::outbox::OutboxEvent;
@@ -57,8 +59,10 @@ use std::future::Future;
 use std::sync::Arc;
 use time::Duration;
 
+pub use ciba::{CibaPingDeliverer, PgPingRequests, PingRequests};
 pub use http::HttpDeliverer;
 pub use journal::JournalDeliverer;
+pub use ssf::{PgPushStreams, PgSsfQueues, PushStreams, SetPoster, SsfPushDeliverer, push_event};
 
 /// What a deliverer did with an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

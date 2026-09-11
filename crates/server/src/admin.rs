@@ -57,6 +57,7 @@ pub struct Deployment {
     registration: RegistrationPolicy,
     outbound: Arc<dyn ClientUrlFetcher>,
     outbox: Arc<dyn asterius_domain::outbox::DeadLetterQuery>,
+    dead_letters: Arc<dyn asterius_domain::outbox::DeadLetterOperations>,
     kek: Arc<dyn asterius_jose::Kek>,
     signer: Arc<dyn asterius_domain::keys::Signer>,
     queue: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
@@ -104,6 +105,7 @@ impl Deployment {
             registration: parts.registration,
             outbound: parts.outbound,
             outbox: parts.outbox,
+            dead_letters: parts.dead_letters,
             kek: parts.kek,
             signer: parts.signer,
             queue: parts.queue,
@@ -134,6 +136,13 @@ pub struct DeploymentParts {
     pub outbound: Arc<dyn ClientUrlFetcher>,
     /// The process's `PgOutbox`, read-only, for the dead-letter screen.
     pub outbox: Arc<dyn asterius_domain::outbox::DeadLetterQuery>,
+    /// The same `PgOutbox` as the operator's retry and drop (`ast-f7m.8`).
+    ///
+    /// The same object as `outbox` and `queue`, handed over as a third
+    /// port for the reason those two are two: the admin API keeps the
+    /// read-only view and the mutations on separate handles, and this is
+    /// the one behind `admin.outbox:write`.
+    pub dead_letters: Arc<dyn asterius_domain::outbox::DeadLetterOperations>,
     /// The key-encryption key the tenants' pairwise salts are sealed under.
     ///
     /// The process's, for the reason `keys` is the process's: a `sub` derived
@@ -163,6 +172,122 @@ pub struct DeploymentParts {
 impl std::fmt::Debug for DeploymentParts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeploymentParts").finish_non_exhaustive()
+    }
+}
+
+/// This deployment's SSF streams, as the admin API's port sees them
+/// (`ast-f7m.8`).
+///
+/// A type of its own for the reason [`DeploymentClients`] is one: the
+/// object behind the handle is what a handler can reach, and this one can
+/// read and re-status a tenant's streams and sign a verification event, and
+/// nothing else. The verification goes through the same
+/// [`crate::ssf::SsfTransmitter`] the emitters use — same signer, same
+/// queues — so the SET a receiver gets is signed by a key in the tenant's
+/// published JWKS and delivered by the worker that delivers everything else.
+#[derive(Clone)]
+struct DeploymentSsf {
+    store: Store,
+    tenants: Arc<dyn TenantRepository>,
+    /// The process's signer: the same key the emitters sign with, so the
+    /// verification SET verifies against the published JWKS.
+    keys: Arc<dyn asterius_domain::keys::Signer>,
+    kek: Arc<dyn asterius_jose::Kek>,
+    capabilities: Capabilities,
+}
+
+impl std::fmt::Debug for DeploymentSsf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeploymentSsf").finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
+    async fn streams(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Vec<asterius_admin_api::ssf::StreamSummary>, DomainError> {
+        let overview = self
+            .store
+            .scope(tenant.clone())
+            .ssf_streams(Arc::clone(&self.kek))
+            .overview()
+            .await?;
+        Ok(overview
+            .into_iter()
+            .map(|stream| asterius_admin_api::ssf::StreamSummary {
+                stream_id: stream.stream_id,
+                receiver: stream.receiver,
+                delivery_method: match stream.delivery {
+                    asterius_store_pg::DeliveryMethod::Poll => asterius_ssf::stream::DELIVERY_POLL,
+                    asterius_store_pg::DeliveryMethod::Push => asterius_ssf::stream::DELIVERY_PUSH,
+                },
+                events_requested: stream.events_requested,
+                description: stream.description,
+                created_at: stream.created_at,
+                status: stream.stats.status,
+                reason: stream.stats.reason,
+                status_changed_at: stream.status_changed_at,
+                delivered: stream.stats.delivered,
+                failed: stream.stats.failed,
+                queue_depth: stream.stats.queue_depth,
+            })
+            .collect())
+    }
+
+    async fn set_status(
+        &self,
+        tenant: &TenantId,
+        stream: &asterius_ssf::stream::StreamId,
+        status: asterius_ssf::stream::StreamStatus,
+        reason: Option<&str>,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .ssf_streams(Arc::clone(&self.kek))
+            .set_status(stream, status, reason, now)
+            .await
+    }
+
+    async fn verify(
+        &self,
+        tenant: &TenantId,
+        stream: &asterius_ssf::stream::StreamId,
+        state: Option<&asterius_ssf::VerificationState>,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let scope = self.store.scope(tenant.clone());
+        let Some(subscription) = scope
+            .ssf_streams(Arc::clone(&self.kek))
+            .subscription(stream)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let clients = scope.clients(self.capabilities);
+        let users = scope.users(Arc::clone(&self.kek));
+        let queues = crate::outbox::PgSsfQueues::new(
+            self.store.clone(),
+            tenant.clone(),
+            Arc::clone(&self.kek),
+        );
+        let transmitter = crate::ssf::SsfTransmitter {
+            tenant,
+            issuer: &tenant_entity.issuer,
+            queues: &queues,
+            clients: &clients,
+            subjects: &users,
+            signer: self.keys.as_ref(),
+        };
+        transmitter.verify(&subscription, state, now).await?;
+        Ok(true)
     }
 }
 
@@ -374,6 +499,42 @@ impl DeploymentUsers {
         };
         notifier.notify(&session, &participants, now).await
     }
+
+    /// Emits the CAEP or RISC Security Event Tokens one administrative effect
+    /// produces, to every stream that subscribed (`ast-0ju.8`).
+    ///
+    /// Best-effort and after the effect, the same order and the same reasoning
+    /// as [`Self::notify_participants`]: the account is already disabled, and a
+    /// receiver that could not be told must not undo that. A tenant that cannot
+    /// be read is logged and nothing is emitted.
+    async fn emit_signal(
+        &self,
+        tenant: &TenantId,
+        cause: &crate::ssf::Cause,
+        now: time::OffsetDateTime,
+    ) {
+        let Ok(Some(tenant_entity)) = self.tenants.find_by_id(tenant).await else {
+            tracing::error!(tenant = %tenant, "cannot read a tenant to emit a security event");
+            return;
+        };
+        let scope = self.store.scope(tenant.clone());
+        let clients = scope.clients(self.capabilities);
+        let users = scope.users(Arc::clone(&self.kek));
+        let queues = crate::outbox::PgSsfQueues::new(
+            self.store.clone(),
+            tenant.clone(),
+            Arc::clone(&self.kek),
+        );
+        let transmitter = crate::ssf::SsfTransmitter {
+            tenant,
+            issuer: &tenant_entity.issuer,
+            queues: &queues,
+            clients: &clients,
+            subjects: &users,
+            signer: self.keys.as_ref(),
+        };
+        transmitter.emit(cause, now).await;
+    }
 }
 
 #[async_trait::async_trait]
@@ -465,15 +626,41 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         users.upsert(&held).await?;
 
         if status != asterius_domain::UserStatus::Disabled {
+            // RISC `account-enabled`: nothing was terminated, but a receiver
+            // that heard the account was disabled must hear it is back.
+            self.emit_signal(
+                tenant,
+                &crate::ssf::Cause::AccountEnabled {
+                    user: id,
+                    initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+                },
+                now,
+            )
+            .await;
             return Ok(asterius_domain::Terminated::default());
         }
-        self.terminate_sessions(
+        let terminated = self
+            .terminate_sessions(
+                tenant,
+                id,
+                asterius_domain::SessionRevocation::AccountClosed,
+                now,
+            )
+            .await?;
+        // RISC `account-disabled`. The per-session `session-revoked` signals
+        // are a follow-up: this path revokes in bulk by digest and does not
+        // hold the public `sid` each SET's complex subject needs.
+        self.emit_signal(
             tenant,
-            id,
-            asterius_domain::SessionRevocation::AccountClosed,
+            &crate::ssf::Cause::AccountDisabled {
+                user: id,
+                reason: None,
+                initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+            },
             now,
         )
-        .await
+        .await;
+        Ok(terminated)
     }
 
     async fn save(
@@ -516,6 +703,7 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
             .await?
             .ok_or(DomainError::NotFound)?;
 
+        let subject = sessions.find(&digest).await?.map(|session| session.user);
         sessions
             .revoke(
                 &digest,
@@ -523,6 +711,20 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
                 now,
             )
             .await?;
+        // CAEP §3.1: the session named by its public `sid`, which this path
+        // has in hand.
+        if let Some(subject) = subject {
+            self.emit_signal(
+                tenant,
+                &crate::ssf::Cause::SessionRevoked {
+                    user: asterius_domain::UserId::new(subject),
+                    sid: public_sid.to_owned(),
+                    initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+                },
+                now,
+            )
+            .await;
+        }
         Ok(asterius_domain::Terminated {
             sessions_revoked: 1,
             logout_tokens_queued: self.notify_participants(tenant, &digest, now).await,
@@ -600,11 +802,43 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         credential: uuid::Uuid,
         now: time::OffsetDateTime,
     ) -> Result<bool, DomainError> {
-        self.store
+        let removed = self
+            .store
             .scope(tenant.clone())
             .passkeys()
             .disable_for_user(&user, credential, now)
-            .await
+            .await?;
+        let Some(removed) = removed else {
+            return Ok(false);
+        };
+
+        // CAEP §3.3: a credential was deleted. `fido2-platform` or
+        // `fido2-roaming` from what WebAuthn recorded, the friendly name where
+        // the user gave one — no key material, which a receiver has no use for
+        // and this server never puts on the wire.
+        let mut change = asterius_ssf::caep::CredentialChange::new(
+            asterius_ssf::caep::CredentialType::fido2(None, removed.backup_eligible),
+            asterius_ssf::caep::ChangeType::Delete,
+        );
+        if let Some(aaguid) = removed.aaguid {
+            change = change.fido2_aaguid(aaguid);
+        }
+        if let Some(label) = removed.label.as_deref()
+            && let Ok(named) = change.clone().friendly_name(label)
+        {
+            change = named;
+        }
+        self.emit_signal(
+            tenant,
+            &crate::ssf::Cause::CredentialChange {
+                user,
+                change,
+                initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+            },
+            now,
+        )
+        .await;
+        Ok(true)
     }
 
     async fn force_password_reset(
@@ -649,6 +883,22 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
                 now,
             )
             .await?;
+
+        // CAEP §3.3: the password was changed. `update` and not `revoke`: a
+        // forced reset replaces the password rather than removing the factor.
+        self.emit_signal(
+            tenant,
+            &crate::ssf::Cause::CredentialChange {
+                user,
+                change: asterius_ssf::caep::CredentialChange::new(
+                    asterius_ssf::caep::CredentialType::Password,
+                    asterius_ssf::caep::ChangeType::Update,
+                ),
+                initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+            },
+            now,
+        )
+        .await;
 
         Ok(asterius_domain::PasswordReset {
             password_invalidated,
@@ -846,10 +1096,31 @@ impl AdminBackend for Deployment {
         Arc::clone(&self.outbox)
     }
 
+    fn dead_letter_operations(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterOperations> {
+        Arc::clone(&self.dead_letters)
+    }
+
+    fn ssf(&self) -> Arc<dyn asterius_admin_api::ssf::SsfAdministration> {
+        Arc::new(DeploymentSsf {
+            store: self.store.clone(),
+            tenants: Arc::clone(&self.tenants),
+            keys: Arc::clone(&self.signer),
+            kek: Arc::clone(&self.kek),
+            capabilities: self.capabilities,
+        })
+    }
+
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {
         Arc::new(asterius_store_pg::PgApplicationRoles::new(
             self.store.pool().clone(),
         ))
+    }
+
+    /// The trail read back (`ast-lh3.9`), over the pool every endpoint
+    /// writes it through — so what the console lists is what was recorded,
+    /// with no second sink to disagree.
+    fn audit_trail(&self) -> Arc<dyn asterius_domain::audit::AuditQuery> {
+        Arc::new(PgAuditSink::new(self.store.pool().clone()))
     }
 
     fn clients(&self) -> Arc<dyn ClientAdministration> {

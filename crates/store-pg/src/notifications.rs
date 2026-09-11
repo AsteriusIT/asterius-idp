@@ -129,6 +129,21 @@ fn payload(kind: &NotificationKind) -> serde_json::Value {
             valid_for_minutes,
         } => json!({ "link": link, "valid_for_minutes": valid_for_minutes }),
         NotificationKind::CredentialChanged => json!({}),
+        // `ast-lh3.6`. The binding message is a value a real sender has to be
+        // able to render, because CIBA Core 1.0 §7.1 has the person compare it
+        // against the device that started the flow: a message that reached the
+        // inbox but not the mail would leave one of the two screens blank.
+        NotificationKind::ApprovalRequested {
+            link,
+            client_name,
+            binding_message,
+            valid_for_minutes,
+        } => json!({
+            "link": link,
+            "client_name": client_name,
+            "binding_message": binding_message,
+            "valid_for_minutes": valid_for_minutes,
+        }),
     }
 }
 
@@ -186,6 +201,33 @@ mod tests {
             json!({
                 "link": "https://as.example/t/a/recovery/new?token=x",
                 "valid_for_minutes": 15,
+            })
+        );
+    }
+
+    /// CIBA Core 1.0 §7.1: the mail carries what the page carries, so the two
+    /// screens can be compared.
+    #[test]
+    fn an_approval_payload_carries_the_inbox_and_the_binding_message() {
+        // Arrange
+        let kind = NotificationKind::ApprovalRequested {
+            link: "https://as.example/t/a/account/approvals".to_owned(),
+            client_name: "Teller agent".to_owned(),
+            binding_message: Some("W4SCT".to_owned()),
+            valid_for_minutes: 5,
+        };
+
+        // Act
+        let stored = payload(&kind);
+
+        // Assert
+        assert_eq!(
+            stored,
+            json!({
+                "link": "https://as.example/t/a/account/approvals",
+                "client_name": "Teller agent",
+                "binding_message": "W4SCT",
+                "valid_for_minutes": 5,
             })
         );
     }

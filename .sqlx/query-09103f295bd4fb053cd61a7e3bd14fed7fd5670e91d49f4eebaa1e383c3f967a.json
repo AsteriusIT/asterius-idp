@@ -1,0 +1,48 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select delivery_endpoint_url, status,\n                    authorization_header_ciphertext, authorization_header_nonce,\n                    authorization_header_kek_id\n               from ssf_streams\n              where tenant_id = $1 and stream_id = $2\n                and delivery_method = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "delivery_endpoint_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "authorization_header_ciphertext",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "authorization_header_nonce",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 4,
+        "name": "authorization_header_kek_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "09103f295bd4fb053cd61a7e3bd14fed7fd5670e91d49f4eebaa1e383c3f967a"
+}

@@ -41,7 +41,13 @@ impl TestDb {
     }
 
     fn streams(&self) -> PgSsfStreams {
-        PgSsfStreams::new(self.pool.clone(), self.tenant.clone())
+        PgSsfStreams::new(
+            self.pool.clone(),
+            self.tenant.clone(),
+            std::sync::Arc::new(
+                asterius_jose::LocalKek::from_bytes(&[0x5a; 32]).expect("a 32-byte KEK"),
+            ),
+        )
     }
 
     /// A poll stream this receiver owns, ready to be polled.
