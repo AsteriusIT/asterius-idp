@@ -205,6 +205,8 @@ Requests — not failures — are counted per endpoint, in the same fixed window
 | `limits.backchannel_per_client` | integer | 120 | The same, per authenticated client. Above the address limit, because several clients can share one address and a client that proved who it is should not be bounded by traffic it did not make. |
 | `limits.backchannel_per_user` | integer | 3 | Backchannel requests per window about *one person*, whichever client asks and whichever hint names them. The limit that bounds approval fatigue: a client with a large budget spread over a directory is ordinary traffic, and the same budget aimed at one account is an attack. Raise it only if a deployment legitimately asks the same person several times a minute. |
 | `limits.ssf_subjects_per_client` | integer | 600 | The same, per authenticated receiver. Higher than the address limit, because several receivers can share one address and a receiver bringing a deployment online adds its subjects in a burst. |
+| `limits.access_evaluation_per_address` | integer | 600 | Access evaluation requests per window from one address (AuthZEN Authorization API 1.0 §11.7). As generous as UserInfo's, because the callers are machines: a policy enforcement point asks once per API call it protects. |
+| `limits.access_evaluation_per_client` | integer | 3000 | The same, per authenticated enforcement point. Higher than the address limit, because several PEPs can share one address; this is the bucket that matters, since every request here carries a verified token. |
 
 ## Account recovery and mail — read this before enabling passwords
 

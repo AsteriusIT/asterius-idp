@@ -1037,10 +1037,54 @@ disclosure — a tenant that writes "you are not in the finance group" has told
 every refused caller that the group exists. The bound on it is length and
 control characters, not meaning. The console editor (`ast-f7m.9`) is where a
 warning belongs. Nothing in this story is reachable without an admin
-credential: the evaluation endpoint itself is `ast-pj0.1`, and until it lands
-the engine decides nothing that anybody outside the admin API can ask.
+credential: the evaluation endpoint is the section below, and every other
+route into the engine is the admin API.
 
 [ADR-0011]: adr/0011-a-declarative-rule-model-for-the-built-in-pdp.md
+
+### The Access Evaluation endpoint (`ast-pj0.1`)
+
+**Why this needs a section: `POST /access/v1/evaluation` is the first route by
+which somebody outside the admin API can make this server walk a tenant's
+authorization model, once per API call their application serves.** Everything
+in the section above is about what a rule may say; this is about who may ask,
+how often, and what an answer discloses.
+
+**Who may ask.** Authorization API 1.0 §11.2 says only that the PDP *SHOULD*
+authenticate the PEP. This endpoint applies the same five checks the Grant
+Management API does, from the same functions: the access token verifies against
+the keys `/jwks` publishes; the caller proves it holds it (DPoP, RFC 9449 §7.1,
+over this method and this URL, or a certificate under RFC 8705 §3); `aud` is
+*this tenant's* evaluation endpoint, built from the same registry entry the
+metadata advertises, so a PEP's token for a business API is not one the PDP
+answers; the `jti` is not denylisted and the token post-dates every withdrawal
+of its principal; and it carries `authzen.evaluate`. Nothing is parsed and no
+policy is loaded before all five pass.
+
+**What an answer says.** A decision is 200 whatever it decided (§10.1.2), and a
+decision this server could not take is *also* 200 with `decision: false` and an
+`error` in the context — fail closed. The alternative, a 500, hands the PEP a
+condition it has no rule for and invites it to invent one; the two it would
+invent are "fail open" and "let this one through". The audit record is what
+tells an operator the difference between a tightened policy and an unreachable
+replica.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Asking about somebody else.** A PEP holding a valid token asks for decisions about every subject in the tenant, learning who is in which group from which requests are permitted. | The answer is a boolean about the subject *the PEP named*, and nothing in it enumerates: a deny carries only `reason_user`, which an administrator wrote, and a rule id. What bounds the probing is volume — `LimitedEndpoint::AccessEvaluation`, both buckets, charged to the authenticated PEP after the credential checks — and the fact that every request is one `access.evaluated` record naming the PEP, so a client walking a directory is visible in the trail rather than in an alert nobody set up. |
+| **A1** | **G1** | **Asserting the facts that decide.** The request claims `subject.properties.groups`, a role, an active grant or an `acr`. | The parser produces a subject with those fields *empty* (`authzen_request` asserts it on arbitrary input), and the endpoint fills them from this tenant's own rows keyed by the `sub` the PEP named. A PEP can influence `attribute` conditions and nothing else. |
+| **A3** | **G3** | **Spending the PDP's CPU.** A megabyte of nested JSON, or an evaluation per packet. | 64 KiB and 16 levels, checked on the body before the members are read; the per-property bounds of the engine behind them; and the endpoint limiter in front of the policy load. A request that fails the credential checks costs no policy walk at all. |
+| **A1**, **A4** | **G2** | **Reading a decision out of a shared cache, or out of the trail.** | Every response is `no-store`. The trail records a *summary* — subject type, action, resource type, the rule and the latency — with the subject's and the resource's identifiers fingerprinted (an AuthZEN `id` is routinely an email address) and the PEP's `properties` not recorded at all: they are one application's data, arriving once per API call, and this table is kept for years. |
+| **A1** | **G3** | **Poisoning a correlation header.** §10.1.3 requires the PDP to echo the caller's `X-Request-ID`, which is a caller-chosen string on a response header. | The echoed value is bounded at 128 bytes and must be a valid header value, or it is dropped. It is deliberately *not* the identifier the audit trail records: that one is this server's own, drawn from the CSPRNG, so a caller cannot collide with another caller's entries. |
+
+**Residual, stated rather than closed:** the `acr` a rule reads is taken from
+the authentications recorded on the subject's live grants — the weakest of
+them — because this endpoint is given no session to read. A step-up rule
+(`acr_at_least`) therefore reasons about what the subject's standing
+authorizations were proved with, not about a browser session that may have been
+strengthened since. That is the conservative direction, and it is the reason
+`ast-lh3.10`'s pre-issuance port, which *does* hold the authentication it is
+about, is the better home for a step-up decision.
 
 ### Back-channel logout (`ast-o4u.2`)
 

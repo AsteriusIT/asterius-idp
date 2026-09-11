@@ -409,6 +409,11 @@ fn limits(max: u32) -> EndpointLimits {
             per_client: Some(limit),
             per_subject: Some(limit),
         },
+        access_evaluation: EndpointLimit {
+            per_address: limit,
+            per_client: Some(limit),
+            per_subject: None,
+        },
     }
 }
 

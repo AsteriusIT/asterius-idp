@@ -34,6 +34,7 @@
 
 use crate::config::{
     DEFAULT_ADMIN_TENANT, DEFAULT_ADMIN_USERNAME, DEFAULT_BIND, DEFAULT_BODY_LIMIT,
+    DEFAULT_LIMIT_ACCESS_EVALUATION_PER_ADDRESS, DEFAULT_LIMIT_ACCESS_EVALUATION_PER_CLIENT,
     DEFAULT_LIMIT_BACKCHANNEL_PER_ADDRESS, DEFAULT_LIMIT_BACKCHANNEL_PER_CLIENT,
     DEFAULT_LIMIT_BACKCHANNEL_PER_USER, DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS,
     DEFAULT_LIMIT_PAR_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_CLIENT,
@@ -815,6 +816,23 @@ fn limits() -> Section {
                 "The same, per authenticated receiver. Higher than the address limit, \
                  because several receivers can share one address and a receiver \
                  bringing a deployment online adds its subjects in a burst.",
+            ),
+            key(
+                "access_evaluation_per_address",
+                "integer",
+                DEFAULT_LIMIT_ACCESS_EVALUATION_PER_ADDRESS.to_string(),
+                "Access evaluation requests per window from one address (AuthZEN \
+                 Authorization API 1.0 §11.7). As generous as UserInfo's, because the \
+                 callers are machines: a policy enforcement point asks once per API \
+                 call it protects.",
+            ),
+            key(
+                "access_evaluation_per_client",
+                "integer",
+                DEFAULT_LIMIT_ACCESS_EVALUATION_PER_CLIENT.to_string(),
+                "The same, per authenticated enforcement point. Higher than the address \
+                 limit, because several PEPs can share one address; this is the bucket \
+                 that matters, since every request here carries a verified token.",
             ),
         ],
     }

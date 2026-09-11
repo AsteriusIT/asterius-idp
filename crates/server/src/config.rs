@@ -464,6 +464,8 @@ struct RawLimits {
     backchannel_per_address: Option<u32>,
     backchannel_per_client: Option<u32>,
     backchannel_per_user: Option<u32>,
+    access_evaluation_per_address: Option<u32>,
+    access_evaluation_per_client: Option<u32>,
 }
 
 /// The `[outbox]` table: how delivery is paced and when it gives up.
@@ -808,6 +810,25 @@ pub(crate) const DEFAULT_LIMIT_BACKCHANNEL_PER_CLIENT: u32 = 120;
 /// stolen client credential — pushing a notification at somebody until they
 /// press approve to make it stop.
 pub(crate) const DEFAULT_LIMIT_BACKCHANNEL_PER_USER: u32 = 3;
+
+/// `POST /access/v1/evaluation` — per address, per window (§11.7).
+///
+/// As generous as UserInfo's, and for the same reason: the callers are
+/// machines. A policy enforcement point asks once per API call it protects, so
+/// a single busy PEP behind one address legitimately makes hundreds a minute,
+/// and a limit sized for a browser would take an application down on the day it
+/// got popular. What it still refuses is the caller spending a PDP's CPU on a
+/// policy walk per packet.
+pub(crate) const DEFAULT_LIMIT_ACCESS_EVALUATION_PER_ADDRESS: u32 = 600;
+
+/// The same, per authenticated PEP.
+///
+/// Higher than the address limit, for the reason `/token`'s is: several PEPs
+/// can share one address, and one that has proven who it is should not be
+/// bounded by traffic it did not make. This is the bucket that matters here —
+/// every request at this endpoint carries a verified access token, so there is
+/// always a proven client to charge.
+pub(crate) const DEFAULT_LIMIT_ACCESS_EVALUATION_PER_CLIENT: u32 = 3_000;
 
 /// The seeded admin's login identifier when `[admin]` does not name one.
 pub(crate) const DEFAULT_ADMIN_USERNAME: &str = "admin";
@@ -1289,6 +1310,23 @@ fn configured_endpoint_limits(
                 raw.backchannel_per_user,
                 DEFAULT_LIMIT_BACKCHANNEL_PER_USER,
             )),
+        },
+        access_evaluation: EndpointLimit {
+            per_address: limit(
+                "limits.access_evaluation_per_address",
+                raw.access_evaluation_per_address,
+                DEFAULT_LIMIT_ACCESS_EVALUATION_PER_ADDRESS,
+            ),
+            // The PEP is authenticated before the limiter is reached: the
+            // access token is verified, sender-constrained and audienced at
+            // this endpoint first, so the client charged is one that proved
+            // who it is (Authorization API 1.0 §11.2).
+            per_client: Some(limit(
+                "limits.access_evaluation_per_client",
+                raw.access_evaluation_per_client,
+                DEFAULT_LIMIT_ACCESS_EVALUATION_PER_CLIENT,
+            )),
+            per_subject: None,
         },
         ssf_subjects: EndpointLimit {
             per_address: limit(
