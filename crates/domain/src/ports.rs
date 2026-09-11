@@ -4,6 +4,7 @@
 //! Protocol crates depend on these traits and never on an implementation.
 
 use crate::audit::AuditEvent;
+use crate::policy::{Decision, EvaluationRequest, RuleSet, StoredPolicy};
 use crate::{
     ApplicationRole, AuthenticationMethod, AuthorizationDetailsType, Client, ClientId,
     ClientMetadataError, ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError,
@@ -1942,6 +1943,102 @@ pub trait ApplicationRoleDirectory: Debug + Send + Sync {
     /// skipped: a token minted with a *subset* of somebody's roles is an
     /// authorization decision taken by a parse failure.
     async fn held_by(&self, tenant: &TenantId, user: UserId) -> Result<HeldRoles, DomainError>;
+}
+
+// ---------------------------------------------------------------------------
+// Authorization decisions (AuthZEN)
+// ---------------------------------------------------------------------------
+
+/// The Policy Decision Point (`ast-pj0.4`).
+///
+/// Authorization API 1.0 §5 gives the question its four parts — a subject, an
+/// action, a resource and a context — and this port is that question plus the
+/// tenant it is asked in. §2 leaves the answer's *mechanism* out of scope, so
+/// what sits behind this trait is a local decision: [ADR-0011] chooses the
+/// declarative engine in [`crate::policy::engine`], and shapes this signature
+/// so that a Cedar adapter is a mapping rather than a redesign —
+/// `principal`/`action`/`resource`/`context`, entities carrying a type, an id
+/// and typed attributes, and group and role membership carried as the
+/// subject's *parents* rather than as attributes.
+///
+/// # Why it is fallible, when evaluation is not
+///
+/// [`crate::policy::RuleSet::evaluate`] is total: it cannot fail. This port
+/// can, because an implementation has to *find* the tenant's policy first, and
+/// "the store is unreachable" must not be reported as "the answer is no".
+/// §10.1.2 has the endpoint answer 200 with `decision: false` and an error in
+/// the decision context, and audit it — which it can only do if the port told
+/// it apart from an ordinary deny.
+///
+/// [ADR-0011]: https://github.com/AsteriusIT/asterius-idp/blob/main/docs/adr/0011-a-declarative-rule-model-for-the-built-in-pdp.md
+#[async_trait::async_trait]
+pub trait PolicyEngine: Debug + Send + Sync {
+    /// Decides one request.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] when the decision could not be *taken* — the policy
+    /// could not be loaded, or an external engine did not answer. Never for a
+    /// request that is simply refused: that is a [`Decision`] whose `permit` is
+    /// false.
+    async fn evaluate(
+        &self,
+        tenant: &TenantId,
+        request: &EvaluationRequest,
+    ) -> Result<Decision, DomainError>;
+}
+
+/// Where a tenant's rule document lives.
+///
+/// Separate from [`PolicyEngine`] rather than two more methods on it, for the
+/// reason [`TenantSettingsRepository`] is separate from [`TenantRepository`]:
+/// the write side accepts a [`RuleSet`], which cannot exist without having been
+/// through the parser, so no admin handler can store a document that the
+/// evaluator would later refuse to read. A `document: Value` parameter would
+/// accept anything a handler happened to build.
+#[async_trait::async_trait]
+pub trait PolicyStore: Debug + Send + Sync {
+    /// The tenant's policy, or `None` if it has never written one.
+    ///
+    /// `None` is not an empty policy dressed up: "no document" and "a document
+    /// with no rules" deny exactly the same things but are different operator
+    /// states, and the decision context says which one it was.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] for a stored document this build will not read
+    /// — refused rather than skipped, because a policy read as *fewer* rules
+    /// than it holds is an authorization decision taken by a parse failure —
+    /// and [`DomainError::Storage`] if the read fails.
+    async fn load(&self, tenant: &TenantId) -> Result<Option<StoredPolicy>, DomainError>;
+
+    /// Replaces the tenant's policy, whole.
+    ///
+    /// Whole and not incremental: a rule catalogue is read as a document, deny
+    /// precedence is a property of the *set*, and a partial write would leave a
+    /// tenant authorised by half of two policies.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Conflict`] if the tenant does not exist,
+    /// [`DomainError::Storage`] otherwise.
+    async fn replace(
+        &self,
+        tenant: &TenantId,
+        rules: &RuleSet,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError>;
+
+    /// Removes the tenant's policy, returning `false` if there was none.
+    ///
+    /// The tenant goes back to denying everything, which is why this is a
+    /// route an administrator may reach: it is the one edit that cannot widen
+    /// anybody's authority.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn clear(&self, tenant: &TenantId) -> Result<bool, DomainError>;
 }
 
 #[cfg(test)]

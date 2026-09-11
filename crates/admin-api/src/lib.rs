@@ -56,6 +56,7 @@ pub mod openapi;
 pub mod operations;
 pub mod outbox;
 pub mod pagination;
+pub mod policies;
 pub mod rbac;
 pub mod roles;
 pub mod router;
@@ -859,6 +860,12 @@ pub const USER_APP_ROLE_ASSIGN_ID: &str = "users.app_roles.assign";
 pub const USER_APP_ROLE_WITHDRAW_ID: &str = "users.app_roles.tenant.withdraw";
 /// The `operationId` of [`USER_CLIENT_APP_ROLE_WITHDRAW`].
 pub const USER_CLIENT_APP_ROLE_WITHDRAW_ID: &str = "users.app_roles.client.withdraw";
+/// The `operationId` of [`POLICY_READ`].
+pub const POLICY_READ_ID: &str = "policies.read";
+/// The `operationId` of [`POLICY_UPDATE`].
+pub const POLICY_UPDATE_ID: &str = "policies.update";
+/// The `operationId` of [`POLICY_DELETE`].
+pub const POLICY_DELETE_ID: &str = "policies.delete";
 
 /// The tenant's shared role catalogue (`ast-095`).
 ///
@@ -991,7 +998,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 54] = [
+static REGISTRY: [Operation; 57] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -1046,7 +1053,63 @@ static REGISTRY: [Operation; 54] = [
     USER_APP_ROLE_ASSIGN,
     USER_APP_ROLE_WITHDRAW,
     USER_CLIENT_APP_ROLE_WITHDRAW,
+    POLICY_READ,
+    POLICY_UPDATE,
+    POLICY_DELETE,
 ];
+
+/// The tenant's authorization policy, as the PDP evaluates it (`ast-pj0.4`).
+///
+/// Its own scope, `admin.policies:read`, and not `admin.tenants:read` beside
+/// the settings document: a rule catalogue says which of this tenant's people
+/// may reach which of its applications' resources, and "may read the tenant's
+/// lifetimes" must not thereby be "may read the authorization model". The
+/// auditor role holds it by definition
+/// (`asterius_domain::Role::grants` gives every read to `security_auditor`),
+/// which is the right answer for a document a compliance review exists to
+/// read.
+pub const POLICY_READ: Operation = Operation::read(
+    POLICY_READ_ID,
+    "/policies",
+    S::Get,
+    A::new(R::Tenant, "admin.policies:read"),
+    "The tenant's AuthZEN policy document, with the count of rules and when it last changed",
+);
+
+/// Replaces the tenant's policy, whole (ADR-0011).
+///
+/// A `PUT` and not a `PATCH`: deny precedence is a property of the rule *set*,
+/// so a partial write would leave a tenant authorised by half of two policies.
+/// Idempotent by its own definition — the same document twice is the same
+/// policy — so no `Idempotency-Key`.
+///
+/// The body is the document `GET` returns under `document`, which is what lets
+/// the console (`ast-f7m.9`) fetch, edit and put it back. Everything in it is
+/// data: there is no member of the language that names code, and one this
+/// build does not know is a 400 naming the path rather than a value stored for
+/// a later build to interpret.
+pub const POLICY_UPDATE: Operation = Operation::mutation(
+    POLICY_UPDATE_ID,
+    "/policies",
+    M::Put,
+    A::new(R::Tenant, "admin.policies:write"),
+    "Replaces the tenant's AuthZEN policy document after validating it",
+);
+
+/// Removes the tenant's policy.
+///
+/// The tenant goes back to denying every evaluation, which is why an
+/// administrator may reach it: it is the one edit to this document that cannot
+/// widen anybody's authority. Recorded as `policy.updated` with a `cleared`
+/// flag, so a reader of the trail filtering on the type sees every change to
+/// the tenant's authorization, whichever direction it went.
+pub const POLICY_DELETE: Operation = Operation::mutation(
+    POLICY_DELETE_ID,
+    "/policies",
+    M::Delete,
+    A::new(R::Tenant, "admin.policies:write"),
+    "Removes the tenant's AuthZEN policy document, which denies every evaluation",
+);
 
 /// The registry.
 #[must_use]

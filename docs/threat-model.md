@@ -981,6 +981,67 @@ is what that endpoint is for. A receiver-initiated status change (§8.1.2.2)
 emits nothing: the receiver already knows what it just asked for, and §8.1.5's
 MUST is about the transmitter's own decisions.
 
+### AuthZEN policy engine and its rules (`ast-pj0.4`)
+
+**Why this needs a section: a tenant's administrator now writes something the
+server evaluates on every authorization question, and the evaluation happens in
+the process that holds every tenant's signing keys.** [ADR-0011] chose a
+declarative rule model over Cedar and over an external OPA, and the choice is a
+security one as much as a product one: whatever an administrator writes here
+has to be *data*, because anything else is a tenant running code in a shared
+process.
+
+**The frontier: rules are data, and the vocabulary is closed.** A document is
+`asterius_domain::policy::RuleSet::parse` or it is a 400 naming the path that
+failed. The condition set is eight named forms and nothing else — no
+arithmetic, no string manipulation, no loops, no reference to a second request
+— so there is no expression whose cost is a function of what a tenant wrote.
+Every bound (128 rules, 64 condition nodes per rule, depth 8, 256-byte strings,
+a 64 KiB document) is applied at parse time, which is what lets
+`RuleSet::evaluate` be total: it returns a decision for every input and has no
+error path at all, so no authorization outcome is ever produced by a failure.
+The parser and the evaluator each have a fuzz target (`policy_document`,
+`policy_evaluation`).
+
+**The second frontier: a PEP asks questions, it does not state facts.**
+Authorization API 1.0 §5 lets a PEP send `properties` on the subject, the
+action and the resource, and this server takes them as exactly that — the
+requester's own description of what it is protecting. The facts that decide
+*authority* are resolved here and carried in fields a request cannot reach:
+`Subject::groups`, `Subject::roles` (`ast-095`), `Subject::grants`
+(`ast-uwv.2`, filtered to `GrantStatus::Active` by `ActiveGrant::of`) and the
+session's `acr` with the tenant's ladder. A rule written over `group`, `role`,
+`grant` or `acr_at_least` therefore cannot be satisfied by anything a PEP
+says; one written over `attribute` can be, and that is the tenant's own
+decision about a PEP it chose to trust. `policy_evaluation` asserts the split
+by feeding an arbitrary request to a catalogue with those facts empty.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Claiming an attribute that decides authority.** A PEP sends `subject.properties.groups = ["finance"]`, or a `context.acr` of its choosing, and is permitted what the tenant reserved for its finance group. | Group, role, grant and `acr` are separate fields on the resolved request with no constructor that reads a request body, and the conditions that read them read nothing else. `acr_at_least` is a rank comparison against the tenant's ladder (`AcrPolicy`), and a value off the ladder is *false* rather than an error — so a PEP naming a context this tenant does not publish satisfies nothing. |
+| **A1** | **G1** | **Overturning a deny with an appended permit.** A tenant's operator, or somebody who reached the admin API, adds an exception below a rule that withdraws access. | Explicit deny wins over permit whatever the order (`RuleSet::evaluate` scans every rule, and the first matching deny is the decision). A request matching nothing is denied, and a tenant with no document denies everything — so the failure modes of "empty", "unparseable" and "not yet written" all point the same way. |
+| **A1**, **A3** | **G3** | **A tenant's document as a denial of service against the deployment.** A rule catalogue that costs seconds to evaluate, or that recurses until the stack ends, would take the process down for every tenant. | The condition set has no construct whose cost is not linear in the document, and the document is bounded at parse time. Nesting depth is checked *as the parser descends*, so the evaluator's recursion is bounded by a constant of the code rather than by the input, and a 64 KiB body limit sits in front of it at the admin API. |
+| **A2**, **A5** | **G2** | **Reading the tenant's authorization model with an unrelated scope.** | `admin.policies:read` and `admin.policies:write` are their own scopes, deliberately not the tenant-settings ones: "may read the tenant's lifetimes" must not be "may read which of its people reach which of its resources". `security_auditor` holds the read by definition (`Role::grants`) and no write; every edit, including a clearing, is one `policy.updated` record naming the operator and the rule count. |
+| **A1** | **G1** | **Reading the policy out of the refusals.** A caller probes the endpoint and reconstructs the rule catalogue — the groups that exist, the attributes that matter — from what each denial says. | The decision context carries two reasons and they are not the same thing (§5.5.1). `reason_admin` may name the rule and is for whoever administers the policy; `reason_user` is a sentence *the administrator wrote*, never derived from the request or from the rule that fired, and a default deny carries none at all. Nothing the engine emits is composed from the caller's own input, which `policy_evaluation` asserts by comparing every decision's explanation against the rule that produced it. |
+
+**A document the server cannot read is a failure, not a subset.** A stored
+policy that this build refuses — a `version` from a newer schema, a condition
+it does not know — fails the read with `DomainError::Invalid` rather than being
+evaluated as the rules it happened to understand. The alternative is the one
+failure nobody would notice: a policy whose *deny* rules disappear in an
+upgrade looks exactly like a deployment that works.
+
+**Residual, stated rather than closed:** `reason_user` is free text an
+administrator writes, and this server cannot tell a helpful sentence from a
+disclosure — a tenant that writes "you are not in the finance group" has told
+every refused caller that the group exists. The bound on it is length and
+control characters, not meaning. The console editor (`ast-f7m.9`) is where a
+warning belongs. Nothing in this story is reachable without an admin
+credential: the evaluation endpoint itself is `ast-pj0.1`, and until it lands
+the engine decides nothing that anybody outside the admin API can ask.
+
+[ADR-0011]: adr/0011-a-declarative-rule-model-for-the-built-in-pdp.md
+
 ### Back-channel logout (`ast-o4u.2`)
 
 **Why this needs a section: the server now signs a JWT it sends to somebody

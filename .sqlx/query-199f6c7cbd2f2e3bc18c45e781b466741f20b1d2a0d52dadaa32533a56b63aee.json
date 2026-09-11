@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into tenant_policies (tenant_id, document, created_at, updated_at)\n             select $1, $2::jsonb, $3, $3\n              where exists (select 1 from tenants where tenant_id = $1)\n             on conflict (tenant_id)\n             do update set document = excluded.document, updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "199f6c7cbd2f2e3bc18c45e781b466741f20b1d2a0d52dadaa32533a56b63aee"
+}

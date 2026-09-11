@@ -103,6 +103,13 @@ tenant_themes_document as (
               jsonb_build_object('tenant_id', tenant_id),
               pg_temp.quarantined_keys(document)
 ),
+tenant_policies_document as (
+    update tenant_policies set document = pg_temp.quarantine_serde_json_sentinels(document)
+    where pg_temp.has_serde_json_sentinel(document)
+    returning 'tenant_policies', 'document',
+              jsonb_build_object('tenant_id', tenant_id),
+              pg_temp.quarantined_keys(document)
+),
 clients_jwks as (
     update clients set jwks = pg_temp.quarantine_serde_json_sentinels(jwks)
     where pg_temp.has_serde_json_sentinel(jwks)
@@ -240,6 +247,7 @@ outbox_payload as (
 repaired as (
     select * from tenants_settings
     union all select * from tenant_themes_document
+    union all select * from tenant_policies_document
     union all select * from clients_jwks
     union all select * from clients_agent_policy
     union all select * from clients_software_statement

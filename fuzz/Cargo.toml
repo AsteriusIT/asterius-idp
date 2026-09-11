@@ -449,6 +449,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "policy_document"
+path = "fuzz_targets/policy_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_evaluation"
+path = "fuzz_targets/policy_evaluation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "recovery_token"
 path = "fuzz_targets/recovery_token.rs"
 test = false

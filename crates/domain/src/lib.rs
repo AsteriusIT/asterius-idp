@@ -21,6 +21,7 @@ pub mod locale;
 pub mod messages;
 pub mod notification;
 pub mod outbox;
+pub mod policy;
 pub mod ports;
 pub mod rate_limit;
 pub mod secret;
@@ -88,14 +89,15 @@ pub use locale::{Locale, UiLocales, negotiate};
 pub use messages::{MessageOverrideError, MessageOverrides};
 pub use notification::{MailSender, Notification, NotificationKind};
 pub use outbox::{DeadLetter, DeadLetterOperations, DeadLetterQuery, OutboxEvent};
+
 pub use ports::{
     ApplicationRoleDirectory, AuthRequestRepository, AuthorizationDetailsTypeRepository,
     ClientAdministration, ClientConfiguration, ClientRegistry, ClientRepository,
     ClientUsageRecorder, CodeIssuer, CredentialVerifier, EmailVerificationStore, GrantAmendments,
     GrantRepository, InitialAccessTokenStore, InteractionRepository, ManagedClient,
-    PasskeyRepository, PreviousRegistrationAccessToken, RecoveryTokenStore, ReplayCheck,
-    ReplayGuard, ReplayPurpose, ResourceServerRepository, SessionRepository, SubjectResolver,
-    TenantSettingsRepository, UserDirectory,
+    PasskeyRepository, PolicyEngine, PolicyStore, PreviousRegistrationAccessToken,
+    RecoveryTokenStore, ReplayCheck, ReplayGuard, ReplayPurpose, ResourceServerRepository,
+    SessionRepository, SubjectResolver, TenantSettingsRepository, UserDirectory,
 };
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,

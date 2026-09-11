@@ -637,6 +637,14 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "tenant_policies",
+        rule: Rule::Kept(
+            "one row per tenant, replaced rather than accumulated; a tenant's \
+             authorization rules (ADR-0011) are configuration and outlive every \
+             decision taken against them",
+        ),
+    },
+    Retention {
         table: "tenant_themes",
         rule: Rule::Kept(
             "one row per tenant, rewritten rather than accumulated; a palette \

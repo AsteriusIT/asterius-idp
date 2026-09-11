@@ -1199,6 +1199,15 @@ impl AdminBackend for Deployment {
         ))
     }
 
+    /// The tenants' authorization policies (`ast-pj0.4`), over the pool the
+    /// PDP decides from — so what an administrator edits is what the
+    /// evaluation endpoint reads.
+    fn policies(&self) -> Arc<dyn asterius_domain::ports::PolicyStore> {
+        Arc::new(asterius_store_pg::PgPolicies::new(
+            self.store.pool().clone(),
+        ))
+    }
+
     /// The trail read back (`ast-lh3.9`), over the pool every endpoint
     /// writes it through — so what the console lists is what was recorded,
     /// with no second sink to disagree.
