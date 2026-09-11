@@ -14,12 +14,43 @@
 //! * **Bounded.** An accepted reason is non-empty, trimmed, at most
 //!   `MAX_REASON_LEN` characters and carries no control character; an
 //!   accepted `enabled` carries no reason at all.
-//! * **Silent about the body.** A refusal never echoes what was sent.
+//! * **Silent about the body.** A refusal is one of a closed set of
+//!   sentences, so nothing that was sent can come back out.
+//!
+//! That last one used to be spelled "the message does not contain the body",
+//! which is not the same statement: every sentence below is a fragment of
+//! English, and a body that happens to *be* such a fragment — libFuzzer found
+//! `the request body is not a status document: the body is not JSON` — made
+//! the check fail without anything having leaked (`ast-eqe`). Membership in a
+//! body-independent set says what was meant, and cannot coincide.
 #![no_main]
 
 use asterius_admin_api::ssf::{MAX_REASON_LEN, parse_status_request};
 use asterius_ssf::stream::StreamStatus;
 use libfuzzer_sys::fuzz_target;
+
+/// Every sentence `parse_status_request` can refuse with, in full.
+///
+/// The parser builds each one from `&'static str` pieces and the
+/// `MAX_REASON_LEN` constant, never from the body. Adding a refusal to the
+/// parser without adding it here fails this target on the first input that
+/// reaches it, which is the intended tripwire: a new message is exactly where
+/// an echo would be introduced.
+fn refusals() -> Vec<String> {
+    let mut sentences: Vec<String> = [
+        "the body ended early",
+        "the body is not JSON",
+        "the body carries a member the document does not have, or one of the wrong type",
+    ]
+    .iter()
+    .map(|classification| format!("the request body is not a status document: {classification}"))
+    .collect();
+    sentences.push("status must be enabled or paused".to_owned());
+    sentences.push("reason must not be empty when given".to_owned());
+    sentences.push(format!("reason is longer than {MAX_REASON_LEN} characters"));
+    sentences.push("reason must not carry a control character".to_owned());
+    sentences
+}
 
 fuzz_target!(|data: &[u8]| {
     match parse_status_request(data) {
@@ -41,11 +72,10 @@ fuzz_target!(|data: &[u8]| {
         }
         Err(error) => {
             let message = error.to_string();
-            if let Ok(text) = std::str::from_utf8(data)
-                && text.len() >= 8
-            {
-                assert!(!message.contains(text), "a refusal echoed the body");
-            }
+            assert!(
+                refusals().contains(&message),
+                "a refusal outside the closed set: {message}"
+            );
         }
     }
 });
