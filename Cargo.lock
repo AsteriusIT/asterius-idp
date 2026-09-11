@@ -98,6 +98,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "futures-core",
  "hex",
  "http-body-util",
  "image",

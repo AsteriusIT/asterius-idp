@@ -38,6 +38,10 @@ asterius-admin-api = { path = "crates/admin-api" }
 # --- pure / protocol-safe --------------------------------------------------
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The `Stream` trait alone, for the admin API's streamed audit export: axum's
+# `Body::from_stream` takes one, and pulling `futures-util` in for a single
+# trait would be the larger dependency for the smaller need.
+futures-core = "0.3"
 thiserror = "2"
 url = "2"
 askama = { version = "0.16", default-features = false, features = ["std", "derive"] }

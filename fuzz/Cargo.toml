@@ -64,6 +64,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_audit_filter"
+path = "fuzz_targets/admin_audit_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_client_request"
 path = "fuzz_targets/admin_client_request.rs"
 test = false

@@ -39,7 +39,7 @@ use crate::error::AdminError;
 use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Effect, Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
-use crate::{clients, csrf, initial_access_tokens, keys, openapi, outbox, throttle, users};
+use crate::{audit, clients, csrf, initial_access_tokens, keys, openapi, outbox, throttle, users};
 
 /// The client address, as this crate sees it.
 ///
@@ -292,6 +292,8 @@ async fn route(
         crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
         crate::KEYS_SCHEDULE_APPLY_ID => context.apply_key_schedule().await,
         crate::OUTBOX_DEAD_LETTERS_ID => context.list_dead_letters().await,
+        crate::AUDIT_EVENTS_LIST_ID => context.list_audit_events().await,
+        crate::AUDIT_EVENTS_EXPORT_ID => context.export_audit_events(),
         crate::USERS_LIST_ID => context.list_users().await,
         crate::USER_READ_ID => context.read_user().await,
         crate::USER_CREATE_ID => context.create_user(body).await,
@@ -1019,6 +1021,83 @@ impl Handling<'_> {
             StatusCode::OK,
             &serde_json::json!({ "items": rendered }),
         ))
+    }
+
+    /// `GET /audit/events` — the trail, filtered, one page at a time
+    /// (`ast-lh3.9`).
+    ///
+    /// The filter is parsed before the cursor is read, so a caller with a
+    /// bad filter and a bad cursor is told about the filter: the cursor was
+    /// minted for a different query and would be wrong anyway.
+    async fn list_audit_events(&self) -> Result<Response, AdminError> {
+        let filter = audit::parse_filter(&self.query)?;
+        let request = PageRequest::parse(
+            query_value(&self.query, "cursor").as_deref(),
+            query_value(&self.query, "limit").as_deref(),
+        )?;
+        // The cursor key is the id of the last record shown; anything else
+        // is a cursor this server did not mint for this listing.
+        let before = request
+            .after
+            .as_ref()
+            .map(|cursor| {
+                cursor
+                    .key()
+                    .parse::<i64>()
+                    .map_err(|_| AdminError::CursorInvalid)
+            })
+            .transpose()?;
+        let limit = u32::try_from(request.limit + 1).unwrap_or(u32::MAX);
+
+        let entries = self
+            .state
+            .backend
+            .audit_trail()
+            .query(&self.tenant.id, &filter, before, limit)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::AUDIT_EVENTS_LIST_ID, &error))?;
+
+        let items: Vec<serde_json::Value> = entries.iter().map(audit::render).collect();
+        let page = Page::from_overfetched(items, request.limit, |row| row["id"].to_string());
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::to_value(&page).unwrap_or_else(|_| serde_json::json!({})),
+        ))
+    }
+
+    /// `GET /audit/events/export` — the same records as NDJSON, streamed.
+    ///
+    /// Not `async`: nothing is read before the response starts. The first
+    /// page is fetched when the body is first polled, so a storage failure
+    /// surfaces as a body that does not complete — see
+    /// [`crate::audit::Export`] for why that is the honest shape.
+    fn export_audit_events(&self) -> Result<Response, AdminError> {
+        let filter = audit::parse_filter(&self.query)?;
+        let export = audit::Export::new(
+            self.state.backend.audit_trail(),
+            self.tenant.id.clone(),
+            filter,
+        );
+
+        let mut response = (StatusCode::OK, axum::body::Body::from_stream(export)).into_response();
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(audit::NDJSON),
+        );
+        headers.insert(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        // A download and not a page: a browser handed NDJSON with no
+        // disposition renders it, and a rendered export is one a person
+        // screenshots.
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            axum::http::HeaderValue::from_static("attachment; filename=\"audit-events.ndjson\""),
+        );
+        Ok(response)
     }
 
     /// `POST /initial-access-tokens` — mints one, shown once (`ast-cu3`).
@@ -2938,6 +3017,45 @@ mod tests {
         }
     }
 
+    /// The trail read back: the recorded events, newest first, through the
+    /// reference semantics of the filter, with ids that are their position
+    /// in the recording order — which is what the database's ids are.
+    #[async_trait::async_trait]
+    impl asterius_domain::audit::AuditQuery for Handle {
+        async fn query(
+            &self,
+            tenant: &TenantId,
+            filter: &asterius_domain::audit::AuditFilter,
+            before: Option<i64>,
+            limit: u32,
+        ) -> Result<Vec<asterius_domain::audit::TrailEntry>, DomainError> {
+            use asterius_domain::audit::chain::{EventHash, hash};
+            Ok(self
+                .0
+                .events
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, event)| event.tenant == *tenant)
+                .map(|(index, event)| asterius_domain::audit::TrailEntry {
+                    id: i64::try_from(index).expect("a small index") + 1,
+                    hash: hash(EventHash::GENESIS, event),
+                    record: asterius_domain::audit::AuditRecord::Event(Box::new(event.clone())),
+                })
+                .filter(|entry| before.is_none_or(|before| entry.id < before))
+                .filter(|entry| {
+                    entry
+                        .record
+                        .event()
+                        .is_some_and(|event| filter.matches(event))
+                })
+                .take(limit.min(asterius_domain::audit::query::MAX_PAGE) as usize)
+                .collect())
+        }
+    }
+
     #[async_trait::async_trait]
     impl AuditSink for Handle {
         async fn record(&self, event: AuditEvent) -> Result<(), DomainError> {
@@ -3992,6 +4110,10 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn audit_trail(&self) -> Arc<dyn asterius_domain::audit::AuditQuery> {
+            Arc::new(self.clone())
+        }
+
         fn initial_access_tokens(
             &self,
         ) -> Arc<dyn asterius_domain::ports::InitialAccessTokenStore> {
@@ -4463,6 +4585,31 @@ mod tests {
             .await
         }
 
+        /// A `GET` of `operation` with a query string, carrying `cookie`.
+        async fn get_with_query(
+            &self,
+            operation: &Operation,
+            query: &str,
+            cookie: &str,
+        ) -> Response {
+            let uri = format!("{}?{query}", operation.full_path());
+            self.send(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await
+        }
+
         /// Calls `operation` in `acme` as a freshly signed-in holder of
         /// `role`, with everything a mutation needs to get past CSRF and
         /// idempotency — so that a 403 in the assertion is about authority and
@@ -4668,6 +4815,280 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_of(response).await;
         assert_eq!(body["items"].as_array().map(Vec::len), Some(0));
+    }
+
+    // ---- the audit query API (`ast-lh3.9`) --------------------------------
+
+    fn agent_actor(id: &str, owner: &str) -> asterius_domain::audit::Actor {
+        asterius_domain::audit::Actor::Agent {
+            client: asterius_domain::ClientId::new(id),
+            on_behalf_of: owner.to_owned(),
+        }
+    }
+
+    /// The chain user alice → agent A → agent B in `acme`, as the token
+    /// endpoints write it, plus noise: carol's agent and a record in another
+    /// tenant.
+    fn seed_delegation_chain(world: &World) {
+        use asterius_domain::audit::{Actor, Detail, EventType, Outcome};
+        let at = |seconds: i64| OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds);
+        let mut events = world.handle.0.events.lock().expect("an uncontended lock");
+        events.push(
+            AuditEvent::new(
+                TenantId::new("acme"),
+                EventType::TOKEN_ISSUED,
+                Outcome::Success,
+                agent_actor("c.a", "alice"),
+                at(10),
+            )
+            .client(asterius_domain::ClientId::new("c.a"))
+            .grant(asterius_domain::GrantId::new(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            ))
+            .detail(
+                Detail::new()
+                    .label("grant_type", "client_credentials")
+                    .pii("ip", "203.0.113.5")
+                    .pii("user_agent", "Mozilla/5.0 (agent-runner)"),
+            ),
+        );
+        events.push(
+            AuditEvent::new(
+                TenantId::new("acme"),
+                EventType::TOKEN_EXCHANGED,
+                Outcome::Success,
+                agent_actor("c.b", "bob"),
+                at(20),
+            )
+            .client(asterius_domain::ClientId::new("c.b"))
+            .subject("alice")
+            .grant(asterius_domain::GrantId::new(
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            ))
+            .actor_chain(vec![Actor::Client(asterius_domain::ClientId::new("c.a"))]),
+        );
+        events.push(
+            AuditEvent::new(
+                TenantId::new("acme"),
+                EventType::TOKEN_ISSUED,
+                Outcome::Success,
+                agent_actor("c.c", "carol"),
+                at(30),
+            )
+            .client(asterius_domain::ClientId::new("c.c")),
+        );
+        events.push(
+            AuditEvent::new(
+                TenantId::new("other"),
+                EventType::TOKEN_ISSUED,
+                Outcome::Success,
+                agent_actor("c.a", "alice"),
+                at(40),
+            )
+            .client(asterius_domain::ClientId::new("c.a")),
+        );
+    }
+
+    /// The acceptance criterion: "everything done under alice" is the
+    /// issuance to A and the exchange by B, newest first, with B's chain
+    /// intact — and nothing of carol's, and nothing from another tenant.
+    #[tokio::test]
+    async fn everything_done_under_a_user_lists_the_whole_delegation_chain() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::SecurityAuditor]);
+
+        // Act
+        let response = world
+            .get_with_query(&crate::AUDIT_EVENTS_LIST, "user=alice", &cookie)
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let items = body["items"].as_array().expect("an items array");
+        assert_eq!(items.len(), 2, "{body}");
+        assert_eq!(items[0]["type"], "token.exchanged");
+        assert_eq!(items[0]["agent_id"], "c.b");
+        assert_eq!(items[0]["agent_owner"], "bob");
+        assert_eq!(items[0]["subject"], "alice");
+        assert_eq!(items[0]["actor_chain"][0]["id"], "c.a");
+        assert_eq!(items[0]["grant_id"], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        assert_eq!(items[1]["type"], "token.issued");
+        assert_eq!(items[1]["agent_id"], "c.a");
+        assert_eq!(items[1]["agent_owner"], "alice");
+        assert!(
+            items[1]["hash"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
+        assert_eq!(body["next_cursor"], serde_json::Value::Null);
+    }
+
+    /// RFC 8693 §4.1: A is a link in B's exchange, so a filter on A finds it.
+    #[tokio::test]
+    async fn an_agent_filter_finds_the_exchanges_it_was_a_link_in() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .get_with_query(
+                &crate::AUDIT_EVENTS_LIST,
+                "agent=c.a&type=token.exchanged",
+                &cookie,
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let items = body["items"].as_array().expect("an items array");
+        assert_eq!(items.len(), 1, "{body}");
+        assert_eq!(items[0]["agent_id"], "c.b");
+    }
+
+    /// Keyset paging through the listing: a page of one, a cursor, the next
+    /// page, and a `null` cursor at the end.
+    #[tokio::test]
+    async fn the_listing_pages_by_cursor() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let first = body_of(
+            world
+                .get_with_query(&crate::AUDIT_EVENTS_LIST, "limit=2", &cookie)
+                .await,
+        )
+        .await;
+        let cursor = first["next_cursor"].as_str().expect("a cursor").to_owned();
+        let second = body_of(
+            world
+                .get_with_query(
+                    &crate::AUDIT_EVENTS_LIST,
+                    &format!("limit=2&cursor={cursor}"),
+                    &cookie,
+                )
+                .await,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(first["items"].as_array().map(Vec::len), Some(2));
+        assert_eq!(second["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(second["items"][0]["type"], "token.issued");
+        assert_eq!(second["items"][0]["agent_id"], "c.a");
+        assert_eq!(second["next_cursor"], serde_json::Value::Null);
+    }
+
+    /// A misspelled filter is a 400, not the whole trail.
+    #[tokio::test]
+    async fn an_unknown_filter_parameter_is_refused() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .get_with_query(&crate::AUDIT_EVENTS_LIST, "agnet=c.a", &cookie)
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The export: NDJSON, one line per record, newest first, the same filter
+    /// semantics as the listing — and PII minimised on every line, because
+    /// what was fingerprinted on the way in is a digest on the way out.
+    #[tokio::test]
+    async fn the_export_streams_ndjson_with_hashed_personal_data() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::SecurityAuditor]);
+
+        // Act
+        let response = world
+            .get_with_query(&crate::AUDIT_EVENTS_EXPORT, "user=alice", &cookie)
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some(audit::NDJSON)
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a readable body");
+        let text = std::str::from_utf8(&bytes).expect("utf-8");
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("one JSON text per line"))
+            .collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert_eq!(lines[0]["type"], "token.exchanged");
+        assert_eq!(lines[1]["type"], "token.issued");
+        assert!(
+            !text.contains("203.0.113.5"),
+            "an address reached the export: {text}"
+        );
+        assert!(
+            !text.contains("Mozilla"),
+            "a user agent reached the export: {text}"
+        );
+        assert!(text.contains("\"ip\":\"sha256:"), "{text}");
+    }
+
+    /// The scope is `admin.audit:read`: the auditor and the administrator
+    /// hold it by definition, and support — who may look up an account —
+    /// does not thereby get to read everything everyone did.
+    #[tokio::test]
+    async fn the_trail_is_read_by_auditors_and_not_by_support() {
+        // Arrange
+        let world = World::new();
+
+        // Act / Assert
+        for operation in [&crate::AUDIT_EVENTS_LIST, &crate::AUDIT_EVENTS_EXPORT] {
+            assert_eq!(
+                world
+                    .as_role(operation, Role::SecurityAuditor)
+                    .await
+                    .status(),
+                StatusCode::OK,
+                "{}",
+                operation.id()
+            );
+            assert_eq!(
+                world.as_role(operation, Role::TenantAdmin).await.status(),
+                StatusCode::OK,
+                "{}",
+                operation.id()
+            );
+            assert_eq!(
+                world.as_role(operation, Role::UserSupport).await.status(),
+                StatusCode::FORBIDDEN,
+                "{}",
+                operation.id()
+            );
+        }
     }
 
     // ---- the table-driven authorization test ------------------------------

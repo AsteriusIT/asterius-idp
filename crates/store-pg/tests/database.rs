@@ -775,6 +775,360 @@ db_test! {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Audit trail: the per-agent query (`ast-lh3.9`)
+// ---------------------------------------------------------------------------
+
+use asterius_domain::GrantId;
+use asterius_domain::audit::query::{AuditFilter, AuditQuery as _, MAX_PAGE, TrailEntry};
+use asterius_domain::audit::trail::keys;
+
+const GRANT_A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const GRANT_B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+fn agent(id: &str, owner: &str) -> Actor {
+    Actor::Agent {
+        client: ClientId::new(id),
+        on_behalf_of: owner.to_owned(),
+    }
+}
+
+fn at(seconds: i64) -> OffsetDateTime {
+    OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds)
+}
+
+/// The chain user alice → agent A → agent B, written the way the token
+/// endpoints write it (`client_credentials` then `token_exchange`), with
+/// noise around it: carol's agent, alice's own login, a plain client.
+async fn seed_delegation_chain(sink: &PgAuditSink) {
+    let demo = || TenantId::new("demo");
+    let events = vec![
+        // A is issued a token as alice's agent (`client_credentials`).
+        AuditEvent::new(
+            demo(),
+            EventType::TOKEN_ISSUED,
+            Outcome::Success,
+            agent("c.a", "alice"),
+            at(10),
+        )
+        .client(ClientId::new("c.a"))
+        .grant(GrantId::new(GRANT_A))
+        .detail(
+            Detail::new()
+                .label("grant_type", "client_credentials")
+                .text(keys::AGENT_OWNER, "alice")
+                .text(keys::RESOURCE, "https://api.example/"),
+        ),
+        // B exchanges A's token: B acts, the chain names A, alice is the subject.
+        AuditEvent::new(
+            demo(),
+            EventType::TOKEN_EXCHANGED,
+            Outcome::Success,
+            agent("c.b", "bob"),
+            at(20),
+        )
+        .client(ClientId::new("c.b"))
+        .subject("alice")
+        .grant(GrantId::new(GRANT_B))
+        .actor_chain(vec![Actor::Client(ClientId::new("c.a"))])
+        .detail(
+            Detail::new()
+                .label("grant_type", "token_exchange")
+                .text(keys::AGENT_OWNER, "bob"),
+        ),
+        // Noise: carol's agent, a plain client, alice signing in herself.
+        AuditEvent::new(
+            demo(),
+            EventType::TOKEN_ISSUED,
+            Outcome::Success,
+            agent("c.c", "carol"),
+            at(30),
+        )
+        .client(ClientId::new("c.c")),
+        AuditEvent::new(
+            demo(),
+            EventType::TOKEN_ISSUED,
+            Outcome::Success,
+            Actor::Client(ClientId::new("billing")),
+            at(40),
+        )
+        .client(ClientId::new("billing")),
+        AuditEvent::new(
+            demo(),
+            EventType::AUTH_LOGIN,
+            Outcome::Success,
+            Actor::User("alice".to_owned()),
+            at(50),
+        )
+        .subject("alice"),
+    ];
+    for event in events {
+        sink.record(event).await.expect("record");
+    }
+}
+
+fn types_of(entries: &[TrailEntry]) -> Vec<(EventType, String)> {
+    entries
+        .iter()
+        .map(|entry| {
+            let event = entry.record.event().expect("a readable record");
+            (event.event_type, event.actor.id().to_owned())
+        })
+        .collect()
+}
+
+db_test! {
+    /// The acceptance criterion of `ast-lh3.9`: for user → A → B, "everything
+    /// done under alice" returns the issuance to A and the exchange by B —
+    /// with B's chain intact — and alice's own login, and nothing of carol's.
+    /// Newest first, which is the order an incident reads in.
+    async fn everything_done_under_a_user_spans_the_delegation_chain(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+
+        let filter = AuditFilter { user: Some("alice".to_owned()), ..AuditFilter::default() };
+        let found = sink
+            .query(&TenantId::new("demo"), &filter, None, 100)
+            .await
+            .expect("query");
+
+        assert_eq!(
+            types_of(&found),
+            vec![
+                (EventType::AUTH_LOGIN, "alice".to_owned()),
+                (EventType::TOKEN_EXCHANGED, "c.b".to_owned()),
+                (EventType::TOKEN_ISSUED, "c.a".to_owned()),
+            ]
+        );
+        let exchange = found[1].record.event().expect("readable");
+        assert_eq!(exchange.actor_chain, vec![Actor::Client(ClientId::new("c.a"))]);
+        assert_eq!(exchange.agent_owner(), Some("bob"));
+        assert_eq!(exchange.grant.as_ref().map(GrantId::as_str), Some(GRANT_B));
+        let issuance = found[2].record.event().expect("readable");
+        assert_eq!(issuance.agent_id(), Some("c.a"));
+        assert_eq!(issuance.agent_owner(), Some("alice"));
+    }
+}
+
+db_test! {
+    /// RFC 8693 §4.1: the exchange B performed names A as a link, so "what
+    /// did A take part in" includes it — through the chain index, not only
+    /// through the actor.
+    async fn an_agent_is_found_through_the_act_chain(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+
+        let filter = AuditFilter { agent: Some(ClientId::new("c.a")), ..AuditFilter::default() };
+        let found = sink
+            .query(&TenantId::new("demo"), &filter, None, 100)
+            .await
+            .expect("query");
+
+        assert_eq!(
+            types_of(&found),
+            vec![
+                (EventType::TOKEN_EXCHANGED, "c.b".to_owned()),
+                (EventType::TOKEN_ISSUED, "c.a".to_owned()),
+            ]
+        );
+    }
+}
+
+db_test! {
+    /// Every SQL predicate is the spelling of `AuditFilter::matches`: for a
+    /// set of filters covering each member, what the database returns is
+    /// what a scan through the reference semantics returns.
+    async fn the_sql_predicates_agree_with_the_reference_semantics(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        let tenant = TenantId::new("demo");
+
+        let everything = sink.query(&tenant, &AuditFilter::default(), None, 100).await.expect("all");
+        assert_eq!(everything.len(), 5);
+
+        let filters = [
+            AuditFilter { agent: Some(ClientId::new("c.b")), ..AuditFilter::default() },
+            AuditFilter { owner: Some("bob".to_owned()), ..AuditFilter::default() },
+            AuditFilter { owner: Some("alice".to_owned()), ..AuditFilter::default() },
+            AuditFilter { user: Some("bob".to_owned()), ..AuditFilter::default() },
+            AuditFilter { grant: Some(GrantId::new(GRANT_A)), ..AuditFilter::default() },
+            AuditFilter { grant: Some(GrantId::new("not-a-uuid")), ..AuditFilter::default() },
+            AuditFilter { event_types: vec![EventType::TOKEN_ISSUED], ..AuditFilter::default() },
+            AuditFilter { from: Some(at(20)), until: Some(at(40)), ..AuditFilter::default() },
+            AuditFilter {
+                agent: Some(ClientId::new("c.a")),
+                event_types: vec![EventType::TOKEN_EXCHANGED],
+                from: Some(at(0)),
+                ..AuditFilter::default()
+            },
+        ];
+        for filter in filters {
+            let from_sql: Vec<i64> = sink
+                .query(&tenant, &filter, None, 100)
+                .await
+                .expect("query")
+                .iter()
+                .map(|entry| entry.id)
+                .collect();
+            let by_reference: Vec<i64> = everything
+                .iter()
+                .filter(|entry| entry.record.event().is_some_and(|event| filter.matches(event)))
+                .map(|entry| entry.id)
+                .collect();
+            assert_eq!(from_sql, by_reference, "SQL and `matches` disagree for {filter:?}");
+        }
+    }
+}
+
+db_test! {
+    /// Keyset paging: pages tile the trail newest first, resume from the id
+    /// of the last row seen, and a record written between two pages lands on
+    /// none of them rather than shifting a row into both.
+    async fn pages_tile_the_trail_without_overlap(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        let tenant = TenantId::new("demo");
+
+        let first = sink.query(&tenant, &AuditFilter::default(), None, 2).await.expect("page 1");
+        assert_eq!(first.len(), 2);
+        assert!(first[0].id > first[1].id, "not newest first");
+
+        // Written while the operator pages: newer than everything, so it
+        // belongs to no page that resumes below `first`.
+        sink.record(audit_event("demo", EventType::CONSENT_GRANTED)).await.expect("record");
+
+        let second = sink.query(&tenant, &AuditFilter::default(), Some(first[1].id), 2).await.expect("page 2");
+        let third = sink.query(&tenant, &AuditFilter::default(), Some(second[1].id), 2).await.expect("page 3");
+        let fourth = sink.query(&tenant, &AuditFilter::default(), Some(third[0].id), 2).await.expect("page 4");
+
+        let ids: Vec<i64> = [&first[..], &second[..], &third[..]].concat().iter().map(|e| e.id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        sorted.dedup();
+        assert_eq!(ids, sorted, "pages overlapped or went out of order");
+        assert_eq!(ids.len(), 5, "the five seeded records, once each");
+        assert!(fourth.is_empty(), "paging past the end must be empty, not an error");
+    }
+}
+
+db_test! {
+    /// A page is never larger than `MAX_PAGE` whatever is asked, and asking
+    /// for zero is one row rather than a statement the database refuses.
+    async fn the_page_size_is_clamped(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        let tenant = TenantId::new("demo");
+
+        let huge = sink.query(&tenant, &AuditFilter::default(), None, MAX_PAGE * 10).await.expect("query");
+        assert_eq!(huge.len(), 5);
+        let none = sink.query(&tenant, &AuditFilter::default(), None, 0).await.expect("query");
+        assert_eq!(none.len(), 1);
+    }
+}
+
+db_test! {
+    /// A record this build cannot read is on the page as opaque, with its
+    /// hash and its id, and counts against the limit: an export that skipped
+    /// it would be evidence with a hole nobody was told about.
+    async fn an_opaque_record_is_paged_like_any_other(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        sink.record(audit_event("demo", EventType::CODE_ISSUED)).await.expect("first");
+        let tip = chain_tip(&db, "demo").await;
+        let opaque_hash = seed_unreadable_record(&db, "demo", &tip).await;
+        sink.record(audit_event("demo", EventType::TOKEN_ISSUED)).await.expect("third");
+
+        let page = sink
+            .query(&TenantId::new("demo"), &AuditFilter::default(), None, 10)
+            .await
+            .expect("an unreadable row must not fail the query");
+
+        assert_eq!(page.len(), 3);
+        assert!(page[1].record.is_opaque(), "{:?}", page[1].record);
+        assert_eq!(page[1].hash.as_bytes().as_slice(), opaque_hash.as_slice());
+        assert!(page[0].id > page[1].id && page[1].id > page[2].id);
+    }
+}
+
+db_test! {
+    /// The query is tenant-scoped at the first predicate: another tenant's
+    /// records never appear, whatever filter is asked.
+    async fn the_query_never_crosses_a_tenant(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_tenant(&db.pool, "other").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        sink.record(
+            AuditEvent::new(TenantId::new("other"), EventType::TOKEN_ISSUED, Outcome::Success, agent("c.a", "alice"), at(60))
+        )
+        .await
+        .expect("record");
+
+        let filter = AuditFilter { agent: Some(ClientId::new("c.a")), ..AuditFilter::default() };
+        let other = sink.query(&TenantId::new("other"), &filter, None, 100).await.expect("query");
+        let demo = sink.query(&TenantId::new("demo"), &filter, None, 100).await.expect("query");
+
+        assert_eq!(other.len(), 1);
+        assert_eq!(demo.len(), 2);
+    }
+}
+
+db_test! {
+    /// The `0035` indexes are what make a per-agent question a range scan
+    /// rather than a walk of the tenant's whole trail, and a planner that
+    /// ignores them is a regression nothing else would notice until a large
+    /// tenant's console timed out.
+    async fn the_owner_question_is_planned_through_its_index(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        // A tenant with a realistic trail, written straight to the table for
+        // the reason the clients test gives: what is under test is the
+        // planner, and 5000 writes through the sink would only make the test
+        // slow. The hashes are not a chain; nothing here verifies one.
+        sqlx::query(
+            "insert into audit_events (tenant_id, occurred_at, event_type, outcome, actor,
+                                       actor_chain, subject, detail, previous_hash, event_hash)
+             select 'demo', now(), 'auth.login', 'success',
+                    jsonb_build_object('type', 'user', 'id', 'u' || g),
+                    '[]'::jsonb, 'u' || g, '{}'::jsonb,
+                    sha256(('p' || g)::bytea), sha256(('h' || g)::bytea)
+             from generate_series(1, 5000) g",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("fill the trail");
+        sqlx::query("analyze audit_events").execute(&db.pool).await.expect("analyze");
+
+        let plan: Vec<String> = sqlx::query_scalar(
+            "explain select event_id from audit_events
+             where tenant_id = 'demo'
+               and actor ->> 'type' = 'agent' and actor ->> 'on_behalf_of' = 'alice'
+             order by event_id desc limit 50",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("explain");
+        let rendered = plan.join("\n");
+        assert!(rendered.contains("audit_events_by_owner"), "{rendered}");
+
+        let chain: Vec<String> = sqlx::query_scalar(
+            "explain select event_id from audit_events
+             where tenant_id = 'demo' and actor_chain @> '[{\"type\": \"client\", \"id\": \"c.a\"}]'",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("explain");
+        let rendered = chain.join("\n");
+        assert!(rendered.contains("audit_events_by_chain"), "{rendered}");
+    }
+}
+
 db_test! {
     /// Chains are per tenant: one tenant's writes must not appear in another's
     /// chain, or a busy tenant would make a quiet one's trail unverifiable.

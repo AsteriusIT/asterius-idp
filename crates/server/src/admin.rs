@@ -977,6 +977,13 @@ impl AdminBackend for Deployment {
         ))
     }
 
+    /// The trail read back (`ast-lh3.9`), over the pool every endpoint
+    /// writes it through — so what the console lists is what was recorded,
+    /// with no second sink to disagree.
+    fn audit_trail(&self) -> Arc<dyn asterius_domain::audit::AuditQuery> {
+        Arc::new(PgAuditSink::new(self.store.pool().clone()))
+    }
+
     fn clients(&self) -> Arc<dyn ClientAdministration> {
         Arc::new(DeploymentClients {
             store: self.store.clone(),
