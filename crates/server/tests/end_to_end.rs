@@ -5383,3 +5383,144 @@ async fn a_logout_queues_a_logout_token_its_relying_party_can_validate() {
 
     flow.tear_down().await;
 }
+
+// ---------------------------------------------------------------------------
+// Query budget (`ast-p2l.8`)
+// ---------------------------------------------------------------------------
+
+/// Every SQL statement `sqlx` executed while a future ran, in order.
+///
+/// `sqlx` announces each finished statement as a `tracing` event on the
+/// `sqlx::query` target; this layer keeps the one-line summary of each. It is
+/// installed on the future alone (`WithSubscriber`), so statements the pool
+/// runs on its own — connection setup, health pings — are not in the count,
+/// and neither is another test on the same binary.
+#[derive(Clone, Default)]
+struct QueryLog(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl QueryLog {
+    fn statements(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .expect("no test panicked holding the log")
+            .clone()
+    }
+}
+
+/// The `summary` field of one `sqlx::query` event: the statement's first
+/// words, which is enough to name it and short enough to print seventy of.
+struct Summary(String);
+
+impl tracing::field::Visit for Summary {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "summary" {
+            self.0 = format!("{value:?}");
+        }
+    }
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "summary" {
+            value.clone_into(&mut self.0);
+        }
+    }
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for QueryLog {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target() != "sqlx::query" {
+            return;
+        }
+        let mut summary = Summary(String::new());
+        event.record(&mut summary);
+        self.0
+            .lock()
+            .expect("no test panicked holding the log")
+            .push(summary.0);
+    }
+}
+
+/// Runs `work` with every `sqlx` statement it executes recorded.
+async fn counting_queries<F, T>(work: F) -> (T, Vec<String>)
+where
+    F: std::future::Future<Output = T>,
+{
+    use tracing::instrument::WithSubscriber as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let log = QueryLog::default();
+    let subscriber = tracing_subscriber::Registry::default().with(log.clone());
+    let out = work.with_subscriber(subscriber).await;
+    (out, log.statements())
+}
+
+/// The most SQL statements one complete `authorization_code` journey may run.
+///
+/// Measured, not designed: the number a push, an arrival at `/authorize`, a
+/// passkey sign-in, a consent and one redemption cost on the day the budget
+/// was set (`ast-p2l.8`, see docs/performance.md for the breakdown). It is a
+/// ceiling on the *shape* of the flow, not a target: a change that adds a
+/// statement on purpose moves it, with the reason in the commit. What it
+/// refuses is the accidental kind — a loop that fetches one row per scope,
+/// per role, per resource — which is the one no unit test notices, because
+/// every unit test has one of each.
+const CODE_FLOW_QUERY_BUDGET: usize = 71;
+
+/// **One code flow costs a bounded number of SQL statements** (`ast-p2l.8`).
+///
+/// FAPI 2.0 SP §6.1 makes the authorization server the busiest component of
+/// a deployment, because short-lived access tokens bring the client back
+/// often. The database is where that load lands, and a query per collection
+/// element is how it quietly multiplies. This pins the count for the whole
+/// browser flow so that a per-row lookup shows up as a failed build rather
+/// than as a slow tenant six months later.
+#[tokio::test]
+async fn a_complete_code_flow_stays_within_its_query_budget() {
+    // Arrange
+    let Some(mut flow) = Flow::new().await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = ProofKey::generate();
+
+    // Act: the whole journey, counted. The steps are the ones of
+    // `a_push_becomes_a_code_becomes_a_token_becomes_a_refresh`, minus the
+    // refresh, which is a separate endpoint with its own shape.
+    let (redeemed, statements) = counting_queries(async {
+        let request_uri = flow.push(&key).await;
+        let interaction = flow.authorize(&request_uri).await;
+        flow.sign_in(&interaction).await;
+        let code = flow.consent(&interaction).await;
+        flow.token(
+            &key,
+            "assertion-budget",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+            ],
+        )
+        .await
+    })
+    .await;
+
+    // Assert: the flow worked, and it did so within the budget. The
+    // statements are printed so that a failure names the offender.
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text());
+    assert!(
+        !statements.is_empty(),
+        "no statement was observed: is sqlx statement logging switched off?"
+    );
+    assert!(
+        statements.len() <= CODE_FLOW_QUERY_BUDGET,
+        "the code flow ran {} SQL statements, budget is {}:\n  {}",
+        statements.len(),
+        CODE_FLOW_QUERY_BUDGET,
+        statements.join("\n  ")
+    );
+
+    flow.tear_down().await;
+}
