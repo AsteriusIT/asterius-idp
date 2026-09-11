@@ -145,6 +145,21 @@ docs (table_name, column_name, repairable, row_key, doc) as (
            jsonb_build_object('tenant_id', tenant_id, 'outbox_id', outbox_id), payload
     from outbox
     union all
+    -- One receiver's subject membership (`0032`, SSF 1.0 §8.1.3). Scanned like
+    -- the rest, and `repairable` is false for a reason of its own rather than
+    -- append-only-ness: every member name in this column is a constant of
+    -- `asterius_ssf::subject` — `format`, and the members RFC 9493 §3.2 and
+    -- SSF 1.0 §3.3 define — so a sentinel here cannot have been written by
+    -- this server. Quarantining the name would leave a subject identifier the
+    -- model still refuses to read, which is a membership that matches nothing
+    -- and a receiver silently hearing about nobody. A human deletes the row
+    -- and has the receiver add the subject again (§8.1.3.2).
+    select 'ssf_stream_subjects', 'subject', false,
+           jsonb_build_object('tenant_id', tenant_id, 'stream_id', stream_id,
+                              'subject_key', subject_key),
+           subject
+    from ssf_stream_subjects
+    union all
     select 'audit_events', 'actor', false,
            jsonb_build_object('tenant_id', tenant_id, 'event_id', event_id), actor
     from audit_events
@@ -181,6 +196,7 @@ inventory (table_name, column_name) as (
            ('ciba_requests', 'authorization_details'),
            ('signing_keys', 'public_jwk'),
            ('outbox', 'payload'),
+           ('ssf_stream_subjects', 'subject'),
            ('audit_events', 'actor'),
            ('audit_events', 'actor_chain'),
            ('audit_events', 'detail')

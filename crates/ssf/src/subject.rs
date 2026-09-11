@@ -1076,4 +1076,53 @@ mod tests {
         assert!(!simple.matches(&complex));
         assert!(!complex.matches(&simple));
     }
+
+    /// The member names this crate renders are a closed set, so the object
+    /// stored in `ssf_stream_subjects.subject` can never carry one of the
+    /// names `serde_json` reserves for its private types — the row that no
+    /// binary linking `serde_json` could read back.
+    ///
+    /// Both ways a receiver could try it are covered: a sentinel as an extra
+    /// member of a *simple* identifier is ignored, because a format's members
+    /// are the ones the constructor writes and nothing else; as a member of a
+    /// *complex* one it is refused outright, since §3.3's member list is
+    /// closed. The consequence is recorded in
+    /// `scripts/sql/json-sentinels-detect.sql`, which files this column as not
+    /// repairable: a sentinel there did not come from this server.
+    #[test]
+    fn a_subject_this_crate_renders_never_names_a_serde_json_sentinel() {
+        for sentinel in asterius_domain::SERDE_JSON_SENTINELS {
+            // Arrange: a receiver puts the reserved name where it can.
+            let smuggled = json!({
+                "format": "opaque",
+                "id": "u-1",
+                sentinel: {"whatever": true},
+            });
+            let complex = json!({
+                "user": {"format": "opaque", "id": "u-1"},
+                sentinel: {"format": "opaque", "id": "u-2"},
+            });
+
+            // Act
+            let simple = Subject::from_json(&smuggled).expect("an opaque identifier");
+            let refused = Subject::from_json(&complex);
+
+            // Assert
+            assert!(
+                !asterius_domain::names_a_serde_json_sentinel(&simple.to_json()),
+                "{sentinel} survived into a rendered subject"
+            );
+            assert!(
+                !asterius_domain::names_a_serde_json_sentinel(&serde_json::Value::from(
+                    simple.key()
+                )),
+                "{sentinel} survived into a storage key"
+            );
+            assert_eq!(
+                refused,
+                Err(SubjectError::UnknownMember),
+                "{sentinel} was accepted as a complex subject member"
+            );
+        }
+    }
 }

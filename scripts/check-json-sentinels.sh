@@ -89,8 +89,9 @@ echo "$findings"
 echo >&2
 echo "FINDINGS: the rows above carry a member name serde_json reserves" >&2
 echo "  'sentinel' rows with repairable=t are fixed by scripts/repair-json-sentinels.sh" >&2
-echo "  'sentinel' rows with repairable=f are in audit_events: append-only and" >&2
-echo "  hash-chained, so they need a decision, not a script" >&2
+echo "  'sentinel' rows with repairable=f need a decision, not a script:" >&2
+echo "  audit_events is append-only and hash-chained, and a subject identifier" >&2
+echo "  (ssf_stream_subjects) renamed in place is a membership matching nobody" >&2
 echo "  'unreviewed_column' rows mean a migration added a JSONB column that" >&2
 echo "  ${DETECT_SQL} does not scan yet" >&2
 exit 1
