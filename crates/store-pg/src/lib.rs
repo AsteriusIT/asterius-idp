@@ -55,8 +55,8 @@ pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;
 pub use authorization_details_types::PgAuthorizationDetailsTypes;
 pub use ciba_requests::{
-    CibaPoll, CibaPolled, NewCibaRequest, PING_OUTBOX_KIND, PgCibaRequestRepository,
-    PingCredentials, PingTarget, RedeemedCiba,
+    CibaPoll, CibaPolled, NewCibaRequest, PING_OUTBOX_KIND, PendingApproval,
+    PgCibaRequestRepository, PingCredentials, PingTarget, RedeemedCiba,
 };
 pub use client_key_fetches::PgClientKeyFetches;
 pub use client_usage::PgClientUsage;

@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}{{ text.approvals_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# CIBA Core 1.0 §8: the OP identifies the end-user, authenticates them on the
+   authentication device, and "MUST obtain an authorization decision as
+   described in Section 3.1.2.4 of OpenID Core". This page is that decision.
+   It is not a consent screen: nothing here can be narrowed, because the client
+   has already been told what it asked for and a narrowed grant would leave it
+   holding a token it cannot explain. The answer to "not that" is Deny.
+
+   §7.1: the `binding_message` is displayed on the consumption device and on
+   this one, "to interrelate the two". It is therefore rendered first and
+   large, as a comparison rather than as information — a person who is merely
+   shown a code has been shown a code, and the instruction to compare is the
+   whole of what it buys.
+
+   RFC 8628 §5.3 ("Remote Phishing") applies to both flows on this page and is
+   said plainly rather than left to be inferred: a request the person did not
+   start is a request somebody else started.
+
+   No script, like every page in this tree: the countdown is text this server
+   computed, and both halves are ordinary forms. #}
+{% include "error_summary.html" %}
+
+<div class="stack tight">
+<h2>{{ text.approvals_heading() }}</h2>
+</div>
+
+{% if approvals.is_empty() %}
+<p class="muted">{{ text.approvals_empty() }}</p>
+{% else %}
+<p class="error">{{ text.approvals_warning() }}</p>
+{% for approval in approvals %}
+<div class="stack tight">
+<p>{{ text.approvals_requested_by(approval.client_name) }}</p>
+
+{% if let Some(binding) = approval.binding_message %}
+<p class="muted">{{ text.approvals_binding_message() }}</p>
+<p class="code-display">{{ binding }}</p>
+{% endif %}
+
+{# §7.3's `expires_in`, as a countdown a browser with no script can still read.
+   The `<time>` element carries the instant in machine-readable form so that a
+   user agent or an assistive technology can present it its own way. #}
+<p class="muted">
+  <time datetime="{{ approval.expires_at }}">{{ text.approvals_expires_in(approval.expires_in) }}</time>
+</p>
+
+{% if !approval.scopes.is_empty() %}
+<p class="muted">{{ text.approvals_asking_for() }}</p>
+<ul class="scopes">
+{% for scope in approval.scopes %}
+  <li>
+    {% if let Some(description) = scope.description %}{{ description }}{% else %}{{ scope.name }}{% endif %}
+    <span class="muted">({{ scope.name }})</span>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if !approval.authorization_details.is_empty() %}
+<p class="muted">{{ text.approvals_also_asking() }}</p>
+<ul class="scopes">
+{% for detail in approval.authorization_details %}
+  <li>
+    {% if let Some(description) = detail.description %}{{ description }}{% else %}{{ text.approvals_undescribed_detail() }}{% endif %}
+    <span class="muted">({{ detail.name }})</span>
+    {% if !detail.actions.is_empty() %}
+    <br><span class="muted">{{ text.approvals_detail_actions() }} {% for action in detail.actions %}{{ action }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if !detail.datatypes.is_empty() %}
+    <br><span class="muted">{{ text.approvals_detail_datatypes() }} {% for datatype in detail.datatypes %}{{ datatype }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+    {% if !detail.locations.is_empty() %}
+    <br><span class="muted">{{ text.approvals_detail_locations() }} {% for location in detail.locations %}{{ location }}{% if !loop.last %}, {% endif %}{% endfor %}</span>
+    {% endif %}
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{# Both answers under one token, as on the consent, logout and device pages: a
+   forged approval would hand somebody else a credential on this account, and a
+   forged refusal is a denial of service. The request is named by the digest of
+   its `auth_req_id` and never by the identifier itself, and the server checks
+   that the row named belongs to the person answering. #}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="approval" value="{{ approval.reference }}">
+<div class="actions">
+  <button type="submit" name="decision" value="approve">{{ text.approvals_approve() }}</button>
+  <button type="submit" name="decision" value="deny" class="secondary">{{ text.approvals_deny() }}</button>
+</div>
+</form>
+</div>
+{% endfor %}
+{% endif %}
+
+{# RFC 8628 §3.3's code entry, on the same page. A device authorization names
+   nobody until a code is typed (§3.1 happens before anybody is identified), so
+   it cannot be listed above; it is offered here instead, posting to the same
+   verification endpoint the printed `verification_uri` leads to. #}
+<p class="separator"></p>
+<div class="stack tight">
+<h2>{{ text.approvals_device_heading() }}</h2>
+<p class="muted">{{ text.approvals_device_intro(tenant_name) }}</p>
+</div>
+<form method="post" action="{{ device_action }}">
+{# The device page's own token, not this page's: the two endpoints derive their
+   synchroniser tokens under different domain separators, so a form posting
+   there has to carry the one that endpoint will compare against. #}
+<input type="hidden" name="csrf" value="{{ device_csrf }}">
+<label>
+  <span>{{ text.approvals_device_label() }}</span>
+  <input type="text" name="user_code" id="user_code" class="code"
+         autocomplete="one-time-code" autocapitalize="characters"
+         spellcheck="false" required>
+</label>
+<div class="actions"><button type="submit">{{ text.approvals_device_submit() }}</button></div>
+</form>
+
+<p class="link-row"><a href="{{ sign_in_href }}">{{ text.approvals_sign_in_again() }}</a></p>
+{% endblock %}

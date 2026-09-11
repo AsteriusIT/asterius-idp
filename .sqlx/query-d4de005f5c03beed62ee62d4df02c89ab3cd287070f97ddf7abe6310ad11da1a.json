@@ -1,0 +1,55 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select client_id, scopes, authorization_details, acr_values,\n                    binding_message, expires_at\n               from ciba_requests\n              where tenant_id = $1 and user_id = $2 and auth_req_id_hash = $3\n                and status = 'pending' and expires_at > $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "authorization_details",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 3,
+        "name": "acr_values",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "binding_message",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "d4de005f5c03beed62ee62d4df02c89ab3cd287070f97ddf7abe6310ad11da1a"
+}

@@ -134,6 +134,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "approval_decision"
+path = "fuzz_targets/approval_decision.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "attestation_object"
 path = "fuzz_targets/attestation_object.rs"
 test = false

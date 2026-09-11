@@ -3,7 +3,8 @@
 //! Four actors move one row through three states, and the statements here are
 //! theirs: the client records the request (`ast-lh3.4`, [`issue`]) and then
 //! polls the token endpoint with it (`ast-lh3.5`, [`poll`] and [`redeem`]);
-//! the person approves or refuses it (`ast-lh3.6`, [`approve`] and [`deny`]);
+//! the person lists what is waiting for them and approves or refuses it
+//! (`ast-lh3.6`, [`pending_for_user`], [`approve`] and [`deny`]);
 //! and in ping mode the delivery worker reads what the §10.2 notification
 //! needs ([`for_notification`]) and records that it was sent
 //! ([`mark_notified`]). The rule the device flow's store follows holds here
@@ -42,6 +43,7 @@
 //! nothing: §10.2 names the two outcomes it notifies, and expiry is not one.
 //!
 //! [`issue`]: PgCibaRequestRepository::issue
+//! [`pending_for_user`]: PgCibaRequestRepository::pending_for_user
 //! [`poll`]: PgCibaRequestRepository::poll
 //! [`redeem`]: PgCibaRequestRepository::redeem
 //! [`approve`]: PgCibaRequestRepository::approve
@@ -194,6 +196,34 @@ impl std::fmt::Debug for PingTarget {
             .field("notified_at", &self.notified_at)
             .finish_non_exhaustive()
     }
+}
+
+/// One request waiting for a person's decision (§7.3, `ast-lh3.6`).
+///
+/// Everything the approvals inbox renders, and nothing a page has no use for:
+/// no digest of the notification token, no sealed envelope, no poll
+/// bookkeeping. What it does carry is the `auth_req_id` **digest**, which is
+/// how the form names the row it is answering — a value that identifies the
+/// request without being the credential the client polls with, so a rendering
+/// of this page is not a rendering of anything anybody could redeem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingApproval {
+    /// The row's identity, hex-encoded. Not a credential: the `auth_req_id`
+    /// itself is what the token endpoint answers to, and this is its digest.
+    pub auth_req_id_digest: String,
+    /// The client that asked, for the name the page shows.
+    pub client_id: String,
+    /// What it asked for, already narrowed to its registration.
+    pub scopes: Vec<String>,
+    /// RFC 9396 §3's rich authorization, as it was accepted.
+    pub authorization_details: serde_json::Value,
+    /// §7.1's `acr_values`, most preferred first. What the approver's
+    /// authentication has to reach before the decision counts.
+    pub acr_values: Vec<String>,
+    /// §7.1's `binding_message`, for the comparison it exists for.
+    pub binding_message: Option<String>,
+    /// §7.3's expiry, which the page renders as a countdown.
+    pub expires_at: OffsetDateTime,
 }
 
 /// Backchannel authentication requests for one tenant.
@@ -520,9 +550,107 @@ impl PgCibaRequestRepository {
         }))
     }
 
+    /// What is waiting for one person's decision, soonest to expire first
+    /// (`ast-lh3.6`).
+    ///
+    /// The read behind the approvals inbox. `expires_at > now` rather than a
+    /// status of its own, for the reason `0026_ciba_requests.sql` gives:
+    /// expiry is the clock and not a state, so a request that ran out a second
+    /// ago disappears from the page without a sweep having had to run.
+    ///
+    /// Scoped by `user_id` in the statement, not filtered afterwards: this is
+    /// the whole of what stops one person's inbox listing another's pending
+    /// approvals, and a filter in application code is a filter somebody can
+    /// forget.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    pub async fn pending_for_user(
+        &self,
+        user: &UserId,
+        now: OffsetDateTime,
+    ) -> Result<Vec<PendingApproval>, DomainError> {
+        let rows = sqlx::query!(
+            "select auth_req_id_hash, client_id, scopes, authorization_details,
+                    acr_values, binding_message, expires_at
+               from ciba_requests
+              where tenant_id = $1 and user_id = $2
+                and status = 'pending' and expires_at > $3
+              order by expires_at asc",
+            self.tenant.as_str(),
+            user.as_uuid(),
+            now,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| PendingApproval {
+                auth_req_id_digest: hex::encode(row.auth_req_id_hash),
+                client_id: row.client_id,
+                scopes: row.scopes,
+                authorization_details: row.authorization_details,
+                acr_values: row.acr_values,
+                binding_message: row.binding_message,
+                expires_at: row.expires_at,
+            })
+            .collect())
+    }
+
+    /// One of [`Self::pending_for_user`]'s rows, by the reference the page
+    /// carried.
+    ///
+    /// `Ok(None)` for a request that does not exist, belongs to somebody else,
+    /// has been decided or has expired — one answer for all four, because the
+    /// page that asks is the page a person is looking at and none of the four
+    /// is a distinction they can act on.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the store could not be reached.
+    pub async fn pending_for_user_by_id(
+        &self,
+        user: &UserId,
+        auth_req_id_digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<PendingApproval>, DomainError> {
+        let auth_req_id = Self::digest_bytes(auth_req_id_digest)?;
+        let row = sqlx::query!(
+            "select client_id, scopes, authorization_details, acr_values,
+                    binding_message, expires_at
+               from ciba_requests
+              where tenant_id = $1 and user_id = $2 and auth_req_id_hash = $3
+                and status = 'pending' and expires_at > $4",
+            self.tenant.as_str(),
+            user.as_uuid(),
+            auth_req_id,
+            now,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        Ok(row.map(|row| PendingApproval {
+            auth_req_id_digest: auth_req_id_digest.to_owned(),
+            client_id: row.client_id,
+            scopes: row.scopes,
+            authorization_details: row.authorization_details,
+            acr_values: row.acr_values,
+            binding_message: row.binding_message,
+            expires_at: row.expires_at,
+        }))
+    }
+
     /// Approves a pending request, binding it to the grant the approval
     /// created, and queues the §10.2 notification if the client is to be
     /// pinged.
+    ///
+    /// `user` is who is answering, and it is part of the statement's
+    /// predicate: a request is approved by the person §7.2 resolved it to or
+    /// by nobody at all.
     ///
     /// `false` means there was nothing pending and live to approve — which is
     /// the answer a second submission of the same form gets, so the grant the
@@ -537,6 +665,7 @@ impl PgCibaRequestRepository {
     pub async fn approve(
         &self,
         auth_req_id_digest: &str,
+        user: &UserId,
         grant: &GrantId,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
@@ -545,12 +674,13 @@ impl PgCibaRequestRepository {
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let moved = sqlx::query!(
             "update ciba_requests
-                set status = 'approved', grant_id = $3, approved_at = $4
-              where tenant_id = $1 and auth_req_id_hash = $2
-                and status = 'pending' and expires_at > $4
+                set status = 'approved', grant_id = $4, approved_at = $5
+              where tenant_id = $1 and auth_req_id_hash = $2 and user_id = $3
+                and status = 'pending' and expires_at > $5
           returning client_id, delivery_mode",
             self.tenant.as_str(),
             auth_req_id,
+            user.as_uuid(),
             grant_id,
             now,
         )
@@ -579,6 +709,7 @@ impl PgCibaRequestRepository {
     pub async fn deny(
         &self,
         auth_req_id_digest: &str,
+        user: &UserId,
         now: OffsetDateTime,
     ) -> Result<bool, DomainError> {
         let auth_req_id = Self::digest_bytes(auth_req_id_digest)?;
@@ -586,11 +717,12 @@ impl PgCibaRequestRepository {
         let moved = sqlx::query!(
             "update ciba_requests
                 set status = 'denied'
-              where tenant_id = $1 and auth_req_id_hash = $2
-                and status = 'pending' and expires_at > $3
+              where tenant_id = $1 and auth_req_id_hash = $2 and user_id = $3
+                and status = 'pending' and expires_at > $4
           returning client_id, delivery_mode",
             self.tenant.as_str(),
             auth_req_id,
+            user.as_uuid(),
             now,
         )
         .fetch_optional(&mut *transaction)
