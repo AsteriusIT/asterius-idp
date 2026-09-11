@@ -102,6 +102,13 @@ l'orchestrateur gagnent sur tout.
 
 ### Mode journée entière
 
+- Au démarrage d'une session : `./scripts/sync-github-issues.sh --apply`. Les jobs
+  nocturnes (`fuzz-nightly.yml`, `conformance.yml`) alertent par une issue GitHub,
+  pas par un bead — un runner n'atteint pas la base Dolt locale. Le script crée le
+  bead P1 manquant pour chaque issue `fuzz`/`conformance` ouverte, commente l'issue
+  avec son id, et ferme celles dont le bead est déjà clos. Sans `--apply` il se
+  contente de lister ; `--no-close` garde ouverte une issue qu'on veut voir
+  confirmée par un nightly vert. Le `fix(ci)` P0 se greffe sur les beads ainsi créés.
 - `/grind [n]` : l'orchestrateur délègue chaque ticket à l'agent `ticket-worker` et
   ne garde en contexte que son résumé de 10 lignes. Le Stop hook enchaîne les tickets.
 - `/grind-stop` pour arrêter proprement, `/status` pour le tableau de bord (utile depuis le mobile).

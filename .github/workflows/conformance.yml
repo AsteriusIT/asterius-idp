@@ -137,8 +137,9 @@ jobs:
             "" \
             "Until this is green again, release-gate.yml will refuse to tag." \
             "" \
-            "Opened automatically. The tracker of record is beads: file the bead" \
-            "and link it here.")
+            "Opened automatically. The tracker of record is beads, which a runner" \
+            "cannot reach: run \`./scripts/sync-github-issues.sh --apply\` locally" \
+            "to file the bead and link it here.")
           if [[ -n "$existing" ]]; then
             gh issue comment "$existing" --body "$body"
             echo "commented on #$existing"

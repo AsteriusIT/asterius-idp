@@ -112,6 +112,13 @@ jobs:
       # One issue per target, reopened by comment rather than duplicated: a
       # target that crashes tends to crash every night until it is fixed, and
       # thirty identical issues train people to ignore the label.
+      #
+      # The body is written to be turned into a bead without opening the run:
+      # `scripts/sync-github-issues.sh` copies it verbatim into the bead's
+      # description, and a bead that says "download the artefact from run
+      # 34490455221" is worthless once the artefact has expired — seven days
+      # for the corpus, ninety for the crash. The base64 of the crashing input
+      # travels with the text and survives both.
       - name: open an issue for the crash
         if: failure()
         env:
@@ -131,18 +138,52 @@ jobs:
                       --json number,title \
                       --jq ".[] | select(.title == \"$title\") | .number")
           existing=$(head -n1 <<<"$matches")
-          body=$(printf '%s\n' \
-            "\`$TARGET\` failed in the nightly fuzzing run." \
-            "" \
-            "Run: $RUN_URL" \
-            "Crashing input: the \`crash-$TARGET\` artefact on that run." \
-            "" \
-            "Reproduce:" \
-            "" \
-            "    cargo +nightly fuzz run --target x86_64-unknown-linux-gnu $TARGET path/to/crash-input" \
-            "" \
-            "Opened automatically. The tracker of record is beads: file the bead" \
-            "and link it here.")
+
+          # libFuzzer writes one file per finding under fuzz/artifacts/<target>,
+          # named crash-<sha1>. Newest first, because a run that found several
+          # reports the one it died on.
+          crash_file=$(ls -1t "fuzz/artifacts/$TARGET"/* 2>/dev/null | head -n1 || true)
+          crash_b64=""
+          if [[ -n "$crash_file" ]]; then
+            crash_b64=$(base64 -w0 < "$crash_file")
+            # A GitHub issue body is capped at 65536 characters, and the fuzzer
+            # is free to find a megabyte-long input. Past the cap the comment
+            # would be rejected outright — no notification at all — so a large
+            # input falls back to the artefact.
+            [[ ${#crash_b64} -gt 40000 ]] && crash_b64=""
+          fi
+
+          lines=(
+            "\`$TARGET\` failed in the nightly fuzzing run."
+            ""
+            "Run: $RUN_URL"
+          )
+          if [[ -n "$crash_b64" ]]; then
+            lines+=(
+              ""
+              "Crashing input, base64 — write it out first:"
+              ""
+              "    base64 -d > crash-input <<'EOF'"
+              "    $crash_b64"
+              "    EOF"
+            )
+          else
+            lines+=(
+              "Crashing input: the \`crash-$TARGET\` artefact on that run"
+              "(too large to inline, or the run died before writing one)."
+            )
+          fi
+          lines+=(
+            ""
+            "Reproduce:"
+            ""
+            "    cargo +nightly fuzz run --target x86_64-unknown-linux-gnu $TARGET crash-input"
+            ""
+            "Opened automatically. The tracker of record is beads, which a runner"
+            "cannot reach: run \`./scripts/sync-github-issues.sh --apply\` locally"
+            "to file the bead and link it here."
+          )
+          body=$(printf '%s\n' "${lines[@]}")
           if [[ -n "$existing" ]]; then
             gh issue comment "$existing" --body "$body"
             echo "commented on #$existing"
