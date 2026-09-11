@@ -316,6 +316,7 @@ fn limits(max: u32) -> EndpointLimits {
     let plain = EndpointLimit {
         per_address: limit,
         per_client: None,
+        per_subject: None,
     };
     EndpointLimits {
         registration: plain,
@@ -326,6 +327,12 @@ fn limits(max: u32) -> EndpointLimits {
         ssf_subjects: EndpointLimit {
             per_address: limit,
             per_client: Some(limit),
+            per_subject: None,
+        },
+        backchannel: EndpointLimit {
+            per_address: limit,
+            per_client: Some(limit),
+            per_subject: Some(limit),
         },
     }
 }

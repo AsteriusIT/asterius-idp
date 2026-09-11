@@ -34,7 +34,8 @@
 
 use crate::config::{
     DEFAULT_ADMIN_TENANT, DEFAULT_ADMIN_USERNAME, DEFAULT_BIND, DEFAULT_BODY_LIMIT,
-    DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_ADDRESS,
+    DEFAULT_LIMIT_BACKCHANNEL_PER_ADDRESS, DEFAULT_LIMIT_BACKCHANNEL_PER_CLIENT,
+    DEFAULT_LIMIT_BACKCHANNEL_PER_USER, DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_ADDRESS,
     DEFAULT_LIMIT_PAR_PER_CLIENT, DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS,
     DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS, DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT,
     DEFAULT_LIMIT_TOKEN_PER_ADDRESS, DEFAULT_LIMIT_TOKEN_PER_CLIENT,
@@ -778,6 +779,34 @@ fn limits() -> Section {
                  remove-subject endpoints (SSF 1.0 §8.1.3.2, §8.1.3.3). Tight, because \
                  those endpoints answer the same way whether or not a subject exists \
                  (§9.1) and the remaining way to probe for one is volume.",
+            ),
+            key(
+                "backchannel_per_address",
+                "integer",
+                DEFAULT_LIMIT_BACKCHANNEL_PER_ADDRESS.to_string(),
+                "Requests per window from one address to `POST /bc-authorize` (CIBA \
+                 Core 1.0 §7.1). Tighter than the token endpoint's, because each \
+                 accepted request sends a person a message and puts a decision in \
+                 front of them.",
+            ),
+            key(
+                "backchannel_per_client",
+                "integer",
+                DEFAULT_LIMIT_BACKCHANNEL_PER_CLIENT.to_string(),
+                "The same, per authenticated client. Above the address limit, because \
+                 several clients can share one address and a client that proved who it \
+                 is should not be bounded by traffic it did not make.",
+            ),
+            key(
+                "backchannel_per_user",
+                "integer",
+                DEFAULT_LIMIT_BACKCHANNEL_PER_USER.to_string(),
+                "Backchannel requests per window about *one person*, whichever client \
+                 asks and whichever hint names them. The limit that bounds approval \
+                 fatigue: a client with a large budget spread over a directory is \
+                 ordinary traffic, and the same budget aimed at one account is an \
+                 attack. Raise it only if a deployment legitimately asks the same \
+                 person several times a minute.",
             ),
             key(
                 "ssf_subjects_per_client",

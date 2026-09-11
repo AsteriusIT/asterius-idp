@@ -19,6 +19,10 @@
 //!   spend the other.
 //! * **Disjoint from the address buckets.** `client_id = "x:ip:198.51.100.7"`
 //!   must not name the bucket that address is counted in, in either direction.
+//! * **Disjoint from the subject buckets** (`ast-5lw`). `/bc-authorize` counts
+//!   requests about a *person* as well as requests from a client, and the two
+//!   are different budgets: a chosen `client_id` that named a person's bucket
+//!   would let a client spend the limit that exists to protect them.
 //! * **Disjoint from the audit marker**, which shadows a bucket to keep the
 //!   trail to one record per window. If a chosen id could produce a marker key,
 //!   deciding "have I already reported this flood" would consume the budget it
@@ -32,6 +36,7 @@
 
 use asterius_domain::rate_limit::{
     LimitedEndpoint, audited_once_bucket, endpoint_address_bucket, endpoint_client_bucket,
+    endpoint_subject_bucket,
 };
 use libfuzzer_sys::fuzz_target;
 use sha2::{Digest as _, Sha256};
@@ -126,6 +131,25 @@ fuzz_target!(|data: &[u8]| {
                 "a client id named an audit marker: {left:?}"
             );
         }
+    }
+
+    for other in LimitedEndpoint::ALL {
+        let by_subject = endpoint_subject_bucket(other, &left);
+        assert_ne!(
+            by_subject, bucket,
+            "a client id named the bucket a person is counted in: {left:?}"
+        );
+        assert_ne!(
+            audited_once_bucket(&by_subject),
+            bucket,
+            "a client id named a subject bucket's audit marker: {left:?}"
+        );
+        assert_eq!(
+            endpoint_subject_bucket(other, &right) == by_subject,
+            right == left,
+            "two people agreed on a bucket without being the same person: \
+             {left:?} against {right:?}"
+        );
     }
 
     assert_ne!(

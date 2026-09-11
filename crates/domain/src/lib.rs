@@ -100,7 +100,7 @@ pub use ports::{
 pub use rate_limit::{
     Bucket, Decision as RateLimitDecision, EndpointLimit, EndpointLimits, LimitedEndpoint,
     LoginLimits, RateLimit, RateLimitStore, Scope as RateLimitScope, account_bucket,
-    admin_api_bucket, audited_once_bucket, endpoint_address_bucket, endpoint_client_bucket,
-    ip_bucket,
+    admin_api_bucket, approval_decision_bucket, audited_once_bucket, endpoint_address_bucket,
+    endpoint_client_bucket, endpoint_subject_bucket, ip_bucket,
 };
 pub use secret::{Secret, ct_eq};
