@@ -45,9 +45,9 @@ use asterius_server::outbox::{
 use asterius_ssf::push::AuthorizationHeader;
 use asterius_ssf::stream::{Delivery, StreamConfiguration, StreamId};
 use asterius_store_pg::{Backoff, MIGRATOR, PgOutbox, PgTenantRepository, Store};
+use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::str::FromStr as _;
-use serde_json::json;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use time::{Duration, OffsetDateTime};
