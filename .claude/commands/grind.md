@@ -8,7 +8,24 @@ Initialise l'état :
 ```bash
 jq -n --argjson max "${ARGUMENTS:-30}" '{active: true, iteration: 0, max_iterations: $max}' > .claude/grind.local.json
 ```
-(si `$ARGUMENTS` est vide, utilise 30). Puis lance le premier tour.
+(si `$ARGUMENTS` est vide, utilise 30).
+
+Puis, **avant le premier tour**, rapatrie les alertes de la nuit :
+```bash
+./scripts/sync-github-issues.sh --apply
+```
+Les jobs nocturnes ouvrent une issue GitHub et non un bead — la base Dolt est
+locale, un runner n'y accède pas. Le script crée le bead P1 manquant pour chaque
+issue `fuzz`/`conformance` ouverte, commente l'issue avec son id (c'est ce
+commentaire qui rend le script rejouable, pas un état local), et ferme celles
+dont le bead est déjà clos. Sans lui, une issue vit ouverte des jours après le
+correctif, ou un crash n'entre jamais dans le backlog : les deux se sont produits
+le 2026-09-11 (issues #1 à #5, puis #6). Lis sa sortie : les beads créés sont des
+P1 et sortiront en tête de `bd ready`. C'est aussi sur eux que se greffe le
+`fix(ci)` P0 quand le Stop hook signale un échec CI sur main — pas sur un ticket
+neuf. Ajoute `--no-close` si une issue doit rester ouverte jusqu'à un nightly vert.
+
+Puis lance le premier tour.
 
 ## Un tour = un ticket
 1. `bd ready -n 1 --json` → id. Si vide : `jq '.active=false' .claude/grind.local.json > t && mv t .claude/grind.local.json`, résume la journée et arrête-toi.
