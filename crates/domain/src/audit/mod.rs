@@ -346,6 +346,22 @@ impl EventType {
     /// put every attribute name a tenant reasons about into the one table this
     /// deployment keeps forever.
     pub const POLICY_UPDATED: Self = Self("policy.updated");
+    /// A policy enforcement point asked for a decision (`ast-pj0.1`).
+    ///
+    /// One type for permit and for deny, told apart by [`Outcome`], because
+    /// the question an investigator asks is "what did this PEP ask about, and
+    /// what did the PDP answer" — a filter that had to name two types to see
+    /// one conversation would hide the half that was refused.
+    ///
+    /// The entry carries a *summary*: the subject type and id, the action
+    /// name, the resource type and id, the rule that decided and how long the
+    /// decision took. It never carries `properties` — those are attributes a
+    /// PEP composed about a person and a document, arriving at the rate of one
+    /// bag per API call, and copying them into the one table this deployment
+    /// keeps forever would make the trail a mirror of every application's
+    /// data. Authorization API 1.0 §11.5's I-JSON and `docs/threat-model.md`
+    /// carry the same row.
+    pub const ACCESS_EVALUATED: Self = Self("access.evaluated");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
     /// A backchannel authentication request was accepted (CIBA Core 1.0 §7.3).
@@ -480,7 +496,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 69] = [
+    pub const ALL: [Self; 70] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -531,6 +547,7 @@ impl EventType {
         Self::APP_ROLE_ASSIGNED,
         Self::APP_ROLE_WITHDRAWN,
         Self::POLICY_UPDATED,
+        Self::ACCESS_EVALUATED,
         Self::AUDIT_PURGED,
         Self::BACKCHANNEL_REQUESTED,
         Self::BACKCHANNEL_REFUSED,

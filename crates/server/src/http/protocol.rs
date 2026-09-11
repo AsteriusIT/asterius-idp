@@ -11,6 +11,7 @@
 //! from a document the specification says must contain it.
 
 use crate::client_auth::ClientAuthenticator;
+use crate::http::access_evaluation::{self, AccessEvaluationContext};
 use crate::http::account_grants::{self, GrantsContext};
 use crate::http::approvals::{self, ApprovalsContext};
 use crate::http::authorization_code::AuthorizationCode;
@@ -455,6 +456,7 @@ fn mount_features(
     let router = mount_grant_management(router, capabilities, &endpoints);
     let router = mount_backchannel_authentication(router, capabilities, &endpoints);
     let router = mount_ssf(router, capabilities, &endpoints);
+    let router = mount_access_evaluation(router, capabilities, &endpoints);
     let router = router.merge(approvals_pages(Arc::clone(&endpoints)));
     let router = router.merge(grants_pages(Arc::clone(&endpoints)));
     router.merge(device_pages(endpoints))
@@ -517,6 +519,34 @@ fn mount_ssf(
             SSF_VERIFICATION_PATH,
             any(ssf_verification).with_state(Arc::clone(endpoints)),
         )
+}
+
+/// Mounts the AuthZEN Access Evaluation endpoint (Authorization API 1.0 §6,
+/// §10.1, `ast-pj0.1`), where the deployment has it.
+///
+/// From the registry, so the URL the router matches is the URL
+/// `access_evaluation_endpoint` advertises and the audience a PEP's token must
+/// carry (§10.1, `ast-o0t.3`). `POST` only, which is what §10.1 binds this API
+/// to — `any` rather than `post` so the 405 carries this endpoint's own body
+/// and `no-store`, instead of axum's empty one.
+///
+/// The *deployment's* flag decides whether the route exists at all; the
+/// per-tenant half is [`tenant_feature_guard`], which recognises the path as
+/// [`Endpoint::AccessEvaluation`] because [`gated_endpoint`] reads the registry
+/// rather than a list kept beside it. A tenant that has switched AuthZEN off
+/// gets the 404 its own discovery document implies.
+fn mount_access_evaluation(
+    router: Router,
+    capabilities: Capabilities,
+    endpoints: &Arc<ClientEndpoints>,
+) -> Router {
+    if !Endpoint::AccessEvaluation.is_enabled(&capabilities) {
+        return router;
+    }
+    router.route(
+        Endpoint::AccessEvaluation.path(),
+        any(access_evaluation_endpoint).with_state(Arc::clone(endpoints)),
+    )
 }
 
 /// Mounts the backchannel authentication endpoint (CIBA Core 1.0 §7).
@@ -684,6 +714,7 @@ fn mount_the_unbuilt(
                         | Endpoint::UserInfo
                         | Endpoint::DeviceAuthorization
                         | Endpoint::BackchannelAuthentication
+                        | Endpoint::AccessEvaluation
                 ))
         {
             continue;
@@ -1875,6 +1906,162 @@ impl crate::http::ssf_management::SubjectDirectory for StoredDirectory {
         } else {
             Recognised::Unknown
         })
+    }
+}
+
+/// `POST /access/v1/evaluation` — the AuthZEN Access Evaluation endpoint
+/// (Authorization API 1.0 §6.1, §10.1, `ast-pj0.1`).
+///
+/// Wiring only, like [`ssf_status`]: everything that decides anything is in
+/// [`crate::http::access_evaluation`], which is where the tests are. What is
+/// assembled here is the PDP — [`asterius_domain::policy::DeclarativeEngine`]
+/// over the same `tenant_policies` rows the admin API writes, so what an
+/// operator edits is what this endpoint decides from — and the two stores the
+/// endpoint reads facts and token standing from.
+///
+/// The policy document is loaded per request rather than held: a decision must
+/// not be taken from a catalogue an administrator has already replaced, and a
+/// cache here would need invalidating at every write from every replica
+/// (`ast-pj0.4`).
+// Seven extractors, which axum builds from the request itself: the client
+// address because this endpoint is rate limited (§11.7) and the certificate
+// because a PEP's token may be certificate-bound (RFC 8705 §3).
+#[allow(clippy::too_many_arguments)]
+async fn access_evaluation_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let now = time::OffsetDateTime::now_utc();
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
+        asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
+    ));
+    let subjects = StoredSubjects {
+        users: scope.users(Arc::clone(&endpoints.kek)),
+        roles: scope.application_roles(),
+        grants: scope.grants(),
+    };
+    let tokens = StoredPdpTokens {
+        grants: scope.grants(),
+    };
+
+    access_evaluation::evaluate(
+        AccessEvaluationContext {
+            tenant: &tenant,
+            engine: &engine,
+            subjects: &subjects,
+            tokens: &tokens,
+            keys: endpoints.keys.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            certificate: certificate.as_deref().map(|presented| &presented.leaf),
+            acr: acr_policy(),
+            limits: endpoint_limits(&endpoints, &tenant, &limiter, client.as_deref(), now),
+            now,
+        },
+        &method,
+        &headers,
+        &body,
+    )
+    .await
+}
+
+/// What this tenant knows about the subject a PEP named (`ast-pj0.1`).
+///
+/// Three reads, and each of them is a fact a request must not be able to
+/// assert: the account the `sub` names, the application roles it holds
+/// (`ast-095`) and its authorizations (`ast-uwv.2`).
+#[derive(Debug)]
+struct StoredSubjects {
+    users: asterius_store_pg::PgUserRepository,
+    roles: asterius_store_pg::PgApplicationRoles,
+    grants: asterius_store_pg::PgGrantRepository,
+}
+
+#[async_trait::async_trait]
+impl crate::http::access_evaluation::SubjectFacts for StoredSubjects {
+    /// The subject is resolved by its **identifier**, and the `type` is not
+    /// read.
+    ///
+    /// §5.1's `type` is the PEP's own vocabulary — `user`, `machine`,
+    /// `service` — and this server has no registry of it; what it has is the
+    /// `sub` it issued, which is unique within the tenant and is what a
+    /// relying party holds. So the id is looked up as a subject identifier
+    /// (pairwise or public, `ast-2vk.6`), and a rule that cares about the type
+    /// matches on `subject_type`, where the PEP's word is preserved.
+    ///
+    /// An id that names nobody here resolves to no facts rather than to an
+    /// error: see [`crate::http::access_evaluation::SubjectFacts`].
+    async fn resolve(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        _kind: &str,
+        id: &str,
+    ) -> Result<crate::http::access_evaluation::ResolvedSubject, DomainError> {
+        use asterius_domain::ports::{ApplicationRoleDirectory, GrantRepository};
+
+        let subject = asterius_domain::SubjectId::new(id.to_owned());
+        let Some(user) = self.users.find_by_subject(&subject).await? else {
+            return Ok(crate::http::access_evaluation::ResolvedSubject::default());
+        };
+        Ok(crate::http::access_evaluation::ResolvedSubject {
+            groups: groups_of(&user),
+            roles: self.roles.held_by(tenant, user.id).await?,
+            grants: self.grants.for_subject(&subject).await?,
+        })
+    }
+}
+
+/// The groups an account is held in, as this server records them.
+///
+/// There is no group table: what a tenant's directory calls a group is the
+/// `groups` claim on the account (`ast-2vk.6`), which is what an administrator
+/// writes through the admin API and what a `groups` scope would release. A
+/// claim that is not an array of strings is no groups at all — it is a value an
+/// administrator wrote and this server will not guess at, and guessing here
+/// would be guessing about authority.
+fn groups_of(user: &asterius_domain::User) -> std::collections::BTreeSet<String> {
+    let Ok(name) = asterius_domain::ClaimName::parse("groups") else {
+        return std::collections::BTreeSet::new();
+    };
+    user.claims
+        .get(&name)
+        .and_then(|claim| claim.value().as_array())
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a PEP's access token still stands, over the same rows UserInfo and
+/// the Grant Management endpoint read.
+#[derive(Debug)]
+struct StoredPdpTokens {
+    grants: asterius_store_pg::PgGrantRepository,
+}
+
+#[async_trait::async_trait]
+impl crate::http::access_evaluation::PdpTokenStatus for StoredPdpTokens {
+    async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
+        self.grants.is_denylisted(jti).await
+    }
+
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &asterius_domain::ClientId,
+        grant: Option<&asterius_domain::GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, DomainError> {
+        self.grants.revoked_before(client, grant).await
     }
 }
 
@@ -4697,6 +4884,7 @@ mod tests {
                 LimitedEndpoint::UserInfo => "LimitedEndpoint::UserInfo",
                 LimitedEndpoint::SsfSubjects => "LimitedEndpoint::SsfSubjects",
                 LimitedEndpoint::Backchannel => "LimitedEndpoint::Backchannel",
+                LimitedEndpoint::AccessEvaluation => "LimitedEndpoint::AccessEvaluation",
             };
 
             // The SSF subject endpoints count the *authenticated receiver*,
@@ -4714,6 +4902,11 @@ mod tests {
                 LimitedEndpoint::Backchannel => {
                     include_str!("backchannel_authentication.rs")
                 }
+                // The PDP counts the *authenticated* enforcement point, which
+                // only the handler knows: the limiter runs after the five
+                // credential checks and before the policy is loaded
+                // (Authorization API 1.0 §11.7).
+                LimitedEndpoint::AccessEvaluation => include_str!("access_evaluation.rs"),
                 _ => source,
             };
 

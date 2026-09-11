@@ -518,6 +518,7 @@ fn generous_endpoint_limits() -> EndpointLimits {
             }),
             ..limit
         },
+        access_evaluation: limit,
     }
 }
 

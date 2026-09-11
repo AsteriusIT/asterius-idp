@@ -623,6 +623,7 @@ mod tests {
             },
             userinfo: plain,
             ssf_subjects: plain,
+            access_evaluation: plain,
             backchannel: asterius_domain::EndpointLimit {
                 per_address: limit(2),
                 per_client: Some(limit(5)),

@@ -400,12 +400,23 @@ pub enum LimitedEndpoint {
     /// only one with a [`Scope::Subject`] bucket — see
     /// [`EndpointLimit::per_subject`].
     Backchannel,
+    /// `POST /access/v1/evaluation` — Authorization API 1.0 §10.1
+    /// (`ast-pj0.1`).
+    ///
+    /// §11.7 asks a PDP to rate limit: an evaluation is a policy walk over a
+    /// document the caller did not write, and a PEP that has lost control of
+    /// its credential — or one whose cache is cold — can make them as fast as
+    /// it can open sockets. Both buckets exist, and the client bucket is the
+    /// one that matters: every request here carries a verified access token
+    /// (§11.2), so there is always a proven client to charge, and a busy PEP
+    /// must not spend the budget of every other PEP behind the same address.
+    AccessEvaluation,
 }
 
 impl LimitedEndpoint {
     /// Every endpoint that has limits, so a caller can iterate over them
     /// without writing the list a second time.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Registration,
         Self::ClientConfiguration,
         Self::PushedAuthorizationRequest,
@@ -413,6 +424,7 @@ impl LimitedEndpoint {
         Self::UserInfo,
         Self::SsfSubjects,
         Self::Backchannel,
+        Self::AccessEvaluation,
     ];
 
     /// The name used in bucket keys, metric labels and audit details.
@@ -426,6 +438,7 @@ impl LimitedEndpoint {
             Self::UserInfo => "userinfo",
             Self::SsfSubjects => "ssf_subjects",
             Self::Backchannel => "backchannel",
+            Self::AccessEvaluation => "access_evaluation",
         }
     }
 }
@@ -580,6 +593,8 @@ pub struct EndpointLimits {
     pub ssf_subjects: EndpointLimit,
     /// `POST /bc-authorize`.
     pub backchannel: EndpointLimit,
+    /// `POST /access/v1/evaluation`.
+    pub access_evaluation: EndpointLimit,
 }
 
 impl EndpointLimits {
@@ -594,6 +609,7 @@ impl EndpointLimits {
             LimitedEndpoint::UserInfo => self.userinfo,
             LimitedEndpoint::SsfSubjects => self.ssf_subjects,
             LimitedEndpoint::Backchannel => self.backchannel,
+            LimitedEndpoint::AccessEvaluation => self.access_evaluation,
         }
     }
 }
@@ -720,6 +736,7 @@ mod tests {
                 per_subject: Some(RateLimit { max: 3, window }),
                 ..plain
             },
+            access_evaluation: plain,
         };
 
         // Act & Assert
