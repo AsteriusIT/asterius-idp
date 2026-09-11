@@ -690,3 +690,131 @@ test('the reserved tenant serves a console of its own', async ({ page }) => {
   expect(response?.status()).toBe(200);
   await expect(page.getByRole('heading', { name: 'Asterius console' })).toBeVisible();
 });
+
+/**
+ * Walks the navigation to the shared-signals screen (`ast-f7m.8`).
+ *
+ * By its link, like every screen above: the criterion is that the screen is
+ * reachable through the navigation, and the tenant administrator the sweep
+ * signs in as holds `admin.ssf:read`, which is what the link is gated on.
+ */
+async function openSharedSignals(page: Page): Promise<void> {
+  await page.getByRole('link', { name: 'Shared signals' }).click();
+  await expect(page.getByRole('heading', { name: 'Shared signals' })).toBeVisible();
+  // Drawn from the two documents the API answered with: the streams table's
+  // heading and the dead-letter table's, which the administrator may read.
+  await expect(page.getByRole('heading', { name: 'Streams' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Dead letters' })).toBeVisible();
+}
+
+test('the shared-signals screen is reachable and reads the admin API', async ({
+  context,
+  page,
+}) => {
+  // Arrange
+  const watcher = await CspWatcher.attach(context, true);
+  const offOrigin: string[] = [];
+  context.on('request', (request) => {
+    if (!request.url().startsWith(ORIGIN)) {
+      offOrigin.push(`${request.method()} ${request.url()}`);
+    }
+  });
+  await signIn(page);
+
+  // Act
+  await openSharedSignals(page);
+
+  // Assert: the sweep's tenant has no receiver, so the honest answer is the
+  // empty state, not a skeleton — and the read happened, or the sentence
+  // would not be there.
+  await expect(page.getByText('No stream.', { exact: false })).toBeVisible();
+  expect(offOrigin, 'the shared-signals screen reached a third party').toEqual([]);
+  watcher.assertClean('the shared-signals screen');
+});
+
+/**
+ * Walks the navigation to the audit explorer (`ast-f7m.8`).
+ */
+async function openAudit(page: Page): Promise<void> {
+  await page.getByRole('link', { name: 'Audit trail' }).click();
+  await expect(page.getByRole('heading', { name: 'Audit trail' })).toBeVisible();
+  await expect(page.getByLabel('Agent')).toBeVisible();
+}
+
+/**
+ * **The export's RBAC, from the browser.** Provisioning the sweep's tenant
+ * left `key.rotated` records (one per signing algorithm, written at boot), so
+ * the trail is never empty whatever ran before this test; filtering it to
+ * that type shows the rows with their chain, and the export link points at
+ * the same filter and answers NDJSON to the session that holds
+ * `admin.audit:read` — and a refusal to a request context that holds nothing.
+ * (A password sign-in leaves no `auth.login` record today; only a passkey
+ * sign-in does, which is why the filter is not on the login.)
+ */
+test('the audit explorer filters the trail and exports it as NDJSON', async ({
+  page,
+  request,
+}) => {
+  // Arrange
+  await signIn(page);
+  await openAudit(page);
+
+  // Act
+  await page.getByLabel('Event type').fill('key.rotated');
+  await page.getByRole('button', { name: 'Apply filters' }).click();
+
+  // Assert: the provisioning records, rendered with their chain.
+  const rows = page.getByRole('row').filter({ hasText: 'key.rotated' });
+  await expect(rows.first()).toBeVisible();
+  await expect(rows.first().getByRole('list', { name: 'Delegation chain' })).toBeVisible();
+
+  const link = page.getByRole('link', { name: 'Export as NDJSON' });
+  await expect(link).toBeVisible();
+  const href = await link.getAttribute('href');
+  expect(href).toContain('type=key.rotated');
+
+  // The export, fetched *with* the browser's cookies through the page's own
+  // context: NDJSON, one JSON text per line, each naming its hash.
+  const exported = await page.request.get(new URL(href ?? '', CONSOLE_URL).toString());
+  expect(exported.status()).toBe(200);
+  expect(exported.headers()['content-type']).toContain('application/x-ndjson');
+  const lines = (await exported.text()).split('\n').filter((line) => line !== '');
+  expect(lines.length).toBeGreaterThan(0);
+  for (const line of lines) {
+    const record = JSON.parse(line) as { hash?: unknown; type?: unknown };
+    expect(record.hash).toEqual(expect.any(String));
+    expect(record.type).toBe('key.rotated');
+  }
+
+  // And without a session — the isolated request context — the same URL is
+  // refused, which is the server's decision and not this screen's.
+  const refused = await request.get(new URL(href ?? '', CONSOLE_URL).toString());
+  expect(refused.status()).toBe(401);
+});
+
+test('the shared-signals and audit screens have no accessibility violation', async (
+  { page },
+  testInfo,
+) => {
+  // Arrange
+  await signIn(page);
+
+  for (const [open, name] of [
+    [openSharedSignals, 'shared-signals'],
+    [openAudit, 'audit'],
+  ] as const) {
+    await open(page);
+
+    // Act
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+      .analyze();
+
+    // Assert
+    await testInfo.attach(`axe-${name}`, {
+      body: JSON.stringify(results.violations, null, 2),
+      contentType: 'application/json',
+    });
+    expect(results.violations, `${name} screen`).toEqual([]);
+  }
+});

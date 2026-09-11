@@ -1,0 +1,63 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "with target as (\n                 select auth_req_id_hash, client_id, status, expires_at,\n                        redeemed_at, last_polled_at, poll_interval_seconds\n                   from ciba_requests\n                  where tenant_id = $1 and auth_req_id_hash = $2\n                    for update\n             ),\n             stamped as (\n                 update ciba_requests as c\n                    set last_polled_at = $3,\n                        poll_interval_seconds = case\n                            when t.status <> 'approved'\n                             and t.last_polled_at is not null\n                             and t.poll_interval_seconds < $5\n                             and $3 < t.last_polled_at\n                                      + make_interval(secs => t.poll_interval_seconds)\n                            then least(t.poll_interval_seconds + $4, $5)\n                            else t.poll_interval_seconds\n                        end\n                   from target as t\n                  where c.tenant_id = $1 and c.auth_req_id_hash = t.auth_req_id_hash\n                    and t.client_id = $6\n              returning c.poll_interval_seconds as new_interval\n             )\n             select t.client_id, t.status, t.expires_at, t.redeemed_at,\n                    t.last_polled_at, t.poll_interval_seconds,\n                    s.new_interval as \"new_interval?\"\n               from target as t left join stamped as s on true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "redeemed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_polled_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "poll_interval_seconds",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "new_interval?",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz",
+        "Int4",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "0892f9bc1720cccbaf4318679f2bc1e9e26601a99ae8f6bc831c89e3a8698230"
+}

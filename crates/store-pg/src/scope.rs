@@ -67,9 +67,14 @@ impl<'a> TenantScope<'a> {
 
     /// The backchannel-authentication repository for this tenant (CIBA Core
     /// 1.0).
+    ///
+    /// `kek` is what seals a ping request's credentials for the §10.2
+    /// notification (`ast-lh3.5`). Not optional, for the reason
+    /// [`Self::ssf_streams`] gives: a repository that could not reach the key
+    /// would either write the credentials in the clear or drop them.
     #[must_use]
-    pub fn ciba_requests(&self) -> crate::PgCibaRequestRepository {
-        crate::PgCibaRequestRepository::new(self.pool.clone(), self.tenant.clone())
+    pub fn ciba_requests(&self, kek: Arc<dyn Kek>) -> crate::PgCibaRequestRepository {
+        crate::PgCibaRequestRepository::new(self.pool.clone(), self.tenant.clone(), kek)
     }
 
     /// The refresh-token repository for this tenant.

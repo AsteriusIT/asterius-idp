@@ -80,6 +80,7 @@
 //! to `ast-0ju.3`, and until it exists the caller is responsible for it.
 #![forbid(unsafe_code)]
 
+pub mod caep;
 pub mod event;
 pub mod management;
 pub mod metadata;
@@ -88,6 +89,7 @@ pub mod push;
 pub mod set;
 pub mod stream;
 pub mod subject;
+pub mod verification;
 
 pub use event::{EventError, EventUri, MAX_EVENT_URI_LEN, SecurityEvent};
 pub use management::{
@@ -106,4 +108,7 @@ pub use set::{
 };
 pub use subject::{
     ComplexSubject, MAX_MEMBER_LEN, MAX_SUBJECT_BYTES, SimpleSubject, Subject, SubjectError,
+};
+pub use verification::{
+    MAX_STATE_LEN, StateError, VERIFICATION, VerificationState, verification_event,
 };

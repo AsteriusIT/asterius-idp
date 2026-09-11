@@ -256,9 +256,10 @@ pub const POLICY: &[Retention] = &[
             // expires: the token endpoint answers `expired_token` off the
             // clock rather than off a status, so nothing reads an expired row
             // again. The row holds the digest of an `auth_req_id` and, in ping
-            // mode, of a `client_notification_token` — both credentials a
-            // database copy would otherwise still yield — so it is swept
-            // rather than kept.
+            // mode, of a `client_notification_token` — plus both values sealed
+            // for the §10.2 notification (`0034_ciba_ping_credentials.sql`) —
+            // credentials a database copy would otherwise still yield, so it
+            // is swept rather than kept.
             //
             // The same five-minute grace `device_codes` has, for the same
             // reason: the client is still polling when its request expires

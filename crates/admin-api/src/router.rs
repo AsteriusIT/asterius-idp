@@ -39,7 +39,9 @@ use crate::error::AdminError;
 use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Effect, Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
-use crate::{clients, csrf, initial_access_tokens, keys, openapi, outbox, throttle, users};
+use crate::{
+    audit, clients, csrf, initial_access_tokens, keys, openapi, outbox, ssf, throttle, users,
+};
 
 /// The client address, as this crate sees it.
 ///
@@ -292,6 +294,13 @@ async fn route(
         crate::KEYS_SCHEDULE_ID => context.set_key_schedule(body).await,
         crate::KEYS_SCHEDULE_APPLY_ID => context.apply_key_schedule().await,
         crate::OUTBOX_DEAD_LETTERS_ID => context.list_dead_letters().await,
+        crate::OUTBOX_DEAD_LETTER_RETRY_ID => context.retry_dead_letter().await,
+        crate::OUTBOX_DEAD_LETTER_DROP_ID => context.drop_dead_letter().await,
+        crate::SSF_STREAMS_LIST_ID => context.list_streams().await,
+        crate::SSF_STREAM_STATUS_UPDATE_ID => context.update_stream_status(body).await,
+        crate::SSF_STREAM_VERIFY_ID => context.verify_stream(body).await,
+        crate::AUDIT_EVENTS_LIST_ID => context.list_audit_events().await,
+        crate::AUDIT_EVENTS_EXPORT_ID => context.export_audit_events(),
         crate::USERS_LIST_ID => context.list_users().await,
         crate::USER_READ_ID => context.read_user().await,
         crate::USER_CREATE_ID => context.create_user(body).await,
@@ -1019,6 +1028,329 @@ impl Handling<'_> {
             StatusCode::OK,
             &serde_json::json!({ "items": rendered }),
         ))
+    }
+
+    /// The `{outbox_id}` in this request's path: the segment after
+    /// `dead-letters`.
+    ///
+    /// Read by position rather than by `trim_end_matches`, for the reason
+    /// [`Self::user_in_path`] gives: the retry route has a tail and the drop
+    /// route has none, and one rule that holds for both beats two literals.
+    /// A segment that is not an integer names nothing this server holds and
+    /// is the same answer as a row of another tenant: 404.
+    fn outbox_id_in_path(&self) -> Result<i64, AdminError> {
+        let mut segments = self.path.split('/');
+        segments
+            .find(|segment| *segment == "dead-letters")
+            .and_then(|_| segments.next())
+            .and_then(|segment| segment.parse::<i64>().ok())
+            .ok_or(AdminError::NotFound)
+    }
+
+    /// One abandoned row of this tenant that the buttons apply to, or the
+    /// refusal that says why not.
+    ///
+    /// A row of another kind is a 409 and not a 404: it exists, the caller
+    /// can see it on the screen, and "no such resource" would send them
+    /// looking for a typo. See [`crate::outbox`] for the rule.
+    async fn retryable_dead_letter(
+        &self,
+        operation: &'static str,
+    ) -> Result<asterius_domain::outbox::DeadLetter, AdminError> {
+        let id = self.outbox_id_in_path()?;
+        let letter = self
+            .state
+            .backend
+            .outbox()
+            .dead_letter(&self.tenant.id, id)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?
+            .ok_or(AdminError::NotFound)?;
+        if !outbox::is_retryable(&letter) {
+            return Err(AdminError::Conflict(format!(
+                "only {} deliveries can be retried or dropped from the console; this row is {}",
+                outbox::RETRYABLE_FAMILY,
+                letter.kind
+            )));
+        }
+        Ok(letter)
+    }
+
+    /// What the two dead-letter mutations record: the row, its kind, how
+    /// hard it was tried and what the receiver last said. Never the payload,
+    /// which the port does not carry.
+    fn dead_letter_detail(letter: &asterius_domain::outbox::DeadLetter) -> Detail {
+        let detail = Detail::new()
+            .number("outbox_id", letter.id)
+            .text("kind", &letter.kind)
+            .number("attempts", i64::from(letter.attempts));
+        match &letter.last_error {
+            Some(error) => detail.text("last_error", error),
+            None => detail,
+        }
+    }
+
+    /// `POST /outbox/dead-letters/{outbox_id}/retry` — back on the schedule
+    /// (`ast-f7m.8`).
+    ///
+    /// The row is read first and the mutation is predicated on its status,
+    /// so a row swept by retention between the two answers 404 rather than
+    /// recording a retry that requeued nothing.
+    async fn retry_dead_letter(&self) -> Result<Response, AdminError> {
+        let letter = self
+            .retryable_dead_letter(crate::OUTBOX_DEAD_LETTER_RETRY_ID)
+            .await?;
+        let requeued = self
+            .state
+            .backend
+            .dead_letter_operations()
+            .requeue(&self.tenant.id, letter.id, self.now)
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::OUTBOX_DEAD_LETTER_RETRY_ID, &error)
+            })?;
+        if !requeued {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::OUTBOX_RETRIED,
+            Self::dead_letter_detail(&letter)
+                .label("operation", crate::OUTBOX_DEAD_LETTER_RETRY_ID),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "id": letter.id, "kind": letter.kind, "requeued": true }),
+        ))
+    }
+
+    /// `DELETE /outbox/dead-letters/{outbox_id}` — gone, and recorded
+    /// (`ast-f7m.8`).
+    ///
+    /// The record is written *after* the delete and carries everything the
+    /// row said about itself, because once the row is gone this record is
+    /// the only place an investigator finds it.
+    async fn drop_dead_letter(&self) -> Result<Response, AdminError> {
+        let letter = self
+            .retryable_dead_letter(crate::OUTBOX_DEAD_LETTER_DROP_ID)
+            .await?;
+        let dropped = self
+            .state
+            .backend
+            .dead_letter_operations()
+            .drop_letter(&self.tenant.id, letter.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::OUTBOX_DEAD_LETTER_DROP_ID, &error))?;
+        if !dropped {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::OUTBOX_DROPPED,
+            Self::dead_letter_detail(&letter).label("operation", crate::OUTBOX_DEAD_LETTER_DROP_ID),
+        )
+        .await;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    }
+
+    /// The `{stream_id}` in this request's path: the segment after
+    /// `streams`, which must be an identifier this server issues.
+    ///
+    /// One that is not is a 404 and not a 400: it names nothing, and the
+    /// refusal must not distinguish "malformed" from "another tenant's".
+    fn stream_in_path(&self) -> Result<asterius_ssf::stream::StreamId, AdminError> {
+        let mut segments = self.path.split('/');
+        segments
+            .find(|segment| *segment == "streams")
+            .and_then(|_| segments.next())
+            .and_then(asterius_ssf::stream::StreamId::parse)
+            .ok_or(AdminError::NotFound)
+    }
+
+    /// `GET /ssf/streams` — every stream of the tenant, with its figures
+    /// (`ast-f7m.8`).
+    async fn list_streams(&self) -> Result<Response, AdminError> {
+        let streams = self
+            .state
+            .backend
+            .ssf()
+            .streams(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SSF_STREAMS_LIST_ID, &error))?;
+        let items: Vec<_> = streams.iter().map(ssf::document).collect();
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({ "items": items }),
+        ))
+    }
+
+    /// `PUT /ssf/streams/{stream_id}/status` — pause or re-enable (SSF 1.0
+    /// §8.1.2, `ast-f7m.8`).
+    ///
+    /// Recorded as `ssf.stream_updated` — the type the receiver's own edits
+    /// leave — with the operator as the actor and the stream fingerprinted,
+    /// exactly as the management endpoint records it. A reader of the trail
+    /// filtering on the type sees every change to the arrangement, whoever
+    /// made it, and tells the two apart by the actor.
+    async fn update_stream_status(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let stream = self.stream_in_path()?;
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let requested = ssf::parse_status_request(&bytes)?;
+
+        let written = self
+            .state
+            .backend
+            .ssf()
+            .set_status(
+                &self.tenant.id,
+                &stream,
+                requested.status,
+                requested.reason.as_deref(),
+                self.now,
+            )
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::SSF_STREAM_STATUS_UPDATE_ID, &error)
+            })?;
+        if !written {
+            return Err(AdminError::NotFound);
+        }
+
+        let detail = Detail::new()
+            .label("operation", crate::SSF_STREAM_STATUS_UPDATE_ID)
+            .credential("stream_id", stream.as_str())
+            .label("status", requested.status.as_str());
+        let detail = match &requested.reason {
+            Some(reason) => detail.text("reason", reason),
+            None => detail,
+        };
+        self.record(EventType::SSF_STREAM_UPDATED, detail).await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "stream_id": stream.as_str(),
+                "status": requested.status.as_str(),
+                "reason": requested.reason,
+            }),
+        ))
+    }
+
+    /// `POST /ssf/streams/{stream_id}/verification` — §8.1.4's event, on
+    /// the stream's own queue (`ast-f7m.8`).
+    ///
+    /// The record says a `state` was given and not which: it is a value the
+    /// receiver will compare against, and the trail is read more widely than
+    /// the receiver.
+    async fn verify_stream(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let stream = self.stream_in_path()?;
+        let bytes = axum::body::to_bytes(body, ssf::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let state = ssf::parse_verification_request(&bytes)?;
+
+        let queued = self
+            .state
+            .backend
+            .ssf()
+            .verify(&self.tenant.id, &stream, state.as_ref(), self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::SSF_STREAM_VERIFY_ID, &error))?;
+        if !queued {
+            return Err(AdminError::NotFound);
+        }
+
+        self.record(
+            EventType::SSF_VERIFICATION_REQUESTED,
+            Detail::new()
+                .label("operation", crate::SSF_STREAM_VERIFY_ID)
+                .credential("stream_id", stream.as_str())
+                .flag("with_state", state.is_some()),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::ACCEPTED,
+            &serde_json::json!({ "stream_id": stream.as_str(), "queued": true }),
+        ))
+    }
+
+    /// `GET /audit/events` — the trail, filtered, one page at a time
+    /// (`ast-lh3.9`).
+    ///
+    /// The filter is parsed before the cursor is read, so a caller with a
+    /// bad filter and a bad cursor is told about the filter: the cursor was
+    /// minted for a different query and would be wrong anyway.
+    async fn list_audit_events(&self) -> Result<Response, AdminError> {
+        let filter = audit::parse_filter(&self.query)?;
+        let request = PageRequest::parse(
+            query_value(&self.query, "cursor").as_deref(),
+            query_value(&self.query, "limit").as_deref(),
+        )?;
+        // The cursor key is the id of the last record shown; anything else
+        // is a cursor this server did not mint for this listing.
+        let before = request
+            .after
+            .as_ref()
+            .map(|cursor| {
+                cursor
+                    .key()
+                    .parse::<i64>()
+                    .map_err(|_| AdminError::CursorInvalid)
+            })
+            .transpose()?;
+        let limit = u32::try_from(request.limit + 1).unwrap_or(u32::MAX);
+
+        let entries = self
+            .state
+            .backend
+            .audit_trail()
+            .query(&self.tenant.id, &filter, before, limit)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::AUDIT_EVENTS_LIST_ID, &error))?;
+
+        let items: Vec<serde_json::Value> = entries.iter().map(audit::render).collect();
+        let page = Page::from_overfetched(items, request.limit, |row| row["id"].to_string());
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::to_value(&page).unwrap_or_else(|_| serde_json::json!({})),
+        ))
+    }
+
+    /// `GET /audit/events/export` — the same records as NDJSON, streamed.
+    ///
+    /// Not `async`: nothing is read before the response starts. The first
+    /// page is fetched when the body is first polled, so a storage failure
+    /// surfaces as a body that does not complete — see
+    /// [`crate::audit::Export`] for why that is the honest shape.
+    fn export_audit_events(&self) -> Result<Response, AdminError> {
+        let filter = audit::parse_filter(&self.query)?;
+        let export = audit::Export::new(
+            self.state.backend.audit_trail(),
+            self.tenant.id.clone(),
+            filter,
+        );
+
+        let mut response = (StatusCode::OK, axum::body::Body::from_stream(export)).into_response();
+        let headers = response.headers_mut();
+        headers.insert(
+            header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static(audit::NDJSON),
+        );
+        headers.insert(
+            header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        // A download and not a page: a browser handed NDJSON with no
+        // disposition renders it, and a rendered export is one a person
+        // screenshots.
+        headers.insert(
+            header::CONTENT_DISPOSITION,
+            axum::http::HeaderValue::from_static("attachment; filename=\"audit-events.ndjson\""),
+        );
+        Ok(response)
     }
 
     /// `POST /initial-access-tokens` — mints one, shown once (`ast-cu3`).
@@ -2798,8 +3130,19 @@ mod tests {
         /// (`ast-cu3`), with the digest each was stored under.
         initial_access_tokens: Mutex<Vec<([u8; 32], asterius_domain::InitialAccessToken)>>,
         /// Deliveries this fake outbox has abandoned (`ast-0ju.9`), newest
-        /// last. Empty by default, which is a healthy deployment.
+        /// last. `World::new` seeds two `ssf.set` rows per tenant so that the
+        /// retry and drop routes name something (`ast-f7m.8`).
         dead_letters: Mutex<Vec<asterius_domain::outbox::DeadLetter>>,
+        /// The rows an operator put back on the schedule (`ast-f7m.8`).
+        requeued: Mutex<Vec<i64>>,
+        /// The rows an operator dropped.
+        dropped: Mutex<Vec<i64>>,
+        /// This deployment's SSF streams, as the console lists them
+        /// (`ast-f7m.8`), keyed by nothing: a handful of rows.
+        streams: Mutex<Vec<(TenantId, ssf::StreamSummary)>>,
+        /// The verification events this fake transmitter queued: the stream
+        /// and the `state`, if one was given.
+        verifications: Mutex<Vec<(String, Option<String>)>>,
         /// This deployment's accounts (`ast-f7m.6`).
         accounts: Mutex<Vec<asterius_domain::User>>,
         /// The accounts holding a usable password, by local id.
@@ -2870,6 +3213,110 @@ mod tests {
             let letters = self.0.dead_letters.lock().expect("an uncontended lock");
             Ok(letters.iter().rev().take(limit as usize).cloned().collect())
         }
+
+        async fn dead_letter(
+            &self,
+            _tenant: &TenantId,
+            id: i64,
+        ) -> Result<Option<asterius_domain::outbox::DeadLetter>, DomainError> {
+            let letters = self.0.dead_letters.lock().expect("an uncontended lock");
+            Ok(letters.iter().find(|letter| letter.id == id).cloned())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl asterius_domain::outbox::DeadLetterOperations for Handle {
+        async fn requeue(
+            &self,
+            _tenant: &TenantId,
+            id: i64,
+            _now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            let mut letters = self.0.dead_letters.lock().expect("an uncontended lock");
+            let before = letters.len();
+            letters.retain(|letter| letter.id != id);
+            let removed = letters.len() < before;
+            if removed {
+                self.0
+                    .requeued
+                    .lock()
+                    .expect("an uncontended lock")
+                    .push(id);
+            }
+            Ok(removed)
+        }
+
+        async fn drop_letter(&self, _tenant: &TenantId, id: i64) -> Result<bool, DomainError> {
+            let mut letters = self.0.dead_letters.lock().expect("an uncontended lock");
+            let before = letters.len();
+            letters.retain(|letter| letter.id != id);
+            let removed = letters.len() < before;
+            if removed {
+                self.0.dropped.lock().expect("an uncontended lock").push(id);
+            }
+            Ok(removed)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ssf::SsfAdministration for Handle {
+        async fn streams(&self, tenant: &TenantId) -> Result<Vec<ssf::StreamSummary>, DomainError> {
+            let streams = self.0.streams.lock().expect("an uncontended lock");
+            Ok(streams
+                .iter()
+                .filter(|(owner, _)| owner == tenant)
+                .map(|(_, stream)| stream.clone())
+                .collect())
+        }
+
+        async fn set_status(
+            &self,
+            tenant: &TenantId,
+            stream: &asterius_ssf::stream::StreamId,
+            status: asterius_ssf::stream::StreamStatus,
+            reason: Option<&str>,
+            now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            let mut streams = self.0.streams.lock().expect("an uncontended lock");
+            let Some((_, held)) = streams
+                .iter_mut()
+                .find(|(owner, held)| owner == tenant && held.stream_id == *stream)
+            else {
+                return Ok(false);
+            };
+            held.status = status;
+            held.reason = reason.map(ToOwned::to_owned);
+            held.status_changed_at = Some(now);
+            Ok(true)
+        }
+
+        async fn verify(
+            &self,
+            tenant: &TenantId,
+            stream: &asterius_ssf::stream::StreamId,
+            state: Option<&asterius_ssf::VerificationState>,
+            _now: OffsetDateTime,
+        ) -> Result<bool, DomainError> {
+            let known = self
+                .0
+                .streams
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .any(|(owner, held)| owner == tenant && held.stream_id == *stream);
+            if !known {
+                return Ok(false);
+            }
+            self.0
+                .verifications
+                .lock()
+                .expect("an uncontended lock")
+                .push((
+                    stream.as_str().to_owned(),
+                    state.map(|state| state.as_str().to_owned()),
+                ));
+            Ok(true)
+        }
     }
 
     #[async_trait::async_trait]
@@ -2935,6 +3382,45 @@ mod tests {
                 .expect("an uncontended lock")
                 .insert(tenant.as_str().to_owned(), settings.clone());
             Ok(())
+        }
+    }
+
+    /// The trail read back: the recorded events, newest first, through the
+    /// reference semantics of the filter, with ids that are their position
+    /// in the recording order — which is what the database's ids are.
+    #[async_trait::async_trait]
+    impl asterius_domain::audit::AuditQuery for Handle {
+        async fn query(
+            &self,
+            tenant: &TenantId,
+            filter: &asterius_domain::audit::AuditFilter,
+            before: Option<i64>,
+            limit: u32,
+        ) -> Result<Vec<asterius_domain::audit::TrailEntry>, DomainError> {
+            use asterius_domain::audit::chain::{EventHash, hash};
+            Ok(self
+                .0
+                .events
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, event)| event.tenant == *tenant)
+                .map(|(index, event)| asterius_domain::audit::TrailEntry {
+                    id: i64::try_from(index).expect("a small index") + 1,
+                    hash: hash(EventHash::GENESIS, event),
+                    record: asterius_domain::audit::AuditRecord::Event(Box::new(event.clone())),
+                })
+                .filter(|entry| before.is_none_or(|before| entry.id < before))
+                .filter(|entry| {
+                    entry
+                        .record
+                        .event()
+                        .is_some_and(|event| filter.matches(event))
+                })
+                .take(limit.min(asterius_domain::audit::query::MAX_PAGE) as usize)
+                .collect())
         }
     }
 
@@ -3992,6 +4478,18 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn dead_letter_operations(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterOperations> {
+            Arc::new(self.clone())
+        }
+
+        fn ssf(&self) -> Arc<dyn ssf::SsfAdministration> {
+            Arc::new(self.clone())
+        }
+
+        fn audit_trail(&self) -> Arc<dyn asterius_domain::audit::AuditQuery> {
+            Arc::new(self.clone())
+        }
+
         fn initial_access_tokens(
             &self,
         ) -> Arc<dyn asterius_domain::ports::InitialAccessTokenStore> {
@@ -4053,6 +4551,67 @@ mod tests {
 
     /// An application role in both catalogues that nobody holds, so the two
     /// delete routes have something they are allowed to remove (`ast-095`).
+    /// The stream every tenant of the world holds, so that `{stream_id}`
+    /// names something for the tests that walk the registry (`ast-f7m.8`).
+    const SEEDED_STREAM_ID: &str = "stream-seeded-000000000000000000000";
+    /// The abandoned `ssf.set` row the retry route is walked against, and
+    /// the one the drop route is: two, because the first press of each
+    /// removes its row from the list and a walk that used one id would
+    /// assert a 404 for the second (`ast-095`'s `{role_name}` argument).
+    const RETRY_LETTER_ID: i64 = 7001;
+    const DROP_LETTER_ID: i64 = 7002;
+
+    /// One abandoned SSF delivery.
+    fn seeded_letter(id: i64) -> asterius_domain::outbox::DeadLetter {
+        asterius_domain::outbox::DeadLetter {
+            id,
+            kind: "ssf.set".to_owned(),
+            attempts: 10,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            last_attempt_at: Some(OffsetDateTime::UNIX_EPOCH),
+            last_error: Some("the receiver answered 503; the SET is still owed".to_owned()),
+        }
+    }
+
+    /// One paused stream and two abandoned SETs for `tenant`, so that every
+    /// `{stream_id}` and `{outbox_id}` in the registry names something for
+    /// the tests that walk it (`ast-f7m.8`).
+    fn seed_shared_signals(handle: &Handle, tenant: &str) {
+        handle
+            .0
+            .streams
+            .lock()
+            .expect("an uncontended lock")
+            .push((TenantId::new(tenant), seeded_stream()));
+        for letter in [RETRY_LETTER_ID, DROP_LETTER_ID] {
+            handle
+                .0
+                .dead_letters
+                .lock()
+                .expect("an uncontended lock")
+                .push(seeded_letter(letter));
+        }
+    }
+
+    /// One stream, as the console lists it.
+    fn seeded_stream() -> ssf::StreamSummary {
+        ssf::StreamSummary {
+            stream_id: asterius_ssf::stream::StreamId::parse(SEEDED_STREAM_ID)
+                .expect("a fixed stream id"),
+            receiver: asterius_domain::ClientId::new(SEEDED_CLIENT_ID),
+            delivery_method: asterius_ssf::stream::DELIVERY_PUSH,
+            events_requested: vec![asterius_ssf::caep::SESSION_REVOKED.to_owned()],
+            description: None,
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            status: asterius_ssf::stream::StreamStatus::Paused,
+            reason: Some("the receiver answered 400".to_owned()),
+            status_changed_at: Some(OffsetDateTime::UNIX_EPOCH),
+            delivered: 12,
+            failed: 4,
+            queue_depth: 3,
+        }
+    }
+
     const SPARE_ROLE: &str = "spare";
     /// An application role in both catalogues that the seeded account *does*
     /// hold, so the two withdraw routes have something to withdraw — and so
@@ -4296,6 +4855,7 @@ mod tests {
                     .lock()
                     .expect("an uncontended lock")
                     .push(seeded_grant(id));
+                seed_shared_signals(&handle, id);
                 // Two roles in each catalogue, one held and one not, so that
                 // every `{role_name}` in the registry names something *and*
                 // the delete routes have a role they are allowed to remove
@@ -4348,6 +4908,17 @@ mod tests {
                 api_tenant: Arc::new(tenant_named("acme")),
                 handle,
             }
+        }
+
+        /// Empties the dead-letter queue the world seeds (`ast-f7m.8`), for
+        /// the tests whose premise is a healthy deployment.
+        fn forget_dead_letters(&self) {
+            self.handle
+                .0
+                .dead_letters
+                .lock()
+                .expect("an uncontended lock")
+                .clear();
         }
 
         /// Routes subsequent requests to `id` instead of `acme`.
@@ -4463,6 +5034,31 @@ mod tests {
             .await
         }
 
+        /// A `GET` of `operation` with a query string, carrying `cookie`.
+        async fn get_with_query(
+            &self,
+            operation: &Operation,
+            query: &str,
+            cookie: &str,
+        ) -> Response {
+            let uri = format!("{}?{query}", operation.full_path());
+            self.send(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await
+        }
+
         /// Calls `operation` in `acme` as a freshly signed-in holder of
         /// `role`, with everything a mutation needs to get past CSRF and
         /// idempotency — so that a 403 in the assertion is about authority and
@@ -4533,6 +5129,15 @@ mod tests {
             .replace("{sid}", SEEDED_SID)
             .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
             .replace("{grant_id}", SEEDED_GRANT_ID)
+            .replace("{stream_id}", SEEDED_STREAM_ID)
+            .replace(
+                "{outbox_id}",
+                &match operation.id() {
+                    crate::OUTBOX_DEAD_LETTER_DROP_ID => DROP_LETTER_ID,
+                    _ => RETRY_LETTER_ID,
+                }
+                .to_string(),
+            )
             // A delete must name a role nobody holds and a withdrawal must
             // name one somebody does; one literal could not be both, and a
             // table walk that used one would assert a 409 for the first or a
@@ -4590,6 +5195,11 @@ mod tests {
             // was never created is a 409 rather than a silent creation.
             crate::USER_APP_ROLE_ASSIGN_ID => serde_json::json!({"name": "auditor"}),
             crate::KEYS_ROTATE_ID => serde_json::json!({"alg": "EdDSA"}),
+            // A whole status document: the route refuses `{}` because a
+            // status it did not name is not a status (`ast-f7m.8`).
+            crate::SSF_STREAM_STATUS_UPDATE_ID => {
+                serde_json::json!({"status": "paused", "reason": "walked"})
+            }
             crate::KEYS_SCHEDULE_ID => serde_json::json!({
                 "alg": "EdDSA",
                 "rotation_period_seconds": 7_776_000,
@@ -4622,6 +5232,7 @@ mod tests {
     async fn a_tenant_admin_reads_the_deliveries_the_outbox_gave_up_on() {
         // Arrange
         let world = World::new();
+        world.forget_dead_letters();
         world
             .handle
             .0
@@ -4659,6 +5270,7 @@ mod tests {
     async fn an_outbox_with_nothing_abandoned_renders_an_empty_list() {
         // Arrange
         let world = World::new();
+        world.forget_dead_letters();
         let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
 
         // Act
@@ -4668,6 +5280,740 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_of(response).await;
         assert_eq!(body["items"].as_array().map(Vec::len), Some(0));
+    }
+
+    // ---- the shared-signals screen (`ast-f7m.8`) ---------------------------
+
+    /// One detail value by key, for the assertions about what a record says.
+    fn detail_value<'a>(
+        detail: &'a asterius_domain::audit::Detail,
+        key: &str,
+    ) -> Option<&'a asterius_domain::audit::DetailValue> {
+        detail
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| value)
+    }
+
+    /// The list is the screen: state, reason and the three numbers, and
+    /// nothing a receiver registered as a secret.
+    #[tokio::test]
+    async fn a_tenant_admin_reads_every_stream_with_its_state_and_figures() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world.get(&crate::SSF_STREAMS_LIST, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let items = body["items"].as_array().expect("an items array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["stream_id"], SEEDED_STREAM_ID);
+        assert_eq!(items[0]["status"], "paused");
+        assert_eq!(items[0]["reason"], "the receiver answered 400");
+        assert_eq!(items[0]["delivered"], 12);
+        assert_eq!(items[0]["failed"], 4);
+        assert_eq!(items[0]["queue_depth"], 3);
+        assert!(items[0].get("endpoint_url").is_none());
+        assert!(items[0].get("authorization_header").is_none());
+    }
+
+    /// **The first acceptance criterion of `ast-f7m.8`.** Re-enabling a
+    /// stream the worker paused writes `enabled`, clears the reason, and is
+    /// recorded as `ssf.stream_updated` with the administrator as the
+    /// actor — the same type the receiver's own edits leave.
+    #[tokio::test]
+    async fn an_operator_re_enables_a_paused_stream_and_it_is_audited() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::SSF_STREAM_STATUS_UPDATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"status": "enabled"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert_eq!(body["status"], "enabled");
+        assert_eq!(body["reason"], serde_json::Value::Null);
+        let streams = world.handle.0.streams.lock().expect("a lock");
+        let (_, stream) = streams
+            .iter()
+            .find(|(tenant, _)| tenant.as_str() == "acme")
+            .expect("acme's stream");
+        assert_eq!(stream.status, asterius_ssf::stream::StreamStatus::Enabled);
+        assert_eq!(stream.reason, None);
+        drop(streams);
+
+        let events = world.handle.0.events.lock().expect("a lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::SSF_STREAM_UPDATED)
+            .expect("the change was not recorded");
+        assert!(matches!(recorded.actor, Actor::Admin(_)));
+        assert_eq!(
+            rendered(detail_value(&recorded.detail, "status").expect("a status")).as_deref(),
+            Some("enabled")
+        );
+        // The stream is fingerprinted, as the management endpoint records it.
+        assert!(matches!(
+            detail_value(&recorded.detail, "stream_id"),
+            Some(asterius_domain::audit::DetailValue::Fingerprint(_))
+        ));
+    }
+
+    /// Pausing by hand carries the hand's reason to the row and the trail.
+    #[tokio::test]
+    async fn an_operator_pauses_a_stream_with_a_reason() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        world
+            .handle
+            .0
+            .streams
+            .lock()
+            .expect("a lock")
+            .iter_mut()
+            .for_each(|(_, stream)| {
+                stream.status = asterius_ssf::stream::StreamStatus::Enabled;
+                stream.reason = None;
+            });
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::SSF_STREAM_STATUS_UPDATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"status": "paused", "reason": "receiver migration"})
+                            .to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let streams = world.handle.0.streams.lock().expect("a lock");
+        let (_, stream) = streams
+            .iter()
+            .find(|(tenant, _)| tenant.as_str() == "acme")
+            .expect("acme's stream");
+        assert_eq!(stream.status, asterius_ssf::stream::StreamStatus::Paused);
+        assert_eq!(stream.reason.as_deref(), Some("receiver migration"));
+        drop(streams);
+        let events = world.handle.0.events.lock().expect("a lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::SSF_STREAM_UPDATED)
+            .expect("the change was not recorded");
+        assert_eq!(
+            rendered(detail_value(&recorded.detail, "reason").expect("a reason")).as_deref(),
+            Some("receiver migration")
+        );
+    }
+
+    /// `disabled` is the receiver's state (§8.1.2), and a status that is
+    /// not a status is a 400 that changes nothing and records nothing.
+    #[tokio::test]
+    async fn a_status_the_operator_may_not_write_is_refused_and_not_recorded() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::SSF_STREAM_STATUS_UPDATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"status": "disabled"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let streams = world.handle.0.streams.lock().expect("a lock");
+        assert!(
+            streams
+                .iter()
+                .all(|(_, stream)| stream.status == asterius_ssf::stream::StreamStatus::Paused)
+        );
+        drop(streams);
+        let events = world.handle.0.events.lock().expect("a lock");
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.event_type == EventType::SSF_STREAM_UPDATED)
+        );
+    }
+
+    /// A stream of another tenant, or one that does not exist, is a 404 —
+    /// the streams port is asked with the request's tenant, not the path's.
+    #[tokio::test]
+    async fn a_stream_the_tenant_does_not_hold_is_not_found() {
+        // Arrange
+        let world = World::new();
+        world
+            .handle
+            .0
+            .streams
+            .lock()
+            .expect("a lock")
+            .retain(|(tenant, _)| tenant.as_str() != "acme");
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let status = world
+            .send(
+                as_console(&crate::SSF_STREAM_STATUS_UPDATE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"status": "enabled"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+        let verify = world
+            .send(
+                as_console(&crate::SSF_STREAM_VERIFY, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(status.status(), StatusCode::NOT_FOUND);
+        assert_eq!(verify.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// **"Trigger verification".** The event is queued with the `state`
+    /// verbatim (§8.1.4), and the trail says that a state was given — not
+    /// what it was.
+    #[tokio::test]
+    async fn an_operator_triggers_a_verification_event_with_a_state() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::SSF_STREAM_VERIFY, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"state": "corr-0042"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let queued = world.handle.0.verifications.lock().expect("a lock");
+        assert_eq!(
+            queued.as_slice(),
+            &[(SEEDED_STREAM_ID.to_owned(), Some("corr-0042".to_owned()))]
+        );
+        drop(queued);
+        let events = world.handle.0.events.lock().expect("a lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::SSF_VERIFICATION_REQUESTED)
+            .expect("the verification was not recorded");
+        assert!(matches!(recorded.actor, Actor::Admin(_)));
+        assert_eq!(
+            detail_value(&recorded.detail, "with_state"),
+            Some(&asterius_domain::audit::DetailValue::Flag(true))
+        );
+        let serialised = format!("{:?}", recorded.detail);
+        assert!(
+            !serialised.contains("corr-0042"),
+            "the state reached the trail"
+        );
+    }
+
+    /// A `state` the profile refuses is a 400 and queues nothing.
+    #[tokio::test]
+    async fn a_verification_with_a_refused_state_queues_nothing() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::SSF_STREAM_VERIFY, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({"state": "line\nbreak"}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            world
+                .handle
+                .0
+                .verifications
+                .lock()
+                .expect("a lock")
+                .is_empty()
+        );
+    }
+
+    /// **The dead-letter half of the first criterion.** A retry takes the
+    /// row off the screen, puts it back on the schedule, and is recorded
+    /// with the row's kind and attempt count under the operator's name.
+    #[tokio::test]
+    async fn an_operator_requeues_an_abandoned_set_and_it_is_audited() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::OUTBOX_DEAD_LETTER_RETRY, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await["requeued"], true);
+        assert_eq!(
+            world.handle.0.requeued.lock().expect("a lock").as_slice(),
+            &[RETRY_LETTER_ID]
+        );
+        let letters = world.handle.0.dead_letters.lock().expect("a lock");
+        assert!(!letters.iter().any(|letter| letter.id == RETRY_LETTER_ID));
+        drop(letters);
+        let events = world.handle.0.events.lock().expect("a lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::OUTBOX_RETRIED)
+            .expect("the retry was not recorded");
+        assert!(matches!(recorded.actor, Actor::Admin(_)));
+        assert_eq!(
+            detail_value(&recorded.detail, "outbox_id"),
+            Some(&asterius_domain::audit::DetailValue::Number(
+                RETRY_LETTER_ID
+            ))
+        );
+        assert_eq!(
+            rendered(detail_value(&recorded.detail, "kind").expect("a kind")).as_deref(),
+            Some("ssf.set")
+        );
+        assert_eq!(
+            detail_value(&recorded.detail, "attempts"),
+            Some(&asterius_domain::audit::DetailValue::Number(10))
+        );
+    }
+
+    /// A drop removes the row and leaves the record that is now the only
+    /// trace of it: kind, attempts and the receiver's last word.
+    #[tokio::test]
+    async fn an_operator_drops_an_abandoned_set_and_the_record_outlives_it() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::OUTBOX_DEAD_LETTER_DROP, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            world.handle.0.dropped.lock().expect("a lock").as_slice(),
+            &[DROP_LETTER_ID]
+        );
+        let events = world.handle.0.events.lock().expect("a lock");
+        let recorded = events
+            .iter()
+            .find(|event| event.event_type == EventType::OUTBOX_DROPPED)
+            .expect("the drop was not recorded");
+        assert_eq!(
+            rendered(detail_value(&recorded.detail, "last_error").expect("the last error"))
+                .as_deref(),
+            Some("the receiver answered 503; the SET is still owed")
+        );
+    }
+
+    /// The rule of `crate::outbox`: a row of another family is refused with
+    /// a 409 that names the rule, and nothing is requeued or dropped.
+    #[tokio::test]
+    async fn a_dead_letter_of_another_family_is_neither_retried_nor_dropped() {
+        // Arrange
+        let world = World::new();
+        {
+            let mut letters = world.handle.0.dead_letters.lock().expect("a lock");
+            for letter in letters.iter_mut() {
+                letter.kind = "notification.account_recovery".to_owned();
+            }
+        }
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let retry = world
+            .send(
+                as_console(&crate::OUTBOX_DEAD_LETTER_RETRY, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        let drop = world
+            .send(
+                as_console(&crate::OUTBOX_DEAD_LETTER_DROP, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(retry.status(), StatusCode::CONFLICT);
+        assert_eq!(drop.status(), StatusCode::CONFLICT);
+        assert!(world.handle.0.requeued.lock().expect("a lock").is_empty());
+        assert!(world.handle.0.dropped.lock().expect("a lock").is_empty());
+        assert_eq!(world.handle.0.dead_letters.lock().expect("a lock").len(), 6);
+    }
+
+    /// A row that is not abandoned — or is somebody else's — is a 404.
+    #[tokio::test]
+    async fn a_dead_letter_that_does_not_exist_is_not_found() {
+        // Arrange
+        let world = World::new();
+        world.forget_dead_letters();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                as_console(&crate::OUTBOX_DEAD_LETTER_RETRY, &cookie)
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// **The export's RBAC, as the criterion states it.** A support agent
+    /// holds `admin.users:read` and `admin.sessions:write` and does not hold
+    /// `admin.audit:read`: the export is a 403 and the body is the error
+    /// envelope, never a line of the trail.
+    #[tokio::test]
+    async fn the_export_is_refused_to_a_caller_without_the_audit_scope() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::UserSupport]);
+
+        // Act
+        let response = world.get(&crate::AUDIT_EVENTS_EXPORT, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_ne!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some(audit::NDJSON)
+        );
+    }
+
+    // ---- the audit query API (`ast-lh3.9`) --------------------------------
+
+    fn agent_actor(id: &str, owner: &str) -> asterius_domain::audit::Actor {
+        asterius_domain::audit::Actor::Agent {
+            client: asterius_domain::ClientId::new(id),
+            on_behalf_of: owner.to_owned(),
+        }
+    }
+
+    /// The chain user alice → agent A → agent B in `acme`, as the token
+    /// endpoints write it, plus noise: carol's agent and a record in another
+    /// tenant.
+    fn seed_delegation_chain(world: &World) {
+        use asterius_domain::audit::{Actor, Detail, EventType, Outcome};
+        let at = |seconds: i64| OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds);
+        let mut events = world.handle.0.events.lock().expect("an uncontended lock");
+        events.push(
+            AuditEvent::new(
+                TenantId::new("acme"),
+                EventType::TOKEN_ISSUED,
+                Outcome::Success,
+                agent_actor("c.a", "alice"),
+                at(10),
+            )
+            .client(asterius_domain::ClientId::new("c.a"))
+            .grant(asterius_domain::GrantId::new(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            ))
+            .detail(
+                Detail::new()
+                    .label("grant_type", "client_credentials")
+                    .pii("ip", "203.0.113.5")
+                    .pii("user_agent", "Mozilla/5.0 (agent-runner)"),
+            ),
+        );
+        events.push(
+            AuditEvent::new(
+                TenantId::new("acme"),
+                EventType::TOKEN_EXCHANGED,
+                Outcome::Success,
+                agent_actor("c.b", "bob"),
+                at(20),
+            )
+            .client(asterius_domain::ClientId::new("c.b"))
+            .subject("alice")
+            .grant(asterius_domain::GrantId::new(
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            ))
+            .actor_chain(vec![Actor::Client(asterius_domain::ClientId::new("c.a"))]),
+        );
+        events.push(
+            AuditEvent::new(
+                TenantId::new("acme"),
+                EventType::TOKEN_ISSUED,
+                Outcome::Success,
+                agent_actor("c.c", "carol"),
+                at(30),
+            )
+            .client(asterius_domain::ClientId::new("c.c")),
+        );
+        events.push(
+            AuditEvent::new(
+                TenantId::new("other"),
+                EventType::TOKEN_ISSUED,
+                Outcome::Success,
+                agent_actor("c.a", "alice"),
+                at(40),
+            )
+            .client(asterius_domain::ClientId::new("c.a")),
+        );
+    }
+
+    /// The acceptance criterion: "everything done under alice" is the
+    /// issuance to A and the exchange by B, newest first, with B's chain
+    /// intact — and nothing of carol's, and nothing from another tenant.
+    #[tokio::test]
+    async fn everything_done_under_a_user_lists_the_whole_delegation_chain() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::SecurityAuditor]);
+
+        // Act
+        let response = world
+            .get_with_query(&crate::AUDIT_EVENTS_LIST, "user=alice", &cookie)
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let items = body["items"].as_array().expect("an items array");
+        assert_eq!(items.len(), 2, "{body}");
+        assert_eq!(items[0]["type"], "token.exchanged");
+        assert_eq!(items[0]["agent_id"], "c.b");
+        assert_eq!(items[0]["agent_owner"], "bob");
+        assert_eq!(items[0]["subject"], "alice");
+        assert_eq!(items[0]["actor_chain"][0]["id"], "c.a");
+        assert_eq!(items[0]["grant_id"], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        assert_eq!(items[1]["type"], "token.issued");
+        assert_eq!(items[1]["agent_id"], "c.a");
+        assert_eq!(items[1]["agent_owner"], "alice");
+        assert!(
+            items[1]["hash"]
+                .as_str()
+                .is_some_and(|hash| hash.len() == 64)
+        );
+        assert_eq!(body["next_cursor"], serde_json::Value::Null);
+    }
+
+    /// RFC 8693 §4.1: A is a link in B's exchange, so a filter on A finds it.
+    #[tokio::test]
+    async fn an_agent_filter_finds_the_exchanges_it_was_a_link_in() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .get_with_query(
+                &crate::AUDIT_EVENTS_LIST,
+                "agent=c.a&type=token.exchanged",
+                &cookie,
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        let items = body["items"].as_array().expect("an items array");
+        assert_eq!(items.len(), 1, "{body}");
+        assert_eq!(items[0]["agent_id"], "c.b");
+    }
+
+    /// Keyset paging through the listing: a page of one, a cursor, the next
+    /// page, and a `null` cursor at the end.
+    #[tokio::test]
+    async fn the_listing_pages_by_cursor() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let first = body_of(
+            world
+                .get_with_query(&crate::AUDIT_EVENTS_LIST, "limit=2", &cookie)
+                .await,
+        )
+        .await;
+        let cursor = first["next_cursor"].as_str().expect("a cursor").to_owned();
+        let second = body_of(
+            world
+                .get_with_query(
+                    &crate::AUDIT_EVENTS_LIST,
+                    &format!("limit=2&cursor={cursor}"),
+                    &cookie,
+                )
+                .await,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(first["items"].as_array().map(Vec::len), Some(2));
+        assert_eq!(second["items"].as_array().map(Vec::len), Some(1));
+        assert_eq!(second["items"][0]["type"], "token.issued");
+        assert_eq!(second["items"][0]["agent_id"], "c.a");
+        assert_eq!(second["next_cursor"], serde_json::Value::Null);
+    }
+
+    /// A misspelled filter is a 400, not the whole trail.
+    #[tokio::test]
+    async fn an_unknown_filter_parameter_is_refused() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .get_with_query(&crate::AUDIT_EVENTS_LIST, "agnet=c.a", &cookie)
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// The export: NDJSON, one line per record, newest first, the same filter
+    /// semantics as the listing — and PII minimised on every line, because
+    /// what was fingerprinted on the way in is a digest on the way out.
+    #[tokio::test]
+    async fn the_export_streams_ndjson_with_hashed_personal_data() {
+        // Arrange
+        let world = World::new();
+        seed_delegation_chain(&world);
+        let cookie = world.sign_in("acme", &[Role::SecurityAuditor]);
+
+        // Act
+        let response = world
+            .get_with_query(&crate::AUDIT_EVENTS_EXPORT, "user=alice", &cookie)
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some(audit::NDJSON)
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a readable body");
+        let text = std::str::from_utf8(&bytes).expect("utf-8");
+        let lines: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("one JSON text per line"))
+            .collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert_eq!(lines[0]["type"], "token.exchanged");
+        assert_eq!(lines[1]["type"], "token.issued");
+        assert!(
+            !text.contains("203.0.113.5"),
+            "an address reached the export: {text}"
+        );
+        assert!(
+            !text.contains("Mozilla"),
+            "a user agent reached the export: {text}"
+        );
+        assert!(text.contains("\"ip\":\"sha256:"), "{text}");
+    }
+
+    /// The scope is `admin.audit:read`: the auditor and the administrator
+    /// hold it by definition, and support — who may look up an account —
+    /// does not thereby get to read everything everyone did.
+    #[tokio::test]
+    async fn the_trail_is_read_by_auditors_and_not_by_support() {
+        // Arrange
+        let world = World::new();
+
+        // Act / Assert
+        for operation in [&crate::AUDIT_EVENTS_LIST, &crate::AUDIT_EVENTS_EXPORT] {
+            assert_eq!(
+                world
+                    .as_role(operation, Role::SecurityAuditor)
+                    .await
+                    .status(),
+                StatusCode::OK,
+                "{}",
+                operation.id()
+            );
+            assert_eq!(
+                world.as_role(operation, Role::TenantAdmin).await.status(),
+                StatusCode::OK,
+                "{}",
+                operation.id()
+            );
+            assert_eq!(
+                world.as_role(operation, Role::UserSupport).await.status(),
+                StatusCode::FORBIDDEN,
+                "{}",
+                operation.id()
+            );
+        }
     }
 
     // ---- the table-driven authorization test ------------------------------

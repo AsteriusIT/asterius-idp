@@ -523,7 +523,7 @@ async fn admitted(
 ///
 /// The domain separator is what stops the value being usable as anything else
 /// derived from the same digest.
-fn csrf_for(session: &Session) -> String {
+pub(crate) fn csrf_for(session: &Session) -> String {
     asterius_domain::sha256_hex(
         format!("{}:device-verification-csrf", session.id_digest).as_bytes(),
     )
@@ -622,7 +622,7 @@ async fn client_name(context: &DeviceContext<'_>, client_id: &str) -> String {
 /// composed, so rendering it whole would be asking a person to agree to
 /// attacker-chosen text. A type this deployment has no sentence for renders as
 /// its bare name, which the page says is undescribed.
-fn detail_lines(details: &serde_json::Value) -> Vec<pages::DetailLine> {
+pub(crate) fn detail_lines(details: &serde_json::Value) -> Vec<pages::DetailLine> {
     let strings = |element: &serde_json::Value, member: &str| -> Vec<String> {
         element
             .get(member)

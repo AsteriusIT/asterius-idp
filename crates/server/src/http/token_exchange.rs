@@ -55,6 +55,7 @@
 //! on has decided that their resource servers cannot tell an agent from the
 //! person it acts for, and `docs/threat-model.md` records what that costs.
 
+use asterius_domain::audit::trail::{self, keys};
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::agent::AgentLimits;
 use asterius_domain::entities::client::{GrantType, TokenBinding};
@@ -254,7 +255,7 @@ impl GrantHandler for TokenExchange<'_> {
 /// A completed exchange, and what the trail needs to describe it.
 struct Issued {
     response: Response,
-    grant: GrantId,
+    grant: Grant,
     chain: Vec<Value>,
     subject: Option<SubjectId>,
 }
@@ -389,7 +390,7 @@ impl TokenExchange<'_> {
 
         Ok(Issued {
             response: Self::response(access_token.as_str(), &targeting.scopes, lifetime),
-            grant: grant.id,
+            grant,
             chain,
             subject: subject.subject,
         })
@@ -734,12 +735,18 @@ impl TokenExchange<'_> {
     /// "who is answerable", and the second question is the one a delegation
     /// exists to make answerable. The actors are recorded outermost first, the
     /// same order §4.1 renders them in, so the trail and the token agree.
+    ///
+    /// The resources the exchanged token was audienced at go under
+    /// `asterius_domain::audit::trail::keys::RESOURCE` (`ast-lh3.9`), so that
+    /// "which agent reached this resource, and through whose token" is one
+    /// query over the trail rather than a join against grants retention has
+    /// since swept.
     async fn record(
         &self,
         tenant: &Tenant,
         client: &Client,
         outcome: Outcome,
-        grant: Option<&GrantId>,
+        grant: Option<&Grant>,
         chain: &[Value],
         subject: Option<&SubjectId>,
     ) {
@@ -753,13 +760,24 @@ impl TokenExchange<'_> {
         );
         let mut detail = Detail::new().label("grant_type", "token_exchange");
         if let Some(profile) = profile {
-            detail = detail.text("agent_owner", profile.owner().to_string());
+            detail = detail.text(keys::AGENT_OWNER, profile.owner().to_string());
         }
         if profile.is_some_and(|profile| profile.limits().impersonation()) {
             // The one exchange with no `act` to record. Named in the trail
             // because a delegation nobody can see in the token is a delegation
             // the trail is the only witness to (§5).
-            detail = detail.label("delegation", "impersonation");
+            detail = detail.label(keys::DELEGATION, "impersonation");
+        }
+        if let Some(grant) = grant {
+            if let Some(resource) =
+                trail::resource_summary(grant.resources.iter().map(String::as_str))
+            {
+                detail = detail.text(keys::RESOURCE, resource);
+            }
+            if let Some(types) = trail::authorization_details_summary(&grant.authorization_details)
+            {
+                detail = detail.text(keys::AUTHORIZATION_DETAILS, types);
+            }
         }
         let mut event = AuditEvent::new(
             tenant.id.clone(),
@@ -772,7 +790,7 @@ impl TokenExchange<'_> {
         .actor_chain(chain_actors(chain))
         .detail(detail);
         if let Some(grant) = grant {
-            event = event.grant(grant.clone());
+            event = event.grant(grant.id.clone());
         }
         if let Some(subject) = subject {
             event = event.subject(subject.as_str().to_owned());

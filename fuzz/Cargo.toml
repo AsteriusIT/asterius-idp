@@ -64,6 +64,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_audit_filter"
+path = "fuzz_targets/admin_audit_filter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_client_request"
 path = "fuzz_targets/admin_client_request.rs"
 test = false
@@ -106,6 +113,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_stream_status"
+path = "fuzz_targets/admin_stream_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_user_claims"
 path = "fuzz_targets/admin_user_claims.rs"
 test = false
@@ -115,6 +129,13 @@ bench = false
 [[bin]]
 name = "agent_profile"
 path = "fuzz_targets/agent_profile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "approval_decision"
+path = "fuzz_targets/approval_decision.rs"
 test = false
 doc = false
 bench = false
@@ -171,6 +192,13 @@ bench = false
 [[bin]]
 name = "ciba_form"
 path = "fuzz_targets/ciba_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ciba_token_request"
+path = "fuzz_targets/ciba_token_request.rs"
 test = false
 doc = false
 bench = false
@@ -498,6 +526,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ssf_caep_assurance_level_change"
+path = "fuzz_targets/ssf_caep_assurance_level_change.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssf_caep_text"
+path = "fuzz_targets/ssf_caep_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ssf_event_uri"
 path = "fuzz_targets/ssf_event_uri.rs"
 test = false
@@ -535,6 +577,13 @@ bench = false
 [[bin]]
 name = "ssf_subject"
 path = "fuzz_targets/ssf_subject.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssf_verification_state"
+path = "fuzz_targets/ssf_verification_state.rs"
 test = false
 doc = false
 bench = false

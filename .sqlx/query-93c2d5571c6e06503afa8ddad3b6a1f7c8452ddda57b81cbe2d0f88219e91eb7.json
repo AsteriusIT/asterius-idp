@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ciba_requests\n                 (tenant_id, auth_req_id_hash, client_id, user_id, scopes,\n                  authorization_details, acr_values, binding_message, delivery_mode,\n                  client_notification_token_hash, issued_at, expires_at,\n                  poll_interval_seconds, ping_ciphertext, ping_nonce, ping_kek_id)\n             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Text",
+        "Uuid",
+        "TextArray",
+        "Jsonb",
+        "TextArray",
+        "Text",
+        "Text",
+        "Bytea",
+        "Timestamptz",
+        "Timestamptz",
+        "Int4",
+        "Bytea",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "93c2d5571c6e06503afa8ddad3b6a1f7c8452ddda57b81cbe2d0f88219e91eb7"
+}

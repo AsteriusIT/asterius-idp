@@ -56,6 +56,9 @@ node_modules/
 !/fuzz/corpus/dpop_proof/
 /fuzz/corpus/dpop_proof/*
 !/fuzz/corpus/dpop_proof/crash-*
+!/fuzz/corpus/admin_stream_status/
+/fuzz/corpus/admin_stream_status/*
+!/fuzz/corpus/admin_stream_status/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.
@@ -73,3 +76,11 @@ node_modules/
 # everyone who clones this repository has, even a development one — and a
 # committed certificate is one that expires in a checkout nobody rebuilt.
 /deploy/certs/
+
+# Load-test material (scripts/load/gen-keys.sh): a private key, even a load one,
+# is not content.
+/scripts/load/client-key.der
+/scripts/load/client.jwks.json
+
+/scripts/load/certs/
+/scripts/load/explain.out

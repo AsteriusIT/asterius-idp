@@ -99,7 +99,7 @@ impl TestDb {
     async fn set_status(&self, stream: &StreamId, status: StreamStatus) {
         let changed = self
             .streams()
-            .set_status(&ClientId::new(RECEIVER), stream, status, None, at(0))
+            .set_status_for(&ClientId::new(RECEIVER), stream, status, None, at(0))
             .await
             .expect("set the status");
         assert!(changed, "the fixture stream must exist");
@@ -223,7 +223,7 @@ db_test! {
             .expect("read the status");
         let written = db
             .streams()
-            .set_status(
+            .set_status_for(
                 &ClientId::new(RECEIVER),
                 &theirs,
                 StreamStatus::Disabled,
@@ -255,7 +255,7 @@ db_test! {
 
         // Act
         db.streams()
-            .set_status(
+            .set_status_for(
                 &ClientId::new(RECEIVER),
                 &stream,
                 StreamStatus::Paused,

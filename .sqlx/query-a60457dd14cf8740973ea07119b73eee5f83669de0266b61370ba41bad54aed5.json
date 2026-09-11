@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ciba_requests\n                set status = 'denied'\n              where tenant_id = $1 and auth_req_id_hash = $2 and user_id = $3\n                and status = 'pending' and expires_at > $4\n          returning client_id, delivery_mode",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "delivery_mode",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a60457dd14cf8740973ea07119b73eee5f83669de0266b61370ba41bad54aed5"
+}

@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select auth_req_id_hash,\n                    ping_ciphertext as \"ciphertext!\",\n                    ping_nonce as \"nonce!\",\n                    ping_kek_id as \"kek_id!\"\n               from ciba_requests\n              where tenant_id = $1 and ping_kek_id = $2\n              for update",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "auth_req_id_hash",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "ciphertext!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 2,
+        "name": "nonce!",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 3,
+        "name": "kek_id!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "a9a61f6b5d93df416c340f978d19e88f640c2c68c7a1ee0dc0c7df03a8ae2f87"
+}

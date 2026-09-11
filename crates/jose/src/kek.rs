@@ -180,17 +180,23 @@ pub enum RowSecret {
     /// The `authorization_header` a push receiver registered for one stream
     /// (RFC 8935 §2.2; SSF 1.0 §6.1.1). The row is the `stream_id`.
     SsfPushAuthorization,
+    /// What a CIBA Core 1.0 §10.2 ping notification presents: the
+    /// `auth_req_id` it carries in its body and the `client_notification_token`
+    /// it carries as a bearer, sealed together for one backchannel
+    /// authentication request. The row is the hex digest of the `auth_req_id`.
+    CibaPing,
 }
 
 impl RowSecret {
     /// Every secret this enum names, so a test can be exhaustive over them.
-    pub const ALL: [Self; 1] = [Self::SsfPushAuthorization];
+    pub const ALL: [Self; 2] = [Self::SsfPushAuthorization, Self::CibaPing];
 
     /// The value that goes into the additional authenticated data.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SsfPushAuthorization => "ssf-push-authorization",
+            Self::CibaPing => "ciba-ping",
         }
     }
 }

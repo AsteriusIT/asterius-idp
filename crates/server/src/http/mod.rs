@@ -17,10 +17,12 @@ pub fn font_url(mount: &crate::tenancy::MountPrefix) -> String {
 }
 
 pub mod access_token;
+pub mod approvals;
 pub mod assets;
 pub mod authorization_code;
 pub mod authorize;
 pub mod backchannel_authentication;
+pub mod ciba_grant;
 pub mod client_configuration;
 pub mod client_credentials;
 pub mod console;

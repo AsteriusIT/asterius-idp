@@ -1,0 +1,62 @@
+# Configuration for a load stack: one asterius process on this machine,
+# terminating TLS with a self-signed certificate, against a throwaway
+# PostgreSQL. NOT a production configuration, and not the example stack either
+# — deploy/compose is the shape to measure a container image in; this is the
+# shape to measure the process in (README.md, "Two stacks").
+#
+# What differs from the defaults, and why:
+#
+# * `[limits]` are raised far above their defaults. They exist to bound abuse
+#   (docs/configuration.md), and a load run *is* the abuse they bound: at the
+#   default 1200 successful token responses per client per minute, a run at
+#   100 req/s is throttled after twelve seconds. The numbers below are not a
+#   recommendation; they are "out of the way".
+# * `features.ssf = true`, for ssf-poll.js.
+# * Everything secret comes from the environment: ASTERIUS_KEK, and
+#   ASTERIUS_ADMIN_PASSWORD, which is also the load user's password (seed.sql).
+
+log_format = "json"
+
+[server]
+bind = "127.0.0.1:9443"
+mode = "terminate_tls"
+
+[server.tls]
+# deploy/scripts/gen-self-signed.sh with CERT_DIR=scripts/load/certs
+certificate = "scripts/load/certs/server.crt"
+private_key = "scripts/load/certs/server.key"
+
+[keys]
+kek_env = "ASTERIUS_KEK"
+
+[database]
+url = "postgres://asterius:asterius@127.0.0.1:5434/asterius"
+max_connections = 16
+
+[features]
+ssf = true
+
+[limits]
+window_seconds = 60
+par_per_address = 1000000
+par_per_client = 1000000
+token_per_address = 1000000
+token_per_client = 1000000
+userinfo_per_address = 1000000
+
+[login]
+# The load user signs in successfully every time; failures are what is
+# counted, so the defaults would do. Raised anyway so that a mis-set PASSWORD
+# fails every iteration visibly rather than locking the account after ten.
+max_failures_per_account = 1000000
+max_failures_per_address = 1000000
+
+[[tenant]]
+id = "load"
+issuer = "https://localhost:9443/t/load"
+
+[admin]
+tenant = "admin"
+issuer = "https://localhost:9443/t/admin"
+username = "admin"
+password_env = "ASTERIUS_ADMIN_PASSWORD"

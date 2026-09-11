@@ -120,18 +120,15 @@ pub const MIN_VERIFICATION_INTERVAL: u64 = 60;
 
 /// The event types a stream of this transmitter can deliver.
 ///
-/// Empty, and that is a claim rather than a placeholder: an event type belongs
-/// here the day something emits it. The emitters are `ast-0ju.5` (verification
-/// and stream-updated) and `ast-0ju.8` (the CAEP and RISC types), and each of
-/// them adds its own URI to this list as it lands.
-///
-/// The consequence is visible and intended: a receiver that requests
-/// `session-revoked` today is told, in `events_delivered`, that it will
-/// receive nothing. §8.1.1 makes `events_delivered` the member "the receiver
-/// relies on", so the honest empty list is what stops a receiver believing it
-/// has continuous access coverage it has not got — the same argument
-/// [`crate::metadata`] makes for advertising no endpoint it does not route.
-pub const SUPPORTED_EVENTS: &[&str] = &[];
+/// Exactly [`crate::caep::EVENT_TYPES`], and that is a claim rather than a
+/// list: an event type belongs here the day something emits it, and the
+/// emitters of `ast-0ju.8` are what put these five here. §8.1.1 makes
+/// `events_delivered` the member "the receiver relies on", so a type nothing
+/// emits must not be advertised — a receiver would believe it has continuous
+/// access coverage it has not got, the same argument [`crate::metadata`]
+/// makes for advertising no endpoint it does not route. The verification
+/// event of `ast-0ju.5` joins the list when it lands.
+pub const SUPPORTED_EVENTS: &[&str] = &crate::caep::EVENT_TYPES;
 
 /// How many bytes of entropy a stream identifier carries. 128 bits.
 const STREAM_ID_BYTES: usize = 16;

@@ -55,7 +55,10 @@ pub use application_roles::PgApplicationRoles;
 pub use audit::{PgAuditSink, VerifiedChain};
 pub use auth_requests::PgAuthRequestRepository;
 pub use authorization_details_types::PgAuthorizationDetailsTypes;
-pub use ciba_requests::{NewCibaRequest, PgCibaRequestRepository};
+pub use ciba_requests::{
+    CibaPoll, CibaPolled, NewCibaRequest, PING_OUTBOX_KIND, PendingApproval,
+    PgCibaRequestRepository, PingCredentials, PingTarget, RedeemedCiba,
+};
 pub use client_key_fetches::PgClientKeyFetches;
 pub use client_usage::PgClientUsage;
 pub use clients::PgClientRepository;
@@ -73,7 +76,7 @@ pub use outbox::{
     Backoff, DEFAULT_LEASE, DEFAULT_MAX_ATTEMPTS, NewOutboxEntry, Outcome, PgOutbox, PgTransaction,
     Verdict, enqueue,
 };
-pub use passkeys::PgPasskeyRepository;
+pub use passkeys::{PgPasskeyRepository, RemovedPasskey};
 pub use passwords::PgPasswordVerifier;
 pub use provisioning::ProvisionedTenants;
 pub use rate_limits::PgRateLimitStore;
@@ -89,7 +92,10 @@ pub use roles::PgRoleRepository;
 pub use scope::TenantScope;
 pub use sessions::PgSessionRepository;
 pub use ssf_poll::{Discarded, Enqueued, PgSsfPoll, PollBatch, QueuedSet};
-pub use ssf_streams::{PgSsfStreams, PushTarget, SET_OUTBOX_KIND, StreamStats};
+pub use ssf_streams::{
+    DeliveryMethod, PgSsfStreams, PushTarget, SET_OUTBOX_KIND, StreamOverview, StreamStats,
+    Subscription,
+};
 pub use ssf_subjects::{Added, MAX_SUBJECTS, PgSsfSubjects};
 pub use store::{MIGRATOR, Store};
 pub use tenant_settings::PgTenantSettings;

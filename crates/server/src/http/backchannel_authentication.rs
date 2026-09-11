@@ -40,7 +40,7 @@
 
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::entities::client::GrantType;
-use asterius_domain::{AuditSink, Client, ClientRepository, KeyStore, Tenant, User, sha256_hex};
+use asterius_domain::{AuditSink, Client, ClientRepository, KeyStore, Tenant, User};
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::verify::{Policy, TypRule};
 use asterius_oidc::ciba::{self, BackchannelRequest, CibaError, Hint, MintedAuthReqId, Submission};
@@ -48,7 +48,7 @@ use asterius_oidc::client_auth::{AssertionRules, Attempt, Audiences, ClientAuthE
 use asterius_oidc::form::Parameters;
 use asterius_oidc::metadata::Endpoint;
 use asterius_store_pg::PgUserRepository;
-use asterius_store_pg::{NewCibaRequest, PgCibaRequestRepository};
+use asterius_store_pg::{NewCibaRequest, PgCibaRequestRepository, PingCredentials};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, body::Bytes};
@@ -80,6 +80,16 @@ pub struct BackchannelContext<'a> {
     pub ciba_requests: &'a PgCibaRequestRepository,
     /// Where the decision is recorded.
     pub audit: &'a dyn AuditSink,
+    /// How the person is told that something is waiting for them
+    /// (`ast-lh3.6`).
+    ///
+    /// CIBA Core 1.0 §8 has the decision taken on a device the client never
+    /// touches. A request nobody is told about is a request that expires
+    /// unseen, so the notification is part of accepting one — but only part:
+    /// the answer to the client is the same whether or not a message could be
+    /// handed off, because §7.3's acknowledgement says nothing about the
+    /// person and must not start saying whether they are reachable.
+    pub mail: &'a dyn asterius_domain::MailSender,
     /// The client certificate this request arrived with (RFC 8705 §2), if the
     /// deployment saw one from a source it trusts.
     pub certificate: Option<&'a asterius_oidc::mtls::ClientCertificate>,
@@ -210,13 +220,17 @@ async fn recorded(
         acr_values: request.acr_values.clone(),
         binding_message: request.binding_message.clone(),
         delivery_mode: delivery_mode.as_str().to_owned(),
-        // Digested here and never stored as itself: §10.2 will present this
-        // value to the client's notification endpoint, so it is a credential
-        // and a database copy must not yield it.
-        client_notification_token_digest: request
+        // In ping mode the store keeps what the §10.2 notification will
+        // present — this `auth_req_id` and the token — sealed under the
+        // tenant's KEK, and the token's digest beside it. Neither reaches the
+        // row in the clear; see `0034_ciba_ping_credentials.sql`.
+        ping: request
             .client_notification_token
             .as_deref()
-            .map(|token| sha256_hex(token.as_bytes())),
+            .map(|token| PingCredentials {
+                auth_req_id: minted.expose().to_owned(),
+                client_notification_token: token.to_owned(),
+            }),
         expires_at: now + request.expires_in,
         interval: ciba::POLL_INTERVAL,
     };
@@ -234,6 +248,8 @@ async fn recorded(
         );
         return unavailable();
     }
+
+    notify(context, client, &user, &request, now).await;
 
     record(
         context,
@@ -263,6 +279,60 @@ async fn recorded(
         })),
     )
         .into_response()
+}
+
+/// Tells the person that something is waiting for them (`ast-lh3.6`).
+///
+/// The link is to the inbox and never to one request: a URL that decided which
+/// approval was being answered would be a URL somebody could aim a person at,
+/// and §7.1's `binding_message` exists precisely so that the decision rests on
+/// comparing two screens rather than on having followed a link. The message
+/// carries that same binding message, for that comparison.
+///
+/// Every failure is logged and swallowed. An account with no address cannot be
+/// mailed and the client is not told so; a sender that refuses is this
+/// deployment's problem and not the client's. §10.2's ping is the *client's*
+/// notification and is queued by the decision, not here.
+async fn notify(
+    context: &BackchannelContext<'_>,
+    client: &Client,
+    user: &asterius_domain::User,
+    request: &BackchannelRequest,
+    now: OffsetDateTime,
+) {
+    let Some(address) = user.email.clone() else {
+        tracing::info!(
+            tenant = %context.tenant.id,
+            client = %client.id,
+            "a backchannel request was accepted for an account with no address; \
+             nothing was sent, and the request waits in the inbox"
+        );
+        return;
+    };
+    // Absolute, for the recovery link's reason: it is going into a message,
+    // and a browser opening it has no page to resolve a relative path
+    // against. Built from the tenant's issuer, so a path-mounted tenant's
+    // link comes back through the prefix it is served under (`ast-295`).
+    let link = format!(
+        "{}{}",
+        context.tenant.issuer.as_str().trim_end_matches('/'),
+        crate::http::approvals::PAGE_PATH,
+    );
+    let message = asterius_domain::Notification::approval_requested(
+        address,
+        link,
+        client.registration.client_name.clone(),
+        request.binding_message.clone(),
+        (request.expires_in).whole_minutes(),
+    );
+    let _ = now;
+    if let Err(error) = context.mail.send(&message).await {
+        tracing::error!(
+            %error,
+            tenant = %context.tenant.id,
+            "cannot hand off an approval notification; the request still waits in the inbox"
+        );
+    }
 }
 
 /// The assertion rules this endpoint applies, and no other one does.

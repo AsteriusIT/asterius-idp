@@ -775,6 +775,360 @@ db_test! {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Audit trail: the per-agent query (`ast-lh3.9`)
+// ---------------------------------------------------------------------------
+
+use asterius_domain::GrantId;
+use asterius_domain::audit::query::{AuditFilter, AuditQuery as _, MAX_PAGE, TrailEntry};
+use asterius_domain::audit::trail::keys;
+
+const GRANT_A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const GRANT_B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+fn agent(id: &str, owner: &str) -> Actor {
+    Actor::Agent {
+        client: ClientId::new(id),
+        on_behalf_of: owner.to_owned(),
+    }
+}
+
+fn at(seconds: i64) -> OffsetDateTime {
+    OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(seconds)
+}
+
+/// The chain user alice → agent A → agent B, written the way the token
+/// endpoints write it (`client_credentials` then `token_exchange`), with
+/// noise around it: carol's agent, alice's own login, a plain client.
+async fn seed_delegation_chain(sink: &PgAuditSink) {
+    let demo = || TenantId::new("demo");
+    let events = vec![
+        // A is issued a token as alice's agent (`client_credentials`).
+        AuditEvent::new(
+            demo(),
+            EventType::TOKEN_ISSUED,
+            Outcome::Success,
+            agent("c.a", "alice"),
+            at(10),
+        )
+        .client(ClientId::new("c.a"))
+        .grant(GrantId::new(GRANT_A))
+        .detail(
+            Detail::new()
+                .label("grant_type", "client_credentials")
+                .text(keys::AGENT_OWNER, "alice")
+                .text(keys::RESOURCE, "https://api.example/"),
+        ),
+        // B exchanges A's token: B acts, the chain names A, alice is the subject.
+        AuditEvent::new(
+            demo(),
+            EventType::TOKEN_EXCHANGED,
+            Outcome::Success,
+            agent("c.b", "bob"),
+            at(20),
+        )
+        .client(ClientId::new("c.b"))
+        .subject("alice")
+        .grant(GrantId::new(GRANT_B))
+        .actor_chain(vec![Actor::Client(ClientId::new("c.a"))])
+        .detail(
+            Detail::new()
+                .label("grant_type", "token_exchange")
+                .text(keys::AGENT_OWNER, "bob"),
+        ),
+        // Noise: carol's agent, a plain client, alice signing in herself.
+        AuditEvent::new(
+            demo(),
+            EventType::TOKEN_ISSUED,
+            Outcome::Success,
+            agent("c.c", "carol"),
+            at(30),
+        )
+        .client(ClientId::new("c.c")),
+        AuditEvent::new(
+            demo(),
+            EventType::TOKEN_ISSUED,
+            Outcome::Success,
+            Actor::Client(ClientId::new("billing")),
+            at(40),
+        )
+        .client(ClientId::new("billing")),
+        AuditEvent::new(
+            demo(),
+            EventType::AUTH_LOGIN,
+            Outcome::Success,
+            Actor::User("alice".to_owned()),
+            at(50),
+        )
+        .subject("alice"),
+    ];
+    for event in events {
+        sink.record(event).await.expect("record");
+    }
+}
+
+fn types_of(entries: &[TrailEntry]) -> Vec<(EventType, String)> {
+    entries
+        .iter()
+        .map(|entry| {
+            let event = entry.record.event().expect("a readable record");
+            (event.event_type, event.actor.id().to_owned())
+        })
+        .collect()
+}
+
+db_test! {
+    /// The acceptance criterion of `ast-lh3.9`: for user → A → B, "everything
+    /// done under alice" returns the issuance to A and the exchange by B —
+    /// with B's chain intact — and alice's own login, and nothing of carol's.
+    /// Newest first, which is the order an incident reads in.
+    async fn everything_done_under_a_user_spans_the_delegation_chain(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+
+        let filter = AuditFilter { user: Some("alice".to_owned()), ..AuditFilter::default() };
+        let found = sink
+            .query(&TenantId::new("demo"), &filter, None, 100)
+            .await
+            .expect("query");
+
+        assert_eq!(
+            types_of(&found),
+            vec![
+                (EventType::AUTH_LOGIN, "alice".to_owned()),
+                (EventType::TOKEN_EXCHANGED, "c.b".to_owned()),
+                (EventType::TOKEN_ISSUED, "c.a".to_owned()),
+            ]
+        );
+        let exchange = found[1].record.event().expect("readable");
+        assert_eq!(exchange.actor_chain, vec![Actor::Client(ClientId::new("c.a"))]);
+        assert_eq!(exchange.agent_owner(), Some("bob"));
+        assert_eq!(exchange.grant.as_ref().map(GrantId::as_str), Some(GRANT_B));
+        let issuance = found[2].record.event().expect("readable");
+        assert_eq!(issuance.agent_id(), Some("c.a"));
+        assert_eq!(issuance.agent_owner(), Some("alice"));
+    }
+}
+
+db_test! {
+    /// RFC 8693 §4.1: the exchange B performed names A as a link, so "what
+    /// did A take part in" includes it — through the chain index, not only
+    /// through the actor.
+    async fn an_agent_is_found_through_the_act_chain(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+
+        let filter = AuditFilter { agent: Some(ClientId::new("c.a")), ..AuditFilter::default() };
+        let found = sink
+            .query(&TenantId::new("demo"), &filter, None, 100)
+            .await
+            .expect("query");
+
+        assert_eq!(
+            types_of(&found),
+            vec![
+                (EventType::TOKEN_EXCHANGED, "c.b".to_owned()),
+                (EventType::TOKEN_ISSUED, "c.a".to_owned()),
+            ]
+        );
+    }
+}
+
+db_test! {
+    /// Every SQL predicate is the spelling of `AuditFilter::matches`: for a
+    /// set of filters covering each member, what the database returns is
+    /// what a scan through the reference semantics returns.
+    async fn the_sql_predicates_agree_with_the_reference_semantics(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        let tenant = TenantId::new("demo");
+
+        let everything = sink.query(&tenant, &AuditFilter::default(), None, 100).await.expect("all");
+        assert_eq!(everything.len(), 5);
+
+        let filters = [
+            AuditFilter { agent: Some(ClientId::new("c.b")), ..AuditFilter::default() },
+            AuditFilter { owner: Some("bob".to_owned()), ..AuditFilter::default() },
+            AuditFilter { owner: Some("alice".to_owned()), ..AuditFilter::default() },
+            AuditFilter { user: Some("bob".to_owned()), ..AuditFilter::default() },
+            AuditFilter { grant: Some(GrantId::new(GRANT_A)), ..AuditFilter::default() },
+            AuditFilter { grant: Some(GrantId::new("not-a-uuid")), ..AuditFilter::default() },
+            AuditFilter { event_types: vec![EventType::TOKEN_ISSUED], ..AuditFilter::default() },
+            AuditFilter { from: Some(at(20)), until: Some(at(40)), ..AuditFilter::default() },
+            AuditFilter {
+                agent: Some(ClientId::new("c.a")),
+                event_types: vec![EventType::TOKEN_EXCHANGED],
+                from: Some(at(0)),
+                ..AuditFilter::default()
+            },
+        ];
+        for filter in filters {
+            let from_sql: Vec<i64> = sink
+                .query(&tenant, &filter, None, 100)
+                .await
+                .expect("query")
+                .iter()
+                .map(|entry| entry.id)
+                .collect();
+            let by_reference: Vec<i64> = everything
+                .iter()
+                .filter(|entry| entry.record.event().is_some_and(|event| filter.matches(event)))
+                .map(|entry| entry.id)
+                .collect();
+            assert_eq!(from_sql, by_reference, "SQL and `matches` disagree for {filter:?}");
+        }
+    }
+}
+
+db_test! {
+    /// Keyset paging: pages tile the trail newest first, resume from the id
+    /// of the last row seen, and a record written between two pages lands on
+    /// none of them rather than shifting a row into both.
+    async fn pages_tile_the_trail_without_overlap(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        let tenant = TenantId::new("demo");
+
+        let first = sink.query(&tenant, &AuditFilter::default(), None, 2).await.expect("page 1");
+        assert_eq!(first.len(), 2);
+        assert!(first[0].id > first[1].id, "not newest first");
+
+        // Written while the operator pages: newer than everything, so it
+        // belongs to no page that resumes below `first`.
+        sink.record(audit_event("demo", EventType::CONSENT_GRANTED)).await.expect("record");
+
+        let second = sink.query(&tenant, &AuditFilter::default(), Some(first[1].id), 2).await.expect("page 2");
+        let third = sink.query(&tenant, &AuditFilter::default(), Some(second[1].id), 2).await.expect("page 3");
+        let fourth = sink.query(&tenant, &AuditFilter::default(), Some(third[0].id), 2).await.expect("page 4");
+
+        let ids: Vec<i64> = [&first[..], &second[..], &third[..]].concat().iter().map(|e| e.id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        sorted.dedup();
+        assert_eq!(ids, sorted, "pages overlapped or went out of order");
+        assert_eq!(ids.len(), 5, "the five seeded records, once each");
+        assert!(fourth.is_empty(), "paging past the end must be empty, not an error");
+    }
+}
+
+db_test! {
+    /// A page is never larger than `MAX_PAGE` whatever is asked, and asking
+    /// for zero is one row rather than a statement the database refuses.
+    async fn the_page_size_is_clamped(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        let tenant = TenantId::new("demo");
+
+        let huge = sink.query(&tenant, &AuditFilter::default(), None, MAX_PAGE * 10).await.expect("query");
+        assert_eq!(huge.len(), 5);
+        let none = sink.query(&tenant, &AuditFilter::default(), None, 0).await.expect("query");
+        assert_eq!(none.len(), 1);
+    }
+}
+
+db_test! {
+    /// A record this build cannot read is on the page as opaque, with its
+    /// hash and its id, and counts against the limit: an export that skipped
+    /// it would be evidence with a hole nobody was told about.
+    async fn an_opaque_record_is_paged_like_any_other(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        sink.record(audit_event("demo", EventType::CODE_ISSUED)).await.expect("first");
+        let tip = chain_tip(&db, "demo").await;
+        let opaque_hash = seed_unreadable_record(&db, "demo", &tip).await;
+        sink.record(audit_event("demo", EventType::TOKEN_ISSUED)).await.expect("third");
+
+        let page = sink
+            .query(&TenantId::new("demo"), &AuditFilter::default(), None, 10)
+            .await
+            .expect("an unreadable row must not fail the query");
+
+        assert_eq!(page.len(), 3);
+        assert!(page[1].record.is_opaque(), "{:?}", page[1].record);
+        assert_eq!(page[1].hash.as_bytes().as_slice(), opaque_hash.as_slice());
+        assert!(page[0].id > page[1].id && page[1].id > page[2].id);
+    }
+}
+
+db_test! {
+    /// The query is tenant-scoped at the first predicate: another tenant's
+    /// records never appear, whatever filter is asked.
+    async fn the_query_never_crosses_a_tenant(db) {
+        seed_tenant(&db.pool, "demo").await;
+        seed_tenant(&db.pool, "other").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        sink.record(
+            AuditEvent::new(TenantId::new("other"), EventType::TOKEN_ISSUED, Outcome::Success, agent("c.a", "alice"), at(60))
+        )
+        .await
+        .expect("record");
+
+        let filter = AuditFilter { agent: Some(ClientId::new("c.a")), ..AuditFilter::default() };
+        let other = sink.query(&TenantId::new("other"), &filter, None, 100).await.expect("query");
+        let demo = sink.query(&TenantId::new("demo"), &filter, None, 100).await.expect("query");
+
+        assert_eq!(other.len(), 1);
+        assert_eq!(demo.len(), 2);
+    }
+}
+
+db_test! {
+    /// The `0035` indexes are what make a per-agent question a range scan
+    /// rather than a walk of the tenant's whole trail, and a planner that
+    /// ignores them is a regression nothing else would notice until a large
+    /// tenant's console timed out.
+    async fn the_owner_question_is_planned_through_its_index(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let sink = PgAuditSink::new(db.pool.clone());
+        seed_delegation_chain(&sink).await;
+        // A tenant with a realistic trail, written straight to the table for
+        // the reason the clients test gives: what is under test is the
+        // planner, and 5000 writes through the sink would only make the test
+        // slow. The hashes are not a chain; nothing here verifies one.
+        sqlx::query(
+            "insert into audit_events (tenant_id, occurred_at, event_type, outcome, actor,
+                                       actor_chain, subject, detail, previous_hash, event_hash)
+             select 'demo', now(), 'auth.login', 'success',
+                    jsonb_build_object('type', 'user', 'id', 'u' || g),
+                    '[]'::jsonb, 'u' || g, '{}'::jsonb,
+                    sha256(('p' || g)::bytea), sha256(('h' || g)::bytea)
+             from generate_series(1, 5000) g",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("fill the trail");
+        sqlx::query("analyze audit_events").execute(&db.pool).await.expect("analyze");
+
+        let plan: Vec<String> = sqlx::query_scalar(
+            "explain select event_id from audit_events
+             where tenant_id = 'demo'
+               and actor ->> 'type' = 'agent' and actor ->> 'on_behalf_of' = 'alice'
+             order by event_id desc limit 50",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("explain");
+        let rendered = plan.join("\n");
+        assert!(rendered.contains("audit_events_by_owner"), "{rendered}");
+
+        let chain: Vec<String> = sqlx::query_scalar(
+            "explain select event_id from audit_events
+             where tenant_id = 'demo' and actor_chain @> '[{\"type\": \"client\", \"id\": \"c.a\"}]'",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("explain");
+        let rendered = chain.join("\n");
+        assert!(rendered.contains("audit_events_by_chain"), "{rendered}");
+    }
+}
+
 db_test! {
     /// Chains are per tenant: one tenant's writes must not appear in another's
     /// chain, or a busy tenant would make a quiet one's trail unverifiable.
@@ -986,6 +1340,35 @@ fn registration_document() -> serde_json::Value {
 
 fn client(tenant: &str, id: &str, document: &serde_json::Value) -> Client {
     client_with(tenant, id, document, Capabilities::default())
+}
+
+/// One row of the trail, read as the chain sees it rather than as a record.
+///
+/// The hashes are what a test about ordering asserts on, and they are not on
+/// `AuditRecord`: the chain is a property of the rows, so a test that reads it
+/// through the reader would be asserting that the reader agrees with itself.
+#[derive(sqlx::FromRow)]
+struct ChainLink {
+    event_type: String,
+    client_id: Option<String>,
+    previous_hash: Vec<u8>,
+    event_hash: Vec<u8>,
+}
+
+/// The `client.registered` record a registration commits with its row.
+///
+/// Since `ast-zq9` the trail entry is an argument of `register` rather than a
+/// later call, so every test that registers a client states the record it
+/// expects to find beside the row.
+fn registration_record(tenant: &str, id: &str) -> AuditEvent {
+    AuditEvent::new(
+        TenantId::new(tenant),
+        EventType::CLIENT_REGISTERED,
+        Outcome::Success,
+        Actor::System,
+        OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("a valid instant"),
+    )
+    .client(ClientId::new(id))
 }
 
 fn client_with(
@@ -1608,7 +1991,7 @@ db_test! {
         let digest = asterius_domain::sha256(token.expose().as_bytes());
         let registered = client("demo", "c.abc", &registration_document());
 
-        let stored = repo.register(&registered, &digest).await.expect("register");
+        let stored = repo.register(&registered, &digest, &registration_record("demo", "c.abc")).await.expect("register");
         assert_eq!(stored.registration, registered.registration);
         assert_eq!(stored.id, registered.id);
         assert!(stored.is_active());
@@ -1663,7 +2046,7 @@ db_test! {
         let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
 
         let first_digest = [1_u8; 32];
-        repo.register(&client("demo", "c.abc", &registration_document()), &first_digest)
+        repo.register(&client("demo", "c.abc", &registration_document()), &first_digest, &registration_record("demo", "c.abc"))
             .await
             .expect("the first registration");
 
@@ -1673,7 +2056,7 @@ db_test! {
             .expect("object")
             .insert("redirect_uris".to_owned(), json!(["https://attacker.example/cb"]));
         let conflict = repo
-            .register(&client("demo", "c.abc", &second), &[2_u8; 32])
+            .register(&client("demo", "c.abc", &second), &[2_u8; 32], &registration_record("demo", "c.abc"))
             .await;
         assert!(
             matches!(conflict, Err(asterius_domain::DomainError::Conflict(_))),
@@ -1702,6 +2085,150 @@ db_test! {
 }
 
 db_test! {
+    /// The row and its `client.registered` record are one commit (`ast-zq9`),
+    /// and the record joins the chain like any other.
+    ///
+    /// The chain is the part that could have been broken by moving the write:
+    /// the record must follow the tenant's current tip and be followed by
+    /// whatever the sink appends next, or the trail is no longer verifiable.
+    /// So a record is appended before and after, and the three are checked to
+    /// be one chain in the order they happened.
+    async fn a_registration_commits_its_trail_entry_in_the_same_chain(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        let sink = PgAuditSink::new(db.pool.clone());
+
+        sink.record(AuditEvent::new(
+            TenantId::new("demo"),
+            EventType::CLIENT_READ,
+            Outcome::Success,
+            Actor::System,
+            OffsetDateTime::from_unix_timestamp(1_759_000_000).expect("a valid instant"),
+        ))
+        .await
+        .expect("the record before the registration");
+
+        repo.register(
+            &client("demo", "c.abc", &registration_document()),
+            &[21_u8; 32],
+            &registration_record("demo", "c.abc"),
+        )
+        .await
+        .expect("register");
+
+        sink.record(AuditEvent::new(
+            TenantId::new("demo"),
+            EventType::CLIENT_UPDATED,
+            Outcome::Success,
+            Actor::System,
+            OffsetDateTime::from_unix_timestamp(1_761_000_000).expect("a valid instant"),
+        ))
+        .await
+        .expect("the record after the registration");
+
+        let rows: Vec<ChainLink> = sqlx::query_as(
+            "select event_type, client_id, previous_hash, event_hash from audit_events
+             where tenant_id = 'demo' order by event_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the trail");
+
+        assert_eq!(rows.len(), 3, "the registration did not append exactly one record");
+        assert_eq!(rows[1].event_type, "client.registered");
+        assert_eq!(rows[1].client_id.as_deref(), Some("c.abc"));
+        assert_eq!(
+            rows[1].previous_hash, rows[0].event_hash,
+            "the registration forked the chain"
+        );
+        assert_eq!(
+            rows[2].previous_hash, rows[1].event_hash,
+            "the next record did not follow the registration"
+        );
+
+        // And the whole chain still verifies through the sink's own reader.
+        sink.verify_chain(&TenantId::new("demo")).await.expect("the chain verifies");
+    }
+}
+
+db_test! {
+    /// A failure of the audit store during a registration keeps *nothing*
+    /// (`ast-zq9`).
+    ///
+    /// The trail write used to happen after the row had committed, so an audit
+    /// store that was down left a live client — with redirect URIs and a
+    /// registration access token its owner had already been handed — that the
+    /// trail never mentioned, through the one endpoint reachable without a
+    /// client credential. The failure is simulated where it actually happens,
+    /// in the database, by a trigger that refuses every insert into
+    /// `audit_events`: the call must fail and leave no `clients` row behind.
+    async fn a_failed_trail_write_leaves_no_registered_client(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+
+        sqlx::query(
+            "create function refuse_audit() returns trigger language plpgsql as
+             $$ begin raise exception 'the audit store is down'; end $$",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("create the failing function");
+        sqlx::query(
+            "create trigger refuse_audit before insert on audit_events
+             for each row execute function refuse_audit()",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("create the failing trigger");
+
+        let refused = repo
+            .register(
+                &client("demo", "c.abc", &registration_document()),
+                &[22_u8; 32],
+                &registration_record("demo", "c.abc"),
+            )
+            .await;
+        assert!(
+            refused.is_err(),
+            "a registration whose trail entry could not be written was reported as stored"
+        );
+
+        let clients: i64 = sqlx::query_scalar(
+            "select count(*) from clients where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("count the clients");
+        assert_eq!(clients, 0, "a client was left with no entry in the trail");
+
+        // The other half of the same statement: no trail entry survived either.
+        let records: i64 = sqlx::query_scalar(
+            "select count(*) from audit_events where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("count the records");
+        assert_eq!(records, 0, "the trail describes a client that does not exist");
+
+        // With the audit store back, the same registration goes through, so
+        // the failure was a refusal and not a poisoned repository.
+        sqlx::query("drop trigger refuse_audit on audit_events")
+            .execute(&db.pool)
+            .await
+            .expect("drop the failing trigger");
+        repo.register(
+            &client("demo", "c.abc", &registration_document()),
+            &[23_u8; 32],
+            &registration_record("demo", "c.abc"),
+        )
+        .await
+        .expect("the retried registration");
+    }
+}
+
+db_test! {
     /// A client registered in one tenant does not exist in another, even when
     /// both tenants used the same `client_id`. This is the case a missing
     /// `tenant_id` predicate breaks, and dynamic registration is the path that
@@ -1714,7 +2241,7 @@ db_test! {
         let beta = store.scope(TenantId::new("beta")).clients(Capabilities::default());
 
         alpha
-            .register(&client("alpha", "c.abc", &registration_document()), &[3_u8; 32])
+            .register(&client("alpha", "c.abc", &registration_document()), &[3_u8; 32], &registration_record("alpha", "c.abc"))
             .await
             .expect("alpha registers");
 
@@ -1727,7 +2254,7 @@ db_test! {
 
         // Both tenants may hold the same identifier without either seeing the
         // other's row, and the registration access tokens stay distinct.
-        beta.register(&client("beta", "c.abc", &registration_document()), &[4_u8; 32])
+        beta.register(&client("beta", "c.abc", &registration_document()), &[4_u8; 32], &registration_record("beta", "c.abc"))
             .await
             .expect("beta registers the same id");
         let digests: Vec<(String, Vec<u8>)> = sqlx::query_as(
@@ -1744,7 +2271,7 @@ db_test! {
         // And an entity belonging to another tenant cannot be registered
         // through this scope at all.
         let wrong = alpha
-            .register(&client("beta", "c.def", &registration_document()), &[5_u8; 32])
+            .register(&client("beta", "c.def", &registration_document()), &[5_u8; 32], &registration_record("beta", "c.def"))
             .await;
         assert!(
             matches!(
@@ -1771,10 +2298,10 @@ db_test! {
         let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
 
         let digest = [7_u8; 32];
-        repo.register(&client("demo", "c.alpha", &registration_document()), &digest)
+        repo.register(&client("demo", "c.alpha", &registration_document()), &digest, &registration_record("demo", "c.alpha"))
             .await
             .expect("alpha registers");
-        repo.register(&client("demo", "c.beta", &registration_document()), &[8_u8; 32])
+        repo.register(&client("demo", "c.beta", &registration_document()), &[8_u8; 32], &registration_record("demo", "c.beta"))
             .await
             .expect("beta registers");
 
@@ -1813,7 +2340,7 @@ db_test! {
         seed_tenant(&db.pool, "demo").await;
         let store = Store::from_pool(db.pool.clone());
         let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
-        repo.register(&client("demo", "c.alpha", &registration_document()), &[9_u8; 32])
+        repo.register(&client("demo", "c.alpha", &registration_document()), &[9_u8; 32], &registration_record("demo", "c.alpha"))
             .await
             .expect("alpha registers");
 
@@ -1856,10 +2383,10 @@ db_test! {
         let beta = store.scope(TenantId::new("beta")).clients(Capabilities::default());
 
         let shared = [11_u8; 32];
-        alpha.register(&client("alpha", "c.abc", &registration_document()), &shared)
+        alpha.register(&client("alpha", "c.abc", &registration_document()), &shared, &registration_record("alpha", "c.abc"))
             .await
             .expect("alpha registers");
-        beta.register(&client("beta", "c.abc", &registration_document()), &shared)
+        beta.register(&client("beta", "c.abc", &registration_document()), &shared, &registration_record("beta", "c.abc"))
             .await
             .expect("beta registers");
 
@@ -1906,7 +2433,7 @@ db_test! {
         seed_tenant(&db.pool, "demo").await;
         let store = Store::from_pool(db.pool.clone());
         let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
-        repo.register(&client("demo", "c.alpha", &registration_document()), &[13_u8; 32])
+        repo.register(&client("demo", "c.alpha", &registration_document()), &[13_u8; 32], &registration_record("demo", "c.alpha"))
             .await
             .expect("alpha registers");
 
@@ -1992,7 +2519,7 @@ db_test! {
         let store = Store::from_pool(db.pool.clone());
         let repo = store.scope(TenantId::new("ghost")).clients(Capabilities::default());
         let failed = repo
-            .register(&client("ghost", "c.abc", &registration_document()), &[7_u8; 32])
+            .register(&client("ghost", "c.abc", &registration_document()), &[7_u8; 32], &registration_record("ghost", "c.abc"))
             .await;
         assert!(
             matches!(failed, Err(asterius_domain::DomainError::Conflict(_))),
@@ -6820,7 +7347,11 @@ mod client_configuration {
         Store::from_pool(pool.clone())
             .scope(TenantId::new(tenant))
             .clients(Capabilities::default())
-            .register(&client(tenant, id, &registration_document()), &digest)
+            .register(
+                &client(tenant, id, &registration_document()),
+                &digest,
+                &registration_record(tenant, id),
+            )
             .await
             .expect("register");
         digest
@@ -7218,20 +7749,10 @@ mod client_configuration {
             .await
             .expect("seed an authorization code");
 
-            let audit = PgAuditSink::new(db.pool.clone());
-            audit
-                .record(
-                    AuditEvent::new(
-                        TenantId::new("demo"),
-                        EventType::CLIENT_REGISTERED,
-                        Outcome::Success,
-                        Actor::Client(ClientId::new("c.abc")),
-                        OffsetDateTime::now_utc(),
-                    )
-                    .client(ClientId::new("c.abc")),
-                )
-                .await
-                .expect("record");
+            // No record is seeded here: since `ast-zq9` the registration above
+            // wrote its own `client.registered` in the transaction that wrote
+            // the row, so the trail entry this test is about is the real one
+            // rather than one the test appended beside it.
 
             repo.deprovision(&ClientId::new("c.abc"), OffsetDateTime::now_utc())
                 .await
@@ -7269,7 +7790,10 @@ mod client_configuration {
             assert_eq!(others, 3, "deleting one client took another's rows with it");
 
             // The trail survives. It is the only record left that the client
-            // ever existed, which is exactly why it has no foreign key here.
+            // ever existed, which is exactly why it has no foreign key here —
+            // and the one record is the `client.registered` the registration
+            // committed with the row, so what survives the delete is the entry
+            // the production path writes.
             let recorded: i64 = sqlx::query_scalar(
                 "select count(*) from audit_events where tenant_id = 'demo' and client_id = 'c.abc'",
             )
@@ -7310,7 +7834,7 @@ mod client_configuration {
             Store::from_pool(db.pool.clone())
                 .scope(TenantId::new("demo"))
                 .clients(mtls_on)
-                .register(&client_with("demo", "c.abc", &document, mtls_on), &digest)
+                .register(&client_with("demo", "c.abc", &document, mtls_on), &digest, &registration_record("demo", "c.abc"))
                 .await
                 .expect("register while mtls is on");
 
@@ -7844,6 +8368,7 @@ mod retention {
         seed_theme(pool, tenant).await;
         seed_ssf_stream(pool, tenant).await;
         seed_ssf_poll_queue(pool, tenant).await;
+        seed_ssf_stream_subjects(pool, tenant).await;
     }
 
     /// One row in each of the four application-role tables (`ast-095`).
@@ -7972,6 +8497,34 @@ mod retention {
             .await
             .expect("seed ssf poll queue");
         }
+    }
+
+    /// One subject the seeded stream carries events about (SSF 1.0 §8.1.3,
+    /// `ast-0ju.4`).
+    ///
+    /// Kept by the policy, like the stream it hangs off: a receiver adds a
+    /// subject with §8.1.3.2 and removes it with §8.1.3.3, and a sweep between
+    /// the two would silently stop the signals a security team believes it is
+    /// still receiving about that person. The kept-table criterion cannot say
+    /// that about an empty table, so there is a row here.
+    ///
+    /// The document is the shape `asterius_ssf::Subject::to_json` writes and
+    /// the key is its canonical form, so the row is one `PgSsfSubjects::add`
+    /// could have written rather than one only this test can read.
+    async fn seed_ssf_stream_subjects(pool: &PgPool, tenant: &str) {
+        sqlx::query(
+            "insert into ssf_stream_subjects
+                 (tenant_id, stream_id, subject_key, subject, verified)
+             values ($1, 'seeded-stream',
+                     '{\"format\":\"opaque\",\"id\":\"seeded-subject\"}',
+                     '{\"format\":\"opaque\",\"id\":\"seeded-subject\"}'::jsonb,
+                     true)
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("seed ssf stream subject");
     }
 
     /// One row per swept expiry-driven table, expiring at `expires`.
@@ -12569,7 +13122,7 @@ mod themes {
 /// statement rather than by anything in Rust.
 mod outbox {
     use super::*;
-    use asterius_domain::outbox::DeadLetterQuery as _;
+    use asterius_domain::outbox::{DeadLetterOperations as _, DeadLetterQuery as _};
     use asterius_store_pg::{Backoff, NewOutboxEntry, Outcome, PgOutbox, Verdict};
     use time::Duration;
 
@@ -12614,7 +13167,135 @@ mod outbox {
             .expect("read the row's status")
     }
 
+    /// Spends `budget` attempts on a fresh row and returns it abandoned.
+    async fn abandoned_row(db: &TestDb, tenant: &str, kind: &str, budget: u32) -> i64 {
+        let now = OffsetDateTime::now_utc();
+        let mut transaction = db.pool.begin().await.expect("begin");
+        let mut entry = NewOutboxEntry::new(kind, "stream-1", serde_json::json!({"body": "a.b.c"}));
+        entry.max_attempts = Some(budget);
+        let id = asterius_store_pg::enqueue(&mut transaction, &TenantId::new(tenant), &entry, now)
+            .await
+            .expect("enqueue");
+        transaction.commit().await.expect("commit");
+        let outbox = outbox(&db.pool);
+        let mut at = now;
+        for _ in 0..budget {
+            let claimed = outbox.claim("worker-a", 10, at).await.expect("claim");
+            assert_eq!(claimed.len(), 1);
+            outbox
+                .ack(
+                    &claimed[0],
+                    &Outcome::failed(&claimed[0], at, "the receiver answered 503".to_owned()),
+                )
+                .await
+                .expect("ack");
+            at += Duration::hours(1);
+        }
+        assert_eq!(row_status(&db.pool, id).await, "abandoned");
+        id
+    }
+
     db_test! {
+        /// **The operator's retry (`ast-f7m.8`).** An abandoned row goes back
+        /// to `pending`, is claimable at once, keeps its attempt count — the
+        /// trail is keyed on it — and gets this deployment's budget on top of
+        /// what it spent. A row that is not abandoned is left alone.
+        async fn a_requeued_dead_letter_is_claimed_again_with_a_fresh_budget(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-retry").await;
+            let id = abandoned_row(&db, "ob-retry", "ssf.set", 2).await;
+            let outbox = outbox(&db.pool).with_max_attempts(3);
+            let tenant = TenantId::new("ob-retry");
+            let now = OffsetDateTime::now_utc() + Duration::days(1);
+
+            // Act
+            let before = outbox.dead_letter(&tenant, id).await.expect("read");
+            let requeued = outbox.requeue(&tenant, id, now).await.expect("requeue");
+            let again = outbox.requeue(&tenant, id, now).await.expect("requeue twice");
+            let claimed = outbox.claim("worker-b", 10, now).await.expect("claim");
+            let after = outbox.dead_letter(&tenant, id).await.expect("read");
+
+            // Assert
+            assert_eq!(before.as_ref().map(|letter| letter.attempts), Some(2));
+            assert!(requeued);
+            assert!(!again, "a row that is no longer abandoned was requeued");
+            assert_eq!(claimed.len(), 1, "the requeued row was not claimable");
+            assert_eq!(claimed[0].id, id);
+            assert_eq!(claimed[0].attempt, 3, "the attempt count was reset");
+            assert_eq!(claimed[0].max_attempts, 5, "2 spent + a budget of 3");
+            assert_eq!(after, None, "a requeued row is still on the dead-letter screen");
+            let letters = outbox.dead_letters(&tenant, 10).await.expect("list");
+            assert!(letters.is_empty());
+        }
+    }
+
+    db_test! {
+
+        /// **The operator's drop.** The row and its attempts are gone, as
+        /// after the retention sweep; a second drop finds nothing; and a row
+        /// that is still owed cannot be dropped.
+        async fn a_dropped_dead_letter_is_gone_with_its_attempts(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-drop").await;
+            let id = abandoned_row(&db, "ob-drop", "ssf.set", 1).await;
+            let owed = queue(&db.pool, "ob-drop", "ssf.set", None, OffsetDateTime::now_utc()).await;
+            let outbox = outbox(&db.pool);
+            let tenant = TenantId::new("ob-drop");
+
+            // Act
+            let dropped = outbox.drop_letter(&tenant, id).await.expect("drop");
+            let again = outbox.drop_letter(&tenant, id).await.expect("drop twice");
+            let refused = outbox.drop_letter(&tenant, owed).await.expect("drop a live row");
+
+            // Assert
+            assert!(dropped);
+            assert!(!again);
+            assert!(!refused, "a row still owed was dropped");
+            let rows: i64 = sqlx::query_scalar("select count(*) from outbox where outbox_id = $1")
+                .bind(id)
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
+            let attempts: i64 =
+                sqlx::query_scalar("select count(*) from outbox_attempts where outbox_id = $1")
+                    .bind(id)
+                    .fetch_one(&db.pool)
+                    .await
+                    .expect("count");
+            assert_eq!(rows, 0);
+            assert_eq!(attempts, 0);
+            assert_eq!(row_status(&db.pool, owed).await, "pending");
+        }
+    }
+
+    db_test! {
+
+        /// Both operations are the tenant's: another tenant's row is not one
+        /// this tenant can read, requeue or drop by naming its id.
+        async fn another_tenants_dead_letter_is_out_of_reach(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-mine").await;
+            seed_tenant(&db.pool, "ob-theirs").await;
+            let id = abandoned_row(&db, "ob-theirs", "ssf.set", 1).await;
+            let outbox = outbox(&db.pool);
+            let mine = TenantId::new("ob-mine");
+            let now = OffsetDateTime::now_utc();
+
+            // Act
+            let read = outbox.dead_letter(&mine, id).await.expect("read");
+            let requeued = outbox.requeue(&mine, id, now).await.expect("requeue");
+            let dropped = outbox.drop_letter(&mine, id).await.expect("drop");
+
+            // Assert
+            assert_eq!(read, None);
+            assert!(!requeued);
+            assert!(!dropped);
+            assert_eq!(row_status(&db.pool, id).await, "abandoned");
+        }
+    }
+
+    db_test! {
+
         /// The property the table exists for: the row and the change it
         /// describes commit together or not at all. A caller that rolls back
         /// must not leave a notification announcing something that never

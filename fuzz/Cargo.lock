@@ -103,10 +103,12 @@ version = "0.0.0"
 dependencies = [
  "askama",
  "asterius-domain",
+ "asterius-ssf",
  "asterius-web",
  "async-trait",
  "axum",
  "base64",
+ "futures-core",
  "hex",
  "image",
  "serde",
@@ -255,6 +257,7 @@ dependencies = [
  "thiserror",
  "time",
  "url",
+ "uuid",
 ]
 
 [[package]]

@@ -145,7 +145,7 @@ docs (table_name, column_name, repairable, row_key, doc) as (
            jsonb_build_object('tenant_id', tenant_id, 'outbox_id', outbox_id), payload
     from outbox
     union all
-    -- One receiver's subject membership (`0032`, SSF 1.0 §8.1.3). Scanned like
+    -- One receiver's subject membership (`0036`, SSF 1.0 §8.1.3). Scanned like
     -- the rest, and `repairable` is false for a reason of its own rather than
     -- append-only-ness: every member name in this column is a constant of
     -- `asterius_ssf::subject` — `format`, and the members RFC 9493 §3.2 and

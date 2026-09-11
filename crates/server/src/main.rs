@@ -17,7 +17,8 @@ use asterius_server::observability::health::HealthState;
 use asterius_server::observability::{self, Metrics};
 use asterius_server::outbound::HttpsClientUrlFetcher;
 use asterius_server::outbox::{
-    HttpDeliverer, JournalDeliverer, OutboxWorker, PgPushStreams, SsfPushDeliverer,
+    CibaPingDeliverer, HttpDeliverer, JournalDeliverer, OutboxWorker, PgPingRequests,
+    PgPushStreams, SsfPushDeliverer,
 };
 use asterius_server::retention::RetentionSweep;
 use asterius_server::rotation::RotationSweep;
@@ -314,6 +315,9 @@ struct AdminContext {
     /// deployment's one handle, and a second one built for the console would
     /// report a backlog nothing is working through.
     outbox: Arc<dyn asterius_domain::DeadLetterQuery>,
+    /// The same `PgOutbox`, for the operator's retry and drop of a dead
+    /// letter (`ast-f7m.8`).
+    dead_letters: Arc<dyn asterius_domain::DeadLetterOperations>,
     /// The reserved tenant a deployment admin's session lives in (ADR-0010),
     /// or `None` for a deployment with no `[admin]` table and therefore no
     /// deployment admin. Which tenant may hold deployment authority is the
@@ -345,6 +349,7 @@ impl AdminContext {
             registration: config.registration.clone(),
             outbound: Arc::clone(outbound),
             outbox: Arc::new(outbox.clone()),
+            dead_letters: Arc::new(outbox.clone()),
             reserved_tenant: config.admin.as_ref().map(|admin| admin.tenant.clone()),
             queue: Arc::new(outbox.clone()),
             kek: Arc::clone(kek),
@@ -393,6 +398,7 @@ fn admin_routes(
                 registration: context.registration,
                 outbound: context.outbound,
                 outbox: context.outbox,
+                dead_letters: context.dead_letters,
                 kek: Arc::clone(&context.kek),
                 signer: prepare_signer(keys),
                 queue: Some(context.queue),
@@ -620,11 +626,21 @@ fn outbox_worker(
 
     match asterius_server::outbound::HttpsPoster::new() {
         Ok(poster) => {
+            let poster = Arc::new(poster);
             worker = worker
-                .with(Arc::new(HttpDeliverer::new("logout", poster.clone())))
+                .with(Arc::new(HttpDeliverer::new("logout", (*poster).clone())))
                 .with(Arc::new(SsfPushDeliverer::new(
                     Arc::new(PgPushStreams::new(store.clone(), Arc::clone(kek))),
-                    Arc::new(poster),
+                    Arc::clone(&poster) as Arc<dyn asterius_server::outbox::SetPoster>,
+                    Arc::clone(&audit),
+                    Arc::clone(&clock),
+                )))
+                // CIBA Core 1.0 §10.2 ping notifications (`ast-lh3.5`): a
+                // `POST` through the same outbound path, reading the sealed
+                // credentials off the request at delivery time.
+                .with(Arc::new(CibaPingDeliverer::new(
+                    Arc::new(PgPingRequests::new(store.clone(), Arc::clone(kek))),
+                    poster,
                     audit,
                     clock,
                 )));
@@ -746,6 +762,12 @@ fn rewrap_kek(path: &std::path::Path, new_kek: Option<&KekSource>) -> Result<(),
                         pass.left_behind,
                         pass.stranded
                     );
+                    if pass.ssf_push_credentials > 0 || pass.ciba_ping_envelopes > 0 {
+                        println!(
+                            "{}: SSF push credentials {}, CIBA ping envelopes {}",
+                            tenant.id, pass.ssf_push_credentials, pass.ciba_ping_envelopes
+                        );
+                    }
                 }
             }
         }

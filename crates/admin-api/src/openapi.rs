@@ -165,6 +165,17 @@ fn operation_object(operation: &Operation) -> Value {
         parameters.push(json!({ "$ref": "#/components/parameters/cursor" }));
         parameters.push(json!({ "$ref": "#/components/parameters/limit" }));
     }
+    if is_audit_query(operation) {
+        for (name, description) in crate::audit::PARAMETERS {
+            parameters.push(json!({
+                "name": name,
+                "in": "query",
+                "required": false,
+                "description": description,
+                "schema": { "type": "string", "maxLength": crate::audit::MAX_VALUE_LEN },
+            }));
+        }
+    }
 
     let mut object = json!({
         "operationId": operation.id(),
@@ -198,6 +209,14 @@ fn operation_object(operation: &Operation) -> Value {
     object
 }
 
+/// The two reads of the trail take the same filters (`ast-lh3.9`).
+fn is_audit_query(operation: &Operation) -> bool {
+    matches!(
+        operation.id(),
+        crate::AUDIT_EVENTS_LIST_ID | crate::AUDIT_EVENTS_EXPORT_ID
+    )
+}
+
 fn idempotency_parameter() -> Value {
     json!({
         "name": "Idempotency-Key",
@@ -224,6 +243,18 @@ fn responses(operation: &Operation) -> Value {
     let content = if operation.is_paginated() {
         json!({
             "application/json": { "schema": { "$ref": "#/components/schemas/Page" } }
+        })
+    } else if operation.id() == crate::AUDIT_EVENTS_EXPORT_ID {
+        json!({
+            crate::audit::NDJSON: {
+                "schema": {
+                    "type": "string",
+                    "description": format!(
+                        "One JSON object per line, newest first, at most {} lines.",
+                        asterius_domain::audit::query::EXPORT_MAX_RECORDS
+                    ),
+                }
+            }
         })
     } else {
         json!({ "application/json": { "schema": { "type": "object" } } })

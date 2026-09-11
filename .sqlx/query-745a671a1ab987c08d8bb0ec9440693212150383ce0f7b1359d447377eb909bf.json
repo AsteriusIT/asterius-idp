@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update credentials set disabled_at = $4\n             where tenant_id = $1 and user_id = $2 and credential_id = $3\n               and kind = 'passkey' and disabled_at is null\n             returning passkey_aaguid, passkey_backup_eligible, label",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "passkey_aaguid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "passkey_backup_eligible",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "label",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "745a671a1ab987c08d8bb0ec9440693212150383ce0f7b1359d447377eb909bf"
+}
