@@ -29,6 +29,7 @@ mod notifications;
 mod outbox;
 mod passkeys;
 mod passwords;
+mod policies;
 mod provisioning;
 mod rate_limits;
 mod recovery;
@@ -80,6 +81,7 @@ pub use outbox::{
 };
 pub use passkeys::{PgPasskeyRepository, RemovedPasskey};
 pub use passwords::PgPasswordVerifier;
+pub use policies::PgPolicies;
 pub use provisioning::ProvisionedTenants;
 pub use rate_limits::PgRateLimitStore;
 pub use recovery::PgRecoveryTokens;

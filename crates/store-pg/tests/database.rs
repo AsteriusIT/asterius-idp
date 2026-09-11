@@ -8367,6 +8367,7 @@ mod retention {
         seed_application_roles(pool, tenant, user).await;
 
         seed_theme(pool, tenant).await;
+        seed_policy(pool, tenant).await;
         seed_ssf_stream(pool, tenant).await;
         seed_ssf_poll_queue(pool, tenant).await;
         seed_ssf_stream_subjects(pool, tenant).await;
@@ -8413,6 +8414,30 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed client role assignment");
+    }
+
+    /// The tenant's authorization policy (`ast-pj0.4`).
+    ///
+    /// Kept by the policy — a rule catalogue is configuration and outlives
+    /// every decision taken against it — so the kept-table criterion needs a
+    /// row here before it can say anything about the table. Written through
+    /// `RuleSet::to_json`, so it is a document this build reads back: a
+    /// fixture the store would refuse is a fixture that lies about what is
+    /// stored.
+    async fn seed_policy(pool: &PgPool, tenant: &str) {
+        let rules = asterius_domain::policy::RuleSet::parse(
+            r#"{"version": 1, "rules": [{"id": "seeded", "effect": "deny"}]}"#,
+        )
+        .expect("a valid document");
+        sqlx::query(
+            "insert into tenant_policies (tenant_id, document) values ($1, $2)
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .bind(rules.to_json())
+        .execute(pool)
+        .await
+        .expect("seed policy");
     }
 
     /// The tenant's theme and one image it could name (`ast-ndk.1`).
@@ -14706,6 +14731,183 @@ mod application_roles {
                     .expect("catalogue")
                     .is_empty()
             );
+        }
+    }
+}
+
+/// A tenant's authorization policy for the AuthZEN PDP (`ast-pj0.4`).
+mod policies {
+    use super::*;
+    use asterius_domain::DomainError;
+    use asterius_domain::policy::RuleSet;
+    use asterius_domain::ports::PolicyStore as _;
+    use asterius_store_pg::PgPolicies;
+    use time::OffsetDateTime;
+
+    fn catalogue(id: &str, effect: &str) -> RuleSet {
+        RuleSet::parse(&format!(
+            r#"{{"version": 1, "rules": [{{"id": "{id}", "effect": "{effect}",
+                 "when": {{"group": "finance"}}}}]}}"#
+        ))
+        .expect("a valid document")
+    }
+
+    db_test! {
+        /// A tenant that has never written a policy reads as `None`, not as an
+        /// empty rule set: the two deny the same things and are different
+        /// operator states, and the decision context says which.
+        async fn a_tenant_with_no_policy_reads_as_nothing(db) {
+            seed_tenant(&db.pool, "demo").await;
+
+            let loaded = PgPolicies::new(db.pool.clone())
+                .load(&TenantId::new("demo"))
+                .await
+                .expect("a read");
+
+            assert_eq!(loaded, None);
+        }
+    }
+
+    db_test! {
+        /// What was written is what comes back, conditions and all.
+        async fn a_policy_survives_the_round_trip(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let policies = PgPolicies::new(db.pool.clone());
+            let rules = catalogue("deny-contractors", "deny");
+
+            policies
+                .replace(&TenantId::new("demo"), &rules, OffsetDateTime::now_utc())
+                .await
+                .expect("a write");
+
+            let loaded = policies
+                .load(&TenantId::new("demo"))
+                .await
+                .expect("a read")
+                .expect("a document");
+            assert_eq!(loaded.rules, rules);
+        }
+    }
+
+    db_test! {
+        /// A policy is replaced whole: deny precedence is a property of the
+        /// set, and a merge would leave a tenant authorised by half of two
+        /// policies.
+        async fn a_second_write_replaces_the_first(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let policies = PgPolicies::new(db.pool.clone());
+            let now = OffsetDateTime::now_utc();
+
+            policies
+                .replace(&TenantId::new("demo"), &catalogue("a", "deny"), now)
+                .await
+                .expect("first");
+            policies
+                .replace(&TenantId::new("demo"), &catalogue("b", "permit"), now)
+                .await
+                .expect("second");
+
+            let rows: i64 =
+                sqlx::query_scalar("select count(*) from tenant_policies where tenant_id = $1")
+                    .bind("demo")
+                    .fetch_one(&db.pool)
+                    .await
+                    .expect("count");
+            assert_eq!(rows, 1);
+            assert_eq!(
+                policies
+                    .load(&TenantId::new("demo"))
+                    .await
+                    .expect("a read")
+                    .expect("a document")
+                    .rules,
+                catalogue("b", "permit")
+            );
+        }
+    }
+
+    db_test! {
+        /// Clearing puts the tenant back to denying everything, and says
+        /// whether there was anything to clear.
+        async fn clearing_reports_whether_there_was_a_policy(db) {
+            seed_tenant(&db.pool, "demo").await;
+            let policies = PgPolicies::new(db.pool.clone());
+
+            policies
+                .replace(
+                    &TenantId::new("demo"),
+                    &catalogue("a", "deny"),
+                    OffsetDateTime::now_utc(),
+                )
+                .await
+                .expect("a write");
+
+            assert!(policies.clear(&TenantId::new("demo")).await.expect("a delete"));
+            assert!(
+                !policies
+                    .clear(&TenantId::new("demo"))
+                    .await
+                    .expect("a second delete")
+            );
+        }
+    }
+
+    db_test! {
+        /// The failure this adapter exists to make loud: a row this build will
+        /// not read is refused, never evaluated as the rules it happened to
+        /// understand — a policy whose deny rules were dropped by an upgrade
+        /// looks exactly like a deployment that works.
+        async fn a_stored_document_this_build_refuses_fails_the_read(db) {
+            seed_tenant(&db.pool, "demo").await;
+            sqlx::query(
+                "insert into tenant_policies (tenant_id, document)
+                 values ($1, '{\"version\": 99, \"rules\": []}'::jsonb)",
+            )
+            .bind("demo")
+            .execute(&db.pool)
+            .await
+            .expect("a row from a newer schema");
+
+            let refused = PgPolicies::new(db.pool.clone())
+                .load(&TenantId::new("demo"))
+                .await;
+
+            assert!(matches!(refused, Err(DomainError::Invalid { .. })));
+        }
+    }
+
+    db_test! {
+        /// The schema refuses a document that is not one, whoever writes it:
+        /// a restored dump and a support script are as much a source of rows
+        /// as the adapter is.
+        async fn the_column_refuses_a_document_that_is_not_one(db) {
+            seed_tenant(&db.pool, "demo").await;
+
+            let refused = sqlx::query(
+                "insert into tenant_policies (tenant_id, document) values ($1, '[]'::jsonb)",
+            )
+            .bind("demo")
+            .execute(&db.pool)
+            .await;
+
+            assert!(refused.is_err());
+        }
+    }
+
+    db_test! {
+        /// A policy for a tenant that does not exist is a conflict and not a
+        /// storage failure: the caller asked about a tenant, and "no such
+        /// tenant" is an answer.
+        async fn a_policy_for_an_unknown_tenant_is_refused(db) {
+            let refused = PgPolicies::new(db.pool.clone())
+                .replace(
+                    &TenantId::new("nobody"),
+                    &RuleSet::deny_all(),
+                    OffsetDateTime::now_utc(),
+                )
+                .await;
+
+            assert!(matches!(refused, Err(DomainError::Conflict(_))));
         }
     }
 }

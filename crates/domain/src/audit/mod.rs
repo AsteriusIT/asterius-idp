@@ -336,6 +336,16 @@ impl EventType {
     pub const APP_ROLE_ASSIGNED: Self = Self("app_role.assigned");
     /// An application role was taken away from an account.
     pub const APP_ROLE_WITHDRAWN: Self = Self("app_role.withdrawn");
+    /// A tenant's authorization policy was replaced or removed (`ast-pj0.4`).
+    ///
+    /// One type for both edits, told apart by a detail, because both answer
+    /// the same question: what did this tenant's PDP decide with, and since
+    /// when. The entry carries how many rules the new document holds and
+    /// whether it was cleared — never the document itself, which is a
+    /// catalogue an administrator can read from the admin API and which would
+    /// put every attribute name a tenant reasons about into the one table this
+    /// deployment keeps forever.
+    pub const POLICY_UPDATED: Self = Self("policy.updated");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
     /// A backchannel authentication request was accepted (CIBA Core 1.0 §7.3).
@@ -470,7 +480,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 68] = [
+    pub const ALL: [Self; 69] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -520,6 +530,7 @@ impl EventType {
         Self::APP_ROLE_REMOVED,
         Self::APP_ROLE_ASSIGNED,
         Self::APP_ROLE_WITHDRAWN,
+        Self::POLICY_UPDATED,
         Self::AUDIT_PURGED,
         Self::BACKCHANNEL_REQUESTED,
         Self::BACKCHANNEL_REFUSED,

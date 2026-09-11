@@ -55,6 +55,14 @@ docs (table_name, column_name, repairable, row_key, doc) as (
            jsonb_build_object('tenant_id', tenant_id), document
     from tenant_themes
     union all
+    -- The tenant's authorization rules (`0038`). Validated by
+    -- `RuleSet::from_json` on the way in and on the way out, and an
+    -- administrator may name any member inside a rule, so this column is as
+    -- reachable as `users.claims` is.
+    select 'tenant_policies', 'document', true,
+           jsonb_build_object('tenant_id', tenant_id), document
+    from tenant_policies
+    union all
     select 'clients', 'jwks', true,
            jsonb_build_object('tenant_id', tenant_id, 'client_id', client_id), jwks
     from clients
@@ -180,6 +188,7 @@ docs (table_name, column_name, repairable, row_key, doc) as (
 inventory (table_name, column_name) as (
     values ('tenants', 'settings'),
            ('tenant_themes', 'document'),
+           ('tenant_policies', 'document'),
            ('clients', 'jwks'),
            ('clients', 'agent_policy'),
            ('clients', 'software_statement'),

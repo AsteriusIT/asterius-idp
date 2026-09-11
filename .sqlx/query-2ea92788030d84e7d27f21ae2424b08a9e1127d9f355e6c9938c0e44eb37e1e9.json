@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select document, updated_at from tenant_policies where tenant_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "document",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 1,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "2ea92788030d84e7d27f21ae2424b08a9e1127d9f355e6c9938c0e44eb37e1e9"
+}

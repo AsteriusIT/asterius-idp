@@ -40,7 +40,8 @@ use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Effect, Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
-    audit, clients, csrf, initial_access_tokens, keys, openapi, outbox, ssf, throttle, users,
+    audit, clients, csrf, initial_access_tokens, keys, openapi, outbox, policies, ssf, throttle,
+    users,
 };
 
 /// The client address, as this crate sees it.
@@ -296,6 +297,9 @@ async fn route(
         crate::OUTBOX_DEAD_LETTERS_ID => context.list_dead_letters().await,
         crate::OUTBOX_DEAD_LETTER_RETRY_ID => context.retry_dead_letter().await,
         crate::OUTBOX_DEAD_LETTER_DROP_ID => context.drop_dead_letter().await,
+        crate::POLICY_READ_ID => context.read_policy().await,
+        crate::POLICY_UPDATE_ID => context.update_policy(body).await,
+        crate::POLICY_DELETE_ID => context.delete_policy().await,
         crate::SSF_STREAMS_LIST_ID => context.list_streams().await,
         crate::SSF_STREAM_STATUS_UPDATE_ID => context.update_stream_status(body).await,
         crate::SSF_STREAM_VERIFY_ID => context.verify_stream(body).await,
@@ -1149,6 +1153,100 @@ impl Handling<'_> {
             Self::dead_letter_detail(&letter).label("operation", crate::OUTBOX_DEAD_LETTER_DROP_ID),
         )
         .await;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    }
+
+    /// `GET /policies` — the tenant's authorization policy (`ast-pj0.4`).
+    ///
+    /// A tenant that has never written one is a 200 carrying the empty
+    /// document rather than a 404: the editor has to open on something, and
+    /// "no policy" is a state of the tenant rather than a missing resource.
+    async fn read_policy(&self) -> Result<Response, AdminError> {
+        let stored = self
+            .state
+            .backend
+            .policies()
+            .load(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::POLICY_READ_ID, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &policies::document(stored.as_ref()),
+        ))
+    }
+
+    /// `PUT /policies` — replaces the policy after parsing it (`ast-pj0.4`).
+    ///
+    /// Parsed before it is stored, and stored only as a
+    /// `asterius_domain::policy::RuleSet`: the port has no method that takes a
+    /// `Value`, so a document this build cannot read cannot reach the column
+    /// the evaluator reads back.
+    ///
+    /// The record carries the rule count and not the rules. A policy is the
+    /// list of attributes, groups and roles a tenant reasons about, and the
+    /// audit trail is the one table this deployment keeps forever; the
+    /// document itself is readable by anybody holding `admin.policies:read`,
+    /// which is where it belongs.
+    async fn update_policy(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, policies::MAX_BODY_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let rules = policies::parse_document(&bytes)?;
+
+        self.state
+            .backend
+            .policies()
+            .replace(&self.tenant.id, &rules, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::POLICY_UPDATE_ID, &error))?;
+
+        self.record(
+            EventType::POLICY_UPDATED,
+            Detail::new()
+                .label("operation", crate::POLICY_UPDATE_ID)
+                .number(
+                    "rules",
+                    i64::try_from(rules.rules().len()).unwrap_or(i64::MAX),
+                )
+                .flag("cleared", false),
+        )
+        .await;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "document": rules.to_json(),
+                "rule_count": rules.rules().len(),
+            }),
+        ))
+    }
+
+    /// `DELETE /policies` — the tenant goes back to denying everything.
+    ///
+    /// 204 whether or not there was a document: the tenant ends in the state
+    /// the caller asked for, and a 404 for "there was nothing to delete" would
+    /// make a retried click an error. The record says it was a clearing.
+    async fn delete_policy(&self) -> Result<Response, AdminError> {
+        let removed = self
+            .state
+            .backend
+            .policies()
+            .clear(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::POLICY_DELETE_ID, &error))?;
+
+        if removed {
+            self.record(
+                EventType::POLICY_UPDATED,
+                Detail::new()
+                    .label("operation", crate::POLICY_DELETE_ID)
+                    .number("rules", 0)
+                    .flag("cleared", true),
+            )
+            .await;
+        }
+
         Ok(StatusCode::NO_CONTENT.into_response())
     }
 
@@ -3133,6 +3231,10 @@ mod tests {
         /// last. `World::new` seeds two `ssf.set` rows per tenant so that the
         /// retry and drop routes name something (`ast-f7m.8`).
         dead_letters: Mutex<Vec<asterius_domain::outbox::DeadLetter>>,
+        /// The tenants' authorization policies (`ast-pj0.4`), keyed by
+        /// tenant id. Absent is a tenant that has never written one, which is
+        /// the state every tenant starts in.
+        policies: Mutex<BTreeMap<String, asterius_domain::policy::StoredPolicy>>,
         /// The rows an operator put back on the schedule (`ast-f7m.8`).
         requeued: Mutex<Vec<i64>>,
         /// The rows an operator dropped.
@@ -3202,6 +3304,48 @@ mod tests {
 
     #[derive(Debug, Clone)]
     struct Handle(Arc<Fake>);
+
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::PolicyStore for Handle {
+        async fn load(
+            &self,
+            tenant: &TenantId,
+        ) -> Result<Option<asterius_domain::policy::StoredPolicy>, DomainError> {
+            Ok(self
+                .0
+                .policies
+                .lock()
+                .expect("an uncontended lock")
+                .get(tenant.as_str())
+                .cloned())
+        }
+
+        async fn replace(
+            &self,
+            tenant: &TenantId,
+            rules: &asterius_domain::policy::RuleSet,
+            now: OffsetDateTime,
+        ) -> Result<(), DomainError> {
+            self.0.policies.lock().expect("an uncontended lock").insert(
+                tenant.as_str().to_owned(),
+                asterius_domain::policy::StoredPolicy {
+                    rules: rules.clone(),
+                    updated_at: now,
+                },
+            );
+            Ok(())
+        }
+
+        async fn clear(&self, tenant: &TenantId) -> Result<bool, DomainError> {
+            Ok(self
+                .0
+                .policies
+                .lock()
+                .expect("an uncontended lock")
+                .remove(tenant.as_str())
+                .is_some())
+        }
+    }
 
     #[async_trait::async_trait]
     impl asterius_domain::outbox::DeadLetterQuery for Handle {
@@ -4482,6 +4626,10 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn policies(&self) -> Arc<dyn asterius_domain::ports::PolicyStore> {
+            Arc::new(self.clone())
+        }
+
         fn ssf(&self) -> Arc<dyn ssf::SsfAdministration> {
             Arc::new(self.clone())
         }
@@ -5194,6 +5342,13 @@ mod tests {
             // catalogue: assignment is a foreign key onto it, so a name that
             // was never created is a 409 rather than a silent creation.
             crate::USER_APP_ROLE_ASSIGN_ID => serde_json::json!({"name": "auditor"}),
+            // A whole policy document: the route refuses `{}` because a
+            // document with no version is not one this build reads
+            // (`ast-pj0.4`).
+            crate::POLICY_UPDATE_ID => serde_json::json!({
+                "version": 1,
+                "rules": [{"id": "walked", "effect": "deny"}],
+            }),
             crate::KEYS_ROTATE_ID => serde_json::json!({"alg": "EdDSA"}),
             // A whole status document: the route refuses `{}` because a
             // status it did not name is not a status (`ast-f7m.8`).
@@ -5221,6 +5376,182 @@ mod tests {
             .await
             .expect("a readable body");
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    // ---- the policy screen (`ast-pj0.4`) ----------------------------------
+
+    /// A `PUT` or `DELETE` of the policy, with the CSRF token a first-party
+    /// mutation needs. No `Idempotency-Key`: both verbs are idempotent by
+    /// their own definition (RFC 9110 §9.2.2) and the registry asks for a key
+    /// on `POST` only.
+    async fn edit_policy(
+        world: &World,
+        operation: &Operation,
+        cookie: &str,
+        body: serde_json::Value,
+    ) -> Response {
+        let body = if body.is_null() {
+            Body::empty()
+        } else {
+            Body::from(body.to_string())
+        };
+        world
+            .send(
+                request_for(operation)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(cookie))
+                    .body(body)
+                    .expect("a request"),
+            )
+            .await
+    }
+
+    /// A tenant that has never written a policy still gets a document to open
+    /// the editor on: "no policy" is a state of the tenant, not a missing
+    /// resource.
+    #[tokio::test]
+    async fn a_tenant_with_no_policy_reads_an_empty_document() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world.get(&crate::POLICY_READ, &cookie).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_of(response).await;
+        assert_eq!(body["rule_count"], serde_json::json!(0));
+        assert_eq!(body["updated_at"], serde_json::Value::Null);
+    }
+
+    /// The round trip the console editor makes: put a document, get it back
+    /// unchanged.
+    #[tokio::test]
+    async fn a_policy_survives_the_round_trip_through_the_api() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let document = serde_json::json!({
+            "version": 1,
+            "rules": [{
+                "id": "deny-contractors",
+                "effect": "deny",
+                "when": {"group": "contractors"},
+                "reason_admin": "contractors do not reach this",
+            }],
+        });
+
+        // Act
+        let written = edit_policy(&world, &crate::POLICY_UPDATE, &cookie, document.clone()).await;
+        let read = world.get(&crate::POLICY_READ, &cookie).await;
+
+        // Assert
+        assert_eq!(written.status(), StatusCode::OK);
+        let body = body_of(read).await;
+        assert_eq!(body["document"], document);
+        assert_eq!(body["rule_count"], serde_json::json!(1));
+    }
+
+    /// A tenant cannot supply code: a condition this build does not know is a
+    /// 400 naming the path, never a document stored for a later build to
+    /// interpret.
+    #[tokio::test]
+    async fn a_document_this_build_does_not_understand_is_refused() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let document = serde_json::json!({
+            "version": 1,
+            "rules": [{"id": "r", "effect": "permit", "when": {"eval": "1 + 1"}}],
+        });
+
+        // Act
+        let response = edit_policy(&world, &crate::POLICY_UPDATE, &cookie, document).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            world
+                .handle
+                .0
+                .policies
+                .lock()
+                .expect("an uncontended lock")
+                .is_empty()
+        );
+    }
+
+    /// Both edits leave one type in the trail, told apart by a flag: a reader
+    /// filtering on `policy.updated` sees every change to the tenant's
+    /// authorization, whichever direction it went.
+    #[tokio::test]
+    async fn writing_and_clearing_a_policy_are_both_recorded() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let document = serde_json::json!({
+            "version": 1,
+            "rules": [{"id": "r", "effect": "deny"}],
+        });
+
+        // Act
+        edit_policy(&world, &crate::POLICY_UPDATE, &cookie, document).await;
+        let cleared = edit_policy(
+            &world,
+            &crate::POLICY_DELETE,
+            &cookie,
+            serde_json::Value::Null,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(cleared.status(), StatusCode::NO_CONTENT);
+        assert!(
+            world
+                .handle
+                .0
+                .policies
+                .lock()
+                .expect("an uncontended lock")
+                .is_empty()
+        );
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        let recorded = events
+            .iter()
+            .filter(|event| event.event_type == EventType::POLICY_UPDATED)
+            .count();
+        assert_eq!(recorded, 2);
+    }
+
+    /// The scope is its own: reading the tenant's lifetimes is not reading the
+    /// authorization model. An auditor holds the read by definition and no
+    /// write at all.
+    #[tokio::test]
+    async fn an_auditor_reads_the_policy_and_does_not_write_it() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::SecurityAuditor]);
+
+        // Act
+        let read = world.get(&crate::POLICY_READ, &cookie).await;
+        let written = edit_policy(
+            &world,
+            &crate::POLICY_UPDATE,
+            &cookie,
+            serde_json::json!({"version": 1, "rules": []}),
+        )
+        .await;
+
+        // Assert
+        assert_eq!(read.status(), StatusCode::OK);
+        assert_eq!(written.status(), StatusCode::FORBIDDEN);
     }
 
     // ---- the dead-letter screen (`ast-0ju.9`) -----------------------------

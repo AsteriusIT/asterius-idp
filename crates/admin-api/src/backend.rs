@@ -225,6 +225,20 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// reach and queue where nothing delivers from.
     fn ssf(&self) -> Arc<dyn crate::ssf::SsfAdministration>;
 
+    /// The tenants' authorization policies, for the PDP's admin screens
+    /// (`ast-pj0.4`).
+    ///
+    /// A handle for the same reason [`Self::tenants`] is one: the object
+    /// behind it is the composition root's `PgPolicies`, over the pool the
+    /// evaluation endpoint (`ast-pj0.1`) decides from. A second one built here
+    /// would edit a policy nothing evaluates.
+    ///
+    /// The port is [`asterius_domain::ports::PolicyStore`], whose write side
+    /// takes a parsed [`asterius_domain::policy::RuleSet`]: there is no method
+    /// on it that accepts a `Value`, so no admin route can store a document
+    /// the evaluator would later refuse to read.
+    fn policies(&self) -> Arc<dyn asterius_domain::ports::PolicyStore>;
+
     /// The audit trail, for the query API and the export (`ast-lh3.9`).
     ///
     /// The port is the read-only [`asterius_domain::audit::AuditQuery`] and
