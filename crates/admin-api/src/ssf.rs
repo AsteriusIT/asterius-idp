@@ -418,7 +418,7 @@ mod tests {
         let bodies = [
             r#"{"status":"paused","reason":"   "}"#.to_owned(),
             format!(r#"{{"status":"paused","reason":"{long}"}}"#),
-            r#"{"status":"paused","reason":"a b"}"#.to_owned(),
+            "{\"status\":\"paused\",\"reason\":\"a\u{0}b\"}".to_owned(),
         ];
 
         // Act / Assert
