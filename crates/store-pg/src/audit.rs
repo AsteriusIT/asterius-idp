@@ -316,67 +316,99 @@ pub struct VerifiedChain {
 #[async_trait::async_trait]
 impl AuditSink for PgAuditSink {
     async fn record(&self, event: AuditEvent) -> Result<(), DomainError> {
-        // Hash what will actually be stored, not what was handed to us. See
-        // `as_stored`.
-        let event = as_stored(event);
         let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
         let connection = transaction.acquire().await.map_err(to_domain_error)?;
+        append(connection, event).await?;
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(())
+    }
+}
 
-        // Appending to a chain is a read-then-write, so two concurrent writers
-        // for one tenant would both read the same tip and produce a fork. The
-        // lock is per tenant and held for the transaction, so tenants do not
-        // queue behind each other.
-        sqlx::query("select pg_advisory_xact_lock(hashtext($1))")
-            .bind(event.tenant.as_str())
-            .execute(&mut *connection)
-            .await
-            .map_err(to_domain_error)?;
+/// Appends one record to a tenant's chain **on a caller's connection**.
+///
+/// Separate from [`AuditSink::record`] so that a write which must not be
+/// observable without its trail entry can put both in one transaction
+/// (`ast-zq9`): the caller opens the transaction, writes its row, calls this,
+/// and commits. Nothing here commits, and nothing here opens a transaction —
+/// on a bare connection the insert is its own transaction and the advisory
+/// lock is released with it, which is exactly what [`AuditSink::record`]
+/// wants; inside a caller's transaction the lock is held until that
+/// transaction ends, which is what makes the pairing atomic.
+///
+/// The append-only hash chain is unchanged by the move. The tip is read under
+/// `pg_advisory_xact_lock(hashtext(tenant))`, the same per-tenant lock every
+/// other appender takes, so a record written beside a client row and one
+/// written by the sink cannot read the same tip and fork the chain. What the
+/// caller's transaction adds is that a record whose row is rolled back is
+/// rolled back with it, so the chain never holds a line about something that
+/// did not happen.
+///
+/// # Errors
+///
+/// [`DomainError::Storage`] if the tip cannot be read or the row cannot be
+/// written, and [`DomainError::Invalid`] if the stored tip is not a hash. In
+/// every case nothing of this append reached the chain.
+pub(crate) async fn append(
+    connection: &mut sqlx::PgConnection,
+    event: AuditEvent,
+) -> Result<(), DomainError> {
+    // Hash what will actually be stored, not what was handed to us. See
+    // `as_stored`.
+    let event = as_stored(event);
 
-        let previous = sqlx::query(
-            "select event_hash from audit_events
-             where tenant_id = $1
-             order by event_id desc
-             limit 1",
-        )
+    // Appending to a chain is a read-then-write, so two concurrent writers
+    // for one tenant would both read the same tip and produce a fork. The
+    // lock is per tenant and held for the transaction, so tenants do not
+    // queue behind each other.
+    sqlx::query("select pg_advisory_xact_lock(hashtext($1))")
         .bind(event.tenant.as_str())
-        .fetch_optional(&mut *connection)
-        .await
-        .map_err(to_domain_error)?
-        .map(|row| EventHash::from_slice(row.get::<Vec<u8>, _>("event_hash").as_slice()))
-        .transpose()
-        .map_err(|e| DomainError::invalid("event_hash", e.to_string()))?
-        .unwrap_or(EventHash::GENESIS);
-
-        let current = chain::hash(previous, &event);
-
-        sqlx::query(
-            "insert into audit_events
-                 (tenant_id, occurred_at, event_type, outcome, actor, actor_chain, subject,
-                  client_id, session_id, grant_id, request_id, detail,
-                  previous_hash, event_hash)
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
-        )
-        .bind(event.tenant.as_str())
-        .bind(event.occurred_at)
-        .bind(event.event_type.as_str())
-        .bind(event.outcome.as_str())
-        .bind(record::actor_json(&event.actor))
-        .bind(record::actor_chain_json(&event.actor_chain))
-        .bind(event.subject.as_deref())
-        .bind(event.client.as_ref().map(ClientId::as_str))
-        .bind(event.session.as_ref().map(SessionId::as_str))
-        .bind(event.grant.as_ref().and_then(|g| uuid_or_none(g.as_str())))
-        .bind(event.request_id.as_deref())
-        .bind(record::detail_json(&event.detail))
-        .bind(previous.as_bytes().as_slice())
-        .bind(current.as_bytes().as_slice())
         .execute(&mut *connection)
         .await
         .map_err(to_domain_error)?;
 
-        transaction.commit().await.map_err(to_domain_error)?;
-        Ok(())
-    }
+    let previous = sqlx::query(
+        "select event_hash from audit_events
+             where tenant_id = $1
+             order by event_id desc
+             limit 1",
+    )
+    .bind(event.tenant.as_str())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(to_domain_error)?
+    .map(|row| EventHash::from_slice(row.get::<Vec<u8>, _>("event_hash").as_slice()))
+    .transpose()
+    .map_err(|e| DomainError::invalid("event_hash", e.to_string()))?
+    .unwrap_or(EventHash::GENESIS);
+
+    let current = chain::hash(previous, &event);
+
+    sqlx::query(
+        "insert into audit_events
+                 (tenant_id, occurred_at, event_type, outcome, actor, actor_chain, subject,
+                  client_id, session_id, grant_id, request_id, detail,
+                  previous_hash, event_hash)
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+    )
+    .bind(event.tenant.as_str())
+    .bind(event.occurred_at)
+    .bind(event.event_type.as_str())
+    .bind(event.outcome.as_str())
+    .bind(record::actor_json(&event.actor))
+    .bind(record::actor_chain_json(&event.actor_chain))
+    .bind(event.subject.as_deref())
+    .bind(event.client.as_ref().map(ClientId::as_str))
+    .bind(event.session.as_ref().map(SessionId::as_str))
+    .bind(event.grant.as_ref().and_then(|g| uuid_or_none(g.as_str())))
+    .bind(event.request_id.as_deref())
+    .bind(record::detail_json(&event.detail))
+    .bind(previous.as_bytes().as_slice())
+    .bind(current.as_bytes().as_slice())
+    .execute(&mut *connection)
+    .await
+    .map_err(to_domain_error)?;
+
+    Ok(())
 }
 
 /// Normalises an event into exactly the form storage will hold.

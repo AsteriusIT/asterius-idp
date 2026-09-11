@@ -26,14 +26,17 @@
 //! both places is the point, because the validator protects the API and the
 //! constraint protects the table.
 
+use crate::audit;
 use crate::cutoffs;
 use crate::error::to_domain_error;
 use asterius_domain::SigningAlgorithm;
+use asterius_domain::audit::AuditEvent;
 use asterius_domain::ports::TenantScoped;
 use asterius_domain::{
     Capabilities, Client, ClientId, ClientMetadata, ClientRegistration, ClientStatus, DomainError,
     JwksSource, ManagedClient, PreviousRegistrationAccessToken, TenantId, TokenDeliveryMode,
 };
+use sqlx::Acquire as _;
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
 
@@ -63,8 +66,9 @@ impl asterius_domain::ClientRegistry for PgClientRepository {
         &self,
         client: &Client,
         registration_access_token: &[u8; 32],
+        audit: &AuditEvent,
     ) -> Result<Client, DomainError> {
-        Self::register(self, client, registration_access_token).await
+        Self::register(self, client, registration_access_token, audit).await
     }
 }
 
@@ -370,15 +374,28 @@ impl PgClientRepository {
     /// altered — a default, a trigger — fails here rather than at the token
     /// endpoint weeks later.
     ///
+    /// **The row and its `client.registered` record are one transaction**
+    /// (`ast-zq9`). The record used to be appended by the endpoint after this
+    /// returned, and a crash or an audit-store failure in between left a live
+    /// client the trail never mentioned — through the one endpoint reachable
+    /// without a client credential, so the row an operator most wants
+    /// explained was the row most likely to be missing. Both writes are now
+    /// made on one connection, under the trail's own per-tenant advisory lock,
+    /// and the chain is appended to exactly as [`crate::PgAuditSink`] appends
+    /// to it: same lock, same tip read, same row shape. Either both are
+    /// committed or neither is.
+    ///
     /// # Errors
     ///
     /// [`DomainError::Conflict`] if the `client_id` is taken or the tenant does
-    /// not exist, [`DomainError::Invalid`] if the entity belongs to another
-    /// tenant or the stored row does not validate, or a storage error.
+    /// not exist, [`DomainError::Invalid`] if the entity or the record belongs
+    /// to another tenant or the stored row does not validate, or a storage
+    /// error. Nothing is kept in any of those cases.
     pub async fn register(
         &self,
         client: &Client,
         registration_access_token: &[u8; 32],
+        audit: &AuditEvent,
     ) -> Result<Client, DomainError> {
         if client.tenant != self.tenant {
             return Err(DomainError::invalid(
@@ -386,6 +403,39 @@ impl PgClientRepository {
                 "does not match the tenant this repository is scoped to",
             ));
         }
+        if audit.tenant != self.tenant {
+            return Err(DomainError::invalid(
+                "audit.tenant",
+                "the registration record belongs to another tenant",
+            ));
+        }
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let connection = transaction.acquire().await.map_err(to_domain_error)?;
+
+        let row =
+            Self::insert_row(connection, &self.tenant, client, registration_access_token).await?;
+
+        // In the same transaction, under the trail's own per-tenant lock. A
+        // failure here rolls the row back with it, so the endpoint's caller is
+        // told the registration failed exactly when it did not happen.
+        audit::append(connection, audit.clone()).await?;
+        transaction.commit().await.map_err(to_domain_error)?;
+
+        row.into_entity(&self.tenant, self.capabilities)
+    }
+
+    /// The `insert` half of [`Self::register`], on the caller's connection.
+    ///
+    /// Split out only so that the transaction the two writes share is legible
+    /// in one screen; it has no other caller and no meaning on its own — a row
+    /// inserted here and not followed by its trail entry is the state
+    /// `ast-zq9` exists to make impossible.
+    async fn insert_row(
+        connection: &mut sqlx::PgConnection,
+        tenant: &TenantId,
+        client: &Client,
+        registration_access_token: &[u8; 32],
+    ) -> Result<Row, DomainError> {
         let registration = &client.registration;
         let lists = ListColumns::of(registration);
         let (jwks, jwks_uri) = key_columns(registration);
@@ -394,7 +444,7 @@ impl PgClientRepository {
             backchannel_logout_columns(registration);
         let (agent, agent_policy) = agent_columns(registration);
 
-        let row = sqlx::query_as!(
+        sqlx::query_as!(
             Row,
             "insert into clients (tenant_id, client_id, client_name,
                                   token_endpoint_auth_method, redirect_uris, grant_types,
@@ -432,7 +482,7 @@ impl PgClientRepository {
                        backchannel_logout_uri, backchannel_logout_session_required,
                        roles_in_id_token,
                        status, created_at, updated_at",
-            self.tenant.as_str(),
+            tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
             registration.token_endpoint_auth_method.as_str(),
@@ -471,11 +521,9 @@ impl PgClientRepository {
             backchannel_session_required,
             registration.roles_in_id_token.is_issued(),
         )
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *connection)
         .await
-        .map_err(to_domain_error)?;
-
-        row.into_entity(&self.tenant, self.capabilities)
+        .map_err(to_domain_error)
     }
 
     /// The two columns a management request is authorised against.
