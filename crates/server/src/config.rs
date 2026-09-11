@@ -459,6 +459,8 @@ struct RawLimits {
     token_per_address: Option<u32>,
     token_per_client: Option<u32>,
     userinfo_per_address: Option<u32>,
+    ssf_subjects_per_address: Option<u32>,
+    ssf_subjects_per_client: Option<u32>,
 }
 
 /// The `[outbox]` table: how delivery is paced and when it gives up.
@@ -759,6 +761,24 @@ pub(crate) const DEFAULT_LIMIT_TOKEN_PER_CLIENT: u32 = 1200;
 /// deployment on the day it got busy, and the endpoint is a read of claims the
 /// caller already holds a token for.
 pub(crate) const DEFAULT_LIMIT_USERINFO_PER_ADDRESS: u32 = 600;
+
+/// The SSF add-subject and remove-subject endpoints — per address, per window.
+///
+/// Tight, because this is the endpoint SSF 1.0 §9.1 warns about: a caller that
+/// may walk a list of subject identifiers through it learns nothing from any
+/// single answer, which is the point of answering the same way whatever
+/// happens, but it learns a great deal from making the request a hundred
+/// thousand times. Sixty a minute is a receiver managing its subscriptions and
+/// is not a receiver enumerating a tenant's users.
+pub(crate) const DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS: u32 = 60;
+
+/// The same, per authenticated receiver.
+///
+/// Higher than the address limit, for the reason `/token`'s is: several
+/// receivers can share one NAT, and a receiver that has proven who it is
+/// should not be bounded by traffic it did not make. A receiver bringing a new
+/// deployment online adds its subjects in a burst and then goes quiet.
+pub(crate) const DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT: u32 = 600;
 
 /// The seeded admin's login identifier when `[admin]` does not name one.
 pub(crate) const DEFAULT_ADMIN_USERNAME: &str = "admin";
@@ -1198,6 +1218,23 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
             // client out of a token before it is verified would be trusting a
             // string the caller wrote, so the address bucket holds it alone.
             per_client: None,
+        },
+        ssf_subjects: EndpointLimit {
+            per_address: limit(
+                "limits.ssf_subjects_per_address",
+                raw.ssf_subjects_per_address,
+                DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS,
+            ),
+            // Unlike UserInfo, this endpoint *does* have a proven client by
+            // the time it is counted: the limiter runs after the five checks
+            // of `asterius_server::http::ssf`, so the receiver charged is one
+            // that presented a verified, sender-constrained token for this
+            // resource.
+            per_client: Some(limit(
+                "limits.ssf_subjects_per_client",
+                raw.ssf_subjects_per_client,
+                DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT,
+            )),
         },
     }
 }

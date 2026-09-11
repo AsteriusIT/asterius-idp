@@ -19,9 +19,38 @@
 use crate::error::to_domain_error;
 use crate::outbox::PgTransaction;
 use asterius_domain::{DomainError, TenantId};
+use asterius_ssf::management::{MAX_HELD_WHILE_PAUSED, StreamStatus};
 use asterius_ssf::stream::StreamId;
 use sqlx::postgres::PgPool;
 use time::OffsetDateTime;
+
+/// What queueing one SET did (SSF 1.0 §8.1.2).
+///
+/// Three outcomes, because §8.1.2 gives a stream three states and each one
+/// answers this differently. Returned rather than logged, so that an emitter
+/// can record that a signal it produced was never queued — a dropped event
+/// nobody wrote down is a security signal that silently did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Enqueued {
+    /// The stream is `enabled`: the SET is queued for the next poll.
+    Queued,
+    /// The stream is `paused`: the SET is held, and the receiver will be
+    /// handed it when the stream is enabled again (§8.1.2's "SHOULD hold").
+    Held,
+    /// The SET was not kept at all.
+    Dropped(Discarded),
+}
+
+/// Why a SET was not kept (SSF 1.0 §8.1.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discarded {
+    /// > `disabled`: […] the Transmitter MUST NOT transmit events over the
+    /// > stream, and will not hold any events.
+    StreamDisabled,
+    /// The stream is paused and already holding
+    /// [`asterius_ssf::management::MAX_HELD_WHILE_PAUSED`] events.
+    HoldingTooMany,
+}
 
 /// One queued SET, as the polling endpoint renders it (§2.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +97,27 @@ impl PgSsfPoll {
     /// written twice: the identifier is the response's member name (§2.3), so
     /// a duplicate is not something a receiver could tell apart anyway.
     ///
+    /// # The stream's status decides whether this keeps anything
+    ///
+    /// SSF 1.0 §8.1.2, at the one point where it can be enforced without a
+    /// worker having an opinion:
+    ///
+    /// * `enabled` — queued, and handed over on the next poll.
+    /// * `paused` — queued and *held*: delivery is what stops (see
+    ///   [`Self::deliver`]), so the row stays and is released by enabling the
+    ///   stream rather than moved by anything. Bounded by
+    ///   [`MAX_HELD_WHILE_PAUSED`]; over it, the newest SET is dropped and the
+    ///   caller is told, because §8.1.2's "SHOULD hold" against an unbounded
+    ///   store is a receiver that pauses a stream and fills a tenant's
+    ///   database.
+    /// * `disabled` — nothing is written: §8.1.2 says a disabled transmitter
+    ///   "will not hold any events", and a queue filling up while disabled
+    ///   would be exactly that.
+    ///
+    /// The outcome is returned rather than logged: an emitter that cannot tell
+    /// "queued" from "dropped" cannot record that a signal it produced was
+    /// never kept.
+    ///
     /// # Errors
     ///
     /// [`DomainError::Storage`] if the insert fails — including when the
@@ -80,7 +130,24 @@ impl PgSsfPoll {
         jti: &str,
         jws: &str,
         now: OffsetDateTime,
-    ) -> Result<(), DomainError> {
+    ) -> Result<Enqueued, DomainError> {
+        let status = self.status(transaction, stream).await?;
+        // A stream this server has never heard of has no status and is left to
+        // the foreign key below, which refuses it. Reporting `NoSuchStream`
+        // here instead would turn a caller's mistake into an outcome it could
+        // ignore.
+        if let Some(status) = status {
+            if !status.delivers() && !status.holds() {
+                return Ok(Enqueued::Dropped(Discarded::StreamDisabled));
+            }
+            if status.holds()
+                && count(transaction, &self.tenant, stream).await?
+                    >= i64::try_from(MAX_HELD_WHILE_PAUSED).unwrap_or(i64::MAX)
+            {
+                return Ok(Enqueued::Dropped(Discarded::HoldingTooMany));
+            }
+        }
+
         sqlx::query!(
             "insert into ssf_poll_queue (tenant_id, stream_id, jti, set_jws, queued_at)
              values ($1, $2, $3, $4, $5)
@@ -94,7 +161,39 @@ impl PgSsfPoll {
         .execute(&mut **transaction)
         .await
         .map_err(to_domain_error)?;
-        Ok(())
+        Ok(match status {
+            Some(status) if status.holds() => Enqueued::Held,
+            _ => Enqueued::Queued,
+        })
+    }
+
+    /// This stream's status, inside the caller's transaction (§8.1.2).
+    ///
+    /// `None` is a stream that does not exist, which only the enqueue path can
+    /// see: the endpoint reads the stream under the receiver's `client_id`
+    /// before it ever reaches the queue.
+    async fn status(
+        &self,
+        transaction: &mut PgTransaction<'_>,
+        stream: &StreamId,
+    ) -> Result<Option<StreamStatus>, DomainError> {
+        let stored = sqlx::query_scalar!(
+            "select status from ssf_streams where tenant_id = $1 and stream_id = $2",
+            self.tenant.as_str(),
+            stream.as_str(),
+        )
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        stored
+            .map(|status| {
+                StreamStatus::parse(&status).ok_or_else(|| DomainError::Invalid {
+                    field: "status",
+                    reason: "a stored stream status is not one SSF 1.0 §8.1.2 defines".to_owned(),
+                })
+            })
+            .transpose()
     }
 
     /// The oldest `limit` SETs this stream is holding, and whether there are
@@ -110,6 +209,12 @@ impl PgSsfPoll {
     /// remove them by acknowledging them. What this does write is the count
     /// and the instant, so an operator can see a receiver that is being handed
     /// the same SET over and over.
+    ///
+    /// A stream that is not `enabled` hands over nothing (SSF 1.0 §8.1.2's
+    /// "MUST NOT transmit"), and that is a clause in this statement rather
+    /// than a check the endpoint makes first: the guard then cannot be skipped
+    /// by a caller that forgot it, and enabling the stream releases the held
+    /// rows with no second statement to run.
     ///
     /// # Errors
     ///
@@ -128,6 +233,10 @@ impl PgSsfPoll {
                  select jti
                    from ssf_poll_queue
                   where tenant_id = $1 and stream_id = $2
+                    and exists (select 1 from ssf_streams
+                                 where tenant_id = $1
+                                   and stream_id = $2
+                                   and status = 'enabled')
                   order by queued_at, jti
                   limit $3
              )
@@ -234,7 +343,11 @@ impl PgSsfPoll {
     pub async fn has_pending(&self, stream: &StreamId) -> Result<bool, DomainError> {
         let held = sqlx::query_scalar!(
             "select count(*) from ssf_poll_queue
-              where tenant_id = $1 and stream_id = $2",
+              where tenant_id = $1 and stream_id = $2
+                and exists (select 1 from ssf_streams
+                             where tenant_id = $1
+                               and stream_id = $2
+                               and status = 'enabled')",
             self.tenant.as_str(),
             stream.as_str(),
         )

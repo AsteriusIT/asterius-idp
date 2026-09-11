@@ -1350,6 +1350,7 @@ fn generous_endpoint_limits() -> EndpointLimits {
         par: limit,
         token: limit,
         userinfo: limit,
+        ssf_subjects: limit,
     }
 }
 

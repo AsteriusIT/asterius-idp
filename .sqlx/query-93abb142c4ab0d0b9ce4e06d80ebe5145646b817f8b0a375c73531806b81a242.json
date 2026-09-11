@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select subject\n               from ssf_stream_subjects\n              where tenant_id = $1 and stream_id = $2\n              order by subject_key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "subject",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "93abb142c4ab0d0b9ce4e06d80ebe5145646b817f8b0a375c73531806b81a242"
+}

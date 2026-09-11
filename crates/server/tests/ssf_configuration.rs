@@ -8,11 +8,14 @@
 //! §3.1 inserts it, and clients in the wild use both.
 //!
 //! The parity assertion is the same one `discovery.rs` makes and the reason
-//! `ast-o0t.3` exists: a document must not name a URL that answers 404. This
-//! transmitter names none of SSF §7.1's five management endpoints, because
-//! none of them is routed yet (`ast-0ju.3` through `ast-0ju.7`); the test
-//! below asserts the *agreement*, not the emptiness, so it stays honest as
-//! each of those stories turns one on.
+//! `ast-o0t.3` exists: a document must not name a URL that answers 404. The
+//! fixture here stands the document up *without* the client wiring the
+//! management API needs (`clients: None`), which is the deployment that
+//! advertises none of SSF §7.1's endpoints — so the document below is the one
+//! a deployment with no database serves. Which endpoints a deployment *with*
+//! that wiring names is `asterius_ssf::metadata`'s own tests; the tests below
+//! assert the *agreement* between what is named and what is routed, not the
+//! emptiness, so they stay honest as each story turns one on.
 
 use asterius_domain::ports::{TenantRepository, TenantSettingsRepository as _};
 use asterius_domain::{
@@ -270,10 +273,10 @@ async fn every_url_in_the_document_is_https() {
 
 /// Every URL the transmitter configuration names resolves to a route.
 ///
-/// Today it names one, `jwks_uri`, and none of SSF §7.1's five management
-/// endpoints — they are `ast-0ju.3` through `ast-0ju.5` and are not built.
-/// This test asserts the agreement rather than the absence, so it is the test
-/// each of those stories has to keep green as it adds a member *and* a route.
+/// For this fixture — a deployment with no client wiring — that is one URL,
+/// `jwks_uri`. This test asserts the agreement rather than the absence, so it
+/// is the test each management-API story has to keep green as it adds a member
+/// *and* a route.
 #[tokio::test]
 async fn every_url_the_transmitter_advertises_resolves_to_a_route() {
     // Arrange
@@ -303,9 +306,10 @@ async fn every_url_the_transmitter_advertises_resolves_to_a_route() {
     }
 }
 
-/// The other half of parity, in the state SSF is in today: a member that names
-/// a delivery method or a management endpoint would be describing behaviour
-/// this build does not have.
+/// The other half of parity, for a deployment that mounts nothing: a member
+/// naming a management endpoint here would name a URL this fixture does not
+/// route. `ast-0ju.4` mounts three of them, and they are advertised exactly
+/// when the wiring they need exists — which this fixture deliberately lacks.
 #[tokio::test]
 async fn nothing_unbuilt_is_advertised() {
     // Arrange, act

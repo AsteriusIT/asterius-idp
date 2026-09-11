@@ -55,6 +55,35 @@ pub enum SubjectError {
     /// A member that must be a URI is not one.
     #[error("the {0} member must be an absolute URI")]
     NotAUri(&'static str),
+    /// A subject identifier that arrived over the wire is not a JSON object.
+    #[error("a subject identifier must be a JSON object")]
+    NotAnObject,
+    /// A member a format requires is absent.
+    #[error("the {0} member is required by this subject identifier format")]
+    Missing(&'static str),
+    /// A member is present with a JSON type the format does not give it.
+    #[error("the {0} member is not of the type its format gives it")]
+    WrongType(&'static str),
+    /// `format` names something outside the closed set this module knows.
+    ///
+    /// Not "ignored and treated as opaque": a receiver naming a format this
+    /// transmitter cannot read means something by it, and guessing would
+    /// register a subject that matches events about somebody else.
+    #[error("`format` names a subject identifier format this transmitter does not read")]
+    UnknownFormat,
+    /// A complex subject identifier names a member SSF 1.0 §3.3 does not
+    /// define.
+    ///
+    /// Refused rather than dropped, because a dropped member makes a subject
+    /// *less* restrictive than the one the receiver described — and a less
+    /// restrictive subject matches events about principals it never asked
+    /// for (§8.1.3.1).
+    #[error("a complex subject identifier names a member §3.3 does not define")]
+    UnknownMember,
+    /// A complex subject identifier with no member at all: an identifier that
+    /// identifies everybody.
+    #[error("a complex subject identifier must name at least one member")]
+    NoMembers,
 }
 
 /// Validates one free-text member of a subject identifier.
@@ -437,6 +466,227 @@ impl From<ComplexSubject> for Subject {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reading a subject identifier back (SSF 1.0 §8.1.3)
+// ---------------------------------------------------------------------------
+
+/// The longest canonical form a subject identifier may have.
+///
+/// Four kibibytes. Every member is already bounded by [`MAX_MEMBER_LEN`] and a
+/// complex identifier has at most seven of them, so this is not the binding
+/// constraint on a well-formed identifier: it is the bound on what reaches a
+/// database column and a `WHERE` clause, made explicit rather than inferred
+/// from the product of two other constants.
+pub const MAX_SUBJECT_BYTES: usize = 4 * 1024;
+
+/// The members SSF 1.0 §3.3 defines for a complex subject identifier, in the
+/// order they are rendered.
+const COMPLEX_MEMBERS: [&str; 7] = [
+    "user",
+    "device",
+    "session",
+    "application",
+    "tenant",
+    "org_unit",
+    "group",
+];
+
+/// One string member of an identifier that arrived over the wire.
+fn wire_member<'a>(
+    object: &'a Map<String, Value>,
+    name: &'static str,
+) -> Result<&'a str, SubjectError> {
+    object
+        .get(name)
+        .ok_or(SubjectError::Missing(name))?
+        .as_str()
+        .ok_or(SubjectError::WrongType(name))
+}
+
+impl SimpleSubject {
+    /// Reads a simple subject identifier a receiver sent (RFC 9493 §3.2).
+    ///
+    /// The `format` member selects the arm, and each arm goes through the same
+    /// constructor a caller inside this server would use — so an identifier
+    /// that arrived over the wire is bounded, non-empty and absolutely-URI'd
+    /// by exactly the rules one this crate built satisfies. A format outside
+    /// the closed set is [`SubjectError::UnknownFormat`] and never a
+    /// pass-through.
+    ///
+    /// Members the format does not define are ignored, because RFC 9493 §3
+    /// leaves an identifier extensible and a receiver built against a later
+    /// revision must not be refused for carrying one. They are ignored
+    /// *consistently*: matching compares what was parsed, so an extra member
+    /// can only ever make two identifiers compare equal that already agree on
+    /// every member the format defines.
+    ///
+    /// # Errors
+    ///
+    /// [`SubjectError`] for a value that is not a usable identifier.
+    pub fn from_json(value: &Value) -> Result<Self, SubjectError> {
+        let object = value.as_object().ok_or(SubjectError::NotAnObject)?;
+        let format = wire_member(object, "format")?;
+        match format {
+            "account" => Self::account(wire_member(object, "uri")?),
+            "email" => Self::email(wire_member(object, "email")?),
+            "iss_sub" => {
+                let iss = Issuer::parse(wire_member(object, "iss")?)
+                    .map_err(|_| SubjectError::NotAUri("iss"))?;
+                Self::iss_sub(&iss, wire_member(object, "sub")?)
+            }
+            "opaque" => Self::opaque(wire_member(object, "id")?),
+            "phone_number" => Self::phone_number(wire_member(object, "phone_number")?),
+            "uri" => Self::uri(wire_member(object, "uri")?),
+            "jwt_id" => {
+                let iss = Issuer::parse(wire_member(object, "iss")?)
+                    .map_err(|_| SubjectError::NotAUri("iss"))?;
+                Self::jwt_id(&iss, wire_member(object, "jti")?)
+            }
+            "saml_assertion_id" => Self::saml_assertion_id(
+                wire_member(object, "issuer")?,
+                wire_member(object, "assertion_id")?,
+            ),
+            _ => Err(SubjectError::UnknownFormat),
+        }
+    }
+}
+
+impl ComplexSubject {
+    /// Reads a complex subject identifier a receiver sent (SSF 1.0 §3.3).
+    ///
+    /// An object with no `format` of its own, whose members are simple
+    /// identifiers. A member §3.3 does not define is refused rather than
+    /// dropped: see [`SubjectError::UnknownMember`].
+    ///
+    /// # Errors
+    ///
+    /// [`SubjectError`] for a value that is not a usable identifier.
+    pub fn from_json(value: &Value) -> Result<Self, SubjectError> {
+        let object = value.as_object().ok_or(SubjectError::NotAnObject)?;
+        for name in object.keys() {
+            if !COMPLEX_MEMBERS.contains(&name.as_str()) {
+                return Err(SubjectError::UnknownMember);
+            }
+        }
+        let mut complex = Self::default();
+        for name in COMPLEX_MEMBERS {
+            if let Some(member) = object.get(name) {
+                let parsed = SimpleSubject::from_json(member)?;
+                match name {
+                    "user" => complex.user = Some(parsed),
+                    "device" => complex.device = Some(parsed),
+                    "session" => complex.session = Some(parsed),
+                    "application" => complex.application = Some(parsed),
+                    "tenant" => complex.tenant = Some(parsed),
+                    "org_unit" => complex.org_unit = Some(parsed),
+                    // The list is closed above, so `group` is the only name
+                    // left a member could have.
+                    _ => complex.group = Some(parsed),
+                }
+            }
+        }
+        if complex == Self::default() {
+            return Err(SubjectError::NoMembers);
+        }
+        Ok(complex)
+    }
+
+    /// SSF 1.0 §8.1.3.1, for two complex identifiers.
+    ///
+    /// > each member is either undefined in one of the two, or the values are
+    /// > identical
+    ///
+    /// So a stream subject naming a user and a device matches an event about
+    /// that user with no device named — the event is *less* restrictive — and
+    /// an event about that user on a *different* device matches nothing.
+    fn matches_complex(&self, other: &Self) -> bool {
+        let pairs = [
+            (&self.user, &other.user),
+            (&self.device, &other.device),
+            (&self.session, &other.session),
+            (&self.application, &other.application),
+            (&self.tenant, &other.tenant),
+            (&self.org_unit, &other.org_unit),
+            (&self.group, &other.group),
+        ];
+        pairs.into_iter().all(|(mine, theirs)| match (mine, theirs) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            // Undefined on one side or the other: §8.1.3.1 says nothing about
+            // that member, so it does not stop the match.
+            _ => true,
+        })
+    }
+}
+
+impl Subject {
+    /// Reads either kind of subject identifier (SSF 1.0 §3.3, RFC 9493 §3.2).
+    ///
+    /// The presence of `format` is what tells the two apart — §3.3 gives a
+    /// complex identifier no `format` member of its own — and it is the
+    /// receiver's own object that decides, never a hint from elsewhere in the
+    /// request.
+    ///
+    /// # Errors
+    ///
+    /// [`SubjectError`] for a value that is not a usable identifier, including
+    /// one whose canonical form exceeds [`MAX_SUBJECT_BYTES`].
+    // fuzz-target: ssf_subject
+    pub fn from_json(value: &Value) -> Result<Self, SubjectError> {
+        let object = value.as_object().ok_or(SubjectError::NotAnObject)?;
+        let subject = if object.contains_key("format") {
+            Self::Simple(SimpleSubject::from_json(value)?)
+        } else {
+            Self::Complex(Box::new(ComplexSubject::from_json(value)?))
+        };
+        let found = subject.key().len();
+        if found > MAX_SUBJECT_BYTES {
+            return Err(SubjectError::TooLong {
+                member: "subject",
+                found,
+                max: MAX_SUBJECT_BYTES,
+            });
+        }
+        Ok(subject)
+    }
+
+    /// The canonical form: the identifier as JSON, with members in one order.
+    ///
+    /// What a stream's subject membership is stored and compared under. Built
+    /// from the *parsed* identifier rather than from the bytes a receiver
+    /// sent, so that two spellings of one subject — members in another order,
+    /// an extra member the format does not define, different whitespace — are
+    /// one key and not two. Without that, an add and a remove of the same
+    /// subject spelled two ways would leave a membership a receiver believes
+    /// it removed.
+    #[must_use]
+    pub fn key(&self) -> String {
+        self.to_json().to_string()
+    }
+
+    /// SSF 1.0 §8.1.3.1: whether an event about `other` reaches a stream that
+    /// named `self`.
+    ///
+    /// Two rules, and no third.
+    ///
+    /// * **Simple against simple**: identical, member for member.
+    /// * **Complex against complex**: each member is undefined on one of the
+    ///   two sides, or identical.
+    ///
+    /// A simple identifier and a complex one never match. §8.1.3.1 defines
+    /// matching within a kind, and treating `{"format":"opaque","id":"u"}` as
+    /// interchangeable with `{"user":{"format":"opaque","id":"u"}}` would be
+    /// this transmitter inventing a rule that decides who receives events
+    /// about whom.
+    #[must_use]
+    pub fn matches(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Simple(mine), Self::Simple(theirs)) => mine == theirs,
+            (Self::Complex(mine), Self::Complex(theirs)) => mine.matches_complex(theirs),
+            _ => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -608,5 +858,220 @@ mod tests {
             panic!("a complex subject is an object");
         };
         assert_eq!(members.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Reading one back (SSF 1.0 §8.1.3), and matching (§8.1.3.1)
+    // -----------------------------------------------------------------------
+
+    /// Whatever this crate can render, it can read back: the wire form of a
+    /// subject identifier is the same object in both directions.
+    #[test]
+    fn every_simple_format_round_trips_through_the_wire_form() {
+        // Arrange
+        let subjects = [
+            SimpleSubject::account("acct:alice@example.com").expect("account"),
+            SimpleSubject::email("alice@example.com").expect("email"),
+            SimpleSubject::iss_sub(&issuer(), "abc").expect("iss_sub"),
+            SimpleSubject::opaque("o-1").expect("opaque"),
+            SimpleSubject::phone_number("+33123456789").expect("phone"),
+            SimpleSubject::uri("https://example.com/u/1").expect("uri"),
+            SimpleSubject::jwt_id(&issuer(), "jti-1").expect("jwt_id"),
+            SimpleSubject::saml_assertion_id("https://idp.example", "a-1").expect("saml"),
+        ];
+
+        for subject in subjects {
+            // Act
+            let read = SimpleSubject::from_json(&subject.to_json());
+
+            // Assert
+            assert_eq!(read, Ok(subject.clone()), "{}", subject.format());
+        }
+    }
+
+    /// A format outside the closed set is refused rather than kept as an
+    /// opaque blob: guessing would register a subject matching somebody else.
+    #[test]
+    fn an_unknown_format_is_refused() {
+        // Arrange
+        let body = json!({"format": "employee_number", "id": "42"});
+
+        // Act
+        let read = Subject::from_json(&body);
+
+        // Assert
+        assert_eq!(read, Err(SubjectError::UnknownFormat));
+    }
+
+    #[test]
+    fn a_member_the_format_requires_must_be_there() {
+        assert_eq!(
+            SimpleSubject::from_json(&json!({"format": "email"})),
+            Err(SubjectError::Missing("email"))
+        );
+        assert_eq!(
+            SimpleSubject::from_json(&json!({"format": "opaque", "id": 7})),
+            Err(SubjectError::WrongType("id"))
+        );
+    }
+
+    /// §3.3: the absence of `format` is what makes an object complex.
+    #[test]
+    fn an_object_without_a_format_is_read_as_a_complex_subject() {
+        // Arrange
+        let body = json!({
+            "user": {"format": "opaque", "id": "u-1"},
+            "device": {"format": "opaque", "id": "d-1"},
+        });
+
+        // Act
+        let read = Subject::from_json(&body).expect("a complex subject");
+
+        // Assert
+        assert_eq!(
+            read,
+            Subject::from(
+                ComplexSubject::of_user(SimpleSubject::opaque("u-1").expect("user"))
+                    .with_device(SimpleSubject::opaque("d-1").expect("device"))
+            )
+        );
+    }
+
+    /// A member §3.3 does not define makes the identifier *less* restrictive
+    /// if it is dropped, which is a subscription to events about principals
+    /// the receiver never named.
+    #[test]
+    fn an_undefined_complex_member_is_refused_rather_than_dropped() {
+        // Arrange
+        let body = json!({
+            "user": {"format": "opaque", "id": "u-1"},
+            "workload": {"format": "opaque", "id": "w-1"},
+        });
+
+        // Act
+        let read = Subject::from_json(&body);
+
+        // Assert
+        assert_eq!(read, Err(SubjectError::UnknownMember));
+    }
+
+    #[test]
+    fn a_complex_subject_with_no_member_is_refused() {
+        assert_eq!(Subject::from_json(&json!({})), Err(SubjectError::NoMembers));
+    }
+
+    #[test]
+    fn a_subject_identifier_must_be_an_object() {
+        assert_eq!(
+            Subject::from_json(&json!("alice")),
+            Err(SubjectError::NotAnObject)
+        );
+    }
+
+    /// The canonical key does not depend on how the receiver spelled the
+    /// object: an add and a remove of one subject must name one row.
+    #[test]
+    fn two_spellings_of_one_subject_have_one_key() {
+        // Arrange
+        let first = Subject::from_json(&json!({
+            "device": {"format": "opaque", "id": "d-1"},
+            "user": {"id": "u-1", "format": "opaque"},
+        }))
+        .expect("a subject");
+        let second = Subject::from_json(&json!({
+            "user": {"format": "opaque", "id": "u-1"},
+            "device": {"format": "opaque", "id": "d-1"},
+        }))
+        .expect("a subject");
+
+        // Act & Assert
+        assert_eq!(first.key(), second.key());
+    }
+
+    /// §8.1.3.1: a simple subject matches a simple subject that is identical.
+    #[test]
+    fn identical_simple_subjects_match_and_different_ones_do_not() {
+        // Arrange
+        let stream = Subject::from(SimpleSubject::opaque("u-1").expect("subject"));
+        let same = Subject::from(SimpleSubject::opaque("u-1").expect("subject"));
+        let other = Subject::from(SimpleSubject::opaque("u-2").expect("subject"));
+        let other_format = Subject::from(SimpleSubject::email("u-1").expect("subject"));
+
+        // Act & Assert
+        assert!(stream.matches(&same));
+        assert!(!stream.matches(&other), "a different id must not match");
+        assert!(
+            !stream.matches(&other_format),
+            "one member value under two formats is two subjects"
+        );
+    }
+
+    /// §8.1.3.1's first example: the event's subject is *less* restrictive
+    /// than the stream's — the member it does not name is undefined on one
+    /// side — so it matches.
+    #[test]
+    fn a_less_restrictive_event_subject_matches() {
+        // Arrange
+        let stream = Subject::from(
+            ComplexSubject::of_user(SimpleSubject::opaque("u-1").expect("user"))
+                .with_device(SimpleSubject::opaque("d-1").expect("device")),
+        );
+        let event = Subject::from(ComplexSubject::of_user(
+            SimpleSubject::opaque("u-1").expect("user"),
+        ));
+
+        // Act & Assert
+        assert!(stream.matches(&event));
+    }
+
+    /// The mirror: the stream names only the user and the event adds a
+    /// device. The added member is undefined on the stream's side, so it
+    /// matches too.
+    #[test]
+    fn a_more_restrictive_event_subject_matches() {
+        // Arrange
+        let stream = Subject::from(ComplexSubject::of_user(
+            SimpleSubject::opaque("u-1").expect("user"),
+        ));
+        let event = Subject::from(
+            ComplexSubject::of_user(SimpleSubject::opaque("u-1").expect("user"))
+                .with_device(SimpleSubject::opaque("d-1").expect("device")),
+        );
+
+        // Act & Assert
+        assert!(stream.matches(&event));
+    }
+
+    /// §8.1.3.1's mismatch: a member defined on both sides with different
+    /// values. One differing member is enough, whatever the rest agree on.
+    #[test]
+    fn a_member_defined_on_both_sides_with_different_values_does_not_match() {
+        // Arrange
+        let stream = Subject::from(
+            ComplexSubject::of_user(SimpleSubject::opaque("u-1").expect("user"))
+                .with_device(SimpleSubject::opaque("d-1").expect("device")),
+        );
+        let event = Subject::from(
+            ComplexSubject::of_user(SimpleSubject::opaque("u-1").expect("user"))
+                .with_device(SimpleSubject::opaque("d-2").expect("device")),
+        );
+
+        // Act & Assert
+        assert!(!stream.matches(&event));
+    }
+
+    /// Matching is defined within a kind. A transmitter that equated the two
+    /// would be inventing the rule that decides who hears about whom.
+    #[test]
+    fn a_simple_subject_never_matches_a_complex_one() {
+        // Arrange
+        let simple = Subject::from(SimpleSubject::opaque("u-1").expect("user"));
+        let complex = Subject::from(ComplexSubject::of_user(
+            SimpleSubject::opaque("u-1").expect("user"),
+        ));
+
+        // Act & Assert
+        assert!(!simple.matches(&complex));
+        assert!(!complex.matches(&simple));
     }
 }

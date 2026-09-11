@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select status, status_reason\n               from ssf_streams\n              where tenant_id = $1 and client_id = $2 and stream_id = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "status_reason",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "ae0f1576db905016aa63cc6727e7f8b31f60b8f9239753dbf8af807ce3f6c1b2"
+}
