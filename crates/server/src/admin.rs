@@ -57,6 +57,7 @@ pub struct Deployment {
     registration: RegistrationPolicy,
     outbound: Arc<dyn ClientUrlFetcher>,
     outbox: Arc<dyn asterius_domain::outbox::DeadLetterQuery>,
+    dead_letters: Arc<dyn asterius_domain::outbox::DeadLetterOperations>,
     kek: Arc<dyn asterius_jose::Kek>,
     signer: Arc<dyn asterius_domain::keys::Signer>,
     queue: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
@@ -104,6 +105,7 @@ impl Deployment {
             registration: parts.registration,
             outbound: parts.outbound,
             outbox: parts.outbox,
+            dead_letters: parts.dead_letters,
             kek: parts.kek,
             signer: parts.signer,
             queue: parts.queue,
@@ -134,6 +136,13 @@ pub struct DeploymentParts {
     pub outbound: Arc<dyn ClientUrlFetcher>,
     /// The process's `PgOutbox`, read-only, for the dead-letter screen.
     pub outbox: Arc<dyn asterius_domain::outbox::DeadLetterQuery>,
+    /// The same `PgOutbox` as the operator's retry and drop (`ast-f7m.8`).
+    ///
+    /// The same object as `outbox` and `queue`, handed over as a third
+    /// port for the reason those two are two: the admin API keeps the
+    /// read-only view and the mutations on separate handles, and this is
+    /// the one behind `admin.outbox:write`.
+    pub dead_letters: Arc<dyn asterius_domain::outbox::DeadLetterOperations>,
     /// The key-encryption key the tenants' pairwise salts are sealed under.
     ///
     /// The process's, for the reason `keys` is the process's: a `sub` derived
@@ -163,6 +172,122 @@ pub struct DeploymentParts {
 impl std::fmt::Debug for DeploymentParts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeploymentParts").finish_non_exhaustive()
+    }
+}
+
+/// This deployment's SSF streams, as the admin API's port sees them
+/// (`ast-f7m.8`).
+///
+/// A type of its own for the reason [`DeploymentClients`] is one: the
+/// object behind the handle is what a handler can reach, and this one can
+/// read and re-status a tenant's streams and sign a verification event, and
+/// nothing else. The verification goes through the same
+/// [`crate::ssf::SsfTransmitter`] the emitters use — same signer, same
+/// queues — so the SET a receiver gets is signed by a key in the tenant's
+/// published JWKS and delivered by the worker that delivers everything else.
+#[derive(Clone)]
+struct DeploymentSsf {
+    store: Store,
+    tenants: Arc<dyn TenantRepository>,
+    /// The process's signer: the same key the emitters sign with, so the
+    /// verification SET verifies against the published JWKS.
+    keys: Arc<dyn asterius_domain::keys::Signer>,
+    kek: Arc<dyn asterius_jose::Kek>,
+    capabilities: Capabilities,
+}
+
+impl std::fmt::Debug for DeploymentSsf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeploymentSsf").finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
+    async fn streams(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<Vec<asterius_admin_api::ssf::StreamSummary>, DomainError> {
+        let overview = self
+            .store
+            .scope(tenant.clone())
+            .ssf_streams(Arc::clone(&self.kek))
+            .overview()
+            .await?;
+        Ok(overview
+            .into_iter()
+            .map(|stream| asterius_admin_api::ssf::StreamSummary {
+                stream_id: stream.stream_id,
+                receiver: stream.receiver,
+                delivery_method: match stream.delivery {
+                    asterius_store_pg::DeliveryMethod::Poll => asterius_ssf::stream::DELIVERY_POLL,
+                    asterius_store_pg::DeliveryMethod::Push => asterius_ssf::stream::DELIVERY_PUSH,
+                },
+                events_requested: stream.events_requested,
+                description: stream.description,
+                created_at: stream.created_at,
+                status: stream.stats.status,
+                reason: stream.stats.reason,
+                status_changed_at: stream.status_changed_at,
+                delivered: stream.stats.delivered,
+                failed: stream.stats.failed,
+                queue_depth: stream.stats.queue_depth,
+            })
+            .collect())
+    }
+
+    async fn set_status(
+        &self,
+        tenant: &TenantId,
+        stream: &asterius_ssf::stream::StreamId,
+        status: asterius_ssf::stream::StreamStatus,
+        reason: Option<&str>,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .ssf_streams(Arc::clone(&self.kek))
+            .set_status(stream, status, reason, now)
+            .await
+    }
+
+    async fn verify(
+        &self,
+        tenant: &TenantId,
+        stream: &asterius_ssf::stream::StreamId,
+        state: Option<&asterius_ssf::VerificationState>,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let scope = self.store.scope(tenant.clone());
+        let Some(subscription) = scope
+            .ssf_streams(Arc::clone(&self.kek))
+            .subscription(stream)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let tenant_entity = self
+            .tenants
+            .find_by_id(tenant)
+            .await?
+            .ok_or(DomainError::NotFound)?;
+        let clients = scope.clients(self.capabilities);
+        let users = scope.users(Arc::clone(&self.kek));
+        let queues = crate::outbox::PgSsfQueues::new(
+            self.store.clone(),
+            tenant.clone(),
+            Arc::clone(&self.kek),
+        );
+        let transmitter = crate::ssf::SsfTransmitter {
+            tenant,
+            issuer: &tenant_entity.issuer,
+            queues: &queues,
+            clients: &clients,
+            subjects: &users,
+            signer: self.keys.as_ref(),
+        };
+        transmitter.verify(&subscription, state, now).await?;
+        Ok(true)
     }
 }
 
@@ -969,6 +1094,20 @@ impl AdminBackend for Deployment {
     /// enforcing.
     fn outbox(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterQuery> {
         Arc::clone(&self.outbox)
+    }
+
+    fn dead_letter_operations(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterOperations> {
+        Arc::clone(&self.dead_letters)
+    }
+
+    fn ssf(&self) -> Arc<dyn asterius_admin_api::ssf::SsfAdministration> {
+        Arc::new(DeploymentSsf {
+            store: self.store.clone(),
+            tenants: Arc::clone(&self.tenants),
+            keys: Arc::clone(&self.signer),
+            kek: Arc::clone(&self.kek),
+            capabilities: self.capabilities,
+        })
     }
 
     fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from outbox\n              where tenant_id = $1 and outbox_id = $2 and status = 'abandoned'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "55ba293dadaa4f3e7b66ed21f87dcae7e71784d39df37993ebd591404786427e"
+}

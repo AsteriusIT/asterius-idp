@@ -113,6 +113,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "admin_stream_status"
+path = "fuzz_targets/admin_stream_status.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "admin_user_claims"
 path = "fuzz_targets/admin_user_claims.rs"
 test = false
@@ -549,6 +556,13 @@ bench = false
 [[bin]]
 name = "ssf_stream_configuration"
 path = "fuzz_targets/ssf_stream_configuration.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssf_verification_state"
+path = "fuzz_targets/ssf_verification_state.rs"
 test = false
 doc = false
 bench = false

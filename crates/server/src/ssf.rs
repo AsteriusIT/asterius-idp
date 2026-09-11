@@ -51,6 +51,7 @@ use asterius_domain::{
     ClientId, ClientRepository, DomainError, Issuer, SectorIdentifier, TenantId, UserId,
 };
 use asterius_ssf::caep::{self, EventDetails};
+use asterius_ssf::verification::{VerificationState, verification_event};
 use asterius_ssf::{
     ComplexSubject, SecurityEvent, Set, SimpleSubject, StreamAudience, Subject, Txn,
 };
@@ -392,6 +393,73 @@ impl SsfTransmitter<'_> {
         queued
     }
 
+    /// Queues SSF 1.0 §8.1.4's verification event on one stream
+    /// (`ast-f7m.8`).
+    ///
+    /// Unlike [`Self::emit`], this is one SET for one stream and it is *not*
+    /// best-effort: the operator who asked is standing there, and a
+    /// verification that was silently not queued would be read as "the
+    /// stream is fine". The `sub_id` is the stream itself as an `opaque`
+    /// identifier, which is what §8.1.4's example carries and what makes the
+    /// event about no person — no receiver sector is consulted and no
+    /// subject is derived. The ordering key of a push SET is therefore the
+    /// stream alone: a verification is ordered behind nothing but earlier
+    /// verifications of the same stream.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] if the SET cannot be built, signed or queued. Nothing
+    /// was queued.
+    pub async fn verify(
+        &self,
+        subscription: &Subscription,
+        state: Option<&VerificationState>,
+        now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let stream = subscription.stream_id.as_str();
+        let subject = SimpleSubject::opaque(stream)
+            .map_err(|error| DomainError::invalid("ssf.verification.sub_id", error.to_string()))?;
+        let audience = StreamAudience::new(subscription.audience.iter().map(String::as_str))
+            .map_err(|_| {
+                DomainError::invalid(
+                    "ssf_streams.audience",
+                    "a stored stream audience is empty or over the bound",
+                )
+            })?;
+        let signed = Set::about(subject)
+            .reporting(verification_event(state))
+            .issue(self.issuer, &audience, now)
+            .map_err(|error| DomainError::invalid("ssf.set", error.to_string()))?
+            .sign(self.signer, self.tenant)
+            .await
+            .map_err(|error| DomainError::invalid("ssf.set", error.to_string()))?;
+
+        match subscription.delivery {
+            DeliveryMethod::Poll => {
+                let polled = PolledSet {
+                    stream: &subscription.stream_id,
+                    jti: signed.jti().as_str(),
+                    jws: signed.jws().as_str(),
+                };
+                self.queues.queue_poll(&[polled], now).await?;
+            }
+            DeliveryMethod::Push => {
+                let event = crate::outbox::push_event(
+                    &subscription.stream_id,
+                    stream,
+                    signed.jws().as_str(),
+                );
+                self.queues.queue_push(&[event], now).await?;
+            }
+        }
+        tracing::info!(
+            tenant = %self.tenant,
+            stream,
+            "a verification event was queued at an operator's request",
+        );
+        Ok(())
+    }
+
     /// Builds and signs the SET for one subscription, or `None` if the
     /// receiver's registration has gone.
     async fn sign_for(
@@ -592,6 +660,89 @@ mod tests {
             .decode(payload)
             .expect("base64url");
         serde_json::from_slice(&bytes).expect("json claims")
+    }
+
+    /// **SSF 1.0 §8.1.4, on a poll stream.** The event type is the
+    /// verification URI, the `sub_id` is the stream as an `opaque`
+    /// identifier, and the `state` is carried verbatim.
+    #[tokio::test]
+    async fn a_verification_reaches_a_poll_stream_with_its_state() {
+        let keys = keys();
+        let queues = FakeQueues::default();
+        let transmitter = SsfTransmitter {
+            tenant: &tenant(),
+            issuer: &issuer(),
+            queues: &queues,
+            clients: &FakeClients,
+            subjects: &FakeSubjects,
+            signer: &keys,
+        };
+        let state = VerificationState::parse("corr-1").expect("a state");
+
+        transmitter
+            .verify(
+                &subscription(POLL_STREAM, DeliveryMethod::Poll),
+                Some(&state),
+                now(),
+            )
+            .await
+            .expect("queued");
+
+        let polled = queues.polled.lock().expect("not poisoned");
+        assert_eq!(polled.len(), 1);
+        assert_eq!(polled[0].0, POLL_STREAM);
+        let claims = claims_of(&polled[0].2);
+        assert_eq!(claims["iss"], ISSUER);
+        assert_eq!(claims["aud"], "https://receiver.example");
+        assert_eq!(
+            claims["sub_id"],
+            serde_json::json!({"format": "opaque", "id": POLL_STREAM})
+        );
+        assert_eq!(
+            claims["events"],
+            serde_json::json!({ asterius_ssf::VERIFICATION: {"state": "corr-1"} })
+        );
+        assert!(queues.pushed.lock().expect("not poisoned").is_empty());
+    }
+
+    /// On a push stream the SET goes to the outbox under the stream's own
+    /// key, and without a `state` the event payload is empty.
+    #[tokio::test]
+    async fn a_verification_reaches_a_push_stream_ordered_behind_the_stream_alone() {
+        let keys = keys();
+        let queues = FakeQueues::default();
+        let transmitter = SsfTransmitter {
+            tenant: &tenant(),
+            issuer: &issuer(),
+            queues: &queues,
+            clients: &FakeClients,
+            subjects: &FakeSubjects,
+            signer: &keys,
+        };
+
+        transmitter
+            .verify(
+                &subscription(PUSH_STREAM, DeliveryMethod::Push),
+                None,
+                now(),
+            )
+            .await
+            .expect("queued");
+
+        let pushed = queues.pushed.lock().expect("not poisoned");
+        assert_eq!(pushed.len(), 1);
+        assert_eq!(pushed[0].kind, "ssf.set");
+        assert_eq!(pushed[0].destination, PUSH_STREAM);
+        assert_eq!(
+            pushed[0].ordering_key.as_deref(),
+            Some(format!("{PUSH_STREAM}\u{1f}{PUSH_STREAM}").as_str())
+        );
+        let claims = claims_of(pushed[0].payload["body"].as_str().expect("a jws"));
+        assert_eq!(
+            claims["events"],
+            serde_json::json!({ asterius_ssf::VERIFICATION: {} })
+        );
+        assert!(queues.polled.lock().expect("not poisoned").is_empty());
     }
 
     /// A session revocation reaches a poll stream as a `session-revoked` SET

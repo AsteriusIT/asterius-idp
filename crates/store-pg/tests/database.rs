@@ -12923,7 +12923,7 @@ mod themes {
 /// statement rather than by anything in Rust.
 mod outbox {
     use super::*;
-    use asterius_domain::outbox::DeadLetterQuery as _;
+    use asterius_domain::outbox::{DeadLetterOperations as _, DeadLetterQuery as _};
     use asterius_store_pg::{Backoff, NewOutboxEntry, Outcome, PgOutbox, Verdict};
     use time::Duration;
 
@@ -12968,7 +12968,135 @@ mod outbox {
             .expect("read the row's status")
     }
 
+    /// Spends `budget` attempts on a fresh row and returns it abandoned.
+    async fn abandoned_row(db: &TestDb, tenant: &str, kind: &str, budget: u32) -> i64 {
+        let now = OffsetDateTime::now_utc();
+        let mut transaction = db.pool.begin().await.expect("begin");
+        let mut entry = NewOutboxEntry::new(kind, "stream-1", serde_json::json!({"body": "a.b.c"}));
+        entry.max_attempts = Some(budget);
+        let id = asterius_store_pg::enqueue(&mut transaction, &TenantId::new(tenant), &entry, now)
+            .await
+            .expect("enqueue");
+        transaction.commit().await.expect("commit");
+        let outbox = outbox(&db.pool);
+        let mut at = now;
+        for _ in 0..budget {
+            let claimed = outbox.claim("worker-a", 10, at).await.expect("claim");
+            assert_eq!(claimed.len(), 1);
+            outbox
+                .ack(
+                    &claimed[0],
+                    &Outcome::failed(&claimed[0], at, "the receiver answered 503".to_owned()),
+                )
+                .await
+                .expect("ack");
+            at += Duration::hours(1);
+        }
+        assert_eq!(row_status(&db.pool, id).await, "abandoned");
+        id
+    }
+
     db_test! {
+        /// **The operator's retry (`ast-f7m.8`).** An abandoned row goes back
+        /// to `pending`, is claimable at once, keeps its attempt count — the
+        /// trail is keyed on it — and gets this deployment's budget on top of
+        /// what it spent. A row that is not abandoned is left alone.
+        async fn a_requeued_dead_letter_is_claimed_again_with_a_fresh_budget(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-retry").await;
+            let id = abandoned_row(&db, "ob-retry", "ssf.set", 2).await;
+            let outbox = outbox(&db.pool).with_max_attempts(3);
+            let tenant = TenantId::new("ob-retry");
+            let now = OffsetDateTime::now_utc() + Duration::days(1);
+
+            // Act
+            let before = outbox.dead_letter(&tenant, id).await.expect("read");
+            let requeued = outbox.requeue(&tenant, id, now).await.expect("requeue");
+            let again = outbox.requeue(&tenant, id, now).await.expect("requeue twice");
+            let claimed = outbox.claim("worker-b", 10, now).await.expect("claim");
+            let after = outbox.dead_letter(&tenant, id).await.expect("read");
+
+            // Assert
+            assert_eq!(before.as_ref().map(|letter| letter.attempts), Some(2));
+            assert!(requeued);
+            assert!(!again, "a row that is no longer abandoned was requeued");
+            assert_eq!(claimed.len(), 1, "the requeued row was not claimable");
+            assert_eq!(claimed[0].id, id);
+            assert_eq!(claimed[0].attempt, 3, "the attempt count was reset");
+            assert_eq!(claimed[0].max_attempts, 5, "2 spent + a budget of 3");
+            assert_eq!(after, None, "a requeued row is still on the dead-letter screen");
+            let letters = outbox.dead_letters(&tenant, 10).await.expect("list");
+            assert!(letters.is_empty());
+        }
+    }
+
+    db_test! {
+
+        /// **The operator's drop.** The row and its attempts are gone, as
+        /// after the retention sweep; a second drop finds nothing; and a row
+        /// that is still owed cannot be dropped.
+        async fn a_dropped_dead_letter_is_gone_with_its_attempts(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-drop").await;
+            let id = abandoned_row(&db, "ob-drop", "ssf.set", 1).await;
+            let owed = queue(&db.pool, "ob-drop", "ssf.set", None, OffsetDateTime::now_utc()).await;
+            let outbox = outbox(&db.pool);
+            let tenant = TenantId::new("ob-drop");
+
+            // Act
+            let dropped = outbox.drop_letter(&tenant, id).await.expect("drop");
+            let again = outbox.drop_letter(&tenant, id).await.expect("drop twice");
+            let refused = outbox.drop_letter(&tenant, owed).await.expect("drop a live row");
+
+            // Assert
+            assert!(dropped);
+            assert!(!again);
+            assert!(!refused, "a row still owed was dropped");
+            let rows: i64 = sqlx::query_scalar("select count(*) from outbox where outbox_id = $1")
+                .bind(id)
+                .fetch_one(&db.pool)
+                .await
+                .expect("count");
+            let attempts: i64 =
+                sqlx::query_scalar("select count(*) from outbox_attempts where outbox_id = $1")
+                    .bind(id)
+                    .fetch_one(&db.pool)
+                    .await
+                    .expect("count");
+            assert_eq!(rows, 0);
+            assert_eq!(attempts, 0);
+            assert_eq!(row_status(&db.pool, owed).await, "pending");
+        }
+    }
+
+    db_test! {
+
+        /// Both operations are the tenant's: another tenant's row is not one
+        /// this tenant can read, requeue or drop by naming its id.
+        async fn another_tenants_dead_letter_is_out_of_reach(db) {
+            // Arrange
+            seed_tenant(&db.pool, "ob-mine").await;
+            seed_tenant(&db.pool, "ob-theirs").await;
+            let id = abandoned_row(&db, "ob-theirs", "ssf.set", 1).await;
+            let outbox = outbox(&db.pool);
+            let mine = TenantId::new("ob-mine");
+            let now = OffsetDateTime::now_utc();
+
+            // Act
+            let read = outbox.dead_letter(&mine, id).await.expect("read");
+            let requeued = outbox.requeue(&mine, id, now).await.expect("requeue");
+            let dropped = outbox.drop_letter(&mine, id).await.expect("drop");
+
+            // Assert
+            assert_eq!(read, None);
+            assert!(!requeued);
+            assert!(!dropped);
+            assert_eq!(row_status(&db.pool, id).await, "abandoned");
+        }
+    }
+
+    db_test! {
+
         /// The property the table exists for: the row and the change it
         /// describes commit together or not at all. A caller that rolls back
         /// must not leave a notification announcing something that never

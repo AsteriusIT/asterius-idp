@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select stream_id, client_id, audience, delivery_method\n               from ssf_streams\n              where tenant_id = $1 and stream_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stream_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "audience",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "delivery_method",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9e0253e2e8147715e6ac8d59827c3ca82e6c4e6f845b1966fdf15b06333898cb"
+}

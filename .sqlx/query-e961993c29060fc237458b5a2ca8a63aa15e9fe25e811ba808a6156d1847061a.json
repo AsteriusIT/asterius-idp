@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select o.outbox_id, o.kind, o.attempts, o.created_at, o.last_error,\n                    (select max(a.attempted_at)\n                       from outbox_attempts a\n                      where a.tenant_id = o.tenant_id and a.outbox_id = o.outbox_id)\n                        as last_attempt_at\n               from outbox o\n              where o.tenant_id = $1 and o.outbox_id = $2 and o.status = 'abandoned'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outbox_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "attempts",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 4,
+        "name": "last_error",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_attempt_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "e961993c29060fc237458b5a2ca8a63aa15e9fe25e811ba808a6156d1847061a"
+}

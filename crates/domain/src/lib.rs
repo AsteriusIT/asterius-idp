@@ -84,7 +84,7 @@ pub use limits::MAX_JWT_BYTES;
 pub use locale::{Locale, UiLocales, negotiate};
 pub use messages::{MessageOverrideError, MessageOverrides};
 pub use notification::{MailSender, Notification, NotificationKind};
-pub use outbox::{DeadLetter, DeadLetterQuery, OutboxEvent};
+pub use outbox::{DeadLetter, DeadLetterOperations, DeadLetterQuery, OutboxEvent};
 pub use ports::{
     ApplicationRoleDirectory, AuthRequestRepository, AuthorizationDetailsTypeRepository,
     ClientAdministration, ClientConfiguration, ClientRegistry, ClientRepository,

@@ -59,6 +59,7 @@ pub mod pagination;
 pub mod rbac;
 pub mod roles;
 pub mod router;
+pub mod ssf;
 pub mod theme_image;
 pub mod throttle;
 pub mod users;
@@ -128,6 +129,16 @@ pub const KEYS_SCHEDULE_ID: &str = "keys.schedule";
 pub const KEYS_SCHEDULE_APPLY_ID: &str = "keys.schedule.apply";
 /// The `operationId` of `GET /outbox/dead-letters`.
 pub const OUTBOX_DEAD_LETTERS_ID: &str = "outbox.dead_letters";
+/// The `operationId` of [`OUTBOX_DEAD_LETTER_RETRY`].
+pub const OUTBOX_DEAD_LETTER_RETRY_ID: &str = "outbox.dead_letters.retry";
+/// The `operationId` of [`OUTBOX_DEAD_LETTER_DROP`].
+pub const OUTBOX_DEAD_LETTER_DROP_ID: &str = "outbox.dead_letters.drop";
+/// The `operationId` of [`SSF_STREAMS_LIST`].
+pub const SSF_STREAMS_LIST_ID: &str = "ssf.streams.list";
+/// The `operationId` of [`SSF_STREAM_STATUS_UPDATE`].
+pub const SSF_STREAM_STATUS_UPDATE_ID: &str = "ssf.streams.status.update";
+/// The `operationId` of [`SSF_STREAM_VERIFY`].
+pub const SSF_STREAM_VERIFY_ID: &str = "ssf.streams.verify";
 /// The `operationId` of `GET /audit/events`.
 pub const AUDIT_EVENTS_LIST_ID: &str = "audit.events.list";
 /// The `operationId` of `GET /audit/events/export`.
@@ -494,6 +505,85 @@ pub const OUTBOX_DEAD_LETTERS: Operation = Operation::read(
     S::Get,
     A::new(R::Tenant, "admin.outbox:read"),
     "Lists deliveries this tenant's outbox has abandoned",
+);
+
+/// Puts one abandoned SSF delivery back on the schedule (`ast-f7m.8`).
+///
+/// `admin.outbox:write`, a scope of its own beside the read: the screen
+/// that shows a delivery failing is granted more widely than the button
+/// that makes this server post to a receiver again. Only `ssf.*` rows are
+/// accepted — see [`crate::router`]'s handler — because an SSF receiver
+/// deduplicates on `jti` and orders on `event_timestamp`, and whether a
+/// late `notification.account_recovery` is a message somebody wants is a
+/// question nobody has answered. The row's ordering key is not consulted:
+/// an abandoned row stopped blocking its key when it was abandoned, so the
+/// rows behind it have gone, and this one goes out after them.
+///
+/// A `POST` and not a `PUT`, because two of them are two deliveries'
+/// worth of attempts and the `Idempotency-Key` is what makes a retried
+/// click one.
+pub const OUTBOX_DEAD_LETTER_RETRY: Operation = Operation::mutation(
+    OUTBOX_DEAD_LETTER_RETRY_ID,
+    "/outbox/dead-letters/{outbox_id}/retry",
+    M::Post,
+    A::new(R::Tenant, "admin.outbox:write"),
+    "Requeues an abandoned SSF delivery with a fresh attempt budget",
+);
+
+/// Removes one abandoned delivery for good (`ast-f7m.8`).
+///
+/// What the retention sweep would do a week later, done now and recorded
+/// with the operator's name on it. A `DELETE` on the resource it removes;
+/// the same family rule as the retry, for the same reason.
+pub const OUTBOX_DEAD_LETTER_DROP: Operation = Operation::mutation(
+    OUTBOX_DEAD_LETTER_DROP_ID,
+    "/outbox/dead-letters/{outbox_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.outbox:write"),
+    "Drops an abandoned SSF delivery, recording it in the audit trail",
+);
+
+/// Every SSF stream of the tenant with its state and delivery figures
+/// (`ast-f7m.8`).
+///
+/// Its own scope, `admin.ssf:read`, and not `admin.outbox:read` beside it:
+/// the dead-letter screen says *that* deliveries fail, and this one says
+/// which receiver has arranged to hear about the tenant's users and which
+/// events. Neither the push endpoint nor the credential is rendered; see
+/// [`ssf::StreamSummary`].
+pub const SSF_STREAMS_LIST: Operation = Operation::read(
+    SSF_STREAMS_LIST_ID,
+    "/ssf/streams",
+    S::Get,
+    A::new(R::Tenant, "admin.ssf:read"),
+    "Lists this tenant's SSF streams with status, reason, counters and queue depth",
+);
+
+/// Pauses or re-enables a stream (SSF 1.0 §8.1.2, `ast-f7m.8`).
+///
+/// A `PUT` of the whole status: `enabled` or `paused`, with an optional
+/// reason. Idempotent by its own definition, so no `Idempotency-Key`.
+/// Recorded as `ssf.stream_updated`, the same type the receiver's own
+/// edits leave, with the operator as the actor.
+pub const SSF_STREAM_STATUS_UPDATE: Operation = Operation::mutation(
+    SSF_STREAM_STATUS_UPDATE_ID,
+    "/ssf/streams/{stream_id}/status",
+    M::Put,
+    A::new(R::Tenant, "admin.ssf:write"),
+    "Pauses or re-enables an SSF stream, with an optional reason",
+);
+
+/// Sends a stream §8.1.4's verification event (`ast-f7m.8`).
+///
+/// A `POST`, because each one is a SET on the wire and a retried click
+/// must be one SET. The body may carry a `state`, placed in the event
+/// verbatim as §8.1.4 requires.
+pub const SSF_STREAM_VERIFY: Operation = Operation::mutation(
+    SSF_STREAM_VERIFY_ID,
+    "/ssf/streams/{stream_id}/verification",
+    M::Post,
+    A::new(R::Tenant, "admin.ssf:write"),
+    "Queues an SSF verification event on the stream, with an optional state",
 );
 
 /// This tenant's audit trail, filtered, one cursor page at a time
@@ -901,7 +991,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 49] = [
+static REGISTRY: [Operation; 54] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -925,6 +1015,11 @@ static REGISTRY: [Operation; 49] = [
     KEYS_SCHEDULE,
     KEYS_SCHEDULE_APPLY,
     OUTBOX_DEAD_LETTERS,
+    OUTBOX_DEAD_LETTER_RETRY,
+    OUTBOX_DEAD_LETTER_DROP,
+    SSF_STREAMS_LIST,
+    SSF_STREAM_STATUS_UPDATE,
+    SSF_STREAM_VERIFY,
     AUDIT_EVENTS_LIST,
     AUDIT_EVENTS_EXPORT,
     USERS_LIST,
