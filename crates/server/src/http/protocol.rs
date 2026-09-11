@@ -30,6 +30,7 @@ use crate::http::refresh::RefreshToken;
 use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::revocation;
 use crate::http::ssf::CONFIGURATION_PATH as SSF_STREAMS_PATH;
+use crate::http::ssf::POLL_PATH as SSF_POLL_PATH;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::http::verify_email;
@@ -472,10 +473,19 @@ fn mount_ssf(
     if !capabilities.is_enabled(asterius_domain::Feature::Ssf) {
         return router;
     }
-    router.route(
-        SSF_STREAMS_PATH,
-        any(ssf_streams).with_state(Arc::clone(endpoints)),
-    )
+    router
+        .route(
+            SSF_STREAMS_PATH,
+            any(ssf_streams).with_state(Arc::clone(endpoints)),
+        )
+        // One route per stream, because SSF 1.0 §6.1.2 makes the polling URL
+        // unique per stream: the identifier in the path is what says which
+        // stream a poll request (RFC 8936 §2.1, which carries no stream
+        // identifier of its own) is for.
+        .route(
+            &format!("{SSF_POLL_PATH}/{{stream_id}}"),
+            any(ssf_poll).with_state(Arc::clone(endpoints)),
+        )
 }
 
 /// Mounts the backchannel authentication endpoint (CIBA Core 1.0 §7).
@@ -1293,6 +1303,138 @@ async fn ssf_streams(
     .await
 }
 
+/// `POST /ssf/poll/{stream_id}` — RFC 8936 §2, SSF 1.0 §6.1.2.
+///
+/// Wiring only, like [`ssf_streams`]: everything that decides anything is in
+/// [`crate::http::ssf_poll::poll`], which is where the tests are. `any` rather
+/// than `post`, for the same reason — the module answers 405 itself, with the
+/// `Cache-Control` every response of this endpoint carries.
+async fn ssf_poll(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    method: axum::http::Method,
+    Path(stream_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    // The per-tenant half of the gate, as at the management endpoint: this
+    // path is not in the endpoint registry, so `tenant_feature_guard` does not
+    // cover it.
+    match capabilities_for(&endpoints, &tenant).await {
+        Ok(capabilities) if capabilities.is_enabled(asterius_domain::Feature::Ssf) => {}
+        Ok(_) => return crate::http::server::not_found().await.into_response(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    }
+
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let store = StoredPoll {
+        streams: scope.ssf_streams(),
+        queue: scope.ssf_poll(),
+        grants: scope.grants(),
+    };
+    crate::http::ssf_poll::poll(
+        crate::http::ssf_poll::SsfPollContext {
+            tenant: &tenant,
+            store: &store,
+            keys: endpoints.keys.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            certificate: certificate.as_deref().map(|presented| &presented.leaf),
+            timing: crate::http::ssf_poll::PollTiming::default(),
+            now: time::OffsetDateTime::now_utc(),
+        },
+        &method,
+        &headers,
+        &stream_id,
+        &body,
+    )
+    .await
+}
+
+/// The rows behind the polling endpoint.
+///
+/// Three repositories and three questions: which stream this receiver owns,
+/// what that stream is holding, and whether the token presented is still good.
+#[derive(Debug)]
+struct StoredPoll {
+    streams: asterius_store_pg::PgSsfStreams,
+    queue: asterius_store_pg::PgSsfPoll,
+    grants: asterius_store_pg::PgGrantRepository,
+}
+
+#[async_trait::async_trait]
+impl crate::http::ssf_poll::SsfPollStore for StoredPoll {
+    async fn find(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamId,
+    ) -> Result<Option<asterius_ssf::stream::StreamConfiguration>, DomainError> {
+        self.streams.find(receiver, stream).await
+    }
+
+    async fn deliver(
+        &self,
+        stream: &asterius_ssf::stream::StreamId,
+        limit: usize,
+        now: time::OffsetDateTime,
+    ) -> Result<crate::http::ssf_poll::Batch, DomainError> {
+        let batch = self.queue.deliver(stream, limit, now).await?;
+        Ok(crate::http::ssf_poll::Batch {
+            sets: batch
+                .sets
+                .into_iter()
+                .map(|set| crate::http::ssf_poll::QueuedSet {
+                    jti: set.jti,
+                    jws: set.jws,
+                })
+                .collect(),
+            more_available: batch.more_available,
+        })
+    }
+
+    async fn acknowledge(
+        &self,
+        stream: &asterius_ssf::stream::StreamId,
+        jtis: &[String],
+    ) -> Result<u64, DomainError> {
+        self.queue.acknowledge(stream, jtis).await
+    }
+
+    async fn reject(
+        &self,
+        stream: &asterius_ssf::stream::StreamId,
+        jtis: &[String],
+    ) -> Result<u64, DomainError> {
+        self.queue.reject(stream, jtis).await
+    }
+
+    async fn has_pending(
+        &self,
+        stream: &asterius_ssf::stream::StreamId,
+    ) -> Result<bool, DomainError> {
+        self.queue.has_pending(stream).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::http::ssf::SsfTokenStatus for StoredPoll {
+    async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
+        self.grants.is_denylisted(jti).await
+    }
+
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &asterius_domain::ClientId,
+        grant: Option<&asterius_domain::GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, DomainError> {
+        self.grants.revoked_before(client, grant).await
+    }
+}
+
 /// The rows behind the SSF management API.
 ///
 /// Two repositories, because the endpoint asks two different questions: what
@@ -1345,7 +1487,10 @@ impl crate::http::ssf::SsfStreamStore for StoredStreams {
     ) -> Result<bool, DomainError> {
         self.streams.delete(receiver, stream).await
     }
+}
 
+#[async_trait::async_trait]
+impl crate::http::ssf::SsfTokenStatus for StoredStreams {
     async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
         self.grants.is_denylisted(jti).await
     }

@@ -166,6 +166,13 @@ impl<'a> TenantScope<'a> {
         crate::PgSsfStreams::new(self.pool.clone(), self.tenant.clone())
     }
 
+    /// The SETs this tenant's streams are holding for receivers that poll
+    /// (RFC 8936, `ast-0ju.7`).
+    #[must_use]
+    pub fn ssf_poll(&self) -> crate::PgSsfPoll {
+        crate::PgSsfPoll::new(self.pool.clone(), self.tenant.clone())
+    }
+
     /// The journal mail sender for this tenant.
     ///
     /// Scoped like everything else, so an outbox row can never be written

@@ -512,6 +512,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ssf_poll_request"
+path = "fuzz_targets/ssf_poll_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ssf_stream_configuration"
 path = "fuzz_targets/ssf_stream_configuration.rs"
 test = false

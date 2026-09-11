@@ -7844,6 +7844,7 @@ mod retention {
 
         seed_theme(pool, tenant).await;
         seed_ssf_stream(pool, tenant).await;
+        seed_ssf_poll_queue(pool, tenant).await;
     }
 
     /// One row in each of the four application-role tables (`ast-095`).
@@ -7946,6 +7947,32 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed ssf stream");
+    }
+
+    /// Two queued SETs on the seeded stream: one older than the policy's
+    /// window and one just arrived (RFC 8936, `ast-0ju.7`).
+    ///
+    /// Swept by age, not by delivery: §2.4 makes the receiver's
+    /// acknowledgement the thing that removes a SET, so the stale row is one
+    /// nobody ever came to collect. The fresh row is what says the sweep does
+    /// not simply empty the queue a receiver is about to poll.
+    async fn seed_ssf_poll_queue(pool: &PgPool, tenant: &str) {
+        for (jti, queued_at) in [
+            ("stale-set", now() - Duration::days(60)),
+            ("fresh-set", now()),
+        ] {
+            sqlx::query(
+                "insert into ssf_poll_queue (tenant_id, stream_id, jti, set_jws, queued_at)
+                 values ($1, 'seeded-stream', $2, 'a.b.c', $3)
+                 on conflict do nothing",
+            )
+            .bind(tenant)
+            .bind(jti)
+            .bind(queued_at)
+            .execute(pool)
+            .await
+            .expect("seed ssf poll queue");
+        }
     }
 
     /// One row per swept expiry-driven table, expiring at `expires`.

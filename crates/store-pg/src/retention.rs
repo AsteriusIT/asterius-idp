@@ -658,6 +658,36 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "ssf_poll_queue",
+        rule: Rule::Sweep {
+            // Every row, on age alone, and deliberately not "only the ones
+            // already delivered": RFC 8936 §2.4 makes the *receiver's*
+            // acknowledgement the thing that removes a SET, so a row still
+            // here after the window is a signal nobody ever came to collect.
+            //
+            // Unlike `outbox`, where a `pending` row is work this server still
+            // owes and performs, nothing here is owed to anyone: poll delivery
+            // is pulled, not pushed, and a receiver that has not polled in a
+            // month is not a delivery in flight. The row it left behind is a
+            // subject identifier held for a third party that never arrived —
+            // which is the one thing `asterius_ssf`'s threat model says not to
+            // keep a moment longer than the signal is useful.
+            statement: "delete from ssf_poll_queue where ctid = any (array(
+                            select ctid from ssf_poll_queue
+                             where tenant_id = $1
+                               and queued_at <= $2
+                             limit $3))",
+            // A month. A CAEP signal describes a security state that changed:
+            // "this session was revoked" is worth acting on for as long as a
+            // receiver plausibly takes to come back from an outage, and is
+            // worth nothing at all a month later — the session it names has
+            // long since expired on its own. The trail keeps the record that
+            // the event happened (`ssf.sets_delivered` and the emitter's own
+            // entry); what is dropped is the undelivered copy.
+            grace: Duration::days(30),
+        },
+    },
+    Retention {
         table: "tenant_theme_assets",
         rule: Rule::Kept(
             "a logo lives as long as the tenant that uploaded it. Content \
