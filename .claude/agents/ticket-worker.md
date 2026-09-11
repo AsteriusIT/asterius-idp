@@ -34,6 +34,13 @@ l'id manque, arrête-toi et réponds `ERREUR: id de ticket absent`.
 
 ## Règles
 - Interdits : `cargo test`, `git push --force`, merge, modification de `main`, création d'autres tickets.
+- Disque : ton worktree porte son propre `target/` (7 à 12 Go après un `check.sh`
+  complet) sur un disque partagé avec les autres agents. La compilation
+  incrémentale est coupée par `.cargo/config.toml` — elle pesait 64 % d'un
+  `target/` pour un gain nul sur un ticket. Ne l'exporte pas (`CARGO_INCREMENTAL=1`),
+  ne définis pas de `CARGO_TARGET_DIR` commun (verrou global, les agents
+  compileraient à tour de rôle), et ne supprime jamais le `target/` d'un autre
+  worktree : `./scripts/cleanup-worktrees.sh --apply` s'en charge après le merge.
 - Si le ticket est ambigu ou impossible sans décision humaine : n'invente pas, arrête-toi et réponds `BLOQUE: <cause précise>`.
 - Si après 3 tentatives un test ciblé échoue encore : commit ce qui compile, réponds `PARTIEL: <ce qui reste>`.
 - Pas de refactor hors périmètre du ticket. Note les idées dans le résumé final.

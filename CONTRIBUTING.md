@@ -168,8 +168,36 @@ new hash-suffixed artifact to `target/debug/deps` and the previous one stays
 forever. A single day of branch switching here left 257 copies of the
 `asterius` binary (2.4 GB) and 110 copies of the `tls_handshake` test binary
 (1.3 GB), in a 21 GB `deps/`. Agent worktrees make it worse: each one is a
-separate checkout with its own `target/`, roughly 1 GB after nothing more than
-a `cargo check`.
+separate checkout with its own `target/`, 7 to 12 GB once it has run a full
+`check.sh`. On 2026-09-10 seven finished worktrees held 51 GB between them, the
+disk hit zero during a `cargo fuzz run`, and an unrelated worker's `cargo sqlx
+prepare` failed. Nothing here is theoretical.
+
+### Incremental compilation is off by default
+
+The committed `.cargo/config.toml` sets `build.incremental = false`. The reason
+is disk, not speed: in the 8.8 GB `target/` measured that day,
+`debug/incremental` was 5.6 GB — 64% of the total — against 2.8 GB of
+`debug/deps` and 0.4 GB of `debug/build`. (`profile.dev.debug =
+"line-tables-only"` was already in `Cargo.toml`, so debuginfo was not the
+culprit.) An agent worktree exists for one ticket and recompiles a given crate
+two or three times; the incremental cache never gets the chance to pay for
+itself, and nothing deletes it afterwards.
+
+If you edit the same crate all day, take it back — the environment variable
+wins over the config file:
+
+```sh
+CARGO_INCREMENTAL=1 cargo check      # this command
+export CARGO_INCREMENTAL=1           # this shell
+```
+
+Putting `incremental = true` in your `~/.cargo/config.toml` will *not* work:
+between two config files, the one closest to the working directory wins, and
+that is the repository's. CI already exports `CARGO_INCREMENTAL: 0`, so the
+committed default changes nothing there.
+
+### Reclaiming what is already on disk
 
 ```sh
 ./scripts/gc-build-artifacts.sh             # report what is reclaimable
@@ -192,15 +220,60 @@ sitting on the tip of `main`, which have merged nothing and belong to an agent
 that just started; and remote branches whose real tip — read with `git
 ls-remote`, not from a possibly stale tracking ref — is not contained in
 `main`, which is an agent that pushed again after the merge. It never forces
-anything. `./scripts/cleanup-worktrees.sh --self-test` builds a throwaway
-repository with its own bare `origin` and asserts each of those cases;
-`check.sh` runs it.
+anything.
+
+A worktree whose branch is *not* merged is a different case: the agent has
+finished, the branch is pushed, CI has not spoken yet, and deleting the
+checkout would throw away work that may still need a fix. Those keep their
+`target/`, which is where the 51 GB came from. The same `--apply` now runs
+`cargo clean` in them — in `target/` and in `fuzz/target/` — which frees the
+disk and leaves the branch, the sources and the git state untouched. The three
+guards above apply, plus a fourth: a `target/` written to in the last 30
+minutes (`--idle-minutes N`) belongs to a build in progress, even if its owner
+forgot to lock the worktree. `--no-clean` turns the pass off. `cargo clean`
+rather than `rm -rf` on purpose: it is the tool that knows what a build
+directory is, and it cannot be aimed at anything else.
+
+`./scripts/cleanup-worktrees.sh --self-test` builds a throwaway repository with
+its own bare `origin` and four worktrees — finished, locked, compiling, just
+started — and asserts each of those cases, including that only the finished one
+is cleaned; `check.sh` runs it.
 
 Sharing one `CARGO_TARGET_DIR` across worktrees looks like the obvious fix and
 is not: cargo takes an exclusive lock on the build directory, so concurrent
 builds print `Blocking waiting for file lock on build directory` and run one
 after another. Measured with cargo 1.98: two 8-second builds sharing a target
-directory took 15 seconds of wall clock instead of 8.
+directory took 15 seconds of wall clock instead of 8. The way to share work
+between worktrees is a compilation cache, not a shared directory — see below.
+
+### Machine-local accelerators: mold, sccache
+
+Neither is in the repository's `.cargo/config.toml`, and neither ever will be:
+cargo has no "use it if installed" syntax, so a committed `rustc-wrapper =
+"sccache"` or a committed mold linker flag turns a missing binary into a hard
+build failure for every reader of that file, CI runners included. They go in
+your own `~/.cargo/config.toml`, which the repository config does not override
+because it defines neither key.
+
+```sh
+./scripts/local-toolchain.sh          # what is installed, what is active
+./scripts/local-toolchain.sh --print  # the snippet for this machine
+```
+
+- **sccache** is a compilation cache shared by every worktree, so a new agent
+  worktree does not rebuild the dependency tree from cold. It only works
+  because incremental compilation is off: sccache declines to cache
+  incremental units. Bound the cache in `~/.config/sccache/config` (`[cache.disk]
+  size = 21474836480` for 20 GB); the default is 10 GB, and the environment
+  variable is only read when the sccache server starts, which makes it easy to
+  believe you set it when you did not.
+- **mold** needs two flags, not one, on rustc 1.98: `-C linker-features=-lld`
+  to stop rustc from passing its bundled `rust-lld`, and `-C
+  link-arg=-B<prefix>/libexec/mold` to point `cc` at mold's `ld` shim. Not
+  `-fuse-ld=<path>`, which gcc rejects — that spelling is clang-only. Since the
+  default linker is already LLD and no longer GNU ld, expect less than the
+  folklore promises; it still helps on the ~30 statically linked test binaries.
+  It saves no disk at all.
 
 ### WSL2: freeing space inside does not give it back to Windows
 

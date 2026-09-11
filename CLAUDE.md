@@ -71,6 +71,14 @@ l'orchestrateur gagnent sur tout.
 - Maximum 3 exécutions de nextest par session.
 - Ces limites ne sont plus imposées par un hook : la session tourne en mode bypass,
   c'est à toi de les respecter.
+- Compilation incrémentale désactivée pour tout le monde par `.cargo/config.toml`
+  (`build.incremental = false`) : elle pesait 5,6 Go des 8,8 Go d'un `target/`,
+  pour un gain nul sur un worktree qui vit le temps d'un ticket. Ne la réactive
+  pas dans un worktree d'agent. Un humain qui la veut exporte `CARGO_INCREMENTAL=1`
+  (la variable l'emporte sur le fichier) — `CONTRIBUTING.md`, « Disk space ».
+- `./scripts/local-toolchain.sh` dit si mold et sccache sont là et comment les
+  activer, dans `~/.cargo/config.toml` seulement : un dépôt qui exige un binaire
+  absent casse la machine qui ne l'a pas, et la CI.
 
 ### Tickets & branches
 
@@ -82,8 +90,11 @@ l'orchestrateur gagnent sur tout.
 - Jamais : `push --force`, `reset --hard`, `clean`, modification directe de `main` depuis un worker.
 - Après un merge, `./scripts/cleanup-worktrees.sh --apply` : un worktree
   d'agent porte son propre `target/` (~1 Go) et rien ne le supprime tout seul.
-  Le script ne touche que les `claude/*` fusionnés dans `main`, et épargne les
-  worktrees verrouillés par un agent en cours. Les artefacts
+  Le script ne supprime que les `claude/*` fusionnés dans `main`, et passe un
+  `cargo clean` (target/ et fuzz/target) dans les worktrees `claude/*` non
+  fusionnés dont plus personne ne compile — agent fini, CI en cours. Il épargne
+  toujours les worktrees verrouillés par un agent en cours et ceux dont le
+  `target/` a bougé depuis moins de 30 minutes. Les artefacts
   périmés du dépôt principal se récupèrent séparément avec
   `./scripts/gc-build-artifacts.sh --apply`. Ne supprime jamais le `target/`
   d'un worktree qui n'est pas le tien. Contrainte WSL2 et détails :
