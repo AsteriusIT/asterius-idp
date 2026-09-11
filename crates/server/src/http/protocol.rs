@@ -11,6 +11,7 @@
 //! from a document the specification says must contain it.
 
 use crate::client_auth::ClientAuthenticator;
+use crate::http::account_grants::{self, GrantsContext};
 use crate::http::approvals::{self, ApprovalsContext};
 use crate::http::authorization_code::AuthorizationCode;
 use crate::http::authorize::{self, AuthorizeContext};
@@ -454,6 +455,7 @@ fn mount_features(
     let router = mount_backchannel_authentication(router, capabilities, &endpoints);
     let router = mount_ssf(router, capabilities, &endpoints);
     let router = router.merge(approvals_pages(Arc::clone(&endpoints)));
+    let router = router.merge(grants_pages(Arc::clone(&endpoints)));
     router.merge(device_pages(endpoints))
 }
 
@@ -621,6 +623,33 @@ fn approvals_pages(endpoints: Arc<ClientEndpoints>) -> Router {
         .route(
             approvals::SIGN_IN_PATH,
             get(approvals_sign_in).with_state(endpoints),
+        )
+}
+
+/// The grants dashboard (`ast-uwv.6`), which is three pages and no endpoint.
+///
+/// Not in the [`Endpoint`] registry and therefore not in the discovery
+/// document, for the reason the inbox is not: this is this server's own user
+/// interface, reached with a session cookie, and no client has business
+/// linking into it. Grant Management ID1 §6's endpoint — the one clients call
+/// — is mounted elsewhere and is a different thing entirely.
+///
+/// Behind no feature flag: a deployment that issues tokens has grants, whether
+/// or not it has enabled the Grant Management API, and a person's ability to
+/// withdraw their own authorizations is not an optional protocol feature.
+fn grants_pages(endpoints: Arc<ClientEndpoints>) -> Router {
+    Router::new()
+        .route(
+            account_grants::PAGE_PATH,
+            get(grants_page).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_grants::REVOKE_PATH,
+            post(grants_revoke).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_grants::SIGN_IN_PATH,
+            get(grants_sign_in).with_state(endpoints),
         )
 }
 
@@ -4273,6 +4302,132 @@ async fn approvals_sign_in(
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     approvals::sign_in(
         &approvals_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// What the grants dashboard's three handlers borrow for one request.
+///
+/// `ApprovalsParts`' reason for existing, and a different set: this page never
+/// touches a backchannel request, and it does reach the user directory, to
+/// turn an agent's owner into a name the person reading recognises.
+struct GrantsParts {
+    grants: asterius_store_pg::PgGrantRepository,
+    sessions: asterius_store_pg::PgSessionRepository,
+    interactions: asterius_store_pg::PgAuthRequestRepository,
+    clients: asterius_store_pg::PgClientRepository,
+    users: asterius_store_pg::PgUserRepository,
+}
+
+fn grants_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> GrantsParts {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    GrantsParts {
+        grants: scope.grants(),
+        sessions: scope.sessions(),
+        interactions: scope.auth_requests(),
+        clients: scope.clients(endpoints.capabilities),
+        users: scope.users(Arc::clone(&endpoints.kek)),
+    }
+}
+
+fn grants_context<'a>(
+    tenant: &'a Tenant,
+    parts: &'a GrantsParts,
+    text: &'a asterius_web::Catalog,
+    audit: &'a dyn asterius_domain::AuditSink,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: Option<Extension<MountPrefix>>,
+) -> GrantsContext<'a> {
+    GrantsContext {
+        tenant,
+        grants: &parts.grants,
+        sessions: &parts.sessions,
+        interactions: &parts.interactions,
+        clients: &parts.clients,
+        users: &parts.users,
+        acr: acr_policy(),
+        text,
+        nonce,
+        audit,
+        mount: mount_of(mount),
+    }
+}
+
+/// `GET /account/grants` — what stands open in this person's name.
+async fn grants_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = grants_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_grants::page(
+        &grants_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /account/grants/revoke` — withdraw one authorization.
+async fn grants_revoke(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = grants_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_grants::revoke(
+        &grants_context(
+            &tenant,
+            &parts,
+            &text,
+            endpoints.audit.as_ref(),
+            &nonce,
+            mount,
+        ),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/grants/sign-in` — authenticate again, and come back.
+async fn grants_sign_in(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = grants_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_grants::sign_in(
+        &grants_context(
             &tenant,
             &parts,
             &text,

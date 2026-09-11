@@ -688,6 +688,122 @@ pub struct ApprovalsPage<'a> {
     pub brand: crate::brand::Brand<'a>,
 }
 
+/// One delegation minted from a grant, as the dashboard renders it
+/// (RFC 8693 §4.1, `ast-lh3.9`).
+///
+/// A token exchange creates a *child* grant whose `act` chain records who
+/// asked on whose behalf. It is shown under the grant it came from rather than
+/// as an entry of its own, because a person did not allow it separately: it is
+/// what the access they did allow was passed on to, and withdrawing the parent
+/// is what stops it.
+#[derive(Debug, Clone)]
+pub struct DelegationLine {
+    /// The registered name of the client the access was passed on to. A claim
+    /// the client made about itself at registration, like every other name on
+    /// this page.
+    pub client_name: String,
+    /// The `act` chain in the order a person reads it — who acted first,
+    /// first. Each entry is an actor's `sub` or `client_id` as the chain
+    /// recorded it, and never a credential.
+    pub actors: Vec<String>,
+    /// When the delegation was minted, RFC 3339, for a `<time>` element.
+    pub delegated_at: String,
+}
+
+/// One standing authorization, as the grants dashboard renders it (Grant
+/// Management ID1 §3, `ast-uwv.6`).
+///
+/// Everything here is already a string, formatted by the caller: the page must
+/// render with no script at all, so a date a browser would have localised is a
+/// date this server writes out.
+#[derive(Debug, Clone)]
+pub struct GrantLine {
+    /// How the withdrawal form names this grant: the grant id.
+    ///
+    /// The identifier and not a digest of it, unlike the approvals inbox's
+    /// reference, because a `grant_id` is not a credential — Grant Management
+    /// ID1 §6 has clients send it in a URL — and the server checks that the
+    /// row it names belongs to the person pressing the button.
+    pub reference: String,
+    /// The client's registered name. Attacker-chosen at registration and
+    /// rendered as a claim rather than as an identity (FAPI 2.0 SP §7).
+    pub client_name: String,
+    /// For an agent, the account it acts for (`asterius_domain::AgentOwner`).
+    ///
+    /// `None` for an ordinary client. An agent is the one kind of client whose
+    /// access is not explained by the person in front of this page having used
+    /// it, so the owner is named where the name is.
+    pub agent_owner: Option<String>,
+    /// The scopes the authorization covers (RFC 6749 §3.3), read-only: there
+    /// is nothing to untick, because narrowing a standing grant would leave a
+    /// client holding a token it cannot explain. The answer to "not that" is
+    /// to withdraw it.
+    pub scopes: Vec<ScopeLine>,
+    /// The RFC 9396 §2 elements, described the way the consent screen
+    /// describes them: the operator's sentence for the type, never the
+    /// client's JSON (§12).
+    pub authorization_details: Vec<DetailLine>,
+    /// The RFC 8707 resources the authorization is audience-bound to.
+    pub resources: Vec<String>,
+    /// When the authorization was made, RFC 3339.
+    pub granted_at: String,
+    /// When a credential was last taken from it, RFC 3339. `None` renders
+    /// "never used": a grant nobody ever claimed from.
+    pub last_used: Option<String>,
+    /// The most recent token exchange made from this grant, RFC 3339.
+    ///
+    /// `None` when there has never been one. Named separately from
+    /// [`Self::last_used`] because for an agent grant it is the fact that
+    /// matters: it is when the agent last acted *as somebody*, rather than
+    /// when it last took a token for itself.
+    pub last_exchange: Option<String>,
+    /// What this access was passed on to, newest first.
+    pub delegations: Vec<DelegationLine>,
+}
+
+/// The grants dashboard: what stands open in a person's name, and one button
+/// per row to close it (Grant Management ID1 §3, OIDC Core §3.1.2.4).
+///
+/// # No script
+///
+/// Every date is server-rendered text and every withdrawal is a form post, for
+/// the reason the rest of this tree gives: a page that needed JavaScript to
+/// revoke would be a page a person cannot revoke from.
+///
+/// # Why a withdrawal is a `POST` with a token
+///
+/// It destroys an authorization. A `GET` that revoked could be fired by an
+/// `<img>` on any page in the world, and a `POST` without a synchroniser token
+/// by a form on one — so it carries [`Self::csrf`], derived from the session's
+/// digest, which a cross-origin page can cause the browser to *send* but
+/// cannot read.
+#[derive(Debug, Template)]
+#[template(path = "grants.html")]
+pub struct GrantsPage<'a> {
+    /// The words this page is rendered with, and the language they are in.
+    pub text: &'a Catalog,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// What stands open, newest first. Empty renders a page that says so.
+    pub grants: Vec<GrantLine>,
+    /// Where a withdrawal posts to.
+    pub action: &'a str,
+    /// Where a person re-authenticates when withdrawing needs a fresher
+    /// sign-in than the session has.
+    pub sign_in_href: &'a str,
+    /// The synchroniser token a withdrawal carries.
+    pub csrf: &'a str,
+    /// What happened last time, if anything did.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders.
+    pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    pub brand: crate::brand::Brand<'a>,
+}
+
 /// The account creation page.
 ///
 /// No script: a passkey cannot be enrolled from markup, and enrolment happens

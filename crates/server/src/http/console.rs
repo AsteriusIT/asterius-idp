@@ -91,6 +91,9 @@ pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
         // One segment up from `/interaction/{id}`, like the others, and then
         // down into the account pages (`ast-lh3.6`).
         FirstPartyDestination::ApprovalsInbox => "../account/approvals",
+        // The grants dashboard (`ast-uwv.6`), reached the same way: one segment
+        // up from `/interaction/{id}` and then down into the account pages.
+        FirstPartyDestination::GrantsDashboard => "../account/grants",
     }
 }
 
