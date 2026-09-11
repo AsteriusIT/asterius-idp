@@ -48,6 +48,20 @@ pub enum NotificationKind {
         /// How many minutes the link is good for, so the message can say so.
         valid_for_minutes: i64,
     },
+    /// Somebody has to prove they can read the address on this account, and
+    /// here is the link (`ast-vae`).
+    ///
+    /// A separate variant from [`Self::AccountRecovery`] rather than a flag on
+    /// it, because the two are worth different things and a template that
+    /// could not tell them apart would word a confirmation like a password
+    /// reset — which is how a person is trained to click a "reset your
+    /// password" link they did not ask for.
+    EmailVerification {
+        /// Where to click. Contains the single-use token.
+        link: String,
+        /// How many minutes the link is good for, so the message can say so.
+        valid_for_minutes: i64,
+    },
     /// The account's credentials changed. No link, nothing to click: this is
     /// the "was this you?" message, and a link in it would train the person
     /// receiving it to click links in messages about their password.
@@ -60,6 +74,7 @@ impl NotificationKind {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::AccountRecovery { .. } => "account_recovery",
+            Self::EmailVerification { .. } => "email_verification",
             Self::CredentialChanged => "credential_changed",
         }
     }
@@ -86,6 +101,18 @@ impl Notification {
         Self {
             to,
             kind: NotificationKind::AccountRecovery {
+                link,
+                valid_for_minutes,
+            },
+        }
+    }
+
+    /// The address-confirmation message.
+    #[must_use]
+    pub fn email_verification(to: String, link: String, valid_for_minutes: i64) -> Self {
+        Self {
+            to,
+            kind: NotificationKind::EmailVerification {
                 link,
                 valid_for_minutes,
             },
@@ -141,6 +168,24 @@ mod tests {
 
         // Assert
         assert_eq!(kind, "account_recovery");
+    }
+
+    /// A confirmation is not a recovery, and the recorded name is what tells
+    /// a template and an operator which of the two this is.
+    #[test]
+    fn an_email_verification_notification_records_its_own_kind() {
+        // Arrange
+        let message = Notification::email_verification(
+            "a@example.test".to_owned(),
+            "https://x".to_owned(),
+            15,
+        );
+
+        // Act
+        let kind = message.kind.as_str();
+
+        // Assert
+        assert_eq!(kind, "email_verification");
     }
 
     /// A credential-change notice carries nothing to click. Asserted rather

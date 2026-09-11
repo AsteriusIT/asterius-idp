@@ -324,6 +324,57 @@ impl PgUserRepository {
         .map_err(to_domain_error)
     }
 
+    /// Turns a proved address into OIDC Core §5.1's `email_verified`
+    /// (`ast-vae`).
+    ///
+    /// One statement, and every predicate in it is load-bearing:
+    ///
+    /// * `email = $3` — the address the *token* was mailed to, not the one the
+    ///   handler happened to read a moment ago. The comparison is in SQL so
+    ///   that an address changed between the read and this write loses the
+    ///   race rather than winning it: without it, the sequence "ask for a link
+    ///   at a mailbox you own, change the address, follow the link" would set
+    ///   the flag on a mailbox nobody proved. The handler checks the same thing
+    ///   with [`asterius_domain::VerifiedAddress::still_matches`]; this is the
+    ///   half that is atomic.
+    /// * `email_verified = false` — so a repeated confirmation is a no-op that
+    ///   reports `false` rather than a second write and a second audit event.
+    ///
+    /// Case-insensitive on the whole address for the reason
+    /// `still_matches` gives: both sides were recorded by this server for this
+    /// account, so a difference in case is somebody retyping their own
+    /// address, and a different mailbox differs by more than case.
+    ///
+    /// Returns whether a row moved — `false` for an account that has since
+    /// changed its address, one that was already confirmed, and one that no
+    /// longer exists. The caller must not tell the three apart in anything a
+    /// browser sees.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the update fails.
+    pub async fn mark_email_verified(
+        &self,
+        id: UserId,
+        address: &str,
+    ) -> Result<bool, DomainError> {
+        let result = sqlx::query!(
+            "update users
+                set email_verified = true
+              where tenant_id = $1
+                and user_id = $2
+                and lower(email) = lower($3)
+                and email_verified = false",
+            self.tenant.as_str(),
+            id.as_uuid(),
+            address,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Deletes a user, and by cascade their credentials, sessions and every
     /// subject identifier they were known by.
     ///

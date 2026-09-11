@@ -7,10 +7,11 @@ use crate::{
     ApplicationRole, AuthenticationMethod, AuthorizationDetailsType, Client, ClientId,
     ClientMetadataError, ClientRegistration, ClientStatus, CodeBinding, Consumed, DomainError,
     Enrolment, FirstPartyDestination, Grant, InitialAccessToken, InitialAccessTokenReservation,
-    InteractionRecord, IssuedRecovery, Issuer, NewInitialAccessToken, NewPasskey, Participant,
-    PushedRequest, RegisteredPasskey, ResourceServer, RoleName, RoleOwner, Secret,
-    SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant, TenantId, TenantSettings,
-    Theme, User, UserId, entities::application_role::HeldRoles, entities::theme::ImageFormat,
+    InteractionRecord, IssuedEmailVerification, IssuedRecovery, Issuer, NewInitialAccessToken,
+    NewPasskey, Participant, PushedRequest, RegisteredPasskey, ResourceServer, RoleName, RoleOwner,
+    Secret, SectorIdentifier, Session, SessionRevocation, SubjectId, Tenant, TenantId,
+    TenantSettings, Theme, User, UserId, VerifiedAddress, entities::application_role::HeldRoles,
+    entities::theme::ImageFormat,
 };
 use serde_json::Value;
 use std::fmt::Debug;
@@ -1731,6 +1732,76 @@ pub trait RecoveryTokenStore: Debug + Send + Sync {
     /// a password changed from a signed-in session, an administrator. A live
     /// reset link that survives the change it was meant to cause is a way back
     /// in for whoever prompted it.
+    ///
+    /// Returns how many were invalidated, for the trail.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn invalidate_for_user(
+        &self,
+        user: UserId,
+        now: OffsetDateTime,
+    ) -> Result<u64, DomainError>;
+}
+
+// ---------------------------------------------------------------------------
+// Email verification
+// ---------------------------------------------------------------------------
+
+/// The single-use tokens behind a confirmation link (`ast-vae`).
+///
+/// Shaped like [`RecoveryTokenStore`] and deliberately not merged with it. The
+/// two tokens are worth different things — one resets a credential, one
+/// asserts OIDC Core §5.1's `email_verified` and nothing else — and a store
+/// that served both would be one `spend` away from letting a confirmation link
+/// be presented where a reset link is expected. Separate tables, separate
+/// digests, separate ports.
+///
+/// No method here ever sees a token. Rows hold
+/// [`crate::EmailVerificationToken::digest`] and callers pass digests.
+#[async_trait::async_trait]
+pub trait EmailVerificationStore: Debug + Send + Sync {
+    /// Writes a freshly drawn token and invalidates every earlier one for the
+    /// same user, in one transaction.
+    ///
+    /// Superseding matters more here than it does for recovery, and for a
+    /// reason that is not tidiness: an outstanding link proves an address that
+    /// may since have been changed. Drawing a new one for the new address must
+    /// retire the old one, or the account would hold two live proofs of two
+    /// different mailboxes and whichever was followed last would win.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    async fn issue(&self, issued: &IssuedEmailVerification) -> Result<(), DomainError>;
+
+    /// Consumes the token behind `digest`, returning what it proved.
+    ///
+    /// Atomic, and the only place expiry is enforced against a clock the
+    /// caller does not control. `Ok(None)` covers every ordinary refusal —
+    /// unknown, already spent, expired, superseded — as one answer, because a
+    /// browser that could tell them apart could probe for live links.
+    ///
+    /// The answer carries the address as well as the user, and the caller must
+    /// check it against the account's current address before writing the flag:
+    /// [`VerifiedAddress::still_matches`] is that check, and
+    /// `crate::entities::email_verification` documents the attack it closes.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the statement fails.
+    async fn spend(
+        &self,
+        digest: &str,
+        now: OffsetDateTime,
+    ) -> Result<Option<VerifiedAddress>, DomainError>;
+
+    /// Invalidates every outstanding token for one user.
+    ///
+    /// Called when the account's address changes by any route. A live link
+    /// that survives the change it was meant to confirm is a proof about a
+    /// mailbox the account no longer names.
     ///
     /// Returns how many were invalidated, for the trail.
     ///

@@ -7728,6 +7728,7 @@ mod retention {
             // pair and to no other fixture.
             seed_initial_access_token(pool, tenant, label, expires).await;
             seed_recovery_token(pool, tenant, user, label, expires).await;
+            seed_email_verification_token(pool, tenant, user, label, expires).await;
             seed_device_code(pool, tenant, label, expires).await;
             seed_ciba_request(pool, tenant, user, label, expires).await;
         }
@@ -8340,6 +8341,34 @@ mod retention {
         .execute(pool)
         .await
         .expect("seed recovery token");
+    }
+
+    /// A confirmation link, live or spent (`ast-vae`).
+    ///
+    /// `issued_at` is placed before `expires_at` for the reason the reset
+    /// link above is: the table refuses a row whose link expired before it was
+    /// drawn, and the stale fixture is dated in the past.
+    async fn seed_email_verification_token(
+        pool: &PgPool,
+        tenant: &str,
+        user: uuid::Uuid,
+        label: &str,
+        expires: OffsetDateTime,
+    ) {
+        sqlx::query(
+            "insert into email_verification_tokens
+                 (tenant_id, token_hash, user_id, address, issued_at, expires_at)
+             values ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(tenant)
+        .bind(format!("digest-of-a-{label}-confirmation-link"))
+        .bind(user)
+        .bind(format!("{label}@example.test"))
+        .bind(expires - Duration::minutes(15))
+        .bind(expires)
+        .execute(pool)
+        .await
+        .expect("seed email verification token");
     }
 
     /// A pending device authorization, live or long over (`ast-lh3.3`).
@@ -12237,6 +12266,388 @@ mod recovery {
             // Act
             let purged = store
                 .purge_expired(issued_at + RECOVERY_LIFETIME + Duration::seconds(1))
+                .await
+                .expect("purge");
+
+            // Assert
+            assert_eq!(purged, 1);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Email verification (`ast-vae`)
+// ---------------------------------------------------------------------------
+
+/// The rules a clock decides, and the one an `update` decides, for the token
+/// behind a confirmation link.
+///
+/// Here rather than in `asterius-server`'s handler for the reason the module
+/// above gives: `now` is a parameter here and the system clock there, so a
+/// fifteen-minute rule can only be stated against the predicate that runs.
+mod email_verification {
+    use super::*;
+    use asterius_domain::ports::EmailVerificationStore as _;
+    use asterius_domain::{
+        EMAIL_VERIFICATION_LIFETIME, EmailVerificationToken, IssuedEmailVerification, UserId,
+        VerifiedAddress,
+    };
+    use asterius_store_pg::PgEmailVerificationTokens;
+    use time::Duration;
+
+    /// The address the seeded account holds, which is also the address a token
+    /// is issued against unless a test says otherwise.
+    fn address_of(user: UserId) -> String {
+        format!("{}@example.test", user.as_uuid())
+    }
+
+    async fn seed_account(pool: &PgPool, tenant: &str) -> UserId {
+        seed_tenant(pool, tenant).await;
+        let id = UserId::generate();
+        sqlx::query(
+            "insert into users (tenant_id, user_id, username, email, status)
+             values ($1, $2, $3, $4, 'active')",
+        )
+        .bind(tenant)
+        .bind(id.as_uuid())
+        .bind(id.as_uuid().to_string())
+        .bind(address_of(id))
+        .execute(pool)
+        .await
+        .expect("seed a user");
+        id
+    }
+
+    fn tokens(pool: &PgPool, tenant: &str) -> PgEmailVerificationTokens {
+        PgEmailVerificationTokens::new(pool.clone(), TenantId::new(tenant))
+    }
+
+    db_test! {
+        /// The ordinary case: a live token is spent, and what comes back names
+        /// both the account and the address that was proved.
+        async fn a_live_token_is_spent_and_names_what_it_proved(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-live").await;
+            let store = tokens(&db.pool, "ev-live");
+            let token = EmailVerificationToken::generate();
+            let now = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, now))
+                .await
+                .expect("issue");
+
+            // Act
+            let spent = store.spend(&token.digest(), now).await.expect("spend");
+
+            // Assert
+            assert_eq!(
+                spent,
+                Some(VerifiedAddress { user, address: address_of(user) })
+            );
+        }
+    }
+
+    db_test! {
+        /// **Single use.** The second spend of one link finds nothing, and the
+        /// `update`'s own `consumed_at is null` predicate is what decides —
+        /// not a read the caller did first, which would be a race.
+        async fn a_token_is_spent_exactly_once(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-once").await;
+            let store = tokens(&db.pool, "ev-once");
+            let token = EmailVerificationToken::generate();
+            let now = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, now))
+                .await
+                .expect("issue");
+            store.spend(&token.digest(), now).await.expect("first spend");
+
+            // Act
+            let again = store.spend(&token.digest(), now).await.expect("second spend");
+
+            // Assert
+            assert_eq!(again, None);
+        }
+    }
+
+    db_test! {
+        /// **Fifteen minutes**, as the ticket fixed it, stated against the
+        /// predicate that actually runs.
+        async fn a_token_past_its_lifetime_is_refused(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-expiry").await;
+            let store = tokens(&db.pool, "ev-expiry");
+            let token = EmailVerificationToken::generate();
+            let issued_at = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, issued_at))
+                .await
+                .expect("issue");
+
+            // Act
+            let spent = store
+                .spend(
+                    &token.digest(),
+                    issued_at + EMAIL_VERIFICATION_LIFETIME + Duration::seconds(1),
+                )
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(spent, None);
+        }
+    }
+
+    db_test! {
+        /// One second inside the window still works. Without this, the test
+        /// above would pass against a token that never worked at all.
+        async fn a_token_inside_its_lifetime_still_works(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-inside").await;
+            let store = tokens(&db.pool, "ev-inside");
+            let token = EmailVerificationToken::generate();
+            let issued_at = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, issued_at))
+                .await
+                .expect("issue");
+
+            // Act
+            let spent = store
+                .spend(
+                    &token.digest(),
+                    issued_at + EMAIL_VERIFICATION_LIFETIME - Duration::seconds(1),
+                )
+                .await
+                .expect("spend");
+
+            // Assert
+            assert!(spent.is_some());
+        }
+    }
+
+    db_test! {
+        /// **The attack the address column exists for.** A link issued while
+        /// the account held one address must not be spendable *as a proof of*
+        /// a different one after the address moves: what comes back is what
+        /// was mailed, so the handler can refuse it.
+        ///
+        /// Sign up as `attacker@evil.test`, ask for a link, change the address
+        /// to `victim@bank.test`, follow the link. Without the stored address
+        /// the flag would land on a mailbox nobody proved.
+        async fn a_spent_token_names_the_address_it_was_mailed_to(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-moved").await;
+            let store = tokens(&db.pool, "ev-moved");
+            let token = EmailVerificationToken::generate();
+            let now = OffsetDateTime::now_utc();
+            store
+                .issue(&IssuedEmailVerification::new(user, "attacker@evil.test", &token, now))
+                .await
+                .expect("issue");
+            sqlx::query("update users set email = $1 where tenant_id = $2 and user_id = $3")
+                .bind("victim@bank.test")
+                .bind("ev-moved")
+                .bind(user.as_uuid())
+                .execute(&db.pool)
+                .await
+                .expect("move the address");
+
+            // Act
+            let spent = store.spend(&token.digest(), now).await.expect("spend");
+
+            // Assert
+            let proved = spent.expect("the token is still live");
+            assert_eq!(proved.address, "attacker@evil.test");
+            assert!(
+                !proved.still_matches(Some("victim@bank.test")),
+                "a proof about one mailbox confirmed another"
+            );
+        }
+    }
+
+    db_test! {
+        /// Issuing supersedes. Two live links for one account are two
+        /// assertions about two possibly different mailboxes, and whichever
+        /// was followed last would win.
+        async fn issuing_a_token_kills_the_one_before_it(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-supersede").await;
+            let store = tokens(&db.pool, "ev-supersede");
+            let now = OffsetDateTime::now_utc();
+            let first = EmailVerificationToken::generate();
+            let second = EmailVerificationToken::generate();
+            store
+                .issue(&IssuedEmailVerification::new(user, "old@example.test", &first, now))
+                .await
+                .expect("issue");
+            store
+                .issue(&IssuedEmailVerification::new(user, "new@example.test", &second, now))
+                .await
+                .expect("issue");
+
+            // Act
+            let old = store.spend(&first.digest(), now).await.expect("spend");
+            let new = store.spend(&second.digest(), now).await.expect("spend");
+
+            // Assert
+            assert_eq!(old, None);
+            assert_eq!(new.map(|proved| proved.address), Some("new@example.test".to_owned()));
+        }
+    }
+
+    db_test! {
+        /// **An address change invalidates an outstanding link.** A proof
+        /// about the mailbox the account has just stopped naming must not
+        /// survive the change it was meant to confirm.
+        async fn an_address_change_invalidates_an_outstanding_token(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-change").await;
+            let store = tokens(&db.pool, "ev-change");
+            let now = OffsetDateTime::now_utc();
+            let token = EmailVerificationToken::generate();
+            store
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, now))
+                .await
+                .expect("issue");
+
+            // Act
+            let invalidated = store.invalidate_for_user(user, now).await.expect("invalidate");
+            let spent = store.spend(&token.digest(), now).await.expect("spend");
+
+            // Assert
+            assert_eq!(invalidated, 1);
+            assert_eq!(spent, None);
+        }
+    }
+
+    db_test! {
+        /// The reason is recorded, so an operator can tell a followed link
+        /// from one retired by an address change — the distinction the handler
+        /// deliberately refuses to show a browser.
+        async fn an_invalidated_token_records_why(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-reason").await;
+            let store = tokens(&db.pool, "ev-reason");
+            let now = OffsetDateTime::now_utc();
+            let token = EmailVerificationToken::generate();
+            store
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, now))
+                .await
+                .expect("issue");
+            store.invalidate_for_user(user, now).await.expect("invalidate");
+
+            // Act
+            let reason: Option<String> = sqlx::query_scalar(
+                "select consumed_reason from email_verification_tokens
+                  where tenant_id = $1 and token_hash = $2",
+            )
+            .bind("ev-reason")
+            .bind(token.digest())
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row");
+
+            // Assert
+            assert_eq!(reason.as_deref(), Some("address_change"));
+        }
+    }
+
+    db_test! {
+        /// **Hashed at rest.** No column holds the token, so a copy of this
+        /// database is a pile of digests rather than a pile of live links.
+        async fn no_row_holds_the_token_itself(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-at-rest").await;
+            let store = tokens(&db.pool, "ev-at-rest");
+            let now = OffsetDateTime::now_utc();
+            let token = EmailVerificationToken::generate();
+            store
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, now))
+                .await
+                .expect("issue");
+
+            // Act
+            let row: String = sqlx::query_scalar(
+                "select email_verification_tokens::text from email_verification_tokens
+                  where tenant_id = $1",
+            )
+            .bind("ev-at-rest")
+            .fetch_one(&db.pool)
+            .await
+            .expect("read the row");
+
+            // Assert
+            assert!(!row.contains(token.expose()), "the row held the token: {row}");
+            assert!(row.contains(&token.digest()));
+        }
+    }
+
+    db_test! {
+        /// A token nobody issued is refused rather than matched as a prefix.
+        async fn a_token_nobody_issued_is_refused(db) {
+            // Arrange
+            seed_account(&db.pool, "ev-unknown").await;
+            let store = tokens(&db.pool, "ev-unknown");
+
+            // Act
+            let spent = store
+                .spend(
+                    &EmailVerificationToken::generate().digest(),
+                    OffsetDateTime::now_utc(),
+                )
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(spent, None);
+        }
+    }
+
+    db_test! {
+        /// A token belongs to the tenant that issued it. The predicate names
+        /// `tenant_id`, so one tenant's link cannot confirm another's account
+        /// even if the digests somehow collided.
+        async fn a_token_does_not_cross_tenants(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-mine").await;
+            seed_account(&db.pool, "ev-theirs").await;
+            let now = OffsetDateTime::now_utc();
+            let token = EmailVerificationToken::generate();
+            tokens(&db.pool, "ev-mine")
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, now))
+                .await
+                .expect("issue");
+
+            // Act
+            let elsewhere = tokens(&db.pool, "ev-theirs")
+                .spend(&token.digest(), now)
+                .await
+                .expect("spend");
+
+            // Assert
+            assert_eq!(elsewhere, None);
+        }
+    }
+
+    db_test! {
+        /// The sweep drops what has expired. An expired row protects nothing —
+        /// `spend` refuses it regardless — and it holds somebody's address.
+        async fn expired_tokens_are_purged(db) {
+            // Arrange
+            let user = seed_account(&db.pool, "ev-purge").await;
+            let store = tokens(&db.pool, "ev-purge");
+            let issued_at = OffsetDateTime::now_utc();
+            let token = EmailVerificationToken::generate();
+            store
+                .issue(&IssuedEmailVerification::new(user, &address_of(user), &token, issued_at))
+                .await
+                .expect("issue");
+
+            // Act
+            let purged = store
+                .purge_expired(issued_at + EMAIL_VERIFICATION_LIFETIME + Duration::seconds(1))
                 .await
                 .expect("purge");
 

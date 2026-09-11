@@ -156,6 +156,15 @@ impl TokenLifetimes {
 
 /// Everything a tenant may set about itself that this story covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the same argument `Capabilities` makes: these are four independent \
+              switches a tenant sets separately, not four states of one thing, so \
+              the state enum clippy suggests cannot express them — it would have \
+              sixteen variants and no name for any of them. Each field is read \
+              through its own accessor, which is where the meaning lives, and the \
+              names are the JSON keys an operator writes."
+)]
 pub struct TenantSettings {
     disabled_features: BTreeSet<Feature>,
     lifetimes: TokenLifetimes,
@@ -219,6 +228,22 @@ pub struct TenantSettings {
     /// the end so that a parallel change adding another one does not have to
     /// be reconciled line by line.
     revoke_refresh_on_logout: bool,
+    /// Whether a sign-in here may complete before the account's address has
+    /// been proved (`ast-vae`).
+    ///
+    /// `false` unless this tenant says otherwise, and the default is a
+    /// decision rather than an oversight. Turning it on makes a mailbox part
+    /// of every sign-in: an account whose address has stopped working can no
+    /// longer be used at all, and a tenant whose accounts were imported
+    /// without addresses would lock out everybody at once. OIDC Core §5.1's
+    /// `email_verified` is reported honestly either way — what this setting
+    /// decides is whether an unproved address *blocks*, not whether it is
+    /// truthfully reported.
+    ///
+    /// Last, for the reason the fields above it are last: a new member goes at
+    /// the end so that a parallel change adding another one does not have to
+    /// be reconciled line by line.
+    require_verified_email: bool,
 }
 
 impl Default for TenantSettings {
@@ -238,6 +263,7 @@ impl Default for TenantSettings {
             messages: MessageOverrides::default(),
             grant_id_in_access_token: true,
             revoke_refresh_on_logout: false,
+            require_verified_email: false,
         }
     }
 }
@@ -265,6 +291,7 @@ impl TenantSettings {
             messages: MessageOverrides::default(),
             grant_id_in_access_token: true,
             revoke_refresh_on_logout: false,
+            require_verified_email: false,
         })
     }
 
@@ -356,6 +383,27 @@ impl TenantSettings {
     pub const fn with_revoke_refresh_on_logout(mut self, revoke: bool) -> Self {
         self.revoke_refresh_on_logout = revoke;
         self
+    }
+
+    /// The same settings with the email-verification gate decided.
+    ///
+    /// A builder rather than another argument to [`TenantSettings::validated`],
+    /// for the reason [`Self::with_registration`] gives.
+    #[must_use]
+    pub const fn requiring_a_verified_email(mut self, required: bool) -> Self {
+        self.require_verified_email = required;
+        self
+    }
+
+    /// Whether a sign-in here is refused until the address is proved
+    /// (`ast-vae`).
+    ///
+    /// See the field: `false` unless this tenant asked for it, because turning
+    /// it on puts a mailbox in the path of every sign-in and a default that
+    /// did so would lock out every account provisioned without an address.
+    #[must_use]
+    pub const fn require_verified_email(&self) -> bool {
+        self.require_verified_email
     }
 
     /// Whether ending a session here also revokes the refresh tokens issued
@@ -458,6 +506,7 @@ impl TenantSettings {
             "messages": self.messages.to_json(),
             "grant_id_in_access_token": self.grant_id_in_access_token,
             "revoke_refresh_on_logout": self.revoke_refresh_on_logout,
+            "require_verified_email": self.require_verified_email,
         })
     }
 
@@ -562,6 +611,19 @@ impl TenantSettings {
             }
         };
 
+        // Absent is `false`, like the setting above it and for a sharper
+        // version of the same reason: a row written before this existed
+        // belongs to a tenant whose sign-ins never consulted an address, and
+        // reading silence as "require" would lock every one of its accounts
+        // out on the next deployment.
+        let require_verified_email = match object.get("require_verified_email") {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(required)) => *required,
+            Some(_) => {
+                return Err(TenantSettingsError::NotABoolean("require_verified_email"));
+            }
+        };
+
         Ok(
             Self::validated(disabled_features, authorization_code, access_token)?
                 .with_registration(registration)
@@ -569,7 +631,8 @@ impl TenantSettings {
                 .with_default_locale(default_locale)
                 .with_messages(messages)
                 .with_grant_id_in_access_token(grant_id_in_access_token)
-                .with_revoke_refresh_on_logout(revoke_refresh_on_logout),
+                .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
+                .requiring_a_verified_email(require_verified_email),
         )
     }
 }
@@ -734,6 +797,55 @@ mod tests {
 
         // Assert
         assert!(read_back.revoke_refresh_on_logout());
+    }
+
+    /// A tenant that has never opened this file must not have every one of its
+    /// accounts locked out by a deployment (`ast-vae`). Silence is `false`.
+    #[test]
+    fn a_tenant_that_never_mentioned_it_does_not_require_a_verified_email() {
+        // Arrange
+        let stored = serde_json::json!({"disabled_features": []});
+
+        // Act
+        let settings = TenantSettings::from_json(Some(&stored)).expect("a readable row");
+
+        // Assert
+        assert!(!settings.require_verified_email());
+    }
+
+    /// The switch the sign-in path reads. A setting that did not survive a
+    /// write would be a gate an operator believes is closed and is not.
+    #[test]
+    fn requiring_a_verified_email_round_trips() {
+        // Arrange
+        let settings = TenantSettings::default().requiring_a_verified_email(true);
+
+        // Act
+        let read_back =
+            TenantSettings::from_json(Some(&settings.to_json())).expect("this server wrote it");
+
+        // Assert
+        assert!(read_back.require_verified_email());
+    }
+
+    /// A row edited by hand during an incident must not turn a truthy string
+    /// into a gate nobody set.
+    #[test]
+    fn a_non_boolean_email_requirement_is_refused() {
+        // Arrange
+        let stored = serde_json::json!({"require_verified_email": "yes"});
+
+        // Act
+        let error = TenantSettings::from_json(Some(&stored)).unwrap_err();
+
+        // Assert
+        assert!(
+            matches!(
+                error,
+                TenantSettingsError::NotABoolean("require_verified_email")
+            ),
+            "{error}"
+        );
     }
 
     /// The tenant default is the last layer of OIDC Core §3.1.2.1 negotiation,

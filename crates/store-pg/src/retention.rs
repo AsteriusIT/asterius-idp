@@ -292,6 +292,23 @@ pub const POLICY: &[Retention] = &[
         },
     },
     Retention {
+        table: "email_verification_tokens",
+        rule: Rule::Sweep {
+            // A confirmation link, fifteen minutes wide, swept on exactly the
+            // terms its sibling above is and for the same reason: the row
+            // holds the digest of a live link, and one that has been spent or
+            // has expired is material a database copy still yields for no
+            // remaining purpose. The address column makes that sharper rather
+            // than softer — it is a person's mailbox, kept only as long as the
+            // link it belongs to is capable of doing anything.
+            statement: "delete from email_verification_tokens where ctid = any (array(
+                            select ctid from email_verification_tokens
+                             where tenant_id = $1 and expires_at <= $2
+                             limit $3))",
+            grace: Duration::ZERO,
+        },
+    },
+    Retention {
         table: "user_roles",
         rule: Rule::Kept(
             "authority is granted and revoked by a person: a deployment admin \
