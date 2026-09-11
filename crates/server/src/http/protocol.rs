@@ -36,6 +36,7 @@ use crate::http::ssf::POLL_PATH as SSF_POLL_PATH;
 use crate::http::ssf_management::ADD_SUBJECT_PATH as SSF_ADD_SUBJECT_PATH;
 use crate::http::ssf_management::REMOVE_SUBJECT_PATH as SSF_REMOVE_SUBJECT_PATH;
 use crate::http::ssf_management::STATUS_PATH as SSF_STATUS_PATH;
+use crate::http::ssf_management::VERIFICATION_PATH as SSF_VERIFICATION_PATH;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::http::verify_email;
@@ -511,6 +512,11 @@ fn mount_ssf(
             SSF_REMOVE_SUBJECT_PATH,
             any(ssf_remove_subject).with_state(Arc::clone(endpoints)),
         )
+        // §8.1.4.2, advertised as §7.1's `verification_endpoint`.
+        .route(
+            SSF_VERIFICATION_PATH,
+            any(ssf_verification).with_state(Arc::clone(endpoints)),
+        )
 }
 
 /// Mounts the backchannel authentication endpoint (CIBA Core 1.0 §7).
@@ -929,6 +935,7 @@ async fn ssf_configuration(
             format!("{issuer}{SSF_STATUS_PATH}"),
             format!("{issuer}{SSF_ADD_SUBJECT_PATH}"),
             format!("{issuer}{SSF_REMOVE_SUBJECT_PATH}"),
+            format!("{issuer}{SSF_VERIFICATION_PATH}"),
         ]
     });
     let management = mounted
@@ -938,6 +945,7 @@ async fn ssf_configuration(
             status: &urls[1],
             add_subject: &urls[2],
             remove_subject: &urls[3],
+            verification: &urls[4],
         });
     let document = asterius_ssf::transmitter_metadata(
         &tenant.issuer,
@@ -1477,6 +1485,7 @@ async fn ssf_status(
             tenant: &tenant,
             store: &store,
             directory: &directory,
+            verifier: &store,
             keys: endpoints.keys.as_ref(),
             dpop: endpoints.dpop.as_ref(),
             audit: endpoints.audit.as_ref(),
@@ -1487,6 +1496,51 @@ async fn ssf_status(
         &method,
         &headers,
         uri.query(),
+        &body,
+    )
+    .await
+}
+
+/// `POST /ssf/streams/verification` — SSF 1.0 §8.1.4.2.
+///
+/// Wiring only, like [`ssf_status`]: the decisions are in
+/// [`crate::http::ssf_management::verification`].
+// Seven extractors, which axum builds from the request itself: the client
+// address because the tenant's limiter is built per request like the other
+// three endpoints', and the certificate because the receiver's token may be
+// certificate-bound (RFC 8705 §3).
+#[allow(clippy::too_many_arguments)]
+async fn ssf_verification(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let now = time::OffsetDateTime::now_utc();
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let Some((store, directory, limits)) =
+        ssf_management_context(&endpoints, &tenant, &limiter, client.as_deref(), now).await
+    else {
+        return crate::http::server::not_found().await.into_response();
+    };
+    crate::http::ssf_management::verification(
+        crate::http::ssf_management::SsfManagementContext {
+            tenant: &tenant,
+            store: &store,
+            directory: &directory,
+            verifier: &store,
+            keys: endpoints.keys.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            certificate: certificate.as_deref().map(|presented| &presented.leaf),
+            limits,
+            now,
+        },
+        &method,
+        &headers,
         &body,
     )
     .await
@@ -1566,6 +1620,7 @@ async fn ssf_subject_membership(
             tenant: &tenant,
             store: &store,
             directory: &directory,
+            verifier: &store,
             keys: endpoints.keys.as_ref(),
             dpop: endpoints.dpop.as_ref(),
             audit: endpoints.audit.as_ref(),
@@ -1598,14 +1653,14 @@ async fn ssf_management_context<'a>(
     StoredDirectory,
     crate::http::limits::LimitContext<'a>,
 )> {
-    match capabilities_for(endpoints, tenant).await {
-        Ok(capabilities) if capabilities.is_enabled(asterius_domain::Feature::Ssf) => {}
+    let capabilities = match capabilities_for(endpoints, tenant).await {
+        Ok(capabilities) if capabilities.is_enabled(asterius_domain::Feature::Ssf) => capabilities,
         Ok(_) => return None,
         Err(error) => {
             tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
             return None;
         }
-    }
+    };
 
     let scope = endpoints.store.scope(tenant.id.clone());
     Some((
@@ -1613,6 +1668,15 @@ async fn ssf_management_context<'a>(
             streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
             subjects: scope.ssf_subjects(),
             grants: scope.grants(),
+            tenant: Arc::clone(tenant),
+            clients: scope.clients(capabilities),
+            users: scope.users(Arc::clone(&endpoints.kek)),
+            queues: crate::outbox::PgSsfQueues::new(
+                endpoints.store.clone(),
+                tenant.id.clone(),
+                Arc::clone(&endpoints.kek),
+            ),
+            signer: Arc::clone(&endpoints.signer),
         },
         StoredDirectory {
             issuer: tenant.issuer.clone(),
@@ -1622,12 +1686,75 @@ async fn ssf_management_context<'a>(
     ))
 }
 
-/// The rows behind the status and subject endpoints.
+/// The rows behind the status, subject and verification endpoints.
+///
+/// The verification endpoint (§8.1.4.2) is the one of the four that does more
+/// than read and write rows: it signs a SET and queues it. That is why this
+/// carries the tenant, the signer and the queues as well — see the
+/// [`crate::http::ssf_management::SsfVerifier`] implementation below, which
+/// builds the same [`crate::ssf::SsfTransmitter`] the emitters and the console
+/// use rather than assembling a second idea of what a verification event is.
 #[derive(Debug)]
 struct StoredManagement {
     streams: asterius_store_pg::PgSsfStreams,
     subjects: asterius_store_pg::PgSsfSubjects,
     grants: asterius_store_pg::PgGrantRepository,
+    tenant: Arc<Tenant>,
+    clients: asterius_store_pg::PgClientRepository,
+    users: asterius_store_pg::PgUserRepository,
+    queues: crate::outbox::PgSsfQueues,
+    signer: Arc<dyn asterius_domain::keys::Signer>,
+}
+
+#[async_trait::async_trait]
+impl crate::http::ssf_management::SsfVerifier for StoredManagement {
+    async fn verify(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamId,
+        state: Option<&asterius_ssf::VerificationState>,
+        now: time::OffsetDateTime,
+    ) -> Result<crate::http::ssf_management::Verified, DomainError> {
+        use crate::http::ssf_management::Verified;
+
+        // §8.1.4.2's interval is claimed *before* anything is signed: a
+        // receiver asking faster than it is answered must meet the 429 rather
+        // than a signing oracle.
+        let claim = self
+            .streams
+            .claim_verification(receiver, stream, min_verification_interval(), now)
+            .await?;
+        let subscription = match claim {
+            asterius_store_pg::VerificationClaim::NoSuchStream => {
+                return Ok(Verified::NoSuchStream);
+            }
+            asterius_store_pg::VerificationClaim::TooSoon { retry_after } => {
+                return Ok(Verified::TooSoon { retry_after });
+            }
+            asterius_store_pg::VerificationClaim::Granted(subscription) => subscription,
+        };
+
+        let transmitter = crate::ssf::SsfTransmitter {
+            tenant: &self.tenant.id,
+            issuer: &self.tenant.issuer,
+            queues: &self.queues,
+            clients: &self.clients,
+            subjects: &self.users,
+            signer: self.signer.as_ref(),
+        };
+        transmitter.verify(&subscription, state, now).await?;
+        Ok(Verified::Queued)
+    }
+}
+
+/// §7.1's `min_verification_interval`, as a duration.
+///
+/// Read from the constant the metadata document is rendered from, so the
+/// interval a receiver is told about is the interval it is held to.
+fn min_verification_interval() -> time::Duration {
+    time::Duration::seconds(
+        i64::try_from(asterius_ssf::stream::MIN_VERIFICATION_INTERVAL).unwrap_or(i64::MAX),
+    )
 }
 
 #[async_trait::async_trait]

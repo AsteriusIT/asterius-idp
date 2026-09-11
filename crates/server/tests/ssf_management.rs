@@ -29,8 +29,10 @@ use asterius_server::http::limits::{EndpointThrottle, LimitContext};
 use asterius_server::http::ssf::SsfTokenStatus;
 use asterius_server::http::ssf_management::{
     ADD_SUBJECT_PATH, Membership, REMOVE_SUBJECT_PATH, Recognised, STATUS_PATH,
-    SsfManagementContext, SsfManagementStore, SubjectDirectory, SubjectOutcome, status, subjects,
+    SsfManagementContext, SsfManagementStore, SsfVerifier, SubjectDirectory, SubjectOutcome,
+    VERIFICATION_PATH, Verified, status, subjects, verification,
 };
+use asterius_ssf::VerificationState;
 use asterius_ssf::stream::{SCOPE_MANAGE, StreamId, StreamStatus};
 use asterius_ssf::subject::Subject;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -208,6 +210,79 @@ impl SsfTokenStatus for FakeRows {
     }
 }
 
+/// §8.1.4.2's queue and its interval, in memory.
+///
+/// It records what the endpoint asked it to queue — one entry per admitted
+/// request, with the `state` exactly as it arrived — and it enforces the
+/// interval the way the repository does: the first request on a stream is
+/// admitted, the next one inside the interval is refused with the seconds
+/// left. The point of the fake is that the *endpoint* is real: the credential
+/// checks, the parse and the status codes are the ones a receiver meets.
+#[derive(Debug, Default)]
+struct FakeVerifier {
+    /// `(receiver, stream, state)` per queued verification event.
+    queued: Mutex<Vec<(String, String, Option<String>)>>,
+    /// Streams this receiver owns, so "no such stream" can be asserted.
+    streams: Mutex<Vec<(String, String)>>,
+    /// When each stream was last verified, in seconds from the fixed `now`.
+    verified_at: Mutex<BTreeMap<String, i64>>,
+}
+
+impl FakeVerifier {
+    /// §7.1's `min_verification_interval`, as the repository applies it.
+    const INTERVAL: i64 = 60;
+
+    fn owns(&self, receiver: &str, stream: &StreamId) {
+        self.streams
+            .lock()
+            .expect("lock")
+            .push((receiver.to_owned(), stream.as_str().to_owned()));
+    }
+
+    fn queued(&self) -> Vec<(String, String, Option<String>)> {
+        self.queued.lock().expect("lock").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl SsfVerifier for FakeVerifier {
+    async fn verify(
+        &self,
+        receiver: &ClientId,
+        stream: &StreamId,
+        state: Option<&VerificationState>,
+        now: OffsetDateTime,
+    ) -> Result<Verified, DomainError> {
+        let owned = self
+            .streams
+            .lock()
+            .expect("lock")
+            .iter()
+            .any(|(owner, held)| owner == receiver.as_str() && held == stream.as_str());
+        if !owned {
+            return Ok(Verified::NoSuchStream);
+        }
+        let mut verified_at = self.verified_at.lock().expect("lock");
+        let at = now.unix_timestamp();
+        if let Some(last) = verified_at.get(stream.as_str()) {
+            let elapsed = at - last;
+            if elapsed < Self::INTERVAL {
+                return Ok(Verified::TooSoon {
+                    retry_after: (Self::INTERVAL - elapsed).max(1),
+                });
+            }
+        }
+        verified_at.insert(stream.as_str().to_owned(), at);
+        drop(verified_at);
+        self.queued.lock().expect("lock").push((
+            receiver.as_str().to_owned(),
+            stream.as_str().to_owned(),
+            state.map(|state| state.as_str().to_owned()),
+        ));
+        Ok(Verified::Queued)
+    }
+}
+
 /// A directory that knows one address and nobody else.
 #[derive(Debug, Default)]
 struct FakeDirectory(Mutex<Vec<Subject>>);
@@ -345,6 +420,7 @@ struct Fixture {
     keys: Arc<LocalKeyStore>,
     dpop_key: SigningKey,
     rows: FakeRows,
+    verifier: FakeVerifier,
     directory: FakeDirectory,
     audit: FakeAudit,
     limiter: FakeLimiter,
@@ -366,7 +442,12 @@ impl Fixture {
         let jkt = thumbprint(&dpop_key.public_jwk().expect("jwk")).expect("thumbprint");
 
         let mut tokens = BTreeMap::new();
-        for path in [STATUS_PATH, ADD_SUBJECT_PATH, REMOVE_SUBJECT_PATH] {
+        for path in [
+            STATUS_PATH,
+            ADD_SUBJECT_PATH,
+            REMOVE_SUBJECT_PATH,
+            VERIFICATION_PATH,
+        ] {
             let token = sign_token(&keys, &jkt, scopes, &url_of(path)).await;
             tokens.insert(path.to_owned(), token);
         }
@@ -375,6 +456,7 @@ impl Fixture {
             keys,
             dpop_key,
             rows: FakeRows::with_capacity(64),
+            verifier: FakeVerifier::default(),
             directory: FakeDirectory::default(),
             audit: FakeAudit::default(),
             limiter: FakeLimiter::default(),
@@ -405,6 +487,7 @@ impl Fixture {
             tenant,
             store: &self.rows,
             directory: &self.directory,
+            verifier: &self.verifier,
             keys: self.keys.as_ref(),
             dpop,
             audit: &self.audit,
@@ -451,6 +534,25 @@ impl Fixture {
             &rendered,
         )
         .await
+    }
+
+    /// A stream this receiver owns, as the verification endpoint sees it.
+    fn verifiable_stream(&self) -> StreamId {
+        let stream = StreamId::generate();
+        self.verifier.owns(RECEIVER, &stream);
+        stream
+    }
+
+    async fn verification_request(&self, body: Value) -> Response {
+        self.verification_with(Method::POST, body).await
+    }
+
+    async fn verification_with(&self, method: Method, body: Value) -> Response {
+        let tenant = tenant();
+        let dpop = DpopEndpoint::new(Arc::new(FakeReplay), None);
+        let rendered = serde_json::to_vec(&body).expect("a JSON body");
+        let headers = self.headers(VERIFICATION_PATH, method.as_str());
+        verification(self.context(&tenant, &dpop), &method, &headers, &rendered).await
     }
 
     fn headers(&self, path: &str, method: &str) -> HeaderMap {
@@ -1259,4 +1361,166 @@ async fn a_membership_change_is_recorded_without_the_subject_identifier() {
         !written.contains(KNOWN),
         "a subject identifier reached the trail: {written}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// §8.1.4.2 — the verification endpoint
+// ---------------------------------------------------------------------------
+
+/// §8.1.4.2: a receiver asks its transmitter to verify a stream and gets 204,
+/// with the `state` carried to the queue exactly as it sent it.
+#[tokio::test]
+async fn a_receiver_asks_for_a_verification_and_the_set_carries_its_state() {
+    // Arrange
+    let fixture = Fixture::new().await;
+    let stream = fixture.verifiable_stream();
+
+    // Act
+    let response = fixture
+        .verification_request(json!({
+            "stream_id": stream.as_str(),
+            "state": "VGhpcyBpcyBhbiBleGFtcGxlIHN0YXRlIHZhbHVlLgo=",
+        }))
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        fixture.verifier.queued(),
+        vec![(
+            RECEIVER.to_owned(),
+            stream.as_str().to_owned(),
+            Some("VGhpcyBpcyBhbiBleGFtcGxlIHN0YXRlIHZhbHVlLgo=".to_owned()),
+        )]
+    );
+    assert!(
+        fixture
+            .trail()
+            .contains(&EventType::SSF_VERIFICATION_REQUESTED)
+    );
+}
+
+/// `state` is OPTIONAL (§8.1.4.2): a request without one is still 204.
+#[tokio::test]
+async fn a_verification_without_a_state_is_accepted() {
+    // Arrange
+    let fixture = Fixture::new().await;
+    let stream = fixture.verifiable_stream();
+
+    // Act
+    let response = fixture
+        .verification_request(json!({"stream_id": stream.as_str()}))
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(fixture.verifier.queued().len(), 1);
+    assert_eq!(fixture.verifier.queued()[0].2, None);
+}
+
+/// > If the Event Receiver requests verification more frequently than the
+/// > `min_verification_interval`, the Event Transmitter MUST respond with 429.
+///
+/// And the refusal says how long to wait, so a receiver retries once rather
+/// than in a loop.
+#[tokio::test]
+async fn a_second_verification_inside_the_interval_is_refused_with_a_retry_after() {
+    // Arrange
+    let fixture = Fixture::new().await;
+    let stream = fixture.verifiable_stream();
+    let first = fixture
+        .verification_request(json!({"stream_id": stream.as_str()}))
+        .await;
+    assert_eq!(first.status(), StatusCode::NO_CONTENT);
+
+    // Act
+    let second = fixture
+        .verification_request(json!({"stream_id": stream.as_str()}))
+        .await;
+
+    // Assert
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(
+        second
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("60")
+    );
+    // And the refusal queued nothing: one SET for two requests.
+    assert_eq!(fixture.verifier.queued().len(), 1);
+}
+
+/// §8: the stream a receiver may verify is one of its own. Another
+/// receiver's is 404, the same answer as a stream that does not exist.
+#[tokio::test]
+async fn another_receivers_stream_cannot_be_verified() {
+    // Arrange
+    let fixture = Fixture::new().await;
+    let theirs = StreamId::generate();
+    fixture.verifier.owns("other-receiver", &theirs);
+
+    // Act
+    let response = fixture
+        .verification_request(json!({"stream_id": theirs.as_str()}))
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert!(fixture.verifier.queued().is_empty());
+}
+
+/// §8.1.4.2 makes `stream_id` REQUIRED: a request without one addresses no
+/// stream and is a 400, not a 404 about a stream nobody named.
+#[tokio::test]
+async fn a_verification_without_a_stream_id_is_refused() {
+    // Arrange
+    let fixture = Fixture::new().await;
+
+    // Act
+    let response = fixture
+        .verification_request(json!({"state": "corr-1"}))
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The `state` ends up in a signed token handed to a third party, so the
+/// endpoint refuses what the model refuses — before anything is queued, and
+/// without echoing the value.
+#[tokio::test]
+async fn a_state_with_a_control_character_is_refused_before_anything_is_queued() {
+    // Arrange
+    let fixture = Fixture::new().await;
+    let stream = fixture.verifiable_stream();
+
+    // Act
+    let response = fixture
+        .verification_request(json!({
+            "stream_id": stream.as_str(),
+            "state": "secret-value\r\n",
+        }))
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(fixture.verifier.queued().is_empty());
+    let body = body_of(response).await.to_string();
+    assert!(!body.contains("secret-value"), "{body}");
+}
+
+/// §8.1.4.2 is a `POST`. A `GET` at this URL is 405, not a verification.
+#[tokio::test]
+async fn the_verification_endpoint_answers_only_post() {
+    // Arrange
+    let fixture = Fixture::new().await;
+
+    // Act
+    let response = fixture
+        .verification_with(Method::GET, json!({"stream_id": "s"}))
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }

@@ -45,6 +45,7 @@
 
 use crate::stream::{StreamId, StreamStatus};
 use crate::subject::{Subject, SubjectError};
+use crate::verification::{StateError, VerificationState};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -111,6 +112,14 @@ pub enum ManagementError {
     /// `subject` is not a usable subject identifier.
     #[error("`subject` is not a subject identifier this transmitter reads: {0}")]
     Subject(#[from] SubjectError),
+    /// §8.1.4.2's `state` is present and not a value this transmitter will
+    /// place in a signed token.
+    ///
+    /// The inner message names the rule and never the value — see
+    /// [`crate::verification::StateError`] — which is what lets this one be
+    /// rendered into a 400 body like every other variant here.
+    #[error("`state` is not one this transmitter carries: {0}")]
+    State(#[from] StateError),
 }
 
 /// A §8.1.2.2 request: change this stream's status.
@@ -218,6 +227,71 @@ impl SubjectRequest {
     ///
     /// [`ManagementError::MissingStreamId`] — §8.1.3.2 and §8.1.3.3 both make
     /// the member REQUIRED.
+    pub fn addressed_stream(&self) -> Result<&StreamId, ManagementError> {
+        self.stream_id
+            .as_ref()
+            .ok_or(ManagementError::MissingStreamId)
+    }
+}
+
+/// A §8.1.4.2 request: send this stream a verification event.
+///
+/// > `stream_id`: REQUIRED. [...] `state`: OPTIONAL. An arbitrary string that
+/// > the Event Transmitter MUST echo back to the Event Receiver in the
+/// > verification event's `state` claim.
+///
+/// The `state` is parsed here rather than carried as a raw string, because
+/// what happens to it next is that it becomes a member of a *signed* token
+/// sent to a third party: the bound and the control-character rule belong at
+/// the edge, once, before anything is signed
+/// ([`crate::verification::VerificationState`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct VerificationRequest {
+    /// §8.1.4.2's `stream_id`. REQUIRED, read through
+    /// [`VerificationRequest::addressed_stream`].
+    pub stream_id: Option<StreamId>,
+    /// §8.1.4.2's `state`, to be echoed verbatim in the event.
+    pub state: Option<VerificationState>,
+}
+
+impl VerificationRequest {
+    /// Parses one verification request body (§8.1.4.2).
+    ///
+    /// An explicit `null` `state` is read as "no state", as it is for
+    /// §8.1.2.2's `reason`: a receiver's serialiser that renders absent
+    /// members as `null` is asking for the event without one, and there is
+    /// nothing about that request to refuse.
+    ///
+    /// # Errors
+    ///
+    /// [`ManagementError`] for anything §8.1.4.2 answers 400 to: a body that
+    /// is not an object, a `stream_id` or `state` of the wrong type, and a
+    /// `state` that is empty, over-long or carries a control character.
+    // fuzz-target: ssf_verification_request
+    pub fn parse(body: &Value) -> Result<Self, ManagementError> {
+        let object = body.as_object().ok_or(ManagementError::NotAnObject)?;
+        let state = match object.get("state") {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let raw = value
+                    .as_str()
+                    .ok_or(ManagementError::WrongType { member: "state" })?;
+                Some(VerificationState::parse(raw)?)
+            }
+        };
+        Ok(Self {
+            stream_id: addressed(object)?,
+            state,
+        })
+    }
+
+    /// The stream this request addresses.
+    ///
+    /// # Errors
+    ///
+    /// [`ManagementError::MissingStreamId`] — §8.1.4.2 makes the member
+    /// REQUIRED, and a request without it addresses no stream at all.
     pub fn addressed_stream(&self) -> Result<&StreamId, ManagementError> {
         self.stream_id
             .as_ref()
@@ -463,5 +537,101 @@ mod tests {
 
         // Assert
         assert_eq!(request.status, StreamStatus::Enabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // §8.1.4.2: the verification request
+    // -----------------------------------------------------------------------
+
+    /// §8.1.4.2's example body: a stream and the state to echo.
+    #[test]
+    fn a_verification_request_names_a_stream_and_a_state() {
+        // Arrange
+        let stream = stream_id();
+        let body = json!({
+            "stream_id": stream.as_str(),
+            "state": "VGhpcyBpcyBhbiBleGFtcGxlIHN0YXRlIHZhbHVlLgo=",
+        });
+
+        // Act
+        let request = VerificationRequest::parse(&body).expect("a verification request");
+
+        // Assert
+        assert_eq!(request.addressed_stream(), Ok(&stream));
+        assert_eq!(
+            request.state.as_ref().map(VerificationState::as_str),
+            Some("VGhpcyBpcyBhbiBleGFtcGxlIHN0YXRlIHZhbHVlLgo=")
+        );
+    }
+
+    /// `state` is OPTIONAL, and an explicit `null` is the same request.
+    #[test]
+    fn a_verification_request_without_a_state_is_accepted() {
+        // Arrange
+        let stream = stream_id();
+
+        // Act
+        let absent = VerificationRequest::parse(&json!({"stream_id": stream.as_str()}))
+            .expect("a verification request");
+        let null = VerificationRequest::parse(&json!({
+            "stream_id": stream.as_str(),
+            "state": Value::Null,
+        }))
+        .expect("a verification request");
+
+        // Assert
+        assert_eq!(absent.state, None);
+        assert_eq!(null.state, None);
+    }
+
+    /// §8.1.4.2 makes `stream_id` REQUIRED: a request without one addresses
+    /// no stream.
+    #[test]
+    fn a_verification_request_without_a_stream_addresses_none() {
+        // Arrange
+        let request = VerificationRequest::parse(&json!({"state": "corr-1"}))
+            .expect("a verification request");
+
+        // Act / Assert
+        assert_eq!(
+            request.addressed_stream(),
+            Err(ManagementError::MissingStreamId)
+        );
+    }
+
+    /// The `state` is placed in a signed token, so the parse refuses what
+    /// [`VerificationState`] refuses — and names the rule, not the value.
+    #[test]
+    fn a_state_with_a_control_character_is_refused_before_it_is_signed() {
+        // Arrange
+        let body = json!({"stream_id": stream_id().as_str(), "state": "secret\u{7f}"});
+
+        // Act
+        let refusal = VerificationRequest::parse(&body).expect_err("refused");
+
+        // Assert
+        assert_eq!(refusal, ManagementError::State(StateError::Control));
+        assert!(!refusal.to_string().contains("secret"));
+    }
+
+    #[test]
+    fn a_state_of_the_wrong_type_is_refused() {
+        // Arrange
+        let body = json!({"stream_id": stream_id().as_str(), "state": 7});
+
+        // Act / Assert
+        assert_eq!(
+            VerificationRequest::parse(&body),
+            Err(ManagementError::WrongType { member: "state" })
+        );
+    }
+
+    #[test]
+    fn a_verification_request_that_is_not_an_object_is_refused() {
+        // Arrange / Act / Assert
+        assert_eq!(
+            VerificationRequest::parse(&json!("stream")),
+            Err(ManagementError::NotAnObject)
+        );
     }
 }

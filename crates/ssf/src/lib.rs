@@ -88,13 +88,14 @@ pub mod poll;
 pub mod push;
 pub mod set;
 pub mod stream;
+pub mod stream_updated;
 pub mod subject;
 pub mod verification;
 
 pub use event::{EventError, EventUri, MAX_EVENT_URI_LEN, SecurityEvent};
 pub use management::{
     MAX_HELD_WHILE_PAUSED, MAX_REASON_LEN, ManagementError, StatusRequest, SubjectRequest,
-    render_status,
+    VerificationRequest, render_status,
 };
 pub use metadata::{SPEC_VERSION, WELL_KNOWN_DOCUMENT, transmitter_metadata};
 pub use poll::{MAX_LONG_POLL, PollError, PollRequest, PollResponse, RejectedSet};
@@ -106,6 +107,7 @@ pub use set::{
     AudienceError, MAX_SET_CLAIMS_BYTES, ReadySet, SET_TYP, Set, SetError, SetId, SetSubject,
     SignedSet, StreamAudience, Txn, UnsignedSet,
 };
+pub use stream_updated::{STREAM_UPDATED, stream_updated_event};
 pub use subject::{
     ComplexSubject, MAX_MEMBER_LEN, MAX_SUBJECT_BYTES, SimpleSubject, Subject, SubjectError,
 };

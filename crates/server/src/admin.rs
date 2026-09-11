@@ -202,6 +202,54 @@ impl std::fmt::Debug for DeploymentSsf {
     }
 }
 
+impl DeploymentSsf {
+    /// Queues §8.1.5's stream-updated event on one stream, or says in the log
+    /// why it could not.
+    ///
+    /// Never fails the caller: see [`SsfAdministration::set_status`] for why
+    /// a status change outlives an announcement that could not be made.
+    async fn announce(
+        &self,
+        tenant: &TenantId,
+        subscription: &asterius_store_pg::Subscription,
+        status: asterius_ssf::stream::StreamStatus,
+        reason: Option<&str>,
+        now: time::OffsetDateTime,
+    ) {
+        let Ok(Some(tenant_entity)) = self.tenants.find_by_id(tenant).await else {
+            tracing::error!(tenant = %tenant, "cannot read a tenant to announce a stream update");
+            return;
+        };
+        let scope = self.store.scope(tenant.clone());
+        let clients = scope.clients(self.capabilities);
+        let users = scope.users(Arc::clone(&self.kek));
+        let queues = crate::outbox::PgSsfQueues::new(
+            self.store.clone(),
+            tenant.clone(),
+            Arc::clone(&self.kek),
+        );
+        let transmitter = crate::ssf::SsfTransmitter {
+            tenant,
+            issuer: &tenant_entity.issuer,
+            queues: &queues,
+            clients: &clients,
+            subjects: &users,
+            signer: self.keys.as_ref(),
+        };
+        if let Err(error) = transmitter
+            .announce_status(subscription, status, reason, now)
+            .await
+        {
+            tracing::error!(
+                %error,
+                tenant = %tenant,
+                stream = subscription.stream_id.as_str(),
+                "a stream status change was not announced to its receiver",
+            );
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
     async fn streams(
@@ -236,6 +284,27 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
             .collect())
     }
 
+    /// An operator's pause or re-enable, announced to the receiver as SSF 1.0
+    /// §8.1.5 requires (`ast-0ju.5`).
+    ///
+    /// The order is the specification's and is the whole point of this
+    /// method:
+    ///
+    /// > The Transmitter MUST send this event to the Receiver before the
+    /// > stream is paused or disabled, and upon the stream being re-enabled.
+    ///
+    /// So a **pause** announces first and writes second — the SET is enqueued
+    /// while the stream still accepts events, and the queue then holds it as
+    /// §8.1.2 says a paused stream holds what it is handed, delivering it when
+    /// the stream is enabled again. A **re-enable** writes first and announces
+    /// second, so that the announcement leaves immediately rather than joining
+    /// the backlog behind the very pause it ends.
+    ///
+    /// An announcement that cannot be queued is logged and does not stop the
+    /// status change. An operator pausing a stream is usually pausing it
+    /// *because* the receiver is unreachable, and a transmitter that refused
+    /// to stop delivering until it had told the receiver it was stopping would
+    /// be stuck exactly when stopping matters.
     async fn set_status(
         &self,
         tenant: &TenantId,
@@ -244,11 +313,25 @@ impl asterius_admin_api::ssf::SsfAdministration for DeploymentSsf {
         reason: Option<&str>,
         now: time::OffsetDateTime,
     ) -> Result<bool, DomainError> {
-        self.store
-            .scope(tenant.clone())
-            .ssf_streams(Arc::clone(&self.kek))
-            .set_status(stream, status, reason, now)
-            .await
+        let scope = self.store.scope(tenant.clone());
+        let streams = scope.ssf_streams(Arc::clone(&self.kek));
+        // Read before the write, because a stream that is not there is not one
+        // to announce and the console's 404 depends on the same answer.
+        let Some(subscription) = streams.subscription(stream).await? else {
+            return Ok(false);
+        };
+
+        let announce_first = !matches!(status, asterius_ssf::stream::StreamStatus::Enabled);
+        if announce_first {
+            self.announce(tenant, &subscription, status, reason, now)
+                .await;
+        }
+        let changed = streams.set_status(stream, status, reason, now).await?;
+        if changed && !announce_first {
+            self.announce(tenant, &subscription, status, reason, now)
+                .await;
+        }
+        Ok(changed)
     }
 
     async fn verify(

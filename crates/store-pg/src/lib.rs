@@ -96,7 +96,7 @@ pub use sessions::PgSessionRepository;
 pub use ssf_poll::{Discarded, Enqueued, PgSsfPoll, PollBatch, QueuedSet};
 pub use ssf_streams::{
     DeliveryMethod, PgSsfStreams, PushTarget, SET_OUTBOX_KIND, StreamOverview, StreamStats,
-    Subscription,
+    Subscription, VerificationClaim,
 };
 pub use ssf_subjects::{Added, MAX_SUBJECTS, PgSsfSubjects};
 pub use store::{MIGRATOR, Store};
