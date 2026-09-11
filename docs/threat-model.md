@@ -318,6 +318,44 @@ introspection the day it is recorded.
 | A3a | G1 | **A record dropped on the way out.** An export that skipped a row this build cannot read — one written before `ast-ju2`, or by a newer schema — would be evidence with a hole nobody was told about, and a storage failure half-way through a stream that ended cleanly would look like the end of the trail | An unreadable row is on the page as `{"id", "hash", "opaque"}` and counts against the page like any other (`ast-1p1`); every readable line carries the record's stored hash, so an export can be checked against the chain later by whoever holds both. A storage failure mid-stream ends the body with an error after the headers have gone — the client sees a response that did not complete, never a `200` that looks whole and is not. Nothing here writes: the port has no method that appends, so no admin route built on it can be one that rewrites the table the database refuses to let anything rewrite | `ast-lh3.9`, `ast-1p1` |
 | A5 | G4 | **A scan per question.** "What did agent A do" over a tenant with years of trail is a sequential scan of that tenant's rows if nothing indexes the actor, the owner, the subject or the chain — a denial of service an auditor commits by accident, and one an attacker with the scope commits on purpose | Migration `0035` adds partial indexes on `(tenant_id, actor->>'id')` and `(tenant_id, actor->>'on_behalf_of')` for agent actors, on `(tenant_id, subject)`, on `(tenant_id, event_type)` and a `jsonb_path_ops` GIN on `actor_chain` for the containment the chain filter uses; each ends with `event_id desc` so a filtered page is one range scan from wherever the last one stopped. No column was added: a new field on `AuditEvent` would change `canonical_bytes` and turn every earlier record into a tampering report, so the agent view is read out of the columns the trail already has. A database test `explain`s the owner and chain questions against a filled table and requires the indexes by name | `ast-lh3.9` |
 
+### Console: SSF streams, dead letters and the audit explorer (`ast-f7m.8`)
+
+`ast-lh3.9` above is the read side of the trail; `ast-f7m.8` puts a screen in
+front of it and, beside it, gives an operator three things nothing but SQL
+could do before: re-enable a stream the push worker paused (`ast-0ju.6`),
+send a stream SSF 1.0 §8.1.4's verification event, and put an abandoned SET
+back on the outbox or drop it. Each is a button that makes this server *do*
+something to a third party or to its own delivery trail, so each is a route
+with a write scope of its own, an audit record with the operator's name on
+it, and a rule about what it will not touch.
+
+| Attacker | Goal | Attack it enables | Control | Bead |
+|---|---|---|---|---|
+| A1, A5 | G2, G3 | **Requeue as a replay engine, or a way to reorder.** A retry makes this server post a signed statement about a person to a receiver again; a retry of a `notification.account_recovery` re-sends a reset link nobody asked for twice; and a row put back behind the rows that overtook it while it was abandoned arrives out of the order its ordering key promised | The two routes accept `ssf.*` rows and answer 409 for any other family (`asterius_admin_api::outbox::is_retryable`; the listing reports `retryable` so the console cannot offer what the server refuses). An SSF receiver deduplicates on `jti` (RFC 8417 §1.2) and orders on `event_timestamp`, so a late SET is a late signal and not a wrong one — which is the property the family rule is stated on, and why extending it to another family is a decision and not an edit. `admin.outbox:write` is a scope of its own beside the read the dead-letter screen is granted on, and each retry or drop is `outbox.retried` / `outbox.dropped` with the row, its kind, its attempt count and the receiver's last word under the operator's name; the drop's record is the only trace of the row once it is gone. The retry raises the budget rather than resetting the attempt counter, so the attempts trail keyed on `(row, attempt)` keeps the first run's history beside the second's | `ast-f7m.8`, `ast-0ju.9` |
+| A1, A3 | G2 | **Verification as a signal flood.** §8.1.4's event is a signed SET posted to a receiver; a button that sends one per click, from a session an attacker holds, is a way to make this server post to a receiver at will | `admin.ssf:write`, held by the administrators and not by the auditor or support; a `POST` with an `Idempotency-Key`, so a retried click is one SET; the admin API's per-address and per-operation fixed-window buckets (`ast-f7m.1`); and the SET goes on the stream's own queue, where the push worker's attempt budget, backoff and pause rule bound what one stream costs (`ast-0ju.6`). `min_verification_interval` is advertised for the receiver's endpoint (`ast-0ju.4`) and is not enforced against the operator: the operator is the party the interval protects. Recorded as `ssf.verification_requested` with the stream fingerprinted and whether a `state` was given — never the `state`, which is a correlation value the receiver compares against | `ast-f7m.8`, `ast-0ju.6` |
+| A1 | G1 | **A `state` or a reason as an injection.** Both are operator-typed text; `state` is copied verbatim into a signed token a receiver parses, and a reason is written to the stream row, shown on the console and read back by the receiver when `ast-0ju.4` lands | `VerificationState::parse` and `parse_status_request` are the only ways in, both fuzzed (`ssf_verification_state`, `admin_stream_status`): bounded to 256 characters, refused on a control character, a status other than `enabled` or `paused` refused — `disabled` is the receiver's state (§8.1.2) and an operator does not write it — and every refusal names the rule without echoing the value. The rendered stream document has no endpoint and no credential member at all (a test asserts on the serialized member set), because a push endpoint may carry a token in its query string and the credential is sealed for a reason | `ast-f7m.8` |
+| A1, A5 | G4 | **Export from a screen that shows it to everybody.** The console draws an "Export as NDJSON" link; a link the wrong session can follow is a download prompt for the whole trail | The link is a same-origin anchor and not a fetch — the browser's downloader streams it, so the tab never holds a hundred thousand lines — and it is drawn only for a session whose `GET /session` scopes carry `admin.audit:read`, which is also what the screen opens with. None of that is the control: `GET /audit/events/export` answers 403 to a support agent's session and 401 to no session, asserted in the admin API's handler tests and in the browser sweep, and the export's own bounds and rendering are unchanged from `ast-lh3.9` above | `ast-f7m.8`, `ast-lh3.9` |
+
+**A choice made here: an operator's pause and enable overwrite the worker's
+reason.** `PgSsfStreams::pause` never un-pauses and never overwrites, so that
+the reason on a row is the one that stopped the stream. The operator's
+`set_status` does both, because an operator re-enabling a stream is stating
+that the worker's reason no longer holds and a stream paused by hand carries
+the hand's reason; `enabled` clears it, so a delivering stream never shows a
+stale refusal beside it. The worker's rule still holds against the operator's
+row: a stream an operator paused stays paused with the operator's reason if a
+delivery later fails, because `pause` only moves `enabled` to `paused`.
+
+**Residual, stated rather than closed:** a requeued SET goes out after the
+SETs that overtook it, which for a `session-revoked` behind a later
+`credential-change` about the same person is the order the receiver's
+`event_timestamp` restores and the ordering key no longer can; the
+verification event is triggered by an operator only, until `ast-0ju.4` gives
+the receiver §8.1.4's endpoint; and the console's browser sweep asserts the
+screens against a tenant with no receiver, so a stream's buttons are
+exercised by the handler tests and the database tests rather than in a
+browser.
+
 ### mTLS client authentication (RFC 8705 §2)
 
 `ast-m9c.3` adds the second of FAPI 2.0 SP §5.3.2.1 item 6's two methods, and

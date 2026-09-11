@@ -315,6 +315,9 @@ struct AdminContext {
     /// deployment's one handle, and a second one built for the console would
     /// report a backlog nothing is working through.
     outbox: Arc<dyn asterius_domain::DeadLetterQuery>,
+    /// The same `PgOutbox`, for the operator's retry and drop of a dead
+    /// letter (`ast-f7m.8`).
+    dead_letters: Arc<dyn asterius_domain::DeadLetterOperations>,
     /// The reserved tenant a deployment admin's session lives in (ADR-0010),
     /// or `None` for a deployment with no `[admin]` table and therefore no
     /// deployment admin. Which tenant may hold deployment authority is the
@@ -346,6 +349,7 @@ impl AdminContext {
             registration: config.registration.clone(),
             outbound: Arc::clone(outbound),
             outbox: Arc::new(outbox.clone()),
+            dead_letters: Arc::new(outbox.clone()),
             reserved_tenant: config.admin.as_ref().map(|admin| admin.tenant.clone()),
             queue: Arc::new(outbox.clone()),
             kek: Arc::clone(kek),
@@ -394,6 +398,7 @@ fn admin_routes(
                 registration: context.registration,
                 outbound: context.outbound,
                 outbox: context.outbox,
+                dead_letters: context.dead_letters,
                 kek: Arc::clone(&context.kek),
                 signer: prepare_signer(keys),
                 queue: Some(context.queue),

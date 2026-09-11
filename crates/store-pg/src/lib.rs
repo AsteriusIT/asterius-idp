@@ -92,7 +92,8 @@ pub use scope::TenantScope;
 pub use sessions::PgSessionRepository;
 pub use ssf_poll::{PgSsfPoll, PollBatch, QueuedSet};
 pub use ssf_streams::{
-    DeliveryMethod, PgSsfStreams, PushTarget, SET_OUTBOX_KIND, StreamStats, Subscription,
+    DeliveryMethod, PgSsfStreams, PushTarget, SET_OUTBOX_KIND, StreamOverview, StreamStats,
+    Subscription,
 };
 pub use store::{MIGRATOR, Store};
 pub use tenant_settings::PgTenantSettings;

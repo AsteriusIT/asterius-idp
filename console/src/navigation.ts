@@ -70,10 +70,13 @@ export const DESTINATIONS: readonly Destination[] = [
   // building it, so this one names the epic until a ticket exists.
   { route: 'tenants', label: 'Tenants', reach: 'deployment', scope: 'admin.tenants:read', bead: 'ast-f7m' },
   { route: 'keys', label: 'Signing keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-f7m.7' },
-  // Shared signals are delivered through the outbox, and the dead-letter list
-  // is the only part of the story that has a route today: `admin.outbox:read`
-  // is what the screen will open with, not a placeholder.
-  { route: 'ssf', label: 'Shared signals', reach: 'tenant', scope: 'admin.outbox:read', bead: 'ast-f7m.8' },
+  // The screen opens by listing the streams (`admin.ssf:read`); the
+  // dead-letter table beneath them is shown when the caller also holds
+  // `admin.outbox:read`, and the buttons when it holds the write scopes.
+  { route: 'ssf', label: 'Shared signals', reach: 'tenant', scope: 'admin.ssf:read', bead: 'ast-f7m.8' },
+  // The trail and its export share one scope, `admin.audit:read`, held by the
+  // auditor and the administrators and by nobody else (`ast-lh3.9`).
+  { route: 'audit', label: 'Audit trail', reach: 'tenant', scope: 'admin.audit:read', bead: 'ast-f7m.8' },
   { route: 'policy', label: 'Policy', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.9' },
   // A form nobody may save is worse than an absent link, so the settings
   // screen asks for the write scope its only button needs.

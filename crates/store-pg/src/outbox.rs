@@ -64,7 +64,7 @@
 //! same cutoff and there is no second schedule to keep in step.
 
 use crate::error::to_domain_error;
-use asterius_domain::outbox::{DeadLetter, DeadLetterQuery, OutboxEvent};
+use asterius_domain::outbox::{DeadLetter, DeadLetterOperations, DeadLetterQuery, OutboxEvent};
 use asterius_domain::{DomainError, TenantId};
 use sqlx::postgres::PgPool;
 use time::{Duration, OffsetDateTime};
@@ -681,6 +681,95 @@ impl DeadLetterQuery for PgOutbox {
                 last_error: row.last_error,
             })
             .collect())
+    }
+
+    async fn dead_letter(
+        &self,
+        tenant: &TenantId,
+        id: i64,
+    ) -> Result<Option<DeadLetter>, DomainError> {
+        let row = sqlx::query!(
+            "select o.outbox_id, o.kind, o.attempts, o.created_at, o.last_error,
+                    (select max(a.attempted_at)
+                       from outbox_attempts a
+                      where a.tenant_id = o.tenant_id and a.outbox_id = o.outbox_id)
+                        as last_attempt_at
+               from outbox o
+              where o.tenant_id = $1 and o.outbox_id = $2 and o.status = 'abandoned'",
+            tenant.as_str(),
+            id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        Ok(row.map(|row| DeadLetter {
+            id: row.outbox_id,
+            kind: row.kind,
+            attempts: u32::try_from(row.attempts).unwrap_or(u32::MAX),
+            created_at: row.created_at,
+            last_attempt_at: row.last_attempt_at,
+            last_error: row.last_error,
+        }))
+    }
+}
+
+/// The operator's two mutations (`ast-f7m.8`).
+///
+/// Both are one statement with `status = 'abandoned'` in the predicate, so a
+/// row the worker has meanwhile picked up — impossible for an abandoned row,
+/// but a predicate is cheaper than the argument — is left alone and the
+/// caller is told `false`.
+#[async_trait::async_trait]
+impl DeadLetterOperations for PgOutbox {
+    /// The attempt counter is *not* reset: `outbox_attempts` is keyed on
+    /// `(row, attempt)` and the ack writes with `on conflict do nothing`, so
+    /// a counter that started again at one would silently drop the trail of
+    /// the second run. The budget is raised instead — this deployment's
+    /// configured attempts on top of what was spent — which is what "try
+    /// again as if it were new" means for a row whose history is kept.
+    async fn requeue(
+        &self,
+        tenant: &TenantId,
+        id: i64,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let affected = sqlx::query!(
+            "update outbox
+                set status = 'pending',
+                    available_at = $3,
+                    max_attempts = attempts + $4,
+                    last_error = null,
+                    claimed_by = null,
+                    claim_expires_at = null
+              where tenant_id = $1 and outbox_id = $2 and status = 'abandoned'",
+            tenant.as_str(),
+            id,
+            now,
+            i32::try_from(self.max_attempts).unwrap_or(i32::MAX),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        Ok(affected > 0)
+    }
+
+    /// The attempts go with the row by the schema's cascade, which is the
+    /// same thing the retention sweep does a week later; the admin API's
+    /// audit record is what outlives both.
+    async fn drop_letter(&self, tenant: &TenantId, id: i64) -> Result<bool, DomainError> {
+        let affected = sqlx::query!(
+            "delete from outbox
+              where tenant_id = $1 and outbox_id = $2 and status = 'abandoned'",
+            tenant.as_str(),
+            id,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        Ok(affected > 0)
     }
 }
 

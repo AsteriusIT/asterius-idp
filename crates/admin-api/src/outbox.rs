@@ -21,12 +21,22 @@
 //! The same reasoning excludes the ordering key, which is built from a subject
 //! id or a session id.
 //!
-//! # There is no retry button
+//! # The retry and drop buttons, and what they will not touch
 //!
-//! Re-queueing is a mutation that has to decide what happens to the ordering
-//! key's other rows, and a button that quietly reorders a session's events is
-//! worse than no button. `asterius_domain::outbox::DeadLetterQuery` is
-//! read-only for that reason.
+//! Until `ast-f7m.8` this module said there would be no retry button, because
+//! re-queueing has to decide what happens to the ordering key's other rows.
+//! The decision is made for one family and refused for the rest: `POST
+//! /outbox/dead-letters/{id}/retry` and `DELETE /outbox/dead-letters/{id}`
+//! act on `ssf.*` rows and answer 409 for any other kind. An SSF receiver
+//! deduplicates on `jti` and orders on `event_timestamp`, so a SET that goes
+//! out after the ones queued behind it is a late signal and not a wrong one;
+//! a `notification.account_recovery` re-sent a day later is a reset link
+//! somebody did not ask for twice, and a `logout.backchannel` is about a
+//! session that ended either way. Both buttons need `admin.outbox:write`,
+//! which the read scope of this screen does not confer, and both leave an
+//! audit record naming the operator, the row, its kind and its attempts —
+//! the drop's record being the only trace of the row once it is gone.
+//! [`is_retryable`] is the rule.
 
 use asterius_domain::outbox::DeadLetter;
 use serde::Serialize;
@@ -40,6 +50,24 @@ use time::format_description::well_known::Rfc3339;
 /// visible in the first hundred. Paginating it would be a feature for a
 /// situation nobody should be in.
 pub const LIMIT: u32 = 100;
+
+/// The one outbox family an operator may requeue or drop from the screen.
+pub const RETRYABLE_FAMILY: &str = "ssf";
+
+/// Whether the screen's buttons apply to this letter.
+///
+/// By family, which is the dispatch prefix: a rule on the whole kind would
+/// have to be edited every time the SSF path gained a kind, and the thing
+/// that makes a retry safe — the receiver's own duplicate detection — is a
+/// property of the family's receivers.
+#[must_use]
+pub fn is_retryable(letter: &DeadLetter) -> bool {
+    letter
+        .kind
+        .split_once('.')
+        .map_or(letter.kind.as_str(), |(head, _)| head)
+        == RETRYABLE_FAMILY
+}
 
 /// One abandoned delivery, as the API renders it.
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -61,6 +89,12 @@ pub struct DeadLetterDocument {
     /// The deliverer's description of the last failure, if there was one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Whether the retry and drop routes accept this row (`ast-f7m.8`).
+    ///
+    /// Reported rather than left for the console to work out from the kind,
+    /// so that the rule has one spelling and the screen cannot offer a
+    /// button the server will refuse.
+    pub retryable: bool,
 }
 
 /// Renders one dead letter.
@@ -77,6 +111,7 @@ pub fn summarise(letter: &DeadLetter) -> DeadLetterDocument {
         created_at: timestamp(letter.created_at),
         last_attempt_at: letter.last_attempt_at.map(timestamp),
         last_error: letter.last_error.clone(),
+        retryable: is_retryable(letter),
     }
 }
 
@@ -159,8 +194,27 @@ mod tests {
                 "kind",
                 "last_attempt_at",
                 "last_error",
+                "retryable",
             ]
         );
+    }
+
+    /// The rule the two buttons follow: SSF rows and nothing else.
+    #[test]
+    fn only_the_ssf_family_is_retryable() {
+        // Arrange
+        let mut set = letter();
+        set.kind = "ssf.set".to_owned();
+        let recovery = letter();
+        let mut bare = letter();
+        bare.kind = "ssf".to_owned();
+
+        // Act / Assert
+        assert!(is_retryable(&set));
+        assert!(is_retryable(&bare));
+        assert!(!is_retryable(&recovery));
+        assert!(summarise(&set).retryable);
+        assert!(!summarise(&recovery).retryable);
     }
 
     /// A row abandoned before any attempt was recorded — an unregistered

@@ -398,10 +398,36 @@ impl EventType {
     /// dead letter records one SET, and this records that the next ones are
     /// not being attempted either.
     pub const SSF_STREAM_PAUSED: Self = Self("ssf.stream_paused");
+    /// An operator asked a stream to send a verification event (SSF 1.0
+    /// §8.1.4, `ast-f7m.8`).
+    ///
+    /// Its own type rather than a detail on [`Self::SSF_STREAM_UPDATED`]: a
+    /// verification changes nothing about the stream, and a reader counting
+    /// configuration changes must not have to subtract the health checks.
+    /// The record carries the stream and whether a `state` was supplied —
+    /// never the `state` itself, which is a correlation value the receiver
+    /// chose to compare against.
+    pub const SSF_VERIFICATION_REQUESTED: Self = Self("ssf.verification_requested");
+    /// An operator put an abandoned outbox row back on the schedule
+    /// (`ast-f7m.8`).
+    ///
+    /// The dead-letter screen has a retry button since `ast-f7m.8`, and this
+    /// is the record the button leaves: which row, of which kind, after how
+    /// many attempts, and who pressed it. A delivery that goes out after a
+    /// retry is audited by its deliverer as any other; this one says the
+    /// delivery was somebody's decision rather than the worker's schedule.
+    pub const OUTBOX_RETRIED: Self = Self("outbox.retried");
+    /// An operator removed an abandoned outbox row for good (`ast-f7m.8`).
+    ///
+    /// The one record of the row's existence once it is gone: the outbox
+    /// keeps its attempts trail by cascade, so dropping the row takes the
+    /// trail with it, and this entry — the id, the kind, the attempt count
+    /// and the last error — is what an investigator finds instead.
+    pub const OUTBOX_DROPPED: Self = Self("outbox.dropped");
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 59] = [
+    pub const ALL: [Self; 62] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -461,6 +487,9 @@ impl EventType {
         Self::SSF_SET_PUSHED,
         Self::SSF_PUSH_REFUSED,
         Self::SSF_STREAM_PAUSED,
+        Self::SSF_VERIFICATION_REQUESTED,
+        Self::OUTBOX_RETRIED,
+        Self::OUTBOX_DROPPED,
     ];
 
     /// The wire and storage spelling.

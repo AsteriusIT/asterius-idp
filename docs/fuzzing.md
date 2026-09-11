@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 82 targets below cover 101 declared entry points. Generated from the
+The 84 targets below cover 103 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -90,6 +90,7 @@ The 82 targets below cover 101 declared entry points. Generated from the
 | `admin_key_request` | `RotationRequest::algorithm` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `ScheduleRequest::schedule` | `crates/admin-api/src/keys.rs` |
 | `admin_key_request` | `public_members` | `crates/admin-api/src/keys.rs` |
+| `admin_stream_status` | `parse_status_request` | `crates/admin-api/src/ssf.rs` |
 | `admin_user_claims` | `accept_claims` | `crates/admin-api/src/users.rs` |
 | `agent_profile` | `AgentLimits::from_json` | `crates/domain/src/entities/agent.rs` |
 | `agent_profile` | `AgentProfile::from_json` | `crates/domain/src/entities/agent.rs` |
@@ -164,6 +165,7 @@ The 82 targets below cover 101 declared entry points. Generated from the
 | `ssf_poll_request` | `PollRequest::parse` | `crates/ssf/src/poll.rs` |
 | `ssf_push_error` | `ReceiverError::parse` | `crates/ssf/src/push.rs` |
 | `ssf_stream_configuration` | `StreamRequest::parse` | `crates/ssf/src/stream.rs` |
+| `ssf_verification_state` | `VerificationState::parse` | `crates/ssf/src/verification.rs` |
 | `tenant_message_overrides` | `MessageOverrides::from_json` | `crates/domain/src/messages.rs` |
 | `tenant_route` | `route` | `crates/oidc/src/tenancy.rs` |
 | `tenant_settings` | `TenantSettings::from_json` | `crates/domain/src/entities/tenant_settings.rs` |

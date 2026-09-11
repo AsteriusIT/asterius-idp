@@ -90,6 +90,38 @@ pub struct StreamStats {
     pub queue_depth: i64,
 }
 
+/// One stream as the console lists it (`ast-f7m.8`): who it belongs to,
+/// how it delivers, and how it is doing.
+///
+/// The management API's `StreamConfiguration` is a receiver's view and
+/// carries the push endpoint and the sealed credential; this is an
+/// operator's view and carries neither. The endpoint URL is left out on
+/// purpose — a receiver may put a token in its query string, and
+/// `crates/server/src/outbox/ssf.rs` keeps it out of logs for that reason —
+/// so what an operator sees is the receiver's `client_id`, the delivery
+/// method and the counters, which is what "is this receiver taking anything"
+/// needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamOverview {
+    /// The stream.
+    pub stream_id: StreamId,
+    /// The receiver the stream belongs to.
+    pub receiver: ClientId,
+    /// RFC 8935 or RFC 8936.
+    pub delivery: DeliveryMethod,
+    /// §8.1.1's `events_requested`, as the receiver asked for it.
+    pub events_requested: Vec<String>,
+    /// §8.1.1's `description`.
+    pub description: Option<String>,
+    /// When the receiver created it.
+    pub created_at: OffsetDateTime,
+    /// When the status last changed, or `None` for a stream that has been
+    /// enabled since creation.
+    pub status_changed_at: Option<OffsetDateTime>,
+    /// Status, reason and counters.
+    pub stats: StreamStats,
+}
+
 /// How a subscribed stream takes delivery, as an emitter needs to know it.
 ///
 /// Two variants and nothing else: the emitter's only decision is *which
@@ -507,6 +539,142 @@ impl PgSsfStreams {
         .transpose()
     }
 
+    /// Every stream of the tenant, whoever holds it, with its delivery
+    /// figures (`ast-f7m.8`).
+    ///
+    /// The one listing with no `client_id` in its `WHERE` clause, and the
+    /// module's opening argument says why that is not a hole: the caller is
+    /// the admin API, acting for an operator of the *tenant*, whose authority
+    /// (`admin.ssf:read`) is over every receiver's arrangement to be told
+    /// about the tenant's users. It renders no credential and no endpoint —
+    /// see [`StreamOverview`].
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails, [`DomainError::Invalid`]
+    /// for a stored row this build cannot read back.
+    pub async fn overview(&self) -> Result<Vec<StreamOverview>, DomainError> {
+        let rows = sqlx::query!(
+            "select s.stream_id, s.client_id, s.delivery_method, s.events_requested,
+                    s.description, s.created_at, s.status, s.status_reason,
+                    s.status_changed_at, s.delivered_count, s.failed_count,
+                    (select count(*) from outbox o
+                      where o.tenant_id = s.tenant_id
+                        and o.kind = $2
+                        and o.destination = s.stream_id
+                        and o.status in ('pending', 'failed', 'claimed')) as \"queued!\"
+               from ssf_streams s
+              where s.tenant_id = $1
+              order by s.created_at, s.stream_id",
+            self.tenant.as_str(),
+            SET_OUTBOX_KIND,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(StreamOverview {
+                    stream_id: parse_stream_id(&row.stream_id)?,
+                    receiver: ClientId::new(&row.client_id),
+                    delivery: parse_delivery_method(&row.delivery_method)?,
+                    events_requested: row.events_requested,
+                    description: row.description,
+                    created_at: row.created_at,
+                    status_changed_at: row.status_changed_at,
+                    stats: StreamStats {
+                        status: parse_status(&row.status)?,
+                        reason: row.status_reason,
+                        delivered: row.delivered_count,
+                        failed: row.failed_count,
+                        queue_depth: row.queued,
+                    },
+                })
+            })
+            .collect()
+    }
+
+    /// One stream by identifier alone, as an emitter sees it (`ast-f7m.8`).
+    ///
+    /// What the verification event needs: the receiver, the audience and the
+    /// queue. No `client_id` predicate, for the reason [`Self::overview`]
+    /// gives — the caller is an operator of the tenant, not a receiver — and
+    /// a `disabled` stream is returned like any other, because §8.1.4's
+    /// verification is precisely the thing one sends to find out whether a
+    /// stream that is not delivering could.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::overview`].
+    pub async fn subscription(
+        &self,
+        stream: &StreamId,
+    ) -> Result<Option<Subscription>, DomainError> {
+        let row = sqlx::query!(
+            "select stream_id, client_id, audience, delivery_method
+               from ssf_streams
+              where tenant_id = $1 and stream_id = $2",
+            self.tenant.as_str(),
+            stream.as_str(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        row.map(|row| {
+            Ok(Subscription {
+                stream_id: parse_stream_id(&row.stream_id)?,
+                receiver: ClientId::new(&row.client_id),
+                audience: row.audience,
+                delivery: parse_delivery_method(&row.delivery_method)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// An operator's change of status (SSF 1.0 §8.1.2, `ast-f7m.8`).
+    ///
+    /// The counterpart of [`Self::pause`], which is the worker's and only
+    /// ever goes one way. This one goes both ways and overwrites the reason
+    /// — an operator re-enabling a stream is stating that the worker's
+    /// reason no longer holds, and a stream paused by hand carries the hand's
+    /// reason. `enabled` clears the reason: a delivering stream with a stale
+    /// "the receiver answered 400" beside it is a screen that lies.
+    ///
+    /// `false` is "no such stream in this tenant".
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    pub async fn set_status(
+        &self,
+        stream: &StreamId,
+        status: StreamStatus,
+        reason: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let reason = match status {
+            StreamStatus::Enabled => None,
+            StreamStatus::Paused | StreamStatus::Disabled => reason,
+        };
+        let affected = sqlx::query!(
+            "update ssf_streams
+                set status = $3, status_reason = $4, status_changed_at = $5
+              where tenant_id = $1 and stream_id = $2",
+            self.tenant.as_str(),
+            stream.as_str(),
+            status.as_str(),
+            reason,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        Ok(affected > 0)
+    }
+
     /// Every stream this receiver holds (§8.1.1.2's `GET` with no
     /// `stream_id`).
     ///
@@ -654,27 +822,11 @@ impl PgSsfStreams {
 
         rows.into_iter()
             .map(|row| {
-                let stream_id = StreamId::parse(&row.stream_id).ok_or_else(|| {
-                    DomainError::invalid(
-                        "ssf_streams.stream_id",
-                        "a stored stream identifier is not one this server issues",
-                    )
-                })?;
-                let delivery = match row.delivery_method.as_str() {
-                    asterius_ssf::stream::DELIVERY_POLL => DeliveryMethod::Poll,
-                    asterius_ssf::stream::DELIVERY_PUSH => DeliveryMethod::Push,
-                    _ => {
-                        return Err(DomainError::invalid(
-                            "ssf_streams.delivery_method",
-                            "a stored delivery method is not one SSF 1.0 defines",
-                        ));
-                    }
-                };
                 Ok(Subscription {
-                    stream_id,
+                    stream_id: parse_stream_id(&row.stream_id)?,
                     receiver: ClientId::new(&row.client_id),
                     audience: row.audience,
-                    delivery,
+                    delivery: parse_delivery_method(&row.delivery_method)?,
                 })
             })
             .collect()
@@ -739,6 +891,39 @@ impl PgSsfStreams {
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(affected > 0)
     }
+}
+
+/// A stored `stream_id`, or the refusal every reader gives a row this server
+/// would not have written.
+fn parse_stream_id(raw: &str) -> Result<StreamId, DomainError> {
+    StreamId::parse(raw).ok_or_else(|| {
+        DomainError::invalid(
+            "ssf_streams.stream_id",
+            "a stored stream identifier is not one this server issues",
+        )
+    })
+}
+
+/// A stored `delivery_method`, as an emitter reads it.
+fn parse_delivery_method(raw: &str) -> Result<DeliveryMethod, DomainError> {
+    match raw {
+        asterius_ssf::stream::DELIVERY_POLL => Ok(DeliveryMethod::Poll),
+        asterius_ssf::stream::DELIVERY_PUSH => Ok(DeliveryMethod::Push),
+        _ => Err(DomainError::invalid(
+            "ssf_streams.delivery_method",
+            "a stored delivery method is not one SSF 1.0 defines",
+        )),
+    }
+}
+
+/// A stored `status` (§8.1.2).
+fn parse_status(raw: &str) -> Result<StreamStatus, DomainError> {
+    StreamStatus::parse(raw).ok_or_else(|| {
+        DomainError::invalid(
+            "ssf_streams.status",
+            "a stored stream status is not one SSF 1.0 §8.1.2 defines",
+        )
+    })
 }
 
 /// The audience as it is stored: sorted, because the unique index compares

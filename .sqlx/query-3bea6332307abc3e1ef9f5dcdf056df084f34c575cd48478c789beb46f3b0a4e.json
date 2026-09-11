@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select s.stream_id, s.client_id, s.delivery_method, s.events_requested,\n                    s.description, s.created_at, s.status, s.status_reason,\n                    s.status_changed_at, s.delivered_count, s.failed_count,\n                    (select count(*) from outbox o\n                      where o.tenant_id = s.tenant_id\n                        and o.kind = $2\n                        and o.destination = s.stream_id\n                        and o.status in ('pending', 'failed', 'claimed')) as \"queued!\"\n               from ssf_streams s\n              where s.tenant_id = $1\n              order by s.created_at, s.stream_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stream_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "delivery_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "events_requested",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "status_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "status_changed_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "delivered_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 10,
+        "name": "failed_count",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 11,
+        "name": "queued!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "3bea6332307abc3e1ef9f5dcdf056df084f34c575cd48478c789beb46f3b0a4e"
+}

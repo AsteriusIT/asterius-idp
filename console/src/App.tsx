@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, endSession, loadSession, type Session } from './api';
+import { AuditExplorer } from './audit';
 import { Clients } from './clients';
 import { Keys } from './keys';
 import { visibleTo } from './navigation';
 import { hrefOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
+import { SharedSignals } from './ssf';
 import { Users } from './users';
 
 /**
@@ -144,6 +146,12 @@ function Screen({ route, session }: { route: string; session: Session }): JSX.El
   }
   if (route === 'settings') {
     return <TenantSettings session={session} />;
+  }
+  if (route === 'ssf') {
+    return <SharedSignals session={session} />;
+  }
+  if (route === 'audit') {
+    return <AuditExplorer session={session} />;
   }
   if (route === 'overview') {
     return (

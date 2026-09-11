@@ -18,6 +18,10 @@ hex.workspace = true
 sha2.workspace = true
 askama.workspace = true
 asterius-domain.workspace = true
+# The Shared Signals screen names a stream, a stream status and a
+# verification `state` (`ast-f7m.8`): protocol types, from the protocol crate,
+# which reaches no adapter.
+asterius-ssf.workspace = true
 # The console's entry document is HTML, and `asterius_web::Document` is the one
 # type in the workspace that produces it: it cannot be built without the
 # per-response CSP nonce, which is exactly the guarantee ADR-0009 asks of the

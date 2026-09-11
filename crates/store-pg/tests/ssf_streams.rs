@@ -514,3 +514,150 @@ db_test! {
         );
     }
 }
+
+db_test! {
+
+    /// **The console's listing (`ast-f7m.8`).** Every receiver's stream, in
+    /// creation order, with §8.1.2's status, the reason the worker wrote,
+    /// the two counters and the SETs still owed — and no credential.
+    async fn the_overview_lists_every_receivers_stream_with_its_figures(db) {
+        use asterius_ssf::stream::StreamStatus;
+        use asterius_store_pg::DeliveryMethod;
+        let streams = db.streams();
+        let now = time::OffsetDateTime::now_utc();
+
+        let polled = stream(&[AUDIENCE]);
+        streams.create(&receiver(), &polled).await.expect("create");
+        let mut pushed = stream(&["https://other.example/events"]);
+        pushed.delivery = Delivery::Push {
+            endpoint_url: "https://other.example/events?token=secret".to_owned(),
+            authorization_header: Some(
+                asterius_ssf::push::AuthorizationHeader::parse("Bearer receiver-secret")
+                    .expect("a header"),
+            ),
+        };
+        pushed.description = Some("other's push stream".to_owned());
+        streams.create(&other_receiver(), &pushed).await.expect("create");
+        streams
+            .pause(&pushed.stream_id, "the receiver answered 400", now)
+            .await
+            .expect("pause");
+        streams.count_attempt(&pushed.stream_id, true).await.expect("count");
+        streams.count_attempt(&pushed.stream_id, false).await.expect("count");
+        streams.count_attempt(&pushed.stream_id, false).await.expect("count");
+        let owed = queue_set(&db, &pushed.stream_id).await;
+        let delivered = queue_set(&db, &pushed.stream_id).await;
+        sqlx::query("update outbox set status = 'delivered' where outbox_id = $1")
+            .bind(delivered)
+            .execute(&db.pool)
+            .await
+            .expect("deliver one");
+
+        let overview = streams.overview().await.expect("overview");
+
+        assert_eq!(overview.len(), 2);
+        assert_eq!(overview[0].stream_id, polled.stream_id);
+        assert_eq!(overview[0].receiver, receiver());
+        assert_eq!(overview[0].delivery, DeliveryMethod::Poll);
+        assert_eq!(overview[0].stats.status, StreamStatus::Enabled);
+        assert_eq!(overview[0].stats.reason, None);
+        assert_eq!(overview[0].status_changed_at, None);
+        assert_eq!(overview[0].stats.queue_depth, 0);
+
+        let other = &overview[1];
+        assert_eq!(other.stream_id, pushed.stream_id);
+        assert_eq!(other.receiver, other_receiver());
+        assert_eq!(other.delivery, DeliveryMethod::Push);
+        assert_eq!(other.description.as_deref(), Some("other's push stream"));
+        assert_eq!(other.stats.status, StreamStatus::Paused);
+        assert_eq!(other.stats.reason.as_deref(), Some("the receiver answered 400"));
+        assert!(other.status_changed_at.is_some());
+        assert_eq!(other.stats.delivered, 1);
+        assert_eq!(other.stats.failed, 2);
+        assert_eq!(other.stats.queue_depth, 1, "row {owed} is the one still owed");
+        let rendered = format!("{overview:?}");
+        assert!(!rendered.contains("receiver-secret"), "the overview carried a credential");
+        assert!(!rendered.contains("token=secret"), "the overview carried the endpoint");
+    }
+}
+
+db_test! {
+
+    /// **The operator's pause and re-enable (`ast-f7m.8`).** Both directions,
+    /// with the reason following the status: written on a pause, cleared
+    /// on an enable whatever the caller sent, and overwriting the worker's.
+    async fn an_operator_sets_a_streams_status_both_ways(db) {
+        use asterius_ssf::stream::StreamStatus;
+        let streams = db.streams();
+        let now = time::OffsetDateTime::now_utc();
+        let held = stream(&[AUDIENCE]);
+        streams.create(&receiver(), &held).await.expect("create");
+        streams
+            .pause(&held.stream_id, "the receiver answered 503", now)
+            .await
+            .expect("the worker pauses");
+
+        let enabled = streams
+            .set_status(&held.stream_id, StreamStatus::Enabled, Some("ignored"), now)
+            .await
+            .expect("enable");
+        let after_enable = streams.overview().await.expect("overview");
+        let paused = streams
+            .set_status(&held.stream_id, StreamStatus::Paused, Some("migration"), now)
+            .await
+            .expect("pause");
+        let after_pause = streams.overview().await.expect("overview");
+        let missing = streams
+            .set_status(&StreamId::generate(), StreamStatus::Paused, None, now)
+            .await
+            .expect("no such stream");
+
+        assert!(enabled);
+        assert_eq!(after_enable[0].stats.status, StreamStatus::Enabled);
+        assert_eq!(after_enable[0].stats.reason, None);
+        assert!(paused);
+        assert_eq!(after_pause[0].stats.status, StreamStatus::Paused);
+        assert_eq!(after_pause[0].stats.reason.as_deref(), Some("migration"));
+        assert!(!missing);
+        // And the worker's `pause` still refuses to overwrite a hand-written
+        // reason: it only ever moves `enabled` to `paused`.
+        assert!(
+            !streams
+                .pause(&held.stream_id, "the receiver answered 503", now)
+                .await
+                .expect("pause")
+        );
+    }
+}
+
+db_test! {
+
+    /// A verification is addressed by stream alone, whoever holds it, and
+    /// reaches a disabled stream too — that is what one sends to find out
+    /// whether it could deliver.
+    async fn a_subscription_is_read_by_stream_id_alone_whatever_its_status(db) {
+        use asterius_store_pg::{DeliveryMethod, Subscription};
+        let streams = db.streams();
+        let held = stream(&["https://other.example/events"]);
+        streams.create(&other_receiver(), &held).await.expect("create");
+        sqlx::query("update ssf_streams set status = 'disabled' where stream_id = $1")
+            .bind(held.stream_id.as_str())
+            .execute(&db.pool)
+            .await
+            .expect("disable");
+
+        let found = streams.subscription(&held.stream_id).await.expect("read");
+        let missing = streams.subscription(&StreamId::generate()).await.expect("read");
+
+        assert_eq!(
+            found,
+            Some(Subscription {
+                stream_id: held.stream_id.clone(),
+                receiver: other_receiver(),
+                audience: vec!["https://other.example/events".to_owned()],
+                delivery: DeliveryMethod::Poll,
+            })
+        );
+        assert_eq!(missing, None);
+    }
+}

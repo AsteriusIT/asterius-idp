@@ -215,3 +215,38 @@ td {
   white-space: nowrap;
   border: 0;
 }
+
+/* The delegation chain of an audit record (`ast-f7m.8`): an ordered list
+   drawn inline with arrows, so the order a screen reader announces is the
+   order a sighted reader sees. */
+.chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.chain li + li::before {
+  content: '\2192';
+  margin-right: 0.25rem;
+  color: var(--muted);
+}
+
+.detail {
+  margin: 0;
+}
+
+.detail div {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.detail dt {
+  color: var(--muted);
+}
+
+.detail dd {
+  margin: 0;
+}

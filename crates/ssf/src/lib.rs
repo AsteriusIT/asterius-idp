@@ -88,6 +88,7 @@ pub mod push;
 pub mod set;
 pub mod stream;
 pub mod subject;
+pub mod verification;
 
 pub use event::{EventError, EventUri, MAX_EVENT_URI_LEN, SecurityEvent};
 pub use metadata::{SPEC_VERSION, WELL_KNOWN_DOCUMENT, transmitter_metadata};
@@ -101,3 +102,6 @@ pub use set::{
     SignedSet, StreamAudience, Txn, UnsignedSet,
 };
 pub use subject::{ComplexSubject, MAX_MEMBER_LEN, SimpleSubject, Subject, SubjectError};
+pub use verification::{
+    MAX_STATE_LEN, StateError, VERIFICATION, VerificationState, verification_event,
+};
