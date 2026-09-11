@@ -1,8 +1,14 @@
 # Threat model
 
-**Status:** baseline. Every story that adds a protocol surface updates this file
-as part of its definition of done; `ast-p2l.6` closes it out before external
-review.
+**Status:** review-ready (`ast-p2l.6`). Every story that adds a protocol surface
+updates this file as part of its definition of done. Three sections exist for
+somebody reading this from outside the project: [§4.1](#41-agent-threats-in-detail-ast-p2l6)
+and [§4.2](#42-fapi-20-sp-6-security-considerations-one-row-each) give the
+agent threats and the FAPI 2.0 SP §6 considerations in long form — control,
+file, test, bead, residual — [§7](#7-decisions-pending-security-review) lists
+the decisions nobody has taken yet, and [§8](#8-preparing-for-an-external-review)
+is the artefact list for an audit. How to report a vulnerability in this
+software is [`SECURITY.md`](../SECURITY.md).
 
 **Sources.** [FAPI 2.0 Attacker Model][am] (Final) §5 security goals, §6 model,
 §7 attacker definitions; [FAPI 2.0 Security Profile][sp] (Final) §5.2 network
@@ -1098,7 +1104,9 @@ row above.
 ### 4. Agent-specific threats (G4)
 
 FAPI's attacker model has no notion of a principal acting for another principal.
-These rows are ours.
+These rows are ours. They are the index; §4.1 is the same threats written out
+with the attacker capability, the file the control lives in, the test that holds
+it and the risk that is left.
 
 | ID | Threat | Control | Bead |
 |---|---|---|---|
@@ -1132,7 +1140,280 @@ These rows are ours.
 | **A3a**, **A5** | **G1**, **G4** | **Application-role widening (`ast-095`).** Application roles are authority this server *delegates* to somebody else's code: an application reads `roles` or `resource_access` out of an access token and authorises money movement on the strength of a string. Three ways that goes wrong. A name that splits — `read write` — becomes two roles at any resource server that splits on whitespace. A name that folds — `Admin` beside `admin` — is two catalogue entries here and one authority there. And a role assigned through a route that does not check the catalogue is authority somebody invented at assignment time. | The name is a parsed type, not a string: `RoleName::parse` admits `[a-z0-9]` plus `-_.:`, first character alphanumeric, at most 64 characters, and **refuses uppercase rather than folding it** — a parser that rewrites its input produces a name nobody predicted. It is fuzzed (`fuzz/fuzz_targets/role_name.rs`) against the properties that matter downstream: no whitespace, no control or bidirectional character, no JSON escaping needed, and `parse(x).as_str() == x`. The same alphabet is a check constraint in migration `0023`, so it is a fact about the stored rows rather than about the code path that wrote them. Assignment is a foreign key onto the catalogue, so a role that was never created cannot be given to anybody; deleting a held role is refused by `on delete restrict` rather than cascaded, so authority is never withdrawn from an unbounded number of people by one request. Dynamic client registration has no field for a role, so a client cannot arrive naming its own. Every definition, deletion, assignment and withdrawal is its own audit event (`app_role.defined`, `app_role.removed`, `app_role.assigned`, `app_role.withdrawn` — spelled apart from `ast-3t8`'s `role.granted`/`role.revoked`, which are the authority to administer this server). | `ast-095` |
 | **A5** | **G4** | **Cross-application role disclosure.** A resource server receives a token carrying the roles somebody holds in an unrelated application, and learns — or authorises on — authority that has nothing to do with it (`ast-gxh.7`). | `resource_access` names exactly one client: the one the token was issued to. The narrowing is inside `AccessToken::with_roles` and inside `userinfo::with_roles`, not at their call sites, so there is no caller that could widen it; the access-token fuzz target asserts over arbitrary role sets that the rendered object has exactly one member and that it is the token's own `client_id`. Roles shared across a tenant's applications are a *tenant* role, which is the deliberate way to say "everyone may see this". | `ast-095`, `ast-gxh.7` |
 
+### 4.1 Agent threats in detail (`ast-p2l.6`)
+
+The table above is the index; this is the long form an external reviewer reads.
+Each entry names the attacker capability the attack needs (§2), the control **as
+it exists in this tree today** with the file that holds it, the test or fuzz
+target that keeps the control honest, the bead, and what is left over. A control
+whose bead is still open is written as open — a threat model that describes
+intentions is worth nothing to a reviewer.
+
+#### T-A11 — A prompt-injected agent asks for a scope it was never delegated
+
+- **Attacker: A1.** No network and no browser needed: a document, a tool
+  description or a web page the agent reads is enough. The agent itself is
+  honest and authenticates correctly — which is the point. Every credential it
+  presents is valid; the request it makes is the attacker's.
+- **Threat.** The agent is instructed to ask for `payments:write` instead of
+  `inventory:read`, to name a resource server it has never called, or to keep
+  its token alive past the task.
+- **Control.** The server treats an agent's request as attacker-controlled by
+  construction, so a widened request is refused by the same rules whatever made
+  the agent send it:
+  - *scope* — `TokenExchange::scopes` in
+    [`crates/server/src/http/token_exchange.rs`](../crates/server/src/http/token_exchange.rs)
+    intersects the request with three sets the agent cannot influence: the
+    subject token's scopes, the client's registered scopes, and the agent
+    profile's allow-list (`AgentLimits::scopes`). `NOT_DELEGATED_SCOPES`
+    (`openid`, `offline_access`) is dropped even when all three permit it;
+  - *human-gated scope* — `AgentProfile::scope_needing_human_approval` in
+    [`crates/domain/src/entities/agent.rs`](../crates/domain/src/entities/agent.rs)
+    marks the scopes a person must approve. A delegation has no person in it, so
+    the exchange refuses them with `invalid_scope`, and so does
+    `client_credentials`
+    ([`crates/server/src/http/client_credentials.rs`](../crates/server/src/http/client_credentials.rs));
+  - *audience* — `TokenExchange::targeting` resolves `audience`/`resource`
+    through the RFC 8707 path every other grant uses, against the subject
+    token's own authorized set and the tenant's registry
+    ([`crates/domain/src/entities/resource_server.rs`](../crates/domain/src/entities/resource_server.rs));
+    a target the subject token never had is `invalid_target`;
+  - *lifetime* — `TokenExchange::lifetime` takes the minimum of the tenant's
+    lifetime, the agent's own cap and what is left of the subject token, so an
+    injected "keep this alive" loop extends nothing;
+  - *the limits are the tenant's, never the client's* — `AgentLimits` comes from
+    the registration policy preset (`ast-m9c.6`), so an agent told to re-register
+    itself with wider limits is refused at registration.
+- **Tests.** `crates/oidc/src/token_exchange.rs`:
+  `an_actor_token_is_refused_rather_than_ignored`,
+  `a_chain_deeper_than_the_policy_is_refused`,
+  `a_target_that_is_not_a_resource_identifier_is_invalid_target`,
+  `asking_for_anything_but_an_access_token_is_refused`.
+  `crates/domain/src/entities/agent.rs`: the `scope_needing_human_approval`
+  tests. Fuzz:
+  [`fuzz/fuzz_targets/token_exchange_form.rs`](../fuzz/fuzz_targets/token_exchange_form.rs),
+  [`fuzz/fuzz_targets/agent_profile.rs`](../fuzz/fuzz_targets/agent_profile.rs).
+- **Beads.** `ast-lh3.1` (closed), `ast-lh3.2` (closed), `ast-m9c.6` (closed).
+- **Residual risk.** The server bounds what an agent *may* hold; it cannot tell
+  a task the owner wanted from a task an attacker wrote into the agent's
+  context. Everything inside the delegated envelope — reading the inventory the
+  injected prompt chose, at the moment it chose — is authorized and will be
+  authorized. The mitigations are therefore envelope size (narrow profiles,
+  short lifetimes) and after-the-fact legibility (the per-agent audit trail,
+  `ast-lh3.9`), not prevention. A reviewer should read `AgentLimits::scopes`
+  being absent — "no allow-list" — as the dangerous default it is: it falls
+  back to the client's registered scopes alone.
+
+#### T-A1 — Delegation-chain abuse (detail of the row above)
+
+- **Attacker: A1**, and **A5** for the variant where the chain is read off a
+  TLS-intercepting proxy at the resource server.
+- **Threat.** An agent forges or extends an `act` chain to look like the human,
+  or chains delegations until nobody can say who acted.
+- **Control.** `act` is built by the authorization server from the
+  *authenticated* client and is never read from the request: `actor_token` is
+  refused outright rather than ignored
+  ([`crates/oidc/src/token_exchange.rs`](../crates/oidc/src/token_exchange.rs)).
+  The current actor is the first element of the chain; a stored chain that is
+  not a chain of actors is refused; depth is bounded by
+  `AgentLimits::max_delegation_depth`; a `may_act` naming somebody else refuses
+  the actor, and a `may_act` this build cannot fully check refuses it too — the
+  fail-closed direction. No refresh token is issued from an exchange, so a chain
+  cannot outlive the token it came from.
+- **Tests.** `the_current_actor_is_the_first_element_of_the_chain`,
+  `the_first_delegation_is_a_chain_of_one`,
+  `a_chain_deeper_than_the_policy_is_refused`,
+  `a_stored_chain_that_is_not_a_chain_of_actors_is_refused`,
+  `a_may_act_naming_the_actor_authorizes_it`,
+  `a_may_act_naming_somebody_else_refuses_the_actor`,
+  `a_may_act_this_build_cannot_fully_check_refuses_the_actor`; and
+  `the_audit_chain_holds_the_actors_the_token_does_in_the_same_order`
+  in `crates/server/src/http/token_exchange.rs`.
+- **Beads.** `ast-lh3.2` (closed), `ast-lh3.9` (closed).
+- **Residual risk.** A resource server still has to *read* `act`. Nothing this
+  server emits forces it to, and a resource server that authorises on `sub`
+  alone sees the human. That is FAPI 2.0 SP §6.7's confusion in its delegated
+  form, and it is a property of the deployment rather than of the token.
+
+#### T-A12 — Replay of an agent's DPoP proof
+
+- **Attacker: A2 or A5.** The proof has to be captured, so this needs the
+  network or a log at the endpoint. An agent makes it worth doing: it runs
+  unattended, so a replay nobody is watching has a longer practical window than
+  one aimed at a human flow.
+- **Control.** [`crates/server/src/http/dpop.rs`](../crates/server/src/http/dpop.rs)
+  spends the `jti` once, in one statement over the shared replay store, and
+  binds every proof to its method (`htm`), its URL (`htu`, and therefore its
+  tenant), its key and its `iat` window. `jti` uniqueness is scoped per key, so
+  two agents choosing the same `jti` neither collide nor deny each other
+  service. A replay store that is unavailable **refuses** rather than accepting.
+  Where the deployment turns nonces on, a proof without one is never accepted
+  and a foreign nonce is refused with a usable replacement. The token itself is
+  bound to the key (`cnf.jkt`,
+  [`crates/oidc/src/tokens/access.rs`](../crates/oidc/src/tokens/access.rs)), so
+  a captured proof without the private key buys nothing.
+- **Tests.** [`crates/server/tests/dpop.rs`](../crates/server/tests/dpop.rs):
+  `a_replayed_jti_is_refused`, `two_keys_may_choose_the_same_jti`,
+  `a_proof_minted_for_one_endpoint_is_not_accepted_at_another`,
+  `a_proof_for_another_tenants_endpoint_is_refused`,
+  `an_iat_outside_the_window_is_refused`,
+  `an_unavailable_replay_store_refuses_rather_than_accepting`,
+  `the_age_window_and_the_jti_are_independent_defences`. Fuzz:
+  [`fuzz/fuzz_targets/dpop_proof.rs`](../fuzz/fuzz_targets/dpop_proof.rs).
+- **Beads.** `ast-a05.6` (closed, DPoP), `ast-a05.10`/`ast-a05.11` (closed,
+  wiring and the nonce secret), `ast-p2l.4` (closed, replay-row retention).
+- **Residual risk.** Replay protection is per deployment database, and the `iat`
+  window is exactly the interval in which a *resource server* — which this
+  project does not ship — may accept a proof it has never seen. An agent calling
+  an RS that keeps no `jti` cache has, at that RS, no replay protection beyond
+  the window. Nonces are optional and off by default.
+
+#### T-A3 — Approval fatigue in CIBA and the device flow (detail of the row above)
+
+- **Attacker: A1.** One registered client — including a compromised honest one —
+  is enough.
+- **Threat.** An agent raises backchannel authentication requests until the
+  owner approves one out of habit, or approves the wrong one because two look
+  alike.
+- **Control.** [`crates/server/src/http/approvals.rs`](../crates/server/src/http/approvals.rs)
+  and [`crates/oidc/src/ciba.rs`](../crates/oidc/src/ciba.rs): a pending request
+  expires in five minutes and `requested_expiry` may only shorten that; an
+  approval requires an authentication within `approvals::FRESHNESS` (two
+  minutes), so a browser somebody walked away from cannot approve; `acr_values`
+  is enforced at the one moment a person is present; the decision is a single
+  `UPDATE … WHERE status = 'pending'`, so a double-click or a replay moves no
+  row; the `binding_message` is length- and character-bounded so it cannot be
+  used to write instructions onto the page; the client, the scopes and the RFC
+  9396 elements are named there; and both outcomes are audited with the
+  `approval_id` and the deciding session.
+- **Tests.** The decision-form tests in `crates/server/src/http/approvals.rs`
+  (`a_decision_form_names_one_request_and_one_answer`,
+  `a_form_that_answers_twice_is_refused`, `a_third_answer_is_refused`,
+  `a_reference_that_is_not_a_digest_is_refused`) and the lifetime and
+  binding-message tests in `crates/oidc/src/ciba.rs`. Fuzz:
+  [`fuzz/fuzz_targets/approval_decision.rs`](../fuzz/fuzz_targets/approval_decision.rs),
+  [`fuzz/fuzz_targets/ciba_form.rs`](../fuzz/fuzz_targets/ciba_form.rs),
+  [`fuzz/fuzz_targets/device_user_code.rs`](../fuzz/fuzz_targets/device_user_code.rs).
+- **Beads.** `ast-lh3.6` (closed), `ast-lh3.4` / `ast-lh3.5` (closed),
+  `ast-p2l.3` (closed).
+- **Residual risk — the open one.** `LimitedEndpoint` in
+  [`crates/domain/src/rate_limit.rs`](../crates/domain/src/rate_limit.rs) has no
+  variant for the backchannel authentication endpoint: the set is
+  `Registration`, `ClientConfiguration`, `PushedAuthorizationRequest`, `Token`,
+  `UserInfo`, `SsfSubjects`. **Nothing bounds how many pending approvals one
+  client may raise against one person**, and two identical pending requests are
+  not deduplicated. What bounds the attack today is the five-minute expiry, the
+  freshness rule and the fact that each request is legible — none of which is a
+  rate limit. A reviewer should read "rate-limited approval requests per agent
+  and per user" in the index table above as *designed, not built*; it needs a
+  bead of its own.
+
+#### T-A2 — Confused-deputy MCP server (detail of the row above)
+
+- **Attacker: A1**, or **A1a** where the attacker runs an MCP server in the
+  ecosystem.
+- **Threat.** An MCP server holding a user's token is induced, by a tool
+  description it was handed, to call a resource on the attacker's behalf with
+  the user's authority.
+- **Control.** Every access token is audience-specific: `ResourceRegistry::targets`
+  in [`crates/domain/src/entities/resource_server.rs`](../crates/domain/src/entities/resource_server.rs)
+  returns `Err(InvalidTarget)` rather than an empty audience, and a `resource`
+  must pass both the client's own allow-list and the tenant registry. A
+  multi-audience token carries only the scopes **every** named resource server
+  permits (`ResourceRegistry::permitted_scopes`), so widening the audience never
+  widens authority. There are no public clients anywhere (ADR-0002), so an MCP
+  client cannot be impersonated by a redirect alone, and consent is per client:
+  a second MCP server is a second client with its own consent screen.
+- **Tests.** The `ResourceRegistry` tests in
+  `crates/domain/src/entities/resource_server.rs`; `crates/server/tests/discovery.rs`
+  for what a tenant advertises.
+- **Beads.** `ast-gxh.7` (closed), `ast-lh3.8` (**open** — the MCP compatibility
+  profile itself), `ast-lh3.10` (**open** — the pre-issuance policy port),
+  `ast-m9c.8` (**blocked** — the decision on MCP public clients and Client ID
+  Metadata Documents).
+- **Residual risk.** Two of the three controls the index table claims are beads
+  that have not landed: there is no MCP profile and no pre-issuance policy port
+  today. What exists is audience binding and confidential clients — the
+  substantive half — but the deputy problem is only fully answered when the
+  resource server *checks* `aud` and the AS takes a policy decision per mint.
+
+#### T-A13 — MCP token passthrough
+
+- **Attacker: A1, A5.**
+- **Threat.** An MCP server accepts a token that was not issued for it and
+  forwards it upstream, or hands its own upstream token back down. The token
+  travels further than its audience and the resource server at the end cannot
+  tell who asked.
+- **Control, at this server.** `aud` is never empty and never client-chosen
+  (RFC 9068 §2.2, RFC 8707 §3 — `ResourceRegistry::targets`); the token is
+  sender-constrained (`cnf.jkt`, or `cnf.x5t#S256` where the `mtls` flag is on),
+  so forwarding it without the private key fails at the next hop that checks;
+  tokens are short-lived and grant-bound, and revoking the grant revokes
+  everything minted from it.
+- **Tests.** `crates/server/tests/token.rs` and `crates/server/tests/userinfo.rs`
+  cover audience and binding on issuance and on presentation; fuzz:
+  [`fuzz/fuzz_targets/access_token_claims.rs`](../fuzz/fuzz_targets/access_token_claims.rs).
+- **Beads.** `ast-gxh.7` (closed), `ast-a05.3` (closed), `ast-lh3.8` (open).
+- **Residual risk.** Passthrough is a *resource server* failure, and this
+  repository ships no resource server. An AS cannot stop an RS from accepting a
+  token addressed to somebody else; all it can do is make the token say who it
+  is for, which it does. `ast-lh3.8` owns the guidance that tells an MCP
+  implementer to check `aud` and to refuse a token it did not request.
+
+#### T-A14 — Loopback redirect URIs on agent and MCP clients
+
+- **Attacker: A1**, sharing the machine — another local process, or another
+  application the user installed.
+- **Threat.** MCP authorization leans on `http://127.0.0.1:<port>` callbacks;
+  whichever local process binds the port first receives the code.
+- **Control.** The loopback exception is RFC 8252 §7.3 and no wider:
+  `loopback_parts` in
+  [`crates/domain/src/entities/client.rs`](../crates/domain/src/entities/client.rs)
+  varies **the port and nothing else** — the path must match exactly, the host
+  must be a literal loopback address (not `localhost`), `http` is admissible
+  only for a native client, and everything else falls under exact-string
+  matching (ADR-0005). A pairwise client whose only redirect URI is a loopback
+  callback is refused a sector (`ast-m9c.10`). PKCE `S256` is mandatory, so an
+  intercepted code cannot be redeemed.
+- **Tests.** `a_native_clients_loopback_redirect_matches_on_any_port`,
+  `the_loopback_exception_varies_the_port_and_nothing_else`,
+  `only_a_native_client_gets_the_loopback_port_exception`,
+  `loopback_http_is_admissible_only_for_a_native_client`,
+  `two_loopback_uris_that_differ_only_in_their_port_are_one_registration`, and
+  the property tests `a_match_between_different_strings_can_only_be_a_loopback_port`
+  and `a_loopback_registration_matches_every_port_but_only_its_own_path`. Fuzz:
+  [`fuzz/fuzz_targets/redirect_uri.rs`](../fuzz/fuzz_targets/redirect_uri.rs).
+- **Beads.** `ast-m9c.7` (closed), `ast-m9c.10` (closed), `ast-m9c.8`
+  (blocked — public MCP clients).
+- **Residual risk.** A local attacker who wins the port race still learns that a
+  flow happened and can deny service to the honest client. And because this
+  server has no public clients, the MCP "native app on a laptop" shape is a
+  *confidential* client with a private key on that laptop — a different residual
+  (a client key at rest on a shared machine), owned by `ast-m9c.8`.
+
+### 4.2 FAPI 2.0 SP §6 security considerations, one row each
+
+§6 of the Security Profile lists the attacks an implementation is expected to
+have thought about. Clause numbers appear only where they were verified against
+the Final text (§6.7); the rest are named rather than numbered, deliberately —
+an invented citation is worse than none, and §6 as a whole is the reading a
+human owes this table (see the verification note at the top of this file).
+
+| §6 consideration | Attacker | Control, and where it lives | Test / fuzz | Bead | Residual |
+|---|---|---|---|---|---|
+| **DPoP proof replay** | A2, A5 | Single-use `jti` scoped per key in one statement, `htm`/`htu`/`iat` binding, fail-closed when the replay store is down, optional server nonces — `crates/server/src/http/dpop.rs` | `crates/server/tests/dpop.rs` (`a_replayed_jti_is_refused`, `the_age_window_and_the_jti_are_independent_defences`); `fuzz/fuzz_targets/dpop_proof.rs` | `ast-a05.6`, `ast-a05.10`, `ast-a05.11` (closed) | The `iat` window is all a resource server with no `jti` cache has (T-A12); nonces are off by default |
+| **Stolen-token injection ("Cuckoo's token")** | A1, A2, A5 | Every token is sender-constrained — `cnf.jkt` (`crates/oidc/src/tokens/access.rs`) or `cnf.x5t#S256` under the `mtls` flag; `TokenBinding` has no unbound variant, so `dpop_bound_access_tokens: false` cannot be registered; `aud` is never empty (`ResourceRegistry::targets`); the `authorization_code` grant binds the code to the DPoP key | `crates/server/tests/token.rs`, `crates/server/tests/dpop.rs`, `crates/server/tests/mtls_client_auth.rs`; `fuzz/fuzz_targets/access_token_claims.rs` | `ast-a05.2`, `ast-a05.3`, `ast-a05.7`, `ast-gxh.7` (closed) | A resource server that never checks `cnf` or `aud` is outside this trust boundary |
+| **Authorization-request leak → CSRF** | A3a, A5 | PAR is the only way to start a flow (ADR-0002): the front-channel URL carries `client_id` and a `request_uri` and nothing else; the reference is 256 bits, stored only as a digest and single-use; RFC 9207's `iss` is returned so a client can tell which AS answered (`crates/server/src/http/authorize.rs`) | `crates/server/tests/par.rs`, `crates/server/tests/authorize.rs`; `fuzz/fuzz_targets/par_form.rs` | `ast-gxh.1` (closed) | `state` is the client's defence and the client's responsibility; this server cannot verify that an RP validates it |
+| **Browser swapping** | A1, A3a | A code is minted only into the browser that finished the interaction: the interaction is held in a `__Host`-scoped cookie, a repeated cookie is refused rather than resolved (`crates/web/src/interaction.rs`), every interaction form carries a synchroniser token derived from the session's digest, and minting re-reads the session and refuses one that is no longer usable | `crates/server/tests/interaction.rs`, `crates/server/tests/authorization_code.rs`; `fuzz/fuzz_targets/interaction_cookie.rs` | `ast-gxh.1`, `ast-a05.2` (closed) | The client-side half — binding the redemption to the browser that started the flow — is PKCE plus `state` at the RP, outside this server |
+| **Client impersonating the resource owner (§6.7)** | A1 | A `client_id` minted here carries `ClientId::MINTED_PREFIX` (`c.`, `crates/domain/src/ids.rs`), a prefix that cannot occur in either spelling of a `sub` this server issues; `act` names the actor separately from `sub`; the audit trail records the chain in the same order the token does | `crates/server/src/http/token_exchange.rs` (`the_audit_chain_holds_the_actors_the_token_does_in_the_same_order`), the `ClientId` tests in `crates/domain/src/ids.rs` | `ast-lh3.1`, `ast-lh3.9` (closed) | A resource server keying authorisation on `sub` alone still cannot see the agent (T-A1) |
+| **Key compromise** | A1, A2 | Private keys are sealed at rest under a KEK (`crates/store-pg/src/keys.rs`); rotation and purge are operator commands with audit records (`docs/runbooks/kek-rotation.md`); a purge destroys the private half, unpublishes the key and makes this server refuse its signatures; client keys come only from the source that client's own registration named; every grant is individually revocable | `crates/server/tests/rotation.rs`, `crates/server/tests/signing.rs`; `fuzz/fuzz_targets/kek_unwrap.rs` | `ast-7rq`, `ast-7kw` (closed) | A purge does not reach a token a third party has already accepted, and `LocalKek` keeps the KEK on the machine holding the database credentials — both rows in §5 |
+
 ## 5. Known residual risks
+
+A risk is here when somebody decided to accept it. A choice nobody has made yet
+is in [§7](#7-decisions-pending-security-review) instead — including the mTLS
+rows below, which are listed in both places on purpose: §5 describes what ships,
+§7 states the options.
 
 | Risk | Why we accept it (for now) | Tracked by |
 |---|---|---|
@@ -1232,3 +1513,199 @@ done for any protocol story is:
    adds no row;
 4. no new `unsafe` (enforced: `#![forbid(unsafe_code)]` in every crate);
 5. a human has read the cited spec clause.
+
+## 7. Decisions pending security review
+
+These are not residual risks that have been accepted; they are *choices nobody
+has made yet*. Each one was raised while the code was being written, each has at
+least two defensible answers, and each needs a human — the owner, or an external
+reviewer — to pick one. The options are stated as neutrally as the author could
+manage; picking one is not this file's job. Until a decision lands, the row in
+§5 (where there is one) is the honest description of what ships.
+
+### 7.1 The admin passkey bootstrap exemption has no bound (`ast-895`)
+
+**What ships.** A deployment-scope admin must have proved a user-verified
+passkey ([`crates/domain/src/entities/admin_access.rs`](../crates/domain/src/entities/admin_access.rs)):
+the rule reads the session's `amr`, not a claim the browser makes. But the
+bootstrap problem is real — a passkey cannot be seeded by an operator, because
+it is produced by an authenticator the account holder is standing in front of —
+so an account with **no enabled passkey at all** is admitted on its password.
+Nothing bounds that exemption in time, nothing pushes the account towards
+enrolment, and the only signal is a `warn` per request.
+
+**Options.**
+1. Bound the exemption to the first session: the account may use its password
+   once, and that session may do nothing but enrol a passkey.
+2. Bound it in wall-clock time (a deployment-configured window from account
+   creation), after which the account is locked out rather than downgraded.
+3. Accept it as documented, on the argument that a deployment admin's password
+   is already a high-value secret held to the deployment's own standards, and
+   that a lockout with no passkey is an outage with no recovery path.
+
+**What a decision costs.** Options 1 and 2 need a "you must enrol now"
+interstitial and a recovery story for the admin who loses their authenticator.
+Option 3 needs the `warn` to become something an operator actually sees — an
+audit event and a console banner rather than a log line.
+
+**Test coverage gap, whichever way it goes.** The e2e fixture is `tenant_admin`,
+which does not exercise the rule; a `deployment_admin` scenario in
+[`e2e/tests/console.spec.ts`](../e2e/tests/console.spec.ts) would.
+
+### 7.2 An unreadable audit record is chained but not re-hashed (`ast-9g2`)
+
+**What ships.** The audit reader renders a record it cannot deserialise as
+`AuditRecord::Opaque` with an `OpaqueReason`
+([`crates/domain/src/audit/record.rs`](../crates/domain/src/audit/record.rs)),
+and `chain::verify` traverses it by its stored hash **without recomputing it**
+([`crates/domain/src/audit/chain.rs`](../crates/domain/src/audit/chain.rs): an
+opaque link contributes its stored hash to the chain). The reason is
+structural: the hash is over the canonical form, and canonicalising requires
+deserialising — which is precisely what failed. The consequence is stated
+plainly: **the content of an opaque record can be altered without detection, as
+long as the stored hash is left intact** — and an opaque record is exactly where
+an attacker would hide a trace.
+
+**Options.**
+1. Hash the stored bytes as they are, so verification never needs to
+   deserialise. This changes the chain function and requires a migration that
+   recomputes every stored hash — a one-way door, and one that must not run
+   while writers are active.
+2. Keep canonical hashing but refuse to verify a chain containing an opaque
+   link: `verify` reports "unverifiable from record *n*" instead of "intact".
+   Cheap, honest, and turns a silent hole into a loud one; it also means one
+   corrupt row invalidates the report for everything after it.
+3. Accept, with documentation and an alert: an opaque record is itself an
+   anomaly, so emit an operational signal when one is read and leave the chain
+   semantics alone.
+
+**Why it needs a human.** Option 1 is the only one that closes the hole, and it
+is the only one that touches stored data.
+
+### 7.3 mTLS: no client certificate is requested, and no revocation is checked (`ast-m9c.3`)
+
+Two independent decisions, both listed as residual risks in §5 today.
+
+**(a) `terminate_tls` requests no client certificate.**
+[`crates/server/src/http/tls.rs`](../crates/server/src/http/tls.rs) builds the
+rustls configuration with `with_no_client_auth()`, so mTLS client
+authentication ships **behind a trusted proxy only**, through the
+client-certificate header ([`docs/deployment/tls-and-proxy.md`](deployment/tls-and-proxy.md) §4).
+Asking every peer for a certificate on the listener that also serves the login
+and consent pages is a transport decision, not a protocol one: browsers would be
+prompted, and a certificate request changes the handshake for everyone.
+*Options:* (i) a second, dedicated listener for mTLS clients — the shape RFC
+8705 §3 expects, at the cost of a second port and a second certificate; (ii) SNI
+or ALPN-based selection on the same port; (iii) keep proxy-terminated mTLS as
+the only supported deployment and say so in the certification submission.
+
+**(b) No CRL and no OCSP.** A revoked client certificate authenticates until it
+expires. *Options:* (i) fetch a CRL on a schedule and hold it in memory —
+bounded, cacheable, stale by design; (ii) OCSP on the authentication path —
+fresh, but a network fetch inside a login, with a fail-open/fail-closed choice,
+and it tells the CA who is authenticating and when; (iii) OCSP stapling required
+of the client, which few clients implement; (iv) accept, and require short-lived
+client certificates by policy instead.
+
+### 7.4 Forwarding headers are trusted on configuration alone, and nothing tests the deployment (`ast-4me`)
+
+**What ships.** [`crates/server/src/http/forwarded.rs`](../crates/server/src/http/forwarded.rs)
+reads `X-Forwarded-Host`, `Forwarded` and the client-certificate header **only**
+when the immediate peer is inside the configured `trusted_cidrs`. That is the
+correct server-side rule, and it is the only one a server can enforce: nothing
+in a header says who wrote it. So the entire security of the host, the client
+address and the client certificate rests on the proxy stripping those headers
+from inbound requests — a property of somebody else's configuration file.
+[`docs/deployment/tls-and-proxy.md`](deployment/tls-and-proxy.md) §10 gives the
+`curl` commands that check it, and §11 says what a proxy must never do; nothing
+in this repository runs them against a real deployment.
+
+**Options.**
+1. Ship the guide and the checklist, and treat verification as an operator duty
+   (what happens today).
+2. Add a deployment self-test — a command, or a `--verify-proxy` mode — that
+   sends the §10 requests to a live deployment and fails loudly, so that "we
+   checked" becomes an artefact rather than a memory.
+3. Refuse to start when `trusted_cidrs` is non-empty and a startup probe finds
+   the headers are honoured from an untrusted source. Strongest, and the one
+   most likely to break a legitimate topology.
+
+### 7.5 Account recovery ends on a password, even for a passkey-only account (`ast-2vk.10`)
+
+**What ships.** [`crates/server/src/http/recovery.rs`](../crates/server/src/http/recovery.rs)
+sets a password. An account that had only a passkey therefore comes back from
+recovery on a strictly weaker, phishable factor — NIST SP 800-63B §6.1.2.3 is
+the clause that objects.
+
+**Options.**
+1. Send the user straight into passkey enrolment after recovery (the mechanism
+   exists, `ast-2vk.4`) and refuse the session anything else until they do.
+2. Refuse email recovery for an account with no password — which then needs an
+   answer to "so what *is* the path?" (a second passkey registered in advance, a
+   recovery code issued at enrolment, or an administrator).
+3. Accept: a recovered account is a password account, and the user may enrol a
+   passkey afterwards if they remember to.
+
+### 7.6 Back-channel logout cannot be tested over a socket (`ast-o4u.2`)
+
+**What ships.** `outbound::post` refuses loopback destinations (ADR-0006, the
+anti-SSRF guard), and a test relying party on `127.0.0.1` is exactly what the
+guard exists to refuse. §2.6 of the OIDC Back-Channel Logout validation is
+therefore exercised in-process rather than over a socket.
+
+**Options.**
+1. An explicit test hook in the guard — a `cfg(test)`/test-only feature that is
+   never compiled into a release binary — so the delivery path is exercised end
+   to end.
+2. Accept the limit, and rely on the in-process validation plus the conformance
+   suite where it covers logout.
+
+A reviewer should note which one is chosen *and* that option 1 puts a
+release-gate obligation on the build: a test-only escape hatch in an SSRF guard
+is only safe while something proves it cannot reach a release artefact.
+
+## 8. Preparing for an external review
+
+What an auditor should be handed, and the command that produces each artefact.
+Every command below exists in `scripts/`, in the `Makefile` or in a workflow in
+`.github/workflows/`; a command that does not exist is not listed, however
+useful it would be.
+
+| Artefact | How it is produced | Where it lands |
+|---|---|---|
+| This threat model, and the residual-risk list | read it; §6 is the rule that keeps it current | `docs/threat-model.md` |
+| Decision log (ADRs) | read it; ADR-0001 to ADR-0010 | [`docs/adr/`](adr/README.md) |
+| Everything CI checks, locally, in fail-fastest order | `./scripts/check.sh` (add `--db` for the database tests) | terminal |
+| Format, strict lints, targeted tests | `./scripts/verify.sh <scope>` | terminal |
+| Full test suite, as CI runs it | `cargo nextest run --workspace --all-features --no-fail-fast`, then `cargo test --workspace --doc --no-fail-fast` | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) |
+| Layering proof (protocol crates cannot reach `sqlx`, `axum`, `tokio`, `hyper`, `reqwest`, `askama`, directly or transitively) | `./scripts/check-layering.sh` | CI job, and locally |
+| No `unsafe` in first-party code, three ways | `#![forbid(unsafe_code)]` in every crate root, `./scripts/check-no-unsafe.sh`, `./scripts/check-geiger.sh` | [`.github/workflows/audit.yml`](../.github/workflows/audit.yml) |
+| Fuzz coverage: every parser and validator has a target, and no target is orphaned | `./scripts/check-fuzz-coverage.sh`; the committed inventory is regenerated with `./scripts/gen-fuzzing-doc.sh > docs/fuzzing.md` | [`docs/fuzzing.md`](fuzzing.md) |
+| Fuzzing results | nightly `cargo fuzz run <target>` over the corpus | [`.github/workflows/fuzz-nightly.yml`](../.github/workflows/fuzz-nightly.yml) |
+| Dependency advisories, bans, licences and sources | `cargo deny check advisories bans licenses sources` (configuration in `deny.toml`) | [`.github/workflows/audit.yml`](../.github/workflows/audit.yml) |
+| FAPI 2.0 conformance report, and the waivers | `make conformance` (or `./scripts/conformance.sh --help`); the waived modules are `conformance/waivers.json` and the submission checklist is [`docs/certification.md`](certification.md) | [`.github/workflows/conformance.yml`](../.github/workflows/conformance.yml) |
+| The release gate that refuses a tag whose conformance report is red or stale | [`.github/workflows/release-gate.yml`](../.github/workflows/release-gate.yml) | CI |
+| Supply-chain provenance for a release image (cosign keyless, identity = the workflow at the tag) | [`.github/workflows/release.yml`](../.github/workflows/release.yml) | the registry |
+| Browser-facing behaviour: CSP, no-JS baseline, form-post, accessibility | `./scripts/browser-tests.sh --project=<project>` | [`e2e/`](../e2e/README.md) |
+| Log redaction and PII minimisation proof | the `log_redaction` tests (`crates/server/tests/log_redaction.rs`) and `fuzz/fuzz_targets/redaction_scan.rs` | CI |
+| JSONB sentinel scan (stored JSON cannot smuggle a sentinel past a query) | `./scripts/check-json-sentinels.sh` (needs a database) | CI |
+| Performance baseline and the sizing that follows from it | `scripts/load/` (see [`docs/performance.md`](performance.md)) | `docs/performance.md` |
+| Running deployment, end to end, from a checkout | `docker compose -f deploy/compose/docker-compose.yml up --build -d` then `./scripts/smoke-test.sh` | terminal |
+| Configuration surface, with every key's type, default and secret source | [`docs/configuration.md`](configuration.md) — checked against the code by a test in `crates/server/src/config_reference.rs` | CI |
+| Operational procedures | [`docs/runbooks/`](runbooks/README.md): upgrade, KEK rotation, backup and restore | — |
+| Vulnerability reporting channel and disclosure policy | [`SECURITY.md`](../SECURITY.md) | — |
+
+**What to tell a reviewer before they start.**
+
+1. **The citations in this file are claims, not evidence.** The verification note
+   at the top is the project rule: a human must read the cited clause. An
+   external reviewer is the first reader who has not also been the author.
+2. **§7 is where the value is.** Six decisions are open, and each one is a place
+   where this project would rather have an outside answer than its own.
+3. **The FAPI 2.0 conformance suite is an outside judge with a narrow remit.**
+   It certifies the profile; it says nothing about the agent extensions (G4),
+   which have no published formal model — see the `ast-p2l.6` row in §5.
+4. **Scope boundary.** This repository is an authorization server. Several
+   residual risks above end at a resource server this project does not ship
+   (T-A12, T-A13, T-A1). A review that treats "the RS will check `aud`" as an
+   assumption should say so explicitly in its report.
