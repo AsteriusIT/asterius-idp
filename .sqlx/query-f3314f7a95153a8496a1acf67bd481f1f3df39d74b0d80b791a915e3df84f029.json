@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) from ssf_poll_queue\n              where tenant_id = $1 and stream_id = $2\n                and exists (select 1 from ssf_streams\n                             where tenant_id = $1\n                               and stream_id = $2\n                               and status = 'enabled')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f3314f7a95153a8496a1acf67bd481f1f3df39d74b0d80b791a915e3df84f029"
+}

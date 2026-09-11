@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select count(*) as \"held!\"\n               from ssf_stream_subjects\n              where tenant_id = $1 and stream_id = $2 and subject_key <> $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "held!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e517be03af9fda5da6ee71edd13eca5a72a3a408591d9cfa4494a2f2ed2bb928"
+}

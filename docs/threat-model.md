@@ -859,8 +859,9 @@ is expected to leave, and nothing here ever writes `disabled`.
 are `ast-0ju.8`), so this path is exercised by its tests and by nothing else in
 a running deployment; a paused stream's backlog dead-letters as each row spends
 its own budget rather than waiting for the stream to be resumed; resuming a
-paused stream is an operator's `UPDATE` until the console screen lands
-(`ast-0ju.6` follow-up); and the push deliverer cannot be tested against a real
+paused stream is the receiver's own `POST` at the status endpoint
+(`ast-0ju.4`, §8.1.2.2) or an operator's `UPDATE` until the console screen
+lands; and the push deliverer cannot be tested against a real
 socket, because the SSRF guard refuses every address a test could bind — the
 fake receiver sits at the transport port instead, and what the socket itself
 does is tested in `outbound::post`.
@@ -893,6 +894,51 @@ revoke, account disable/enable, admin passkey removal, forced password reset)
 are wired. Grant revocation has no CAEP event type and stays audit-only, by the
 spec. And, as one section up, a paused or deleted stream's already-queued SETs
 follow that section's rules.
+
+### SSF stream status and subjects (`ast-0ju.4`)
+
+**Why this needs a section: the add-subject endpoint answers the question
+"does this person have an account here", and the status endpoint decides
+whether a tenant's security signals are delivered at all.** Stream
+configuration arranges a subscription and poll delivery hands the signals over;
+this pair decides *whose* signals those are and *whether* they move. Three new
+things exist because of it: two request bodies this server parses (§8.1.2.2,
+§8.1.3.2), a table of subject identifiers held for third parties
+(`ssf_stream_subjects`), and a status column the enqueue guard and the poll
+read both obey.
+
+**The frontier: the stream is read under the receiver's `client_id`, the
+subject is never confirmed or denied.** Every statement a receiver can reach
+goes through `(tenant, client_id, stream_id)` — the same `WHERE` clause the
+management API uses — so another receiver's stream is a stream that does not
+come back. About a *subject*, by contrast, the endpoint says nothing at all:
+SSF 1.0 §9.1 recommends answering 200 or 204 whether or not the transmitter
+recognises it, and that is what this does, byte for byte.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Probing for accounts.** A receiver walks a list of email addresses through `subjects:add`, reading the difference between "added" and "no such subject" as a membership oracle for the tenant's directory. | The response is identical either way — same status, same headers, same empty body — and both paths make the same directory lookup, so there is no difference in work either. What differs is invisible: an address that belongs to nobody here is answered for and *not* recorded, because no event will ever be about it and a row naming a stranger is a personal identifier kept for no purpose. The remaining channel is volume, and it is bounded: `LimitedEndpoint::SsfSubjects`, per address *and* per authenticated receiver, answering 429 with `Retry-After`. |
+| **A1** | **G1** | **Subscribing to somebody else's users.** A receiver adds subjects it was never given — the whole directory, one identifier at a time — and waits for the events to arrive. | Adding a subject creates a membership, not an entitlement to it: the subject a receiver adds is matched against the events this tenant emits (§8.1.3.1), and a receiver only ever learns an identifier it was already given. `verified` is parsed and grants nothing: an assertion by the caller cannot decide what the caller receives. The membership is bounded per stream (`MAX_SUBJECTS`), so the table cannot be used as storage. |
+| **A1** | **G2** | **Silencing a stream.** A receiver — or anything holding its token — pauses or disables the stream so that a revocation never reaches the security team relying on it. | This is a receiver silencing *its own* stream, which it may already do by deleting it (§8.1.1.5); the token is audienced at the status endpoint and sender-constrained like every other SSF call. What the design adds is that it cannot be silent: every change is `ssf.stream_status_changed` in the trail, with the receiver as the actor and the reason it gave, and `status_changed_at` says how long a stream has been stopped. |
+| **A3** | **G3** | **Filling the database through a paused stream.** A receiver pauses a stream and lets the tenant's events pile up in the queue behind it for ever. | "SHOULD hold" is bounded: `MAX_HELD_WHILE_PAUSED` events per stream, after which the *newest* is dropped rather than the oldest — so the held prefix stays an ordered, truthful record of what happened after the pause — and the drop is reported to the emitter rather than silent. A `disabled` stream holds nothing at all, which is §8.1.2's own rule. |
+| **A5** | **G1** | **Changing who is watched, and leaving no trace.** | Every membership change is an audit event (`ssf.subject_added`, `ssf.subject_removed`) with the receiver as the actor, the stream as a fingerprint, and — for an add — whether the request was recorded, which is the only way to tell §9.1's two identical answers apart afterwards. The subject identifier itself is deliberately *not* in the entry: it is the personal data the endpoint exists to be careful with, and an operator reads the stream's membership instead. |
+
+**A choice §9.1 leaves open, made here: an identifier this server cannot
+resolve is recorded.** An `email` and an `iss_sub` naming this issuer are
+questions the directory can answer — the second through `subject_identifiers`,
+so a pairwise `sub` resolves as well as a public one. An `opaque` identifier, a
+`uri` or a complex subject naming a session is not: "we hold nobody by that
+name" and "we cannot answer that question" are different facts, and treating
+the second as the first would silently drop a legitimate subscription.
+Recording them leaks nothing, because the response did not change; what it
+costs is a bounded number of rows naming identifiers no event will match.
+
+**Residual, stated rather than closed:** nothing emits an event yet
+(`ast-0ju.8`), so a membership is today a subscription to a stream that is
+correct, tested and permanently empty; the status of a stream is not yet
+something *this server* changes on its own, so §8.1.1's `inactivity_timeout`
+still leads to no automatic pause and the stream-updated event that would
+announce one is `ast-0ju.5`.
 
 ### Back-channel logout (`ast-o4u.2`)
 

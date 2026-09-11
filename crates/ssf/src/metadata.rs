@@ -61,6 +61,24 @@ pub const WELL_KNOWN_DOCUMENT: &str = "ssf-configuration";
 /// that way.
 pub const SPEC_VERSION: &str = "1_0";
 
+/// The management endpoints a deployment mounts (SSF 1.0 §7.1).
+///
+/// One struct rather than four `Option`s, because the four are mounted
+/// together or not at all — they are the same feature flag and the same
+/// database wiring — and four independent options would be four ways to
+/// advertise a URL that answers 404.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManagementEndpoints<'a> {
+    /// §8.1.1: where a receiver creates, reads, updates and deletes a stream.
+    pub configuration: &'a str,
+    /// §8.1.2: where it reads and changes a stream's status.
+    pub status: &'a str,
+    /// §8.1.3.2: where it adds a subject.
+    pub add_subject: &'a str,
+    /// §8.1.3.3: where it removes one.
+    pub remove_subject: &'a str,
+}
+
 /// Builds one tenant's transmitter configuration document.
 ///
 /// `jwks_uri` is passed in rather than derived here: the URL belongs to the
@@ -72,16 +90,17 @@ pub const SPEC_VERSION: &str = "1_0";
 /// `iss`. SSF 1.0 §7.2.4 is that identity, and [`Issuer`] is what enforces the
 /// rest of §7.1's shape: https, no query, no fragment, canonical form.
 ///
-/// `configuration_endpoint` is `Some` exactly when this deployment mounts the
-/// stream configuration endpoint (`ast-0ju.3`) — which is a deployment with
-/// the database wiring the endpoint needs, since a stream is a row. `None`
-/// omits the member rather than naming a URL that answers 404: the parity rule
-/// this module exists for, applied to the one endpoint that has a handler.
+/// `management` is `Some` exactly when this deployment mounts the management
+/// API — the stream configuration endpoint (`ast-0ju.3`) and the status and
+/// subject endpoints (`ast-0ju.4`) — which is a deployment with the database
+/// wiring those endpoints need, since a stream is a row. `None` omits the
+/// members rather than naming URLs that answer 404: the parity rule this
+/// module exists for.
 #[must_use]
 pub fn transmitter_metadata(
     issuer: &Issuer,
     jwks_uri: &str,
-    configuration_endpoint: Option<&str>,
+    management: Option<&ManagementEndpoints<'_>>,
 ) -> Value {
     let mut document = json!({
         "spec_version": SPEC_VERSION,
@@ -121,10 +140,22 @@ pub fn transmitter_metadata(
     // (§8.1.1). Inserted rather than written above, so that the document a
     // deployment without the endpoint serves is the document it served before
     // this story — one member fewer, and no URL that 404s.
-    if let Some(endpoint) = configuration_endpoint
+    if let Some(endpoints) = management
         && let Some(object) = document.as_object_mut()
     {
-        object.insert("configuration_endpoint".to_owned(), json!(endpoint));
+        object.insert(
+            "configuration_endpoint".to_owned(),
+            json!(endpoints.configuration),
+        );
+        object.insert("status_endpoint".to_owned(), json!(endpoints.status));
+        object.insert(
+            "add_subject_endpoint".to_owned(),
+            json!(endpoints.add_subject),
+        );
+        object.insert(
+            "remove_subject_endpoint".to_owned(),
+            json!(endpoints.remove_subject),
+        );
     }
 
     document
@@ -133,19 +164,28 @@ pub fn transmitter_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn issuer() -> Issuer {
         Issuer::parse("https://as.example/t/demo").expect("an issuer")
     }
 
     const CONFIGURATION: &str = "https://as.example/t/demo/ssf/streams";
+    const STATUS: &str = "https://as.example/t/demo/ssf/streams/status";
+    const ADD_SUBJECT: &str = "https://as.example/t/demo/ssf/streams/subjects:add";
+    const REMOVE_SUBJECT: &str = "https://as.example/t/demo/ssf/streams/subjects:remove";
 
-    /// The document a deployment that mounts the management endpoint serves.
+    /// The document a deployment that mounts the management API serves.
     fn document() -> Value {
         transmitter_metadata(
             &issuer(),
             "https://as.example/t/demo/jwks",
-            Some(CONFIGURATION),
+            Some(&ManagementEndpoints {
+                configuration: CONFIGURATION,
+                status: STATUS,
+                add_subject: ADD_SUBJECT,
+                remove_subject: REMOVE_SUBJECT,
+            }),
         )
     }
 
@@ -236,24 +276,30 @@ mod tests {
         );
     }
 
-    /// The other four management endpoints are `ast-0ju.4` through
-    /// `ast-0ju.7` and have no route, so nothing names them. A story that adds
-    /// a member here adds a route with it, and updates this test as it does.
+    /// §7.1: the three endpoints `ast-0ju.4` mounts are advertised, each at
+    /// the URL the caller mounted it at.
+    #[test]
+    fn the_status_and_subject_endpoints_are_the_ones_the_caller_passed() {
+        // Arrange
+        let document = document();
+
+        // Act & Assert
+        assert_eq!(document["status_endpoint"], json!(STATUS));
+        assert_eq!(document["add_subject_endpoint"], json!(ADD_SUBJECT));
+        assert_eq!(document["remove_subject_endpoint"], json!(REMOVE_SUBJECT));
+    }
+
+    /// The verification endpoint is `ast-0ju.5` and has no route, so nothing
+    /// names it. A story that adds a member here adds a route with it, and
+    /// updates this test as it does.
     #[test]
     fn no_unbuilt_management_endpoint_is_advertised() {
         let document = document();
         let object = document.as_object().expect("an object");
-        for member in [
-            "status_endpoint",
-            "add_subject_endpoint",
-            "remove_subject_endpoint",
-            "verification_endpoint",
-        ] {
-            assert!(
-                object.get(member).is_none(),
-                "{member} is advertised before it is routed"
-            );
-        }
+        assert!(
+            object.get("verification_endpoint").is_none(),
+            "the verification endpoint is advertised before it is routed"
+        );
         assert!(
             object.get("delivery_methods_supported").is_none(),
             "a delivery method is advertised before `ast-0ju.6` delivers one"

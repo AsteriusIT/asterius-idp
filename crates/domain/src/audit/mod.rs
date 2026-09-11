@@ -449,9 +449,28 @@ impl EventType {
     /// and the last error — is what an investigator finds instead.
     pub const OUTBOX_DROPPED: Self = Self("outbox.dropped");
 
+    /// A receiver changed a stream's status (SSF 1.0 §8.1.2.2).
+    ///
+    /// The entry an operator reads when a security team asks why a stream
+    /// stopped: `paused` and `disabled` both stop delivery, and only this says
+    /// who asked for it and when.
+    pub const SSF_STREAM_STATUS_CHANGED: Self = Self("ssf.stream_status_changed");
+
+    /// A receiver added a subject to a stream (SSF 1.0 §8.1.3.2).
+    ///
+    /// The subject itself is not in the entry — it is the personal identifier
+    /// the endpoint exists to be careful with — but whether the request was
+    /// *recorded* is, because §9.1 has this endpoint answer 200 to a subject
+    /// it does not recognise and an operator has no other way to tell the two
+    /// apart afterwards.
+    pub const SSF_SUBJECT_ADDED: Self = Self("ssf.subject_added");
+
+    /// A receiver removed a subject from a stream (SSF 1.0 §8.1.3.3).
+    pub const SSF_SUBJECT_REMOVED: Self = Self("ssf.subject_removed");
+
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 65] = [
+    pub const ALL: [Self; 68] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -514,6 +533,9 @@ impl EventType {
         Self::SSF_SET_PUSHED,
         Self::SSF_PUSH_REFUSED,
         Self::SSF_STREAM_PAUSED,
+        Self::SSF_STREAM_STATUS_CHANGED,
+        Self::SSF_SUBJECT_ADDED,
+        Self::SSF_SUBJECT_REMOVED,
         Self::SSF_VERIFICATION_REQUESTED,
         Self::OUTBOX_RETRIED,
         Self::OUTBOX_DROPPED,

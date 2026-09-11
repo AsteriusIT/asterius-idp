@@ -8369,6 +8369,7 @@ mod retention {
         seed_theme(pool, tenant).await;
         seed_ssf_stream(pool, tenant).await;
         seed_ssf_poll_queue(pool, tenant).await;
+        seed_ssf_stream_subjects(pool, tenant).await;
     }
 
     /// One row in each of the four application-role tables (`ast-095`).
@@ -8497,6 +8498,34 @@ mod retention {
             .await
             .expect("seed ssf poll queue");
         }
+    }
+
+    /// One subject the seeded stream carries events about (SSF 1.0 §8.1.3,
+    /// `ast-0ju.4`).
+    ///
+    /// Kept by the policy, like the stream it hangs off: a receiver adds a
+    /// subject with §8.1.3.2 and removes it with §8.1.3.3, and a sweep between
+    /// the two would silently stop the signals a security team believes it is
+    /// still receiving about that person. The kept-table criterion cannot say
+    /// that about an empty table, so there is a row here.
+    ///
+    /// The document is the shape `asterius_ssf::Subject::to_json` writes and
+    /// the key is its canonical form, so the row is one `PgSsfSubjects::add`
+    /// could have written rather than one only this test can read.
+    async fn seed_ssf_stream_subjects(pool: &PgPool, tenant: &str) {
+        sqlx::query(
+            "insert into ssf_stream_subjects
+                 (tenant_id, stream_id, subject_key, subject, verified)
+             values ($1, 'seeded-stream',
+                     '{\"format\":\"opaque\",\"id\":\"seeded-subject\"}',
+                     '{\"format\":\"opaque\",\"id\":\"seeded-subject\"}'::jsonb,
+                     true)
+             on conflict do nothing",
+        )
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .expect("seed ssf stream subject");
     }
 
     /// One row per swept expiry-driven table, expiring at `expires`.

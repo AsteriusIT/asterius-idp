@@ -374,17 +374,26 @@ pub enum LimitedEndpoint {
     Token,
     /// `GET`/`POST /userinfo` — OIDC Core §5.3.
     UserInfo,
+    /// `POST` at the SSF add-subject and remove-subject endpoints — SSF 1.0
+    /// §8.1.3.2 and §8.1.3.3.
+    ///
+    /// One endpoint for both, because they are one budget: §9.1's subject
+    /// probing does not care which of the two a caller walks a list of
+    /// identifiers with, and two counters would let it spend the budget
+    /// twice.
+    SsfSubjects,
 }
 
 impl LimitedEndpoint {
     /// Every endpoint that has limits, so a caller can iterate over them
     /// without writing the list a second time.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Registration,
         Self::ClientConfiguration,
         Self::PushedAuthorizationRequest,
         Self::Token,
         Self::UserInfo,
+        Self::SsfSubjects,
     ];
 
     /// The name used in bucket keys, metric labels and audit details.
@@ -396,6 +405,7 @@ impl LimitedEndpoint {
             Self::PushedAuthorizationRequest => "par",
             Self::Token => "token",
             Self::UserInfo => "userinfo",
+            Self::SsfSubjects => "ssf_subjects",
         }
     }
 }
@@ -485,6 +495,8 @@ pub struct EndpointLimits {
     pub token: EndpointLimit,
     /// UserInfo.
     pub userinfo: EndpointLimit,
+    /// The SSF add-subject and remove-subject endpoints.
+    pub ssf_subjects: EndpointLimit,
 }
 
 impl EndpointLimits {
@@ -497,6 +509,7 @@ impl EndpointLimits {
             LimitedEndpoint::PushedAuthorizationRequest => self.par,
             LimitedEndpoint::Token => self.token,
             LimitedEndpoint::UserInfo => self.userinfo,
+            LimitedEndpoint::SsfSubjects => self.ssf_subjects,
         }
     }
 }

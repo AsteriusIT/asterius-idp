@@ -36,6 +36,7 @@ use crate::config::{
     DEFAULT_ADMIN_TENANT, DEFAULT_ADMIN_USERNAME, DEFAULT_BIND, DEFAULT_BODY_LIMIT,
     DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_ADDRESS,
     DEFAULT_LIMIT_PAR_PER_CLIENT, DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS,
+    DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS, DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT,
     DEFAULT_LIMIT_TOKEN_PER_ADDRESS, DEFAULT_LIMIT_TOKEN_PER_CLIENT,
     DEFAULT_LIMIT_USERINFO_PER_ADDRESS, DEFAULT_LIMIT_WINDOW_SECONDS,
     DEFAULT_LOGIN_MAX_PER_ACCOUNT, DEFAULT_LOGIN_MAX_PER_ADDRESS, DEFAULT_LOGIN_WINDOW_SECONDS,
@@ -667,6 +668,12 @@ fn login() -> Section {
 }
 
 /// `[limits]`: what each protocol endpoint permits per window.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one key per configurable limit, each with the prose an operator reads before \
+              changing it; splitting the list in two would put half the table in another \
+              function and invite a key to be documented in neither"
+)]
 fn limits() -> Section {
     Section {
         table: "limits",
@@ -762,6 +769,23 @@ fn limits() -> Section {
                  There is no per-client limit, because the caller presents an access \
                  token and reading a client out of it before verifying it would be \
                  trusting a string the caller wrote.",
+            ),
+            key(
+                "ssf_subjects_per_address",
+                "integer",
+                DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS.to_string(),
+                "Requests per window from one address to the SSF add-subject and \
+                 remove-subject endpoints (SSF 1.0 §8.1.3.2, §8.1.3.3). Tight, because \
+                 those endpoints answer the same way whether or not a subject exists \
+                 (§9.1) and the remaining way to probe for one is volume.",
+            ),
+            key(
+                "ssf_subjects_per_client",
+                "integer",
+                DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT.to_string(),
+                "The same, per authenticated receiver. Higher than the address limit, \
+                 because several receivers can share one address and a receiver \
+                 bringing a deployment online adds its subjects in a burst.",
             ),
         ],
     }

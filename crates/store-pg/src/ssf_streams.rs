@@ -779,6 +779,96 @@ impl PgSsfStreams {
         Ok(affected > 0)
     }
 
+    /// This stream's status and the reason it was last given (§8.1.2.1).
+    ///
+    /// `None` is "no such stream for this receiver", for the reason
+    /// [`Self::find`] gives: the receiver is in the `WHERE` clause, so another
+    /// receiver's stream is a row that does not come back rather than one this
+    /// method has to refuse.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails, or [`DomainError::Invalid`]
+    /// if the stored status is not one §8.1.2 defines — a row this server
+    /// cannot interpret is a failure, never a stream silently treated as
+    /// enabled.
+    pub async fn status(
+        &self,
+        receiver: &ClientId,
+        stream: &StreamId,
+    ) -> Result<Option<(StreamStatus, Option<String>)>, DomainError> {
+        let row = sqlx::query!(
+            "select status, status_reason
+               from ssf_streams
+              where tenant_id = $1 and client_id = $2 and stream_id = $3",
+            self.tenant.as_str(),
+            receiver.as_str(),
+            stream.as_str(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        row.map(|row| {
+            let status = StreamStatus::parse(&row.status).ok_or_else(|| DomainError::Invalid {
+                field: "status",
+                reason: "a stored stream status is not one SSF 1.0 §8.1.2 defines".to_owned(),
+            })?;
+            Ok((status, row.status_reason))
+        })
+        .transpose()
+    }
+
+    /// Writes a stream's status *for the receiver that owns it* (§8.1.2.2).
+    /// `false` is "no such stream for this receiver".
+    ///
+    /// The counterpart of [`Self::set_status`], which is the console's: that
+    /// one is tenant-scoped because an operator acts on any stream of the
+    /// tenant, and it clears the reason when a stream is re-enabled. This one
+    /// carries the `client_id` — §8 makes the management API "an association
+    /// between the receiver and the stream identifiers it may act on", so
+    /// another receiver's stream must not be a row this statement can reach —
+    /// and it keeps the reason the receiver gave, whichever status it asked
+    /// for: §8.1.2.2 makes `reason` the receiver's own sentence, and
+    /// §8.1.2.1 reads it back.
+    ///
+    /// Nothing is flushed here and nothing is dropped here. Re-enabling a
+    /// stream releases what it held by making the queue readable again — the
+    /// held rows were never removed — and disabling one stops events at the
+    /// point they are enqueued. Both are [`crate::PgSsfPoll`]'s doing, which
+    /// is what keeps "what `paused` means" a single decision rather than one
+    /// this method and that one could come to disagree about.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails, in which case the status
+    /// is unchanged and the caller must not report the new one.
+    pub async fn set_status_for(
+        &self,
+        receiver: &ClientId,
+        stream: &StreamId,
+        status: StreamStatus,
+        reason: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let affected = sqlx::query!(
+            "update ssf_streams
+                set status = $4, status_reason = $5, status_changed_at = $6
+              where tenant_id = $1 and client_id = $2 and stream_id = $3",
+            self.tenant.as_str(),
+            receiver.as_str(),
+            stream.as_str(),
+            status.as_str(),
+            reason,
+            now,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?
+        .rows_affected();
+        Ok(affected > 0)
+    }
+
     /// The streams that asked for `event`, across every receiver of the tenant.
     ///
     /// The one read in this repository with no receiver in its `WHERE`

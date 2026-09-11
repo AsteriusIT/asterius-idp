@@ -82,6 +82,7 @@
 
 pub mod caep;
 pub mod event;
+pub mod management;
 pub mod metadata;
 pub mod poll;
 pub mod push;
@@ -91,6 +92,10 @@ pub mod subject;
 pub mod verification;
 
 pub use event::{EventError, EventUri, MAX_EVENT_URI_LEN, SecurityEvent};
+pub use management::{
+    MAX_HELD_WHILE_PAUSED, MAX_REASON_LEN, ManagementError, StatusRequest, SubjectRequest,
+    render_status,
+};
 pub use metadata::{SPEC_VERSION, WELL_KNOWN_DOCUMENT, transmitter_metadata};
 pub use poll::{MAX_LONG_POLL, PollError, PollRequest, PollResponse, RejectedSet};
 pub use push::{
@@ -101,7 +106,9 @@ pub use set::{
     AudienceError, MAX_SET_CLAIMS_BYTES, ReadySet, SET_TYP, Set, SetError, SetId, SetSubject,
     SignedSet, StreamAudience, Txn, UnsignedSet,
 };
-pub use subject::{ComplexSubject, MAX_MEMBER_LEN, SimpleSubject, Subject, SubjectError};
+pub use subject::{
+    ComplexSubject, MAX_MEMBER_LEN, MAX_SUBJECT_BYTES, SimpleSubject, Subject, SubjectError,
+};
 pub use verification::{
     MAX_STATE_LEN, StateError, VERIFICATION, VerificationState, verification_event,
 };

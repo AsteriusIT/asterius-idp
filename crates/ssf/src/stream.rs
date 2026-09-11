@@ -239,6 +239,24 @@ impl StreamStatus {
     pub const fn delivers(self) -> bool {
         matches!(self, Self::Enabled)
     }
+
+    /// Whether an event this stream cannot transmit is *kept* for later
+    /// (§8.1.2).
+    ///
+    /// > `paused`: […] The Transmitter SHOULD hold any events it would have
+    /// > transmitted while paused, and transmit them when the stream becomes
+    /// > enabled.
+    /// > `disabled`: […] will not hold any events.
+    ///
+    /// True for [`Self::Paused`] and false for [`Self::Disabled`], which is
+    /// the whole difference between the two: both stop delivery, and only one
+    /// of them promises the receiver will eventually hear what it missed.
+    /// False for [`Self::Enabled`] as well, which transmits rather than holds
+    /// — so a caller asking both questions gets one yes at most.
+    #[must_use]
+    pub const fn holds(self) -> bool {
+        matches!(self, Self::Paused)
+    }
 }
 
 /// A stream identifier: 128 bits of entropy, base64url-encoded.

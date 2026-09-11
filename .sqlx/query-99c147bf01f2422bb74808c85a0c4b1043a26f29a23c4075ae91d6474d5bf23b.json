@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ssf_streams\n                set status = $4, status_reason = $5, status_changed_at = $6\n              where tenant_id = $1 and client_id = $2 and stream_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "99c147bf01f2422bb74808c85a0c4b1043a26f29a23c4075ae91d6474d5bf23b"
+}

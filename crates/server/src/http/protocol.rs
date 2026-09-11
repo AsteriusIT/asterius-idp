@@ -32,6 +32,9 @@ use crate::http::register::{self, RegisterContext, RegistrationPolicy};
 use crate::http::revocation;
 use crate::http::ssf::CONFIGURATION_PATH as SSF_STREAMS_PATH;
 use crate::http::ssf::POLL_PATH as SSF_POLL_PATH;
+use crate::http::ssf_management::ADD_SUBJECT_PATH as SSF_ADD_SUBJECT_PATH;
+use crate::http::ssf_management::REMOVE_SUBJECT_PATH as SSF_REMOVE_SUBJECT_PATH;
+use crate::http::ssf_management::STATUS_PATH as SSF_STATUS_PATH;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::http::verify_email;
@@ -488,6 +491,24 @@ fn mount_ssf(
             &format!("{SSF_POLL_PATH}/{{stream_id}}"),
             any(ssf_poll).with_state(Arc::clone(endpoints)),
         )
+        // §8.1.2 and §8.1.3: one URL each, because SSF 1.0 §7.1 advertises
+        // each of them separately and a receiver discovers them from that
+        // document rather than by guessing a verb on another URL. `any` for
+        // the same reason the configuration endpoint takes it: the module
+        // answers 405 itself, with the `Cache-Control` its every response
+        // carries.
+        .route(
+            SSF_STATUS_PATH,
+            any(ssf_status).with_state(Arc::clone(endpoints)),
+        )
+        .route(
+            SSF_ADD_SUBJECT_PATH,
+            any(ssf_add_subject).with_state(Arc::clone(endpoints)),
+        )
+        .route(
+            SSF_REMOVE_SUBJECT_PATH,
+            any(ssf_remove_subject).with_state(Arc::clone(endpoints)),
+        )
 }
 
 /// Mounts the backchannel authentication endpoint (CIBA Core 1.0 §7).
@@ -872,14 +893,27 @@ async fn ssf_configuration(
     // route needs the database wiring a stream is stored in, so a deployment
     // without it advertises no management endpoint rather than one that 404s
     // (`asterius_ssf::metadata`).
-    let configuration_endpoint = state
-        .clients
+    let issuer = tenant.issuer.as_str();
+    let mounted = state.clients.as_ref().map(|_| {
+        [
+            format!("{issuer}{SSF_STREAMS_PATH}"),
+            format!("{issuer}{SSF_STATUS_PATH}"),
+            format!("{issuer}{SSF_ADD_SUBJECT_PATH}"),
+            format!("{issuer}{SSF_REMOVE_SUBJECT_PATH}"),
+        ]
+    });
+    let management = mounted
         .as_ref()
-        .map(|_| format!("{}{SSF_STREAMS_PATH}", tenant.issuer.as_str()));
+        .map(|urls| asterius_ssf::metadata::ManagementEndpoints {
+            configuration: &urls[0],
+            status: &urls[1],
+            add_subject: &urls[2],
+            remove_subject: &urls[3],
+        });
     let document = asterius_ssf::transmitter_metadata(
         &tenant.issuer,
         &Endpoint::Jwks.url(&tenant.issuer),
-        configuration_endpoint.as_deref(),
+        management.as_ref(),
     );
     cacheable_json(&document, METADATA_MAX_AGE)
 }
@@ -1380,6 +1414,312 @@ async fn ssf_poll(
         &body,
     )
     .await
+}
+
+/// `GET` and `POST` at `/ssf/streams/status` — SSF 1.0 §8.1.2.
+///
+/// Wiring only, like [`ssf_streams`]: everything that decides anything is in
+/// [`crate::http::ssf_management::status`], which is where the tests are.
+// Eight extractors, which axum builds from the request itself, so the count
+// costs no caller anything: the client address is one of them because these
+// endpoints are rate limited (§9.1) and the certificate because their tokens
+// may be certificate-bound (RFC 8705 §3).
+#[allow(clippy::too_many_arguments)]
+async fn ssf_status(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let now = time::OffsetDateTime::now_utc();
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let Some(context) =
+        ssf_management_context(&endpoints, &tenant, &limiter, client.as_deref(), now).await
+    else {
+        return crate::http::server::not_found().await.into_response();
+    };
+    let (store, directory, limits) = context;
+    crate::http::ssf_management::status(
+        crate::http::ssf_management::SsfManagementContext {
+            tenant: &tenant,
+            store: &store,
+            directory: &directory,
+            keys: endpoints.keys.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            certificate: certificate.as_deref().map(|presented| &presented.leaf),
+            limits,
+            now,
+        },
+        &method,
+        &headers,
+        uri.query(),
+        &body,
+    )
+    .await
+}
+
+/// `POST /ssf/streams/subjects:add` — SSF 1.0 §8.1.3.2.
+async fn ssf_add_subject(
+    state: State<Arc<ClientEndpoints>>,
+    tenant: Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    ssf_subject_membership(
+        state,
+        tenant,
+        certificate,
+        client,
+        crate::http::ssf_management::Membership::Add,
+        &method,
+        &headers,
+        &body,
+    )
+    .await
+}
+
+/// `POST /ssf/streams/subjects:remove` — SSF 1.0 §8.1.3.3.
+async fn ssf_remove_subject(
+    state: State<Arc<ClientEndpoints>>,
+    tenant: Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    ssf_subject_membership(
+        state,
+        tenant,
+        certificate,
+        client,
+        crate::http::ssf_management::Membership::Remove,
+        &method,
+        &headers,
+        &body,
+    )
+    .await
+}
+
+/// The wiring both subject endpoints share (§8.1.3.2, §8.1.3.3).
+// Eight extractors, which axum builds from the request itself, so the count
+// costs no caller anything: the client address is one of them because these
+// endpoints are rate limited (§9.1) and the certificate because their tokens
+// may be certificate-bound (RFC 8705 §3).
+#[allow(clippy::too_many_arguments)]
+async fn ssf_subject_membership(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    membership: crate::http::ssf_management::Membership,
+    method: &axum::http::Method,
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+) -> Response {
+    let now = time::OffsetDateTime::now_utc();
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let Some((store, directory, limits)) =
+        ssf_management_context(&endpoints, &tenant, &limiter, client.as_deref(), now).await
+    else {
+        return crate::http::server::not_found().await.into_response();
+    };
+    crate::http::ssf_management::subjects(
+        crate::http::ssf_management::SsfManagementContext {
+            tenant: &tenant,
+            store: &store,
+            directory: &directory,
+            keys: endpoints.keys.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            certificate: certificate.as_deref().map(|presented| &presented.leaf),
+            limits,
+            now,
+        },
+        membership,
+        method,
+        headers,
+        body,
+    )
+    .await
+}
+
+/// The rows, the directory and the limiter one SSF management request needs.
+///
+/// `None` is a tenant with the `ssf` feature switched off, which the callers
+/// answer 404 to: this path is not in the endpoint registry, so
+/// `tenant_feature_guard` does not cover it and the per-tenant half of the
+/// gate is here, exactly as it is for [`ssf_streams`] and [`ssf_poll`].
+async fn ssf_management_context<'a>(
+    endpoints: &'a Arc<ClientEndpoints>,
+    tenant: &'a Arc<Tenant>,
+    limiter: &'a asterius_store_pg::PgRateLimitStore,
+    client: Option<&crate::http::forwarded::ClientAddr>,
+    now: time::OffsetDateTime,
+) -> Option<(
+    StoredManagement,
+    StoredDirectory,
+    crate::http::limits::LimitContext<'a>,
+)> {
+    match capabilities_for(endpoints, tenant).await {
+        Ok(capabilities) if capabilities.is_enabled(asterius_domain::Feature::Ssf) => {}
+        Ok(_) => return None,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return None;
+        }
+    }
+
+    let scope = endpoints.store.scope(tenant.id.clone());
+    Some((
+        StoredManagement {
+            streams: scope.ssf_streams(Arc::clone(&endpoints.kek)),
+            subjects: scope.ssf_subjects(),
+            grants: scope.grants(),
+        },
+        StoredDirectory {
+            issuer: tenant.issuer.clone(),
+            users: scope.users(Arc::clone(&endpoints.kek)),
+        },
+        endpoint_limits(endpoints, tenant, limiter, client, now),
+    ))
+}
+
+/// The rows behind the status and subject endpoints.
+#[derive(Debug)]
+struct StoredManagement {
+    streams: asterius_store_pg::PgSsfStreams,
+    subjects: asterius_store_pg::PgSsfSubjects,
+    grants: asterius_store_pg::PgGrantRepository,
+}
+
+#[async_trait::async_trait]
+impl crate::http::ssf_management::SsfManagementStore for StoredManagement {
+    async fn status(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamId,
+    ) -> Result<Option<(asterius_ssf::stream::StreamStatus, Option<String>)>, DomainError> {
+        self.streams.status(receiver, stream).await
+    }
+
+    async fn set_status(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamId,
+        status: asterius_ssf::stream::StreamStatus,
+        reason: Option<&str>,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        self.streams
+            .set_status_for(receiver, stream, status, reason, now)
+            .await
+    }
+
+    async fn add_subject(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamId,
+        subject: &asterius_ssf::Subject,
+        verified: Option<bool>,
+        now: time::OffsetDateTime,
+    ) -> Result<crate::http::ssf_management::SubjectOutcome, DomainError> {
+        Ok(
+            match self
+                .subjects
+                .add(receiver, stream, subject, verified, now)
+                .await?
+            {
+                asterius_store_pg::Added::Member => {
+                    crate::http::ssf_management::SubjectOutcome::Member
+                }
+                asterius_store_pg::Added::NoSuchStream => {
+                    crate::http::ssf_management::SubjectOutcome::NoSuchStream
+                }
+                asterius_store_pg::Added::Full => crate::http::ssf_management::SubjectOutcome::Full,
+            },
+        )
+    }
+
+    async fn remove_subject(
+        &self,
+        receiver: &asterius_domain::ClientId,
+        stream: &asterius_ssf::stream::StreamId,
+        subject: &asterius_ssf::Subject,
+    ) -> Result<bool, DomainError> {
+        self.subjects.remove(receiver, stream, subject).await
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::http::ssf::SsfTokenStatus for StoredManagement {
+    async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
+        self.grants.is_denylisted(jti).await
+    }
+
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &asterius_domain::ClientId,
+        grant: Option<&asterius_domain::GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, DomainError> {
+        self.grants.revoked_before(client, grant).await
+    }
+}
+
+/// Who a subject identifier names, over this tenant's directory (§9.1).
+///
+/// Two of RFC 9493's formats are questions this server can answer — an
+/// `email`, and an `iss_sub` naming this issuer, which resolves through
+/// `subject_identifiers` and therefore covers a pairwise `sub` as well as a
+/// public one. Everything else is
+/// [`crate::http::ssf_management::Recognised::Unresolvable`]: an `opaque`
+/// identifier is opaque *to this server* too, and a complex subject names a
+/// session or a device this directory does not index.
+#[derive(Debug)]
+struct StoredDirectory {
+    issuer: asterius_domain::Issuer,
+    users: asterius_store_pg::PgUserRepository,
+}
+
+#[async_trait::async_trait]
+impl crate::http::ssf_management::SubjectDirectory for StoredDirectory {
+    async fn recognises(
+        &self,
+        subject: &asterius_ssf::Subject,
+    ) -> Result<crate::http::ssf_management::Recognised, DomainError> {
+        use crate::http::ssf_management::Recognised;
+        use asterius_ssf::{SimpleSubject, Subject};
+
+        let found = match subject {
+            Subject::Simple(SimpleSubject::Email { email }) => {
+                self.users.find_by_email(email).await?.is_some()
+            }
+            Subject::Simple(SimpleSubject::IssuerSubject { iss, sub }) if *iss == self.issuer => {
+                self.users
+                    .find_by_subject(&asterius_domain::SubjectId::new(sub.clone()))
+                    .await?
+                    .is_some()
+            }
+            // An `iss_sub` naming somebody else's issuer is a principal this
+            // transmitter never emits an event about: resolvable, and nobody
+            // here.
+            Subject::Simple(SimpleSubject::IssuerSubject { .. }) => false,
+            _ => return Ok(Recognised::Unresolvable),
+        };
+        Ok(if found {
+            Recognised::Known
+        } else {
+            Recognised::Unknown
+        })
+    }
 }
 
 /// The rows behind the polling endpoint.
@@ -4054,11 +4394,22 @@ mod tests {
                 }
                 LimitedEndpoint::Token => "LimitedEndpoint::Token",
                 LimitedEndpoint::UserInfo => "LimitedEndpoint::UserInfo",
+                LimitedEndpoint::SsfSubjects => "LimitedEndpoint::SsfSubjects",
+            };
+
+            // The SSF subject endpoints count the *authenticated receiver*,
+            // which only the handler knows: the limiter runs after the five
+            // checks of `crate::http::ssf`, so its call site is in that
+            // module rather than in this file's wiring. The assertion follows
+            // the code instead of pretending it is somewhere it is not.
+            let wired_in = match endpoint {
+                LimitedEndpoint::SsfSubjects => include_str!("ssf_management.rs"),
+                _ => source,
             };
 
             // Assert
             assert!(
-                source.contains(variant),
+                wired_in.contains(variant),
                 "{endpoint} has limits but no handler passes it to `limits::guard`"
             );
         }

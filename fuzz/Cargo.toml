@@ -575,6 +575,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ssf_stream_management"
+path = "fuzz_targets/ssf_stream_management.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssf_subject"
+path = "fuzz_targets/ssf_subject.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ssf_verification_state"
 path = "fuzz_targets/ssf_verification_state.rs"
 test = false

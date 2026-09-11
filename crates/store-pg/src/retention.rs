@@ -659,6 +659,19 @@ pub const POLICY: &[Retention] = &[
         ),
     },
     Retention {
+        table: "ssf_stream_subjects",
+        rule: Rule::Kept(
+            "a stream's subject membership is standing configuration (SSF 1.0 \
+             §8.1.3), like the stream itself: a receiver adds a subject with \
+             §8.1.3.2 and removes it with §8.1.3.3, and a sweep between the \
+             two would silently stop the continuous-access signals a security \
+             team believes it is still receiving about that person. The rows \
+             do not outlive the stream either — the foreign key cascades — so \
+             what is kept is bounded by what receivers asked for and released \
+             by the `DELETE` of §8.1.1.5",
+        ),
+    },
+    Retention {
         table: "ssf_poll_queue",
         rule: Rule::Sweep {
             // Every row, on age alone, and deliberately not "only the ones

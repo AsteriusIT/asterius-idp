@@ -9,6 +9,24 @@
 //! it on the queue the stream's delivery method uses — the poll table
 //! (`ast-0ju.7`) or the outbox (`ast-0ju.6`).
 //!
+//! # What this does *not* filter yet: the stream's subjects (§8.1.3)
+//!
+//! [`asterius_store_pg::PgSsfStreams::subscribed`] answers "which streams
+//! asked for this event *type*", and that is the whole filter today. SSF 1.0
+//! §8.1.3 has a second one: a stream carries events about the subjects its
+//! receiver added, and this transmitter advertises `default_subjects: NONE`
+//! (§7.1), so strictly a stream with no membership should receive nothing.
+//! The membership and the matching rules exist — `ssf_stream_subjects` and
+//! [`asterius_ssf::Subject::matches`] (`ast-0ju.4`) — and nothing here calls
+//! them, so a subscribed stream is over-delivered rather than under-delivered.
+//!
+//! Joining the two is deliberately not done in passing: the subject a cause
+//! renders is *complex* for a session event (`user` and `session`), a receiver
+//! that added the plain `iss_sub` would stop matching under §8.1.3.1's literal
+//! reading, and "a receiver silently stops being told things" is the failure
+//! this whole subsystem exists to avoid. It needs its own story, with tests
+//! over the subject shapes a [`Cause`] actually renders.
+//!
 //! # Why a transmitter and not a call at each site
 //!
 //! The five effects that map to events happen in five places, and each of

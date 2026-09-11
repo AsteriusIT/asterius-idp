@@ -520,6 +520,7 @@ mod tests {
                 per_client: Some(limit(5)),
             },
             userinfo: plain,
+            ssf_subjects: plain,
         }
     }
 

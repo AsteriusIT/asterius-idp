@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from ssf_stream_subjects\n              where tenant_id = $1 and stream_id = $2 and subject_key = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ade212743f3f8da8e72ce0e407d05011092fb1b4ea834a455e400b308caaa0fb"
+}
