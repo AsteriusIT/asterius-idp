@@ -506,6 +506,81 @@ impl SsfPushDeliverer {
 /// emitters that will queue them (`ast-0ju.8`).
 pub const KIND: &str = SET_OUTBOX_KIND;
 
+/// The queues an SSF emitter puts a signed SET on, over `PostgreSQL`
+/// (`ast-0ju.8`).
+///
+/// The production [`crate::ssf::SsfQueues`]: it reads the subscribed streams
+/// through [`asterius_store_pg::PgSsfStreams::subscribed`], holds the poll
+/// SETs of one cause in one transaction ([`asterius_store_pg::PgSsfPoll`]),
+/// and hands the push SETs to the same outbox the push deliverer above reads.
+#[derive(Clone)]
+pub struct PgSsfQueues {
+    store: Store,
+    tenant: TenantId,
+    kek: Arc<dyn Kek>,
+}
+
+impl std::fmt::Debug for PgSsfQueues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgSsfQueues")
+            .field("tenant", &self.tenant)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PgSsfQueues {
+    /// Scopes the queues to one tenant.
+    ///
+    /// `kek` opens a push stream's sealed credential when the delivery worker
+    /// reads it; it is not used on the way *in*, but the streams repository
+    /// asks for it, so it is held here rather than reconstructed per call.
+    #[must_use]
+    pub const fn new(store: Store, tenant: TenantId, kek: Arc<dyn Kek>) -> Self {
+        Self { store, tenant, kek }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::ssf::SsfQueues for PgSsfQueues {
+    async fn subscribed(
+        &self,
+        event: &str,
+    ) -> Result<Vec<asterius_store_pg::Subscription>, DomainError> {
+        self.store
+            .scope(self.tenant.clone())
+            .ssf_streams(Arc::clone(&self.kek))
+            .subscribed(event)
+            .await
+    }
+
+    async fn queue_poll(
+        &self,
+        sets: &[crate::ssf::PolledSet<'_>],
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        use asterius_store_pg::to_domain_error;
+        let poll = self.store.scope(self.tenant.clone()).ssf_poll();
+        let mut transaction = self.store.pool().begin().await.map_err(to_domain_error)?;
+        for set in sets {
+            poll.enqueue(&mut transaction, set.stream, set.jti, set.jws, now)
+                .await?;
+        }
+        transaction.commit().await.map_err(to_domain_error)?;
+        Ok(())
+    }
+
+    async fn queue_push(
+        &self,
+        events: &[QueuedEvent],
+        now: time::OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        use asterius_domain::outbox::OutboxQueue as _;
+        asterius_store_pg::PgOutbox::new(self.store.pool().clone())
+            .queue(&self.tenant, events, now)
+            .await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

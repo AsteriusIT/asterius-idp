@@ -433,3 +433,84 @@ db_test! {
         assert!(streams.list(&receiver()).await.expect("list").is_empty());
     }
 }
+
+db_test! {
+    /// The emitters of `ast-0ju.8` read the streams that asked for an event
+    /// type across every receiver of the tenant: a stream that did not ask,
+    /// and a stream that is disabled (§8.1.2), are not among them; a paused
+    /// one is.
+    async fn subscribed_streams_are_those_that_asked_for_the_event_and_are_not_disabled(db) {
+        use asterius_store_pg::{DeliveryMethod, Subscription};
+        const SESSION_REVOKED: &str =
+            "https://schemas.openid.net/secevent/caep/event-type/session-revoked";
+        const CREDENTIAL_CHANGE: &str =
+            "https://schemas.openid.net/secevent/caep/event-type/credential-change";
+        let streams = db.streams();
+
+        let mut asked = stream(&[AUDIENCE]);
+        asked.events_requested = vec![CREDENTIAL_CHANGE.to_owned(), SESSION_REVOKED.to_owned()];
+        streams.create(&receiver(), &asked).await.expect("create");
+
+        let mut other = stream(&["https://other.example/events"]);
+        other.events_requested = vec![SESSION_REVOKED.to_owned()];
+        other.delivery = Delivery::Push {
+            endpoint_url: "https://other.example/events".to_owned(),
+            authorization_header: None,
+        };
+        streams.create(&other_receiver(), &other).await.expect("create");
+
+        let mut silent = stream(&["https://silent.example/events"]);
+        silent.events_requested = vec![CREDENTIAL_CHANGE.to_owned()];
+        streams.create(&receiver(), &silent).await.expect("create");
+
+        let mut paused = stream(&["https://paused.example/events"]);
+        paused.events_requested = vec![SESSION_REVOKED.to_owned()];
+        streams.create(&receiver(), &paused).await.expect("create");
+        streams
+            .pause(&paused.stream_id, "receiver refused", time::OffsetDateTime::now_utc())
+            .await
+            .expect("pause");
+
+        let mut disabled = stream(&["https://disabled.example/events"]);
+        disabled.events_requested = vec![SESSION_REVOKED.to_owned()];
+        streams.create(&receiver(), &disabled).await.expect("create");
+        sqlx::query("update ssf_streams set status = 'disabled' where stream_id = $1")
+            .bind(disabled.stream_id.as_str())
+            .execute(&db.pool)
+            .await
+            .expect("disable");
+
+        let subscribed = streams.subscribed(SESSION_REVOKED).await.expect("read");
+
+        assert_eq!(
+            subscribed,
+            vec![
+                Subscription {
+                    stream_id: asked.stream_id.clone(),
+                    receiver: receiver(),
+                    audience: vec![AUDIENCE.to_owned()],
+                    delivery: DeliveryMethod::Poll,
+                },
+                Subscription {
+                    stream_id: other.stream_id.clone(),
+                    receiver: other_receiver(),
+                    audience: vec!["https://other.example/events".to_owned()],
+                    delivery: DeliveryMethod::Push,
+                },
+                Subscription {
+                    stream_id: paused.stream_id.clone(),
+                    receiver: receiver(),
+                    audience: vec!["https://paused.example/events".to_owned()],
+                    delivery: DeliveryMethod::Poll,
+                },
+            ]
+        );
+        assert!(
+            streams
+                .subscribed("https://schemas.example/nobody-asked")
+                .await
+                .expect("read")
+                .is_empty()
+        );
+    }
+}

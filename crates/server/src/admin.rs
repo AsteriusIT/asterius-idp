@@ -374,6 +374,42 @@ impl DeploymentUsers {
         };
         notifier.notify(&session, &participants, now).await
     }
+
+    /// Emits the CAEP or RISC Security Event Tokens one administrative effect
+    /// produces, to every stream that subscribed (`ast-0ju.8`).
+    ///
+    /// Best-effort and after the effect, the same order and the same reasoning
+    /// as [`Self::notify_participants`]: the account is already disabled, and a
+    /// receiver that could not be told must not undo that. A tenant that cannot
+    /// be read is logged and nothing is emitted.
+    async fn emit_signal(
+        &self,
+        tenant: &TenantId,
+        cause: &crate::ssf::Cause,
+        now: time::OffsetDateTime,
+    ) {
+        let Ok(Some(tenant_entity)) = self.tenants.find_by_id(tenant).await else {
+            tracing::error!(tenant = %tenant, "cannot read a tenant to emit a security event");
+            return;
+        };
+        let scope = self.store.scope(tenant.clone());
+        let clients = scope.clients(self.capabilities);
+        let users = scope.users(Arc::clone(&self.kek));
+        let queues = crate::outbox::PgSsfQueues::new(
+            self.store.clone(),
+            tenant.clone(),
+            Arc::clone(&self.kek),
+        );
+        let transmitter = crate::ssf::SsfTransmitter {
+            tenant,
+            issuer: &tenant_entity.issuer,
+            queues: &queues,
+            clients: &clients,
+            subjects: &users,
+            signer: self.keys.as_ref(),
+        };
+        transmitter.emit(cause, now).await;
+    }
 }
 
 #[async_trait::async_trait]
@@ -465,15 +501,41 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         users.upsert(&held).await?;
 
         if status != asterius_domain::UserStatus::Disabled {
+            // RISC `account-enabled`: nothing was terminated, but a receiver
+            // that heard the account was disabled must hear it is back.
+            self.emit_signal(
+                tenant,
+                &crate::ssf::Cause::AccountEnabled {
+                    user: id,
+                    initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+                },
+                now,
+            )
+            .await;
             return Ok(asterius_domain::Terminated::default());
         }
-        self.terminate_sessions(
+        let terminated = self
+            .terminate_sessions(
+                tenant,
+                id,
+                asterius_domain::SessionRevocation::AccountClosed,
+                now,
+            )
+            .await?;
+        // RISC `account-disabled`. The per-session `session-revoked` signals
+        // are a follow-up: this path revokes in bulk by digest and does not
+        // hold the public `sid` each SET's complex subject needs.
+        self.emit_signal(
             tenant,
-            id,
-            asterius_domain::SessionRevocation::AccountClosed,
+            &crate::ssf::Cause::AccountDisabled {
+                user: id,
+                reason: None,
+                initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+            },
             now,
         )
-        .await
+        .await;
+        Ok(terminated)
     }
 
     async fn save(
@@ -516,6 +578,7 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
             .await?
             .ok_or(DomainError::NotFound)?;
 
+        let subject = sessions.find(&digest).await?.map(|session| session.user);
         sessions
             .revoke(
                 &digest,
@@ -523,6 +586,20 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
                 now,
             )
             .await?;
+        // CAEP §3.1: the session named by its public `sid`, which this path
+        // has in hand.
+        if let Some(subject) = subject {
+            self.emit_signal(
+                tenant,
+                &crate::ssf::Cause::SessionRevoked {
+                    user: asterius_domain::UserId::new(subject),
+                    sid: public_sid.to_owned(),
+                    initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+                },
+                now,
+            )
+            .await;
+        }
         Ok(asterius_domain::Terminated {
             sessions_revoked: 1,
             logout_tokens_queued: self.notify_participants(tenant, &digest, now).await,
@@ -600,11 +677,43 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
         credential: uuid::Uuid,
         now: time::OffsetDateTime,
     ) -> Result<bool, DomainError> {
-        self.store
+        let removed = self
+            .store
             .scope(tenant.clone())
             .passkeys()
             .disable_for_user(&user, credential, now)
-            .await
+            .await?;
+        let Some(removed) = removed else {
+            return Ok(false);
+        };
+
+        // CAEP §3.3: a credential was deleted. `fido2-platform` or
+        // `fido2-roaming` from what WebAuthn recorded, the friendly name where
+        // the user gave one — no key material, which a receiver has no use for
+        // and this server never puts on the wire.
+        let mut change = asterius_ssf::caep::CredentialChange::new(
+            asterius_ssf::caep::CredentialType::fido2(None, removed.backup_eligible),
+            asterius_ssf::caep::ChangeType::Delete,
+        );
+        if let Some(aaguid) = removed.aaguid {
+            change = change.fido2_aaguid(aaguid);
+        }
+        if let Some(label) = removed.label.as_deref()
+            && let Ok(named) = change.clone().friendly_name(label)
+        {
+            change = named;
+        }
+        self.emit_signal(
+            tenant,
+            &crate::ssf::Cause::CredentialChange {
+                user,
+                change,
+                initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+            },
+            now,
+        )
+        .await;
+        Ok(true)
     }
 
     async fn force_password_reset(
@@ -649,6 +758,22 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
                 now,
             )
             .await?;
+
+        // CAEP §3.3: the password was changed. `update` and not `revoke`: a
+        // forced reset replaces the password rather than removing the factor.
+        self.emit_signal(
+            tenant,
+            &crate::ssf::Cause::CredentialChange {
+                user,
+                change: asterius_ssf::caep::CredentialChange::new(
+                    asterius_ssf::caep::CredentialType::Password,
+                    asterius_ssf::caep::ChangeType::Update,
+                ),
+                initiator: asterius_ssf::caep::InitiatingEntity::Admin,
+            },
+            now,
+        )
+        .await;
 
         Ok(asterius_domain::PasswordReset {
             password_invalidated,

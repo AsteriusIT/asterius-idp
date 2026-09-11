@@ -498,6 +498,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ssf_caep_assurance_level_change"
+path = "fuzz_targets/ssf_caep_assurance_level_change.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ssf_caep_text"
+path = "fuzz_targets/ssf_caep_text.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ssf_event_uri"
 path = "fuzz_targets/ssf_event_uri.rs"
 test = false

@@ -19,6 +19,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 time.workspace = true
 url.workspace = true
+# `CredentialChange::fido2_aaguid` renders an authenticator AAGUID, which the
+# WebAuthn path holds as a `Uuid`; taking the type keeps the hyphenated
+# rendering in one place.
+uuid.workspace = true
 # `SetId::generate` and `Txn::generate` each draw 128 bits. The same argument
 # the `jti` of an access token gets in `asterius_oidc::tokens`: the entropy
 # floor is the requirement, and drawing it through a port would put the one

@@ -60,7 +60,7 @@ use time::Duration;
 
 pub use http::HttpDeliverer;
 pub use journal::JournalDeliverer;
-pub use ssf::{PgPushStreams, PushStreams, SetPoster, SsfPushDeliverer, push_event};
+pub use ssf::{PgPushStreams, PgSsfQueues, PushStreams, SetPoster, SsfPushDeliverer, push_event};
 
 /// What a deliverer did with an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
