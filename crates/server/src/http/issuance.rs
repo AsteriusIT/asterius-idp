@@ -339,19 +339,70 @@ pub async fn remember_participant(
 pub async fn released_claims(
     users: &PgUserRepository,
     grant: &Grant,
-) -> Result<serde_json::Map<String, serde_json::Value>, DomainError> {
+    client: &Client,
+    held: &asterius_domain::HeldRoles,
+) -> Result<ReleasedToIdToken, DomainError> {
     let id = grant
         .user
         .ok_or_else(|| DomainError::invalid("grant", "a user-facing grant names no user"))?;
     let user = users.find(id).await?.ok_or_else(|| {
         DomainError::invalid("user", "the user this grant was made for no longer exists")
     })?;
-    let resolved = asterius_oidc::claims::resolve_for_grant(&user, grant)
-        // The request was validated at PAR and re-serialised canonically onto
-        // the grant, so a stored one that no longer parses is a damaged row
-        // rather than a bad request.
+    // The request was validated at PAR and re-serialised canonically onto the
+    // grant, so a stored one that no longer parses is a damaged row rather
+    // than a bad request.
+    let requested = asterius_oidc::claims::ClaimsRequest::from_json(&grant.claims)
         .map_err(|error| DomainError::invalid("claims", error.to_string()))?;
-    Ok(resolved.id_token)
+    let locales = asterius_oidc::claims::ClaimsLocales::from_tags(&grant.claims_locales);
+    let resolved = asterius_oidc::claims::resolve(&user, &grant.scopes, &requested, &locales);
+    Ok(ReleasedToIdToken {
+        claims: resolved.id_token,
+        role_claims: role_claims(&requested, client),
+        held: held.clone(),
+    })
+}
+
+/// What an ID token releases about the person, from the grant and nothing else.
+///
+/// The three travel together because they are one decision read off one grant:
+/// what the `claims` request covers, which role claims this issuance says, and
+/// the roles it says them from. Splitting them across the parameters of
+/// [`sign_id_token`] would let a caller pass a `claims` request from one grant
+/// beside the roles of another.
+#[derive(Debug, Default)]
+pub struct ReleasedToIdToken {
+    /// The claims the grant's `claims` request covers.
+    pub claims: serde_json::Map<String, serde_json::Value>,
+    /// Which application-role claims this issuance carries (`ast-mqt`).
+    pub role_claims: std::collections::BTreeSet<asterius_domain::RoleClaim>,
+    /// What the person holds — the same value the access token of this
+    /// response was minted from, so the two cannot disagree. The builder
+    /// narrows it to this client.
+    pub held: asterius_domain::HeldRoles,
+}
+
+/// Which role claims an ID token carries (`ast-mqt`).
+///
+/// Two routes, and they are a union rather than a precedence: a client that
+/// registered `roles_in_id_token` gets both claims in every ID token, and a
+/// client that did not gets exactly the ones the authorization's `claims`
+/// parameter named. Both are the *client's* request for its own tokens —
+/// nothing here widens what a token may say about anybody, because the roles
+/// are narrowed to the token's own client when they are rendered
+/// (`IdToken::with_roles`).
+///
+/// The request is read from the grant, so a refresh six weeks later carries
+/// what was asked for at the authorization; the registration is read live, so
+/// a client that turned the setting off stops receiving them on the next
+/// issuance rather than on the next authorization.
+fn role_claims(
+    requested: &asterius_oidc::claims::ClaimsRequest,
+    client: &Client,
+) -> std::collections::BTreeSet<asterius_domain::RoleClaim> {
+    if client.registration.roles_in_id_token.is_issued() {
+        return asterius_domain::RoleClaim::ALL.into_iter().collect();
+    }
+    requested.role_claims().clone()
 }
 
 /// The application roles this grant's user holds (`ast-095`).
@@ -632,7 +683,7 @@ pub struct IdTokenParts<'a> {
     /// checking a replay defence against a request it is not making.
     pub nonce: Option<&'a str>,
     /// The claims the grant covers, from [`released_claims`].
-    pub released: serde_json::Map<String, serde_json::Value>,
+    pub released: ReleasedToIdToken,
 }
 
 /// Builds and signs an ID token.
@@ -695,7 +746,11 @@ pub async fn sign_id_token(
     // `releasing` takes a plain map, so `IdToken::build` re-checks it against
     // `ClaimName::SERVER_ISSUED` rather than trusting that it came from
     // `claims::resolve`.
-    builder = builder.releasing(released);
+    builder = builder.releasing(released.claims);
+    // The application roles (`ast-mqt`), and only the ones this issuance is
+    // allowed to say. An empty set is the default and emits nothing; the
+    // builder narrows what it is given to this token's own client.
+    builder = builder.with_roles(&released.held, &released.role_claims);
     let unsigned = builder
         .build()
         .map_err(|e| DomainError::invalid("id_token", e.to_string()))?;

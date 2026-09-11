@@ -307,6 +307,10 @@ impl AuthorizationCode<'_> {
         issuance::remember_participant(self.sessions, &grant, self.now).await;
 
         let targeting = self.targeting(tenant, client, &grant, params).await?;
+        // One read for both tokens of this response (`ast-mqt`): two reads
+        // could disagree, and the disagreement would be a role withdrawn
+        // between them.
+        let held = issuance::held_roles(self.roles, &grant).await?;
 
         let access = AccessToken::new(
             &tenant.issuer,
@@ -337,7 +341,7 @@ impl AuthorizationCode<'_> {
         // UserInfo falls back to resolving the grant from the token's
         // `client_id` and `sub`.
         .with_grant_id_when(self.grant_id_claim)
-        .with_roles(&issuance::held_roles(self.roles, &grant).await?)
+        .with_roles(&held)
         .for_lifetime(self.lifetimes.access_token())
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
@@ -363,7 +367,7 @@ impl AuthorizationCode<'_> {
                 nonce: binding.nonce.as_deref(),
                 // From the grant, never from the request. See
                 // `issuance::released_claims`.
-                released: issuance::released_claims(self.users, &grant).await?,
+                released: issuance::released_claims(self.users, &grant, client, &held).await?,
             };
             Some(issuance::sign_id_token(self.signer, tenant, client, parts, self.now).await?)
         } else {

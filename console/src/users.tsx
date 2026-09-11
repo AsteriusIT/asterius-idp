@@ -35,6 +35,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
+import { UserAppRoles, mayRead as mayReadAppRoles } from './appRoles';
 
 /** Whether an account may authenticate, mirroring `UserStatus`. */
 export type UserStatus = 'active' | 'disabled' | 'locked';
@@ -663,6 +664,24 @@ function Account({
           refresh();
         }}
       />
+
+      {/*
+        `ast-mqt`. Beside the administrative roles and never merged with them:
+        `admin.app_roles:*` delegates the tenant's own vocabulary, and
+        `admin.roles:*` delegates the authority to administer this server. The
+        section is drawn only for a caller who may read it — a scope this
+        console checks for courtesy and the server checks for real.
+      */}
+      {mayReadAppRoles(session) && (
+        <UserAppRoles
+          session={session}
+          userId={user.user_id}
+          busy={busy}
+          onChanged={(message) => {
+            setNotice(message);
+          }}
+        />
+      )}
 
       {roles !== null && (
         <RoleEditor

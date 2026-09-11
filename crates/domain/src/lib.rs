@@ -64,11 +64,11 @@ pub use entities::{
     RECOVERY_TOKEN_BITS, RecoveryToken, RecoveryTokenError, RedirectUri, RedirectUriError,
     RefreshPolicy, RefreshPolicyError, RegistrationError, RegistrationMode, RegistrationPolicy,
     RegistrationPolicyError, ResourceIdentifier, ResourceRegistry, ResourceServer,
-    RevocationReason, Role, RoleAssignment, RoleName, RoleNameError, RoleOwner, RoleScope,
-    Rotation, RuleId, SectorIdentifier, SoftwareStatementIssuer, SoftwareStatementRule,
-    SubjectError, SubjectType, Tenant, TenantIcon, TenantSettings, TenantSettingsError,
-    TenantStatus, Theme, ThemeError, TlsClientAuthSubject, TokenBinding, TokenDeliveryMode,
-    TokenEndpointAuthMethod, TokenLifetimes, User, UserId, UserRole, UserStatus,
+    RevocationReason, Role, RoleAssignment, RoleClaim, RoleName, RoleNameError, RoleOwner,
+    RoleScope, RolesInIdToken, Rotation, RuleId, SectorIdentifier, SoftwareStatementIssuer,
+    SoftwareStatementRule, SubjectError, SubjectType, Tenant, TenantIcon, TenantSettings,
+    TenantSettingsError, TenantStatus, Theme, ThemeError, TlsClientAuthSubject, TokenBinding,
+    TokenDeliveryMode, TokenEndpointAuthMethod, TokenLifetimes, User, UserId, UserRole, UserStatus,
 };
 pub use error::DomainError;
 pub use ids::{ClientId, GrantId, SessionId, SubjectId, TenantId, TenantIdError};
