@@ -107,6 +107,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64",
+ "futures-core",
  "hex",
  "image",
  "serde",

@@ -49,10 +49,11 @@
 //! grant with no resource owner, and [`AccessToken`] does that on its own from
 //! a [`asterius_domain::ClaimedGrant`] whose subject is `None`.
 
+use asterius_domain::audit::trail::{self, keys};
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::client::GrantType;
 use asterius_domain::keys::Signer;
-use asterius_domain::{Client, DomainError, Grant, GrantId, Tenant};
+use asterius_domain::{Client, DomainError, Grant, Tenant};
 use asterius_oidc::form::Parameters;
 use asterius_oidc::tokens::JwtId;
 use asterius_oidc::tokens::access::AccessToken;
@@ -192,7 +193,7 @@ impl ClientCredentials<'_> {
         tenant: &Tenant,
         client: &Client,
         params: &Parameters,
-    ) -> Result<(Response, GrantId), Failure> {
+    ) -> Result<(Response, Grant), Failure> {
         // RFC 9449 §5.2: with a deployment that issues only sender-constrained
         // tokens, "the authorization server MUST reject token requests from the
         // client that do not contain the DPoP header" — and RFC 8705 §3 is the
@@ -304,7 +305,7 @@ impl ClientCredentials<'_> {
                 &targeting.scopes,
                 lifetimes.access_token(),
             ),
-            grant.id,
+            grant,
         ))
     }
 
@@ -436,12 +437,19 @@ impl ClientCredentials<'_> {
     ///
     /// `agent_id` is not a second field: it is the actor's own identifier,
     /// which [`Actor::Agent`] already carries and every reader already reads.
+    ///
+    /// The resources the token was audienced at and the types of its
+    /// `authorization_details` are recorded under the trail's own keys
+    /// (`asterius_domain::audit::trail::keys`, `ast-lh3.9`): an agent that
+    /// reached a resource it should not have is found by the first, and a
+    /// summary of types — never the details, which hold the payment — is
+    /// what the second says.
     async fn record(
         &self,
         tenant: &Tenant,
         client: &Client,
         outcome: Outcome,
-        grant: Option<&GrantId>,
+        grant: Option<&Grant>,
     ) {
         let agent = client.registration.agent.as_ref();
         let actor = agent.map_or_else(
@@ -458,7 +466,18 @@ impl ClientCredentials<'_> {
             // is hyphen-separated groups of at most twelve characters, and the
             // scanner looks for unbroken runs of twenty-two — which the audit
             // test asserts rather than assumes.
-            detail = detail.text("agent_owner", profile.owner().to_string());
+            detail = detail.text(keys::AGENT_OWNER, profile.owner().to_string());
+        }
+        if let Some(grant) = grant {
+            if let Some(resource) =
+                trail::resource_summary(grant.resources.iter().map(String::as_str))
+            {
+                detail = detail.text(keys::RESOURCE, resource);
+            }
+            if let Some(types) = trail::authorization_details_summary(&grant.authorization_details)
+            {
+                detail = detail.text(keys::AUTHORIZATION_DETAILS, types);
+            }
         }
         let mut event = AuditEvent::new(
             tenant.id.clone(),
@@ -470,7 +489,7 @@ impl ClientCredentials<'_> {
         .client(client.id.clone())
         .detail(detail);
         if let Some(grant) = grant {
-            event = event.grant(grant.clone());
+            event = event.grant(grant.id.clone());
         }
         // No `subject`: there is nobody this event is about but the client,
         // which the actor already names.

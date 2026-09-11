@@ -2,12 +2,24 @@
 
 use crate::error::to_domain_error;
 use asterius_domain::audit::chain::{self, Content, EventHash, Link};
+use asterius_domain::audit::query::{AuditFilter, AuditQuery, MAX_PAGE, TrailEntry};
 use asterius_domain::audit::record::{self, AuditRecord, StoredEvent};
+use asterius_domain::audit::trail::keys;
 use asterius_domain::audit::{AuditEvent, AuditSink};
 use asterius_domain::{ClientId, DomainError, SessionId, TenantId};
-use sqlx::postgres::PgPool;
-use sqlx::{Acquire as _, Row as _};
+use sqlx::postgres::{PgPool, PgRow};
+use sqlx::{Acquire as _, Postgres, QueryBuilder, Row as _};
 use time::OffsetDateTime;
+
+/// The columns every read of the trail selects, spelled once.
+///
+/// The JSON columns are cast to text rather than decoded as JSON by the
+/// driver: a document the driver cannot parse would otherwise fail the whole
+/// query, which is precisely the outcome an opaque record exists to avoid.
+const COLUMNS: &str = "event_id, occurred_at, event_type, outcome,
+        actor::text as actor, actor_chain::text as actor_chain, subject,
+        client_id, session_id, grant_id::text as grant_id, request_id,
+        detail::text as detail, previous_hash, event_hash";
 
 /// `AuditSink` over PostgreSQL, with a per-tenant hash chain.
 #[derive(Debug, Clone)]
@@ -86,46 +98,18 @@ impl PgAuditSink {
 
     /// The trail with the hashes each record was stored with.
     async fn read_stored(&self, tenant: &TenantId) -> Result<Vec<StoredRecord>, DomainError> {
-        // The JSON columns are cast to text rather than decoded as JSON by the
-        // driver: a document the driver cannot parse would otherwise fail the
-        // whole query, which is precisely the outcome an opaque record exists
-        // to avoid.
-        let rows = sqlx::query(
-            "select event_id, occurred_at, event_type, outcome,
-                    actor::text as actor, actor_chain::text as actor_chain, subject,
-                    client_id, session_id, grant_id::text as grant_id, request_id,
-                    detail::text as detail, previous_hash, event_hash
-             from audit_events
-             where tenant_id = $1
-             order by event_id",
-        )
+        let rows = sqlx::query(&format!(
+            "select {COLUMNS} from audit_events where tenant_id = $1 order by event_id"
+        ))
         .bind(tenant.as_str())
         .fetch_all(&self.pool)
         .await
         .map_err(to_domain_error)?;
 
-        let mut stored = Vec::with_capacity(rows.len());
-        for (position, row) in rows.iter().enumerate() {
-            let previous = EventHash::from_slice(row.get::<Vec<u8>, _>("previous_hash").as_slice())
-                .map_err(|e| DomainError::invalid("previous_hash", e.to_string()))?;
-            let current = EventHash::from_slice(row.get::<Vec<u8>, _>("event_hash").as_slice())
-                .map_err(|e| DomainError::invalid("event_hash", e.to_string()))?;
-
-            let record = match read_row(tenant, row) {
-                Ok(event) => AuditRecord::Event(Box::new(event)),
-                Err(reason) => AuditRecord::Opaque {
-                    hash: current,
-                    position,
-                    reason,
-                },
-            };
-            stored.push(StoredRecord {
-                record,
-                previous,
-                current,
-            });
-        }
-        Ok(stored)
+        rows.iter()
+            .enumerate()
+            .map(|(position, row)| stored_record(tenant, position, row))
+            .collect()
     }
 
     /// Deletes records older than `cutoff` for one tenant.
@@ -165,6 +149,151 @@ impl PgAuditSink {
         transaction.commit().await.map_err(to_domain_error)?;
         Ok(deleted)
     }
+}
+
+/// The filtered, paged read behind the admin API (`ast-lh3.9`).
+///
+/// Each member of [`AuditFilter`] becomes one predicate, and only the members
+/// that are set become anything at all: a `where ($2 is null or col = $2)`
+/// would be one statement for every filter, and a generic plan for it cannot
+/// use the partial indexes migration `0035` added. The predicates are the SQL
+/// spelling of [`AuditFilter::matches`], and the database test that seeds a
+/// delegation chain and compares the two is what keeps them the same
+/// question.
+#[async_trait::async_trait]
+impl AuditQuery for PgAuditSink {
+    async fn query(
+        &self,
+        tenant: &TenantId,
+        filter: &AuditFilter,
+        before: Option<i64>,
+        limit: u32,
+    ) -> Result<Vec<TrailEntry>, DomainError> {
+        // A grant id that is not a UUID was never stored (`as_stored`), so a
+        // filter naming one matches nothing — answered here rather than by a
+        // cast the database would refuse.
+        let grant = match filter.grant.as_ref().map(|g| uuid_or_none(g.as_str())) {
+            Some(None) => return Ok(Vec::new()),
+            Some(Some(uuid)) => Some(uuid),
+            None => None,
+        };
+
+        let mut sql: QueryBuilder<'_, Postgres> = QueryBuilder::new(format!(
+            "select {COLUMNS} from audit_events where tenant_id = "
+        ));
+        sql.push_bind(tenant.as_str());
+
+        if let Some(agent) = &filter.agent {
+            // The actor, or any link of the `act` chain: a link is written as
+            // a client (see `asterius_server::http::token_exchange`), and an
+            // agent link is accepted for a future writer that records one.
+            sql.push(" and ((actor ->> 'type' = 'agent' and actor ->> 'id' = ");
+            sql.push_bind(agent.as_str().to_owned());
+            sql.push(") or actor_chain @> ");
+            sql.push_bind(serde_json::json!([{ "type": "client", "id": agent.as_str() }]));
+            sql.push(" or actor_chain @> ");
+            sql.push_bind(serde_json::json!([{ "type": "agent", "id": agent.as_str() }]));
+            sql.push(")");
+        }
+        if let Some(owner) = &filter.owner {
+            sql.push(" and ");
+            push_owner_predicate(&mut sql, owner);
+        }
+        if let Some(user) = &filter.user {
+            sql.push(" and (subject = ");
+            sql.push_bind(user.clone());
+            sql.push(" or ");
+            push_owner_predicate(&mut sql, user);
+            sql.push(")");
+        }
+        if let Some(grant) = grant {
+            sql.push(" and grant_id = ");
+            sql.push_bind(grant);
+        }
+        if !filter.event_types.is_empty() {
+            let names: Vec<String> = filter
+                .event_types
+                .iter()
+                .map(|t| t.as_str().to_owned())
+                .collect();
+            sql.push(" and event_type = any(");
+            sql.push_bind(names);
+            sql.push(")");
+        }
+        if let Some(from) = filter.from {
+            sql.push(" and occurred_at >= ");
+            sql.push_bind(from);
+        }
+        if let Some(until) = filter.until {
+            sql.push(" and occurred_at < ");
+            sql.push_bind(until);
+        }
+        if let Some(before) = before {
+            sql.push(" and event_id < ");
+            sql.push_bind(before);
+        }
+        sql.push(" order by event_id desc limit ");
+        sql.push_bind(i64::from(limit.clamp(1, MAX_PAGE)));
+
+        let rows = sql
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(to_domain_error)?;
+
+        rows.iter()
+            .enumerate()
+            .map(|(position, row)| {
+                let stored = stored_record(tenant, position, row)?;
+                Ok(TrailEntry {
+                    id: row.get::<i64, _>("event_id"),
+                    hash: stored.current,
+                    record: stored.record,
+                })
+            })
+            .collect()
+    }
+}
+
+/// `AuditEvent::agent_owner` in SQL: the actor's `on_behalf_of` when it is an
+/// agent, the `agent_owner` detail otherwise.
+fn push_owner_predicate(sql: &mut QueryBuilder<'_, Postgres>, owner: &str) {
+    sql.push("((actor ->> 'type' = 'agent' and actor ->> 'on_behalf_of' = ");
+    sql.push_bind(owner.to_owned());
+    sql.push(") or (actor ->> 'type' <> 'agent' and detail ->> '");
+    // A compile-time constant of the domain's own, never input.
+    sql.push(keys::AGENT_OWNER);
+    sql.push("' = ");
+    sql.push_bind(owner.to_owned());
+    sql.push("))");
+}
+
+/// One row as a stored record with its hashes, or the storage error that
+/// makes the row unreadable even as an opaque record — a hash that is not 32
+/// bytes, which the schema forbids.
+fn stored_record(
+    tenant: &TenantId,
+    position: usize,
+    row: &PgRow,
+) -> Result<StoredRecord, DomainError> {
+    let previous = EventHash::from_slice(row.get::<Vec<u8>, _>("previous_hash").as_slice())
+        .map_err(|e| DomainError::invalid("previous_hash", e.to_string()))?;
+    let current = EventHash::from_slice(row.get::<Vec<u8>, _>("event_hash").as_slice())
+        .map_err(|e| DomainError::invalid("event_hash", e.to_string()))?;
+
+    let record = match read_row(tenant, row) {
+        Ok(event) => AuditRecord::Event(Box::new(event)),
+        Err(reason) => AuditRecord::Opaque {
+            hash: current,
+            position,
+            reason,
+        },
+    };
+    Ok(StoredRecord {
+        record,
+        previous,
+        current,
+    })
 }
 
 /// The result of verifying a tenant's trail.
@@ -299,7 +428,7 @@ struct StoredRecord {
 /// made by the domain's reader and not by the driver's decoder.
 fn read_row(
     tenant: &TenantId,
-    row: &sqlx::postgres::PgRow,
+    row: &PgRow,
 ) -> Result<AuditEvent, asterius_domain::audit::OpaqueReason> {
     let event_type: String = row.get("event_type");
     let outcome: String = row.get("outcome");

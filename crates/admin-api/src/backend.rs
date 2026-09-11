@@ -205,6 +205,17 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// written that makes this server post to a URL of the caller's choosing.
     fn outbox(&self) -> Arc<dyn asterius_domain::outbox::DeadLetterQuery>;
 
+    /// The audit trail, for the query API and the export (`ast-lh3.9`).
+    ///
+    /// The port is the read-only [`asterius_domain::audit::AuditQuery`] and
+    /// not the sink beside it: there is no method on it that appends, so no
+    /// admin route built on this handle can be one that writes to the one
+    /// table nothing may rewrite. It is a second handle rather than a method
+    /// on [`Self::audit`] for the same reason the outbox's queue and its
+    /// dead-letter view are two: one object that could both read the trail
+    /// and append to it would give the export the authority to write.
+    fn audit_trail(&self) -> Arc<dyn asterius_domain::audit::AuditQuery>;
+
     /// This tenant's initial access tokens (`ast-cu3`).
     ///
     /// A handle for the same reason [`Self::tenants`] is one: the object

@@ -42,6 +42,7 @@
 //! API.
 #![forbid(unsafe_code)]
 
+pub mod audit;
 pub mod auth;
 pub mod backend;
 pub mod clients;
@@ -127,6 +128,10 @@ pub const KEYS_SCHEDULE_ID: &str = "keys.schedule";
 pub const KEYS_SCHEDULE_APPLY_ID: &str = "keys.schedule.apply";
 /// The `operationId` of `GET /outbox/dead-letters`.
 pub const OUTBOX_DEAD_LETTERS_ID: &str = "outbox.dead_letters";
+/// The `operationId` of `GET /audit/events`.
+pub const AUDIT_EVENTS_LIST_ID: &str = "audit.events.list";
+/// The `operationId` of `GET /audit/events/export`.
+pub const AUDIT_EVENTS_EXPORT_ID: &str = "audit.events.export";
 /// The `operationId` of `GET /users`.
 pub const USERS_LIST_ID: &str = "users.list";
 /// The `operationId` of `POST /users`.
@@ -489,6 +494,47 @@ pub const OUTBOX_DEAD_LETTERS: Operation = Operation::read(
     S::Get,
     A::new(R::Tenant, "admin.outbox:read"),
     "Lists deliveries this tenant's outbox has abandoned",
+);
+
+/// This tenant's audit trail, filtered, one cursor page at a time
+/// (`ast-lh3.9`).
+///
+/// Its own scope, `admin.audit:read`, and not `admin.outbox:read` or
+/// `admin.users:read` beside it: the trail is the one artefact that
+/// describes the tenant's *people* — who signed in, which agent acted for
+/// whom, from which fingerprinted address — and "may see that delivery is
+/// failing" or "may look up an account" must not thereby be "may read
+/// everything everyone did". The auditor role holds it by definition
+/// (`asterius_domain::Role::grants`); user support does not.
+///
+/// The filters are [`audit::PARAMETERS`]; the cursor is the record's
+/// position in the tenant's chain. Introspection (RFC 7662) is not mounted in
+/// this build (`ast-1sk.1`), so the trail holds issuance and exchange and the
+/// query will hold introspection the day it is recorded.
+pub const AUDIT_EVENTS_LIST: Operation = Operation::read(
+    AUDIT_EVENTS_LIST_ID,
+    "/audit/events",
+    S::Get,
+    A::new(R::Tenant, "admin.audit:read"),
+    "Lists this tenant's audit records, filtered by agent, owner, user, grant, type and time window",
+)
+.paginated();
+
+/// The same records as NDJSON, streamed, newest first, at most
+/// [`asterius_domain::audit::query::EXPORT_MAX_RECORDS`] lines.
+///
+/// A second operation rather than a `format=` parameter on the listing, so
+/// that the two are two `operationId`s in the trail's own rate-limit bucket
+/// and in a token's scope grant — an export is mass exfiltration with a
+/// purpose, and a policy must be able to say "list, but do not export"
+/// without parsing a query string. See [`audit`] for what the export does
+/// and does not add on the way out.
+pub const AUDIT_EVENTS_EXPORT: Operation = Operation::read(
+    AUDIT_EVENTS_EXPORT_ID,
+    "/audit/events/export",
+    S::Get,
+    A::new(R::Tenant, "admin.audit:read"),
+    "Streams this tenant's audit records as NDJSON, with the same filters as the listing",
 );
 
 /// This tenant's accounts, one cursor page at a time, optionally filtered
@@ -855,7 +901,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 47] = [
+static REGISTRY: [Operation; 49] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -879,6 +925,8 @@ static REGISTRY: [Operation; 47] = [
     KEYS_SCHEDULE,
     KEYS_SCHEDULE_APPLY,
     OUTBOX_DEAD_LETTERS,
+    AUDIT_EVENTS_LIST,
+    AUDIT_EVENTS_EXPORT,
     USERS_LIST,
     USER_READ,
     USER_CREATE,
