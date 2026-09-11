@@ -30,7 +30,7 @@
 //!
 //! `ast-5lw`. An authenticated client used to be able to raise an unbounded
 //! number of approval requests against one person: every one of them sends a
-//! message ([`notify`]) and puts another line in their inbox, which is
+//! message and puts another line in their inbox, which is
 //! approval fatigue — press approve to make it stop — and a way to flood a
 //! mailbox. So:
 //!

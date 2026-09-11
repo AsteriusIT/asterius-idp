@@ -732,7 +732,6 @@ mod tests {
         }
     }
 
-
     fn now() -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(1_700_000_000).expect("a valid timestamp")
     }

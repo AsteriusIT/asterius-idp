@@ -1194,6 +1194,22 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
         }
     };
 
+    configured_endpoint_limits(raw, &mut limit)
+}
+
+/// One field per endpoint, out of the maxima this deployment wrote.
+///
+/// Split from [`validate_limits`], which decides the *window* and what a
+/// missing or zero maximum means; this is the list those decisions are applied
+/// to. One function for both was long enough that adding an endpoint meant
+/// scrolling past the rules to reach the list.
+///
+/// `limit` reports its own problems into the collector its caller holds, so a
+/// configuration with four bad numbers still reports four.
+fn configured_endpoint_limits(
+    raw: &RawLimits,
+    limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
+) -> EndpointLimits {
     EndpointLimits {
         registration: EndpointLimit {
             per_address: limit(

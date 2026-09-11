@@ -71,12 +71,12 @@
 
 use asterius_domain::audit::trail::keys;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
+use asterius_domain::rate_limit::{RateLimit, RateLimitStore, approval_decision_bucket};
 use asterius_domain::{
     AcrPolicy, ClientRepository, FirstPartyDestination, Grant, GrantRepository,
     InteractionRepository, SectorIdentifier, Session, SessionId as DomainSessionId,
     SessionRepository, SubjectResolver, Tenant, UserId, entities::session,
 };
-use asterius_domain::rate_limit::{RateLimit, RateLimitStore, approval_decision_bucket};
 use asterius_store_pg::{PendingApproval, PgCibaRequestRepository};
 use asterius_web::Brand;
 use asterius_web::i18n::Catalog;
@@ -844,7 +844,8 @@ async fn first_refusal_in_window(
     now: OffsetDateTime,
 ) -> bool {
     let limit = decision_limit();
-    let marker = asterius_domain::audited_once_bucket(&approval_decision_bucket(&session.id_digest));
+    let marker =
+        asterius_domain::audited_once_bucket(&approval_decision_bucket(&session.id_digest));
     match context
         .limits
         .record(

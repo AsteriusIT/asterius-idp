@@ -366,7 +366,11 @@ pub async fn guard_subject(
     let counted = match context
         .throttle
         .store
-        .count(context.tenant, &full.bucket, limit.window_start(context.now))
+        .count(
+            context.tenant,
+            &full.bucket,
+            limit.window_start(context.now),
+        )
         .await
     {
         Ok(counted) => counted,
@@ -932,7 +936,14 @@ mod tests {
             .expect("the subject bucket is full");
         let by_client = too_many_requests(Refused {
             scope: Scope::Client,
-            retry_after: Duration::seconds(60),
+            // The same clock and the same window: what is asserted is that the
+            // *scope* leaves no trace in the answer, not that two different
+            // limits happen to expire together.
+            retry_after: limits()
+                .for_endpoint(LimitedEndpoint::Backchannel)
+                .per_client
+                .expect("the fixture gives the backchannel endpoint a client limit")
+                .retry_after(now()),
         });
 
         // Assert
