@@ -1,0 +1,29 @@
+-- When a stream was last sent a verification event (SSF 1.0 §8.1.4.2),
+-- ast-0ju.5.
+--
+-- §8.1.4.2 lets a receiver ask for a verification event and requires the
+-- transmitter to refuse one asked for sooner than `min_verification_interval`
+-- after the last:
+--
+--   > If the Event Receiver requests verification more frequently than the
+--   > `min_verification_interval` [...] the Event Transmitter MUST respond
+--   > with 429 Too Many Requests.
+--
+-- That interval is per *stream*, so the instant it is measured from belongs on
+-- the stream's row rather than in the generic rate limiter: the limiter's keys
+-- are an address and a client, and two streams of one receiver are two
+-- independent verification schedules. The column also survives a restart,
+-- which a limiter window measured in process memory would not — and a
+-- transmitter that forgets when it last verified is one a receiver can use as
+-- a signing oracle at whatever rate it reconnects.
+--
+-- Null is "never verified", which is every stream created before this
+-- migration and every stream created after it: the first verification a
+-- receiver asks for is always admitted.
+--
+-- The column is *only* ever set by the receiver-facing endpoint. An operator
+-- triggering a verification from the console (ast-f7m.8) does not consume the
+-- receiver's interval: §8.1.4.2's limit protects this transmitter from a
+-- receiver's requests, and an operator's button is not one of those.
+alter table ssf_streams
+    add column last_verification_at timestamptz;

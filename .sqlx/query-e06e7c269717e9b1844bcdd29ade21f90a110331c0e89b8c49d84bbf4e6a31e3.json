@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ssf_streams\n                set last_verification_at = $4\n              where tenant_id = $1 and client_id = $2 and stream_id = $3\n                and (last_verification_at is null or last_verification_at <= $5)\n          returning stream_id, client_id, audience, delivery_method",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stream_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "audience",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "delivery_method",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e06e7c269717e9b1844bcdd29ade21f90a110331c0e89b8c49d84bbf4e6a31e3"
+}

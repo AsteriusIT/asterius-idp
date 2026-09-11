@@ -27,9 +27,10 @@
 //! SSF 1.0 §7.1 makes `configuration_endpoint`, `status_endpoint`,
 //! `add_subject_endpoint`, `remove_subject_endpoint`, `verification_endpoint`
 //! and `delivery_methods_supported` REQUIRED for a transmitter that supports
-//! stream configuration. Of those, one route exists: `configuration_endpoint`
-//! (`ast-0ju.3`), and it is named here exactly when it is mounted. The rest
-//! are `ast-0ju.4` through `ast-0ju.7` and are named by none of this.
+//! stream configuration. Of those, five routes exist and are named here
+//! exactly when they are mounted: `configuration_endpoint` (`ast-0ju.3`), the
+//! status and subject endpoints (`ast-0ju.4`) and `verification_endpoint`
+//! (`ast-0ju.5`). `delivery_methods_supported` is named by none of this.
 //!
 //! A strict reading of §7.1 calls that incomplete, and it is the honest
 //! incompleteness: the alternative is advertising URLs that answer 404, which
@@ -77,6 +78,8 @@ pub struct ManagementEndpoints<'a> {
     pub add_subject: &'a str,
     /// §8.1.3.3: where it removes one.
     pub remove_subject: &'a str,
+    /// §8.1.4.2: where it asks for a verification event.
+    pub verification: &'a str,
 }
 
 /// Builds one tenant's transmitter configuration document.
@@ -156,6 +159,10 @@ pub fn transmitter_metadata(
             "remove_subject_endpoint".to_owned(),
             json!(endpoints.remove_subject),
         );
+        object.insert(
+            "verification_endpoint".to_owned(),
+            json!(endpoints.verification),
+        );
     }
 
     document
@@ -174,6 +181,7 @@ mod tests {
     const STATUS: &str = "https://as.example/t/demo/ssf/streams/status";
     const ADD_SUBJECT: &str = "https://as.example/t/demo/ssf/streams/subjects:add";
     const REMOVE_SUBJECT: &str = "https://as.example/t/demo/ssf/streams/subjects:remove";
+    const VERIFICATION: &str = "https://as.example/t/demo/ssf/streams/verification";
 
     /// The document a deployment that mounts the management API serves.
     fn document() -> Value {
@@ -185,6 +193,7 @@ mod tests {
                 status: STATUS,
                 add_subject: ADD_SUBJECT,
                 remove_subject: REMOVE_SUBJECT,
+                verification: VERIFICATION,
             }),
         )
     }
@@ -289,17 +298,18 @@ mod tests {
         assert_eq!(document["remove_subject_endpoint"], json!(REMOVE_SUBJECT));
     }
 
-    /// The verification endpoint is `ast-0ju.5` and has no route, so nothing
-    /// names it. A story that adds a member here adds a route with it, and
-    /// updates this test as it does.
+    /// §7.1: the verification endpoint `ast-0ju.5` mounts (§8.1.4.2).
+    #[test]
+    fn the_verification_endpoint_is_the_one_the_caller_passed() {
+        assert_eq!(document()["verification_endpoint"], json!(VERIFICATION));
+    }
+
+    /// The parity rule for what is still unbuilt. A story that adds a member
+    /// here adds a route with it, and updates this test as it does.
     #[test]
     fn no_unbuilt_management_endpoint_is_advertised() {
         let document = document();
         let object = document.as_object().expect("an object");
-        assert!(
-            object.get("verification_endpoint").is_none(),
-            "the verification endpoint is advertised before it is routed"
-        );
         assert!(
             object.get("delivery_methods_supported").is_none(),
             "a delivery method is advertised before `ast-0ju.6` delivers one"
