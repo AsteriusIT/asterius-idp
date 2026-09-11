@@ -22,7 +22,7 @@
 //!    ([`StreamId::parse`]) — a value that cannot be one is a 404 before any
 //!    work is done.
 //! 2. The token is checked exactly as the management endpoint checks it —
-//!    same five checks, same function ([`ssf::authorize_receiver`]) — with
+//!    same five checks, same function (`ssf::authorize_receiver`) — with
 //!    §7.1.1's scope for *this* endpoint, [`stream::SCOPE_POLL`].
 //! 3. The stream is read back **scoped to the receiver the token names**. So
 //!    another receiver's stream is not a stream this endpoint refuses to

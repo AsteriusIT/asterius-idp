@@ -103,8 +103,9 @@ const STREAM_ID_PARAMETER: &str = "stream_id";
 ///
 /// Its own trait because both SSF endpoints ask exactly these two questions
 /// and nothing else about a credential: the stream configuration endpoint here
-/// and the polling endpoint in [`crate::http::ssf_poll`], which shares
-/// [`authorize_receiver`] with it. Splitting it out is what lets one function
+/// and the polling endpoint in [`crate::http::ssf_poll`], which shares this
+/// module's `authorize_receiver` with it. Splitting it out is what lets one
+/// function
 /// hold the five checks for both, rather than each endpoint holding its own
 /// copy — and a copy that drifts is a copy that stops checking something.
 #[async_trait::async_trait]
