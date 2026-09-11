@@ -176,6 +176,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ciba_token_request"
+path = "fuzz_targets/ciba_token_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "claim_name"
 path = "fuzz_targets/claim_name.rs"
 test = false

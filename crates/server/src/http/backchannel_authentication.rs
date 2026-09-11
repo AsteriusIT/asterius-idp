@@ -40,7 +40,7 @@
 
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
 use asterius_domain::entities::client::GrantType;
-use asterius_domain::{AuditSink, Client, ClientRepository, KeyStore, Tenant, User, sha256_hex};
+use asterius_domain::{AuditSink, Client, ClientRepository, KeyStore, Tenant, User};
 use asterius_jose::client_keys::ClientKeyCache;
 use asterius_jose::verify::{Policy, TypRule};
 use asterius_oidc::ciba::{self, BackchannelRequest, CibaError, Hint, MintedAuthReqId, Submission};
@@ -48,7 +48,7 @@ use asterius_oidc::client_auth::{AssertionRules, Attempt, Audiences, ClientAuthE
 use asterius_oidc::form::Parameters;
 use asterius_oidc::metadata::Endpoint;
 use asterius_store_pg::PgUserRepository;
-use asterius_store_pg::{NewCibaRequest, PgCibaRequestRepository};
+use asterius_store_pg::{NewCibaRequest, PgCibaRequestRepository, PingCredentials};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, body::Bytes};
@@ -210,13 +210,17 @@ async fn recorded(
         acr_values: request.acr_values.clone(),
         binding_message: request.binding_message.clone(),
         delivery_mode: delivery_mode.as_str().to_owned(),
-        // Digested here and never stored as itself: §10.2 will present this
-        // value to the client's notification endpoint, so it is a credential
-        // and a database copy must not yield it.
-        client_notification_token_digest: request
+        // In ping mode the store keeps what the §10.2 notification will
+        // present — this `auth_req_id` and the token — sealed under the
+        // tenant's KEK, and the token's digest beside it. Neither reaches the
+        // row in the clear; see `0034_ciba_ping_credentials.sql`.
+        ping: request
             .client_notification_token
             .as_deref()
-            .map(|token| sha256_hex(token.as_bytes())),
+            .map(|token| PingCredentials {
+                auth_req_id: minted.expose().to_owned(),
+                client_notification_token: token.to_owned(),
+            }),
         expires_at: now + request.expires_in,
         interval: ciba::POLL_INTERVAL,
     };

@@ -1844,6 +1844,15 @@ async fn dispatch_grants(
         endpoints.audit.as_ref(),
     );
     let refresh_token = RefreshToken::sharing(&authorization_code, endpoints.audit.as_ref());
+    // The sixth grant (CIBA Core 1.0 §10.1), on the same borrows as the device
+    // grant: the two flows are the same shape, and this one's redemption is
+    // the code grant's issuance with an `auth_req_id` spent in front of it.
+    let ciba_requests = scope.ciba_requests(Arc::clone(&endpoints.kek));
+    let ciba_grant = crate::http::ciba_grant::CibaGrant::sharing(
+        &authorization_code,
+        &ciba_requests,
+        endpoints.audit.as_ref(),
+    );
 
     let mut response = token::token(
         TokenContext {
@@ -1856,6 +1865,7 @@ async fn dispatch_grants(
                 &client_credentials,
                 &device_code,
                 &token_exchange,
+                &ciba_grant,
             ],
             certificate,
         },
@@ -3416,7 +3426,7 @@ async fn backchannel_authentication_endpoint(
     let scope = endpoints.store.scope(tenant.id.clone());
     let clients = scope.clients(endpoints.capabilities);
     let users = scope.users(Arc::clone(&endpoints.kek));
-    let ciba_requests = scope.ciba_requests();
+    let ciba_requests = scope.ciba_requests(Arc::clone(&endpoints.kek));
     let certificate = certificate.as_deref().map(|presented| &presented.leaf);
     let now = time::OffsetDateTime::now_utc();
 

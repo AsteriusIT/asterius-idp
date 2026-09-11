@@ -53,6 +53,7 @@ use asterius_server::http::dpop::DpopEndpoint;
 use asterius_server::http::protocol::{self, ClientEndpoints, ProtocolState};
 use asterius_server::http::register::RegistrationPolicy;
 use asterius_server::http::server::app;
+use asterius_server::outbox::Deliverer as _;
 use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::tenant_settings::SettingsDirectory;
@@ -5380,6 +5381,615 @@ async fn a_logout_queues_a_logout_token_its_relying_party_can_validate() {
     .expect("JSON");
     assert_eq!(claims["sid"], id_token["sid"]);
     assert_eq!(claims["sub"], id_token["sub"]);
+
+    flow.tear_down().await;
+}
+
+// ---------------------------------------------------------------------------
+// CIBA token delivery: poll and ping (CIBA Core 1.0 §10, §11 — `ast-lh3.5`)
+// ---------------------------------------------------------------------------
+
+/// The client a CIBA agent authenticates as, in poll mode.
+const CIBA_POLL_CLIENT: &str = "teller";
+/// The same, in ping mode.
+const CIBA_PING_CLIENT: &str = "teller-ping";
+/// Where the ping client asked to be notified (§4).
+const CIBA_PING_ENDPOINT: &str = "https://rp.example/ciba-ping";
+/// §7.1's `client_notification_token`: at least 128 bits, `token68`.
+const CIBA_NOTIFICATION_TOKEN: &str = "8d67dc78-7faa-4d41-aabd-67707b374255";
+/// The grant type, as §10.1 spells it.
+const CIBA_GRANT_TYPE: &str = "urn:openid:params:grant-type:ciba";
+
+/// A receiver at the transport port, for the reason `ssf_push.rs` gives: the
+/// outbound path refuses every address a test could bind, so the client's
+/// notification endpoint is a fake handed to the deliverer rather than a
+/// socket.
+#[derive(Debug, Default)]
+struct PingReceiver {
+    seen: std::sync::Mutex<Vec<(String, Option<String>, String)>>,
+}
+
+#[async_trait::async_trait]
+impl asterius_server::outbox::SetPoster for PingReceiver {
+    async fn post(
+        &self,
+        url: &str,
+        request: asterius_server::outbound::PostRequest<'_>,
+        body: &[u8],
+    ) -> Result<u16, asterius_server::outbound::PostError> {
+        self.seen.lock().expect("not poisoned").push((
+            url.to_owned(),
+            request.authorization.map(str::to_owned),
+            String::from_utf8_lossy(body).into_owned(),
+        ));
+        // §10.2: the client "SHOULD respond with an HTTP 204".
+        Ok(204)
+    }
+}
+
+impl Flow {
+    /// A confidential CIBA client (CIBA Core 1.0 §4): the CIBA grant, a
+    /// delivery mode, and in ping mode the endpoint to notify.
+    async fn register_ciba_client(&self, client_id: &str, mode: &str) -> SigningKey {
+        let (key, jwks) = client_credentials();
+        let now = OffsetDateTime::now_utc();
+        let mut document = json!({
+            "client_name": "Teller agent",
+            "grant_types": [CIBA_GRANT_TYPE],
+            "response_types": [],
+            "scope": "openid",
+            "token_endpoint_auth_method": "private_key_jwt",
+            "jwks": jwks,
+            "backchannel_token_delivery_mode": mode,
+        });
+        if mode == "ping" {
+            document["backchannel_client_notification_endpoint"] = json!(CIBA_PING_ENDPOINT);
+        }
+        let capabilities = Capabilities {
+            ciba: true,
+            ..Capabilities::default()
+        };
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(client_id),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&document).expect("serialise"),
+                capabilities,
+            )
+            .expect("a valid CIBA registration"),
+            status: ClientStatus::Active,
+            created_at: now,
+            updated_at: now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(capabilities)
+            .upsert(&client)
+            .await
+            .expect("store the CIBA client");
+        key
+    }
+
+    /// CIBA Core 1.0 §7.1: the client asks about this flow's person, by
+    /// `login_hint`, and gets §7.3's acknowledgement.
+    async fn backchannel_authenticate(
+        &mut self,
+        client_id: &str,
+        key: &SigningKey,
+        jti: &str,
+        extra: &[(&str, &str)],
+    ) -> Reply {
+        let path = format!(
+            "{}{}",
+            self.prefix(),
+            Endpoint::BackchannelAuthentication.path()
+        );
+        let assertion = self.assertion_for(client_id, Some(key), jti);
+        let login_hint = self.user.as_uuid().to_string();
+        let mut form = vec![
+            ("client_id", client_id),
+            ("client_assertion_type", CLIENT_ASSERTION_TYPE),
+            ("client_assertion", assertion.as_str()),
+            ("scope", "openid"),
+            ("login_hint", login_hint.as_str()),
+        ];
+        form.extend_from_slice(extra);
+        self.post_form(&path, &form, None).await
+    }
+
+    /// §10.1: one poll of the token endpoint.
+    async fn poll_ciba(
+        &mut self,
+        client_id: &str,
+        key: &SigningKey,
+        proof: &ProofKey,
+        jti: &str,
+        auth_req_id: &str,
+    ) -> Reply {
+        self.token_as(
+            client_id,
+            Some(key),
+            proof,
+            jti,
+            &[
+                ("grant_type", CIBA_GRANT_TYPE),
+                ("auth_req_id", auth_req_id),
+            ],
+        )
+        .await
+    }
+
+    /// The decision, as `ast-lh3.6`'s approvals inbox will make it: a grant on
+    /// this person's account, and the request moved to `approved`.
+    async fn approve_ciba(&self, client_id: &str, auth_req_id: &str) {
+        let now = OffsetDateTime::now_utc();
+        let mut grant =
+            asterius_domain::Grant::new(self.tenant.id.clone(), ClientId::new(client_id), now);
+        grant.user = Some(self.user);
+        grant.subject = Some(asterius_domain::SubjectId::new(
+            self.user.as_uuid().to_string(),
+        ));
+        grant.scopes = ["openid".to_owned()].into_iter().collect();
+        // The person authenticated on their own device, out of any browser
+        // session (CIBA Core 1.0 §8): the grant records the authentication
+        // itself, which is what the ID token's `auth_time` is minted from.
+        grant.authentication = Some(asterius_domain::GrantAuthentication {
+            authenticated_at: now,
+            acr: None,
+            amr: Vec::new(),
+        });
+        let scope = self.store.scope(self.tenant.id.clone());
+        scope
+            .grants()
+            .create(&grant)
+            .await
+            .expect("store the approval's grant");
+        let moved = scope
+            .ciba_requests(Arc::clone(&self.kek))
+            .approve(
+                &asterius_domain::sha256_hex(auth_req_id.as_bytes()),
+                &grant.id,
+                now,
+            )
+            .await
+            .expect("approve the request");
+        assert!(moved, "the request was not pending");
+    }
+
+    /// The other decision.
+    async fn deny_ciba(&self, auth_req_id: &str) {
+        let moved = self
+            .store
+            .scope(self.tenant.id.clone())
+            .ciba_requests(Arc::clone(&self.kek))
+            .deny(
+                &asterius_domain::sha256_hex(auth_req_id.as_bytes()),
+                OffsetDateTime::now_utc(),
+            )
+            .await
+            .expect("deny the request");
+        assert!(moved, "the request was not pending");
+    }
+
+    /// The `ciba.ping` rows this tenant has queued.
+    async fn queued_pings(&self) -> Vec<asterius_domain::outbox::OutboxEvent> {
+        asterius_store_pg::PgOutbox::new(self.store.pool().clone())
+            .claim("e2e-ciba", 10, OffsetDateTime::now_utc())
+            .await
+            .expect("claim the queued rows")
+            .into_iter()
+            .filter(|event| event.tenant == self.tenant.id && event.kind == "ciba.ping")
+            .collect()
+    }
+
+    /// A ping deliverer over this flow's store, posting to `receiver`.
+    fn ping_deliverer(
+        &self,
+        receiver: &Arc<PingReceiver>,
+    ) -> asterius_server::outbox::CibaPingDeliverer {
+        asterius_server::outbox::CibaPingDeliverer::new(
+            Arc::new(asterius_server::outbox::PgPingRequests::new(
+                self.store.clone(),
+                Arc::clone(&self.kek),
+            )),
+            Arc::clone(receiver) as Arc<dyn asterius_server::outbox::SetPoster>,
+            Arc::new(PgAuditSink::new(self.store.pool().clone())),
+            Arc::new(asterius_domain::ports::SystemClock),
+        )
+    }
+}
+
+/// §7.3's acknowledgement, and the `auth_req_id` out of it.
+fn auth_req_id_of(reply: &Reply) -> String {
+    assert_eq!(
+        reply.status,
+        StatusCode::OK,
+        "the backchannel authentication request was refused: {}",
+        reply.text()
+    );
+    let body = reply.json();
+    assert_eq!(body["interval"], 5, "{body}");
+    body["auth_req_id"]
+        .as_str()
+        .expect("§7.3 requires an auth_req_id")
+        .to_owned()
+}
+
+/// §10.1, §11: polls inside the interval are `slow_down`, "increased by at
+/// least 5 seconds", three times — and a fourth is `invalid_request`, after
+/// which the client "MUST stop polling".
+async fn poll_faster_than_allowed(
+    flow: &mut Flow,
+    key: &SigningKey,
+    proof: &ProofKey,
+    auth_req_id: &str,
+) {
+    for n in 0..3 {
+        let hurried = flow
+            .poll_ciba(
+                CIBA_POLL_CLIENT,
+                key,
+                proof,
+                &format!("ciba-poll-hurried-{n}"),
+                auth_req_id,
+            )
+            .await;
+        assert_eq!(
+            hurried.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            hurried.text()
+        );
+        assert_eq!(hurried.json()["error"], "slow_down", "poll {n}");
+    }
+
+    let abusive = flow
+        .poll_ciba(CIBA_POLL_CLIENT, key, proof, "ciba-poll-abuse", auth_req_id)
+        .await;
+    assert_eq!(
+        abusive.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        abusive.text()
+    );
+    assert_eq!(abusive.json()["error"], "invalid_request");
+}
+
+/// **Poll mode, end to end** (CIBA Core 1.0 §10.1, §10.1.1, §11).
+///
+/// * before anybody answers, a poll is `authorization_pending`;
+/// * polling inside the interval is `slow_down`, three times, and then
+///   `invalid_request` — the client must stop;
+/// * an approval is redeemed for a DPoP-bound access token and an ID token,
+///   a poll that forgot its proof is refused *without* spending the request,
+///   and no refresh token is minted without `offline_access`;
+/// * the `auth_req_id` is redeemable exactly once (§10.1.1).
+#[tokio::test]
+async fn a_ciba_poll_request_is_pending_then_slowed_then_redeemed_once() {
+    let capabilities = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = flow.register_ciba_client(CIBA_POLL_CLIENT, "poll").await;
+    let proof = ProofKey::generate();
+
+    // Act: §7.1 — the client asks about the person.
+    let asked = flow
+        .backchannel_authenticate(CIBA_POLL_CLIENT, &key, "ciba-poll-1", &[])
+        .await;
+    let auth_req_id = auth_req_id_of(&asked);
+
+    // Act: §10.1 — the first poll, before anybody has answered.
+    let waiting = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-poll-2", &auth_req_id)
+        .await;
+    // Assert: §11's `authorization_pending`.
+    assert_eq!(
+        waiting.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        waiting.text()
+    );
+    assert_eq!(waiting.json()["error"], "authorization_pending");
+
+    poll_faster_than_allowed(&mut flow, &key, &proof, &auth_req_id).await;
+
+    // Act: the person approves, on their own device.
+    flow.approve_ciba(CIBA_POLL_CLIENT, &auth_req_id).await;
+
+    // Act: a poll with no DPoP proof at all.
+    let path = format!("{}{}", flow.prefix(), Endpoint::Token.path());
+    let assertion = flow.assertion_for(CIBA_POLL_CLIENT, Some(&key), "ciba-poll-unproved");
+    let unproved = flow
+        .post_form(
+            &path,
+            &[
+                ("grant_type", CIBA_GRANT_TYPE),
+                ("auth_req_id", &auth_req_id),
+                ("client_id", CIBA_POLL_CLIENT),
+                ("client_assertion_type", CLIENT_ASSERTION_TYPE),
+                ("client_assertion", &assertion),
+            ],
+            None,
+        )
+        .await;
+    // Assert: refused — every token here is sender-constrained — and the
+    // request is *not* spent by the refusal, which the next poll proves.
+    assert_eq!(
+        unproved.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        unproved.text()
+    );
+    assert_eq!(unproved.json()["error"], "invalid_grant");
+
+    // Act: §10.1 — the client polls once more, proving its key.
+    let redeemed = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-poll-3", &auth_req_id)
+        .await;
+    // Assert: §10.1.1 — OIDC Core §3.1.3.3's response, bound to the key.
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "an approved request was refused: {}",
+        redeemed.text()
+    );
+    let tokens = redeemed.json();
+    assert_eq!(tokens["token_type"], "DPoP", "{tokens}");
+    assert!(tokens["id_token"].is_string(), "{tokens}");
+    assert!(tokens["refresh_token"].is_null(), "{tokens}");
+    let access_token = tokens["access_token"]
+        .as_str()
+        .expect("a token response carries an access token")
+        .to_owned();
+    let who = flow.userinfo(&proof, &access_token).await;
+    assert_eq!(who.status, StatusCode::OK, "{}", who.text());
+    assert_eq!(who.json()["sub"], json!(flow.user.as_uuid().to_string()));
+
+    // Act: the same auth_req_id again.
+    let again = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-poll-4", &auth_req_id)
+        .await;
+    // Assert: §10.1.1 — "no longer valid", and indistinguishable from unknown.
+    assert_eq!(again.status, StatusCode::BAD_REQUEST, "{}", again.text());
+    assert_eq!(again.json()["error"], "invalid_grant");
+
+    flow.tear_down().await;
+}
+
+/// **The refusals a client can be told apart** (§10.1, §11).
+///
+/// A denied request is `access_denied`; an expired one is `expired_token`;
+/// an `auth_req_id` issued to another client is `invalid_grant` and nothing
+/// more — not that it exists, not that it is pending, not whose it is; a
+/// missing one is `invalid_request`.
+#[tokio::test]
+async fn a_ciba_request_is_refused_with_the_code_the_specification_names() {
+    let capabilities = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = flow.register_ciba_client(CIBA_POLL_CLIENT, "poll").await;
+    let other_key = flow.register_ciba_client(CIBA_PING_CLIENT, "ping").await;
+    let proof = ProofKey::generate();
+
+    // Arrange: three requests — one to deny, one to expire, one to steal.
+    let denied = auth_req_id_of(
+        &flow
+            .backchannel_authenticate(CIBA_POLL_CLIENT, &key, "ciba-ref-1", &[])
+            .await,
+    );
+    let expiring = auth_req_id_of(
+        &flow
+            .backchannel_authenticate(CIBA_POLL_CLIENT, &key, "ciba-ref-2", &[])
+            .await,
+    );
+    let stolen = auth_req_id_of(
+        &flow
+            .backchannel_authenticate(CIBA_POLL_CLIENT, &key, "ciba-ref-3", &[])
+            .await,
+    );
+
+    // Act: the person refuses the first.
+    flow.deny_ciba(&denied).await;
+    let refused = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-ref-4", &denied)
+        .await;
+    // Assert: §11's `access_denied`.
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        refused.text()
+    );
+    assert_eq!(refused.json()["error"], "access_denied");
+
+    // Act: the second runs out. Expiry is the clock, not a state, so the row
+    // is dated into the past rather than swept.
+    sqlx::query(
+        "update ciba_requests set expires_at = now() - interval '1 second'
+          where tenant_id = $1 and auth_req_id_hash = $2",
+    )
+    .bind(flow.tenant.id.as_str())
+    .bind(Sha256::digest(expiring.as_bytes()).to_vec())
+    .execute(flow.store.pool())
+    .await
+    .expect("age the request");
+    let late = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-ref-5", &expiring)
+        .await;
+    // Assert: §11's `expired_token`.
+    assert_eq!(late.status, StatusCode::BAD_REQUEST, "{}", late.text());
+    assert_eq!(late.json()["error"], "expired_token");
+
+    // Act: another CIBA client of the tenant presents the third.
+    let theft = flow
+        .poll_ciba(CIBA_PING_CLIENT, &other_key, &proof, "ciba-ref-6", &stolen)
+        .await;
+    // Assert: §10.1 — "issued to this Client" — and §11's `invalid_grant`.
+    assert_eq!(theft.status, StatusCode::BAD_REQUEST, "{}", theft.text());
+    assert_eq!(theft.json()["error"], "invalid_grant");
+    // And the flow it tried to read is untouched: its owner still gets
+    // `authorization_pending`, not `slow_down` for a poll it never made.
+    let owner = flow
+        .poll_ciba(CIBA_POLL_CLIENT, &key, &proof, "ciba-ref-7", &stolen)
+        .await;
+    assert_eq!(
+        owner.json()["error"],
+        "authorization_pending",
+        "{}",
+        owner.text()
+    );
+
+    // Act: no auth_req_id at all.
+    let missing = flow
+        .token_as(
+            CIBA_POLL_CLIENT,
+            Some(&key),
+            &proof,
+            "ciba-ref-8",
+            &[("grant_type", CIBA_GRANT_TYPE)],
+        )
+        .await;
+    // Assert: §11's `invalid_request`.
+    assert_eq!(
+        missing.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        missing.text()
+    );
+    assert_eq!(missing.json()["error"], "invalid_request");
+
+    flow.tear_down().await;
+}
+
+/// **Ping mode, end to end** (CIBA Core 1.0 §10.2).
+///
+/// The decision queues exactly one `ciba.ping` row, addressed to the
+/// registered endpoint and carrying no credential. The worker posts §10.2's
+/// body with the `client_notification_token` as a bearer, a redelivery of the
+/// same row does not post twice, and the client then polls once and gets its
+/// tokens. A refusal is notified too; expiry is not.
+#[tokio::test]
+async fn a_ciba_ping_client_is_notified_after_the_decision_and_polls_once() {
+    let capabilities = Capabilities {
+        ciba: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let key = flow.register_ciba_client(CIBA_PING_CLIENT, "ping").await;
+    let proof = ProofKey::generate();
+    let receiver = Arc::new(PingReceiver::default());
+
+    // Act: §7.1 — a ping client sends its notification token.
+    let approved = auth_req_id_of(
+        &flow
+            .backchannel_authenticate(
+                CIBA_PING_CLIENT,
+                &key,
+                "ciba-ping-1",
+                &[("client_notification_token", CIBA_NOTIFICATION_TOKEN)],
+            )
+            .await,
+    );
+    let denied = auth_req_id_of(
+        &flow
+            .backchannel_authenticate(
+                CIBA_PING_CLIENT,
+                &key,
+                "ciba-ping-2",
+                &[("client_notification_token", CIBA_NOTIFICATION_TOKEN)],
+            )
+            .await,
+    );
+    // Assert: nothing is queued by the request itself.
+    assert!(flow.queued_pings().await.is_empty());
+
+    // Act: the two decisions.
+    flow.approve_ciba(CIBA_PING_CLIENT, &approved).await;
+    flow.deny_ciba(&denied).await;
+
+    // Assert: one row per decision, addressed to the registered endpoint,
+    // naming the request by digest and holding neither credential.
+    let rows = flow.queued_pings().await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    for row in &rows {
+        assert_eq!(row.destination, CIBA_PING_ENDPOINT);
+        let rendered = row.payload.to_string();
+        assert!(!rendered.contains(&approved) && !rendered.contains(&denied));
+        assert!(!rendered.contains(CIBA_NOTIFICATION_TOKEN));
+    }
+    let approved_digest = hex::encode(Sha256::digest(approved.as_bytes()));
+    let approved_row = rows
+        .iter()
+        .find(|row| row.payload["request"] == json!(approved_digest))
+        .expect("the approval's row");
+
+    // Act: the worker delivers the approval's row, twice — the second is a
+    // redelivery after a lost ack.
+    let deliverer = flow.ping_deliverer(&receiver);
+    let first = deliverer.deliver(approved_row).await;
+    let second = deliverer.deliver(approved_row).await;
+
+    // Assert: §10.2 — one POST, JSON body holding the auth_req_id, the
+    // notification token as a bearer, a 204 accepted.
+    assert_eq!(first, Ok(asterius_server::outbox::Delivered::Sent));
+    assert_eq!(second, Ok(asterius_server::outbox::Delivered::Sent));
+    let seen = receiver.seen.lock().expect("not poisoned").clone();
+    assert_eq!(seen.len(), 1, "the client was pinged {} times", seen.len());
+    let (url, authorization, body) = &seen[0];
+    assert_eq!(url, CIBA_PING_ENDPOINT);
+    assert_eq!(
+        authorization.as_deref(),
+        Some(format!("Bearer {CIBA_NOTIFICATION_TOKEN}").as_str())
+    );
+    let parsed: Value = serde_json::from_str(body).expect("§10.2's body is JSON");
+    assert_eq!(parsed, json!({ "auth_req_id": approved }));
+
+    // Act: §10.2 — "the Client ... makes a token request" — once.
+    let redeemed = flow
+        .poll_ciba(CIBA_PING_CLIENT, &key, &proof, "ciba-ping-3", &approved)
+        .await;
+    // Assert: the tokens, in the usual shape.
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "an approved request was refused: {}",
+        redeemed.text()
+    );
+    let tokens = redeemed.json();
+    assert_eq!(tokens["token_type"], "DPoP", "{tokens}");
+    assert!(tokens["id_token"].is_string(), "{tokens}");
+
+    // And the refusal's ping tells the client to come and learn `access_denied`.
+    let denied_row = rows
+        .iter()
+        .find(|row| row.payload["request"] != json!(approved_digest))
+        .expect("the refusal's row");
+    assert_eq!(
+        deliverer.deliver(denied_row).await,
+        Ok(asterius_server::outbox::Delivered::Sent)
+    );
+    let refused = flow
+        .poll_ciba(CIBA_PING_CLIENT, &key, &proof, "ciba-ping-4", &denied)
+        .await;
+    assert_eq!(
+        refused.json()["error"],
+        "access_denied",
+        "{}",
+        refused.text()
+    );
 
     flow.tear_down().await;
 }

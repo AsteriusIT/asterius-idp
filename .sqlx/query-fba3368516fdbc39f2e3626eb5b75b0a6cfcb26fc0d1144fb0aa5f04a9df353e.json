@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update ciba_requests\n                    set ping_ciphertext = $1,\n                        ping_nonce = $2,\n                        ping_kek_id = $3\n                  where tenant_id = $4 and auth_req_id_hash = $5\n                    and ping_kek_id = $6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Text",
+        "Text",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fba3368516fdbc39f2e3626eb5b75b0a6cfcb26fc0d1144fb0aa5f04a9df353e"
+}
