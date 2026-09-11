@@ -379,6 +379,81 @@ catalogue! {
         ApprovalsDenied => approvals_denied, "approvals.denied",
             en: "Denied.",
             fr: "Refusé.";
+
+        // ---- grants dashboard (`ast-uwv.6`) -------------------------------
+        //
+        // Grant Management ID1 §3 names the dashboard use case: a person has
+        // to be able to see what stands open in their name and close it. FAPI
+        // 2.0 SP §7 is why the page is written the way it is — it lists the
+        // *client's* claims about itself as claims, and it says plainly what
+        // withdrawing does, because a revocation somebody did not understand
+        // is a support ticket rather than a decision.
+        GrantsTitle => grants_title, "grants.title",
+            en: "Access you have allowed",
+            fr: "Les accès que vous avez autorisés";
+        GrantsHeading => grants_heading, "grants.heading",
+            en: "Applications and agents with access to your account",
+            fr: "Applications et agents ayant accès à votre compte";
+        GrantsEmpty => grants_empty, "grants.empty",
+            en: "Nothing has standing access to your account.",
+            fr: "Aucun accès permanent n'est ouvert sur votre compte.";
+        // What the button does, said before it is pressed. The cascade is the
+        // one Grant Management ID1 §6.5 describes and this server implements:
+        // the authorization, its refresh tokens and its access tokens all go.
+        GrantsRevokeExplains => grants_revoke_explains, "grants.revoke-explains",
+            en: "Withdrawing access stops the tokens an application already holds from working. \
+                 It will have to ask you again.",
+            fr: "Retirer un accès rend inutilisables les jetons que l'application détient déjà. \
+                 Elle devra vous le redemander.";
+        GrantsCovers => grants_covers, "grants.covers",
+            en: "This access covers:",
+            fr: "Cet accès couvre :";
+        GrantsAlsoCovers => grants_also_covers, "grants.also-covers",
+            en: "And these operations:",
+            fr: "Ainsi que ces opérations :";
+        GrantsUndescribedDetail => grants_undescribed_detail, "grants.undescribed-detail",
+            en: "An operation this server has no description for",
+            fr: "Une opération que ce serveur ne sait pas décrire";
+        GrantsDetailActions => grants_detail_actions, "grants.detail-actions",
+            en: "Operations:",
+            fr: "Opérations :";
+        GrantsDetailDatatypes => grants_detail_datatypes, "grants.detail-datatypes",
+            en: "Data:",
+            fr: "Données :";
+        GrantsDetailLocations => grants_detail_locations, "grants.detail-locations",
+            en: "At:",
+            fr: "Auprès de :";
+        GrantsResources => grants_resources, "grants.resources",
+            en: "Access applies to:",
+            fr: "Cet accès s'applique à :";
+        GrantsNeverUsed => grants_never_used, "grants.never-used",
+            en: "Never used",
+            fr: "Jamais utilisé";
+        // RFC 8693 §4.1's `act` chain, as a person reads it: who passed this
+        // access on to whom. Listed because a delegation nobody can see is a
+        // delegation nobody can withdraw.
+        GrantsDelegations => grants_delegations, "grants.delegations",
+            en: "Access passed on from this:",
+            fr: "Accès transmis à partir de celui-ci :";
+        GrantsRevoke => grants_revoke, "grants.revoke",
+            en: "Withdraw access",
+            fr: "Retirer l'accès";
+        GrantsRevoked => grants_revoked, "grants.revoked",
+            en: "Access withdrawn.",
+            fr: "Accès retiré.";
+        // One sentence for every refusal: already withdrawn, somebody else's,
+        // never existed, a form this server would not read. The person in
+        // front of the page cannot act on the difference, and each distinction
+        // answers a question about a grant they may not hold.
+        GrantsGone => grants_gone, "grants.gone",
+            en: "That access is no longer there.",
+            fr: "Cet accès n'existe plus.";
+        GrantsStale => grants_stale, "grants.stale",
+            en: "Sign in again to withdraw access.",
+            fr: "Reconnectez-vous pour retirer un accès.";
+        GrantsSignInAgain => grants_sign_in_again, "grants.sign-in-again",
+            en: "Sign in again",
+            fr: "Se reconnecter";
     }
     filled {
         // ---- consent ------------------------------------------------------
@@ -423,6 +498,29 @@ catalogue! {
         ApprovalsExpiresIn => approvals_expires_in, "approvals.expires-in",
             en: "Expires in {0}",
             fr: "Expire dans {0}";
+        // ---- grants dashboard (`ast-uwv.6`) -------------------------------
+        GrantsGrantedTo => grants_granted_to, "grants.granted-to",
+            en: "{0} calls itself this, and has access to your account.",
+            fr: "{0} se présente ainsi et a accès à votre compte.";
+        GrantsAllowedOn => grants_allowed_on, "grants.allowed-on",
+            en: "Allowed on {0}",
+            fr: "Autorisé le {0}";
+        GrantsLastUsed => grants_last_used, "grants.last-used",
+            en: "Last used {0}",
+            fr: "Dernière utilisation le {0}";
+        // The agent's owner is the account the registration named
+        // (`asterius_domain::AgentOwner`), which for a grant on this page is
+        // this person themselves or somebody who delegated to them.
+        GrantsAgentOwner => grants_agent_owner, "grants.agent-owner",
+            en: "An agent acting for {0}",
+            fr: "Un agent agissant pour {0}";
+        GrantsLastExchange => grants_last_exchange, "grants.last-exchange",
+            en: "Last delegated token {0}",
+            fr: "Dernier jeton délégué le {0}";
+        GrantsDelegatedTo => grants_delegated_to, "grants.delegated-to",
+            en: "Passed on to {0}",
+            fr: "Transmis à {0}";
+
         ApprovalsDeviceIntro => approvals_device_intro, "approvals.device-intro",
             en: "Enter the code shown on the device you are setting up, and {0} will show you \
                  what it is asking for.",

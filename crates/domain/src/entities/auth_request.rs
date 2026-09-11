@@ -154,6 +154,14 @@ pub enum FirstPartyDestination {
     /// parameter for the reason the other two are: a destination that is data
     /// is a destination somebody else can supply.
     ApprovalsInbox,
+    /// The grants dashboard (Grant Management ID1 §3, `ast-uwv.6`).
+    ///
+    /// A person who comes back to re-authenticate because withdrawing a
+    /// standing consent needs a fresher sign-in than they have lands here. A
+    /// destination rather than a parameter for the reason the other three are:
+    /// a destination that is data is a destination somebody else can supply,
+    /// and this one leads to a page whose buttons revoke things.
+    GrantsDashboard,
 }
 
 impl FirstPartyDestination {
@@ -164,6 +172,7 @@ impl FirstPartyDestination {
             Self::AdminConsole => "admin_console",
             Self::DeviceVerification => "device_verification",
             Self::ApprovalsInbox => "approvals_inbox",
+            Self::GrantsDashboard => "grants_dashboard",
         }
     }
 
@@ -179,6 +188,7 @@ impl FirstPartyDestination {
             "admin_console" => Some(Self::AdminConsole),
             "device_verification" => Some(Self::DeviceVerification),
             "approvals_inbox" => Some(Self::ApprovalsInbox),
+            "grants_dashboard" => Some(Self::GrantsDashboard),
             _ => None,
         }
     }
