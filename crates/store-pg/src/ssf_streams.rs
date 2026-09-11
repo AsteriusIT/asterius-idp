@@ -90,6 +90,39 @@ pub struct StreamStats {
     pub queue_depth: i64,
 }
 
+/// How a subscribed stream takes delivery, as an emitter needs to know it.
+///
+/// Two variants and nothing else: the emitter's only decision is *which
+/// queue* — the poll table (`ast-0ju.7`) or the outbox (`ast-0ju.6`). The
+/// receiver's endpoint and credential are read by the push deliverer at
+/// delivery time, never carried on the SET's way in, so a stream that changes
+/// its endpoint between the two is posted to the new one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryMethod {
+    /// RFC 8936: the receiver polls, so the SET waits in `ssf_poll_queue`.
+    Poll,
+    /// RFC 8935: this server posts, so the SET goes through the outbox.
+    Push,
+}
+
+/// A stream that asked for one event type (`ast-0ju.8`).
+///
+/// What an emitter reads before it signs anything: the stream to queue on,
+/// the receiver whose `sub` the SET is about (OIDC Core §8.1 — the subject
+/// is derived under *this* receiver's sector), the `aud` to write, and which
+/// queue takes it. Nothing here is the receiver's credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subscription {
+    /// The stream.
+    pub stream_id: StreamId,
+    /// The receiver the stream belongs to.
+    pub receiver: ClientId,
+    /// §8.1.1's `aud`, as it was settled at creation.
+    pub audience: Vec<String>,
+    /// Which queue the SET goes to.
+    pub delivery: DeliveryMethod,
+}
+
 /// One tenant's SSF streams.
 #[derive(Clone)]
 pub struct PgSsfStreams {
@@ -576,6 +609,75 @@ impl PgSsfStreams {
         .map_err(to_domain_error)?
         .rows_affected();
         Ok(affected > 0)
+    }
+
+    /// The streams that asked for `event`, across every receiver of the tenant.
+    ///
+    /// The one read in this repository with no receiver in its `WHERE`
+    /// clause, and the reason is the same as [`Self::for_delivery`]'s: an
+    /// emitter holds a cause — a session ended, a passkey was added — and no
+    /// caller. Which receivers hear of it is what the streams say, and every
+    /// stream that says so is read here.
+    ///
+    /// `events_requested` is matched as the receiver wrote it (§8.1.1), so a
+    /// stream that asked for a type before this build could emit it starts
+    /// receiving it now, without asking again — which is why the column keeps
+    /// the whole request rather than the intersection. A `disabled` stream
+    /// (§8.1.2) is not returned: nothing is delivered on it and nothing is
+    /// held for it. A `paused` one *is*: §8.1.2 makes paused a state a stream
+    /// leaves, and what was queued while it was paused is what it gets when
+    /// it does.
+    ///
+    /// Ordered by creation, so the SETs of one cause are queued in a stable
+    /// order and two runs of an emitter over the same streams produce the
+    /// same trail.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the read fails, or if a stored row is not
+    /// one this server would have written.
+    pub async fn subscribed(&self, event: &str) -> Result<Vec<Subscription>, DomainError> {
+        let rows = sqlx::query!(
+            "select stream_id, client_id, audience, delivery_method
+               from ssf_streams
+              where tenant_id = $1
+                and $2 = any(events_requested)
+                and status <> $3
+              order by created_at, stream_id",
+            self.tenant.as_str(),
+            event,
+            StreamStatus::Disabled.as_str(),
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        rows.into_iter()
+            .map(|row| {
+                let stream_id = StreamId::parse(&row.stream_id).ok_or_else(|| {
+                    DomainError::invalid(
+                        "ssf_streams.stream_id",
+                        "a stored stream identifier is not one this server issues",
+                    )
+                })?;
+                let delivery = match row.delivery_method.as_str() {
+                    asterius_ssf::stream::DELIVERY_POLL => DeliveryMethod::Poll,
+                    asterius_ssf::stream::DELIVERY_PUSH => DeliveryMethod::Push,
+                    _ => {
+                        return Err(DomainError::invalid(
+                            "ssf_streams.delivery_method",
+                            "a stored delivery method is not one SSF 1.0 defines",
+                        ));
+                    }
+                };
+                Ok(Subscription {
+                    stream_id,
+                    receiver: ClientId::new(&row.client_id),
+                    audience: row.audience,
+                    delivery,
+                })
+            })
+            .collect()
     }
 
     /// Removes a stream and abandons what it still owed (§8.1.1.5).

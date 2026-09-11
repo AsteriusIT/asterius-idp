@@ -748,6 +748,35 @@ socket, because the SSRF guard refuses every address a test could bind — the
 fake receiver sits at the transport port instead, and what the socket itself
 does is tested in `outbound::post`.
 
+### SSF event emitters (`ast-0ju.8`)
+
+**Why this needs a section: a security signal about a person now leaves this
+server unbidden, and the identifier in it is the one thing that must be right.**
+A session revoked, a passkey added, an account disabled — each maps to a CAEP
+or RISC Security Event Token and is queued for every stream that subscribed
+(`crates/server/src/ssf.rs`). The delivery is the previous two sections'
+(`ast-0ju.6` push, `ast-0ju.7` poll) and adds nothing; what is new is the
+*minting*, and it meets the same problem the back-channel logout token does one
+section down, plus one of its own — a SET is about a subject who is not present.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Handing a receiver a correlation handle it never had.** A SET's `sub_id` names a person; a public `sub`, or one from another sector, sent to a pairwise receiver would join that receiver's logs to everyone else's in a back channel the user never sees. | `SsfTransmitter` derives the `sub` per receiver through `SubjectResolver` under that receiver's own sector (OIDC Core §8.1) — the same value it saw in its ID token — so a receiver is told the identifier it already holds and no other. A session's `sid` is an `opaque` identifier, not a `sub`, and is not derived. The one place this decision lives is unit-tested against a resolver that stamps the sector into the subject. |
+| **A1** | **G1** | **A signal that says more than the event allows.** A CAEP event value a receiver dispatches on — `credential_type`, `change_type`, `initiating_entity`, `change_direction`, RISC's `reason` — spelled wrong, or a free-text `reason_admin` carrying a log-injection newline or an unbounded blob. | Every dispatched value is a closed Rust enum in `asterius_ssf::caep`; there is no constructor taking a string for any of them. Every free-text member goes through one validator (`caep::text`, fuzzed) that refuses empty, over-length and control-character values, and the whole SET is bounded at `MAX_SET_CLAIMS_BYTES`. `event_timestamp` is structurally present — the builder cannot render a SET without it — so a receiver always has the instant the event happened, not just the `iat` of a retried token. |
+| **A1** | **G1** | **Cross-token confusion.** A SET read where an ID token is expected, or the reverse. | The token is signed `typ: secevent+jwt` (SSF 1.0 §4.1.1), a constant this crate never parameterises; it carries no `sub` (§4.1.2) and no `exp` (§4.1.7), and its `sub_id` (§3.1) is structural — a SET without one does not typecheck. The whole envelope is `ast-0ju.2`'s and unchanged here. |
+| **A5** | **G2** | **A signal lost to a crash between the effect and the queue.** The SET is queued *after* the session is revoked, not in the same transaction. | Deliberate, and the same trade the back-channel logout token makes below: revoking is the session repository's statement, and the other order would announce a session that is still live. A crash under-notifies — a receiver is not told — rather than lying. The poll SETs of one cause share one transaction so a stream's backlog never gains half a cause, and every SET of one cause shares one `txn` (§4.1.9) so an operator sees them as one thing. |
+
+**Residual, stated rather than closed:** the console self-service paths do not
+emit yet — a passkey a user adds themselves (CAEP `credential-change` create),
+an RP-initiated logout, and a step-up (`assurance-level-change`) are recorded in
+the audit trail but not yet turned into SETs, because wiring the transmitter
+into those handlers threads a new dependency through the request context and its
+fixtures; the emitters and their goldens exist and the admin-API paths (session
+revoke, account disable/enable, admin passkey removal, forced password reset)
+are wired. Grant revocation has no CAEP event type and stays audit-only, by the
+spec. And, as one section up, a paused or deleted stream's already-queued SETs
+follow that section's rules.
+
 ### Back-channel logout (`ast-o4u.2`)
 
 **Why this needs a section: the server now signs a JWT it sends to somebody

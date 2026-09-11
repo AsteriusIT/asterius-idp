@@ -80,6 +80,7 @@
 //! to `ast-0ju.3`, and until it exists the caller is responsible for it.
 #![forbid(unsafe_code)]
 
+pub mod caep;
 pub mod event;
 pub mod metadata;
 pub mod poll;

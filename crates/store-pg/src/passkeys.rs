@@ -121,22 +121,47 @@ impl PgPasskeyRepository {
         user: &UserId,
         credential: uuid::Uuid,
         now: OffsetDateTime,
-    ) -> Result<bool, DomainError> {
-        let affected = sqlx::query!(
+    ) -> Result<Option<RemovedPasskey>, DomainError> {
+        // `returning` rather than a read before the write: what is described
+        // is the row this statement disabled, so a credential disabled by a
+        // concurrent call is reported by exactly one of them.
+        let row = sqlx::query!(
             "update credentials set disabled_at = $4
              where tenant_id = $1 and user_id = $2 and credential_id = $3
-               and kind = 'passkey' and disabled_at is null",
+               and kind = 'passkey' and disabled_at is null
+             returning passkey_aaguid, passkey_backup_eligible, label",
             self.tenant.as_str(),
             user.as_uuid(),
             credential,
             now
         )
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await
-        .map_err(to_domain_error)?
-        .rows_affected();
-        Ok(affected > 0)
+        .map_err(to_domain_error)?;
+        Ok(row.map(|row| RemovedPasskey {
+            aaguid: row.passkey_aaguid,
+            backup_eligible: row.passkey_backup_eligible.unwrap_or(false),
+            label: row.label,
+        }))
     }
+}
+
+/// What a passkey was, as the CAEP `credential-change` that reports its
+/// removal needs it (`ast-0ju.8`).
+///
+/// Returned by [`PgPasskeyRepository::disable_for_user`] from the row it
+/// disabled: the authenticator model, the backup-eligible flag that stands in
+/// for the attachment a receiver is told (`fido2-platform` or
+/// `fido2-roaming`), and the label the user gave it. None of it is the
+/// credential's key material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedPasskey {
+    /// The authenticator's AAGUID, where the attestation carried one.
+    pub aaguid: Option<uuid::Uuid>,
+    /// WebAuthn L3 §6.1.3's backup-eligible flag.
+    pub backup_eligible: bool,
+    /// The user's label for the credential.
+    pub label: Option<String>,
 }
 
 #[async_trait::async_trait]
