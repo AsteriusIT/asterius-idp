@@ -38,7 +38,7 @@ const TOKEN: &str = "vJ8qN2mXbL5-tRw0KePzUA";
 /// Every registration this run wrote, with the token digest it was given.
 #[derive(Debug, Default)]
 struct FakeRegistry {
-    written: Mutex<Vec<(Client, [u8; 32])>>,
+    written: Mutex<Vec<(Client, [u8; 32], AuditEvent)>>,
     broken: bool,
 }
 
@@ -50,8 +50,21 @@ impl FakeRegistry {
         }
     }
 
-    fn written(&self) -> Vec<(Client, [u8; 32])> {
+    fn written(&self) -> Vec<(Client, [u8; 32], AuditEvent)> {
         self.written.lock().expect("lock").clone()
+    }
+
+    /// The `client.registered` records the store was asked to commit with a
+    /// row, which since `ast-zq9` is where a *successful* registration's trail
+    /// entry lives: a test that read them from the sink instead would pass
+    /// against a server that wrote the row and then lost the record.
+    fn records(&self) -> Vec<AuditEvent> {
+        self.written
+            .lock()
+            .expect("lock")
+            .iter()
+            .map(|(_, _, record)| record.clone())
+            .collect()
     }
 }
 
@@ -61,14 +74,16 @@ impl ClientRegistry for FakeRegistry {
         &self,
         client: &Client,
         registration_access_token: &[u8; 32],
+        audit: &AuditEvent,
     ) -> Result<Client, DomainError> {
         if self.broken {
             return Err(DomainError::Storage("the database is gone".into()));
         }
-        self.written
-            .lock()
-            .expect("lock")
-            .push((client.clone(), *registration_access_token));
+        self.written.lock().expect("lock").push((
+            client.clone(),
+            *registration_access_token,
+            audit.clone(),
+        ));
         // What the store returns is what the row holds, and the row's
         // timestamps come from the database rather than from the entity. The
         // fake reproduces that, because the response is rendered from this
@@ -704,7 +719,7 @@ async fn a_valid_document_registers_a_client_and_echoes_what_was_stored() {
 
     let written = registry.written();
     assert_eq!(written.len(), 1, "exactly one row should have been written");
-    let (stored, digest) = &written[0];
+    let (stored, digest, _) = &written[0];
 
     let document = body_of(response).await;
     assert_eq!(document["client_id"], json!(stored.id.as_str()));
@@ -750,8 +765,14 @@ async fn a_valid_document_registers_a_client_and_echoes_what_was_stored() {
         "the at-rest form must not be the credential"
     );
 
-    // The policy decision is in the trail (`ast-m9c.4`'s definition of done).
-    let events = audit.events();
+    // The policy decision is in the trail (`ast-m9c.4`'s definition of done) —
+    // handed to the store with the row rather than appended afterwards, so
+    // that a client cannot exist without it (`ast-zq9`).
+    assert!(
+        audit.events().is_empty(),
+        "a successful registration wrote its record outside the row's transaction"
+    );
+    let events = registry.records();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_type, EventType::CLIENT_REGISTERED);
     assert_eq!(events[0].outcome, Outcome::Success);
@@ -1032,7 +1053,7 @@ async fn open_registration_needs_no_credential_and_says_so_in_the_trail() {
 
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(registry.written().len(), 1);
-    let events = audit.events();
+    let events = registry.records();
     assert_eq!(
         events[0].detail.iter().find(|(k, _)| *k == "policy"),
         Some((&"policy".to_owned(), &DetailValue::Text("open".to_owned())))

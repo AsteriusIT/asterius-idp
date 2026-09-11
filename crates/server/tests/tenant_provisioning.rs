@@ -55,6 +55,7 @@ impl ClientRegistry for AcceptingRegistry {
         &self,
         client: &Client,
         _registration_access_token: &[u8; 32],
+        _audit: &AuditEvent,
     ) -> Result<Client, DomainError> {
         Ok(client.clone())
     }

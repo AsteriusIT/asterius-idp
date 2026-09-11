@@ -1342,6 +1342,35 @@ fn client(tenant: &str, id: &str, document: &serde_json::Value) -> Client {
     client_with(tenant, id, document, Capabilities::default())
 }
 
+/// One row of the trail, read as the chain sees it rather than as a record.
+///
+/// The hashes are what a test about ordering asserts on, and they are not on
+/// `AuditRecord`: the chain is a property of the rows, so a test that reads it
+/// through the reader would be asserting that the reader agrees with itself.
+#[derive(sqlx::FromRow)]
+struct ChainLink {
+    event_type: String,
+    client_id: Option<String>,
+    previous_hash: Vec<u8>,
+    event_hash: Vec<u8>,
+}
+
+/// The `client.registered` record a registration commits with its row.
+///
+/// Since `ast-zq9` the trail entry is an argument of `register` rather than a
+/// later call, so every test that registers a client states the record it
+/// expects to find beside the row.
+fn registration_record(tenant: &str, id: &str) -> AuditEvent {
+    AuditEvent::new(
+        TenantId::new(tenant),
+        EventType::CLIENT_REGISTERED,
+        Outcome::Success,
+        Actor::System,
+        OffsetDateTime::from_unix_timestamp(1_760_000_000).expect("a valid instant"),
+    )
+    .client(ClientId::new(id))
+}
+
 fn client_with(
     tenant: &str,
     id: &str,
@@ -1962,7 +1991,7 @@ db_test! {
         let digest = asterius_domain::sha256(token.expose().as_bytes());
         let registered = client("demo", "c.abc", &registration_document());
 
-        let stored = repo.register(&registered, &digest).await.expect("register");
+        let stored = repo.register(&registered, &digest, &registration_record("demo", "c.abc")).await.expect("register");
         assert_eq!(stored.registration, registered.registration);
         assert_eq!(stored.id, registered.id);
         assert!(stored.is_active());
@@ -2017,7 +2046,7 @@ db_test! {
         let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
 
         let first_digest = [1_u8; 32];
-        repo.register(&client("demo", "c.abc", &registration_document()), &first_digest)
+        repo.register(&client("demo", "c.abc", &registration_document()), &first_digest, &registration_record("demo", "c.abc"))
             .await
             .expect("the first registration");
 
@@ -2027,7 +2056,7 @@ db_test! {
             .expect("object")
             .insert("redirect_uris".to_owned(), json!(["https://attacker.example/cb"]));
         let conflict = repo
-            .register(&client("demo", "c.abc", &second), &[2_u8; 32])
+            .register(&client("demo", "c.abc", &second), &[2_u8; 32], &registration_record("demo", "c.abc"))
             .await;
         assert!(
             matches!(conflict, Err(asterius_domain::DomainError::Conflict(_))),
@@ -2056,6 +2085,150 @@ db_test! {
 }
 
 db_test! {
+    /// The row and its `client.registered` record are one commit (`ast-zq9`),
+    /// and the record joins the chain like any other.
+    ///
+    /// The chain is the part that could have been broken by moving the write:
+    /// the record must follow the tenant's current tip and be followed by
+    /// whatever the sink appends next, or the trail is no longer verifiable.
+    /// So a record is appended before and after, and the three are checked to
+    /// be one chain in the order they happened.
+    async fn a_registration_commits_its_trail_entry_in_the_same_chain(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+        let sink = PgAuditSink::new(db.pool.clone());
+
+        sink.record(AuditEvent::new(
+            TenantId::new("demo"),
+            EventType::CLIENT_READ,
+            Outcome::Success,
+            Actor::System,
+            OffsetDateTime::from_unix_timestamp(1_759_000_000).expect("a valid instant"),
+        ))
+        .await
+        .expect("the record before the registration");
+
+        repo.register(
+            &client("demo", "c.abc", &registration_document()),
+            &[21_u8; 32],
+            &registration_record("demo", "c.abc"),
+        )
+        .await
+        .expect("register");
+
+        sink.record(AuditEvent::new(
+            TenantId::new("demo"),
+            EventType::CLIENT_UPDATED,
+            Outcome::Success,
+            Actor::System,
+            OffsetDateTime::from_unix_timestamp(1_761_000_000).expect("a valid instant"),
+        ))
+        .await
+        .expect("the record after the registration");
+
+        let rows: Vec<ChainLink> = sqlx::query_as(
+            "select event_type, client_id, previous_hash, event_hash from audit_events
+             where tenant_id = 'demo' order by event_id",
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("read the trail");
+
+        assert_eq!(rows.len(), 3, "the registration did not append exactly one record");
+        assert_eq!(rows[1].event_type, "client.registered");
+        assert_eq!(rows[1].client_id.as_deref(), Some("c.abc"));
+        assert_eq!(
+            rows[1].previous_hash, rows[0].event_hash,
+            "the registration forked the chain"
+        );
+        assert_eq!(
+            rows[2].previous_hash, rows[1].event_hash,
+            "the next record did not follow the registration"
+        );
+
+        // And the whole chain still verifies through the sink's own reader.
+        sink.verify_chain(&TenantId::new("demo")).await.expect("the chain verifies");
+    }
+}
+
+db_test! {
+    /// A failure of the audit store during a registration keeps *nothing*
+    /// (`ast-zq9`).
+    ///
+    /// The trail write used to happen after the row had committed, so an audit
+    /// store that was down left a live client — with redirect URIs and a
+    /// registration access token its owner had already been handed — that the
+    /// trail never mentioned, through the one endpoint reachable without a
+    /// client credential. The failure is simulated where it actually happens,
+    /// in the database, by a trigger that refuses every insert into
+    /// `audit_events`: the call must fail and leave no `clients` row behind.
+    async fn a_failed_trail_write_leaves_no_registered_client(db) {
+        seed_tenant(&db.pool, "demo").await;
+        let store = Store::from_pool(db.pool.clone());
+        let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
+
+        sqlx::query(
+            "create function refuse_audit() returns trigger language plpgsql as
+             $$ begin raise exception 'the audit store is down'; end $$",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("create the failing function");
+        sqlx::query(
+            "create trigger refuse_audit before insert on audit_events
+             for each row execute function refuse_audit()",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("create the failing trigger");
+
+        let refused = repo
+            .register(
+                &client("demo", "c.abc", &registration_document()),
+                &[22_u8; 32],
+                &registration_record("demo", "c.abc"),
+            )
+            .await;
+        assert!(
+            refused.is_err(),
+            "a registration whose trail entry could not be written was reported as stored"
+        );
+
+        let clients: i64 = sqlx::query_scalar(
+            "select count(*) from clients where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("count the clients");
+        assert_eq!(clients, 0, "a client was left with no entry in the trail");
+
+        // The other half of the same statement: no trail entry survived either.
+        let records: i64 = sqlx::query_scalar(
+            "select count(*) from audit_events where tenant_id = 'demo'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("count the records");
+        assert_eq!(records, 0, "the trail describes a client that does not exist");
+
+        // With the audit store back, the same registration goes through, so
+        // the failure was a refusal and not a poisoned repository.
+        sqlx::query("drop trigger refuse_audit on audit_events")
+            .execute(&db.pool)
+            .await
+            .expect("drop the failing trigger");
+        repo.register(
+            &client("demo", "c.abc", &registration_document()),
+            &[23_u8; 32],
+            &registration_record("demo", "c.abc"),
+        )
+        .await
+        .expect("the retried registration");
+    }
+}
+
+db_test! {
     /// A client registered in one tenant does not exist in another, even when
     /// both tenants used the same `client_id`. This is the case a missing
     /// `tenant_id` predicate breaks, and dynamic registration is the path that
@@ -2068,7 +2241,7 @@ db_test! {
         let beta = store.scope(TenantId::new("beta")).clients(Capabilities::default());
 
         alpha
-            .register(&client("alpha", "c.abc", &registration_document()), &[3_u8; 32])
+            .register(&client("alpha", "c.abc", &registration_document()), &[3_u8; 32], &registration_record("alpha", "c.abc"))
             .await
             .expect("alpha registers");
 
@@ -2081,7 +2254,7 @@ db_test! {
 
         // Both tenants may hold the same identifier without either seeing the
         // other's row, and the registration access tokens stay distinct.
-        beta.register(&client("beta", "c.abc", &registration_document()), &[4_u8; 32])
+        beta.register(&client("beta", "c.abc", &registration_document()), &[4_u8; 32], &registration_record("beta", "c.abc"))
             .await
             .expect("beta registers the same id");
         let digests: Vec<(String, Vec<u8>)> = sqlx::query_as(
@@ -2098,7 +2271,7 @@ db_test! {
         // And an entity belonging to another tenant cannot be registered
         // through this scope at all.
         let wrong = alpha
-            .register(&client("beta", "c.def", &registration_document()), &[5_u8; 32])
+            .register(&client("beta", "c.def", &registration_document()), &[5_u8; 32], &registration_record("beta", "c.def"))
             .await;
         assert!(
             matches!(
@@ -2125,10 +2298,10 @@ db_test! {
         let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
 
         let digest = [7_u8; 32];
-        repo.register(&client("demo", "c.alpha", &registration_document()), &digest)
+        repo.register(&client("demo", "c.alpha", &registration_document()), &digest, &registration_record("demo", "c.alpha"))
             .await
             .expect("alpha registers");
-        repo.register(&client("demo", "c.beta", &registration_document()), &[8_u8; 32])
+        repo.register(&client("demo", "c.beta", &registration_document()), &[8_u8; 32], &registration_record("demo", "c.beta"))
             .await
             .expect("beta registers");
 
@@ -2167,7 +2340,7 @@ db_test! {
         seed_tenant(&db.pool, "demo").await;
         let store = Store::from_pool(db.pool.clone());
         let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
-        repo.register(&client("demo", "c.alpha", &registration_document()), &[9_u8; 32])
+        repo.register(&client("demo", "c.alpha", &registration_document()), &[9_u8; 32], &registration_record("demo", "c.alpha"))
             .await
             .expect("alpha registers");
 
@@ -2210,10 +2383,10 @@ db_test! {
         let beta = store.scope(TenantId::new("beta")).clients(Capabilities::default());
 
         let shared = [11_u8; 32];
-        alpha.register(&client("alpha", "c.abc", &registration_document()), &shared)
+        alpha.register(&client("alpha", "c.abc", &registration_document()), &shared, &registration_record("alpha", "c.abc"))
             .await
             .expect("alpha registers");
-        beta.register(&client("beta", "c.abc", &registration_document()), &shared)
+        beta.register(&client("beta", "c.abc", &registration_document()), &shared, &registration_record("beta", "c.abc"))
             .await
             .expect("beta registers");
 
@@ -2260,7 +2433,7 @@ db_test! {
         seed_tenant(&db.pool, "demo").await;
         let store = Store::from_pool(db.pool.clone());
         let repo = store.scope(TenantId::new("demo")).clients(Capabilities::default());
-        repo.register(&client("demo", "c.alpha", &registration_document()), &[13_u8; 32])
+        repo.register(&client("demo", "c.alpha", &registration_document()), &[13_u8; 32], &registration_record("demo", "c.alpha"))
             .await
             .expect("alpha registers");
 
@@ -2346,7 +2519,7 @@ db_test! {
         let store = Store::from_pool(db.pool.clone());
         let repo = store.scope(TenantId::new("ghost")).clients(Capabilities::default());
         let failed = repo
-            .register(&client("ghost", "c.abc", &registration_document()), &[7_u8; 32])
+            .register(&client("ghost", "c.abc", &registration_document()), &[7_u8; 32], &registration_record("ghost", "c.abc"))
             .await;
         assert!(
             matches!(failed, Err(asterius_domain::DomainError::Conflict(_))),
@@ -7174,7 +7347,11 @@ mod client_configuration {
         Store::from_pool(pool.clone())
             .scope(TenantId::new(tenant))
             .clients(Capabilities::default())
-            .register(&client(tenant, id, &registration_document()), &digest)
+            .register(
+                &client(tenant, id, &registration_document()),
+                &digest,
+                &registration_record(tenant, id),
+            )
             .await
             .expect("register");
         digest
@@ -7572,20 +7749,10 @@ mod client_configuration {
             .await
             .expect("seed an authorization code");
 
-            let audit = PgAuditSink::new(db.pool.clone());
-            audit
-                .record(
-                    AuditEvent::new(
-                        TenantId::new("demo"),
-                        EventType::CLIENT_REGISTERED,
-                        Outcome::Success,
-                        Actor::Client(ClientId::new("c.abc")),
-                        OffsetDateTime::now_utc(),
-                    )
-                    .client(ClientId::new("c.abc")),
-                )
-                .await
-                .expect("record");
+            // No record is seeded here: since `ast-zq9` the registration above
+            // wrote its own `client.registered` in the transaction that wrote
+            // the row, so the trail entry this test is about is the real one
+            // rather than one the test appended beside it.
 
             repo.deprovision(&ClientId::new("c.abc"), OffsetDateTime::now_utc())
                 .await
@@ -7623,7 +7790,10 @@ mod client_configuration {
             assert_eq!(others, 3, "deleting one client took another's rows with it");
 
             // The trail survives. It is the only record left that the client
-            // ever existed, which is exactly why it has no foreign key here.
+            // ever existed, which is exactly why it has no foreign key here —
+            // and the one record is the `client.registered` the registration
+            // committed with the row, so what survives the delete is the entry
+            // the production path writes.
             let recorded: i64 = sqlx::query_scalar(
                 "select count(*) from audit_events where tenant_id = 'demo' and client_id = 'c.abc'",
             )
@@ -7664,7 +7834,7 @@ mod client_configuration {
             Store::from_pool(db.pool.clone())
                 .scope(TenantId::new("demo"))
                 .clients(mtls_on)
-                .register(&client_with("demo", "c.abc", &document, mtls_on), &digest)
+                .register(&client_with("demo", "c.abc", &document, mtls_on), &digest, &registration_record("demo", "c.abc"))
                 .await
                 .expect("register while mtls is on");
 
