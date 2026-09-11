@@ -594,6 +594,100 @@ pub struct DeviceOutcomePage<'a> {
     pub brand: crate::brand::Brand<'a>,
 }
 
+/// One request waiting for a decision, as the approvals inbox renders it
+/// (CIBA Core 1.0 §7.3, `ast-lh3.6`).
+#[derive(Debug, Clone)]
+pub struct ApprovalLine {
+    /// How the form names this request: the `auth_req_id` digest, hex.
+    ///
+    /// The digest and never the `auth_req_id` itself. The identifier is the
+    /// credential the client polls the token endpoint with (§10.1), so a page
+    /// that rendered it would put a redeemable value in a browser's history,
+    /// in a referrer, and in whatever saved the document.
+    pub reference: String,
+    /// The client's registered name. Attacker-chosen at registration, like the
+    /// one on the consent screen, and a claim rather than an identity.
+    pub client_name: String,
+    /// §7.1's `binding_message`, when the client sent one.
+    ///
+    /// Rendered prominently and escaped like everything else here. It is the
+    /// only thing on this page that ties the decision to the device the flow
+    /// was started on, which is why §7.1 has it appear in both places.
+    pub binding_message: Option<String>,
+    /// What the client asked for, read-only: like the device confirmation and
+    /// unlike the consent screen there is nothing to untick, because the
+    /// client has already been told what it asked for. The answer to "not
+    /// that" is Deny.
+    pub scopes: Vec<ScopeLine>,
+    /// RFC 9396 §3's elements, described the way the consent screen describes
+    /// them: the operator's sentence for the type, never the client's JSON
+    /// (§12).
+    pub authorization_details: Vec<DetailLine>,
+    /// How long is left, already formatted as digits and unit symbols.
+    ///
+    /// Computed on the server and rendered as text, because the page must work
+    /// with no script at all: a countdown that needed JavaScript would be a
+    /// blank where the urgency is. It is also why this page is served
+    /// `no-store` — a cached rendering would show a stale clock.
+    pub expires_in: String,
+    /// The instant the countdown was computed against, RFC 3339, for the
+    /// `datetime` attribute of a `<time>` element.
+    pub expires_at: String,
+}
+
+/// The approvals inbox (CIBA Core 1.0 §8, RFC 8628 §3.3, `ast-lh3.6`).
+///
+/// # Why the device flow's code entry is on this page
+///
+/// The two flows put the same question to the same person: something that is
+/// not this browser wants to act as them, and only they can say yes. CIBA
+/// arrives as a row this server can list, because §7.2 resolved a hint to a
+/// user before anybody was asked; a device authorization does not, because RFC
+/// 8628 §3.1 happens before anybody is identified at all, so there is nothing
+/// to list until a code is typed. Both halves are here so that a person told
+/// to approve something on their phone finds one page rather than two.
+///
+/// # No script
+///
+/// Every countdown is server-rendered text, every decision is a form post, and
+/// the code entry is the same unscripted field the device page has. See this
+/// module's documentation.
+#[derive(Debug, Template)]
+#[template(path = "approvals.html")]
+pub struct ApprovalsPage<'a> {
+    /// The words this page is rendered with, and the language they are in.
+    pub text: &'a Catalog,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// What is waiting, soonest to expire first. Empty renders a page that
+    /// says so.
+    pub approvals: Vec<ApprovalLine>,
+    /// Where a decision posts to.
+    pub action: &'a str,
+    /// Where the device flow's code entry posts to (RFC 8628 §3.3).
+    pub device_action: &'a str,
+    /// Where a person re-authenticates when a decision needs a fresher or a
+    /// stronger sign-in than the session has.
+    pub sign_in_href: &'a str,
+    /// The synchroniser token a decision carries.
+    pub csrf: &'a str,
+    /// The synchroniser token the device endpoint compares against.
+    ///
+    /// A second token rather than the same one: the two endpoints derive
+    /// theirs under different domain separators, so one value could only work
+    /// at one of them.
+    pub device_csrf: &'a str,
+    /// What happened last time, if anything did.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders.
+    pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    pub brand: crate::brand::Brand<'a>,
+}
+
 /// The account creation page.
 ///
 /// No script: a passkey cannot be enrolled from markup, and enrolment happens

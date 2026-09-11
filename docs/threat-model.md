@@ -919,6 +919,49 @@ dropped: a client that sent one believes the person will be challenged, and a
 server that silently ignored it would put an unchallenged approval in front of
 them.
 
+### Approvals inbox (`ast-lh3.6`)
+
+**Why this needs a section: this is the page where a person gives somebody
+else a credential on their account.** `/account/approvals` lists the pending
+backchannel requests CIBA Core 1.0 §7.2 resolved to this person and carries RFC
+8628 §3.3's code entry beside them. Everything else in the browser tree either
+authenticates the person or authorises a client the person navigated to; here
+the request arrived from somewhere they cannot see, and the only evidence that
+it is theirs is what the page renders.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Phishing through the `binding_message`.** The string is chosen by the client and rendered large, so it is the obvious place to write "Ignore the amount below" or to spoof another transaction. | It is not free text: at most 64 characters of letters, digits, spaces and hyphens (`ciba::MAX_BINDING_MESSAGE_CHARS`, refused with `invalid_binding_message`), so no newline, bidirectional override or combining mark can make one string display two ways. It is escaped like every other value — askama autoescaping, with `crates/web/src/source_audit.rs` failing the build on a second `\|safe` — and it is rendered as a *comparison*: the page says to check it against the device the flow was started on, which is what §7.1 has it for. The page also states RFC 8628 §5.3's warning plainly: a request you did not start is a request somebody else started. |
+| **A1** | **G1, G2** | **Cross-site forgery of a decision.** A page on another origin makes the browser post an approval; the session cookie rides along. | Both forms carry a synchroniser token derived from the session's *digest* — a value the browser never holds, so a cross-site page can cause the cookie to be sent but cannot compute the token — compared in constant time. The decision route is `POST` only and is never reachable by a top-level navigation, which is ADR-0009's rule for first-party state changes. The two forms carry *different* tokens, under different domain separators, so a token lifted from the device form cannot decide an approval. |
+| **A1** | **G1** | **Deciding somebody else's request.** The form names a request; a guessed or stolen reference would let one account answer another's. | The reference is the `auth_req_id`'s digest, never the identifier (so a rendering of this page is not a rendering of anything redeemable), and `user_id` is in the predicate of every statement behind the page — the list, the read, and the `UPDATE` that decides. A reference belonging to somebody else is not "refused", it simply matches no row, and the page says the one sentence it says about every request that is not waiting. |
+| **A1** | **G1** | **Approving from a session somebody walked away from.** A browser left open, or one an attacker reached hours after the person authenticated. | An approval requires an authentication within `approvals::FRESHNESS` (two minutes). A stale session is not refused with an error: it is sent back through the interaction pages and returns having authenticated, so the approval and the authentication are one act. Refusing needs no freshness — saying no grants nothing, and a person shown a request they did not start must be able to stop it with what they have. |
+| **A1** | **G1** | **Approving a request that asked for more than this authentication is worth.** §7.1's `acr_values` is the client's statement about the class it needs. | It is enforced here, at the only moment a person is present: `AcrPolicy::strongest_met` against the session's `amr`, and a session reaching none of the requested classes is told to sign in again with the method that is asked for. On the default ladder that makes `urn:asterius:acr:passkey` answerable by a passkey and by nothing else. A session this tenant cannot classify at all does not reach the page. |
+| **A2** | **G1** | **Replaying a decision, or double-clicking one.** | The decision is one `UPDATE … WHERE status = 'pending' AND expires_at > now`, and the §10.2 ping is queued in the same transaction. A second submission moves no row and is answered `409` with the same sentence, so a request cannot be approved twice and a client cannot be pinged twice for one decision. An expired request disappears from the list by the clock rather than by a sweep. |
+| **A1** | **G2** | **Reading the inbox out of a cache or a shared browser.** | Every response is `no-store`: the page carries a countdown, a synchroniser token and a list of who is asking about this person. |
+
+**Residual — approval under coercion.** Nothing on this page distinguishes a
+person who approves because they want to from one approving because somebody is
+standing over them, and no control here can. What the page does is make the
+decision *legible and attributable*: the client is named, the scopes and the
+RFC 9396 elements are listed, the binding message is shown for comparison, and
+both outcomes are written to the audit trail with the approval's fingerprint
+(`approval_id`) and the deciding session, so a coerced approval is visible
+afterwards to the person and to an operator. The five-minute ceiling on a
+request bounds how long a coerced decision stays possible.
+
+**Residual — the notification is a journal, not a delivery.** The person is
+told through `MailSender`, and the adapter this repository ships writes an
+outbox row and a log line: nothing arrives in anybody's inbox until an operator
+wires a real sender (`docs/configuration.md`). Push notification is out of
+scope for `ast-lh3.6`. An account with no address is not notified at all, and
+the client is not told so — §7.3's acknowledgement says nothing about the
+person, and it must not start saying whether they are reachable.
+
+**Residual — agent scope elevation is not listed.** The bead names three kinds
+of pending request; this server has a CIBA row and a device code, and no agent
+step-up mechanism to list. When one exists it belongs on this page, under the
+same freshness and `acr` rules.
+
 ### Load, and the token endpoint as a denial-of-service surface (`ast-p2l.8`)
 
 **Why this needs a section: FAPI 2.0 SP §6.1 moves the load onto this

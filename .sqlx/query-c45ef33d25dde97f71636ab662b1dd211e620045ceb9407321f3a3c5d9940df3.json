@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "update ciba_requests\n                set status = 'approved', grant_id = $3, approved_at = $4\n              where tenant_id = $1 and auth_req_id_hash = $2\n                and status = 'pending' and expires_at > $4\n          returning client_id, delivery_mode",
+  "query": "update ciba_requests\n                set status = 'approved', grant_id = $4, approved_at = $5\n              where tenant_id = $1 and auth_req_id_hash = $2 and user_id = $3\n                and status = 'pending' and expires_at > $5\n          returning client_id, delivery_mode",
   "describe": {
     "columns": [
       {
@@ -19,6 +19,7 @@
         "Text",
         "Bytea",
         "Uuid",
+        "Uuid",
         "Timestamptz"
       ]
     },
@@ -27,5 +28,5 @@
       false
     ]
   },
-  "hash": "3060c2bfe9cadbf7fe078346b890cc4477f9bdcdcc1cec6549f87bdda3bc5843"
+  "hash": "c45ef33d25dde97f71636ab662b1dd211e620045ceb9407321f3a3c5d9940df3"
 }
