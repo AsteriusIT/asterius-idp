@@ -5161,6 +5161,80 @@ async fn a_device_flow_is_approved_in_a_browser_and_redeemed_by_the_device() {
     flow.tear_down().await;
 }
 
+/// **A refused binding does not spend the device code** (RFC 8628 §3.4,
+/// RFC 9449; `ast-6fa`).
+///
+/// An approved device polls without its DPoP proof — a client that forgot the
+/// header, or somebody who read the code off a log and holds no key. It is
+/// refused, as every unbound token is, and the code is still redeemable by the
+/// device afterwards: the refusal is decided *before* the one redemption the
+/// code has is spent, as `ciba_grant` already does.
+#[tokio::test]
+async fn a_device_poll_without_a_dpop_proof_leaves_the_code_redeemable() {
+    let capabilities = Capabilities {
+        device_flow: true,
+        ..Capabilities::default()
+    };
+    let Some(mut flow) = Flow::with_capabilities(capabilities).await else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let device_key = flow.register_device_client().await;
+    let proof = ProofKey::generate();
+
+    // Arrange: an approved device code.
+    let asked = flow
+        .device_authorization(&device_key, "assertion-unproved-1")
+        .await;
+    assert_eq!(asked.status, StatusCode::OK, "{}", asked.text());
+    let (device_code, user_code) = device_response(&asked.json(), flow.tenant.issuer.as_str());
+    flow.approve_device(&user_code).await;
+
+    // Act: a poll with no DPoP proof at all.
+    let path = format!("{}{}", flow.prefix(), Endpoint::Token.path());
+    let assertion = flow.assertion_for(DEVICE_CLIENT, Some(&device_key), "assertion-unproved-2");
+    let unproved = flow
+        .post_form(
+            &path,
+            &[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", &device_code),
+                ("client_id", DEVICE_CLIENT),
+                ("client_assertion_type", CLIENT_ASSERTION_TYPE),
+                ("client_assertion", &assertion),
+            ],
+            None,
+        )
+        .await;
+
+    // Assert: refused — every token here is sender-constrained.
+    assert_eq!(
+        unproved.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        unproved.text()
+    );
+    assert_eq!(unproved.json()["error"], "invalid_grant");
+
+    // Act: the device polls once more, proving its key.
+    let redeemed = flow
+        .poll_device(&device_key, &proof, "assertion-unproved-3", &device_code)
+        .await;
+
+    // Assert: the refusal spent nothing; the code is redeemed now.
+    assert_eq!(
+        redeemed.status,
+        StatusCode::OK,
+        "an unproved poll burnt the device code: {}",
+        redeemed.text()
+    );
+    let tokens = redeemed.json();
+    assert_eq!(tokens["token_type"], "DPoP", "{tokens}");
+    assert!(tokens["id_token"].is_string(), "{tokens}");
+
+    flow.tear_down().await;
+}
+
 /// **A device code belongs to the device it was issued to** (RFC 8628 §3.4).
 ///
 /// Another authenticated client of the same tenant presents it. It learns
