@@ -4,7 +4,7 @@
 //! produces — the two-credential rule, the CSRF token, and the fact that a
 //! browser mismatch destroys the interaction rather than re-rendering it.
 
-use asterius_domain::audit::{Actor, AuditEvent, AuditSink, EventType};
+use asterius_domain::audit::{Actor, AuditEvent, AuditSink, DetailValue, EventType};
 use asterius_domain::rate_limit::{Bucket, RateLimitStore};
 use asterius_domain::{
     AuthenticationMethod, ClientId, CodeBinding, CodeIssuer, Continuation, CredentialVerifier,
@@ -3128,4 +3128,124 @@ fn acr_policy() -> &'static asterius_domain::AcrPolicy {
     static POLICY: std::sync::LazyLock<asterius_domain::AcrPolicy> =
         std::sync::LazyLock::new(asterius_domain::AcrPolicy::default);
     &POLICY
+}
+
+// ---- the password path writes its own trail (ast-j7u) --------------------
+
+/// The value a detail key holds, as text, or `None` when the key is absent.
+fn detail_text(event: &AuditEvent, key: &str) -> Option<String> {
+    event
+        .detail
+        .iter()
+        .find(|(name, _)| name.as_str() == key)
+        .and_then(|(_, value)| match value {
+            DetailValue::Text(text) => Some(text.clone()),
+            _ => None,
+        })
+}
+
+/// The bug this bead exists for: only the passkey path wrote `auth.login`, so
+/// an account without a passkey left no trace of ever having signed in.
+///
+/// The record has to carry what the passkey one carries — the account as both
+/// actor and subject, and the method — or the trail cannot answer "how did
+/// this session start" for the commonest way of starting one.
+#[tokio::test]
+async fn a_password_sign_in_is_written_to_the_audit_trail() {
+    // Arrange
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let auth = AlwaysSucceeds;
+
+    // Act
+    submit(
+        context(&tenant, &store, &nonce, Some(&auth), &sessions, &issued),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=hunter2",
+            token.expose()
+        )),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    let events = issued.audit.events();
+    let logins: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::AUTH_LOGIN)
+        .collect();
+    assert_eq!(
+        logins.len(),
+        1,
+        "one sign-in, one record: {:?}",
+        events
+            .iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>()
+    );
+    let login = logins[0];
+    let user = uuid::Uuid::from_u128(1).to_string();
+    assert_eq!(login.actor, Actor::User(user.clone()));
+    assert_eq!(login.subject.as_deref(), Some(user.as_str()));
+    assert_eq!(
+        detail_text(login, "method").as_deref(),
+        Some(AuthenticationMethod::Password.as_str()),
+        "the trail has to separate a password sign-in from a passkey one"
+    );
+    assert_eq!(detail_text(login, "kind").as_deref(), Some("password"));
+}
+
+/// The other half: a credential that did not match leaves a record too, and it
+/// is the one the abuse detection already reads.
+#[tokio::test]
+async fn a_wrong_password_is_written_to_the_audit_trail() {
+    // Arrange
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+    let auth = AlwaysRefuses;
+
+    // Act
+    submit(
+        context(&tenant, &store, &nonce, Some(&auth), &sessions, &issued),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=wrong",
+            token.expose()
+        )),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    // Assert
+    let events = issued.audit.events();
+    let failures: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::AUTH_FAILED)
+        .collect();
+    assert_eq!(failures.len(), 1, "one refusal, one record");
+    assert_eq!(
+        detail_text(failures[0], "method").as_deref(),
+        Some("password")
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.event_type == EventType::AUTH_LOGIN),
+        "a refused credential must not look like a sign-in"
+    );
 }

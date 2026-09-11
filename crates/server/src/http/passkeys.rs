@@ -85,7 +85,8 @@ use asterius_domain::entities::session::{COOKIE_NAME, Lifetimes, SessionId};
 use asterius_domain::{
     ASSERTION_TTL, AuditSink, AuthenticationMethod, ENROLMENT_TTL, InteractionRecord,
     InteractionRepository, NewPasskey, OpaqueToken, PasskeyRepository, RegisteredPasskey,
-    SessionRepository, Tenant, UserDirectory, UserId, UserStatus, sha256, sha256_hex,
+    SessionId as DomainSessionId, SessionRepository, Tenant, UserDirectory, UserId, UserStatus,
+    sha256, sha256_hex,
 };
 use asterius_oidc::decision::Requirements;
 use asterius_web::Brand;
@@ -897,7 +898,14 @@ async fn session_from_assertion(
         return login_refused("the interaction could not be advanced");
     }
 
-    record_signed_in(context, credential, &verified.origin, now).await;
+    record_signed_in(
+        context,
+        credential,
+        &verified.origin,
+        &established.digest,
+        now,
+    )
+    .await;
 
     // 204 and a cookie. The script navigates to the interaction, which renders
     // whatever stage it is now at — so the page that follows a passkey sign-in
@@ -1040,6 +1048,7 @@ async fn record_signed_in(
     context: &PasskeyLoginContext<'_>,
     credential: &RegisteredPasskey,
     origin: &str,
+    session_digest: &str,
     now: OffsetDateTime,
 ) {
     let subject = credential.user.as_uuid().to_string();
@@ -1051,6 +1060,10 @@ async fn record_signed_in(
         now,
     )
     .subject(subject)
+    // The digest, never the value the browser holds: this is what lets the
+    // console follow a session back to the ceremony that opened it, and it is
+    // the same field the password path fills (`ast-j7u`).
+    .session(DomainSessionId::new(session_digest.to_owned()))
     .detail(
         Detail::new()
             .label("kind", "passkey")

@@ -743,6 +743,16 @@ async fn authenticated(
     };
     let id_value = established.id;
 
+    // The trail entry for the sign-in itself (`ast-j7u`). Here, and once: this
+    // is the single point on the password path where a session exists because
+    // a credential was accepted, so the three ways out below — first-party
+    // destination, remembered consent, consent screen — cannot each write one
+    // and cannot between them write none. A step-up reaches it through the
+    // same line, which is why the record names the session it rotated onto
+    // rather than being suppressed: "this factor was proved at this moment" is
+    // the fact the trail is short of, not a duplicate of the first login.
+    record_signed_in(context, user, &established.digest, now).await;
+
     // `ast-2vk.7` decides whether a step-up is needed; until then
     // an authenticated user goes straight to whatever this interaction
     // was for — the consent screen for an authorization, the
@@ -2007,6 +2017,50 @@ async fn retry_signup(
             typed: Some(typed),
         },
     )
+}
+
+/// Appends a password sign-in to the audit trail (`ast-j7u`).
+///
+/// The counterpart of `http::passkeys::record_signed_in`, built the same way
+/// and carrying the same fields, because the two are read together: an
+/// operator asking "how did this account sign in" must get one answer shaped
+/// one way, not a passkey answer and a hole where the commonest credential
+/// was. The `method` detail is the RFC 8176 `amr` value the session was given,
+/// taken from [`AuthenticationMethod`] rather than written out, so the trail
+/// and the ID token cannot disagree about what was proved.
+///
+/// The session is named by its digest — what the row is keyed by, never the
+/// value the browser holds — which is what lets the console follow a session
+/// back to the authentication that opened it.
+///
+/// A failure to write is logged and does not propagate: the person is signed
+/// in either way, and an audit outage must not become a sign-in that is
+/// refused for a reason nobody can act on.
+async fn record_signed_in(
+    context: &InteractionContext<'_>,
+    user: uuid::Uuid,
+    session_digest: &str,
+    now: OffsetDateTime,
+) {
+    let subject = user.to_string();
+    record_event(
+        context,
+        AuditEvent::new(
+            context.tenant.id.clone(),
+            EventType::AUTH_LOGIN,
+            Outcome::Success,
+            Actor::User(subject.clone()),
+            now,
+        )
+        .subject(subject)
+        .session(DomainSessionId::new(session_digest.to_owned()))
+        .detail(
+            Detail::new()
+                .label("kind", "password")
+                .label("method", AuthenticationMethod::Password.as_str()),
+        ),
+    )
+    .await;
 }
 
 /// Writes one event, or says in the log that it could not.
