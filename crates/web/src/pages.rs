@@ -1635,6 +1635,68 @@ mod tests {
         );
     }
 
+    /// The order the two decisions appear in is a protocol detail, not a
+    /// matter of taste.
+    ///
+    /// The FAPI 2.0 conformance plan's `Login` task clicks the first
+    /// `//form//button[@type='submit']` of whichever interaction page it is
+    /// shown, because a page that only asks for a password has exactly one.
+    /// It is shown this page too — a second client, already signed in, goes
+    /// straight to consent — so the first submit button in *document order*
+    /// is the one the suite presses, and a page that led with "deny" refused
+    /// the grant the module was measuring (`ast-yc5`).
+    ///
+    /// Document order is also tab order, so this is the same thing the
+    /// keyboard does: the affirmative control comes first here as it does on
+    /// the approvals, logout and device-confirmation pages, and no CSS
+    /// reorders it behind a sighted user's back (WCAG 2.2 SC 2.4.3).
+    #[test]
+    fn the_first_submit_button_of_the_consent_form_is_allow() {
+        let html = consent(Vec::new(), false, Vec::new());
+
+        // Scoped to the form, exactly as `//form//button[@type='submit']` is:
+        // the inlined stylesheet carries a comment that spells the tag out,
+        // and a search over the whole document would find that instead.
+        let form = &html[html.find("<form ").expect("the page has a form")..];
+        let start = form
+            .find(r#"<button type="submit""#)
+            .expect("the consent form has a submit button");
+        let end = start + form[start..].find('>').expect("an open tag ends somewhere");
+        let first = &form[start..end];
+
+        assert!(
+            first.contains(r#"value="allow""#),
+            "the first submit button in document order is what the \
+             conformance suite clicks, and it must be the approval: {first}"
+        );
+    }
+
+    /// The error page says what happened in a `p.error`.
+    ///
+    /// Five modules of the FAPI 2.0 plan end on this page rather than at a
+    /// `redirect_uri`, and their override waits ten seconds for
+    /// `//p[@class='error']` to hold some text before it takes the screenshot
+    /// the module is graded on. The class attribute is matched whole, so the
+    /// element carries that one class and nothing else (`ast-yc5`).
+    #[test]
+    fn the_error_page_states_the_failure_in_a_paragraph_of_class_error() {
+        let html = render(&ErrorPage {
+            text: &ENGLISH,
+            tenant_name: "Demo",
+            message: "We could not complete that request.",
+            correlation_id: "01JQ0000000000000000000000",
+            nonce_attribute: nonce_attribute(&nonce()),
+            theme_css: "",
+            brand: brand(),
+        });
+
+        assert!(
+            html.contains(r#"<p class="error">We could not complete that request.</p>"#),
+            "the conformance overrides wait on //p[@class='error'] with text in \
+             it: {html}"
+        );
+    }
+
     fn consent(scopes: Vec<ScopeLine>, offline: bool, resources: Vec<String>) -> String {
         let nonce = nonce();
         ConsentPage {
