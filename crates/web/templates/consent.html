@@ -110,10 +110,27 @@
 
 {# Both decisions post under the same token. A denial is as much a decision as
    an approval: a forged "deny" is a denial of service and a forged "allow" is
-   a granted authorization, so both need the same protection. #}
+   a granted authorization, so both need the same protection.
+
+   Approve first, in document order and on the screen, like every other pair of
+   decisions in this tree (the approvals inbox, the logout confirmation, the
+   device confirmation). Two reasons, and neither is taste.
+
+   A person reaching this page arrived by asking to sign in somewhere: the
+   affirmative is the step they came for, so it is the first control the
+   keyboard reaches and the one drawn in the accent. Nothing in `style.css`
+   reorders the pair, because a visual order that disagrees with the tab order
+   is what WCAG 2.2 SC 2.4.3 is about — a sighted keyboard user would be
+   focusing "deny" while the eye is on "allow".
+
+   And the FAPI 2.0 conformance plan's `Login` task clicks the first
+   `//form//button[@type='submit']` of whichever interaction page it is shown,
+   including this one, so a page whose first submit was the denial refused the
+   grant eight modules were measuring (`ast-yc5`). The plan is not the reason
+   for the order, but it is what noticed. #}
 <div class="actions">
-  <button type="submit" name="decision" value="deny" class="secondary">{{ text.consent_deny() }}</button>
   <button type="submit" name="decision" value="allow">{{ text.consent_allow() }}</button>
+  <button type="submit" name="decision" value="deny" class="secondary">{{ text.consent_deny() }}</button>
 </div>
 </form>
 {% endblock %}

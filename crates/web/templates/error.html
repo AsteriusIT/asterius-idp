@@ -15,7 +15,13 @@
 <p class="badge-danger" aria-hidden="true">!</p>
 <div class="stack tight">
 <h2>{{ text.error_title() }}</h2>
-<p class="muted">{{ message }}</p>
+{# `class="error"`, spelled exactly like that and alone in the attribute: five
+   modules of the FAPI 2.0 plan end here rather than at a redirect_uri, and
+   their override in `conformance/plans/fapi2-sp-final.json` waits ten seconds
+   for `//p[@class='error']` to hold text before taking the screenshot the
+   module is graded on. That XPath matches the attribute whole, so a second
+   class in it is the same as no element at all (`ast-yc5`). #}
+<p class="error">{{ message }}</p>
 </div>
 {# The reference an operator asks for, set apart from the sentence around it
    because it is read back over the telephone. #}
