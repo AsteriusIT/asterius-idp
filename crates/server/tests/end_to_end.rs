@@ -5387,6 +5387,62 @@ fn validate_as_a_relying_party(token: &str, jwks: &Value, issuer: &str, audience
     claims
 }
 
+/// Every outbox row this tenant has queued, whatever else is in the table.
+///
+/// `PgOutbox::claim` is a *worker* API and is deliberately not tenant-scoped:
+/// a deliverer takes the globally oldest due rows, which is what makes one
+/// worker able to drain the whole deployment. That is correct in production
+/// and a trap in a test, because every server test binary shares one database
+/// and one `outbox` table. `claim("…", 10, now)` takes the oldest ten rows
+/// *anywhere* and the caller then filters by tenant — so ten rows queued by a
+/// test running in parallel are ten rows this tenant's row is not among, and
+/// the assertion fails with "0 rows" on a flow that worked perfectly.
+///
+/// That is the shape of the CI failure `ast-vae` hit: adding a test binary
+/// that queues mail (`email_verification.rs`) made an existing race start
+/// losing. It was never about the logout path.
+///
+/// So this claims in a bounded loop until the batch runs dry, keeps what
+/// belongs to `tenant`, and **hands every foreign row straight back** with a
+/// retry verdict rather than sitting on the lease. Without that last part a
+/// test would silently burn another test's attempt budget and dead-letter
+/// rows that nothing was wrong with — trading a flake here for a flake there.
+async fn queued_for_tenant(
+    pool: &sqlx::PgPool,
+    worker: &str,
+    tenant: &asterius_domain::TenantId,
+) -> Vec<asterius_domain::outbox::OutboxEvent> {
+    let outbox = asterius_store_pg::PgOutbox::new(pool.clone());
+    let mut mine = Vec::new();
+    // Ten batches of fifty is far more than any test run queues, and the loop
+    // ends at the first empty batch in the ordinary case.
+    for _ in 0..10 {
+        let now = OffsetDateTime::now_utc();
+        let batch = outbox
+            .claim(worker, 50, now)
+            .await
+            .expect("claim the queued rows");
+        if batch.is_empty() {
+            break;
+        }
+        for event in batch {
+            if event.tenant == *tenant {
+                mine.push(event);
+            } else {
+                // Back into the queue, attempt budget intact enough to be
+                // claimed again by whoever it belongs to.
+                let outcome = asterius_store_pg::Outcome::failed(
+                    &event,
+                    OffsetDateTime::now_utc(),
+                    "claimed by another test; released".to_owned(),
+                );
+                outbox.ack(&event, &outcome).await.expect("release the row");
+            }
+        }
+    }
+    mine
+}
+
 /// A sign-in, a logout, and the logout token a relying party is left holding.
 ///
 /// End to end because every part of this is a seam between two components: the
@@ -5429,15 +5485,7 @@ async fn a_logout_queues_a_logout_token_its_relying_party_can_validate() {
     assert_eq!(ended.status, StatusCode::OK, "{}", ended.text());
 
     // Assert: exactly one row, addressed and shaped as §2.5 says.
-    let outbox = asterius_store_pg::PgOutbox::new(flow.store.pool().clone());
-    let claimed = outbox
-        .claim("e2e-backchannel", 10, OffsetDateTime::now_utc())
-        .await
-        .expect("claim the queued rows");
-    let rows: Vec<_> = claimed
-        .into_iter()
-        .filter(|event| event.tenant == flow.tenant.id)
-        .collect();
+    let rows = queued_for_tenant(flow.store.pool(), "e2e-backchannel", &flow.tenant.id).await;
     assert_eq!(
         rows.len(),
         1,
@@ -5747,12 +5795,10 @@ impl Flow {
 
     /// The `ciba.ping` rows this tenant has queued.
     async fn queued_pings(&self) -> Vec<asterius_domain::outbox::OutboxEvent> {
-        asterius_store_pg::PgOutbox::new(self.store.pool().clone())
-            .claim("e2e-ciba", 10, OffsetDateTime::now_utc())
+        queued_for_tenant(self.store.pool(), "e2e-ciba", &self.tenant.id)
             .await
-            .expect("claim the queued rows")
             .into_iter()
-            .filter(|event| event.tenant == self.tenant.id && event.kind == "ciba.ping")
+            .filter(|event| event.kind == "ciba.ping")
             .collect()
     }
 
