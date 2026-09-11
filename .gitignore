@@ -59,6 +59,9 @@ node_modules/
 !/fuzz/corpus/admin_stream_status/
 /fuzz/corpus/admin_stream_status/*
 !/fuzz/corpus/admin_stream_status/crash-*
+!/fuzz/corpus/request_object_claims/
+/fuzz/corpus/request_object_claims/*
+!/fuzz/corpus/request_object_claims/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.

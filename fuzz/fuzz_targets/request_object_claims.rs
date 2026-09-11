@@ -181,14 +181,28 @@ fuzz_target!(|input: Input| {
     );
 
     // RFC 9101 §10.2: short-lived, and present.
+    //
+    // `exp` is a client-chosen i64, so `exp - now` is not an i64 for every
+    // accepted object: `parameters` has no reason to refuse an `exp` in the
+    // distant past — an expired object is the signature verifier's business,
+    // not this mapping's — and `i64::MIN - 1_760_000_000` overflows. This
+    // assertion used to spell that subtraction plainly and panicked inside the
+    // harness on such a case, reporting a defect in a parser that had none.
+    //
+    // Saturating, the way `request_object::parameters` itself computes the
+    // lifetime, and for the same reason. It does not soften the property: the
+    // only values that saturate are further from `now` than any i64 can
+    // express, so a saturated difference lands on the same side of
+    // `MAX_LIFETIME` as the true one — `i64::MIN` stays under it, `i64::MAX`
+    // stays over it. A ten-minute ceiling is still a ten-minute ceiling.
     let exp = object
         .get("exp")
         .and_then(Value::as_i64)
         .expect("accepted an object with no numeric exp");
+    let lifetime = exp.saturating_sub(now().unix_timestamp());
     assert!(
-        exp - now().unix_timestamp() <= MAX_LIFETIME.whole_seconds(),
-        "accepted an object valid for {} seconds",
-        exp - now().unix_timestamp()
+        lifetime <= MAX_LIFETIME.whole_seconds(),
+        "accepted an object valid for {lifetime} seconds"
     );
 
     // The JWT's own claims are not parameters: a `state` this server invented
