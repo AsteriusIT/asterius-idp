@@ -364,35 +364,14 @@ pub fn with_roles(
     held: &asterius_domain::HeldRoles,
 ) -> Map<String, Value> {
     let narrowed = held.for_client(&asterius_domain::ClientId::new(client_id.to_owned()));
-    if !narrowed.tenant.is_empty() {
-        body.insert(
-            "roles".to_owned(),
-            Value::Array(
-                narrowed
-                    .tenant
-                    .iter()
-                    .map(|role| Value::String(role.as_str().to_owned()))
-                    .collect(),
-            ),
-        );
-    }
-    for (client, roles) in &narrowed.clients {
-        if roles.is_empty() {
-            continue;
+    // `HeldRoles::claim` renders both, and is the same function the access
+    // token and the ID token call: three responses carrying one shape, and one
+    // place to change it. It writes nothing for a claim with nothing to say,
+    // so a person holding no roles gets no member rather than an empty array.
+    for claim in asterius_domain::RoleClaim::ALL {
+        if let Some(value) = narrowed.claim(claim) {
+            body.insert(claim.as_str().to_owned(), value);
         }
-        let mut entry = Map::new();
-        entry.insert(
-            "roles".to_owned(),
-            Value::Array(
-                roles
-                    .iter()
-                    .map(|role| Value::String(role.as_str().to_owned()))
-                    .collect(),
-            ),
-        );
-        let mut members = Map::new();
-        members.insert(client.as_str().to_owned(), Value::Object(entry));
-        body.insert("resource_access".to_owned(), Value::Object(members));
     }
     body
 }

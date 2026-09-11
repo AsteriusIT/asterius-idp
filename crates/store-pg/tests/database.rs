@@ -149,6 +149,12 @@ const NOT_A_STORED_SECRET: &[(&str, &str, &str)] = &[
     ),
     (
         "clients",
+        "roles_in_id_token",
+        "a boolean saying whether this client's ID tokens carry the application-role claims \
+         (`ast-mqt`), not a token",
+    ),
+    (
+        "clients",
         "backchannel_token_delivery_mode",
         "CIBA Core 1.0 §4's `poll` or `ping` — how the client is handed its tokens, not one \
          of them",

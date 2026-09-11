@@ -31,7 +31,7 @@ pub use agent::{
 };
 pub use application_role::{
     ApplicationRole, ApplicationRoleError, HeldRoles, MAX_ROLE_DESCRIPTION_LEN, RoleAssignment,
-    RoleName, RoleNameError, RoleOwner,
+    RoleClaim, RoleName, RoleNameError, RoleOwner,
 };
 pub use authorization_details::{
     AuthorizationDetail, AuthorizationDetails, AuthorizationDetailsRegistry,
@@ -40,8 +40,8 @@ pub use authorization_details::{
 };
 pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
-    GrantType, JwksSource, RedirectUri, RedirectUriError, SubjectType, TlsClientAuthSubject,
-    TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod,
+    GrantType, JwksSource, RedirectUri, RedirectUriError, RolesInIdToken, SubjectType,
+    TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod,
 };
 pub use email_verification::{
     EMAIL_VERIFICATION_LIFETIME, EMAIL_VERIFICATION_TOKEN_BITS, EmailVerificationToken,

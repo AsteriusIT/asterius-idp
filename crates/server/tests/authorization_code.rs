@@ -230,6 +230,41 @@ impl Fixture {
         client
     }
 
+    /// The same client, registered for the application-role claims in its ID
+    /// tokens (`ast-mqt`).
+    ///
+    /// Registered through `ClientRegistration::from_json`, so the member is
+    /// exercised as a client would send it rather than as a field a test set.
+    async fn client_asking_for_roles_in_its_id_token(&self) -> Client {
+        let client = Client {
+            tenant: self.tenant.id.clone(),
+            id: ClientId::new(CLIENT),
+            registration: ClientRegistration::from_json(
+                &serde_json::to_vec(&json!({
+                    "client_name": "Billing",
+                    "redirect_uris": [REDIRECT],
+                    "grant_types": ["authorization_code"],
+                    "scope": "openid",
+                    "jwks": {"keys": [{"kty": "OKP", "crv": "Ed25519", "x": "abc"}]},
+                    "roles_in_id_token": true,
+                }))
+                .expect("serialise"),
+                Capabilities::default(),
+            )
+            .expect("a valid registration"),
+            status: ClientStatus::Active,
+            created_at: self.now,
+            updated_at: self.now,
+        };
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities::default())
+            .upsert(&client)
+            .await
+            .expect("store the client");
+        client
+    }
+
     /// A second client of the same tenant, so that "another client's roles"
     /// is a real row rather than a hypothesis.
     async fn second_client(&self, id: &ClientId) {
@@ -737,6 +772,183 @@ db_test! {
             1,
             "a token named more than one client in resource_access"
         );
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// **The ID token says who somebody is, not what they may do** (`ast-mqt`).
+    ///
+    /// The same account holding the same roles as the test above, and an
+    /// authorization that asked for nothing: the access token carries the two
+    /// claims and the ID token carries neither. An ID token passes through a
+    /// browser and is kept by the client, so authority goes in it only when
+    /// the client asks — which is the same rule OIDC Core §5.4 states for
+    /// every other claim.
+    async fn an_id_token_carries_no_role_claim_unless_the_client_asked(fixture) {
+        // Arrange.
+        let client = fixture.client().await;
+        let pkce = Pkce::generate();
+        let (session, user) = fixture.session().await;
+        let grant = fixture.grant_in(&["openid"], &session, user).await;
+        fixture.define_and_assign(user, RoleOwner::Tenant, "auditor").await;
+        fixture
+            .define_and_assign(user, RoleOwner::Client(ClientId::new(CLIENT)), "refund")
+            .await;
+        let jkt = thumbprint(21);
+        let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
+
+        // Act.
+        let (status, body) = fixture
+            .redeem(
+                &client,
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("redirect_uri", REDIRECT),
+                    ("code_verifier", pkce.verifier),
+                ],
+                Some(&jkt),
+            )
+            .await;
+
+        // Assert.
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let access = fixture
+            .verify(body["access_token"].as_str().expect("access_token"))
+            .await;
+        let id_token = fixture
+            .verify(body["id_token"].as_str().expect("id_token"))
+            .await;
+
+        assert_eq!(access["roles"], json!(["auditor"]), "the access token lost its roles");
+        assert!(
+            id_token.get("roles").is_none(),
+            "an ID token nobody asked to carry authority carried it: {id_token}"
+        );
+        assert!(
+            id_token.get("resource_access").is_none(),
+            "an ID token nobody asked to carry authority carried it: {id_token}"
+        );
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// **Asked for under the `claims` parameter, and then emitted** (OIDC Core
+    /// §5.5, `ast-mqt`).
+    ///
+    /// The request is read from the *grant* — what the user consented to — and
+    /// the roles are read from the assignment tables at issuance. The claim is
+    /// narrowed to the client the token is for, exactly as in the access
+    /// token: another client's roles are not this client's business, whichever
+    /// token they would travel in.
+    async fn a_claims_request_puts_the_roles_in_the_id_token(fixture) {
+        // Arrange.
+        let client = fixture.client().await;
+        let other = ClientId::new("reporting");
+        fixture.second_client(&other).await;
+        let pkce = Pkce::generate();
+        let (session, user) = fixture.session().await;
+        let grant = fixture
+            .grant_covering(
+                &["openid"],
+                json!({"id_token": {"roles": null, "resource_access": null}}),
+                &session,
+                user,
+            )
+            .await;
+        fixture.define_and_assign(user, RoleOwner::Tenant, "auditor").await;
+        fixture
+            .define_and_assign(user, RoleOwner::Client(ClientId::new(CLIENT)), "refund")
+            .await;
+        fixture
+            .define_and_assign(user, RoleOwner::Client(other.clone()), "export")
+            .await;
+        let jkt = thumbprint(22);
+        let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
+
+        // Act.
+        let (status, body) = fixture
+            .redeem(
+                &client,
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("redirect_uri", REDIRECT),
+                    ("code_verifier", pkce.verifier),
+                ],
+                Some(&jkt),
+            )
+            .await;
+
+        // Assert.
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id_token = fixture
+            .verify(body["id_token"].as_str().expect("id_token"))
+            .await;
+
+        assert_eq!(id_token["roles"], json!(["auditor"]));
+        assert_eq!(id_token["resource_access"][CLIENT]["roles"], json!(["refund"]));
+        assert!(
+            id_token["resource_access"].get(other.as_str()).is_none(),
+            "an ID token named another client's roles: {}",
+            id_token["resource_access"]
+        );
+        // And the claims that make an ID token an ID token are still the
+        // server's: a role claim is written after them and can overwrite none.
+        assert_eq!(id_token["sub"], "alice-pairwise");
+        assert_eq!(id_token["aud"], CLIENT);
+
+        fixture.tear_down().await;
+    }
+}
+
+db_test! {
+    /// **A client may register for it once instead of asking every time**
+    /// (`ast-mqt`).
+    ///
+    /// `roles_in_id_token` is the standing form of the same request, and it
+    /// turns on both claims: a client that set it asked for what it holds
+    /// about its users, not for half of it. The authorization here carries no
+    /// `claims` parameter at all.
+    async fn a_registered_client_setting_emits_both_role_claims(fixture) {
+        // Arrange.
+        let client = fixture.client_asking_for_roles_in_its_id_token().await;
+        let pkce = Pkce::generate();
+        let (session, user) = fixture.session().await;
+        let grant = fixture.grant_in(&["openid"], &session, user).await;
+        fixture.define_and_assign(user, RoleOwner::Tenant, "auditor").await;
+        fixture
+            .define_and_assign(user, RoleOwner::Client(ClientId::new(CLIENT)), "refund")
+            .await;
+        let jkt = thumbprint(23);
+        let code = fixture.issue(&grant, &pkce, Some(jkt.as_str())).await;
+
+        // Act.
+        let (status, body) = fixture
+            .redeem(
+                &client,
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("redirect_uri", REDIRECT),
+                    ("code_verifier", pkce.verifier),
+                ],
+                Some(&jkt),
+            )
+            .await;
+
+        // Assert.
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let id_token = fixture
+            .verify(body["id_token"].as_str().expect("id_token"))
+            .await;
+
+        assert_eq!(id_token["roles"], json!(["auditor"]));
+        assert_eq!(id_token["resource_access"][CLIENT]["roles"], json!(["refund"]));
 
         fixture.tear_down().await;
     }

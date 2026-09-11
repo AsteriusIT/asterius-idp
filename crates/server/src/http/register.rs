@@ -1141,6 +1141,15 @@ pub(crate) fn client_information(
         object.insert("agent_owner".to_owned(), json!(agent.owner().to_string()));
     }
     echo_backchannel_logout(object, registration);
+    // `ast-mqt`. RFC 7591 §3.2.1 asks for "all registered metadata about this
+    // client, including any fields provisioned by the authorization server
+    // itself", and this is one a client sets and then has to be able to read
+    // back — a client that cannot see whether its ID tokens carry role claims
+    // cannot tell a failed registration from a successful one. Echoed only
+    // when it is on, like every other member whose default is absence.
+    if registration.roles_in_id_token.is_issued() {
+        object.insert("roles_in_id_token".to_owned(), json!(true));
+    }
 
     document
 }

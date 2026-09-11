@@ -181,6 +181,10 @@ pub fn document(client: &Client) -> Value {
             .map(String::as_str)
             .collect::<Vec<_>>(),
         "use_mtls_endpoint_aliases": registration.use_mtls_endpoint_aliases,
+        // `ast-mqt`. Always rendered, including when false, because the edit
+        // form carries it as a checkbox: a member the form could not see would
+        // be one it silently cleared on the next save.
+        "roles_in_id_token": registration.roles_in_id_token.is_issued(),
         // Not settable from a document (`ast-m9c.6` owns the per-client
         // audience allow-list); shown because an operator debugging an
         // `invalid_target` needs to see it.

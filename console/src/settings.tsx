@@ -34,6 +34,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
+import {
+  RoleCatalogue,
+  TENANT_CATALOGUE,
+  mayRead as mayReadAppRoles,
+} from './appRoles';
 
 /**
  * The optional features this console draws a switch for, mirroring
@@ -338,6 +343,24 @@ export function TenantSettings({ session }: { session: Session }): JSX.Element {
           </button>
         </p>
       </form>
+
+      {/*
+        The tenant's shared role catalogue (`ast-095`). Here rather than on a
+        screen of its own because it is a property of the tenant, like the
+        features above, and because the account screen that assigns these roles
+        needs somewhere to send an operator who has none to assign. Its own
+        scope, `admin.app_roles:read`, and not this screen's: whoever may edit
+        a tenant's settings is not automatically whoever names the roles its
+        applications authorise against.
+      */}
+      {mayReadAppRoles(session) && (
+        <RoleCatalogue
+          session={session}
+          path={TENANT_CATALOGUE}
+          title="Application roles of this tenant"
+          explanation="Names every application of this tenant shares, issued in the roles claim of a token. Not the roles that administer this server — those are on an account, under admin.roles. Deleting one is refused while any account still holds it."
+        />
+      )}
 
       <section aria-labelledby="not-here">
         <h3 id="not-here">Not configurable yet</h3>

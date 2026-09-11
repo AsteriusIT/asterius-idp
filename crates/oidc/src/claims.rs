@@ -69,7 +69,7 @@
 //! So a claim reaches the ID token only when a client named it and named the
 //! ID token, never as a side effect of a scope.
 
-use asterius_domain::{Claim, ClaimName, ClaimSet, Grant, User};
+use asterius_domain::{Claim, ClaimName, ClaimSet, Grant, RoleClaim, User};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -286,6 +286,17 @@ impl ReleasableClaim {
         if is_serde_json_sentinel(raw) {
             return None;
         }
+        // The application-role claims (`ast-095`) are computed by the token
+        // issuers from the assignment tables, so no user record may release
+        // one. Refused here rather than filtered later: `roles` is a perfectly
+        // ordinary name for a claim bag to hold, and a claims request naming
+        // it must not turn an administrator's free-form attribute into a claim
+        // a resource server reads as authority. Whether the *server's* roles
+        // reach the ID token is `ClaimsRequest::role_claims` — the request is
+        // kept, it simply does not resolve out of the user row.
+        if RoleClaim::parse(base_name(raw)).is_some() {
+            return None;
+        }
         UserAttribute::parse(raw).map_or_else(
             || ClaimName::parse(raw).ok().map(Self::Stored),
             |attribute| Some(Self::Attribute(attribute)),
@@ -300,6 +311,15 @@ impl ReleasableClaim {
             Self::Stored(name) => name.as_str(),
         }
     }
+}
+
+/// A claim name without its OIDC Core §5.2 language tag.
+///
+/// The reserved lists are compared against the base, as
+/// [`ClaimName::parse`] compares them: otherwise `roles#en` would be the one
+/// spelling of a reserved name that slipped through.
+fn base_name(raw: &str) -> &str {
+    raw.split_once('#').map_or(raw, |(base, _)| base)
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +559,7 @@ pub struct ClaimsRequest {
     id_token: BTreeMap<ReleasableClaim, ClaimRequest>,
     userinfo: BTreeMap<ReleasableClaim, ClaimRequest>,
     acr: Option<ClaimRequest>,
+    role_claims: BTreeSet<RoleClaim>,
 }
 
 impl ClaimsRequest {
@@ -620,12 +641,18 @@ impl ClaimsRequest {
         // from the one §5.5.1.1's examples use — `parse_section` keeps the
         // first it is given.
         let mut acr = None;
-        let id_token = parse_section(&root, "id_token", &mut acr)?;
-        let userinfo = parse_section(&root, "userinfo", &mut acr)?;
+        let mut role_claims = BTreeSet::new();
+        let id_token = parse_section(&root, "id_token", &mut acr, &mut role_claims)?;
+        // The role claims named under `userinfo` are dropped rather than
+        // collected: `/userinfo` already answers with what the account holds
+        // (`ast-095`), so there is nothing for a request there to turn on, and
+        // a second switch that changed nothing would be read as one that did.
+        let userinfo = parse_section(&root, "userinfo", &mut acr, &mut BTreeSet::new())?;
         Ok(Self {
             id_token,
             userinfo,
             acr,
+            role_claims,
         })
     }
 
@@ -654,10 +681,30 @@ impl ClaimsRequest {
         self.acr.as_ref()
     }
 
+    /// The application-role claims the client asked to receive **in the ID
+    /// token** (`ast-mqt`).
+    ///
+    /// Empty for every request that did not name one, which is the default an
+    /// ID token is issued under: OIDC Core §5.4 puts no claim in an ID token
+    /// as a side effect of a scope, and what somebody may do travels in the
+    /// access token unless a client asks for it here or registers
+    /// `roles_in_id_token`.
+    ///
+    /// Per name, not per client: a request naming only `resource_access` gets
+    /// only `resource_access`, because a client that asked for one of the two
+    /// said something and the other name is not it.
+    #[must_use]
+    pub const fn role_claims(&self) -> &BTreeSet<RoleClaim> {
+        &self.role_claims
+    }
+
     /// Whether the client asked for anything at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.id_token.is_empty() && self.userinfo.is_empty() && self.acr.is_none()
+        self.id_token.is_empty()
+            && self.userinfo.is_empty()
+            && self.acr.is_none()
+            && self.role_claims.is_empty()
     }
 
     /// The canonical form of this request, as the JSON object a grant stores.
@@ -685,6 +732,14 @@ impl ClaimsRequest {
         let mut id_token = section_json(&self.id_token);
         if let Some(acr) = &self.acr {
             id_token.insert("acr".to_owned(), acr.to_json());
+        }
+        // The role claims are re-emitted under `id_token`, the section they
+        // can be asked for in: a grant that lost them would issue an ID token
+        // without the claims the user consented to the client receiving, and
+        // the round trip `from_json(to_json(r)) == r` is what the
+        // `claims_request` fuzz target asserts.
+        for claim in &self.role_claims {
+            id_token.insert(claim.as_str().to_owned(), Value::Object(Map::new()));
         }
         let mut root = Map::new();
         root.insert("id_token".to_owned(), Value::Object(id_token));
@@ -728,6 +783,7 @@ fn parse_section(
     root: &Map<String, Value>,
     member: &'static str,
     acr: &mut Option<ClaimRequest>,
+    role_claims: &mut BTreeSet<RoleClaim>,
 ) -> Result<BTreeMap<ReleasableClaim, ClaimRequest>, ClaimsRequestError> {
     let mut claims = BTreeMap::new();
     let Some(section) = root.get(member) else {
@@ -750,6 +806,16 @@ fn parse_section(
             // First one wins, and `id_token` is parsed first — see
             // `ClaimsRequest::parse`.
             acr.get_or_insert(entry);
+            continue;
+        }
+        // An application-role claim (`ast-095`). Kept as a request for what
+        // *this server* computed rather than as a claim to look up in the user
+        // record, which `ReleasableClaim::parse` refuses. `essential` is not
+        // carried with it: OIDC Core §5.5.1 makes it a hint for a consent
+        // screen and never an entitlement, and "emit this claim" has no
+        // degrees.
+        if let Some(claim) = RoleClaim::parse(name) {
+            role_claims.insert(claim);
             continue;
         }
         // OIDC Core §5.5: a member this server does not understand is ignored.
@@ -1891,6 +1957,96 @@ mod tests {
             .id_token
             .contains_key("name")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The application-role claims (`ast-mqt`)
+    // -----------------------------------------------------------------------
+
+    /// The default an ID token is issued under: nothing asked for, nothing
+    /// emitted.
+    #[test]
+    fn a_request_that_names_no_role_claim_asks_for_none() {
+        let request = ClaimsRequest::parse(r#"{"id_token":{"name":null}}"#).expect("a request");
+
+        assert!(request.role_claims().is_empty());
+    }
+
+    #[test]
+    fn a_role_claim_named_in_the_id_token_section_is_recorded() {
+        let request = ClaimsRequest::parse(r#"{"id_token":{"roles":null}}"#).expect("a request");
+
+        assert_eq!(
+            request.role_claims(),
+            &[RoleClaim::Roles].into_iter().collect::<BTreeSet<_>>()
+        );
+    }
+
+    /// Per name: asking for one of the two is not asking for both.
+    #[test]
+    fn asking_for_resource_access_does_not_ask_for_the_tenant_roles() {
+        let request =
+            ClaimsRequest::parse(r#"{"id_token":{"resource_access":{}}}"#).expect("a request");
+
+        assert!(!request.role_claims().contains(&RoleClaim::Roles));
+        assert!(request.role_claims().contains(&RoleClaim::ResourceAccess));
+    }
+
+    /// `/userinfo` already answers with what the account holds (`ast-095`), so
+    /// there is nothing a request there turns on.
+    #[test]
+    fn a_role_claim_named_under_userinfo_turns_nothing_on() {
+        let request = ClaimsRequest::parse(r#"{"userinfo":{"roles":null}}"#).expect("a request");
+
+        assert!(request.role_claims().is_empty());
+    }
+
+    /// The grant is what issuance reads, so a request that did not survive
+    /// being written down would be a consent silently dropped.
+    #[test]
+    fn the_role_claims_survive_the_round_trip_through_a_grant() {
+        let request = ClaimsRequest::parse(r#"{"id_token":{"roles":null,"resource_access":null}}"#)
+            .expect("a request");
+
+        let stored = ClaimsRequest::from_json(&request.to_json()).expect("a stored request");
+
+        assert_eq!(stored, request);
+        assert_eq!(stored.role_claims().len(), 2);
+    }
+
+    /// A user record must not be able to assert authority. `roles` is an
+    /// ordinary name for a claim bag to hold, and a client naming it would
+    /// otherwise turn an administrator's free-form attribute into a claim a
+    /// resource server reads as a role.
+    #[test]
+    fn a_stored_claim_named_roles_is_never_released() {
+        let mut user = a_user();
+        user.claims.insert(
+            ClaimName::parse("roles").expect("an ordinary claim name"),
+            Claim::new(json!(["administrator"]), ClaimSource::Admin).expect("a claim"),
+        );
+        let request =
+            ClaimsRequest::parse(r#"{"id_token":{"roles":null},"userinfo":{"roles":null}}"#)
+                .expect("a request");
+
+        let resolved = resolve(
+            &user,
+            &scopes(&["openid", "profile"]),
+            &request,
+            &ClaimsLocales::default(),
+        );
+
+        assert!(!resolved.id_token.contains_key("roles"));
+        assert!(!resolved.userinfo.contains_key("roles"));
+    }
+
+    /// And not under a language tag either, which is the spelling a reserved
+    /// list compared on the whole name would let through.
+    #[test]
+    fn a_role_claim_name_is_unreleasable_under_a_language_tag_too() {
+        assert!(ReleasableClaim::parse("roles").is_none());
+        assert!(ReleasableClaim::parse("roles#en").is_none());
+        assert!(ReleasableClaim::parse("resource_access").is_none());
     }
 
     // -----------------------------------------------------------------------

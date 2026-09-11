@@ -233,6 +233,8 @@ impl DeviceCode<'_> {
         // relying party that has to be told when it ends.
         issuance::remember_participant(self.sessions, &grant, self.now).await;
         let targeting = self.targeting(tenant, client, &grant, params).await?;
+        // Read once for both tokens of this response; see the code grant.
+        let held = issuance::held_roles(self.roles, &grant).await?;
         let confirmation = self
             .constraint
             .confirmation(client)
@@ -253,7 +255,7 @@ impl DeviceCode<'_> {
         // `ast-095`: the tenant's shared roles under `roles`, this client's own
         // under `resource_access.<client_id>.roles`. The builder narrows them
         // to this client; see `AccessToken::with_roles`.
-        .with_roles(&issuance::held_roles(self.roles, &grant).await?)
+        .with_roles(&held)
         .for_lifetime(self.lifetimes.access_token())
         .build()
         .map_err(|e| Failure::Server(DomainError::invalid("access_token", e.to_string())))?;
@@ -278,7 +280,7 @@ impl DeviceCode<'_> {
                 session: &session,
                 access_token: access_token.as_str(),
                 nonce: None,
-                released: issuance::released_claims(self.users, &grant).await?,
+                released: issuance::released_claims(self.users, &grant, client, &held).await?,
             };
             Some(issuance::sign_id_token(self.signer, tenant, client, parts, self.now).await?)
         } else {

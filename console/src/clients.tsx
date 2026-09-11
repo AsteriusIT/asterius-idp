@@ -48,6 +48,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
+import { RoleCatalogue, clientCatalogue, mayRead as mayReadAppRoles } from './appRoles';
 
 /** Where the client collection lives, relative to the API base. */
 export const CLIENTS_PATH = 'clients';
@@ -111,6 +112,8 @@ export interface ClientDocument {
   readonly subject_type: string;
   readonly resources: readonly string[];
   readonly authorization_details_types: readonly string[];
+  /** `ast-mqt`: whether this client's ID tokens carry the role claims. */
+  readonly roles_in_id_token: boolean;
   readonly jwks?: unknown;
   readonly jwks_uri?: string;
   readonly sector_identifier_uri?: string;
@@ -138,6 +141,7 @@ export interface Draft {
   readonly jwks_uri: string;
   readonly jwks: string;
   readonly status: string;
+  readonly roles_in_id_token: boolean;
 }
 
 /** The path of one client, relative to the API base. */
@@ -187,6 +191,9 @@ export function draftOf(document: ClientDocument): Draft {
     // be able to read the one that is there.
     jwks: document.jwks === undefined ? '' : JSON.stringify(document.jwks, null, 2),
     status: document.status,
+    // Absent in a document from an older release reads as off, which is the
+    // default the server applies to the same client.
+    roles_in_id_token: document.roles_in_id_token === true,
   };
 }
 
@@ -205,6 +212,7 @@ export function emptyDraft(): Draft {
     jwks_uri: '',
     jwks: '',
     status: 'active',
+    roles_in_id_token: false,
   };
 }
 
@@ -251,6 +259,7 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
     id_token_signed_response_alg: draft.id_token_signed_response_alg,
     subject_type: draft.subject_type,
     status: draft.status,
+    roles_in_id_token: draft.roles_in_id_token,
   };
   if (draft.sector_identifier_uri.trim() !== '') {
     document.sector_identifier_uri = draft.sector_identifier_uri.trim();
@@ -443,6 +452,20 @@ export function Clients({ session }: { session: Session }): JSX.Element {
           onChange={setDraft}
           onSubmit={() => save(draft, editing)}
           onClose={close}
+        />
+      )}
+
+      {/*
+        This client's own role catalogue (`ast-095`), under the editor and only
+        for an existing client: a role belongs to a client that exists, and the
+        catalogue of one being registered would have nowhere to be written.
+      */}
+      {editing.kind === 'existing' && mayReadAppRoles(session) && (
+        <RoleCatalogue
+          session={session}
+          path={clientCatalogue(editing.document.client_id)}
+          title={`Application roles of ${editing.document.client_id}`}
+          explanation="Issued to this client alone, under resource_access.{client_id}.roles. A token issued to another client never names them. Deleting one is refused while any account still holds it."
         />
       )}
 
@@ -753,6 +776,32 @@ function Editor({
           <p className="muted">
             Fetched and checked when the client is saved (OIDC Registration §5): every redirect
             URI above has to appear in the document it serves.
+          </p>
+        </fieldset>
+
+        <fieldset disabled={busy}>
+          <legend>Application roles in tokens</legend>
+          <p>
+            <label>
+              <input
+                type="checkbox"
+                name="roles_in_id_token"
+                checked={draft.roles_in_id_token}
+                onChange={(event) =>
+                  onChange({ ...draft, roles_in_id_token: event.target.checked })
+                }
+              />{' '}
+              Also put <code>roles</code> and <code>resource_access</code> in this
+              client&rsquo;s ID tokens
+            </label>
+          </p>
+          <p className="muted">
+            Off by default (<code>ast-mqt</code>). The claims are always in the access token and
+            at <code>/userinfo</code>; an ID token travels through the browser and is kept by the
+            client, so the authority it carries is the client&rsquo;s decision for its own users.
+            A client can also ask per authorization with the <code>claims</code> parameter (OIDC
+            Core §5.5). Either way a token names only this client in{' '}
+            <code>resource_access</code>.
           </p>
         </fieldset>
 
