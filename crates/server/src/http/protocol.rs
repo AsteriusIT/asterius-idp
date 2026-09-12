@@ -93,6 +93,15 @@ pub struct ProtocolState {
     /// wired deployment: an endpoint with no way to authenticate must not be
     /// one that skips authentication.
     pub clients: Option<Arc<ClientEndpoints>>,
+    /// Signs the PDP metadata document, when an operator asked for it
+    /// (`[authzen] signed_metadata`, Authorization API 1.0 §9.1.3).
+    ///
+    /// The flag and the capability are one field rather than two, for the
+    /// reason [`Self::clients`] is an `Option`: `None` omits the member, and a
+    /// deployment with no signer wired cannot end up advertising a
+    /// `signed_metadata` it has no key to produce. §9.1.3 is OPTIONAL, so the
+    /// document without it is a smaller document and not an invalid one.
+    pub signed_metadata: Option<Arc<dyn asterius_domain::keys::Signer>>,
 }
 
 /// The database-backed pieces the client-facing endpoints need.
@@ -273,6 +282,9 @@ pub fn routes(state: ProtocolState) -> Router {
         // SSF 1.0 §7.2 (`ast-0ju.1`). Mounted whatever the deployment's flags
         // say and gated inside the handler; see [`ssf_configuration`].
         .route(&ssf_configuration_path(), get(ssf_configuration))
+        // Authorization API 1.0 §9.2, gated inside the handler for the same
+        // reason; see [`authzen_configuration`].
+        .route(&authzen_configuration_path(), get(authzen_configuration))
         .route(Endpoint::Jwks.path(), get(jwks))
         .with_state(state)
         // The typeface the end-user pages are drawn in (`ast-vn7`). Here, with
@@ -983,6 +995,98 @@ async fn ssf_configuration(
         &Endpoint::Jwks.url(&tenant.issuer),
         management.as_ref(),
     );
+    cacheable_json(&document, METADATA_MAX_AGE)
+}
+
+/// Where the PDP metadata document is served (Authorization API 1.0 §9.2).
+///
+/// The same construction as [`ssf_configuration_path`], from the document name
+/// the `asterius-oidc` crate owns: §9.2 inserts the well-known segment between
+/// the host and the path of the PDP identifier, and the tenancy middleware
+/// normalises that form and OIDC Discovery §4's appended one to this single
+/// path.
+fn authzen_configuration_path() -> String {
+    format!(
+        "{}{}",
+        asterius_oidc::tenancy::WELL_KNOWN_PREFIX,
+        asterius_oidc::authzen_configuration::WELL_KNOWN_DOCUMENT
+    )
+}
+
+/// `GET /.well-known/authzen-configuration`.
+///
+/// Authorization API 1.0 §9.2.2: 200 and `application/json`. The document is
+/// [`asterius_oidc::authzen_configuration::pdp_metadata`], which explains why
+/// the identifier is the tenant's issuer and why no `search_*` member or
+/// `capabilities` array appears.
+///
+/// The feature gate is here rather than at mount time, and the refusal is a
+/// **404**, for the reason [`ssf_configuration`] gives: a tenant may switch
+/// `Feature::Authzen` off under a deployment that has it on, and as far as
+/// that tenant is concerned there is no PDP at this URL. A failed settings
+/// read answers 503 rather than falling back to the deployment's flags, which
+/// would publish a PDP an operator has just withdrawn.
+///
+/// §9.1.3's `signed_metadata` is added exactly when a signer was wired
+/// ([`ProtocolState::signed_metadata`]). A signer that refuses — a tenant with
+/// no active key — leaves the member out and logs, rather than failing the
+/// whole document: the unsigned document is the one every PEP can already
+/// read, and §9.1.3 makes the member OPTIONAL.
+async fn authzen_configuration(
+    State(state): State<ProtocolState>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+) -> Response {
+    let capabilities = match &state.tenant_settings {
+        None => state.capabilities,
+        Some(directory) => match directory.for_tenant(&tenant.id).await {
+            Ok(settings) => settings.effective_capabilities(state.capabilities),
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        },
+    };
+
+    if !capabilities.is_enabled(asterius_domain::Feature::Authzen) {
+        return crate::http::server::not_found().await.into_response();
+    }
+
+    let mut document =
+        asterius_oidc::authzen_configuration::pdp_metadata(&tenant.issuer, &capabilities);
+
+    if let Some(signer) = &state.signed_metadata {
+        let claims = asterius_oidc::authzen_configuration::signed_metadata_claims(
+            &document,
+            &tenant.issuer,
+            time::OffsetDateTime::now_utc().unix_timestamp(),
+        );
+        match signer
+            .sign(
+                &tenant.id,
+                None,
+                asterius_oidc::authzen_configuration::SIGNED_METADATA_TYP,
+                &claims,
+            )
+            .await
+        {
+            Ok(jws) => {
+                if let Some(members) = document.as_object_mut() {
+                    members.insert(
+                        "signed_metadata".to_owned(),
+                        serde_json::Value::String(jws.as_str().to_owned()),
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    tenant = %tenant.id,
+                    "cannot sign the PDP metadata; serving it unsigned"
+                );
+            }
+        }
+    }
+
     cacheable_json(&document, METADATA_MAX_AGE)
 }
 

@@ -207,6 +207,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             keys: Arc::clone(&keys) as Arc<dyn asterius_domain::KeyStore>,
             capabilities: config.features,
             tenant_settings: Some(settings.clone()),
+            signed_metadata: pdp_metadata_signer(&config, &keys),
             clients: Some(Arc::new(ClientEndpoints {
                 authenticator,
                 store: store.clone(),
@@ -500,6 +501,21 @@ fn prepare_signer(keys: &Arc<TenantKeyStore>) -> Arc<dyn asterius_domain::keys::
         (**keys).clone(),
         Arc::new(asterius_domain::ports::SystemClock),
     ))
+}
+
+/// The signer the PDP metadata document is signed with, or `None`
+/// (`ast-pj0.3`).
+///
+/// `Some` exactly when `[authzen] signed_metadata` is on: Authorization API
+/// 1.0 §9.1.3 makes the member OPTIONAL, and a deployment that did not ask for
+/// it serves a document one member smaller rather than an invalid one. The
+/// same cached signer the endpoints use, so a PEP verifies the document
+/// against the key set that signs this tenant's tokens.
+fn pdp_metadata_signer(
+    config: &Config,
+    keys: &Arc<TenantKeyStore>,
+) -> Option<Arc<dyn asterius_domain::keys::Signer>> {
+    config.authzen.signed_metadata.then(|| prepare_signer(keys))
 }
 
 /// What the SSF push deliverer needs in order to *speak* (`ast-0ju.5`).

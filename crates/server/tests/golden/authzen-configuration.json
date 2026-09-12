@@ -1,0 +1,4 @@
+{
+  "access_evaluation_endpoint": "https://as.example/t/demo/access/v1/evaluation",
+  "policy_decision_point": "https://as.example/t/demo"
+}

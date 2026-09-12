@@ -214,6 +214,36 @@ impl Endpoint {
         }
     }
 
+    /// Whether this endpoint belongs in the PDP metadata document
+    /// (Authorization API 1.0 §9.1.1) rather than in the OP's own.
+    ///
+    /// Two documents read one registry. `/.well-known/authzen-configuration`
+    /// defines `access_evaluation_endpoint` and its boxcar sibling and nothing
+    /// else: a member RFC 8414 defines has no meaning there, and a PEP reading
+    /// the PDP document would be reading an OP it never asked about.
+    ///
+    /// Written as a match over every variant, like
+    /// [`Endpoint::is_client_authenticated`], so that the next endpoint has to
+    /// say which document describes it before it compiles.
+    #[must_use]
+    pub const fn in_pdp_metadata(self) -> bool {
+        match self {
+            Self::AccessEvaluation => true,
+            Self::Authorization
+            | Self::PushedAuthorizationRequest
+            | Self::Token
+            | Self::Jwks
+            | Self::UserInfo
+            | Self::Introspection
+            | Self::Revocation
+            | Self::Registration
+            | Self::EndSession
+            | Self::DeviceAuthorization
+            | Self::BackchannelAuthentication
+            | Self::GrantManagement => false,
+        }
+    }
+
     /// Whether this deployment exposes this endpoint.
     #[must_use]
     pub fn is_enabled(self, capabilities: &Capabilities) -> bool {

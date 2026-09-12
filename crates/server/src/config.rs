@@ -89,6 +89,37 @@ pub struct Config {
     /// `[features] mtls` gets a deployment that does not look at certificates,
     /// which is the same posture every other flag has.
     pub mtls: crate::mtls::MtlsConfig,
+    /// AuthZEN settings that are not capability flags (`ast-pj0.3`).
+    ///
+    /// Read only where `[features] authzen` is on, like `[mtls]` and `[dpop]`:
+    /// the posture is the flag, and this table says how the PDP presents
+    /// itself.
+    pub authzen: AuthzenConfig,
+}
+
+/// AuthZEN settings that are not capability flags (`ast-pj0.3`).
+///
+/// One key today. A table rather than a flag under `[features]`, because
+/// `[features]` says *what this deployment does* — there is a PDP or there is
+/// not — and this says how the document describing it is served.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AuthzenConfig {
+    /// Whether `/.well-known/authzen-configuration` carries a
+    /// `signed_metadata` JWT (Authorization API 1.0 §9.1.3).
+    ///
+    /// Off by default. §9.1.3 is OPTIONAL and the signature protects nothing
+    /// a PEP fetching the document over TLS does not already have; what it
+    /// buys is a document a PEP can keep, hand on, or check against the key
+    /// set later, which is worth a signature per request only where somebody
+    /// asked for it.
+    pub signed_metadata: bool,
+}
+
+/// The `[authzen]` table.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAuthzen {
+    signed_metadata: Option<bool>,
 }
 
 /// How the outbox worker paces itself and when it gives up (`ast-0ju.9`).
@@ -396,6 +427,8 @@ struct RawConfig {
     dpop: RawDpop,
     #[serde(default)]
     mtls: RawMtls,
+    #[serde(default)]
+    authzen: RawAuthzen,
 }
 
 /// The `[mtls]` table: where client certificates come from (RFC 8705 §2).
@@ -981,6 +1014,9 @@ impl RawConfig {
             outbox,
             dpop,
             mtls,
+            authzen: AuthzenConfig {
+                signed_metadata: self.authzen.signed_metadata.unwrap_or_default(),
+            },
         })
     }
 }
@@ -1970,6 +2006,7 @@ pub fn declared_keys() -> BTreeMap<&'static str, Vec<String>> {
         ("outbox", accepted_keys::<RawOutbox>()),
         ("dpop", accepted_keys::<RawDpop>()),
         ("mtls", accepted_keys::<RawMtls>()),
+        ("authzen", accepted_keys::<RawAuthzen>()),
     ]
     .into_iter()
     .collect()
@@ -3283,6 +3320,38 @@ mod tests {
 
         assert!(rendered.contains("[REDACTED]"), "{rendered}");
         assert!(!rendered.contains(A_NONCE_SECRET), "{rendered}");
+    }
+
+    /// `ast-pj0.3`: §9.1.3 is OPTIONAL, and a deployment that says nothing
+    /// signs nothing.
+    #[test]
+    fn the_pdp_metadata_is_unsigned_unless_the_file_says_otherwise() {
+        // Arrange, act
+        let silent = parse(MINIMAL).expect("the minimal configuration is valid");
+        let asked = parse(&format!("{MINIMAL}\n[authzen]\nsigned_metadata = true\n"))
+            .expect("the key is accepted");
+
+        // Assert
+        assert!(!silent.authzen.signed_metadata);
+        assert!(asked.authzen.signed_metadata);
+    }
+
+    /// The `[features]` rule, for the `[features]` reason: a misspelt key is a
+    /// setting an operator believes is in force.
+    #[test]
+    fn an_unknown_authzen_key_is_refused() {
+        // Arrange, act
+        let err = parse(&format!(
+            "{MINIMAL}\n[authzen]\npolicy_decision_point = \"https://pdp.example\"\n"
+        ))
+        .unwrap_err();
+
+        // Assert: the identifier is the tenant's issuer and is not a key here.
+        let ConfigError::Shape { path, message } = &err else {
+            panic!("expected a shape error, got {err}");
+        };
+        assert_eq!(path, "authzen.policy_decision_point");
+        assert!(message.contains("unknown field"), "{message}");
     }
 
     #[test]
