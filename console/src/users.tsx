@@ -27,15 +27,31 @@
  *
  * Disabling an account, forcing a password reset and withdrawing a grant all
  * sign somebody out of something, and two of them send a message. Each asks
- * once, in a `window.confirm`, because the alternative — a modal of our own —
- * is a focus trap to get right for no benefit an administrator would name.
- * Ending a *single* session does not ask: it is the reversible one, and the
- * person signs in again.
+ * once, in the console's own dialog (`ui.tsx`) — which replaced `window.confirm`
+ * in `ast-fe39`: the focus trap is got right once, in one component, and what is
+ * about to happen can be said in the console's voice rather than in an unstyled
+ * line the browser draws where the page cannot reach it. Ending a *single*
+ * session does not ask: it is the reversible one, and the person signs in
+ * again.
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { UserAppRoles, mayRead as mayReadAppRoles } from './appRoles';
+import {
+  Actions,
+  Badge,
+  Button,
+  ConfirmDialog,
+  DataTable,
+  EmptyState,
+  Field,
+  LoadFailure,
+  Message,
+  Panel,
+  Screen,
+  Skeleton,
+} from './ui';
 
 /** Whether an account may authenticate, mirroring `UserStatus`. */
 export type UserStatus = 'active' | 'disabled' | 'locked';
@@ -280,51 +296,41 @@ function DirectoryScreen({
   useEffect(() => refresh(term, cursor), [refresh, term, cursor]);
 
   return (
-    <>
-      <h2>Users</h2>
-      {notice !== null && (
-        <p role="status" aria-live="polite">
-          {notice}
-        </p>
-      )}
-      <Search
-        onSearch={(value) => {
-          // A new search starts at the first page: keeping a cursor minted for
-          // the previous term would resume in the middle of a different list.
-          setCursor(null);
-          setTerm(value);
-        }}
-      />
-      {load.kind === 'loading' && <p>Reading the directory.</p>}
-      {load.kind === 'failed' && (
-        <>
-          <p>{load.message}</p>
-          <button type="button" onClick={() => refresh(term, cursor)}>
-            Try again
-          </button>
-        </>
-      )}
-      {load.kind === 'ready' && (
-        <>
-          <UserTable rows={load.value.items} onOpen={onOpen} />
-          <p>
-            <button
-              type="button"
-              disabled={cursor === null}
-              onClick={() => setCursor(null)}
-            >
-              First page
-            </button>{' '}
-            <button
-              type="button"
-              disabled={load.value.next_cursor === null}
-              onClick={() => setCursor(load.value.next_cursor)}
-            >
-              Next page
-            </button>
-          </p>
-        </>
-      )}
+    <Screen title="Users" description="The accounts of this tenant, and what each one can sign in with.">
+      {notice !== null && <Message tone="success">{notice}</Message>}
+      <Panel
+        title="Directory"
+        description="Search by username or email. The list is one page at a time, in the order the server returns."
+      >
+        <Search
+          onSearch={(value) => {
+            // A new search starts at the first page: keeping a cursor minted for
+            // the previous term would resume in the middle of a different list.
+            setCursor(null);
+            setTerm(value);
+          }}
+        />
+        {load.kind === 'loading' && <Skeleton rows={4} label="Reading the directory." />}
+        {load.kind === 'failed' && (
+          <LoadFailure message={load.message} onRetry={() => refresh(term, cursor)} />
+        )}
+        {load.kind === 'ready' && (
+          <>
+            <UserTable rows={load.value.items} onOpen={onOpen} />
+            <Actions>
+              <Button disabled={cursor === null} onClick={() => setCursor(null)}>
+                First page
+              </Button>
+              <Button
+                disabled={load.value.next_cursor === null}
+                onClick={() => setCursor(load.value.next_cursor)}
+              >
+                Next page
+              </Button>
+            </Actions>
+          </>
+        )}
+      </Panel>
       <NewAccount
         session={session}
         onCreated={(created) => {
@@ -333,7 +339,7 @@ function DirectoryScreen({
           refresh(term, null);
         }}
       />
-    </>
+    </Screen>
   );
 }
 
@@ -341,21 +347,27 @@ function Search({ onSearch }: { onSearch: (term: string) => void }): JSX.Element
   const [typed, setTyped] = useState('');
   return (
     <form
+      className="toolbar"
       onSubmit={(event) => {
         event.preventDefault();
         onSearch(typed.trim());
       }}
     >
-      <label htmlFor="user-search">Search</label>{' '}
-      <input
-        id="user-search"
-        name="q"
-        type="search"
-        value={typed}
-        placeholder="username or email"
-        onChange={(event) => setTyped(event.target.value)}
-      />{' '}
-      <button type="submit">Search</button>
+      <Field label="Search">
+        {(props) => (
+          <input
+            {...props}
+            name="q"
+            type="search"
+            value={typed}
+            placeholder="username or email"
+            onChange={(event) => setTyped(event.target.value)}
+          />
+        )}
+      </Field>
+      <Button type="submit" variant="primary">
+        Search
+      </Button>
     </form>
   );
 }
@@ -367,40 +379,56 @@ function UserTable({
   rows: readonly UserRow[];
   onOpen: (id: string) => void;
 }): JSX.Element {
-  if (rows.length === 0) {
-    return <p>No account matches.</p>;
-  }
   return (
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">Username</th>
-          <th scope="col">Email</th>
-          <th scope="col">Verified</th>
-          <th scope="col">Status</th>
-          <th scope="col">Claims</th>
-          <th scope="col">
-            <span className="visually-hidden">Actions</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.user_id}>
-            <td>{row.username}</td>
-            <td>{row.email ?? '—'}</td>
-            <td>{row.email_verified ? 'yes' : 'no'}</td>
-            <td>{row.status}</td>
-            <td>{row.claims}</td>
-            <td>
-              <button type="button" onClick={() => onOpen(row.user_id)}>
-                Open
-              </button>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <DataTable
+      caption="Accounts"
+      rows={rows}
+      rowKey={(row) => row.user_id}
+      empty={<EmptyState title="No account matches." body="Clear the search to see the whole directory." />}
+      columns={[
+        {
+          key: 'username',
+          header: 'Username',
+          sortBy: (row) => row.username,
+          cell: (row) => row.username,
+        },
+        { key: 'email', header: 'Email', sortBy: (row) => row.email ?? '', cell: (row) => row.email ?? '—' },
+        {
+          key: 'verified',
+          header: 'Verified',
+          cell: (row) => (row.email_verified ? 'yes' : 'no'),
+        },
+        {
+          key: 'status',
+          header: 'Status',
+          sortBy: (row) => row.status,
+          cell: (row) => <StatusBadge status={row.status} />,
+        },
+        { key: 'claims', header: 'Claims', numeric: true, sortBy: (row) => row.claims, cell: (row) => row.claims },
+        {
+          key: 'open',
+          header: 'Actions',
+          actions: true,
+          cell: (row) => (
+            <Button small onClick={() => onOpen(row.user_id)}>
+              Open
+            </Button>
+          ),
+        },
+      ]}
+    />
+  );
+}
+
+/**
+ * Whether an account may authenticate, as a word first and a tint second.
+ *
+ * The word is the same one the API uses, so an operator reading a screen and an
+ * operator reading a response are reading the same vocabulary.
+ */
+function StatusBadge({ status }: { status: UserStatus }): JSX.Element {
+  return (
+    <Badge tone={status === 'active' ? 'ok' : status === 'locked' ? 'warn' : 'bad'}>{status}</Badge>
   );
 }
 
@@ -459,54 +487,52 @@ function NewAccount({
   };
 
   return (
-    <section aria-labelledby="new-account">
-      <h3 id="new-account">Add an account</h3>
-      {refusal !== null && (
-        <p role="alert">{refusal}</p>
-      )}
+    <Panel id="new-account" title="Add an account">
+      {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={submit}>
-        <p>
-          <label htmlFor="new-username">Username</label>{' '}
-          <input
-            id="new-username"
-            name="username"
-            required
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
-          />
-        </p>
-        <p>
-          <label htmlFor="new-email">Email</label>{' '}
-          <input
-            id="new-email"
-            name="email"
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-          />
-        </p>
-        <p>
-          <label htmlFor="new-password">Password</label>{' '}
-          <input
-            id="new-password"
-            name="password"
-            type="password"
-            autoComplete="new-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-        </p>
-        <p className="muted">
-          Leave the password empty for an account that will enrol a passkey. An account with no
-          password cannot be signed into until it has a credential.
-        </p>
-        <p>
-          <button type="submit" disabled={busy}>
+        <Field label="Username" required>
+          {(props) => (
+            <input
+              {...props}
+              name="username"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+            />
+          )}
+        </Field>
+        <Field label="Email">
+          {(props) => (
+            <input
+              {...props}
+              name="email"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          )}
+        </Field>
+        <Field
+          label="Password"
+          hint="Leave it empty for an account that will enrol a passkey. An account with no password cannot be signed into until it has a credential."
+        >
+          {(props) => (
+            <input
+              {...props}
+              name="password"
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          )}
+        </Field>
+        <Actions>
+          <Button type="submit" variant="primary" disabled={busy}>
             Create account
-          </button>
-        </p>
+          </Button>
+        </Actions>
       </form>
-    </section>
+    </Panel>
   );
 }
 
@@ -523,6 +549,11 @@ function Account({
   const [load, setLoad] = useState<Load<Detail>>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The question in front of an irreversible act, and what to do when it is
+  // answered yes. One slot rather than one flag per button: two confirmations
+  // are never open at once, and a component that could hold both would be a
+  // second thing to close.
+  const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const base = `users/${encodeURIComponent(id)}`;
 
   const refresh = useCallback(() => {
@@ -582,77 +613,86 @@ function Account({
 
   if (load.kind === 'loading') {
     return (
-      <>
-        <h2>Account</h2>
-        <p>Reading the account.</p>
-      </>
+      <Screen title="Account">
+        <Panel title="Reading">
+          <Skeleton rows={5} label="Reading the account." />
+        </Panel>
+      </Screen>
     );
   }
   if (load.kind === 'failed') {
     return (
-      <>
-        <h2>Account</h2>
-        <p>{load.message}</p>
-        <button type="button" onClick={onBack}>
-          Back to users
-        </button>
-      </>
+      <Screen
+        title="Account"
+        actions={<Button onClick={onBack}>Back to users</Button>}
+      >
+        <Panel title="This account could not be read">
+          <LoadFailure message={load.message} onRetry={refresh} />
+        </Panel>
+      </Screen>
     );
   }
 
   const { user, credentials, sessions, grants, roles } = load.value;
   const disabled = user.status === 'disabled';
 
+  const toggleStatus = (): void =>
+    run(
+      () => mutate(`${base}/status`, 'PUT', session, { enabled: disabled }),
+      (value) =>
+        disabled
+          ? 'The account is active again. Nothing was signed out.'
+          : describeTermination((value as { terminated: Terminated }).terminated),
+    );
+
   return (
-    <>
-      <h2>{user.username}</h2>
-      <p>
-        <button type="button" onClick={onBack}>
-          Back to users
-        </button>
-      </p>
-      {notice !== null && (
-        <p role="status" aria-live="polite">
-          {notice}
-        </p>
-      )}
+    <Screen
+      title={user.username}
+      description="One account: what it claims, what it can sign in with, and what it has open."
+      actions={<Button onClick={onBack}>Back to users</Button>}
+    >
+      {notice !== null && <Message tone="success">{notice}</Message>}
 
-      <dl>
-        <dt>Status</dt>
-        <dd>{user.status}</dd>
-        <dt>Created</dt>
-        <dd>{moment(user.created_at)}</dd>
-        <dt>Last changed</dt>
-        <dd>{moment(user.updated_at)}</dd>
-      </dl>
-
-      <p>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            if (
-              !disabled &&
-              !window.confirm(
-                'Disabling this account ends every session it has open and tells the relying parties that took part. Continue?',
-              )
-            ) {
-              return;
-            }
-            run(
-              () => mutate(`${base}/status`, 'PUT', session, { enabled: disabled }),
-              (value) =>
-                disabled
-                  ? 'The account is active again. Nothing was signed out.'
-                  : describeTermination(
-                      (value as { terminated: Terminated }).terminated,
-                    ),
-            );
-          }}
-        >
-          {disabled ? 'Enable account' : 'Disable account'}
-        </button>
-      </p>
+      <Panel
+        title="This account"
+        actions={
+          <Button
+            variant={disabled ? 'secondary' : 'danger'}
+            disabled={busy}
+            onClick={() => {
+              if (disabled) {
+                toggleStatus();
+                return;
+              }
+              setConfirming({
+                title: 'Disable this account?',
+                body: 'Disabling it ends every session it has open and tells the relying parties that took part.',
+                confirmLabel: 'Disable the account',
+                act: toggleStatus,
+              });
+            }}
+          >
+            {disabled ? 'Enable account' : 'Disable account'}
+          </Button>
+        }
+      >
+        <dl className="stats">
+          <div className="stat">
+            <dt>Status</dt>
+            <dd>
+              <StatusBadge status={user.status} />
+            </dd>
+          </div>
+          <div className="stat">
+            <dt>Created</dt>
+            <dd>{moment(user.created_at)}</dd>
+          </div>
+          <div className="stat">
+            <dt>Last changed</dt>
+            <dd>{moment(user.updated_at)}</dd>
+          </div>
+        </dl>
+      </Panel>
 
       <ClaimsEditor
         session={session}
@@ -697,29 +737,34 @@ function Account({
         />
       )}
 
-      <section aria-labelledby="credentials">
-        <h3 id="credentials">Credentials</h3>
-        <p>Password: {credentials.password ? 'set' : 'none'}</p>
-        <p>
-          <button
-            type="button"
+      <Panel
+        id="credentials"
+        title="Credentials"
+        actions={
+          <Button
+            variant="danger"
             disabled={busy}
-            onClick={() => {
-              if (
-                !window.confirm(
-                  'Forcing a reset invalidates the password, ends every session and emails a recovery link. Continue?',
-                )
-              ) {
-                return;
-              }
-              run(
-                () => mutate(`${base}/credentials/password/reset`, 'POST', session),
-                (value) => describeReset(value as Reset),
-              );
-            }}
+            onClick={() =>
+              setConfirming({
+                title: 'Force a password reset?',
+                body: 'The password stops working, every session ends, and a recovery link is emailed to this account.',
+                confirmLabel: 'Force the reset',
+                act: () =>
+                  run(
+                    () => mutate(`${base}/credentials/password/reset`, 'POST', session),
+                    (value) => describeReset(value as Reset),
+                  ),
+              })
+            }
           >
             Force a password reset
-          </button>
+          </Button>
+        }
+      >
+        <p className="row">
+          Password: <Badge tone={credentials.password ? 'ok' : 'neutral'}>
+            {credentials.password ? 'set' : 'none'}
+          </Badge>
         </p>
         <PasskeyTable
           passkeys={credentials.passkeys}
@@ -736,10 +781,9 @@ function Account({
             )
           }
         />
-      </section>
+      </Panel>
 
-      <section aria-labelledby="sessions">
-        <h3 id="sessions">Sessions</h3>
+      <Panel id="sessions" title="Sessions">
         <SessionTable
           sessions={sessions}
           busy={busy}
@@ -750,30 +794,51 @@ function Account({
             )
           }
         />
-      </section>
+      </Panel>
 
-      <section aria-labelledby="grants">
-        <h3 id="grants">Authorizations</h3>
+      <Panel id="grants" title="Authorizations">
         <GrantTable
           grants={grants}
           busy={busy}
-          onRevoke={(grant, client) => {
-            if (
-              !window.confirm(
-                `Withdrawing this authorization revokes the refresh tokens ${client} holds and stops its access tokens being accepted. Continue?`,
-              )
-            ) {
-              return;
-            }
-            run(
-              () => mutate(`${base}/grants/${encodeURIComponent(grant)}`, 'DELETE', session),
-              () => `The authorization ${client} held has been withdrawn.`,
-            );
+          onRevoke={(grant, client) =>
+            setConfirming({
+              title: 'Withdraw this authorization?',
+              body: `The refresh tokens ${client} holds are revoked and its access tokens stop being accepted.`,
+              confirmLabel: 'Withdraw it',
+              act: () =>
+                run(
+                  () => mutate(`${base}/grants/${encodeURIComponent(grant)}`, 'DELETE', session),
+                  () => `The authorization ${client} held has been withdrawn.`,
+                ),
+            })
+          }
+        />
+      </Panel>
+
+      {confirming !== null && (
+        <ConfirmDialog
+          title={confirming.title}
+          body={confirming.body}
+          confirmLabel={confirming.confirmLabel}
+          busy={busy}
+          onCancel={() => setConfirming(null)}
+          onConfirm={() => {
+            const act = confirming.act;
+            setConfirming(null);
+            act();
           }}
         />
-      </section>
-    </>
+      )}
+    </Screen>
   );
+}
+
+/** A question asked before something irreversible, and the act behind it. */
+interface Confirmation {
+  readonly title: string;
+  readonly body: string;
+  readonly confirmLabel: string;
+  readonly act: () => void;
 }
 
 /**
@@ -834,11 +899,16 @@ function RoleEditor({
   };
 
   return (
-    <section aria-labelledby="roles">
-      <h3 id="roles">Administrative roles</h3>
-      {isSelf && <p>Nobody may change their own roles. Ask another administrator.</p>}
-      {offered.length === 0 && <p>This account holds no administrative role.</p>}
-      <ul>
+    <Panel
+      id="roles"
+      title="Administrative roles"
+      description="What this account may do to this server. The tenant's own vocabulary is above, and the two are never merged."
+    >
+      {isSelf && (
+        <Message tone="info">Nobody may change their own roles. Ask another administrator.</Message>
+      )}
+      {offered.length === 0 && <EmptyState title="This account holds no administrative role." />}
+      <ul className="switches">
         {offered.map((role) => (
           <li key={role}>
             <label>
@@ -860,13 +930,13 @@ function RoleEditor({
         ))}
       </ul>
       {mayWrite && (
-        <p>
-          <button type="button" disabled={busy || saving} onClick={save}>
+        <Actions>
+          <Button variant="primary" disabled={busy || saving} onClick={save}>
             Save roles
-          </button>
-        </p>
+          </Button>
+        </Actions>
       )}
-    </section>
+    </Panel>
   );
 }
 
@@ -936,36 +1006,40 @@ function ClaimsEditor({
   };
 
   return (
-    <section aria-labelledby="claims">
-      <h3 id="claims">Claims</h3>
-      {refusal !== null && <p role="alert">{refusal}</p>}
+    <Panel id="claims" title="Claims">
+      {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={save}>
-        <p>
-          <label htmlFor="claim-email">Email</label>{' '}
-          <input
-            id="claim-email"
-            name="email"
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-          />
-        </p>
-        <p>
-          <label htmlFor="claim-email-verified">
+        <Field label="Email">
+          {(props) => (
             <input
-              id="claim-email-verified"
-              name="email_verified"
-              type="checkbox"
-              checked={emailVerified}
-              onChange={(event) => setEmailVerified(event.target.checked)}
-            />{' '}
-            Email verified
-          </label>
-        </p>
-        <p className="muted">
-          OIDC Core §5.1: this asserts that this deployment has taken affirmative steps to check
-          that the address belongs to this person. Relying parties are entitled to act on it.
-        </p>
+              {...props}
+              name="email"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          )}
+        </Field>
+        <ul className="switches">
+          <li>
+            <label htmlFor="claim-email-verified">
+              <input
+                id="claim-email-verified"
+                name="email_verified"
+                type="checkbox"
+                checked={emailVerified}
+                onChange={(event) => setEmailVerified(event.target.checked)}
+              />{' '}
+              Email verified
+            </label>
+            <p className="muted">
+              OIDC Core §5.1: this asserts that this deployment has taken affirmative steps to
+              check that the address belongs to this person. Relying parties are entitled to act
+              on it.
+            </p>
+          </li>
+        </ul>
+        <div className="table-wrap">
         <table>
           <thead>
             <tr>
@@ -1035,29 +1109,26 @@ function ClaimsEditor({
                   />
                 </td>
                 <td>{user.claims[claim.name]?.source ?? 'unsaved'}</td>
-                <td>
-                  <button
-                    type="button"
-                    onClick={() => setClaims(claims.filter((_, at) => at !== index))}
-                  >
+                <td className="actions-cell">
+                  <Button small onClick={() => setClaims(claims.filter((_, at) => at !== index))}>
                     Remove
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        <p>
-          <button
-            type="button"
+        </div>
+        <Actions>
+          <Button
             onClick={() => setClaims([...claims, { name: '', text: '', verified: false }])}
           >
             Add a claim
-          </button>{' '}
-          <button type="submit" disabled={busy}>
+          </Button>
+          <Button type="submit" variant="primary" disabled={busy}>
             Save claims
-          </button>
-        </p>
+          </Button>
+        </Actions>
         <p className="muted">
           A value that reads as JSON is stored as JSON; anything else is stored as a string. The
           claims this server mints for itself — <code>sub</code>, <code>iss</code>,{' '}
@@ -1065,7 +1136,7 @@ function ClaimsEditor({
           <code>email</code> and <code>email_verified</code>, which have their own fields above.
         </p>
       </form>
-    </section>
+    </Panel>
   );
 }
 
@@ -1079,9 +1150,10 @@ function PasskeyTable({
   onRemove: (credential: string) => void;
 }): JSX.Element {
   if (passkeys.length === 0) {
-    return <p>No passkey.</p>;
+    return <EmptyState title="No passkey." body="This account signs in with its password, if it has one." />;
   }
   return (
+    <div className="table-wrap">
     <table>
       <thead>
         <tr>
@@ -1102,22 +1174,23 @@ function PasskeyTable({
             <td>{passkey.rp_id}</td>
             <td>{moment(passkey.created_at)}</td>
             <td>{moment(passkey.last_used_at)}</td>
-            <td>{passkey.disabled_at === null ? 'usable' : 'blocked'}</td>
             <td>
+              <Badge tone={passkey.disabled_at === null ? 'ok' : 'bad'}>
+                {passkey.disabled_at === null ? 'usable' : 'blocked'}
+              </Badge>
+            </td>
+            <td className="actions-cell">
               {passkey.disabled_at === null && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onRemove(passkey.credential_id)}
-                >
+                <Button small disabled={busy} onClick={() => onRemove(passkey.credential_id)}>
                   Remove
-                </button>
+                </Button>
               )}
             </td>
           </tr>
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -1131,9 +1204,10 @@ function SessionTable({
   onRevoke: (sid: string) => void;
 }): JSX.Element {
   if (sessions.length === 0) {
-    return <p>No session.</p>;
+    return <EmptyState title="No session." body="Nothing is signed in as this account." />;
   }
   return (
+    <div className="table-wrap">
     <table>
       <thead>
         <tr>
@@ -1158,18 +1232,23 @@ function SessionTable({
             <td>{moment(row.last_seen_at)}</td>
             <td>{moment(row.expires_at)}</td>
             <td>{row.amr.length === 0 ? '—' : row.amr.join(', ')}</td>
-            <td>{row.live ? 'live' : (row.revoked_reason ?? 'ended')}</td>
             <td>
+              <Badge tone={row.live ? 'ok' : 'neutral'}>
+                {row.live ? 'live' : (row.revoked_reason ?? 'ended')}
+              </Badge>
+            </td>
+            <td className="actions-cell">
               {row.live && (
-                <button type="button" disabled={busy} onClick={() => onRevoke(row.sid)}>
+                <Button small disabled={busy} onClick={() => onRevoke(row.sid)}>
                   End session
-                </button>
+                </Button>
               )}
             </td>
           </tr>
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -1183,9 +1262,10 @@ function GrantTable({
   onRevoke: (grant: string, client: string) => void;
 }): JSX.Element {
   if (grants.length === 0) {
-    return <p>No authorization.</p>;
+    return <EmptyState title="No authorization." body="No client holds an authorization from this account." />;
   }
   return (
+    <div className="table-wrap">
     <table>
       <thead>
         <tr>
@@ -1206,21 +1286,28 @@ function GrantTable({
             </td>
             <td>{grant.scopes.length === 0 ? '—' : grant.scopes.join(' ')}</td>
             <td>{moment(grant.created_at)}</td>
-            <td>{grant.revoked_at === null ? 'active' : `withdrawn ${moment(grant.revoked_at)}`}</td>
             <td>
+              {grant.revoked_at === null ? (
+                <Badge tone="ok">active</Badge>
+              ) : (
+                <span className="muted">withdrawn {moment(grant.revoked_at)}</span>
+              )}
+            </td>
+            <td className="actions-cell">
               {grant.revoked_at === null && (
-                <button
-                  type="button"
+                <Button
+                  small
                   disabled={busy}
                   onClick={() => onRevoke(grant.grant_id, grant.client_id)}
                 >
                   Withdraw
-                </button>
+                </Button>
               )}
             </td>
           </tr>
         ))}
       </tbody>
     </table>
+    </div>
   );
 }

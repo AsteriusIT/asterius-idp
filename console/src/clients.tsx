@@ -49,6 +49,19 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
 import { RoleCatalogue, clientCatalogue, mayRead as mayReadAppRoles } from './appRoles';
+import {
+  Actions,
+  Badge,
+  Button,
+  DataTable,
+  EmptyState,
+  Field,
+  LoadFailure,
+  Message,
+  Panel,
+  Screen,
+  Skeleton,
+} from './ui';
 
 /** Where the client collection lives, relative to the API base. */
 export const CLIENTS_PATH = 'clients';
@@ -401,48 +414,50 @@ export function Clients({ session }: { session: Session }): JSX.Element {
   );
 
   return (
-    <>
-      <h2>Clients</h2>
-      <p className="muted">
-        Every client registered against <strong>{session.tenant}</strong>. A client created here
-        goes through the same validator as one that registers itself, so anything this deployment
-        would refuse at <code>/register</code> is refused here too.
-      </p>
-
-      {notice !== null && (
-        <p role="status" aria-live="polite">
-          {notice}
-        </p>
-      )}
-      {refusal !== null && (
-        <p role="alert" className="refusal">
-          {refusal}
-        </p>
-      )}
-
-      <form
-        role="search"
-        onSubmit={(event) => {
-          event.preventDefault();
-          refresh(query);
-        }}
-      >
-        <label htmlFor="client-search">Search clients</label>{' '}
-        <input
-          id="client-search"
-          name="q"
-          type="search"
-          value={query}
-          placeholder="name, client_id or a callback"
-          onChange={(event) => setQuery(event.target.value)}
-        />{' '}
-        <button type="submit">Search</button>{' '}
-        <button type="button" onClick={openNew}>
+    <Screen
+      title="Clients"
+      description={
+        <>
+          Every client registered against <strong>{session.tenant}</strong>. A client created here
+          goes through the same validator as one that registers itself, so anything this
+          deployment would refuse at <code>/register</code> is refused here too.
+        </>
+      }
+      actions={
+        <Button variant="primary" onClick={openNew}>
           Register a client
-        </button>
-      </form>
+        </Button>
+      }
+    >
+      {notice !== null && <Message tone="success">{notice}</Message>}
+      {refusal !== null && <Message tone="error">{refusal}</Message>}
 
-      <Inventory load={load} onOpen={openExisting} onRetry={() => refresh(query)} busy={busy} />
+      <Panel title="Registered clients">
+        <form
+          className="toolbar"
+          role="search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            refresh(query);
+          }}
+        >
+          <Field label="Search clients">
+            {(props) => (
+              <input
+                {...props}
+                name="q"
+                type="search"
+                value={query}
+                placeholder="name, client_id or a callback"
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            )}
+          </Field>
+          <Button type="submit">Search</Button>
+        </form>
+
+        <Inventory load={load} onOpen={openExisting} onRetry={() => refresh(query)} busy={busy} />
+      </Panel>
 
       {draft !== null && editing.kind !== 'none' && (
         <Editor
@@ -471,16 +486,15 @@ export function Clients({ session }: { session: Session }): JSX.Element {
 
       {gate !== null && <Gate gate={gate} />}
 
-      <section aria-labelledby="clients-not-here">
-        <h3 id="clients-not-here">Not editable yet</h3>
+      <Panel id="clients-not-here" title="Not editable yet">
         <p className="muted">
           The per-tenant registration policy (<code>ast-m9c.6</code>), the agent profile (
           <code>ast-lh3.1</code>) and the per-client resource allow-list are not served by this
           release&rsquo;s admin API, so this screen does not offer them. A control that saved
           nowhere would be worse than none.
         </p>
-      </section>
-    </>
+      </Panel>
+    </Screen>
   );
 }
 
@@ -496,64 +510,63 @@ function Inventory({
   busy: boolean;
 }): JSX.Element {
   if (load.kind === 'loading') {
-    return <p>Reading the clients.</p>;
+    return <Skeleton rows={4} label="Reading the clients." />;
   }
   if (load.kind === 'failed') {
-    return (
-      <>
-        <p role="alert" className="refusal">
-          {load.message}
-        </p>
-        <button type="button" onClick={onRetry}>
-          Try again
-        </button>
-      </>
-    );
-  }
-  if (load.rows.length === 0) {
-    return <p>No client matches.</p>;
+    return <LoadFailure message={load.message} onRetry={onRetry} />;
   }
 
   return (
-    <table>
-      <caption>Registered clients</caption>
-      <thead>
-        <tr>
-          <th scope="col">Name</th>
-          <th scope="col">client_id</th>
-          <th scope="col">Status</th>
-          <th scope="col">Authentication</th>
-          <th scope="col">Keys</th>
-          <th scope="col">Grants</th>
-          <th scope="col">
-            <span className="visually-hidden">Actions</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {load.rows.map((row) => (
-          <tr key={row.client_id}>
-            <td>{row.client_name}</td>
-            <td>
-              <code>{row.client_id}</code>
-            </td>
-            <td>{row.status}</td>
-            <td>
-              <code>{row.token_endpoint_auth_method}</code>
-            </td>
-            <td>
-              <code>{row.jwks_source}</code>
-            </td>
-            <td>{row.grant_types.join(', ')}</td>
-            <td>
-              <button type="button" disabled={busy} onClick={() => onOpen(row.client_id)}>
-                Edit <span className="visually-hidden">{row.client_name}</span>
-              </button>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <DataTable
+      caption="Registered clients"
+      rows={load.rows}
+      rowKey={(row) => row.client_id}
+      empty={
+        <EmptyState
+          title="No client matches."
+          body="Clear the search to see every client registered against this tenant."
+        />
+      }
+      columns={[
+        {
+          key: 'name',
+          header: 'Name',
+          sortBy: (row) => row.client_name,
+          cell: (row) => row.client_name,
+        },
+        {
+          key: 'client_id',
+          header: 'client_id',
+          sortBy: (row) => row.client_id,
+          cell: (row) => <code>{row.client_id}</code>,
+        },
+        {
+          key: 'status',
+          header: 'Status',
+          sortBy: (row) => row.status,
+          cell: (row) => (
+            <Badge tone={row.status === 'active' ? 'ok' : 'bad'}>{row.status}</Badge>
+          ),
+        },
+        {
+          key: 'auth',
+          header: 'Authentication',
+          cell: (row) => <code>{row.token_endpoint_auth_method}</code>,
+        },
+        { key: 'keys', header: 'Keys', cell: (row) => <code>{row.jwks_source}</code> },
+        { key: 'grants', header: 'Grants', cell: (row) => row.grant_types.join(', ') },
+        {
+          key: 'edit',
+          header: 'Actions',
+          actions: true,
+          cell: (row) => (
+            <Button small disabled={busy} onClick={() => onOpen(row.client_id)}>
+              Edit <span className="visually-hidden">{row.client_name}</span>
+            </Button>
+          ),
+        },
+      ]}
+    />
   );
 }
 
@@ -583,8 +596,7 @@ function Editor({
     });
 
   return (
-    <section aria-labelledby="client-editor">
-      <h3 id="client-editor">{heading}</h3>
+    <Panel id="client-editor" title={heading}>
       {/*
         `noValidate`, for the reason the settings screen gives: the browser's
         own constraint validation would block a submission and show a tooltip
@@ -805,16 +817,16 @@ function Editor({
           </p>
         </fieldset>
 
-        <p>
-          <button type="submit" disabled={busy}>
-            {editing.kind === 'existing' ? 'Save client' : 'Register client'}
-          </button>{' '}
-          <button type="button" disabled={busy} onClick={onClose}>
+        <Actions>
+          <Button type="button" disabled={busy} onClick={onClose}>
             Close
-          </button>
-        </p>
+          </Button>
+          <Button type="submit" variant="primary" disabled={busy}>
+            {editing.kind === 'existing' ? 'Save client' : 'Register client'}
+          </Button>
+        </Actions>
       </form>
-    </section>
+    </Panel>
   );
 }
 
@@ -826,17 +838,22 @@ function Editor({
  */
 function Gate({ gate }: { gate: RegistrationGate }): JSX.Element {
   return (
-    <section aria-labelledby="registration-gate">
-      <h3 id="registration-gate">Dynamic client registration</h3>
-      <dl>
-        <dt>Mode</dt>
-        <dd>
-          <code>{gate.mode}</code>
-        </dd>
-        <dt>Initial access tokens configured</dt>
-        <dd>{gate.configured_tokens}</dd>
-        <dt>Stored as</dt>
-        <dd>{gate.tokens_stored_hashed ? 'SHA-256 digests' : 'plain text'}</dd>
+    <Panel id="registration-gate" title="Dynamic client registration">
+      <dl className="stats">
+        <div className="stat">
+          <dt>Mode</dt>
+          <dd>
+            <code>{gate.mode}</code>
+          </dd>
+        </div>
+        <div className="stat">
+          <dt>Initial access tokens configured</dt>
+          <dd>{gate.configured_tokens}</dd>
+        </div>
+        <div className="stat">
+          <dt>Stored as</dt>
+          <dd>{gate.tokens_stored_hashed ? 'SHA-256 digests' : 'plain text'}</dd>
+        </div>
       </dl>
       {!gate.console_issuance && (
         <p className="muted">
@@ -846,6 +863,6 @@ function Gate({ gate }: { gate: RegistrationGate }): JSX.Element {
           registration policy (<code>ast-m9c.6</code>).
         </p>
       )}
-    </section>
+    </Panel>
   );
 }

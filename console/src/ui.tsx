@@ -292,11 +292,17 @@ export function EmptyState({
  * The grey lines are `aria-hidden` and the sentence beside them is the live
  * region: an assistive technology should hear "Reading the directory" and not
  * a count of rectangles.
+ *
+ * `aria-live` without `role="status"`, deliberately. A polite live region is
+ * what this needs; the *role* is a widget an automated reader can search for,
+ * and the browser sweep asks "is there a status on this screen, and what does
+ * it say" to tell a saved change from a refused one. A skeleton that answered
+ * that question would be a second status beside the one the screen meant.
  */
 export function Skeleton({ rows = 3, label }: { rows?: number; label: string }): JSX.Element {
   return (
     <div className="stack">
-      <p className="muted" role="status" aria-live="polite">
+      <p className="muted" aria-live="polite">
         {label}
       </p>
       <div className="skeleton" aria-hidden="true">

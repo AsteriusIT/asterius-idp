@@ -27,6 +27,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
+import {
+  Actions,
+  Badge,
+  Button,
+  EmptyState,
+  LoadFailure,
+  Message,
+  Panel,
+  Screen,
+  Skeleton,
+} from './ui';
 
 /** §8.1.2's three states. Only the first two are written from here. */
 export type StreamStatus = 'enabled' | 'paused' | 'disabled';
@@ -188,47 +199,38 @@ export function SharedSignals({ session }: { session: Session }): JSX.Element {
 
   if (load.kind === 'loading') {
     return (
-      <>
-        <h2>Shared signals</h2>
-        <p>Reading the streams.</p>
-      </>
+      <Screen title="Shared signals">
+        <Panel title="Reading">
+          <Skeleton rows={4} label="Reading the streams." />
+        </Panel>
+      </Screen>
     );
   }
   if (load.kind === 'failed') {
     return (
-      <>
-        <h2>Shared signals</h2>
-        <p role="alert" className="refusal">
-          {load.message}
-        </p>
-        <button type="button" onClick={refresh}>
-          Try again
-        </button>
-      </>
+      <Screen title="Shared signals">
+        <Panel title="The streams could not be read">
+          <LoadFailure message={load.message} onRetry={refresh} />
+        </Panel>
+      </Screen>
     );
   }
 
   return (
-    <>
-      <h2>Shared signals</h2>
-      <p className="muted">
-        Every receiver that has arranged to be told about <strong>{session.tenant}</strong>
-        &apos;s users, and how each stream is doing. A paused stream keeps queueing events and
-        delivers none of them until it is re-enabled.
-      </p>
-      {notice !== null && (
-        <p role="status" aria-live="polite">
-          {notice}
-        </p>
-      )}
-      {refusal !== null && (
-        <p role="alert" className="refusal">
-          {refusal}
-        </p>
-      )}
+    <Screen
+      title="Shared signals"
+      description={
+        <>
+          Every receiver that has arranged to be told about <strong>{session.tenant}</strong>
+          &apos;s users, and how each stream is doing. A paused stream keeps queueing events and
+          delivers none of them until it is re-enabled.
+        </>
+      }
+    >
+      {notice !== null && <Message tone="success">{notice}</Message>}
+      {refusal !== null && <Message tone="error">{refusal}</Message>}
 
-      <section aria-labelledby="ssf-streams">
-        <h3 id="ssf-streams">Streams</h3>
+      <Panel id="ssf-streams" title="Streams">
         <StreamTable
           streams={load.streams}
           busy={busy}
@@ -236,16 +238,14 @@ export function SharedSignals({ session }: { session: Session }): JSX.Element {
           onStatus={setStatus}
           onVerify={verify}
         />
-      </section>
+      </Panel>
 
       {mayReadLetters && (
-        <section aria-labelledby="ssf-dead-letters">
-          <h3 id="ssf-dead-letters">Dead letters</h3>
-          <p className="muted">
-            Deliveries the outbox gave up on, newest first. A retry gives the row a fresh attempt
-            budget; a drop removes it and leaves only its audit record. Both apply to shared-signal
-            deliveries only.
-          </p>
+        <Panel
+          id="ssf-dead-letters"
+          title="Dead letters"
+          description="Deliveries the outbox gave up on, newest first. A retry gives the row a fresh attempt budget; a drop removes it and leaves only its audit record. Both apply to shared-signal deliveries only."
+        >
           <DeadLetterTable
             letters={load.letters}
             busy={busy}
@@ -253,9 +253,9 @@ export function SharedSignals({ session }: { session: Session }): JSX.Element {
             onRetry={retry}
             onDrop={drop}
           />
-        </section>
+        </Panel>
       )}
-    </>
+    </Screen>
   );
 }
 
@@ -273,9 +273,15 @@ function StreamTable({
   onVerify: (stream: StreamRow, state: string) => void;
 }): JSX.Element {
   if (streams.length === 0) {
-    return <p>No stream. No receiver has asked to be told about this tenant&apos;s users.</p>;
+    return (
+      <EmptyState
+        title="No stream."
+        body="No receiver has asked to be told about this tenant&apos;s users."
+      />
+    );
   }
   return (
+    <div className="table-wrap">
     <table>
       <thead>
         <tr>
@@ -307,6 +313,7 @@ function StreamTable({
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 
@@ -338,7 +345,7 @@ function StreamLine({
       <td>{describeDelivery(stream.delivery_method)}</td>
       <td>{stream.events_requested.map(shortEvent).join(', ') || 'none'}</td>
       <td>
-        <strong>{stream.status}</strong>
+        <Badge tone={stream.status === 'enabled' ? 'ok' : 'warn'}>{stream.status}</Badge>
         {stream.reason !== null && <div className="muted">{stream.reason}</div>}
       </td>
       <td>{stream.delivered}</td>
@@ -364,14 +371,14 @@ function StreamLine({
                 maxLength={256}
                 onChange={(event) => setReason(event.target.value)}
               />{' '}
-              <button type="submit" disabled={busy}>
+              <Button type="submit" small disabled={busy}>
                 Pause
-              </button>
+              </Button>
             </form>
           ) : stream.status === 'paused' ? (
-            <button type="button" disabled={busy} onClick={() => onStatus(stream, 'enabled', '')}>
+            <Button small disabled={busy} onClick={() => onStatus(stream, 'enabled', '')}>
               Enable
-            </button>
+            </Button>
           ) : null}
           <form
             onSubmit={(event) => {
@@ -390,9 +397,9 @@ function StreamLine({
               maxLength={256}
               onChange={(event) => setState(event.target.value)}
             />{' '}
-            <button type="submit" disabled={busy}>
+            <Button type="submit" small disabled={busy}>
               Verify
-            </button>
+            </Button>
           </form>
         </td>
       )}
@@ -414,9 +421,15 @@ function DeadLetterTable({
   onDrop: (letter: DeadLetterRow) => void;
 }): JSX.Element {
   if (letters.length === 0) {
-    return <p>No dead letter. Every delivery the outbox took on has been delivered or is still owed.</p>;
+    return (
+      <EmptyState
+        title="No dead letter."
+        body="Every delivery the outbox took on has been delivered or is still owed."
+      />
+    );
   }
   return (
+    <div className="table-wrap">
     <table>
       <thead>
         <tr>
@@ -452,14 +465,14 @@ function DeadLetterTable({
                   button that offered it would be a button that always fails.
                 */}
                 {letter.retryable ? (
-                  <>
-                    <button type="button" disabled={busy} onClick={() => onRetry(letter)}>
+                  <Actions>
+                    <Button small disabled={busy} onClick={() => onRetry(letter)}>
                       Retry
-                    </button>{' '}
-                    <button type="button" disabled={busy} onClick={() => onDrop(letter)}>
+                    </Button>
+                    <Button small disabled={busy} onClick={() => onDrop(letter)}>
                       Drop
-                    </button>
-                  </>
+                    </Button>
+                  </Actions>
                 ) : (
                   <span className="muted">not retryable from here</span>
                 )}
@@ -469,5 +482,6 @@ function DeadLetterTable({
         ))}
       </tbody>
     </table>
+    </div>
   );
 }

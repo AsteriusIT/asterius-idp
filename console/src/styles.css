@@ -580,6 +580,19 @@ label {
   max-width: 40rem;
 }
 
+/* A screen written before `Field` existed says the same thing in markup: a
+   paragraph holding a label and its control. It gets the same layout, so the
+   two spellings are one design rather than two. */
+form p:has(> label),
+form p:has(> select),
+form p:has(> textarea),
+form p:has(> input) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 40rem;
+}
+
 .field .hint,
 .hint {
   color: var(--muted);

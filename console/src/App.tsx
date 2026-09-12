@@ -75,7 +75,10 @@ export function App(): JSX.Element {
   if (shell.kind === 'loading') {
     return (
       <CenteredCard heading="Loading">
-        <p className="muted" role="status" aria-live="polite">
+        {/* `aria-live` and no `role`, for the reason `Skeleton` gives: the
+            status role is what the sweep searches for to tell a saved change
+            from a refused one, and "Reading the session" is neither. */}
+        <p className="muted" aria-live="polite">
           Reading the session.
         </p>
       </CenteredCard>

@@ -34,6 +34,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, probe, read, type Session } from './api';
+import {
+  Actions,
+  Badge,
+  Button,
+  ConfirmDialog,
+  EmptyState,
+  Field,
+  LoadFailure,
+  Message,
+  Panel,
+  Screen,
+  Skeleton,
+} from './ui';
 
 /** One rule, as the document carries it (`asterius_domain::policy::Rule`). */
 export interface RuleDocument {
@@ -223,6 +236,8 @@ export function Policy({ session }: { session: Session }): JSX.Element {
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The question in front of the one irreversible act on this screen.
+  const [removing, setRemoving] = useState(false);
   const mayWrite = session.scopes.includes('admin.policies:write');
 
   const refresh = useCallback(() => {
@@ -277,23 +292,20 @@ export function Policy({ session }: { session: Session }): JSX.Element {
 
   if (load.kind === 'loading') {
     return (
-      <>
-        <h2>Policy</h2>
-        <p>Reading the policy.</p>
-      </>
+      <Screen title="Policy">
+        <Panel title="Reading">
+          <Skeleton rows={5} label="Reading the policy." />
+        </Panel>
+      </Screen>
     );
   }
   if (load.kind === 'failed') {
     return (
-      <>
-        <h2>Policy</h2>
-        <p role="alert" className="refusal">
-          {load.message}
-        </p>
-        <button type="button" onClick={refresh}>
-          Try again
-        </button>
-      </>
+      <Screen title="Policy">
+        <Panel title="The policy could not be read">
+          <LoadFailure message={load.message} onRetry={refresh} />
+        </Panel>
+      </Screen>
     );
   }
 
@@ -302,40 +314,53 @@ export function Policy({ session }: { session: Session }): JSX.Element {
   const line = location.line ?? (location.path === undefined ? undefined : lineOfRule(draft, location.path));
 
   return (
-    <>
-      <h2>Policy</h2>
-      <p className="muted">
-        The rules <strong>{session.tenant}</strong> is decided by. An enforcement point asks
-        whether a subject may take an action on a resource, and this document answers; an
-        explicit deny wins, and a request no rule matches is denied.{' '}
-        {load.policy.rule_count === 0
-          ? 'This tenant has no policy yet, so every evaluation is denied.'
-          : `${load.policy.rule_count} rule${load.policy.rule_count === 1 ? '' : 's'}, last changed ${load.policy.updated_at ?? 'never'}.`}
-      </p>
-
-      {notice !== null && <p className="notice">{notice}</p>}
+    <Screen
+      title="Policy"
+      description={
+        <>
+          The rules <strong>{session.tenant}</strong> is decided by. An enforcement point asks
+          whether a subject may take an action on a resource, and this document answers; an
+          explicit deny wins, and a request no rule matches is denied.{' '}
+          {load.policy.rule_count === 0
+            ? 'This tenant has no policy yet, so every evaluation is denied.'
+            : `${load.policy.rule_count} rule${load.policy.rule_count === 1 ? '' : 's'}, last changed ${load.policy.updated_at ?? 'never'}.`}
+        </>
+      }
+    >
+      {notice !== null && <Message tone="success">{notice}</Message>}
+      {/*
+        Not a `Message`, because this refusal has a second line the component
+        does not take: the JSON path the server named, and the line of the
+        draft it falls on. Same treatment, same mark, one more sentence.
+      */}
       {refusal !== null && (
-        <div role="alert" className="refusal">
-          <p>{refusal}</p>
-          {(location.path !== undefined || line !== undefined) && (
-            <p>
-              {location.path !== undefined && (
-                <>
-                  At <code>{location.path}</code>
-                </>
-              )}
-              {line !== undefined && <> (line {line})</>}
-            </p>
-          )}
+        <div role="alert" className="message error">
+          <span className="message-mark" aria-hidden="true">
+            &#9888;
+          </span>
+          <span className="message-body">
+            <p>{refusal}</p>
+            {(location.path !== undefined || line !== undefined) && (
+              <p>
+                {location.path !== undefined && (
+                  <>
+                    At <code>{location.path}</code>
+                  </>
+                )}
+                {line !== undefined && <> (line {line})</>}
+              </p>
+            )}
+          </span>
         </div>
       )}
 
-      <h3>Rules</h3>
+      <Panel title="Rules">
       {preview === null ? (
         <p className="muted">The draft below is not JSON yet, so there is nothing to summarise.</p>
       ) : preview.length === 0 ? (
-        <p className="muted">No rule. Every evaluation is denied.</p>
+        <EmptyState title="No rule." body="Every evaluation is denied." />
       ) : (
+        <div className="table-wrap">
         <table>
           <thead>
             <tr>
@@ -352,7 +377,9 @@ export function Policy({ session }: { session: Session }): JSX.Element {
                 <td>
                   <code>{rule.id}</code>
                 </td>
-                <td>{rule.effect}</td>
+                <td>
+                  <Badge tone={rule.effect === 'permit' ? 'ok' : 'bad'}>{rule.effect}</Badge>
+                </td>
                 <td>{describeRule(rule)}</td>
                 <td>
                   <code>{rule.when === undefined ? 'always' : JSON.stringify(rule.when)}</code>
@@ -362,58 +389,63 @@ export function Policy({ session }: { session: Session }): JSX.Element {
             ))}
           </tbody>
         </table>
+        </div>
       )}
+      </Panel>
 
-      <h3>Document</h3>
-      <p>
-        <label htmlFor="policy-document">The rule document, as the evaluator reads it</label>
-      </p>
-      <textarea
-        id="policy-document"
-        name="document"
-        rows={20}
-        spellCheck={false}
-        value={draft}
-        readOnly={!mayWrite}
-        onChange={(event) => setDraft(event.target.value)}
-      />
-      {mayWrite ? (
-        <p>
-          <button type="button" disabled={busy} onClick={save}>
-            Save policy
-          </button>{' '}
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => {
-              if (
-                !window.confirm(
-                  'Removing the policy denies every evaluation for this tenant until a new one is saved. Continue?',
-                )
-              ) {
-                return;
-              }
-              run(
-                () => mutate('policies', 'DELETE', session),
-                'The policy was removed. Every evaluation is denied.',
-              );
-            }}
-          >
-            Remove policy
-          </button>{' '}
-          <button type="button" disabled={busy} onClick={refresh}>
-            Discard changes
-          </button>
-        </p>
-      ) : (
-        <p className="muted">
-          This session may read the policy and not change it (<code>admin.policies:write</code>{' '}
-          is what a change needs).
-        </p>
-      )}
+      <Panel title="Document">
+        <Field label="The rule document, as the evaluator reads it">
+          {(props) => (
+            <textarea
+              {...props}
+              name="document"
+              rows={20}
+              spellCheck={false}
+              value={draft}
+              readOnly={!mayWrite}
+              onChange={(event) => setDraft(event.target.value)}
+            />
+          )}
+        </Field>
+        {mayWrite ? (
+          <Actions>
+            <Button variant="danger" disabled={busy} onClick={() => setRemoving(true)}>
+              Remove policy
+            </Button>
+            <Button disabled={busy} onClick={refresh}>
+              Discard changes
+            </Button>
+            <Button variant="primary" disabled={busy} onClick={save}>
+              Save policy
+            </Button>
+          </Actions>
+        ) : (
+          <p className="muted">
+            This session may read the policy and not change it (<code>admin.policies:write</code>{' '}
+            is what a change needs).
+          </p>
+        )}
+      </Panel>
 
       <TestBench session={session} />
-    </>
+
+      {removing && (
+        <ConfirmDialog
+          title="Remove the policy?"
+          body="Every evaluation for this tenant is denied until a new document is saved."
+          confirmLabel="Remove it"
+          busy={busy}
+          onCancel={() => setRemoving(false)}
+          onConfirm={() => {
+            setRemoving(false);
+            run(
+              () => mutate('policies', 'DELETE', session),
+              'The policy was removed. Every evaluation is denied.',
+            );
+          }}
+        />
+      )}
+    </Screen>
   );
 }
 
@@ -467,30 +499,28 @@ function TestBench({ session }: { session: Session }): JSX.Element {
     label: string,
     placeholder: string,
   ): JSX.Element => (
-    <span>
-      <label htmlFor={`trial-${name}`}>{label}</label>{' '}
-      <input
-        id={`trial-${name}`}
-        name={name}
-        type="text"
-        value={question[name]}
-        placeholder={placeholder}
-        maxLength={256}
-        onChange={(event) => setQuestion({ ...question, [name]: event.target.value })}
-      />{' '}
-    </span>
+    <Field label={label}>
+      {(props) => (
+        <input
+          {...props}
+          name={name}
+          type="text"
+          value={question[name]}
+          placeholder={placeholder}
+          maxLength={256}
+          onChange={(event) => setQuestion({ ...question, [name]: event.target.value })}
+        />
+      )}
+    </Field>
   );
 
   return (
-    <>
-      <h3>Try a request</h3>
-      <p className="muted">
-        The question an enforcement point would ask. The subject&apos;s groups, application
-        roles, active authorizations and authentication level are read from this tenant&apos;s
-        own records — they cannot be filled in here, and a rule that reads them is answered
-        with what the server knows. Nothing asked here is enforced, and nothing is stored.
-      </p>
+    <Panel
+      title="Try a request"
+      description="The question an enforcement point would ask. The subject's groups, application roles, active authorizations and authentication level are read from this tenant's own records, and cannot be filled in here: a rule that reads them is answered with what the server knows. Nothing asked here is enforced, and nothing is stored."
+    >
       <form
+        className="toolbar"
         onSubmit={(event) => {
           event.preventDefault();
           ask();
@@ -501,34 +531,36 @@ function TestBench({ session }: { session: Session }): JSX.Element {
         {field('action', 'Action', 'read')}
         {field('resourceType', 'Resource type', 'document')}
         {field('resourceId', 'Resource', 'an identifier your application uses')}
-        <span>
-          <label htmlFor="trial-context">Context properties (JSON)</label>{' '}
-          <input
-            id="trial-context"
-            name="context"
-            type="text"
-            value={question.context}
-            placeholder='{"ip": "198.51.100.7"}'
-            maxLength={1024}
-            onChange={(event) => setQuestion({ ...question, context: event.target.value })}
-          />{' '}
-        </span>
-        <button type="submit" disabled={answer.kind === 'asking'}>
-          Ask the policy
-        </button>{' '}
-        <button
-          type="button"
-          onClick={() => {
-            setQuestion(EMPTY_QUESTION);
-            setAnswer({ kind: 'idle' });
-          }}
-        >
-          Clear
-        </button>
+        <Field label="Context properties (JSON)">
+          {(props) => (
+            <input
+              {...props}
+              name="context"
+              type="text"
+              value={question.context}
+              placeholder='{"ip": "198.51.100.7"}'
+              maxLength={1024}
+              onChange={(event) => setQuestion({ ...question, context: event.target.value })}
+            />
+          )}
+        </Field>
+        <Actions>
+          <Button
+            onClick={() => {
+              setQuestion(EMPTY_QUESTION);
+              setAnswer({ kind: 'idle' });
+            }}
+          >
+            Clear
+          </Button>
+          <Button type="submit" variant="primary" disabled={answer.kind === 'asking'}>
+            Ask the policy
+          </Button>
+        </Actions>
       </form>
 
       <Verdict answer={answer} />
-    </>
+    </Panel>
   );
 }
 
@@ -537,14 +569,10 @@ function Verdict({ answer }: { answer: Answer }): JSX.Element {
     return <p className="muted">No request asked yet.</p>;
   }
   if (answer.kind === 'asking') {
-    return <p>Asking the policy.</p>;
+    return <Skeleton rows={2} label="Asking the policy." />;
   }
   if (answer.kind === 'failed') {
-    return (
-      <p role="alert" className="refusal">
-        {answer.message}
-      </p>
-    );
+    return <Message tone="error">{answer.message}</Message>;
   }
 
   const context = answer.decision.context ?? {};
