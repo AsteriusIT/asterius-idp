@@ -399,6 +399,7 @@ fn limits(max: u32) -> EndpointLimits {
         par: plain,
         token: plain,
         userinfo: plain,
+        introspection: plain,
         ssf_subjects: EndpointLimit {
             per_address: limit,
             per_client: Some(limit),

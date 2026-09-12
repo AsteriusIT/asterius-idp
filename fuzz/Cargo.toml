@@ -407,6 +407,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "introspection_request"
+path = "fuzz_targets/introspection_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "issuer_parse"
 path = "fuzz_targets/issuer_parse.rs"
 test = false

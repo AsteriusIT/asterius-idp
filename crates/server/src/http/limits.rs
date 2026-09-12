@@ -611,6 +611,7 @@ mod tests {
         EndpointLimits {
             registration: plain,
             client_configuration: plain,
+            introspection: plain,
             par: asterius_domain::EndpointLimit {
                 per_address: limit(2),
                 per_client: Some(limit(5)),

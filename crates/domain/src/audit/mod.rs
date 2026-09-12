@@ -183,6 +183,21 @@ impl EventType {
     /// types, so a trail can tell "this integration was signed out" from "this
     /// person withdrew their authorization".
     pub const TOKEN_REVOKED: Self = Self("token.revoked");
+    /// A token was introspected at the introspection endpoint (RFC 7662).
+    ///
+    /// Recorded on **every** call, whatever the answer, which is what makes
+    /// the trail useful here. RFC 7662 §4 names token scanning as the threat
+    /// this endpoint carries: a caller walking values gets `active: false`
+    /// every time and learns nothing from any single answer, so the only
+    /// place the walk is visible at all is a run of these entries against one
+    /// caller. An endpoint that recorded its *successes* would record exactly
+    /// the requests nobody needs to look at.
+    ///
+    /// The entry says what the caller asked and what it was told — the hint,
+    /// and whether the answer was active — and never the token, whose value
+    /// is a live credential and whose `jti` would let a reader of the trail
+    /// reconstruct which token a resource server is holding.
+    pub const TOKEN_INTROSPECTED: Self = Self("token.introspected");
     /// A grant was revoked.
     pub const GRANT_REVOKED: Self = Self("grant.revoked");
     /// A session was revoked.
@@ -513,7 +528,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 71] = [
+    pub const ALL: [Self; 72] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -539,6 +554,7 @@ impl EventType {
         Self::TOKEN_EXCHANGED,
         Self::TOKEN_REFRESHED,
         Self::TOKEN_REVOKED,
+        Self::TOKEN_INTROSPECTED,
         Self::GRANT_REVOKED,
         Self::SESSION_REVOKED,
         Self::CLIENT_AUTHENTICATED,

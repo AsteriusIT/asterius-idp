@@ -36,6 +36,7 @@ fuzz_target!(|data: &[u8]| {
         identifier: ResourceIdentifier::parse(REGISTERED).expect("a fixed identifier"),
         scopes: Some(["read".to_owned()].into_iter().collect()),
         default_token_lifetime: None,
+        introspection_clients: std::collections::BTreeSet::new(),
     }]);
 
     match ResourceIdentifier::parse(text) {

@@ -475,6 +475,7 @@ fn generous_endpoint_limits() -> EndpointLimits {
         par: limit,
         token: limit,
         userinfo: limit,
+        introspection: limit,
         ssf_subjects: limit,
         // Generous here too, and present rather than absent: a fixture that
         // left `/bc-authorize` without a subject bucket would be a fixture

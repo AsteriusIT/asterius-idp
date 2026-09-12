@@ -7,6 +7,7 @@ What is here, and what each measures:
 | `token-client-credentials.js` | `POST /token` | one `client_credentials` request: `private_key_jwt` assertion, DPoP proof, both fresh |
 | `code-flow.js` | PAR → `/authorize` → sign-in → consent → `/token` | one person signing in to one client, with PKCE and a DPoP key pinned at the push and presented at redemption |
 | `ssf-poll.js` | `POST /ssf/poll/{stream}` | one receiver poll with `returnImmediately`, DPoP-bound token with `ath` |
+| `introspection.js` | `POST /introspect` | one RFC 7662 request: `private_key_jwt` assertion, then the four reads the endpoint makes whatever the answer. `SCAN=1` asks about a value nothing issued — the path RFC 7662 §4's attacker takes, which by design is not the cheap one |
 | `explain.sh` | the database | `EXPLAIN (ANALYZE, BUFFERS)` of the hot statements on a seeded, throwaway database, and a verdict on sequential scans |
 
 The measurements taken with them, and the pool-sizing guidance they led to,
@@ -58,6 +59,7 @@ cd scripts/load
 k6 run --insecure-skip-tls-verify -e CLIENT_ID=load-machine --vus 16 --duration 60s token-client-credentials.js
 k6 run --insecure-skip-tls-verify -e CLIENT_ID=load-client  --vus 16 --duration 60s code-flow.js
 k6 run --insecure-skip-tls-verify -e CLIENT_ID=load-receiver --vus 8 --duration 30s ssf-poll.js
+k6 run --insecure-skip-tls-verify -e CLIENT_ID=load-machine --vus 16 --duration 60s introspection.js
 ```
 
 `asterius-load.toml` is that stack's configuration, and it is not a
@@ -102,7 +104,8 @@ will be thrown away.
 | `CLIENT_ID` | `load-client` (`load-receiver` for `ssf-poll.js`) | which seeded client to act as; `load-machine` for the token script |
 | `KID` | `load-key-1` | the `kid` in `client.jwks.json` |
 | `CLIENT_KEY` | `./client-key.der` | the PKCS#8 key `gen-keys.sh` wrote |
-| `SCOPE` | `load.read` | the scope `token-client-credentials.js` asks for |
+| `SCOPE` | `load.read` | the scope `token-client-credentials.js` and `introspection.js` ask for |
+| `SCAN` | unset | `introspection.js`: ask about values nothing issued, to compare the answer a scan gets with the answer a real token gets |
 | `PASSWORD` | `$ASTERIUS_ADMIN_PASSWORD` | the load user's password (`seed.sql` copies the admin's hash) |
 | `KEEP_SESSION` | unset | `code-flow.js`: keep the browser session between iterations instead of signing in every time |
 | `DEBUG` | unset | print every refused token response with the proof and assertion it carried |

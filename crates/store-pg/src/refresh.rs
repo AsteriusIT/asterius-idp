@@ -306,6 +306,79 @@ impl PgRefreshTokenRepository {
         })))
     }
 
+    /// Describes one live refresh token, if it belongs to `client`
+    /// (RFC 7662 §2.1).
+    ///
+    /// A read and not a redemption. [`Self::redeem`] is the only place a
+    /// presentation moves the idle clock, and introspection must not: a
+    /// resource server asking what a token is has not used it, and an
+    /// introspection that pushed the idle deadline out would let a caller keep
+    /// a token alive by asking about it.
+    ///
+    /// The client is half of the `where` clause, exactly as in [`Self::revoke`]
+    /// and for the same reason applied to a different specification: RFC 7662
+    /// §2.2's note says a token "the protected resource is not allowed to
+    /// introspect" gets `active: false`, and a lookup that cannot match
+    /// another client's row cannot tell the two apart even in how long it
+    /// takes.
+    ///
+    /// The liveness predicates are `redeem`'s, minus the supersession grace.
+    /// A superseded token *is* still redeemable inside the grace window under
+    /// the migration rotation mode, and it is reported active here for that
+    /// window, because the answer this endpoint gives must be the answer the
+    /// token endpoint would give — a resource server told a token is inactive
+    /// while `/token` still accepts it has been told something false.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Invalid`] if the digest is not hexadecimal, or
+    /// [`DomainError::Storage`] if the store could not be reached.
+    pub async fn describe(
+        &self,
+        digest: &str,
+        client: &ClientId,
+        now: OffsetDateTime,
+        grace: Duration,
+    ) -> Result<Option<RefreshTokenRecord>, DomainError> {
+        let digest = Self::digest_bytes(digest)?;
+        let superseded_after = now - grace;
+
+        let row = sqlx::query!(
+            "select grant_id, client_id, scopes, dpop_jkt, cert_thumbprint,
+                    issued_at, absolute_expires_at, superseded_at
+               from refresh_tokens
+              where tenant_id = $1
+                and token_hash = $2
+                and client_id = $5
+                and revoked_at is null
+                and absolute_expires_at > $3
+                and (idle_expires_at is null or idle_expires_at > $3)
+                and (superseded_at is null or superseded_at > $4)",
+            self.tenant.as_str(),
+            digest,
+            now,
+            superseded_after,
+            client.as_str(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        Ok(Some(RefreshTokenRecord {
+            grant: GrantId::new(row.grant_id.to_string()),
+            client: ClientId::new(row.client_id),
+            scopes: row.scopes.into_iter().collect(),
+            binding: RefreshBinding::from_columns(row.dpop_jkt, row.cert_thumbprint)?,
+            issued_at: row.issued_at,
+            absolute_expires_at: row.absolute_expires_at,
+            superseded: row.superseded_at.is_some(),
+        }))
+    }
+
     /// Revokes one refresh token, if it belongs to `client`.
     ///
     /// RFC 7009 §2.1's revocation, and §2.2's rule about whose token it is,

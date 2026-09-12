@@ -20,6 +20,7 @@ pub mod decision;
 pub mod device;
 pub mod form;
 pub mod grant_management;
+pub mod introspection;
 pub mod logout;
 pub mod metadata;
 pub mod mtls;

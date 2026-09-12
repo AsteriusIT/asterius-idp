@@ -343,6 +343,7 @@ fn limits(max: u32) -> EndpointLimits {
         par: plain,
         token: plain,
         userinfo: plain,
+        introspection: plain,
         ssf_subjects: plain,
         backchannel: plain,
         access_evaluation: EndpointLimit {

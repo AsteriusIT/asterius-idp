@@ -52,17 +52,26 @@ impl PgResourceServers {
             .and_then(|d| i32::try_from(d.whole_seconds()).ok())
             .filter(|seconds| *seconds > 0);
 
+        let introspectors: Vec<String> = server
+            .introspection_clients
+            .iter()
+            .map(|client| client.as_str().to_owned())
+            .collect();
+
         sqlx::query!(
             "insert into resource_servers
-                 (tenant_id, identifier, scopes, token_lifetime_seconds)
-             values ($1, $2, $3, $4)
+                 (tenant_id, identifier, scopes, token_lifetime_seconds,
+                  introspection_clients)
+             values ($1, $2, $3, $4, $5)
              on conflict (tenant_id, identifier) do update
              set scopes = excluded.scopes,
-                 token_lifetime_seconds = excluded.token_lifetime_seconds",
+                 token_lifetime_seconds = excluded.token_lifetime_seconds,
+                 introspection_clients = excluded.introspection_clients",
             self.tenant.as_str(),
             server.identifier.as_str(),
             scopes.as_deref(),
-            lifetime
+            lifetime,
+            &introspectors
         )
         .execute(&self.pool)
         .await
@@ -98,7 +107,7 @@ impl PgResourceServers {
 impl ResourceServerRepository for PgResourceServers {
     async fn list(&self) -> Result<Vec<ResourceServer>, DomainError> {
         let rows = sqlx::query!(
-            "select identifier, scopes, token_lifetime_seconds
+            "select identifier, scopes, token_lifetime_seconds, introspection_clients
                from resource_servers
               where tenant_id = $1
               order by identifier",
@@ -113,6 +122,7 @@ impl ResourceServerRepository for PgResourceServers {
             let identifier = row.identifier;
             let scopes = row.scopes;
             let lifetime = row.token_lifetime_seconds;
+            let introspectors = row.introspection_clients;
             // A stored row that is not a resource indicator fails the read
             // rather than being skipped: an audience this server would refuse
             // to issue is an audience it must not quietly stop offering
@@ -128,6 +138,14 @@ impl ResourceServerRepository for PgResourceServers {
                 identifier,
                 scopes: scopes.map(|scopes| scopes.into_iter().collect()),
                 default_token_lifetime: lifetime.map(|s| Duration::seconds(i64::from(s))),
+                // The column is `not null default '{}'`, so this is the empty
+                // set for every row registered before RFC 7662 introspection
+                // existed here — which is the posture that lets nobody but a
+                // token's own client introspect it.
+                introspection_clients: introspectors
+                    .into_iter()
+                    .map(asterius_domain::ClientId::new)
+                    .collect(),
             });
         }
         Ok(servers)
