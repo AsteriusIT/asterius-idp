@@ -1406,7 +1406,7 @@ fn error_page(context: &PasskeyContext<'_>, status: StatusCode) -> Response {
         pages::render(&ErrorPage {
             text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
-            message: "Something went wrong, and this request cannot continue.",
+            message: crate::http::i18n::UNTRANSLATED.error_cannot_continue(),
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",

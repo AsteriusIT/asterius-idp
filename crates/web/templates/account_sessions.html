@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ text.sessions_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# The sessions open on an account, and one button per row to close them
+   (`ast-1xd`).
+
+   This is the page a person reaches when they think somebody else is signed
+   in as them, so it lists every live session — not only the ones with a
+   client attached — and marks the one this browser is holding, because
+   "which of these is me" is the first question anybody asks here.
+
+   What it shows is what this server records: when the session began, when it
+   was last used, and how the person authenticated. There is no user agent
+   string and no address, because there is no column for either — the
+   `sessions` table keeps neither, and a page cannot show a fact nobody
+   stored.
+
+   Closing a session revokes it, queues a back-channel logout token for every
+   relying party that took an ID token in it (Back-Channel Logout 1.0 §2.2)
+   and emits CAEP `session-revoked` to the streams that asked. A session that
+   is not this account's is answered exactly as one that does not exist.
+
+   No script: every date is server-rendered text and every revocation is an
+   ordinary form post. #}
+{% include "error_summary.html" %}
+
+<div class="stack tight">
+<h2>{{ text.sessions_heading() }}</h2>
+</div>
+
+<p class="muted">{{ text.sessions_explains() }}</p>
+{% for session in sessions %}
+<p class="separator"></p>
+<div class="stack tight">
+{% if session.current %}
+<p>{{ text.sessions_current() }}</p>
+{% endif %}
+<p class="muted">
+  <time datetime="{{ session.started_at }}">{{ text.sessions_started(session.started_at) }}</time>
+</p>
+<p class="muted">
+  <time datetime="{{ session.last_seen_at }}">{{ text.sessions_last_seen(session.last_seen_at) }}</time>
+</p>
+{% if !session.methods.is_empty() %}
+<p class="muted">{{ text.sessions_methods(session.methods.as_str()) }}</p>
+{% endif %}
+
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="session" value="{{ session.reference }}">
+<div class="actions">
+  <button type="submit" name="do" value="revoke" class="secondary">{{ text.sessions_revoke() }}</button>
+</div>
+</form>
+</div>
+{% endfor %}
+
+{% if others %}
+<p class="separator"></p>
+{# One form for "everything but this browser". It names no session: the server
+   works out which rows those are from the cookie it is holding, so a body
+   that named them could not be made to close somebody else's. #}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="actions">
+  <button type="submit" name="do" value="others" class="secondary">{{ text.sessions_revoke_others() }}</button>
+</div>
+</form>
+{% else %}
+<p class="muted">{{ text.sessions_only_this_one() }}</p>
+{% endif %}
+
+<p class="link-row"><a href="{{ sign_in_href }}">{{ text.sessions_sign_in_again() }}</a></p>
+<p class="link-row"><a href="{{ account_href }}">{{ text.account_back() }}</a></p>
+{% endblock %}

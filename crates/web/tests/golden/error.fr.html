@@ -458,6 +458,23 @@ label.permission {
 .error strong {
   color: var(--danger);
 }
+/* The error page's one sentence is *also* `class="error"`, and it is not this
+   box. Five modules of the FAPI 2.0 plan end at `error.html` rather than at a
+   redirect_uri, and their override in `conformance/plans/fapi2-sp-final.json`
+   waits for `//p[@class='error']` to hold text: that XPath matches the
+   attribute whole, so the class cannot be renamed and cannot gain a second
+   word (`ast-yc5`). What it can do is stop being drawn as the boxed summary:
+   a red frame around the sentence, under a danger badge and a heading that
+   both say the same thing, states it three times on one centred card.
+   Rendered as body text instead, which is what direction A has it be. */
+p.error {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: .9375rem;
+}
 /* The one mark on the error page. It carries no meaning — the heading does —
    so it is drawn in CSS and hidden from the accessibility tree. */
 .badge-danger {
@@ -523,7 +540,7 @@ input.code {
 <div class="stack tight">
 <h2>Une erreur est survenue</h2>
 
-<p class="error">We could not complete that request.</p>
+<p class="error">Nous n&#39;avons pas pu traiter cette demande.</p>
 </div>
 
 <p class="pill">Si vous contactez l&#39;assistance, indiquez <code>01JQ0000000000000000000000</code></p>

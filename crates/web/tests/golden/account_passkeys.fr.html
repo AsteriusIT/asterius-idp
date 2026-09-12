@@ -1,0 +1,637 @@
+
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<meta name="referrer" content="no-referrer">
+<title>Vos clés d&#39;accès — Example Tenant</title>
+<style nonce="snapshot-nonce">@font-face{font-family:Geist;src:url("/assets/font/geist-snapshot.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}
+/* The defaults. A tenant's design tokens are appended to this same <style>
+   element as one more :root rule, so they win on document order.
+
+   The design is ast-9li's direction A: one centred card on a warm neutral
+   backdrop, the tenant's mark and name above it, 44px controls, 8px on the
+   card and 6px on the controls, an indigo accent. It is expressed in custom
+   properties and classes only, and no template carries an inline style
+   attribute.
+
+   The face is Geist, served by this deployment from a hashed path
+   (`asterius_web::brand`): the `@font-face` lives in base.html rather than
+   here, because its URL carries the request's mount prefix and this file is a
+   constant. Nothing is fetched from an outside origin — `font-src 'self'`
+   would refuse it. */
+:root {
+  /* Light, always, and not `light dark` (ast-vn7). A dark page is a decision
+     about a tenant's palette, not about the browser the visitor happens to
+     have: the six colours here are the ones `asterius_domain::Theme` checks
+     for contrast against each other, and a `prefers-color-scheme` block used
+     to substitute a *seventh set nobody validated* the moment a tenant set
+     `--bg` and the media query kept the shipped `--fg`. So there is one
+     scheme, and `ast-ndk.1` is where a dark one comes from. */
+  color-scheme: light;
+
+  /* The tenant tokens. `asterius_web::theme` re-declares exactly these names,
+     after this rule, so anything below that is derived from them follows a
+     tenant that only sets a palette. */
+  --fg: #18181b;
+  --bg: #ffffff;
+  --muted: #71717a;
+  --line: #e4e4e7;
+  --accent: #3f3fbf;
+  --accent-fg: #ffffff;
+  --danger: #b42318;
+  --radius: 8px;
+  --space: 8px;
+  /* Spelled exactly as `FontStack::Geist` spells it: the two have to agree,
+     and `the_default_theme_renders_the_stylesheets_own_colours` fails if they
+     drift. Geist is served from this origin; the system stack behind it is
+     what a browser draws while the file arrives (`font-display: swap`) and
+     what it keeps if the file never does. */
+  --font: Geist, system-ui, -apple-system, Segoe UI, sans-serif;
+
+  /* Derived, and deliberately not tenant tokens.
+
+     The card is the tenant's own background, because `--fg` on `--bg` is the
+     pair `asterius_domain::Theme` validates for contrast; anything else would
+     be this stylesheet quietly inventing a colour pair nobody checked. The
+     backdrop is that same background nudged 6% towards a warm grey, which is
+     what makes the card read as a card. The literal is the fallback for a
+     browser without `color-mix`, and it is the warm tone of the mock-up. */
+  --card: var(--bg);
+  --backdrop: #f8f7f4;
+  --backdrop: color-mix(in srgb, var(--bg) 94%, #a8a29e);
+  /* The control radius, smaller than the card's, and the minimum target
+     size: WCAG 2.2 SC 2.5.8 asks for 24px and this design gives 44, which is
+     also the size a thumb hits on a phone. */
+  --ctl: 6px;
+  --tap: 44px;
+  --shadow: 0 1px 2px rgba(24, 24, 27, .05), 0 8px 24px rgba(24, 24, 27, .06);
+}
+/* ---- the page -------------------------------------------------------- */
+
+body {
+  margin: 0;
+  background: var(--backdrop);
+  color: var(--fg);
+  font: 15px/1.5 var(--font);
+}
+.page {
+  box-sizing: border-box;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+}
+.shell {
+  width: 100%;
+  max-width: 27.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+/* The tenant's mark and name, above the card rather than inside it: it is who
+   is asking, not what is being asked. The mark is either the tenant's uploaded
+   logo or one of the embedded icons (`asterius_web::brand`). */
+.brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+/* The 28px square of the mock-up. The glyph is `--bg` on `--fg`, which is the
+   one colour pair `asterius_domain::Theme` checks for contrast — so a tenant
+   that changes its palette cannot make the mark disappear.
+
+   The corner is 7/8 of the card's radius rather than a literal 7px: a tenant
+   that asked for square corners gets a square mark instead of one rounded
+   shape in an otherwise sharp design. */
+.brand-mark {
+  flex: none;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  border-radius: calc(var(--radius) * .875);
+  background: var(--fg);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+/* A logo is raster bytes the tenant uploaded, so it is fitted rather than
+   trusted to be square, and it replaces the tinted square entirely. */
+.brand-mark.brand-logo {
+  background: none;
+  padding: 0;
+}
+.brand-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.wordmark {
+  margin: 0;
+  font-size: .9375rem;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  overflow-wrap: anywhere;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+/* The pages that say one thing — the error page, the end of a device flow. */
+.card.centered {
+  align-items: center;
+  text-align: center;
+}
+
+/* A column of blocks inside the card: the passkey group, a heading and the
+   sentence under it. */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.stack.tight {
+  gap: 6px;
+}
+/* Author rules beat the user-agent sheet, so a flex container that is also
+   `hidden` would be shown — and the one element in this tree that starts
+   `hidden` is the passkey group, which must stay invisible in a browser that
+   never runs the script that could make its button work. */
+[hidden] {
+  display: none !important;
+}
+
+/* ---- text ------------------------------------------------------------ */
+
+h1, h2, p {
+  margin: 0;
+}
+h2 {
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -.02em;
+}
+.muted {
+  color: var(--muted);
+  font-size: .875rem;
+}
+a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .875rem;
+}
+/* A standalone link is a target, not a word in a sentence: SC 2.5.8 exempts
+   links inside a block of text and these are not that. */
+.link-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  font-size: .8125rem;
+}
+
+/* ---- controls -------------------------------------------------------- */
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+label > span {
+  font-size: .8125rem;
+  font-weight: 500;
+}
+label > span.muted {
+  font-weight: 400;
+  font-size: .75rem;
+}
+input[type=text], input[type=password], input[type=email] {
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--tap);
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl);
+  background: var(--card);
+  color: var(--fg);
+  font: inherit;
+  font-size: .875rem;
+}
+input[type=text]:focus, input[type=password]:focus, input[type=email]:focus {
+  border-color: var(--accent);
+}
+button {
+  box-sizing: border-box;
+  min-height: var(--tap);
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: var(--ctl);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font: inherit;
+  font-size: .875rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+button.secondary {
+  background: var(--card);
+  color: var(--fg);
+  border-color: var(--line);
+}
+.actions {
+  display: flex;
+  gap: 10px;
+}
+.actions > button, .actions > a.button {
+  flex: 1 1 0;
+}
+/* A link that acts as the page's one forward step. It is a link and not a
+   button because it navigates; this only makes it look like the rest. */
+a.button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: var(--tap);
+  padding: 0 16px;
+  border-radius: var(--ctl);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: .875rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+/* The sign-in page is the one place where the accent belongs to the passkey
+   button (ast-9li: one primary action, and it is the phishing-resistant one),
+   so the password form's own submit is drawn as the secondary control. It is
+   selected structurally because `crates/web/src/source_audit.rs` and
+   `e2e/src/no-script.ts` both pin the literal `<button type="submit">` as the
+   control that still works with scripting off. */
+form.password-form button[type=submit] {
+  background: var(--card);
+  color: var(--fg);
+  border-color: var(--line);
+}
+/* Focus is visible everywhere, in the accent, and never removed. SC 2.4.7. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* SC 2.4.7: the error summary takes the focus after a failed submission, and a
+   focused element a user cannot see is a focus indicator that is not there. */
+[tabindex="-1"]:focus {
+  outline: 2px solid var(--danger);
+  outline-offset: 4px;
+}
+
+/* ---- blocks ---------------------------------------------------------- */
+
+/* "or", between the passkey button and the password form. */
+.separator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: .75rem;
+}
+.separator::before, .separator::after {
+  content: "";
+  flex: 1 1 0;
+  height: 1px;
+  background: var(--line);
+}
+/* Where the browser will be sent back to, shown before the name the client
+   chose for itself. FAPI 2.0 SP §7. */
+.host {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl);
+  background: var(--backdrop);
+}
+.host .host-label {
+  font-size: .75rem;
+  color: var(--muted);
+}
+.host .host-value {
+  font-size: 1.0625rem;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  overflow-wrap: anywhere;
+}
+.host .host-client {
+  font-size: .8125rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.host .host-client strong {
+  color: var(--fg);
+  font-weight: 500;
+}
+/* One row per thing the client is asking for. */
+.permissions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl);
+}
+.permissions > li {
+  border-bottom: 1px solid var(--line);
+}
+.permissions > li:last-child {
+  border-bottom: 0;
+}
+.permission {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  min-height: var(--tap);
+  padding: 11px 14px;
+  margin: 0;
+}
+label.permission {
+  cursor: pointer;
+}
+.permission input[type=checkbox] {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+/* A scope that cannot be unticked is drawn as a tick that is made rather than
+   offered: the value travels in a hidden field, and this is only what a person
+   sees.
+
+   Every word in this file reaches the browser — the stylesheet is inlined into
+   the one nonce-carrying <style> element of every page — so the comments here
+   stay short, and they avoid the words the page audits in
+   `crates/web/src/pages.rs` look for. A CSS rule is not a sentence a page
+   says, but a grep over the response cannot tell the difference. */
+.permission-mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+.permission-mark::before {
+  content: "\2713";
+}
+.permission-text {
+  display: flex;
+  flex-direction: column;
+}
+.permission-text .permission-name {
+  font-size: .875rem;
+  font-weight: 500;
+}
+.permission-text .permission-scope {
+  font-size: .75rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+/* A remark about the decision, quieter than the decision itself. */
+.notice {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl);
+  background: var(--backdrop);
+  font-size: .8125rem;
+}
+.notice strong {
+  font-weight: 500;
+}
+/* The lists that are not choices: authorization details, resources, the
+   scopes a device is asking for. */
+.scopes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: .875rem;
+}
+.error {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--danger);
+  border-radius: var(--ctl);
+  font-size: .875rem;
+}
+.error p {
+  margin: 0;
+}
+.error strong {
+  color: var(--danger);
+}
+/* The error page's one sentence is *also* `class="error"`, and it is not this
+   box. Five modules of the FAPI 2.0 plan end at `error.html` rather than at a
+   redirect_uri, and their override in `conformance/plans/fapi2-sp-final.json`
+   waits for `//p[@class='error']` to hold text: that XPath matches the
+   attribute whole, so the class cannot be renamed and cannot gain a second
+   word (`ast-yc5`). What it can do is stop being drawn as the boxed summary:
+   a red frame around the sentence, under a danger badge and a heading that
+   both say the same thing, states it three times on one centred card.
+   Rendered as body text instead, which is what direction A has it be. */
+p.error {
+  display: block;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+  font-size: .9375rem;
+}
+/* The one mark on the error page. It carries no meaning — the heading does —
+   so it is drawn in CSS and hidden from the accessibility tree. */
+.badge-danger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger) 12%, var(--card));
+  color: var(--danger);
+  font-size: 1.375rem;
+  font-weight: 600;
+}
+/* A correlation id is read back over the telephone, so it is set apart from
+   the sentence around it. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: .8125rem;
+}
+.pill code {
+  color: var(--fg);
+}
+/* A one-time code is read off one screen and typed into another, so it is set
+   wide and monospaced: the characters that get confused doing that are 0/O and
+   1/l, and a proportional face is where they look alike. */
+input.code {
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.code-display {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl);
+  background: var(--backdrop);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.5rem;
+  letter-spacing: .15em;
+  text-align: center;
+}:root{--bg:#ffffff;--fg:#18181b;--muted:#71717a;--line:#71717a;--accent:#3f3fbf;--accent-fg:#ffffff;--danger:#b42318;--radius:8px;--space:8px;--font:Geist, system-ui, -apple-system, Segoe UI, sans-serif;}</style>
+</head>
+<body>
+
+<div class="page">
+<div class="shell">
+<div class="brand">
+<span class="brand-mark"><svg class="brand-glyph" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg></span>
+
+<h1 class="wordmark">Example Tenant</h1>
+</div>
+<main class="card">
+
+
+
+
+
+<div class="stack tight">
+<h2>Les clés d&#39;accès enregistrées sur votre compte</h2>
+</div>
+
+
+<p class="muted">Une clé d&#39;accès retirée cesse immédiatement de fonctionner, sur tous les appareils où elle est synchronisée.</p>
+
+<p class="separator"></p>
+<div class="stack tight">
+<p>The laptop</p>
+<p class="muted">
+  <time datetime="2026-01-01T00:00:00Z">Enregistrée le 2026-01-01T00:00:00Z</time>
+</p>
+<p class="muted">
+
+  <time datetime="2026-01-02T09:30:00Z">Dernière utilisation le 2026-01-02T09:30:00Z</time>
+
+</p>
+
+<p class="muted">Modèle d&#39;authentificateur 08987058-cadc-4b81-b6e1-30de50dcbe96</p>
+
+
+
+
+<form method="post" action="/account/passkeys">
+<input type="hidden" name="csrf" value="snapshot-csrf">
+<input type="hidden" name="credential" value="9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f">
+<label>
+  <span>Nom</span>
+  <input type="text" name="label" value="The laptop"
+         maxlength="64" autocomplete="off">
+</label>
+
+<div class="actions">
+  <button type="submit" name="do" value="rename">Enregistrer ce nom</button>
+
+  <button type="submit" name="do" value="remove" class="secondary">Retirer cette clé d&#39;accès</button>
+
+</div>
+</form>
+
+</div>
+
+<p class="separator"></p>
+<div class="stack tight">
+<p>Passkey registered on 2026-01-03T00:00:00Z</p>
+<p class="muted">
+  <time datetime="2026-01-03T00:00:00Z">Enregistrée le 2026-01-03T00:00:00Z</time>
+</p>
+<p class="muted">
+
+  Jamais utilisée
+
+</p>
+
+
+<p class="muted">Bloquée : cette clé d&#39;accès ne permet pas de se connecter.</p>
+
+
+
+<form method="post" action="/account/passkeys">
+<input type="hidden" name="csrf" value="snapshot-csrf">
+<input type="hidden" name="credential" value="11111111-1111-4111-8111-111111111111">
+<label>
+  <span>Nom</span>
+  <input type="text" name="label" value=""
+         maxlength="64" autocomplete="off">
+</label>
+
+<label>
+  <span>Votre mot de passe</span>
+  <input type="password" name="password" autocomplete="current-password">
+  <span class="muted">C&#39;est votre dernière clé d&#39;accès. Saisissez votre mot de passe pour la retirer.</span>
+</label>
+
+<div class="actions">
+  <button type="submit" name="do" value="rename">Enregistrer ce nom</button>
+
+  <button type="submit" name="do" value="remove" class="secondary">Retirer cette clé d&#39;accès</button>
+
+</div>
+</form>
+
+</div>
+
+
+
+
+<p class="link-row"><a href="/account/passkeys/sign-in">Se reconnecter</a></p>
+<p class="link-row"><a href="/account">Retour à votre compte</a></p>
+
+</main>
+</div>
+</div>
+</body>
+</html>

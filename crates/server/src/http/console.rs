@@ -94,6 +94,12 @@ pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
         // The grants dashboard (`ast-uwv.6`), reached the same way: one segment
         // up from `/interaction/{id}` and then down into the account pages.
         FirstPartyDestination::GrantsDashboard => "../account/grants",
+        // The self-service account pages (`ast-1xd`), reached the same way:
+        // one segment up from `/interaction/{id}` and then down.
+        FirstPartyDestination::AccountHome => "../account",
+        FirstPartyDestination::AccountPasskeys => "../account/passkeys",
+        FirstPartyDestination::AccountPassword => "../account/password",
+        FirstPartyDestination::AccountSessions => "../account/sessions",
     }
 }
 

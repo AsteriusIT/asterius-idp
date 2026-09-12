@@ -907,7 +907,7 @@ fn error_page(context: &ApprovalsContext<'_>, status: StatusCode) -> Response {
         pages::render(&ErrorPage {
             text: context.text,
             tenant_name: &context.tenant.display_name,
-            message: "This did not work. Nothing was decided.",
+            message: context.text.error_nothing_decided(),
             correlation_id: "",
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",

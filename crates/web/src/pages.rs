@@ -804,6 +804,217 @@ pub struct GrantsPage<'a> {
     pub brand: crate::brand::Brand<'a>,
 }
 
+/// The account home page: five links and nothing to press (`ast-1xd`).
+///
+/// The pages under it are the self-service half of what an administrator can
+/// already do from the console — remove a credential, close a session — and
+/// they are useless if nobody can find them. This page is what a person is
+/// given the URL of.
+///
+/// It carries no synchroniser token because it carries no form: there is
+/// nothing on it that changes anything, which is also why it is the one
+/// account page a stale session may read without being sent to sign in again.
+#[derive(Debug, Template)]
+#[template(path = "account.html")]
+pub struct AccountPage<'a> {
+    /// The words this page is rendered with, and the language they are in.
+    pub text: &'a Catalog,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Who is signed in, as this server knows them. Their own text, escaped
+    /// like anyone else's.
+    pub username: &'a str,
+    /// Where the passkey list lives.
+    pub passkeys_href: &'a str,
+    /// Where the password page lives.
+    pub password_href: &'a str,
+    /// Where the session list lives.
+    pub sessions_href: &'a str,
+    /// The approvals inbox (`ast-lh3.6`).
+    pub approvals_href: &'a str,
+    /// The grants dashboard (`ast-uwv.6`).
+    pub grants_href: &'a str,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+    /// The tenant's design tokens, as the CSS custom properties
+    /// `crate::theme::custom_properties` renders.
+    pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    pub brand: crate::brand::Brand<'a>,
+}
+
+/// One passkey, as its owner sees it (`ast-1xd`).
+///
+/// Everything is already a string, formatted by the caller, for the reason
+/// [`GrantLine`] gives: the page renders with no script at all, so a date a
+/// browser would have localised is a date this server writes out.
+#[derive(Debug, Clone)]
+pub struct PasskeyLine {
+    /// How a submission names this credential: the `credentials` row id, and
+    /// never the WebAuthn credential id — that one is chosen by the
+    /// authenticator and is a correlator across relying parties.
+    pub reference: String,
+    /// What to call it on the page: the label its owner gave it, or a name
+    /// derived from the day it was registered.
+    pub name: String,
+    /// What the rename field starts with: the stored label, or empty.
+    ///
+    /// Separate from [`Self::name`] so that a derived name is *shown* and not
+    /// silently written back into the column the moment somebody presses
+    /// rename on a different row.
+    pub label: String,
+    /// When it was enrolled, RFC 3339, for a `<time>` element.
+    pub registered_at: String,
+    /// When it was last asserted, RFC 3339. `None` renders "never used".
+    pub last_used: Option<String>,
+    /// The AAGUID the authenticator reported (WebAuthn L3 §6.4.1), as the
+    /// identifier it is. `None` for an authenticator that declined to say.
+    pub model: Option<String>,
+    /// Whether this server has blocked the credential — a signature-counter
+    /// regression, or a removal. Shown rather than hidden: a person looking
+    /// for the passkey their device still offers needs to see it here.
+    pub blocked: bool,
+    /// Whether removing it needs the account's password as well as a fresh
+    /// sign-in, which is true of the last usable passkey and of nothing else.
+    pub needs_password: bool,
+    /// Whether the removal button is offered at all.
+    ///
+    /// `false` for the last passkey of an account with no password: removing
+    /// it would leave nobody able to sign in, so the page offers the password
+    /// page instead of a button that must refuse.
+    pub removable: bool,
+}
+
+/// The passkey list, with a rename and a removal per row (`ast-1xd`).
+///
+/// # Why a change is a `POST` with a token
+///
+/// It takes away a way of signing in. A `GET` that removed could be fired by
+/// an `<img>` on any page in the world, and a `POST` without a synchroniser
+/// token by a form on one — so every submission carries [`Self::csrf`],
+/// derived from the session's digest, which a cross-origin page can cause the
+/// browser to *send* but cannot read.
+#[derive(Debug, Template)]
+#[template(path = "account_passkeys.html")]
+pub struct PasskeysPage<'a> {
+    /// The words this page is rendered with, and the language they are in.
+    pub text: &'a Catalog,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// The credentials on this account, oldest first. Empty renders a page
+    /// that says so.
+    pub passkeys: Vec<PasskeyLine>,
+    /// Where a rename or a removal posts to.
+    pub action: &'a str,
+    /// Where a person re-authenticates when a change needs a fresher sign-in
+    /// than the session has.
+    pub sign_in_href: &'a str,
+    /// The account home page.
+    pub account_href: &'a str,
+    /// The password page, offered to an account whose last passkey cannot be
+    /// removed because nothing else would let them in.
+    pub password_href: &'a str,
+    /// The synchroniser token every submission carries.
+    pub csrf: &'a str,
+    /// The `maxlength` of the rename field, which is the bound the parser
+    /// holds a submitted label to.
+    pub maximum_label_length: usize,
+    /// What happened last time, if anything did.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+    /// The tenant's design tokens.
+    pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    pub brand: crate::brand::Brand<'a>,
+}
+
+/// The password page: set one, or change the one there is (`ast-1xd`).
+#[derive(Debug, Template)]
+#[template(path = "account_password.html")]
+pub struct AccountPasswordPage<'a> {
+    /// The words this page is rendered with, and the language they are in.
+    pub text: &'a Catalog,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// Whether the account has a usable password today, which decides whether
+    /// this is a change (and asks for the current one) or a first setting.
+    pub has_password: bool,
+    /// Where the form posts to.
+    pub action: &'a str,
+    /// Where a person re-authenticates when the session is too old.
+    pub sign_in_href: &'a str,
+    /// The account home page.
+    pub account_href: &'a str,
+    /// The synchroniser token this submission carries.
+    pub csrf: &'a str,
+    /// NIST SP 800-63B §5.1.1.2's floor, as the `minlength` attribute.
+    pub minimum_password_length: usize,
+    /// The same number as text, for the sentence the catalogue fills.
+    pub minimum_password_length_text: String,
+    /// What happened last time, if anything did.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+    /// The tenant's design tokens.
+    pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    pub brand: crate::brand::Brand<'a>,
+}
+
+/// One session of an account, as its owner sees it (`ast-1xd`).
+#[derive(Debug, Clone)]
+pub struct SessionLine {
+    /// How a submission names this session: the public `sid`, which is also
+    /// what a relying party saw in its ID token. Never the digest, which is
+    /// the key this server's own table is keyed by.
+    pub reference: String,
+    /// When the session began, RFC 3339.
+    pub started_at: String,
+    /// When it was last used, RFC 3339.
+    pub last_seen_at: String,
+    /// How the person authenticated, already joined into one string: the
+    /// `amr` values of OIDC Core §2, which are identifiers rather than
+    /// sentences and are shown as such.
+    pub methods: String,
+    /// Whether this is the session the page is being read with.
+    pub current: bool,
+}
+
+/// The session list, with one button per row and one for all the others
+/// (`ast-1xd`).
+#[derive(Debug, Template)]
+#[template(path = "account_sessions.html")]
+pub struct AccountSessionsPage<'a> {
+    /// The words this page is rendered with, and the language they are in.
+    pub text: &'a Catalog,
+    /// The tenant's display name.
+    pub tenant_name: &'a str,
+    /// The live sessions of this account, newest first. Never empty: the
+    /// session reading the page is one of them.
+    pub sessions: Vec<SessionLine>,
+    /// Whether there is anything to close besides this browser, which is what
+    /// decides whether the "everywhere else" button is offered.
+    pub others: bool,
+    /// Where a revocation posts to.
+    pub action: &'a str,
+    /// Where a person re-authenticates when the session is too old to revoke
+    /// with.
+    pub sign_in_href: &'a str,
+    /// The account home page.
+    pub account_href: &'a str,
+    /// The synchroniser token every submission carries.
+    pub csrf: &'a str,
+    /// What happened last time, if anything did.
+    pub message: Option<&'a str>,
+    /// The CSP nonce attribute.
+    pub nonce_attribute: String,
+    /// The tenant's design tokens.
+    pub theme_css: &'a str,
+    /// The tenant's mark and the URL of the face this server hosts.
+    pub brand: crate::brand::Brand<'a>,
+}
+
 /// The account creation page.
 ///
 /// No script: a passkey cannot be enrolled from markup, and enrolment happens

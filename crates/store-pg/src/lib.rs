@@ -79,7 +79,7 @@ pub use outbox::{
     Backoff, DEFAULT_LEASE, DEFAULT_MAX_ATTEMPTS, NewOutboxEntry, Outcome, PgOutbox, PgTransaction,
     Verdict, enqueue,
 };
-pub use passkeys::{PgPasskeyRepository, RemovedPasskey};
+pub use passkeys::{PgPasskeyRepository, RemovedPasskey, RenamedPasskey};
 pub use passwords::PgPasswordVerifier;
 pub use policies::PgPolicies;
 pub use provisioning::ProvisionedTenants;
