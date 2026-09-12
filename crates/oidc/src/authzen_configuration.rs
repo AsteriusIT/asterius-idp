@@ -197,6 +197,31 @@ mod tests {
         );
     }
 
+    /// §9.1.1's OPTIONAL sibling: the boxcar (§7) is advertised beside the
+    /// evaluation endpoint, at the URL the router mounts — which is also the
+    /// `aud` a PEP's token must carry there, and not the one for §6.1's
+    /// endpoint (`ast-pj0.2`).
+    #[test]
+    fn the_boxcar_endpoint_is_advertised_at_the_url_that_answers() {
+        // Arrange, act
+        let document = pdp_metadata(&issuer(), &authzen_on());
+
+        // Assert
+        assert_eq!(
+            document["access_evaluations_endpoint"],
+            serde_json::json!("https://as.example/t/demo/access/v1/evaluations")
+        );
+        assert_eq!(
+            document["access_evaluations_endpoint"],
+            serde_json::json!(crate::metadata::Endpoint::AccessEvaluations.url(&issuer())),
+            "the advertised boxcar is not the one the registry mounts"
+        );
+        assert_ne!(
+            document["access_evaluations_endpoint"], document["access_evaluation_endpoint"],
+            "two endpoints, two audiences"
+        );
+    }
+
     /// §9.2.2: a parameter with nothing to say is omitted rather than empty.
     /// Nothing here searches (`ast-pj0.6`), so no `search_*` member exists.
     #[test]

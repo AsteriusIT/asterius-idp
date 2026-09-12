@@ -242,7 +242,9 @@ impl Endpoint {
     #[must_use]
     pub const fn in_pdp_metadata(self) -> bool {
         match self {
-            Self::AccessEvaluation => true,
+            // §9.1.1 names both: `access_evaluation_endpoint` REQUIRED and
+            // `access_evaluations_endpoint` OPTIONAL (`ast-pj0.2`).
+            Self::AccessEvaluation | Self::AccessEvaluations => true,
             Self::Authorization
             | Self::PushedAuthorizationRequest
             | Self::Token
