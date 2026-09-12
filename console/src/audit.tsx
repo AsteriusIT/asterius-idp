@@ -37,6 +37,7 @@ import {
   Panel,
   Screen,
   Skeleton,
+  Truncate,
 } from './ui';
 
 /** One party to a record, as `actor` and each `actor_chain` entry render. */
@@ -311,7 +312,15 @@ function Trail({
   }
   return (
     <>
-      <div className="table-wrap">
+      {/*
+        A scrolling box has to be reachable by keyboard (WCAG 2.2 §2.1.1), and
+        this one really scrolls: a record's detail is a list of opaque
+        identifiers and there is a width past which they cannot all be shown.
+        `tabIndex` makes it a stop and the region carries a name, which is what
+        axe asks for and what a screen reader announces on arrival
+        (`ast-f9j5`).
+      */}
+      <div className="table-wrap" tabIndex={0} role="region" aria-label="Audit records">
       <table>
         <thead>
           <tr>
@@ -337,7 +346,11 @@ function Trail({
                 <>
                   <td>{row.occurred_at}</td>
                   <td>
-                    <code>{row.type}</code>
+                    {/* One token, never broken across two lines (`ast-f9j5`):
+                        `auth.login` printed as "auth.l / ogin" is what a
+                        column with no floor of its own does when the table
+                        runs out of room. */}
+                    <code className="whitespace-nowrap">{row.type}</code>
                   </td>
                   <td>
                     {/* `outcome` is optional in the record, and an empty badge
@@ -384,7 +397,13 @@ function Chain({ links }: { links: readonly string[] }): JSX.Element {
   return (
     <ol className="chain" aria-label="Delegation chain">
       {links.map((link, index) => (
-        <li key={`${index}-${link}`}>{link}</li>
+        <li key={`${index}-${link}`}>
+          {/* Bounded, with the whole link in the `title` (`ast-f9j5`): a chain
+              of subjects is made of identifiers that have no width of their
+              own, and this is the column that used to push the detail beside
+              it off the edge of the card. */}
+          <Truncate text={link} className="max-w-[28ch]" />
+        </li>
       ))}
     </ol>
   );
@@ -413,7 +432,12 @@ function DetailList({ row }: { row: AuditRow }): JSX.Element {
         <div key={key}>
           <dt>{key}</dt>
           <dd>
-            <code>{value}</code>
+            {/* Elided rather than wrapped one character at a time, and whole
+                in the `title` (`ast-f9j5`): a session id is opaque, and a
+                column of six-character fragments is not a reading of it. */}
+            <code>
+              <Truncate text={value} className="max-w-[14ch]" />
+            </code>
           </dd>
         </div>
       ))}

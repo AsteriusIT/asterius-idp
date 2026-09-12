@@ -34,7 +34,17 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { toast } from './components/ui/toast';
-import { Badge, Button, EmptyState, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
+import {
+  Badge,
+  Button,
+  DataTable,
+  EmptyState,
+  LoadFailure,
+  Message,
+  Panel,
+  Screen,
+  Skeleton,
+} from './ui';
 
 /**
  * Where a key is in its life, mirroring `asterius_domain::keys::KeyState`.
@@ -342,67 +352,80 @@ function KeyTable({
   busy: boolean;
   onRetire: (kid: string) => void;
 }): JSX.Element {
-  if (group.keys.length === 0) {
-    return (
-      <EmptyState
-        title={`No ${group.alg} key.`}
-        body={`A client registered for ${group.alg} has nothing to verify.`}
-      />
-    );
-  }
-
   return (
-    <div className="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">Key ID</th>
-          <th scope="col">State</th>
-          <th scope="col">In the JWK Set</th>
-          <th scope="col">Created</th>
-          <th scope="col">
-            <span className="visually-hidden">Actions</span>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
-        {group.keys.map((key) => (
-          <tr key={key.kid}>
-            <td>
-              <code>{key.kid}</code>
-            </td>
-            <td>
-              <Badge
-                tone={
-                  key.state === 'active'
-                    ? 'ok'
-                    : key.state === 'retired' || key.state === 'purged'
-                      ? 'neutral'
-                      : 'accent'
-                }
-              >
-                {key.state}
-              </Badge>
-            </td>
-            <td>{key.published ? 'yes' : 'no'}</td>
-            <td>{new Date(key.created_at * 1000).toISOString()}</td>
-            <td className="actions-cell">
-              {/*
-                The active key has no retire button, and the server refuses one
-                anyway with a 409 naming rotation as the way to replace it. The
-                two agree because they are two statements of one rule, not
-                because this file is trusted.
-              */}
-              {key.state === 'active' || key.state === 'retired' || key.state === 'purged' ? null : (
-                <Button small disabled={busy} onClick={() => onRetire(key.kid)}>
-                  Retire
-                </Button>
-              )}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-    </div>
+    <DataTable
+      rows={group.keys}
+      rowKey={(key) => key.kid}
+      empty={
+        <EmptyState
+          title={`No ${group.alg} key.`}
+          body={`A client registered for ${group.alg} has nothing to verify.`}
+        />
+      }
+      // A tenant that has rotated for a year has a page of keys per algorithm,
+      // and "where is the one I just staged" is the question this screen is
+      // opened with (`ast-f9j5` (1)). The state is searched as well as the
+      // `kid`, so `retiring` is one word away.
+      search={{
+        of: (key) => `${key.kid} ${key.state} ${key.published ? 'published' : 'unpublished'}`,
+        placeholder: 'Filter by key id or state…',
+        label: `Filter the ${group.alg} keys by id or state`,
+      }}
+      columns={[
+        {
+          key: 'kid',
+          header: 'Key ID',
+          sortBy: (key) => key.kid,
+          cell: (key) => <code>{key.kid}</code>,
+        },
+        {
+          key: 'state',
+          header: 'State',
+          sortBy: (key) => key.state,
+          cell: (key) => (
+            <Badge
+              tone={
+                key.state === 'active'
+                  ? 'ok'
+                  : key.state === 'retired' || key.state === 'purged'
+                    ? 'neutral'
+                    : 'accent'
+              }
+            >
+              {key.state}
+            </Badge>
+          ),
+        },
+        {
+          key: 'published',
+          header: 'In the JWK Set',
+          sortBy: (key) => (key.published ? 'yes' : 'no'),
+          cell: (key) => (key.published ? 'yes' : 'no'),
+        },
+        {
+          key: 'created',
+          header: 'Created',
+          sortBy: (key) => key.created_at,
+          cell: (key) => new Date(key.created_at * 1000).toISOString(),
+        },
+        {
+          key: 'retire',
+          header: '',
+          actions: true,
+          /*
+            The active key has no retire button, and the server refuses one
+            anyway with a 409 naming rotation as the way to replace it. The two
+            agree because they are two statements of one rule, not because this
+            file is trusted.
+          */
+          cell: (key) =>
+            key.state === 'active' || key.state === 'retired' || key.state === 'purged' ? null : (
+              <Button small disabled={busy} onClick={() => onRetire(key.kid)}>
+                Retire <span className="visually-hidden">{key.kid}</span>
+              </Button>
+            ),
+        },
+      ]}
+    />
   );
 }

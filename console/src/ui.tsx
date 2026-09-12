@@ -124,7 +124,12 @@ export function Panel({
             <h3 id={headingId}>{title}</h3>
             {description !== undefined && <p className="muted">{description}</p>}
           </div>
-          {actions !== undefined && <CardAction>{actions}</CardAction>}
+          {/* A row with a gap: a panel's actions are a *set* of controls, and
+              `CardAction` is one grid cell, so two buttons dropped into it sat
+              edge to edge (`ast-f9j5`). */}
+          {actions !== undefined && (
+            <CardAction className="flex flex-wrap items-center gap-2">{actions}</CardAction>
+          )}
         </CardHeader>
         <CardContent className="flex flex-col gap-3">{children}</CardContent>
       </section>
@@ -327,6 +332,39 @@ export function Badge({
     >
       {children}
     </ShadBadge>
+  );
+}
+
+/**
+ * A long single-token value that must not decide how wide its column is
+ * (`ast-f9j5`).
+ *
+ * An issuer, a `client_id` or an address made of a UUID has no space to break
+ * at, so one row of them widened the table past the card it sits in and the
+ * columns after it — a status, a control — went off the edge. The value is
+ * clipped with an ellipsis at a width given in characters, and the whole of it
+ * stays available: in the `title`, which is also what a pointer shows, and by
+ * selecting the cell, since the text is all there in the DOM.
+ *
+ * Not a substitute for the horizontal scroll `DataTable` still has. It is what
+ * keeps the scroll from being needed for the common row.
+ */
+export function Truncate({
+  text,
+  // A Tailwind class and not a `style` attribute: this console writes no
+  // inline style into its markup, and a Rust test asserts it of the built
+  // bundle. `max-width` on the inner block is what bounds the *column* — a
+  // table laid out automatically asks its cells how wide they want to be, and
+  // this is the answer. The caller passes a literal so Tailwind can see it.
+  className = 'max-w-[24ch]',
+}: {
+  text: string;
+  className?: string;
+}): JSX.Element {
+  return (
+    <span className={cn('block truncate', className)} title={text}>
+      {text}
+    </span>
   );
 }
 

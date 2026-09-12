@@ -52,7 +52,9 @@ import {
   Panel,
   Screen,
   Skeleton,
+  Truncate,
 } from './ui';
+import { emailAddress, username as usernameComplaint } from './validation';
 
 /** Whether an account may authenticate, mirroring `UserStatus`. */
 export type UserStatus = 'active' | 'disabled' | 'locked';
@@ -392,9 +394,18 @@ function UserTable({
           key: 'username',
           header: 'Username',
           sortBy: (row) => row.username,
-          cell: (row) => row.username,
+          // Truncated, with the whole of it in the `title` (`ast-f9j5`): a
+          // username is often an address, an address has nowhere to break, and
+          // one long row used to push "Verified" and everything after it off
+          // the edge of the card.
+          cell: (row) => <Truncate text={row.username} className="max-w-[32ch]" />,
         },
-        { key: 'email', header: 'Email', sortBy: (row) => row.email ?? '', cell: (row) => row.email ?? '—' },
+        {
+          key: 'email',
+          header: 'Email',
+          sortBy: (row) => row.email ?? '',
+          cell: (row) => <Truncate text={row.email ?? '—'} className="max-w-[32ch]" />,
+        },
         {
           key: 'verified',
           header: 'Verified',
@@ -492,7 +503,9 @@ function NewAccount({
     <Panel id="new-account" title="Add an account">
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={submit}>
-        <Field label="Username" required>
+        {/* `accept_username` is what refuses one; this is the same rule said
+            a round trip earlier (`ast-f9j5` (2), `validation.ts`). */}
+        <Field label="Username" required error={usernameComplaint(username)}>
           {(props) => (
             <input
               {...props}
@@ -502,7 +515,7 @@ function NewAccount({
             />
           )}
         </Field>
-        <Field label="Email">
+        <Field label="Email" error={emailAddress(email)}>
           {(props) => (
             <input
               {...props}
@@ -1011,7 +1024,7 @@ function ClaimsEditor({
     <Panel id="claims" title="Claims">
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={save}>
-        <Field label="Email">
+        <Field label="Email" error={emailAddress(email)}>
           {(props) => (
             <input
               {...props}

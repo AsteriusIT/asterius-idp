@@ -34,11 +34,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, probe, read, type Session } from './api';
+import { toast } from './components/ui/toast';
 import {
   Actions,
   Badge,
   Button,
   ConfirmDialog,
+  DataTable,
   EmptyState,
   Field,
   LoadFailure,
@@ -47,6 +49,7 @@ import {
   Screen,
   Skeleton,
 } from './ui';
+import { jsonDocument, jsonObject } from './validation';
 
 /** One rule, as the document carries it (`asterius_domain::policy::Rule`). */
 export interface RuleDocument {
@@ -259,7 +262,7 @@ export function Policy({ session }: { session: Session }): JSX.Element {
   useEffect(refresh, [refresh]);
 
   /** Runs one edit, then re-reads the document the server now holds. */
-  const run = (call: () => Promise<unknown>, success: string): void => {
+  const run = (call: () => Promise<unknown>, success: string, announced: string): void => {
     setBusy(true);
     setNotice(null);
     setRefusal(null);
@@ -267,11 +270,23 @@ export function Policy({ session }: { session: Session }): JSX.Element {
       () => {
         setBusy(false);
         setNotice(success);
+        // The announcement; the sentence above is the record (`ast-f9j5` (3)).
+        // A policy screen is long enough that "Save policy" and the line that
+        // says it worked are not on screen together. The toast carries the
+        // title alone and not a copy of that sentence: two elements saying the
+        // same words are two things to read and — as the sweep found — two
+        // things a test cannot tell apart.
+        toast.success(announced);
         refresh();
       },
       (error: unknown) => {
         setBusy(false);
-        setRefusal(error instanceof Error ? error.message : 'the change was refused');
+        const message = error instanceof Error ? error.message : 'the change was refused';
+        setRefusal(message);
+        // The toast says *that* it was refused; the panel above says why, with
+        // the path and the line, which is the part an operator has to act on
+        // and therefore the part that must not scroll away.
+        toast.error('The policy was not changed');
       },
     );
   };
@@ -284,10 +299,16 @@ export function Policy({ session }: { session: Session }): JSX.Element {
       // Not sent: a body that is not JSON has no path for the server to name,
       // and `JSON.parse` has already said which line the braces went wrong on.
       setNotice(null);
-      setRefusal(error instanceof Error ? error.message : 'the document is not JSON');
+      const message = error instanceof Error ? error.message : 'the document is not JSON';
+      setRefusal(message);
+      toast.error('The policy was not sent');
       return;
     }
-    run(() => mutate('policies', 'PUT', session, document), 'The policy was replaced.');
+    run(
+      () => mutate('policies', 'PUT', session, document),
+      'The policy was replaced.',
+      'Policy saved',
+    );
   };
 
   if (load.kind === 'loading') {
@@ -357,44 +378,62 @@ export function Policy({ session }: { session: Session }): JSX.Element {
       <Panel title="Rules">
       {preview === null ? (
         <p className="muted">The draft below is not JSON yet, so there is nothing to summarise.</p>
-      ) : preview.length === 0 ? (
-        <EmptyState title="No rule." body="Every evaluation is denied." />
       ) : (
-        <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Rule</th>
-              <th scope="col">Effect</th>
-              <th scope="col">Matches</th>
-              <th scope="col">Condition</th>
-              <th scope="col">Reason</th>
-            </tr>
-          </thead>
-          <tbody>
-            {preview.map((rule, index) => (
-              <tr key={`${index}-${rule.id}`}>
-                <td>
-                  <code>{rule.id}</code>
-                </td>
-                <td>
-                  <Badge tone={rule.effect === 'permit' ? 'ok' : 'bad'}>{rule.effect}</Badge>
-                </td>
-                <td>{describeRule(rule)}</td>
-                <td>
-                  <code>{rule.when === undefined ? 'always' : JSON.stringify(rule.when)}</code>
-                </td>
-                <td>{rule.reason_admin ?? ''}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
+        <DataTable
+          rows={preview.map((rule, index) => ({ rule, index }))}
+          rowKey={({ rule, index }) => `${index}-${rule.id}`}
+          empty={<EmptyState title="No rule." body="Every evaluation is denied." />}
+          // A catalogue is read to answer "what decides this" (`ast-f9j5` (1)).
+          // The condition is searched with everything else, because an
+          // administrator hunting a rule usually remembers the attribute it
+          // reads and not the name somebody gave it.
+          search={{
+            of: ({ rule }) =>
+              `${rule.id} ${rule.effect} ${describeRule(rule)} ${
+                rule.when === undefined ? 'always' : JSON.stringify(rule.when)
+              } ${rule.reason_admin ?? ''}`,
+            placeholder: 'Filter by rule, effect or condition…',
+            label: 'Filter these rules by rule, effect, what they match or their condition',
+          }}
+          columns={[
+            {
+              key: 'rule',
+              header: 'Rule',
+              sortBy: ({ rule }) => rule.id,
+              cell: ({ rule }) => <code>{rule.id}</code>,
+            },
+            {
+              key: 'effect',
+              header: 'Effect',
+              sortBy: ({ rule }) => rule.effect,
+              cell: ({ rule }) => (
+                <Badge tone={rule.effect === 'permit' ? 'ok' : 'bad'}>{rule.effect}</Badge>
+              ),
+            },
+            { key: 'matches', header: 'Matches', cell: ({ rule }) => describeRule(rule) },
+            {
+              key: 'condition',
+              header: 'Condition',
+              cell: ({ rule }) => (
+                <code>{rule.when === undefined ? 'always' : JSON.stringify(rule.when)}</code>
+              ),
+            },
+            { key: 'reason', header: 'Reason', cell: ({ rule }) => rule.reason_admin ?? '' },
+          ]}
+        />
       )}
       </Panel>
 
       <Panel title="Document">
-        <Field label="The rule document, as the evaluator reads it">
+        <Field
+          label="The rule document, as the evaluator reads it"
+          // The one thing this screen is allowed to say about the draft before
+          // the server sees it: whether the braces close. It is the same
+          // `JSON.parse` `save` already runs — a few keystrokes earlier — and
+          // it says nothing about the *rules*, which are the server's subject
+          // and this module's opening paragraph.
+          error={jsonDocument(draft, 'The document')}
+        >
           {(props) => (
             <textarea
               {...props}
@@ -441,6 +480,7 @@ export function Policy({ session }: { session: Session }): JSX.Element {
             run(
               () => mutate('policies', 'DELETE', session),
               'The policy was removed. Every evaluation is denied.',
+              'Policy removed',
             );
           }}
         />
@@ -531,7 +571,10 @@ function TestBench({ session }: { session: Session }): JSX.Element {
         {field('action', 'Action', 'read')}
         {field('resourceType', 'Resource type', 'document')}
         {field('resourceId', 'Resource', 'an identifier your application uses')}
-        <Field label="Context properties (JSON)">
+        <Field
+          label="Context properties (JSON)"
+          error={jsonObject(question.context, 'The context properties')}
+        >
           {(props) => (
             <input
               {...props}

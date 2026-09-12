@@ -54,7 +54,9 @@ import {
   Panel,
   Screen,
   Skeleton,
+  Truncate,
 } from './ui';
+import { issuerUrl, tenantId as tenantIdComplaint } from './validation';
 
 /** Whether a tenant is served at all, as the API spells it. */
 export type TenantStatus = 'active' | 'disabled';
@@ -365,7 +367,7 @@ function TenantTable({
           key: 'issuer',
           header: 'Issuer',
           sortBy: (row) => row.issuer,
-          cell: (row) => <span className="wrap-anywhere">{row.issuer}</span>,
+          cell: (row) => <Truncate text={row.issuer} className="max-w-[28ch]" />,
         },
         {
           key: 'status',
@@ -495,7 +497,10 @@ function NewTenant({
           label="Tenant id"
           required
           hint="Lowercase, and part of every URL this tenant is reached at. It cannot be changed afterwards."
-          error={refused === 'tenant_id' ? mark : null}
+          // The server's sentence wins when there is one: this is what is said
+          // while the id is being typed, and `TenantId::parse` is still what
+          // decides (`ast-f9j5` (2)).
+          error={refused === 'tenant_id' ? mark : tenantIdComplaint(id)}
         >
           {(props) => (
             <input
@@ -510,7 +515,7 @@ function NewTenant({
           label="Issuer"
           required
           hint="The https URL this tenant identifies itself by, with no trailing slash (RFC 8414 §2)."
-          error={refused === 'issuer' ? mark : null}
+          error={refused === 'issuer' ? mark : issuerUrl(issuer)}
         >
           {(props) => (
             <input

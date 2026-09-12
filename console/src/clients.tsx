@@ -49,6 +49,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
 import { RoleCatalogue, clientCatalogue, mayRead as mayReadAppRoles } from './appRoles';
+import { toast } from './components/ui/toast';
 import {
   Actions,
   Badge,
@@ -62,6 +63,7 @@ import {
   Screen,
   Skeleton,
 } from './ui';
+import { jsonDocument, redirectUris } from './validation';
 
 /** Where the client collection lives, relative to the API base. */
 export const CLIENTS_PATH = 'clients';
@@ -378,7 +380,10 @@ export function Clients({ session }: { session: Session }): JSX.Element {
       try {
         document = documentFrom(current);
       } catch {
-        setRefusal('The JWK Set box does not hold JSON. Paste the whole document, braces and all.');
+        const said =
+          'The JWK Set box does not hold JSON. Paste the whole document, braces and all.';
+        setRefusal(said);
+        toast.error('The client was not sent', said);
         return;
       }
 
@@ -398,14 +403,27 @@ export function Clients({ session }: { session: Session }): JSX.Element {
           const stored = body as ClientDocument;
           setEditing({ kind: 'existing', document: stored });
           setDraft(draftOf(stored));
-          setNotice(
-            where.kind === 'existing' ? 'Saved.' : `Registered as ${stored.client_id}.`,
+          const said =
+            where.kind === 'existing' ? 'Saved.' : `Registered as ${stored.client_id}.`;
+          setNotice(said);
+          // The toast announces and the `Message` at the top records
+          // (`ast-f9j5` (3)). The editor is longer than a window, so an
+          // operator pressing "Save client" at the bottom of it was told at
+          // the top, where they were not looking.
+          toast.success(
+            where.kind === 'existing' ? 'Client saved' : 'Client registered',
+            stored.client_id,
           );
           setBusy(false);
           refresh(query);
         },
         (error: unknown) => {
-          setRefusal(error instanceof Error ? error.message : 'the change was refused');
+          const said = error instanceof Error ? error.message : 'the change was refused';
+          setRefusal(said);
+          // The refusal names a field and a clause, which is the part an
+          // operator has to act on: the toast says that it happened, the
+          // `Message` keeps what it said.
+          toast.error('The client was not saved', said);
           setBusy(false);
         },
       );
@@ -612,16 +630,17 @@ function Editor({
       >
         <fieldset disabled={busy}>
           <legend>Identity</legend>
-          <p>
-            <label htmlFor="client-name">Client name</label>
-            <input
-              id="client-name"
-              name="client_name"
-              type="text"
-              value={draft.client_name}
-              onChange={(event) => onChange({ ...draft, client_name: event.target.value })}
-            />
-          </p>
+          <Field label="Client name" required>
+            {(props) => (
+              <input
+                {...props}
+                name="client_name"
+                type="text"
+                value={draft.client_name}
+                onChange={(event) => onChange({ ...draft, client_name: event.target.value })}
+              />
+            )}
+          </Field>
           <p>
             <label htmlFor="application-type">Application type</label>
             <select
@@ -653,34 +672,43 @@ function Editor({
 
         <fieldset disabled={busy}>
           <legend>Callbacks</legend>
-          <p>
-            <label htmlFor="redirect-uris">Redirect URIs (one per line)</label>
-            <textarea
-              id="redirect-uris"
-              name="redirect_uris"
-              rows={4}
-              value={draft.redirect_uris}
-              onChange={(event) => onChange({ ...draft, redirect_uris: event.target.value })}
-            />
-          </p>
-          <p className="muted">
-            Compared byte for byte at the authorization endpoint (ADR-0005), so a trailing slash
-            is a different URI.
-          </p>
-          <p>
-            <label htmlFor="post-logout-redirect-uris">
-              Post-logout redirect URIs (one per line)
-            </label>
-            <textarea
-              id="post-logout-redirect-uris"
-              name="post_logout_redirect_uris"
-              rows={3}
-              value={draft.post_logout_redirect_uris}
-              onChange={(event) =>
-                onChange({ ...draft, post_logout_redirect_uris: event.target.value })
-              }
-            />
-          </p>
+          {/*
+            The complaint is an echo of `RedirectUri::parse` and never a rule of
+            this form's own (`ast-f9j5` (2), `validation.ts`): the submission is
+            not blocked, the server still decides, and what it says is what is
+            shown at the top of this screen.
+          */}
+          <Field
+            label="Redirect URIs (one per line)"
+            hint="Compared byte for byte at the authorization endpoint (ADR-0005), so a trailing slash is a different URI."
+            error={redirectUris(draft.redirect_uris, draft.application_type)}
+          >
+            {(props) => (
+              <textarea
+                {...props}
+                name="redirect_uris"
+                rows={4}
+                value={draft.redirect_uris}
+                onChange={(event) => onChange({ ...draft, redirect_uris: event.target.value })}
+              />
+            )}
+          </Field>
+          <Field
+            label="Post-logout redirect URIs (one per line)"
+            error={redirectUris(draft.post_logout_redirect_uris, draft.application_type)}
+          >
+            {(props) => (
+              <textarea
+                {...props}
+                name="post_logout_redirect_uris"
+                rows={3}
+                value={draft.post_logout_redirect_uris}
+                onChange={(event) =>
+                  onChange({ ...draft, post_logout_redirect_uris: event.target.value })
+                }
+              />
+            )}
+          </Field>
         </fieldset>
 
         <fieldset disabled={busy}>
@@ -726,16 +754,17 @@ function Editor({
               onChange={(event) => onChange({ ...draft, jwks_uri: event.target.value })}
             />
           </p>
-          <p>
-            <label htmlFor="jwks">Inline JWK Set</label>
-            <textarea
-              id="jwks"
-              name="jwks"
-              rows={6}
-              value={draft.jwks}
-              onChange={(event) => onChange({ ...draft, jwks: event.target.value })}
-            />
-          </p>
+          <Field label="Inline JWK Set" error={jsonDocument(draft.jwks, 'The JWK Set')}>
+            {(props) => (
+              <textarea
+                {...props}
+                name="jwks"
+                rows={6}
+                value={draft.jwks}
+                onChange={(event) => onChange({ ...draft, jwks: event.target.value })}
+              />
+            )}
+          </Field>
           <p className="muted">
             One or the other, never both (RFC 7591 §2). A URL is re-fetched when the client
             rotates its keys; an inline set is changed here.

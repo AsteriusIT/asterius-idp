@@ -148,8 +148,12 @@ export function App(): JSX.Element {
         onSignOut={() => signOut(shell.session)}
       />
       <SidebarInset>
-        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4">
-          <SidebarTrigger className="-ml-1" />
+        {/* The bar is full width — it is the top of the pane — but what is in
+            it starts where the content starts (`ast-f9j5`): a breadcrumb at
+            the far left above a centred column read as two pages stacked. */}
+        <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center border-b bg-background">
+          <div className="mx-auto flex w-full max-w-[var(--content-max)] items-center gap-2 px-[var(--space-5)]">
+          <SidebarTrigger />
           <Separator orientation="vertical" className="mr-2 !h-4" />
           <Breadcrumb>
             <BreadcrumbList>
@@ -166,6 +170,7 @@ export function App(): JSX.Element {
               </BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
+          </div>
         </header>
         <main id="content" tabIndex={-1} className="content">
           <RouteScreen route={current} fragment={fragment} session={shell.session} />

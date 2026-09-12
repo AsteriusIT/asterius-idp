@@ -27,10 +27,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
+import { toast } from './components/ui/toast';
 import {
   Actions,
   Badge,
   Button,
+  DataTable,
   EmptyState,
   LoadFailure,
   Message,
@@ -144,18 +146,26 @@ export function SharedSignals({ session }: { session: Session }): JSX.Element {
    * the worker has already delivered.
    */
   const run = useCallback(
-    (action: () => Promise<unknown>, said: string) => {
+    (action: () => Promise<unknown>, said: string, announced: string) => {
       setBusy(true);
       setNotice(null);
       setRefusal(null);
       action().then(
         () => {
           setNotice(said);
+          // The toast announces, the `Message` above records (`ast-f9j5` (3)):
+          // a stream this operator paused four acts ago is still written down
+          // where they can read it, and the act they just took is said where
+          // they are looking — which, on a screen of two tables, is a row and
+          // not the top of the page.
+          toast.success(announced, said);
           setBusy(false);
           refresh();
         },
         (error: unknown) => {
-          setRefusal(error instanceof Error ? error.message : 'the change was refused');
+          const message = error instanceof Error ? error.message : 'the change was refused';
+          setRefusal(message);
+          toast.error('Nothing changed', message);
           setBusy(false);
         },
       );
@@ -171,6 +181,7 @@ export function SharedSignals({ session }: { session: Session }): JSX.Element {
           ...(status === 'paused' && reason !== '' ? { reason } : {}),
         }),
       `${stream.stream_id} is now ${status}.`,
+      status === 'paused' ? 'Stream paused' : 'Stream enabled',
     );
 
   const verify = (stream: StreamRow, state: string): void =>
@@ -183,18 +194,21 @@ export function SharedSignals({ session }: { session: Session }): JSX.Element {
           state === '' ? {} : { state },
         ),
       `A verification event was queued on ${stream.stream_id}.`,
+      'Verification queued',
     );
 
   const retry = (letter: DeadLetterRow): void =>
     run(
       () => mutate(`outbox/dead-letters/${letter.id}/retry`, 'POST', session),
       `Delivery ${letter.id} is back on the schedule.`,
+      'Delivery retried',
     );
 
   const drop = (letter: DeadLetterRow): void =>
     run(
       () => mutate(`outbox/dead-letters/${letter.id}`, 'DELETE', session),
       `Delivery ${letter.id} was dropped; the audit trail keeps its record.`,
+      'Delivery dropped',
     );
 
   if (load.kind === 'loading') {
@@ -272,61 +286,124 @@ function StreamTable({
   onStatus: (stream: StreamRow, status: 'enabled' | 'paused', reason: string) => void;
   onVerify: (stream: StreamRow, state: string) => void;
 }): JSX.Element {
-  if (streams.length === 0) {
-    return (
-      <EmptyState
-        title="No stream."
-        body="No receiver has asked to be told about this tenant&apos;s users."
-      />
-    );
-  }
   return (
-    <div className="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">Stream</th>
-          <th scope="col">Receiver</th>
-          <th scope="col">Delivery</th>
-          <th scope="col">Events</th>
-          <th scope="col">Status</th>
-          <th scope="col">Delivered</th>
-          <th scope="col">Failed</th>
-          <th scope="col">Queued</th>
-          {mayWrite && (
-            <th scope="col">
-              <span className="visually-hidden">Actions</span>
-            </th>
-          )}
-        </tr>
-      </thead>
-      <tbody>
-        {streams.map((stream) => (
-          <StreamLine
-            key={stream.stream_id}
-            stream={stream}
-            busy={busy}
-            mayWrite={mayWrite}
-            onStatus={onStatus}
-            onVerify={onVerify}
-          />
-        ))}
-      </tbody>
-    </table>
-    </div>
+    <DataTable
+      rows={streams}
+      rowKey={(stream) => stream.stream_id}
+      empty={
+        <EmptyState
+          title="No stream."
+          body="No receiver has asked to be told about this tenant&apos;s users."
+        />
+      }
+      // A tenant with twenty receivers is a table nobody reads top to bottom,
+      // and the question asked of this screen is about *one* of them
+      // (`ast-f9j5` (1)). The status is searched too, so `paused` lists every
+      // stream that is delivering nothing.
+      search={{
+        of: (stream) =>
+          `${stream.stream_id} ${stream.receiver} ${stream.status} ${stream.description ?? ''} ${stream.events_requested.map(shortEvent).join(' ')}`,
+        placeholder: 'Filter by stream, receiver or status…',
+        label: 'Filter these streams by stream, receiver or status',
+      }}
+      columns={[
+        {
+          key: 'stream',
+          header: 'Stream',
+          sortBy: (stream) => stream.stream_id,
+          cell: (stream) => (
+            <>
+              <code>{stream.stream_id}</code>
+              {stream.description !== null && <div className="muted">{stream.description}</div>}
+            </>
+          ),
+        },
+        {
+          key: 'receiver',
+          header: 'Receiver',
+          sortBy: (stream) => stream.receiver,
+          cell: (stream) => <code>{stream.receiver}</code>,
+        },
+        {
+          key: 'delivery',
+          header: 'Delivery',
+          sortBy: (stream) => describeDelivery(stream.delivery_method),
+          cell: (stream) => describeDelivery(stream.delivery_method),
+        },
+        {
+          key: 'events',
+          header: 'Events',
+          cell: (stream) => stream.events_requested.map(shortEvent).join(', ') || 'none',
+        },
+        {
+          key: 'status',
+          header: 'Status',
+          sortBy: (stream) => stream.status,
+          cell: (stream) => (
+            <>
+              <Badge tone={stream.status === 'enabled' ? 'ok' : 'warn'}>{stream.status}</Badge>
+              {stream.reason !== null && <div className="muted">{stream.reason}</div>}
+            </>
+          ),
+        },
+        {
+          key: 'delivered',
+          header: 'Delivered',
+          numeric: true,
+          sortBy: (stream) => stream.delivered,
+          cell: (stream) => stream.delivered,
+        },
+        {
+          key: 'failed',
+          header: 'Failed',
+          numeric: true,
+          sortBy: (stream) => stream.failed,
+          cell: (stream) => stream.failed,
+        },
+        {
+          key: 'queued',
+          header: 'Queued',
+          numeric: true,
+          sortBy: (stream) => stream.queue_depth,
+          cell: (stream) => stream.queue_depth,
+        },
+        ...(mayWrite
+          ? [
+              {
+                key: 'actions',
+                header: '',
+                actions: true,
+                cell: (stream: StreamRow) => (
+                  <StreamControls
+                    stream={stream}
+                    busy={busy}
+                    onStatus={onStatus}
+                    onVerify={onVerify}
+                  />
+                ),
+              },
+            ]
+          : []),
+      ]}
+    />
   );
 }
 
-function StreamLine({
+/**
+ * The two forms one stream carries, each with its own box.
+ *
+ * A component rather than markup inside the cell, because the reason and the
+ * verification state are state *of this row*: a filter that hides a row and
+ * brings it back must not carry what was typed in it to another receiver's.
+ */
+function StreamControls({
   stream,
   busy,
-  mayWrite,
   onStatus,
   onVerify,
 }: {
   stream: StreamRow;
   busy: boolean;
-  mayWrite: boolean;
   onStatus: (stream: StreamRow, status: 'enabled' | 'paused', reason: string) => void;
   onVerify: (stream: StreamRow, state: string) => void;
 }): JSX.Element {
@@ -334,76 +411,56 @@ function StreamLine({
   const [state, setState] = useState('');
   const id = stream.stream_id;
   return (
-    <tr>
-      <td>
-        <code>{stream.stream_id}</code>
-        {stream.description !== null && <div className="muted">{stream.description}</div>}
-      </td>
-      <td>
-        <code>{stream.receiver}</code>
-      </td>
-      <td>{describeDelivery(stream.delivery_method)}</td>
-      <td>{stream.events_requested.map(shortEvent).join(', ') || 'none'}</td>
-      <td>
-        <Badge tone={stream.status === 'enabled' ? 'ok' : 'warn'}>{stream.status}</Badge>
-        {stream.reason !== null && <div className="muted">{stream.reason}</div>}
-      </td>
-      <td>{stream.delivered}</td>
-      <td>{stream.failed}</td>
-      <td>{stream.queue_depth}</td>
-      {mayWrite && (
-        <td>
-          {stream.status === 'enabled' ? (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                onStatus(stream, 'paused', reason);
-              }}
-            >
-              <label htmlFor={`reason-${id}`} className="visually-hidden">
-                Reason for pausing {id}
-              </label>
-              <input
-                id={`reason-${id}`}
-                type="text"
-                value={reason}
-                placeholder="reason (optional)"
-                maxLength={256}
-                onChange={(event) => setReason(event.target.value)}
-              />{' '}
-              <Button type="submit" small disabled={busy}>
-                Pause
-              </Button>
-            </form>
-          ) : stream.status === 'paused' ? (
-            <Button small disabled={busy} onClick={() => onStatus(stream, 'enabled', '')}>
-              Enable
-            </Button>
-          ) : null}
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              onVerify(stream, state);
-            }}
-          >
-            <label htmlFor={`state-${id}`} className="visually-hidden">
-              Verification state for {id}
-            </label>
-            <input
-              id={`state-${id}`}
-              type="text"
-              value={state}
-              placeholder="state (optional)"
-              maxLength={256}
-              onChange={(event) => setState(event.target.value)}
-            />{' '}
-            <Button type="submit" small disabled={busy}>
-              Verify
-            </Button>
-          </form>
-        </td>
-      )}
-    </tr>
+    <>
+      {stream.status === 'enabled' ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            onStatus(stream, 'paused', reason);
+          }}
+        >
+          <label htmlFor={`reason-${id}`} className="visually-hidden">
+            Reason for pausing {id}
+          </label>
+          <input
+            id={`reason-${id}`}
+            type="text"
+            value={reason}
+            placeholder="reason (optional)"
+            maxLength={256}
+            onChange={(event) => setReason(event.target.value)}
+          />{' '}
+          <Button type="submit" small disabled={busy}>
+            Pause
+          </Button>
+        </form>
+      ) : stream.status === 'paused' ? (
+        <Button small disabled={busy} onClick={() => onStatus(stream, 'enabled', '')}>
+          Enable
+        </Button>
+      ) : null}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          onVerify(stream, state);
+        }}
+      >
+        <label htmlFor={`state-${id}`} className="visually-hidden">
+          Verification state for {id}
+        </label>
+        <input
+          id={`state-${id}`}
+          type="text"
+          value={state}
+          placeholder="state (optional)"
+          maxLength={256}
+          onChange={(event) => setState(event.target.value)}
+        />{' '}
+        <Button type="submit" small disabled={busy}>
+          Verify
+        </Button>
+      </form>
+    </>
   );
 }
 
@@ -420,68 +477,86 @@ function DeadLetterTable({
   onRetry: (letter: DeadLetterRow) => void;
   onDrop: (letter: DeadLetterRow) => void;
 }): JSX.Element {
-  if (letters.length === 0) {
-    return (
-      <EmptyState
-        title="No dead letter."
-        body="Every delivery the outbox took on has been delivered or is still owed."
-      />
-    );
-  }
   return (
-    <div className="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th scope="col">Row</th>
-          <th scope="col">Kind</th>
-          <th scope="col">Attempts</th>
-          <th scope="col">Queued</th>
-          <th scope="col">Last attempt</th>
-          <th scope="col">Last error</th>
-          {mayWrite && (
-            <th scope="col">
-              <span className="visually-hidden">Actions</span>
-            </th>
-          )}
-        </tr>
-      </thead>
-      <tbody>
-        {letters.map((letter) => (
-          <tr key={letter.id}>
-            <td>{letter.id}</td>
-            <td>
-              <code>{letter.kind}</code>
-            </td>
-            <td>{letter.attempts}</td>
-            <td>{letter.created_at}</td>
-            <td>{letter.last_attempt_at ?? 'never'}</td>
-            <td>{letter.last_error ?? ''}</td>
-            {mayWrite && (
-              <td>
-                {/*
+    <DataTable
+      rows={letters}
+      rowKey={(letter) => String(letter.id)}
+      empty={
+        <EmptyState
+          title="No dead letter."
+          body="Every delivery the outbox took on has been delivered or is still owed."
+        />
+      }
+      // The error is searched as well as the kind: "how many of these are the
+      // same failure" is the question a dead-letter table is opened with, and
+      // the count beside the box answers it (`ast-f9j5` (1)).
+      search={{
+        of: (letter) => `${letter.id} ${letter.kind} ${letter.last_error ?? ''}`,
+        placeholder: 'Filter by row, kind or error…',
+        label: 'Filter these dead letters by row, kind or error',
+      }}
+      columns={[
+        {
+          key: 'id',
+          header: 'Row',
+          numeric: true,
+          sortBy: (letter) => letter.id,
+          cell: (letter) => letter.id,
+        },
+        {
+          key: 'kind',
+          header: 'Kind',
+          sortBy: (letter) => letter.kind,
+          cell: (letter) => <code>{letter.kind}</code>,
+        },
+        {
+          key: 'attempts',
+          header: 'Attempts',
+          numeric: true,
+          sortBy: (letter) => letter.attempts,
+          cell: (letter) => letter.attempts,
+        },
+        {
+          key: 'queued',
+          header: 'Queued',
+          sortBy: (letter) => letter.created_at,
+          cell: (letter) => letter.created_at,
+        },
+        {
+          key: 'last-attempt',
+          header: 'Last attempt',
+          sortBy: (letter) => letter.last_attempt_at ?? '',
+          cell: (letter) => letter.last_attempt_at ?? 'never',
+        },
+        { key: 'last-error', header: 'Last error', cell: (letter) => letter.last_error ?? '' },
+        ...(mayWrite
+          ? [
+              {
+                key: 'actions',
+                header: '',
+                actions: true,
+                /*
                   The server says which rows its two routes accept, and the
                   buttons follow it: a row of another family answers 409, and a
                   button that offered it would be a button that always fails.
-                */}
-                {letter.retryable ? (
-                  <Actions>
-                    <Button small disabled={busy} onClick={() => onRetry(letter)}>
-                      Retry
-                    </Button>
-                    <Button small disabled={busy} onClick={() => onDrop(letter)}>
-                      Drop
-                    </Button>
-                  </Actions>
-                ) : (
-                  <span className="muted">not retryable from here</span>
-                )}
-              </td>
-            )}
-          </tr>
-        ))}
-      </tbody>
-    </table>
-    </div>
+                */
+                cell: (letter: DeadLetterRow) =>
+                  letter.retryable ? (
+                    <Actions>
+                      <Button small disabled={busy} onClick={() => onRetry(letter)}>
+                        Retry <span className="visually-hidden">delivery {letter.id}</span>
+                      </Button>
+                      <Button small disabled={busy} onClick={() => onDrop(letter)}>
+                        Drop <span className="visually-hidden">delivery {letter.id}</span>
+                      </Button>
+                    </Actions>
+                  ) : (
+                    <span className="muted">not retryable from here</span>
+                  ),
+              },
+            ]
+          : []),
+      ]}
+    />
   );
 }

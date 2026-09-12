@@ -1172,3 +1172,104 @@ test('a tenant admin is offered no other tenant to switch to', async ({ page }) 
   await expect(page.getByText('and no other tenant')).toBeVisible();
   await expect(page.getByRole('option')).toHaveCount(0);
 });
+
+/* -------------------------------------------------------------------------
+   `ast-f9j5`: the three things the console had on some screens and not others
+   ------------------------------------------------------------------------- */
+
+/** Walks the navigation to the signing keys, which is a hand-built table. */
+async function openSigningKeys(page: Page): Promise<void> {
+  await page.getByRole('link', { name: 'Signing keys' }).click();
+  await expect(page.getByRole('heading', { name: 'Signing keys', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Published JWK Set' })).toBeVisible();
+}
+
+/**
+ * (1) A filter, and the count beside it, on a table that had neither.
+ *
+ * The count is the half that matters and the half a filter is usually shipped
+ * without: "nothing here" and "nothing here *matching*" are the same picture,
+ * and an operator who cannot tell them apart concludes the key is gone. So
+ * both are asserted — the narrowed table, and the sentence saying how many of
+ * how many are on screen — and then the case that produces no rows at all,
+ * which must be a sentence rather than an empty table.
+ */
+test('a key table filters, and says how many of how many are shown', async ({ page }) => {
+  // Arrange
+  await signIn(page);
+  await openSigningKeys(page);
+  const section = page.locator('section[aria-labelledby^="alg-"]').first();
+  const total = await section.locator('tbody tr').count();
+  const kid = (await section.locator('tbody tr td').first().innerText()).trim();
+  expect(kid, 'the tenant has no signing key to filter for').not.toBe('');
+
+  // Act
+  const box = section.getByRole('searchbox');
+  await box.fill(kid);
+
+  // Assert
+  await expect(section.locator('tbody tr')).toHaveCount(1);
+  await expect(section.getByText(`1 of ${total} shown`)).toBeVisible();
+
+  // Act / Assert: a filter that matches nothing says so, and offers the way back.
+  await box.fill('no key is called this');
+  await expect(section.getByText('No row matches that filter')).toBeVisible();
+  await section.getByRole('button', { name: 'Clear the filter' }).click();
+  await expect(section.locator('tbody tr')).toHaveCount(total);
+});
+
+/**
+ * (2) A field that says what the server would refuse, while it is being typed.
+ *
+ * The second assertion is the important one: the control that submits is still
+ * enabled. Everything this console says about a value before the server sees
+ * it is an *echo* of a rule written in Rust (`console/src/validation.ts`), and
+ * an echo that could block a submission would be a second validator — the one
+ * that is wrong whenever the two disagree.
+ */
+test('a field says what the server would refuse, without refusing it', async ({ page }) => {
+  // Arrange
+  await signIn(page);
+  await page.getByRole('link', { name: 'Users' }).click();
+  await expect(page.getByRole('heading', { name: 'Add an account' })).toBeVisible();
+  const email = page.getByLabel('Email');
+
+  // Act
+  await email.fill('not-an-address');
+
+  // Assert
+  await expect(page.getByText('An address carries an @.')).toBeVisible();
+  await expect(email).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByRole('button', { name: 'Create account' })).toBeEnabled();
+
+  // Act / Assert: and it goes away when the value would be taken.
+  await email.fill('someone@example.test');
+  await expect(page.getByText('An address carries an @.')).toHaveCount(0);
+  await expect(email).not.toHaveAttribute('aria-invalid', 'true');
+});
+
+/**
+ * (3) An act on the clients screen is announced by a toast *and* recorded
+ * where it happened.
+ *
+ * Both, because they are not the same thing: the editor is longer than a
+ * window, so an operator pressing "Register client" at the bottom of it was
+ * being answered at the top; and a toast that scrolled away after six seconds
+ * would be the only record of a `client_id` this console did not choose.
+ */
+test('registering a client raises a toast and keeps the record', async ({ page }) => {
+  // Arrange
+  await signIn(page);
+  await openClients(page);
+  const name = `Toast client ${Date.now()}`;
+
+  // Act
+  await fillNewClient(page, name, 'https://app.example.test/callback');
+  await page.getByRole('button', { name: 'Register client' }).click();
+
+  // Assert: the announcement, which carries no `role` of its own — see
+  // `console/src/components/ui/toast.tsx` — and the record, which is the
+  // screen's one `status`.
+  await expect(page.getByText('Client registered')).toBeVisible();
+  await expect(page.getByRole('status')).toContainText(/Registered as c\./);
+});

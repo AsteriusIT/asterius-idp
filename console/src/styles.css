@@ -140,8 +140,11 @@
     letter-spacing: -.02em;
   }
 
+  /* A screen's title, at the size the server-rendered pages give theirs
+     (`ast-f9j5`): the console is the same product and `--text-2xl` above a
+     breadcrumb read as a different one. */
   h2 {
-    font-size: var(--text-2xl);
+    font-size: var(--text-xl);
     font-weight: 600;
     letter-spacing: -.02em;
   }
@@ -177,6 +180,13 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
+  /*
+   * `anywhere` rather than `break-word`, and it is load-bearing: it takes part
+   * in intrinsic sizing, so a column of identifiers reports a small
+   * min-content width and a table lets it wrap instead of widening past its
+   * card. The audit trail's delegation chain is the case that proves it
+   * (`ast-f9j5`).
+   */
   code {
     font-size: var(--text-sm);
     overflow-wrap: anywhere;
@@ -333,12 +343,16 @@
   .detail dt {
     color: var(--muted);
     font-weight: 500;
-    min-width: 8rem;
+    /* 6rem, not 8: inside a table cell this is a floor the whole column pays
+       for, and every key this list draws is one short word (`ast-f9j5`). */
+    min-width: 6rem;
   }
 
   .detail dd {
     margin: 0;
     font-size: var(--text-sm);
+    /* The same reason `code` gives: these are opaque identifiers, and this is
+       the column a table should take its room from. */
     overflow-wrap: anywhere;
   }
 
@@ -382,6 +396,7 @@
   }
 
   caption {
+    caption-side: top;
     text-align: left;
     font-weight: 600;
     font-size: var(--text-sm);
@@ -392,7 +407,7 @@
   th,
   td {
     text-align: left;
-    padding: 10px var(--space-3);
+    padding: var(--space-1) var(--space-3);
     border-bottom: 1px solid var(--line);
     vertical-align: top;
   }
@@ -425,6 +440,16 @@
      changes the order, and a `<th>` a mouse can click and a keyboard cannot is
      the commonest table defect there is. `aria-sort` on the `<th>` is what a
      screen reader reads. */
+  /* Whatever a header is drawn as, it is read as a header: a control resets
+     `text-transform` in the UA stylesheet, so a sortable column came out in
+     sentence case beside its neighbours in capitals (`ast-f9j5`). */
+  thead th button {
+    text-transform: inherit;
+    letter-spacing: inherit;
+    font-size: inherit;
+    color: inherit;
+  }
+
   th button.sort {
     display: inline-flex;
     align-items: center;
@@ -538,15 +563,27 @@
     content: '\26A0';
   }
 
-  input[type='text'],
-  input[type='search'],
-  input[type='email'],
-  input[type='password'],
-  input[type='url'],
-  input[type='number'],
-  input[type='datetime-local'],
-  select,
-  textarea {
+  /*
+   * The screens' own controls, and deliberately *not* shadcn's (`ast-f9j5`).
+   *
+   * `:not([data-slot])` is the whole of the difference. A screen that writes
+   * `<input type="text">` inside a `Field` gets the console's control; a
+   * shadcn component — `Input`, the `Command` search box — carries a
+   * `data-slot` and paints itself, and the two rules applied at once are what
+   * gave the tenant selector's search box a border inside a border and made
+   * every filter box 44px tall by way of a `min-height` no utility can beat.
+   *
+   * The list says which input *kinds* are excluded rather than which are
+   * included, which is the other half of the same bead: `<input name="tenant_id">`
+   * carries no `type`, matched no selector in the list that used to be here,
+   * and — Tailwind's preflight having removed every border — was drawn as an
+   * invisible box on the Tenants screen. A box, a check box and a colour well
+   * are the things that paint themselves; everything else is a text field.
+   */
+  input:not([data-slot], [type='checkbox'], [type='radio'], [type='range'], [type='file'],
+             [type='color'], [type='submit'], [type='button'], [type='image'], [type='reset']),
+  select:not([data-slot]),
+  textarea:not([data-slot]) {
     display: block;
     width: 100%;
     max-width: 40rem;
@@ -572,9 +609,9 @@
     padding: 0 8px;
   }
 
-  input:focus,
-  select:focus,
-  textarea:focus {
+  input:not([data-slot]):focus,
+  select:not([data-slot]):focus,
+  textarea:not([data-slot]):focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--tint-accent);
   }
@@ -585,9 +622,9 @@
     border-color: var(--danger);
   }
 
-  input:disabled,
-  select:disabled,
-  textarea:disabled {
+  input:not([data-slot]):disabled,
+  select:not([data-slot]):disabled,
+  textarea:not([data-slot]):disabled {
     background: var(--surface-sunken);
     color: var(--muted);
   }
@@ -637,7 +674,25 @@
 
   /* ---- controls --------------------------------------------------------- */
 
-  button,
+  /*
+   * Only `.button`, and no longer `button` (`ast-f9j5`).
+   *
+   * This block was written when every control on a screen was a bare
+   * `<button>` (`ast-fe39`). `ast-gore` replaced all of them with shadcn's
+   * `Button`, which paints itself with Tailwind utilities — and left this
+   * element selector behind, styling the *few* buttons that deliberately carry
+   * no paint of their own. Every one of them was drawn as a 36px white card
+   * with a border, which is how the console came to have: a white 16px gutter
+   * down the right edge of the sidebar (shadcn's `SidebarRail`, a transparent
+   * hit target), column headers whose sort control was a box inside the header
+   * (`DataTable`), and a boxed dismiss cross on every toast.
+   *
+   * A `min-height` is the sharp part: a Tailwind `h-8` sets `height` and loses
+   * to a layered `min-height: 36px`, so the utilities looked applied and the
+   * control was still the wrong size. The rule is therefore removed rather
+   * than narrowed — the one consumer left is the audit screen's export link,
+   * which is an `<a>` and asks for it by name.
+   */
   .button {
     display: inline-flex;
     align-items: center;
@@ -655,61 +710,23 @@
     text-decoration: none;
     cursor: pointer;
     transition: background var(--motion-fast) var(--ease), border-color var(--motion-fast) var(--ease),
-      color var(--motion-fast) var(--ease), transform var(--motion-fast) var(--ease);
+      color var(--motion-fast) var(--ease);
   }
 
-  button:hover:not(:disabled),
   .button:hover {
     background: var(--surface-sunken);
   }
 
-  button:active:not(:disabled) {
-    transform: translateY(1px);
-  }
-
-  button:disabled {
-    opacity: .55;
-    cursor: not-allowed;
-  }
-
   /* The one accent-coloured control in a view: the decision this screen exists
      to take. Direction A spends the indigo exactly once. */
-  button.primary,
   .button.primary {
     background: var(--accent);
     border-color: transparent;
     color: var(--accent-fg);
   }
 
-  button.primary:hover:not(:disabled),
   .button.primary:hover {
     background: color-mix(in srgb, var(--accent) 88%, black);
-  }
-
-  button.danger {
-    color: var(--danger);
-    border-color: color-mix(in srgb, var(--danger) 40%, var(--line));
-  }
-
-  button.danger:hover:not(:disabled) {
-    background: var(--tint-danger);
-  }
-
-  button.ghost {
-    border-color: transparent;
-    background: none;
-    color: var(--muted);
-  }
-
-  button.ghost:hover:not(:disabled) {
-    background: var(--surface-sunken);
-    color: var(--fg);
-  }
-
-  button.small {
-    min-height: 30px;
-    padding: 0 10px;
-    font-size: var(--text-sm);
   }
 
   /* A control standing alone in a page's flow is a target and not a word in a
