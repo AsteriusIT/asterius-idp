@@ -585,9 +585,22 @@ test('an account can be disabled from the console', async ({ page }) => {
   // `window.confirm`, so it is answered by clicking in it — which is also what
   // proves the dialog is reachable and its control is labelled.
   await page.getByRole('button', { name: 'Disable account' }).click();
-  const confirmation = page.getByRole('dialog');
+  // `alertdialog` since `ast-gore`: the confirmation is Radix's `AlertDialog`,
+  // which is the correct role for a modal that interrupts to ask a question —
+  // an assistive technology announces its description immediately instead of
+  // waiting to be asked. The rest of the claim is unchanged and still checked:
+  // it is visible, it takes the focus, and its answer is a labelled control
+  // inside it.
+  const confirmation = page.getByRole('alertdialog');
   await expect(confirmation).toBeVisible();
-  await expect(confirmation).toHaveAttribute('aria-modal', 'true');
+  // The `aria-modal` attribute is gone with the hand-written dialog: Radix's
+  // `AlertDialog` establishes modality by trapping focus and marking the rest
+  // of the document, rather than by asserting it in an attribute. So what is
+  // checked here is the behaviour that attribute stood in for, and it is the
+  // half `ast-fe39` wrote down and never proved — **focus lands on the
+  // cancelling control**, so that a stray Return answers "no" to a question
+  // about disabling somebody's account.
+  await expect(confirmation.getByRole('button', { name: 'Cancel' })).toBeFocused();
   await confirmation.getByRole('button', { name: 'Disable the account' }).click();
 
   // Assert: the account is off, and the screen says what the revocation did —
@@ -888,7 +901,7 @@ test('the policy editor refuses a bad document, saves a good one and answers the
   // The tenant goes back to denying everything, which is how this file's
   // other tests find it.
   await page.getByRole('button', { name: 'Remove policy' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Remove it' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Remove it' }).click();
   await expect(page.getByText('The policy was removed.', { exact: false })).toBeVisible();
 });
 
@@ -987,7 +1000,7 @@ test('a deployment administrator lists, creates, suspends and restores a tenant'
 
   // Act: suspend it, which is a confirmed act rather than a button press.
   await tenantRow(page, issuer).getByRole('button', { name: 'Suspend' }).click();
-  const dialog = page.getByRole('dialog');
+  const dialog = page.getByRole('alertdialog');
   await expect(dialog).toContainText('fails to obtain a token');
   await dialog.getByRole('button', { name: 'Suspend tenant' }).click();
 
@@ -998,7 +1011,7 @@ test('a deployment administrator lists, creates, suspends and restores a tenant'
   // Act: and back, because a suspension an operator cannot undo from the same
   // screen is a support ticket.
   await tenantRow(page, issuer).getByRole('button', { name: 'Restore' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Restore tenant' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Restore tenant' }).click();
 
   // Assert
   await expect(page.getByRole('status').first()).toContainText('serving again');
@@ -1046,4 +1059,116 @@ test('a tenant admin is offered no tenants screen', async ({ page }) => {
 
   // Act / Assert
   await expect(page.getByRole('link', { name: 'Tenants' })).toHaveCount(0);
+});
+
+/**
+ * `ast-gore` (2): the console opens light, and remembers what it was told.
+ *
+ * The bead exists because it did neither. The owner's console rendered dark
+ * with no way back, because the palette hung off `prefers-color-scheme` — a
+ * browser setting answering a question nobody had asked it. So the two halves
+ * are asserted here and in a browser, which is the only place a class on
+ * `<html>` and a `localStorage` write that survives a reload can be seen.
+ */
+test('the console opens in the light theme and remembers the dark one', async ({
+  page,
+}) => {
+  // Arrange: a browser that prefers dark, which is exactly the case that used
+  // to decide for the administrator.
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await signIn(page);
+
+  // Assert: light all the same. `.dark` on the root element is the whole
+  // switch (`console/src/tokens.css`).
+  await expect(page.locator('html')).not.toHaveClass(/dark/);
+
+  // Act
+  await page.getByRole('button', { name: 'Switch to the dark theme' }).click();
+
+  // Assert: applied…
+  await expect(page.locator('html')).toHaveClass(/dark/);
+  // …and remembered, which a reload is the only honest test of.
+  await page.reload();
+  await expect(page.locator('html')).toHaveClass(/dark/);
+  await expect(page.getByRole('button', { name: 'Switch to the light theme' })).toBeVisible();
+});
+
+/**
+ * `ast-gore` (3): the rail folds, and folding it loses no destination.
+ *
+ * The icon mode is where a sidebar usually stops being usable: the labels go,
+ * and with them the accessible names, so a screen reader is left with nine
+ * buttons called nothing. The shortcut is asserted alongside it because it is
+ * the way back to the rail once it is folded, without a pointer.
+ */
+test('the sidebar folds to icons without losing a destination', async ({ page }) => {
+  // Arrange
+  await signIn(page);
+  const sidebar = page.locator('[data-slot="sidebar"]').first();
+  await expect(sidebar).toHaveAttribute('data-state', 'expanded');
+
+  // Act: the documented shortcut, not the button.
+  await page.keyboard.press('Control+b');
+
+  // Assert: folded, and Users is still a link that says "Users".
+  await expect(sidebar).toHaveAttribute('data-state', 'collapsed');
+  await expect(page.getByRole('link', { name: 'Users' })).toBeVisible();
+
+  // Act / Assert: and it comes back.
+  await page.keyboard.press('Control+b');
+  await expect(sidebar).toHaveAttribute('data-state', 'expanded');
+});
+
+/**
+ * `ast-gore` (4): the tenant selector, as the caller who may use it.
+ *
+ * Two claims, and the second is the one worth a browser. The list is
+ * `GET /tenants`, which only a deployment-scoped caller may read. And choosing
+ * a tenant **navigates to that tenant's own console** — the console is mounted
+ * beneath the tenant it serves and every admin API call it makes is relative
+ * to its own document, so a selector that swapped an id into this page's state
+ * would leave those calls pointing at the first tenant's API. The URL is built
+ * from the issuer the API reports, which is why a tenant on a custom host
+ * works and a URL assembled from this page's location would not.
+ */
+test('the tenant selector lists the deployment and hands over to the chosen console', async ({
+  page,
+}) => {
+  // Arrange
+  await signInAsDeploymentAdmin(page);
+
+  // Act
+  await page.getByRole('combobox', { name: /Switch tenant/ }).click();
+
+  // Assert: the deployment's tenants, including the one this session is in.
+  const options = page.getByRole('option');
+  await expect(options.filter({ hasText: 'e2e-admin' })).toBeVisible();
+  await expect(options.filter({ hasText: 'e2e-webauthn' })).toBeVisible();
+
+  // Act: choose another one.
+  await options.filter({ hasText: 'e2e-webauthn' }).first().click();
+
+  // Assert: the browser is at *that tenant's* console, which — having no
+  // session there — is the login door `ast-wr4` put in front of it. Landing on
+  // a sign-in rather than on a shell is the correct outcome, and it is the
+  // proof that the hand-off is a navigation and not a swapped variable.
+  await page.waitForURL(/t\/e2e-webauthn\//);
+});
+
+/**
+ * The other half: a tenant admin is offered no other tenant.
+ *
+ * `GET /tenants` is deployment-scoped, so the selector must not call it — a
+ * 403 drawn as a broken menu is worse than no menu. It says so instead.
+ */
+test('a tenant admin is offered no other tenant to switch to', async ({ page }) => {
+  // Arrange
+  await signIn(page);
+
+  // Act
+  await page.getByRole('combobox', { name: /Switch tenant/ }).click();
+
+  // Assert
+  await expect(page.getByText('and no other tenant')).toBeVisible();
+  await expect(page.getByRole('option')).toHaveCount(0);
 });
