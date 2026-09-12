@@ -9,6 +9,7 @@ import { Policy } from './policy';
 import { hrefOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
 import { SharedSignals } from './ssf';
+import { Badge, Button, CenteredCard, Panel, Screen } from './ui';
 import { Users } from './users';
 
 /**
@@ -72,13 +73,26 @@ export function App(): JSX.Element {
   }, []);
 
   if (shell.kind === 'loading') {
-    return <Notice heading="Loading" body="Reading the session." />;
+    return (
+      <CenteredCard heading="Loading">
+        {/* `aria-live` and no `role`, for the reason `Skeleton` gives: the
+            status role is what the sweep searches for to tell a saved change
+            from a refused one, and "Reading the session" is neither. */}
+        <p className="muted" aria-live="polite">
+          Reading the session.
+        </p>
+      </CenteredCard>
+    );
   }
   if (shell.kind === 'signed-out') {
     return <SignedOut onRetry={probe} />;
   }
   if (shell.kind === 'failed') {
-    return <Notice heading="The console could not start" body={shell.message} />;
+    return (
+      <CenteredCard heading="The console could not start">
+        <p className="muted">{shell.message}</p>
+      </CenteredCard>
+    );
   }
 
   const destinations = visibleTo(shell.session);
@@ -87,37 +101,46 @@ export function App(): JSX.Element {
     : (destinations[0]?.route ?? route);
 
   return (
-    <>
+    <div className="app">
       <a className="skip" href={`${hrefOf(current)}`} onClick={focusMain}>
         Skip to content
       </a>
-      <header>
-        <h1>Asterius console</h1>
-        <p className="who">
-          Signed in to <strong>{shell.session.tenant}</strong>{' '}
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            A
+          </span>
+          <h1 className="wordmark">Asterius console</h1>
+        </div>
+        <p className="topbar-session">
+          <span>
+            Signed in to <strong>{shell.session.tenant}</strong>
+          </span>{' '}
           <button type="button" onClick={() => signOut(shell.session)}>
             Sign out
           </button>
         </p>
       </header>
-      <nav aria-label="Console sections">
-        <ul>
-          {destinations.map((destination) => (
-            <li key={destination.route}>
-              <a
-                href={hrefOf(destination.route)}
-                aria-current={destination.route === current ? 'page' : undefined}
-              >
-                {destination.label}
-              </a>
-            </li>
-          ))}
-        </ul>
-      </nav>
-      <main id="content" tabIndex={-1}>
-        <Screen route={current} session={shell.session} />
-      </main>
-    </>
+      <div className="app-body">
+        <nav className="rail" aria-label="Console sections">
+          <ul>
+            {destinations.map((destination) => (
+              <li key={destination.route}>
+                <a
+                  href={hrefOf(destination.route)}
+                  aria-current={destination.route === current ? 'page' : undefined}
+                >
+                  {destination.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <main id="content" tabIndex={-1} className="content">
+          <RouteScreen route={current} session={shell.session} />
+        </main>
+      </div>
+    </div>
   );
 }
 
@@ -135,7 +158,7 @@ function focusMain(): void {
  * administrator opening Users read that it was arriving with a ticket that was
  * already closed. See `navigation.ts`.
  */
-function Screen({ route, session }: { route: string; session: Session }): JSX.Element {
+function RouteScreen({ route, session }: { route: string; session: Session }): JSX.Element {
   if (route === 'users') {
     return <Users session={session} />;
   }
@@ -158,27 +181,86 @@ function Screen({ route, session }: { route: string; session: Session }): JSX.El
     return <Policy session={session} />;
   }
   if (route === 'overview') {
-    return (
-      <>
-        <h2>Overview</h2>
-        <dl>
-          <dt>Tenant</dt>
-          <dd>{session.tenant}</dd>
-          <dt>User</dt>
-          <dd>{session.user}</dd>
-          <dt>Roles</dt>
-          <dd>{session.roles.length > 0 ? session.roles.join(', ') : 'none'}</dd>
-        </dl>
-      </>
-    );
+    return <Overview session={session} />;
   }
 
   const destination = visibleTo(session).find((candidate) => candidate.route === route);
   return (
-    <>
-      <h2>{destination?.label ?? 'Not found'}</h2>
-      <p>This screen arrives with {destination?.bead ?? 'a later bead'}.</p>
-    </>
+    <Screen
+      title={destination?.label ?? 'Not found'}
+      description={`This screen arrives with ${destination?.bead ?? 'a later bead'}.`}
+    >
+      <Panel title="Not built yet">
+        <p className="muted">
+          Nothing on this screen works yet, and the ticket above is where the work is
+          tracked.
+        </p>
+      </Panel>
+    </Screen>
+  );
+}
+
+/**
+ * Where the console opens: who you are here, and what that lets you reach.
+ *
+ * It answers the question an administrator asks first — "why can I not see
+ * Clients?" — by naming the roles the session carries and the screens they open,
+ * rather than leaving the rail's absences unexplained. Every value comes from
+ * `GET /session`, which the shell has already read: the overview makes no call
+ * of its own.
+ */
+function Overview({ session }: { session: Session }): JSX.Element {
+  const destinations = visibleTo(session);
+  return (
+    <Screen title="Overview" description="Who this session is, and what it reaches.">
+      <Panel title="This session">
+        <dl className="stats">
+          <div className="stat">
+            <dt>Tenant</dt>
+            <dd>{session.tenant}</dd>
+          </div>
+          <div className="stat">
+            <dt>User</dt>
+            <dd className="wrap-anywhere">{session.user}</dd>
+          </div>
+          <div className="stat">
+            <dt>Roles</dt>
+            <dd>
+              {session.roles.length > 0 ? (
+                <span className="row">
+                  {session.roles.map((role) => (
+                    <Badge key={role} tone="accent">
+                      {role}
+                    </Badge>
+                  ))}
+                </span>
+              ) : (
+                'none'
+              )}
+            </dd>
+          </div>
+        </dl>
+      </Panel>
+      <Panel
+        title="What you can reach"
+        description="A screen is listed when this session holds the scope its first call needs. The server checks every one of them again."
+      >
+        {/*
+          Names and not links, deliberately. The rail beside this panel is the
+          console's one navigation; a second set of links to the same eight
+          screens would be a second place for a keyboard user to tab through,
+          and two controls carrying one accessible name on one page.
+        */}
+        <ul className="switches">
+          {destinations.map((destination) => (
+            <li key={destination.route}>
+              <strong>{destination.label}</strong>{' '}
+              <span className="muted">{destination.scope}</span>
+            </li>
+          ))}
+        </ul>
+      </Panel>
+    </Screen>
   );
 }
 
@@ -199,26 +281,14 @@ function Screen({ route, session }: { route: string; session: Session }): JSX.El
  */
 function SignedOut({ onRetry }: { onRetry: () => void }): JSX.Element {
   return (
-    <main id="content" tabIndex={-1}>
-      <h1>Signed out</h1>
-      <p>This console has no session. Sign in again to continue.</p>
-      <button type="button" onClick={() => window.location.reload()}>
+    <CenteredCard heading="Signed out">
+      <p className="muted">This console has no session. Sign in again to continue.</p>
+      <Button variant="primary" onClick={() => window.location.reload()}>
         Sign in
-      </button>
-      <p className="muted">
-        <button type="button" onClick={onRetry}>
-          Check again
-        </button>
-      </p>
-    </main>
-  );
-}
-
-function Notice({ heading, body }: { heading: string; body: string }): JSX.Element {
-  return (
-    <main id="content" tabIndex={-1}>
-      <h1>{heading}</h1>
-      <p>{body}</p>
-    </main>
+      </Button>
+      <Button variant="ghost" small onClick={onRetry}>
+        Check again
+      </Button>
+    </CenteredCard>
   );
 }

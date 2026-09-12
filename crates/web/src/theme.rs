@@ -227,6 +227,69 @@ mod tests {
         }
     }
 
+    /// The declarations of the first `:root` rule of a stylesheet.
+    ///
+    /// Last wins, as the cascade has it: `--backdrop` is declared twice on
+    /// purpose — a literal for a browser with no `color-mix`, then the mix —
+    /// and the value that counts is the second.
+    fn first_root_block(css: &str) -> std::collections::BTreeMap<&str, &str> {
+        let root = css
+            .split_once(":root {")
+            .expect("a stylesheet opens with its defaults")
+            .1;
+        let root = &root[..root.find('}').expect("the :root block is closed")];
+        root.lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("--"))
+            .filter_map(|line| line.trim_end_matches(';').split_once(':'))
+            .map(|(property, value)| (property.trim(), value.trim()))
+            .collect()
+    }
+
+    /// The console is drawn in these colours too (`ast-fe39`).
+    ///
+    /// `console/src/tokens.css` is a *copy* of the block above, and it has to
+    /// be one: this file is `include!`d into the one nonce-carrying `<style>`
+    /// element of every server-rendered page, while the console's CSS is
+    /// bundled by Vite into a content-hashed file the entry document links.
+    /// Neither consumer can read the other's bytes — one is an `include_str!`
+    /// at `cargo build` time, the other an import resolved by a bundler that
+    /// is not running then — so the values are duplicated and this test is
+    /// what keeps the duplicate a cache rather than a fork.
+    ///
+    /// `--font` is the one token that differs, and the difference is checked
+    /// rather than skipped: the pages are served Geist from a hashed path
+    /// whose URL carries the request's mount prefix (`asterius_web::brand`, an
+    /// `@font-face` that lives in `base.html`), which a bundle cannot name. So
+    /// the console takes the *tail* of the same stack — the faces a browser
+    /// falls back to, and nothing from an outside origin.
+    #[test]
+    fn the_console_declares_the_same_design_tokens() {
+        const STYLESHEET: &str = include_str!("../templates/style.css");
+        const CONSOLE: &str = include_str!("../../../console/src/tokens.css");
+
+        let pages = first_root_block(STYLESHEET);
+        let console = first_root_block(CONSOLE);
+
+        for (property, value) in &pages {
+            let theirs = console.get(property).copied().unwrap_or_else(|| {
+                panic!("{property} is a page token the console declares nowhere")
+            });
+            if *property == "--font" {
+                assert_eq!(
+                    value.strip_prefix("Geist, "),
+                    Some(theirs),
+                    "the console's font stack is not the page stack without its served face"
+                );
+                continue;
+            }
+            assert_eq!(
+                &theirs, value,
+                "{property} differs between style.css and console/src/tokens.css"
+            );
+        }
+    }
+
     /// `ast-vn7`: one scheme, and the browser does not choose it.
     ///
     /// An absence, so it is asserted mechanically. A `prefers-color-scheme`

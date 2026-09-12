@@ -579,10 +579,16 @@ test('an account can be disabled from the console', async ({ page }) => {
   await openScreen(page, 'Users', 'Users');
   const username = await createAccount(page);
   await openAccount(page, username);
-  page.once('dialog', (dialog) => void dialog.accept());
 
-  // Act
+  // Act: the console asks before it ends somebody's sessions (`ast-fe39`).
+  // The question is the console's own dialog and no longer the browser's
+  // `window.confirm`, so it is answered by clicking in it — which is also what
+  // proves the dialog is reachable and its control is labelled.
   await page.getByRole('button', { name: 'Disable account' }).click();
+  const confirmation = page.getByRole('dialog');
+  await expect(confirmation).toBeVisible();
+  await expect(confirmation).toHaveAttribute('aria-modal', 'true');
+  await confirmation.getByRole('button', { name: 'Disable the account' }).click();
 
   // Assert: the account is off, and the screen says what the revocation did —
   // nothing, for an account that has never signed in, which is the honest
@@ -881,8 +887,8 @@ test('the policy editor refuses a bad document, saves a good one and answers the
 
   // The tenant goes back to denying everything, which is how this file's
   // other tests find it.
-  page.once('dialog', (dialog) => void dialog.accept());
   await page.getByRole('button', { name: 'Remove policy' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Remove it' }).click();
   await expect(page.getByText('The policy was removed.', { exact: false })).toBeVisible();
 });
 

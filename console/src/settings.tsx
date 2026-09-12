@@ -39,6 +39,7 @@ import {
   TENANT_CATALOGUE,
   mayRead as mayReadAppRoles,
 } from './appRoles';
+import { Actions, Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
 /**
  * The optional features this console draws a switch for, mirroring
@@ -194,35 +195,27 @@ export function TenantSettings({ session }: { session: Session }): JSX.Element {
     [path, session],
   );
 
-  if (load.kind === 'loading') {
+  if (load.kind === 'loading' || draft === null) {
     return (
-      <>
-        <h2>Tenant settings</h2>
-        <p>Reading the settings.</p>
-      </>
+      <Screen title="Tenant settings">
+        <Panel title="Reading">
+          <Skeleton rows={5} label="Reading the settings." />
+        </Panel>
+      </Screen>
     );
   }
   if (load.kind === 'failed') {
     return (
-      <>
-        <h2>Tenant settings</h2>
-        <p>{load.message}</p>
-        <button type="button" onClick={refresh}>
-          Try again
-        </button>
-      </>
-    );
-  }
-  if (draft === null) {
-    return (
-      <>
-        <h2>Tenant settings</h2>
-        <p>Reading the settings.</p>
-      </>
+      <Screen title="Tenant settings">
+        <Panel title="The settings could not be read">
+          <LoadFailure message={load.message} onRetry={refresh} />
+        </Panel>
+      </Screen>
     );
   }
 
   const settings = load.settings;
+  const refused = refusedField(refusal);
   const toggle = (name: string, enabled: boolean): void =>
     setDraft({
       ...draft,
@@ -232,23 +225,17 @@ export function TenantSettings({ session }: { session: Session }): JSX.Element {
     });
 
   return (
-    <>
-      <h2>Tenant settings</h2>
-      <p className="muted">
-        What <strong>{settings.tenant_id}</strong> is configured to do. Every value below is
-        checked again by the server when it is saved.
-      </p>
-
-      {notice !== null && (
-        <p role="status" aria-live="polite">
-          {notice}
-        </p>
-      )}
-      {refusal !== null && (
-        <p role="alert" className="refusal">
-          {refusal}
-        </p>
-      )}
+    <Screen
+      title="Tenant settings"
+      description={
+        <>
+          What <strong>{settings.tenant_id}</strong> is configured to do. Every value below is
+          checked again by the server when it is saved.
+        </>
+      }
+    >
+      {notice !== null && <Message tone="success">{notice}</Message>}
+      {refusal !== null && <Message tone="error">{refusal}</Message>}
 
       {/*
         `noValidate`, so that an out-of-range value reaches the server.
@@ -263,6 +250,7 @@ export function TenantSettings({ session }: { session: Session }): JSX.Element {
         nothing is lost by letting the request be made and everything is gained
         by showing what came back.
       */}
+      <Panel title="Configuration">
       <form
         noValidate
         onSubmit={(event) => {
@@ -296,53 +284,55 @@ export function TenantSettings({ session }: { session: Session }): JSX.Element {
 
         <fieldset disabled={busy}>
           <legend>Lifetimes</legend>
-          <p>
-            <label htmlFor="code-lifetime">Authorization code lifetime (seconds)</label>
-            <input
-              id="code-lifetime"
-              name="authorization_code_lifetime_seconds"
-              type="number"
-              min={1}
-              max={settings.limits.max_authorization_code_lifetime_seconds}
-              value={draft.code}
-              onChange={(event) => setDraft({ ...draft, code: event.target.value })}
-            />
-          </p>
-          <p className="muted">
-            This deployment refuses anything above{' '}
-            {settings.limits.max_authorization_code_lifetime_seconds} seconds.
-          </p>
-          <p>
-            <label htmlFor="token-lifetime">Access token lifetime (seconds)</label>
-            <input
-              id="token-lifetime"
-              name="access_token_lifetime_seconds"
-              type="number"
-              min={1}
-              max={settings.limits.max_access_token_lifetime_seconds}
-              value={draft.token}
-              onChange={(event) => setDraft({ ...draft, token: event.target.value })}
-            />
-          </p>
-          <p className="muted">
-            This deployment refuses anything above{' '}
-            {settings.limits.max_access_token_lifetime_seconds} seconds.
-          </p>
+          <Field
+            label="Authorization code lifetime (seconds)"
+            hint={`This deployment refuses anything above ${settings.limits.max_authorization_code_lifetime_seconds} seconds.`}
+            error={refused === 'code' ? 'This is the value the server refused above.' : null}
+          >
+            {(props) => (
+              <input
+                {...props}
+                name="authorization_code_lifetime_seconds"
+                type="number"
+                min={1}
+                max={settings.limits.max_authorization_code_lifetime_seconds}
+                value={draft.code}
+                onChange={(event) => setDraft({ ...draft, code: event.target.value })}
+              />
+            )}
+          </Field>
+          <Field
+            label="Access token lifetime (seconds)"
+            hint={`This deployment refuses anything above ${settings.limits.max_access_token_lifetime_seconds} seconds.`}
+            error={refused === 'token' ? 'This is the value the server refused above.' : null}
+          >
+            {(props) => (
+              <input
+                {...props}
+                name="access_token_lifetime_seconds"
+                type="number"
+                min={1}
+                max={settings.limits.max_access_token_lifetime_seconds}
+                value={draft.token}
+                onChange={(event) => setDraft({ ...draft, token: event.target.value })}
+              />
+            )}
+          </Field>
         </fieldset>
 
-        <p>
-          <button type="submit" disabled={busy}>
-            Save settings
-          </button>{' '}
-          <button
-            type="button"
+        <Actions>
+          <Button
             disabled={busy || !isDirty(settings, draft)}
             onClick={() => setDraft(draftOf(settings))}
           >
             Discard changes
-          </button>
-        </p>
+          </Button>
+          <Button type="submit" variant="primary" disabled={busy}>
+            Save settings
+          </Button>
+        </Actions>
       </form>
+      </Panel>
 
       {/*
         The tenant's shared role catalogue (`ast-095`). Here rather than on a
@@ -362,14 +352,41 @@ export function TenantSettings({ session }: { session: Session }): JSX.Element {
         />
       )}
 
-      <section aria-labelledby="not-here">
-        <h3 id="not-here">Not configurable yet</h3>
+      <Panel id="not-here" title="Not configurable yet">
         <p className="muted">
           Theme tokens, the ACR policy, rate limits and session lifetimes are not served by this
           release&rsquo;s admin API, so this screen does not offer them. A control that saved
           nowhere would be worse than none.
         </p>
-      </section>
-    </>
+      </Panel>
+    </Screen>
   );
+}
+
+/**
+ * Which field the server's refusal is about, when it is about one.
+ *
+ * The admin API answers `{"error": {"code", "message"}}` and nothing in that
+ * envelope is a JSON pointer, so there is no *path* to read: what there is, is
+ * a sentence the server wrote about a named lifetime. Matching on the name is
+ * therefore the whole of what this console may claim to know, and it claims it
+ * quietly — the sentence itself stays at the top of the form, in the alert,
+ * exactly as the server wrote it. The field only gets a mark saying "this one",
+ * which is the thing an operator was looking for when they read the sentence.
+ *
+ * `null` when the message names neither, which is the ordinary case for a
+ * refusal about something else: a guess would point at the wrong field.
+ */
+export function refusedField(message: string | null): 'code' | 'token' | null {
+  if (message === null) {
+    return null;
+  }
+  const said = message.toLowerCase();
+  if (said.includes('authorization code')) {
+    return 'code';
+  }
+  if (said.includes('access token')) {
+    return 'token';
+  }
+  return null;
 }

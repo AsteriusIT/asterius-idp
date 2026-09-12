@@ -27,6 +27,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';
+import {
+  Actions,
+  Badge,
+  Button,
+  EmptyState,
+  Field,
+  LoadFailure,
+  Panel,
+  Screen,
+  Skeleton,
+} from './ui';
 
 /** One party to a record, as `actor` and each `actor_chain` entry render. */
 export interface ActorDocument {
@@ -196,68 +207,85 @@ export function AuditExplorer({ session }: { session: Session }): JSX.Element {
   };
 
   const field = (name: keyof Filters, label: string, placeholder: string): JSX.Element => (
-    <span>
-      <label htmlFor={`audit-${name}`}>{label}</label>{' '}
-      <input
-        id={`audit-${name}`}
-        name={name}
-        type="text"
-        value={draft[name]}
-        placeholder={placeholder}
-        maxLength={256}
-        onChange={(event) => setDraft({ ...draft, [name]: event.target.value })}
-      />{' '}
-    </span>
+    <Field label={label}>
+      {(props) => (
+        <input
+          {...props}
+          name={name}
+          type="text"
+          value={draft[name]}
+          placeholder={placeholder}
+          maxLength={256}
+          onChange={(event) => setDraft({ ...draft, [name]: event.target.value })}
+        />
+      )}
+    </Field>
   );
 
   return (
-    <>
-      <h2>Audit trail</h2>
-      <p className="muted">
-        What happened in <strong>{session.tenant}</strong>, newest first. Filter by the agent
-        that acted, the person it acted for, the person concerned, an authorization, an event
-        type or a time window; each row shows the delegation chain the record carries.
-      </p>
-
-      <form
-        role="search"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setApplied(draft);
-        }}
-      >
-        {field('agent', 'Agent', 'client_id')}
-        {field('owner', 'Owner', 'subject the agent acts for')}
-        {field('user', 'User', 'subject')}
-        {field('grant', 'Grant', 'grant id (UUID)')}
-        {field('type', 'Event type', 'token.exchanged, session.revoked')}
-        {field('from', 'From', '2026-01-01T00:00:00Z')}
-        {field('until', 'Until', '2026-12-31T00:00:00Z')}
-        <button type="submit">Apply filters</button>{' '}
-        <button
-          type="button"
-          onClick={() => {
-            setDraft(EMPTY_FILTERS);
-            setApplied(EMPTY_FILTERS);
-          }}
-        >
-          Clear
-        </button>{' '}
-        {/*
+    <Screen
+      title="Audit trail"
+      description={
+        <>
+          What happened in <strong>{session.tenant}</strong>, newest first. Filter by the agent
+          that acted, the person it acted for, the person concerned, an authorization, an event
+          type or a time window; each row shows the delegation chain the record carries.
+        </>
+      }
+      actions={
+        /*
           The export needs `admin.audit:read`, which is also what this screen
           opens with — so the link is shown to whoever got here, and hidden
           for a session whose scopes say otherwise. The server answers 403
           regardless; see the module documentation.
-        */}
-        {mayExport && (
-          <a href={`api/v1/audit/events/export${queryOf(applied)}`} download="audit-events.ndjson">
+        */
+        mayExport ? (
+          <a
+            className="button"
+            href={`api/v1/audit/events/export${queryOf(applied)}`}
+            download="audit-events.ndjson"
+          >
             Export as NDJSON
           </a>
-        )}
-      </form>
+        ) : undefined
+      }
+    >
+      <Panel title="Filters">
+        <form
+          className="toolbar"
+          role="search"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setApplied(draft);
+          }}
+        >
+          {field('agent', 'Agent', 'client_id')}
+          {field('owner', 'Owner', 'subject the agent acts for')}
+          {field('user', 'User', 'subject')}
+          {field('grant', 'Grant', 'grant id (UUID)')}
+          {field('type', 'Event type', 'token.exchanged, session.revoked')}
+          {field('from', 'From', '2026-01-01T00:00:00Z')}
+          {field('until', 'Until', '2026-12-31T00:00:00Z')}
+          <Actions>
+            <Button
+              onClick={() => {
+                setDraft(EMPTY_FILTERS);
+                setApplied(EMPTY_FILTERS);
+              }}
+            >
+              Clear
+            </Button>
+            <Button type="submit" variant="primary">
+              Apply filters
+            </Button>
+          </Actions>
+        </form>
+      </Panel>
 
-      <Trail load={load} more={more} onMore={loadMore} onRetry={() => refresh(applied)} />
-    </>
+      <Panel title="Records">
+        <Trail load={load} more={more} onMore={loadMore} onRetry={() => refresh(applied)} />
+      </Panel>
+    </Screen>
   );
 }
 
@@ -273,25 +301,17 @@ function Trail({
   onRetry: () => void;
 }): JSX.Element {
   if (load.kind === 'loading') {
-    return <p>Reading the trail.</p>;
+    return <Skeleton rows={5} label="Reading the trail." />;
   }
   if (load.kind === 'failed') {
-    return (
-      <>
-        <p role="alert" className="refusal">
-          {load.message}
-        </p>
-        <button type="button" onClick={onRetry}>
-          Try again
-        </button>
-      </>
-    );
+    return <LoadFailure message={load.message} onRetry={onRetry} />;
   }
   if (load.rows.length === 0) {
-    return <p>No record matches.</p>;
+    return <EmptyState title="No record matches." body="Widen the filters, or clear them." />;
   }
   return (
     <>
+      <div className="table-wrap">
       <table>
         <thead>
           <tr>
@@ -319,7 +339,15 @@ function Trail({
                   <td>
                     <code>{row.type}</code>
                   </td>
-                  <td>{row.outcome}</td>
+                  <td>
+                    {/* `outcome` is optional in the record, and an empty badge
+                        would be a state nobody recorded. */}
+                    {row.outcome === undefined ? (
+                      <span className="muted">—</span>
+                    ) : (
+                      <Badge tone={row.outcome === 'success' ? 'ok' : 'bad'}>{row.outcome}</Badge>
+                    )}
+                  </td>
                   <td>
                     <Chain links={chainOf(row)} />
                   </td>
@@ -332,12 +360,13 @@ function Trail({
           ))}
         </tbody>
       </table>
+      </div>
       {load.next !== null && (
-        <p>
-          <button type="button" disabled={more} onClick={onMore}>
+        <Actions>
+          <Button disabled={more} onClick={onMore}>
             Load more
-          </button>
-        </p>
+          </Button>
+        </Actions>
       )}
     </>
   );

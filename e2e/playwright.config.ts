@@ -78,6 +78,7 @@ export default defineConfig({
         '**/passkey-ceremony.spec.ts',
         '**/passkey-clone.spec.ts',
         '**/console.spec.ts',
+        '**/console-shots.spec.ts',
         '**/key-rotation.spec.ts',
         '**/accessibility.spec.ts',
       ],

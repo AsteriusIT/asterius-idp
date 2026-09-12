@@ -31,6 +31,16 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
+import {
+  Actions,
+  Button,
+  EmptyState,
+  Field,
+  LoadFailure,
+  Message,
+  Panel,
+  Skeleton,
+} from './ui';
 
 /** The scope a catalogue is read with. */
 export const READ_SCOPE = 'admin.app_roles:read';
@@ -216,32 +226,19 @@ export function RoleCatalogue({
   };
 
   return (
-    <section aria-labelledby={`catalogue-${path}`}>
-      <h3 id={`catalogue-${path}`}>{title}</h3>
-      <p className="muted">{explanation}</p>
-      {notice !== null && (
-        <p role="status" aria-live="polite">
-          {notice}
-        </p>
-      )}
-      {refusal !== null && (
-        <p role="alert" className="refusal">
-          {refusal}
-        </p>
-      )}
-      {load.kind === 'loading' && <p>Reading the catalogue.</p>}
-      {load.kind === 'failed' && (
-        <>
-          <p>{load.message}</p>
-          <button type="button" onClick={refresh}>
-            Try again
-          </button>
-        </>
-      )}
+    <Panel id={`catalogue-${path}`} title={title} description={explanation}>
+      {notice !== null && <Message tone="success">{notice}</Message>}
+      {refusal !== null && <Message tone="error">{refusal}</Message>}
+      {load.kind === 'loading' && <Skeleton rows={3} label="Reading the catalogue." />}
+      {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && load.value.roles.length === 0 && (
-        <p>No role has been defined here yet.</p>
+        <EmptyState
+          title="No role has been defined here yet."
+          body="A role defined here is a name this tenant's applications authorise against."
+        />
       )}
       {load.kind === 'ready' && load.value.roles.length > 0 && (
+        <div className="table-wrap">
         <table>
           <thead>
             <tr>
@@ -258,16 +255,17 @@ export function RoleCatalogue({
                 </td>
                 <td>{role.description ?? ''}</td>
                 {writable && (
-                  <td>
-                    <button type="button" disabled={busy} onClick={() => remove(role.name)}>
+                  <td className="actions-cell">
+                    <Button small disabled={busy} onClick={() => remove(role.name)}>
                       Delete
-                    </button>
+                    </Button>
                   </td>
                 )}
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       )}
       {writable && (
         <form
@@ -279,42 +277,50 @@ export function RoleCatalogue({
         >
           <fieldset disabled={busy}>
             <legend>Define a role</legend>
-            <p>
-              <label htmlFor={`role-name-${path}`}>Name</label>
-              <input
-                id={`role-name-${path}`}
-                name="name"
-                type="text"
-                value={name}
-                placeholder="payments.settlement:approve"
-                onChange={(event) => setName(event.target.value)}
-              />
-            </p>
-            <p className="muted">
-              Lower case, digits and <code>-_.:</code>, up to 64 characters. The name is copied
-              verbatim into tokens, so the server refuses anything a resource server could read
-              as two roles.
-            </p>
-            <p>
-              <label htmlFor={`role-description-${path}`}>What it is for</label>
-              <input
-                id={`role-description-${path}`}
-                name="description"
-                type="text"
-                value={description}
-                onChange={(event) => setDescription(event.target.value)}
-              />
-            </p>
-            <p className="muted">For whoever assigns it. It is never issued in a token.</p>
-            <p>
-              <button type="submit" disabled={busy || name.trim() === ''}>
+            <Field
+              label="Name"
+              hint={
+                <>
+                  Lower case, digits and <code>-_.:</code>, up to 64 characters. The name is
+                  copied verbatim into tokens, so the server refuses anything a resource server
+                  could read as two roles.
+                </>
+              }
+            >
+              {(props) => (
+                <input
+                  {...props}
+                  name="name"
+                  type="text"
+                  value={name}
+                  placeholder="payments.settlement:approve"
+                  onChange={(event) => setName(event.target.value)}
+                />
+              )}
+            </Field>
+            <Field
+              label="What it is for"
+              hint="For whoever assigns it. It is never issued in a token."
+            >
+              {(props) => (
+                <input
+                  {...props}
+                  name="description"
+                  type="text"
+                  value={description}
+                  onChange={(event) => setDescription(event.target.value)}
+                />
+              )}
+            </Field>
+            <Actions>
+              <Button type="submit" variant="primary" disabled={busy || name.trim() === ''}>
                 Define role
-              </button>
-            </p>
+              </Button>
+            </Actions>
           </fieldset>
         </form>
       )}
-    </section>
+    </Panel>
   );
 }
 
@@ -440,29 +446,25 @@ export function UserAppRoles({
   );
 
   return (
-    <section aria-labelledby="app-roles">
-      <h3 id="app-roles">Application roles</h3>
-      <p className="muted">
-        What this account may do <em>in the tenant&rsquo;s applications</em>, issued in the{' '}
-        <code>roles</code> and <code>resource_access</code> claims. Administering this server is
-        the separate list above.
-      </p>
-      {refusal !== null && (
-        <p role="alert" className="refusal">
-          {refusal}
-        </p>
-      )}
-      {load.kind === 'loading' && <p>Reading the assignments.</p>}
-      {load.kind === 'failed' && (
+    <Panel
+      id="app-roles"
+      title="Application roles"
+      description={
         <>
-          <p>{load.message}</p>
-          <button type="button" onClick={refresh}>
-            Try again
-          </button>
+          What this account may do <em>in the tenant&rsquo;s applications</em>, issued in the{' '}
+          <code>roles</code> and <code>resource_access</code> claims. Administering this server is
+          the separate list above.
         </>
+      }
+    >
+      {refusal !== null && <Message tone="error">{refusal}</Message>}
+      {load.kind === 'loading' && <Skeleton rows={3} label="Reading the assignments." />}
+      {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
+      {load.kind === 'ready' && held.length === 0 && (
+        <EmptyState title="This account holds no application role." />
       )}
-      {load.kind === 'ready' && held.length === 0 && <p>This account holds no application role.</p>}
       {load.kind === 'ready' && held.length > 0 && (
+        <div className="table-wrap">
         <table>
           <thead>
             <tr>
@@ -485,20 +487,21 @@ export function UserAppRoles({
                   )}
                 </td>
                 {writable && (
-                  <td>
-                    <button
-                      type="button"
+                  <td className="actions-cell">
+                    <Button
+                      small
                       disabled={busy || saving}
                       onClick={() => withdraw(assignment.role, assignment.clientId)}
                     >
                       Withdraw
-                    </button>
+                    </Button>
                   </td>
                 )}
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       )}
       {writable && (
         <form
@@ -508,46 +511,50 @@ export function UserAppRoles({
             assign();
           }}
         >
-          <p>
-            <label htmlFor="assign-app-role-owner">Catalogue</label>{' '}
-            <select
-              id="assign-app-role-owner"
-              name="client_id"
-              value={owner}
-              disabled={busy || saving}
-              onChange={(event) => {
-                setOwner(event.target.value);
-                setChosen('');
-              }}
-            >
-              <option value="">the tenant (every application)</option>
-              {clients.map((clientId) => (
-                <option key={clientId} value={clientId}>
-                  {clientId}
-                </option>
-              ))}
-            </select>
-          </p>
-          <p>
-            <label htmlFor="assign-app-role">Role</label>{' '}
-            <select
-              id="assign-app-role"
-              name="name"
-              value={chosen}
-              disabled={busy || saving || offered.length === 0}
-              onChange={(event) => setChosen(event.target.value)}
-            >
-              <option value="">Choose a role</option>
-              {offered.map((role) => (
-                <option key={role.name} value={role.name}>
-                  {role.name}
-                </option>
-              ))}
-            </select>{' '}
-            <button type="submit" disabled={busy || saving || chosen === ''}>
+          <div className="toolbar">
+            <Field label="Catalogue">
+              {(props) => (
+                <select
+                  {...props}
+                  name="client_id"
+                  value={owner}
+                  disabled={busy || saving}
+                  onChange={(event) => {
+                    setOwner(event.target.value);
+                    setChosen('');
+                  }}
+                >
+                  <option value="">the tenant (every application)</option>
+                  {clients.map((clientId) => (
+                    <option key={clientId} value={clientId}>
+                      {clientId}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            <Field label="Role">
+              {(props) => (
+                <select
+                  {...props}
+                  name="name"
+                  value={chosen}
+                  disabled={busy || saving || offered.length === 0}
+                  onChange={(event) => setChosen(event.target.value)}
+                >
+                  <option value="">Choose a role</option>
+                  {offered.map((role) => (
+                    <option key={role.name} value={role.name}>
+                      {role.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            <Button type="submit" variant="primary" disabled={busy || saving || chosen === ''}>
               Assign
-            </button>
-          </p>
+            </Button>
+          </div>
           {offered.length === 0 && (
             <p className="muted">
               This catalogue has nothing left to give. A tenant role is defined on the tenant
@@ -556,6 +563,6 @@ export function UserAppRoles({
           )}
         </form>
       )}
-    </section>
+    </Panel>
   );
 }
