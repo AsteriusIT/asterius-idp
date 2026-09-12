@@ -2156,10 +2156,40 @@ async fn access_evaluation_dispatch(
 /// assert: the account the `sub` names, the application roles it holds
 /// (`ast-095`) and its authorizations (`ast-uwv.2`).
 #[derive(Debug)]
-struct StoredSubjects {
+pub(crate) struct StoredSubjects {
     users: asterius_store_pg::PgUserRepository,
     roles: asterius_store_pg::PgApplicationRoles,
     grants: asterius_store_pg::PgGrantRepository,
+}
+
+impl StoredSubjects {
+    /// The three repositories, opened on one tenant's scope.
+    ///
+    /// Its own constructor because the admin API's policy test bench
+    /// (`ast-f7m.9`) resolves the same facts from the same rows: a second
+    /// spelling of "what this server knows about a subject" would be a bench
+    /// that answers about a subject the PDP does not see.
+    pub(crate) fn of(
+        store: &asterius_store_pg::Store,
+        kek: Arc<dyn asterius_jose::Kek>,
+        tenant: &asterius_domain::TenantId,
+    ) -> Self {
+        let scope = store.scope(tenant.clone());
+        Self {
+            users: scope.users(kek),
+            roles: scope.application_roles(),
+            grants: scope.grants(),
+        }
+    }
+}
+
+/// This deployment's authentication ladder, for callers outside this module.
+///
+/// The admin bench reads `acr_at_least` against the same rungs the
+/// authorization endpoints and the discovery document do; a second ladder
+/// would make the bench disagree with the PDP about a step-up.
+pub(crate) fn deployment_acr_policy() -> &'static asterius_domain::AcrPolicy {
+    acr_policy()
 }
 
 #[async_trait::async_trait]

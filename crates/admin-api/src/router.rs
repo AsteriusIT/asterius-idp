@@ -37,7 +37,7 @@ use crate::auth::{Credentials, Principal, authenticate};
 use crate::backend::{AdminBackend, AdminTokens};
 use crate::error::AdminError;
 use crate::idempotency::{self, IdempotencyKey};
-use crate::operations::{Effect, Method, Operation};
+use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
     audit, clients, csrf, initial_access_tokens, keys, openapi, outbox, policies, ssf, throttle,
@@ -210,10 +210,13 @@ async fn handle(
     )
     .await?;
 
-    // 3. CSRF, for the console and for state changes only. A read cannot be
-    //    the target of a forgery worth mounting, and a token call carries no
-    //    ambient credential to forge with.
-    if operation.effect() == Effect::Mutates
+    // 3. CSRF, for the console and for everything that is not a plain read. A
+    //    `GET` cannot be the target of a forgery worth mounting, and a token
+    //    call carries no ambient credential to forge with. A probe
+    //    (`Effect::Probes`) writes nothing and is still checked: it is mounted
+    //    on a verb a cross-site form can emit, and the header is what says the
+    //    request came from this console.
+    if operation.effect().needs_csrf_token()
         && let Principal::Console { session_id, .. } = &principal
     {
         csrf::check(&headers, session_id, &origin)?;
@@ -300,6 +303,7 @@ async fn route(
         crate::POLICY_READ_ID => context.read_policy().await,
         crate::POLICY_UPDATE_ID => context.update_policy(body).await,
         crate::POLICY_DELETE_ID => context.delete_policy().await,
+        crate::POLICY_TRY_ID => context.try_policy(body).await,
         crate::SSF_STREAMS_LIST_ID => context.list_streams().await,
         crate::SSF_STREAM_STATUS_UPDATE_ID => context.update_stream_status(body).await,
         crate::SSF_STREAM_VERIFY_ID => context.verify_stream(body).await,
@@ -1248,6 +1252,58 @@ impl Handling<'_> {
         }
 
         Ok(StatusCode::NO_CONTENT.into_response())
+    }
+
+    /// `POST /policies/try` — what the stored policy decides about one
+    /// request, without enforcing it (`ast-f7m.9`).
+    ///
+    /// The console's test bench. It answers §6.2's Decision, so an
+    /// administrator reads what a relying party would be handed rather than a
+    /// rendering invented for this screen.
+    ///
+    /// # No record
+    ///
+    /// Deliberately unaudited, and not because a trial is unimportant. The
+    /// trail records what *happened to a tenant's people and configuration*: a
+    /// decision this endpoint takes enforces nothing, changes nothing, and
+    /// tells its caller a function of a document they may already `GET` in
+    /// full over facts they may already read. There is nothing here that a
+    /// later investigator could not recompute from the policy and the trail of
+    /// the edits to it, which `policy.updated` already carries — while a
+    /// record per keystroke of a bench would be the highest-volume row in the
+    /// one table this deployment keeps forever. The threat-model row says the
+    /// same thing: the bench is a policy oracle for somebody who already holds
+    /// the policy.
+    ///
+    /// # Not the PDP's budget
+    ///
+    /// This is an admin route, so it passes the admin rate limiter like every
+    /// other one and cannot reach `LimitedEndpoint::AccessEvaluation` at all —
+    /// this crate has no handle on it. A bench left open in a tab therefore
+    /// cannot spend the budget a PEP's traffic depends on.
+    async fn try_policy(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, asterius_oidc::authzen::MAX_REQUEST_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the request body is too large".to_owned()))?;
+        let request = policies::parse_trial(&bytes)?;
+
+        // A failure is a refusal and not a deny. The PDP endpoint answers a
+        // PEP `decision: false` when it cannot read the store, because an
+        // enforcement point has to do *something* safe; a person asked
+        // "what does my policy say?" must not be told "deny" by an outage
+        // they would then go and edit a rule about.
+        let decision = self
+            .state
+            .backend
+            .policy_trial()
+            .decide(&self.tenant.id, &request)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::POLICY_TRY_ID, &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &policies::trial_response(&decision),
+        ))
     }
 
     /// The `{stream_id}` in this request's path: the segment after
@@ -3178,6 +3234,10 @@ pub const CLIENT_ADDRESS_EXTENSION: &str = "asterius_admin_api::ClientAddress";
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The gate reads an operation's effect through
+    // `Effect::needs_csrf_token`, so the enum itself is only named by the
+    // table-driven tests below.
+    use crate::operations::Effect;
     use crate::rbac::Reach;
     use asterius_domain::entities::session::SessionId;
     use asterius_domain::keys::{
@@ -3265,6 +3325,14 @@ mod tests {
         /// it here without opening a socket — `outbound::post` refuses the
         /// loopback on purpose (`ast-o4u.2`).
         logout_tokens: Mutex<usize>,
+        /// The subject of every evaluation the console's test bench asked
+        /// about (`ast-f7m.9`), oldest first. What a test reads to assert that
+        /// a request reached the PDP — and, by its emptiness, that one did
+        /// not.
+        trials: Mutex<Vec<String>>,
+        /// Whether the bench's store is down, so that a test can assert a
+        /// refusal is a refusal rather than a deny.
+        trials_fail: Mutex<bool>,
         /// The application-role catalogues (`ast-095`).
         role_catalogue: Mutex<Vec<asterius_domain::ApplicationRole>>,
         /// Who holds what: the assignment rows, keyed by nothing — the tests
@@ -3301,6 +3369,14 @@ mod tests {
         user: UserId,
         passkey: asterius_domain::PasskeySummary,
     }
+
+    /// The subject this fake deployment holds in the group `admins`
+    /// (`ast-f7m.9`).
+    ///
+    /// A fact of the fake tenant and not of any request: the bench's tests
+    /// send bodies that do and do not name it, and none of them can make a
+    /// subject a member by saying so.
+    const GROUPED_SUBJECT: &str = "subject-in-admins";
 
     #[derive(Debug, Clone)]
     struct Handle(Arc<Fake>);
@@ -3344,6 +3420,57 @@ mod tests {
                 .expect("an uncontended lock")
                 .remove(tenant.as_str())
                 .is_some())
+        }
+    }
+
+    /// The PDP behind the console's test bench (`ast-f7m.9`), over the same
+    /// document the admin routes write.
+    ///
+    /// A real [`asterius_domain::policy::DeclarativeEngine`] and not a canned
+    /// answer: the test that matters is "what the bench says is what the
+    /// stored rules say", and a fake that returned `permit` would assert
+    /// nothing about the rules.
+    ///
+    /// The facts are attached here, as the composition root attaches them: a
+    /// subject this fake tenant holds is in the group `admins`, and a request
+    /// body can neither state that nor take it away.
+    #[async_trait::async_trait]
+    impl crate::backend::PolicyTrial for Handle {
+        async fn decide(
+            &self,
+            tenant: &TenantId,
+            request: &asterius_domain::policy::EvaluationRequest,
+        ) -> Result<asterius_domain::policy::Decision, DomainError> {
+            self.0
+                .trials
+                .lock()
+                .expect("an uncontended lock")
+                .push(request.subject.id().to_owned());
+            if *self.0.trials_fail.lock().expect("an uncontended lock") {
+                return Err(DomainError::Storage(Box::new(std::io::Error::other(
+                    "the policy store is unreachable",
+                ))));
+            }
+
+            let groups: Vec<String> = if request.subject.id() == GROUPED_SUBJECT {
+                vec!["admins".to_owned()]
+            } else {
+                Vec::new()
+            };
+            let subject = request.subject.clone().with_groups(groups);
+            let resolved = asterius_domain::policy::EvaluationRequest::new(
+                subject,
+                request.action.clone(),
+                request.resource.clone(),
+                request.context.clone(),
+            );
+
+            asterius_domain::ports::PolicyEngine::evaluate(
+                &asterius_domain::policy::DeclarativeEngine::new(Arc::new(self.clone())),
+                tenant,
+                &resolved,
+            )
+            .await
         }
     }
 
@@ -4630,6 +4757,10 @@ mod tests {
             Arc::new(self.clone())
         }
 
+        fn policy_trial(&self) -> Arc<dyn crate::backend::PolicyTrial> {
+            Arc::new(self.clone())
+        }
+
         fn ssf(&self) -> Arc<dyn ssf::SsfAdministration> {
             Arc::new(self.clone())
         }
@@ -5349,6 +5480,14 @@ mod tests {
                 "version": 1,
                 "rules": [{"id": "walked", "effect": "deny"}],
             }),
+            // One Authorization API §6.1 request: the bench refuses a body
+            // that does not name a subject, an action and a resource, so the
+            // table walk has to send one that does (`ast-f7m.9`).
+            crate::POLICY_TRY_ID => serde_json::json!({
+                "subject": {"type": "user", "id": "walked"},
+                "action": {"name": "read"},
+                "resource": {"type": "document", "id": "walked"},
+            }),
             crate::KEYS_ROTATE_ID => serde_json::json!({"alg": "EdDSA"}),
             // A whole status document: the route refuses `{}` because a
             // status it did not name is not a status (`ast-f7m.8`).
@@ -5552,6 +5691,307 @@ mod tests {
         // Assert
         assert_eq!(read.status(), StatusCode::OK);
         assert_eq!(written.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ---- the policy test bench (`ast-f7m.9`) ------------------------------
+
+    /// A `POST /policies/try`, as the console makes it: the session cookie,
+    /// the synchroniser token, and no `Idempotency-Key` — the bench stores
+    /// nothing, so there is nothing for a key to make happen at most once.
+    async fn try_policy(world: &World, cookie: &str, body: serde_json::Value) -> Response {
+        world
+            .send(
+                request_for(&crate::POLICY_TRY)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(cookie))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .expect("a request"),
+            )
+            .await
+    }
+
+    fn a_trial_for(subject: &str) -> serde_json::Value {
+        serde_json::json!({
+            "subject": {"type": "user", "id": subject},
+            "action": {"name": "read"},
+            "resource": {"type": "document", "id": "42"},
+        })
+    }
+
+    /// What the screen is for: an administrator writes a rule and asks what it
+    /// decides, and the answer is §6.2's Decision over the document that was
+    /// just stored.
+    #[tokio::test]
+    async fn the_bench_decides_by_the_document_the_editor_stored() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let document = serde_json::json!({
+            "version": 1,
+            "rules": [{
+                "id": "admins-read",
+                "effect": "permit",
+                "actions": ["read"],
+                "when": {"group": "admins"},
+                "reason_admin": "the admins group reads every document",
+            }],
+        });
+        edit_policy(&world, &crate::POLICY_UPDATE, &cookie, document).await;
+
+        // Act
+        let permitted = try_policy(&world, &cookie, a_trial_for(GROUPED_SUBJECT)).await;
+
+        // Assert
+        assert_eq!(permitted.status(), StatusCode::OK);
+        let body = body_of(permitted).await;
+        assert_eq!(body["decision"], serde_json::json!(true));
+        assert_eq!(
+            body["context"]["reason_admin"],
+            serde_json::json!({"en": "the admins group reads every document"})
+        );
+    }
+
+    /// The facts are this server's. The same rule, a subject this tenant does
+    /// not hold in the group, and a body that says it does anyway: still a
+    /// deny, because nothing a caller writes reaches `subject.groups`.
+    #[tokio::test]
+    async fn a_bench_request_cannot_grant_itself_the_facts_a_rule_reads() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let document = serde_json::json!({
+            "version": 1,
+            "rules": [{
+                "id": "admins-read",
+                "effect": "permit",
+                "actions": ["read"],
+                "when": {"group": "admins"},
+            }],
+        });
+        edit_policy(&world, &crate::POLICY_UPDATE, &cookie, document).await;
+        let claiming = serde_json::json!({
+            "subject": {"type": "user", "id": "nobody", "groups": ["admins"],
+                        "properties": {"groups": ["admins"]}},
+            "action": {"name": "read"},
+            "resource": {"type": "document", "id": "42"},
+        });
+
+        // Act
+        let response = try_policy(&world, &cookie, claiming).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            body_of(response).await["decision"],
+            serde_json::json!(false)
+        );
+    }
+
+    /// The bench enforces nothing, so it records nothing: the trail carries
+    /// the edits (`policy.updated`) and the decisions a PEP acted on
+    /// (`access.evaluated`), and a trial is neither.
+    #[tokio::test]
+    async fn a_trial_is_not_written_to_the_trail() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        world.handle.0.events.lock().expect("a lock").clear();
+
+        // Act
+        let response = try_policy(&world, &cookie, a_trial_for("anybody")).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            world
+                .handle
+                .0
+                .events
+                .lock()
+                .expect("an uncontended lock")
+                .is_empty(),
+            "the test bench wrote a record"
+        );
+    }
+
+    /// The bench is on the admin API's limiter, which is the one this crate
+    /// can reach at all: a console left open cannot spend the budget the
+    /// PDP's enforcement points depend on.
+    #[tokio::test]
+    async fn the_bench_spends_the_admin_limiter_and_not_the_pdps() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let send = async || {
+            let mut request = request_for(&crate::POLICY_TRY)
+                .header(
+                    "cookie",
+                    format!(
+                        "{}={cookie}",
+                        asterius_domain::entities::session::COOKIE_NAME
+                    ),
+                )
+                .header(csrf::HEADER, csrf::token(&cookie))
+                .body(Body::from(a_trial_for("anybody").to_string()))
+                .expect("a request");
+            request
+                .extensions_mut()
+                .insert(Arc::clone(&world.api_tenant));
+            request.extensions_mut().insert(ClientAddress(Some(
+                "198.51.100.9".parse().expect("literal"),
+            )));
+            AdminApi::new(&AdminState {
+                backend: Arc::new(world.handle.clone()),
+                tokens: None,
+                rate_limit: RateLimit {
+                    max: 1,
+                    window: time::Duration::minutes(1),
+                },
+                reserved_tenant: None,
+            })
+            .into_router()
+            .oneshot(request)
+            .await
+            .expect("the router answers")
+        };
+
+        // Act
+        let first = send().await.status();
+        let second = send().await.status();
+
+        // Assert
+        assert_eq!(first, StatusCode::OK);
+        assert_eq!(second, StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// The bench is reachable with an administrator's session and with
+    /// nothing else: no cookie is a 401, and no request reaches the PDP.
+    #[tokio::test]
+    async fn the_bench_needs_the_admin_session() {
+        // Arrange
+        let world = World::new();
+
+        // Act
+        let response = world
+            .send(
+                request_for(&crate::POLICY_TRY)
+                    .body(Body::from(a_trial_for("anybody").to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            world
+                .handle
+                .0
+                .trials
+                .lock()
+                .expect("an uncontended lock")
+                .is_empty(),
+            "an unauthenticated request reached the PDP"
+        );
+    }
+
+    /// The cookie is ambient, so a `POST` a cross-site form could emit is
+    /// refused without this session's synchroniser token — even though it
+    /// changes nothing, and even though the browser would not let the forging
+    /// page read the answer.
+    #[tokio::test]
+    async fn a_trial_without_the_synchroniser_token_is_refused() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                request_for(&crate::POLICY_TRY)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .body(Body::from(a_trial_for("anybody").to_string()))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(
+            world
+                .handle
+                .0
+                .trials
+                .lock()
+                .expect("an uncontended lock")
+                .is_empty()
+        );
+    }
+
+    /// An auditor may ask what the catalogue they may read decides: the bench
+    /// declares `admin.policies:read`, and a caller holding no policy scope at
+    /// all is refused.
+    #[tokio::test]
+    async fn the_bench_takes_the_read_scope_of_the_policy_it_is_about() {
+        // Arrange
+        let world = World::new();
+        let auditor = world.sign_in("acme", &[Role::SecurityAuditor]);
+        let agent = world.sign_in("acme", &[Role::UserSupport]);
+
+        // Act
+        let audited = try_policy(&world, &auditor, a_trial_for("anybody")).await;
+        let refused = try_policy(&world, &agent, a_trial_for("anybody")).await;
+
+        // Assert
+        assert_eq!(audited.status(), StatusCode::OK);
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// §6.1 makes the three entities REQUIRED. A body missing one is a 400
+    /// naming the member, and not a deny: an administrator told "denied" by a
+    /// typo would go and edit a rule that was never consulted.
+    #[tokio::test]
+    async fn a_malformed_trial_is_a_refusal_and_not_a_deny() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        let body = serde_json::json!({"subject": {"type": "user", "id": "alice"}});
+
+        // Act
+        let response = try_policy(&world, &cookie, body).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// A store this server could not read is a refusal for the bench, where
+    /// the PDP endpoint answers a PEP `decision: false`. The difference is the
+    /// reader: an enforcement point has to do something safe, and a person
+    /// asking what their policy says must not be told "deny" by an outage.
+    #[tokio::test]
+    async fn an_unreadable_store_refuses_the_trial_rather_than_denying_it() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+        *world.handle.0.trials_fail.lock().expect("a lock") = true;
+
+        // Act
+        let response = try_policy(&world, &cookie, a_trial_for("anybody")).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     // ---- the dead-letter screen (`ast-0ju.9`) -----------------------------

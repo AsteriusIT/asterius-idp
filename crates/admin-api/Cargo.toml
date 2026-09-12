@@ -18,6 +18,13 @@ hex.workspace = true
 sha2.workspace = true
 askama.workspace = true
 asterius-domain.workspace = true
+# The policy test bench takes Authorization API 1.0 §6.1's request and answers
+# §6.2's response (`ast-f7m.9`), and `asterius_oidc::authzen` is where that
+# wire format is parsed and rendered for the PDP endpoints. Reading it here
+# rather than re-spelling it is the point: a bench that accepted a second
+# dialect of the request would debug a rule against a shape no relying party
+# sends. A protocol crate, like `asterius-ssf` above — it reaches no adapter.
+asterius-oidc.workspace = true
 # The Shared Signals screen names a stream, a stream status and a
 # verification `state` (`ast-f7m.8`): protocol types, from the protocol crate,
 # which reaches no adapter.

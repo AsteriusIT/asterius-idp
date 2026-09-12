@@ -111,7 +111,7 @@ use crate::http::limits::LimitContext;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::application_role::HeldRoles;
 use asterius_domain::keys::KeyStore;
-use asterius_domain::policy::{ActiveGrant, Context as PolicyContext, EvaluationRequest};
+use asterius_domain::policy::{ActiveGrant, Context as PolicyContext, Decision, EvaluationRequest};
 use asterius_domain::ports::PolicyEngine;
 use asterius_domain::{
     AcrPolicy, ClientId, DomainError, Grant, GrantId, LimitedEndpoint, Tenant, TenantId,
@@ -526,7 +526,7 @@ async fn decide_many(
         .map(|evaluation| {
             let key = (evaluation.subject.kind(), evaluation.subject.id());
             let resolved = facts.get(&key).and_then(Option::as_ref)?;
-            attach(context, evaluation.clone(), resolved)
+            attach(context.acr, context.now, evaluation.clone(), resolved)
                 .map_err(|error| {
                     tracing::error!(
                         %error,
@@ -703,7 +703,45 @@ async fn resolved(
             request.subject.id(),
         )
         .await?;
-    attach(context, request, &facts)
+    attach(context.acr, context.now, request, &facts)
+}
+
+/// One evaluation decided for a caller that is **not** a policy enforcement
+/// point: the console's policy test bench (`ast-f7m.9`).
+///
+/// The same two steps the endpoints take once the credential checks are done —
+/// resolve the subject's facts from this server's store, attach them, ask the
+/// engine — and none of the ones that only make sense for a PEP. There is no
+/// token to verify (the caller proved itself to the admin API with a session),
+/// no [`LimitedEndpoint::AccessEvaluation`] token spent (the admin API has its
+/// own limiter, so a bench cannot eat a PEP's budget), and no
+/// `access.evaluated` record (nothing enforced this answer).
+///
+/// This is a *function of this module* rather than a copy in the admin
+/// composition root on purpose. The one property the bench has to have is that
+/// it decides what the endpoint would decide, and that only holds while both
+/// go through `attach` — the single place `ActiveGrant::of` filters the live
+/// grants and `authenticated_acr` reads the ladder.
+///
+/// # Errors
+///
+/// [`DomainError`] when the facts or the policy could not be read. Not a deny:
+/// §10.1.2's fail-closed `decision: false` exists because a PEP has to enforce
+/// *something*, and the administrator reading a bench has to be told that the
+/// answer is missing rather than shown a refusal their rules did not produce.
+pub async fn decide_without_enforcing(
+    engine: &dyn PolicyEngine,
+    subjects: &dyn SubjectFacts,
+    acr: &AcrPolicy,
+    tenant: &TenantId,
+    request: &EvaluationRequest,
+    now: OffsetDateTime,
+) -> Result<Decision, DomainError> {
+    let facts = subjects
+        .resolve(tenant, request.subject.kind(), request.subject.id())
+        .await?;
+    let resolved = attach(acr, now, request.clone(), &facts)?;
+    engine.evaluate(tenant, &resolved).await
 }
 
 /// The facts, attached — the half of [`resolved`] that reads no store.
@@ -713,7 +751,8 @@ async fn resolved(
 /// view of the tenant, and no chance of two evaluations in one answer
 /// disagreeing about who the subject is.
 fn attach(
-    context: &AccessEvaluationContext<'_>,
+    acr_policy: &AcrPolicy,
+    now: OffsetDateTime,
     request: EvaluationRequest,
     facts: &ResolvedSubject,
 ) -> Result<EvaluationRequest, DomainError> {
@@ -722,13 +761,12 @@ fn attach(
     let active: Vec<ActiveGrant> = facts
         .grants
         .iter()
-        .filter_map(|grant| ActiveGrant::of(grant, context.now))
+        .filter_map(|grant| ActiveGrant::of(grant, now))
         .collect();
-    let acr = authenticated_acr(context.acr, &facts.grants, context.now);
+    let acr = authenticated_acr(acr_policy, &facts.grants, now);
     let groups = facts.groups.clone();
     let roles = facts.roles.clone();
-    let ladder: Vec<String> = context
-        .acr
+    let ladder: Vec<String> = acr_policy
         .levels()
         .iter()
         .map(|level| level.value().to_owned())

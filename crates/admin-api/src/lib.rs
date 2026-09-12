@@ -866,6 +866,8 @@ pub const POLICY_READ_ID: &str = "policies.read";
 pub const POLICY_UPDATE_ID: &str = "policies.update";
 /// The `operationId` of [`POLICY_DELETE`].
 pub const POLICY_DELETE_ID: &str = "policies.delete";
+/// The `operationId` of [`POLICY_TRY`].
+pub const POLICY_TRY_ID: &str = "policies.try";
 
 /// The tenant's shared role catalogue (`ast-095`).
 ///
@@ -998,7 +1000,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 57] = [
+static REGISTRY: [Operation; 58] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -1056,6 +1058,7 @@ static REGISTRY: [Operation; 57] = [
     POLICY_READ,
     POLICY_UPDATE,
     POLICY_DELETE,
+    POLICY_TRY,
 ];
 
 /// The tenant's authorization policy, as the PDP evaluates it (`ast-pj0.4`).
@@ -1109,6 +1112,45 @@ pub const POLICY_DELETE: Operation = Operation::mutation(
     M::Delete,
     A::new(R::Tenant, "admin.policies:write"),
     "Removes the tenant's AuthZEN policy document, which denies every evaluation",
+);
+
+/// Decides one evaluation against the tenant's stored policy, without being a
+/// policy enforcement point (`ast-f7m.9`).
+///
+/// The console's test bench. An administrator writes a rule catalogue and has
+/// no way to know what it *does* until a relying party asks; this answers the
+/// question they would otherwise answer by deploying.
+///
+/// # Why it is not `POST /access/v1/evaluation`
+///
+/// That endpoint authenticates a PEP: a DPoP-bound access token whose audience
+/// is the PDP and which carries `authzen.evaluate`. The console holds a session
+/// cookie and no such token, and giving it one would mean minting a PEP
+/// credential for a browser. So the same question is asked over the credential
+/// the console already has, and the two endpoints stay apart in every way that
+/// matters: this one is on the admin API's rate limiter rather than the PDP's,
+/// so a bench that is being hammered cannot spend a PEP's budget; and it writes
+/// no `access.evaluated` record, because nothing enforced its answer.
+///
+/// # Why read and not write authority
+///
+/// It computes a function of the document a caller may already `GET` in full,
+/// over facts that caller may already read. `admin.policies:read` is therefore
+/// the authority it needs — asking for `:write` would mean an auditor could
+/// read a catalogue and not ask what it decides, which is the question an
+/// auditor is there to ask.
+///
+/// The facts are this server's: `groups`, `roles`, `grants` and `acr` are
+/// resolved from the store exactly as the PDP resolves them, and the body's
+/// `properties` are the only thing a caller supplies. A bench that let an
+/// administrator state "this subject is in group admins" would answer a
+/// question about a fiction.
+pub const POLICY_TRY: Operation = Operation::probe(
+    POLICY_TRY_ID,
+    "/policies/try",
+    M::Post,
+    A::new(R::Tenant, "admin.policies:read"),
+    "Decides one Authorization API evaluation against the tenant's stored policy, without enforcing it",
 );
 
 /// The registry.

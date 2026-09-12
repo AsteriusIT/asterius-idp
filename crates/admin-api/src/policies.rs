@@ -26,7 +26,7 @@
 //!
 //! [ADR-0011]: https://github.com/AsteriusIT/asterius-idp/blob/main/docs/adr/0011-a-declarative-rule-model-for-the-built-in-pdp.md
 
-use asterius_domain::policy::{RuleSet, StoredPolicy};
+use asterius_domain::policy::{Decision, EvaluationRequest, RuleSet, StoredPolicy};
 use serde_json::{Value, json};
 use time::format_description::well_known::Rfc3339;
 
@@ -82,6 +82,45 @@ pub fn document(policy: Option<&StoredPolicy>) -> Value {
             "updated_at": Value::Null,
         }),
     }
+}
+
+/// Reads a `POST /policies/try` body: Authorization API 1.0 §6.1's request.
+///
+/// The same parser the PDP's own endpoint uses
+/// ([`asterius_oidc::authzen::parse_evaluation`], fuzzed as
+/// `authzen_request`), so the bench cannot accept a request shape the endpoint
+/// it stands for would refuse — an administrator debugging a rule must not be
+/// debugging a second dialect of the request.
+///
+/// What comes out carries only the caller's own words: entity types, ids and
+/// `properties`. The groups, roles, grants and `acr` are attached below the
+/// API by [`crate::backend::PolicyTrial`], and there is no constructor here
+/// that would let this body state one.
+///
+/// # Errors
+///
+/// [`AdminError::Invalid`] carrying the parser's message, which names the
+/// member at fault.
+pub fn parse_trial(body: &[u8]) -> Result<EvaluationRequest, AdminError> {
+    if body.len() > asterius_oidc::authzen::MAX_REQUEST_BYTES {
+        return Err(AdminError::Invalid(
+            "the evaluation request is larger than this API accepts".to_owned(),
+        ));
+    }
+    asterius_oidc::authzen::parse_evaluation(body)
+        .map_err(|error| AdminError::Invalid(error.to_string()))
+}
+
+/// The decision as `POST /policies/try` renders it.
+///
+/// §6.2's response and nothing beside it — `decision`, and `context` when the
+/// rule that decided carries one — because the console's bench is showing the
+/// administrator what a PEP would receive. A member this server added for the
+/// console's convenience would be a member the console learned to read and a
+/// relying party never sees.
+#[must_use]
+pub fn trial_response(decision: &Decision) -> Value {
+    asterius_oidc::authzen::decision_response(decision)
 }
 
 #[cfg(test)]
@@ -143,6 +182,96 @@ mod tests {
         assert_eq!(rendered["rule_count"], json!(0));
         assert_eq!(rendered["updated_at"], Value::Null);
         assert!(RuleSet::from_json(&rendered["document"]).is_ok());
+    }
+
+    // ---- the test bench (`ast-f7m.9`) -------------------------------------
+
+    #[test]
+    fn a_trial_request_carries_the_three_entities() {
+        // Arrange
+        let body = br#"{"subject": {"type": "user", "id": "alice"},
+                        "action": {"name": "read"},
+                        "resource": {"type": "document", "id": "42"}}"#;
+
+        // Act
+        let parsed = parse_trial(body).expect("a valid evaluation request");
+
+        // Assert
+        assert_eq!(parsed.subject.id(), "alice");
+        assert_eq!(parsed.action.name(), "read");
+        assert_eq!(parsed.resource.id(), "42");
+    }
+
+    /// §6.1 makes the three entities REQUIRED, and the bench refuses what the
+    /// endpoint it stands for would refuse rather than filling one in.
+    #[test]
+    fn a_trial_request_without_an_action_is_refused() {
+        // Arrange
+        let body = br#"{"subject": {"type": "user", "id": "alice"},
+                        "resource": {"type": "document", "id": "42"}}"#;
+
+        // Act
+        let refused = parse_trial(body).expect_err("a missing action");
+
+        // Assert
+        let AdminError::Invalid(message) = refused else {
+            panic!("expected an invalid-request refusal");
+        };
+        assert!(message.contains("action"), "{message}");
+    }
+
+    /// The facts a rule reads are this server's. A body that states them is
+    /// not refused — §10.1.1 asks that unknown members be ignored — but they
+    /// must not reach the subject the engine is asked about.
+    #[test]
+    fn a_trial_request_cannot_state_the_subjects_groups() {
+        // Arrange
+        let body = br#"{"subject": {"type": "user", "id": "alice",
+                                    "groups": ["admins"],
+                                    "properties": {"groups": ["admins"]}},
+                        "action": {"name": "read"},
+                        "resource": {"type": "document", "id": "42"}}"#;
+
+        // Act
+        let parsed = parse_trial(body).expect("a valid evaluation request");
+
+        // Assert
+        assert!(
+            parsed.subject.groups().is_empty(),
+            "a body stated the groups a rule reads"
+        );
+        assert!(parsed.subject.roles().is_empty());
+        assert!(parsed.subject.grants().is_empty());
+    }
+
+    #[test]
+    fn a_trial_body_larger_than_the_endpoint_accepts_is_refused() {
+        // Arrange
+        let body = vec![b'x'; asterius_oidc::authzen::MAX_REQUEST_BYTES + 1];
+
+        // Act / Assert
+        assert!(parse_trial(&body).is_err());
+    }
+
+    /// §6.2: a decision is `decision` and, when there is one, `context`. The
+    /// bench shows a PEP's answer, so it renders a PEP's answer.
+    #[test]
+    fn a_trial_response_is_the_decision_a_pep_would_receive() {
+        // Arrange
+        let decision = Decision::default_deny("no rule matched this request");
+
+        // Act
+        let rendered = trial_response(&decision);
+
+        // Assert
+        assert_eq!(rendered["decision"], json!(false));
+        // §5.5.1's reasons are objects keyed by language tag, not strings: the
+        // bench renders what a PEP receives, so the console reads the same
+        // shape a relying party does.
+        assert_eq!(
+            rendered["context"]["reason_admin"],
+            json!({"en": "no rule matched this request"})
+        );
     }
 
     /// What the editor fetched is what it may `PUT` back.
