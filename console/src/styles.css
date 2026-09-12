@@ -180,6 +180,13 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
 
+  /*
+   * `anywhere` rather than `break-word`, and it is load-bearing: it takes part
+   * in intrinsic sizing, so a column of identifiers reports a small
+   * min-content width and a table lets it wrap instead of widening past its
+   * card. The audit trail's delegation chain is the case that proves it
+   * (`ast-f9j5`).
+   */
   code {
     font-size: var(--text-sm);
     overflow-wrap: anywhere;
@@ -336,12 +343,16 @@
   .detail dt {
     color: var(--muted);
     font-weight: 500;
-    min-width: 8rem;
+    /* 6rem, not 8: inside a table cell this is a floor the whole column pays
+       for, and every key this list draws is one short word (`ast-f9j5`). */
+    min-width: 6rem;
   }
 
   .detail dd {
     margin: 0;
     font-size: var(--text-sm);
+    /* The same reason `code` gives: these are opaque identifiers, and this is
+       the column a table should take its room from. */
     overflow-wrap: anywhere;
   }
 

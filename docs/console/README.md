@@ -340,6 +340,34 @@ the server-rendered pages give theirs (28px above a breadcrumb read as a
 different product), and a table's `<caption>` is drawn above the table rather
 than below it, where it read as a stray word after the last row.
 
+### A column cut off at the edge of a card
+
+The last defect of the same family, and the one that survived the first
+repair: a table is laid out automatically, so a cell whose content is one long
+identifier — an issuer, an address made of a UUID, a delegation chain — asks
+for a width nothing bounds, and the columns after it go off the edge of the
+card. The Tenants screen lost half its "Suspend" column that way and the Users
+screen everything past "Verified".
+
+`Truncate` (`ui.tsx`) is the answer and it is used at every such value: the
+text is elided with an ellipsis at a width given in characters, the whole of it
+stays in the `title` and in the DOM, and the `max-width` on the inner block is
+what tells the column how wide it may be. The wrapping rules around it are
+deliberate and were arrived at by measurement:
+
+* `overflow-wrap: anywhere` on `code` and on a detail's `dd` **takes part in
+  intrinsic sizing**, which is what lets a column of identifiers shrink instead
+  of widening the table. It is kept.
+* A `Truncate` inside such a cell gives that same column a *floor* as well —
+  `white-space: nowrap` capped by `max-width` — which is what stopped the audit
+  trail printing `auth.login` as "auth.l / ogin" and its session ids as a
+  column of six-character fragments.
+* The audit table's wrapper is `tabIndex={0}` with a name, because a box that
+  scrolls has to be reachable by keyboard (WCAG 2.2 §2.1.1) and axe checks it.
+
+No table on the console overflows its card at 1280px today; the scroll is the
+fallback, not the layout.
+
 ### The four the bead asked for
 
 1. **A filter and a count on every list.** Signing keys, Shared signals

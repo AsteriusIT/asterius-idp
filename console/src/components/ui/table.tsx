@@ -7,6 +7,12 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div
       data-slot="table-container"
+      // The scroll stays here, and it is what lets a column keep the width it
+      // asks for: a table that had to fit squeezed its cells to their minimum,
+      // which on the audit trail broke `auth.login` across two lines. What a
+      // table wider than its card must not do is be *clipped* — see
+      // `Truncate` in `ui.tsx` (`ast-f9j5`), which is how the long
+      // single-token values that caused it are bounded instead.
       className="relative w-full overflow-x-auto"
     >
       <table

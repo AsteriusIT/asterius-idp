@@ -54,6 +54,7 @@ import {
   Panel,
   Screen,
   Skeleton,
+  Truncate,
 } from './ui';
 import { issuerUrl, tenantId as tenantIdComplaint } from './validation';
 
@@ -366,7 +367,7 @@ function TenantTable({
           key: 'issuer',
           header: 'Issuer',
           sortBy: (row) => row.issuer,
-          cell: (row) => <span className="wrap-anywhere">{row.issuer}</span>,
+          cell: (row) => <Truncate text={row.issuer} className="max-w-[28ch]" />,
         },
         {
           key: 'status',

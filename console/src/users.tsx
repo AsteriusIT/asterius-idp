@@ -52,6 +52,7 @@ import {
   Panel,
   Screen,
   Skeleton,
+  Truncate,
 } from './ui';
 import { emailAddress, username as usernameComplaint } from './validation';
 
@@ -393,9 +394,18 @@ function UserTable({
           key: 'username',
           header: 'Username',
           sortBy: (row) => row.username,
-          cell: (row) => row.username,
+          // Truncated, with the whole of it in the `title` (`ast-f9j5`): a
+          // username is often an address, an address has nowhere to break, and
+          // one long row used to push "Verified" and everything after it off
+          // the edge of the card.
+          cell: (row) => <Truncate text={row.username} className="max-w-[32ch]" />,
         },
-        { key: 'email', header: 'Email', sortBy: (row) => row.email ?? '', cell: (row) => row.email ?? '—' },
+        {
+          key: 'email',
+          header: 'Email',
+          sortBy: (row) => row.email ?? '',
+          cell: (row) => <Truncate text={row.email ?? '—'} className="max-w-[32ch]" />,
+        },
         {
           key: 'verified',
           header: 'Verified',
