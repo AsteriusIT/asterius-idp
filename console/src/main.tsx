@@ -8,6 +8,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+// The tokens first and the rules second: Vite concatenates the entry's
+// stylesheets in import order into the one hashed file the document links, and
+// a rule that reads a custom property declared after it reads nothing.
+import './tokens.css';
 import './styles.css';
 
 const mount = document.getElementById('console');
