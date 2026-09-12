@@ -127,6 +127,26 @@ pub struct AuthzenConfig {
     /// cannot widen anything on its own: with `[features] authzen` off there
     /// is no PDP, and the derived flag is off with it.
     pub search: bool,
+    /// Whether an agent is issued a token when the policy decision point
+    /// cannot answer (`ast-lh3.10`).
+    ///
+    /// `false`, which is fail closed: a decision point that is unreachable has
+    /// said nothing, and for a credential minted for a process nobody is
+    /// watching, silence is a deny. The other reading is a setting rather than
+    /// a patch because its blast radius is asymmetric — an unreadable policy
+    /// store stops every agent in the deployment at once, and an operator who
+    /// has decided that their agents' registered limits (`ast-lh3.1`) are a
+    /// sufficient floor during an outage should be able to say so.
+    ///
+    /// Read only where `[features] authzen` is on: with no decision point
+    /// there is nothing to be unavailable, and agents take the path they took
+    /// before this key existed.
+    ///
+    /// Either way the outcome is audited under
+    /// [`asterius_domain::audit::EventType::TOKEN_ISSUANCE_DENIED`]; fail open
+    /// records the issuance it let through rather than staying silent about
+    /// it.
+    pub issuance_fail_open: bool,
 }
 
 /// The `[authzen]` table.
@@ -135,6 +155,7 @@ pub struct AuthzenConfig {
 struct RawAuthzen {
     signed_metadata: Option<bool>,
     search: Option<bool>,
+    issuance_fail_open: Option<bool>,
 }
 
 /// How the outbox worker paces itself and when it gives up (`ast-0ju.9`).
@@ -1058,6 +1079,10 @@ impl RawConfig {
             authzen: AuthzenConfig {
                 signed_metadata: self.authzen.signed_metadata.unwrap_or_default(),
                 search: self.authzen.search.unwrap_or_default(),
+                // `unwrap_or_default` is `false` here and `false` is fail
+                // closed, so an operator who writes nothing gets the posture
+                // that refuses rather than the one that issues.
+                issuance_fail_open: self.authzen.issuance_fail_open.unwrap_or_default(),
             },
         })
     }

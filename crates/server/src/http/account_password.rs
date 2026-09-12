@@ -471,6 +471,11 @@ async fn close_the_others(context: &PasswordContext<'_>, session: &Session, now:
             tracing::error!(%error, tenant = %context.account.tenant.id, "cannot revoke a session");
             continue;
         }
+        // Each session ended leaves its own line in the trail, named by its
+        // digest and carrying who ended it (`ast-o4u.3`): "the password
+        // changed" and "four sessions were closed" are different facts, and an
+        // auditor reconstructing a sign-out needs the second one per session.
+        record_revocation(context, &named, now).await;
         // The same two notifications the session page sends, because it is the
         // same act: the relying parties are told (Back-Channel Logout 1.0
         // §2.2) and the streams get CAEP `session-revoked`.
@@ -495,7 +500,8 @@ async fn close_the_others(context: &PasswordContext<'_>, session: &Session, now:
             &crate::ssf::Cause::SessionRevoked {
                 user: UserId::new(named.user),
                 sid: named.public_sid.clone(),
-                initiator: caep::InitiatingEntity::User,
+                by: crate::ssf::RevokedBy::OwnerPasswordChange,
+                locale: context.account.text.locale(),
             },
             now,
         )
@@ -594,6 +600,45 @@ async fn message(
     now: OffsetDateTime,
 ) -> Response {
     rendered(context, session, Some(sentence), status, now).await
+}
+
+/// Records one session closed by a password change (`ast-o4u.3`).
+///
+/// [`EventType::SESSION_REVOKED`], the event the account pages, the admin API
+/// and the end-session endpoint write, because it is the same fact. What
+/// differs is the `reason` — the credential moved under these sessions — and
+/// `initiating_entity`, which is the same word the CAEP SET of this revocation
+/// carries (§2). The session is named by its digest through
+/// [`AuditEvent::session`], as everywhere else in this server.
+async fn record_revocation(context: &PasswordContext<'_>, revoked: &Session, now: OffsetDateTime) {
+    let subject = revoked.user.to_string();
+    let event = AuditEvent::new(
+        context.account.tenant.id.clone(),
+        EventType::SESSION_REVOKED,
+        Outcome::Success,
+        Actor::User(subject.clone()),
+        now,
+    )
+    .session(DomainSessionId::new(revoked.id_digest.clone()))
+    .subject(subject)
+    .detail(
+        Detail::new()
+            .label("reason", SessionRevocation::CredentialChange.as_str())
+            .label("initiator", "account_password_page")
+            .label(
+                "initiating_entity",
+                crate::ssf::RevokedBy::OwnerPasswordChange
+                    .initiating_entity()
+                    .as_str(),
+            ),
+    );
+    if let Err(error) = context.audit.record(event).await {
+        tracing::error!(
+            %error,
+            tenant = %context.account.tenant.id,
+            "a session revocation was not written to the audit trail"
+        );
+    }
 }
 
 /// Records a password that was set or changed.

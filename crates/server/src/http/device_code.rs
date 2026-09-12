@@ -110,6 +110,12 @@ pub struct DeviceCode<'a> {
     /// certificate, or neither. "Neither" is a refusal, as it is for every
     /// other grant (FAPI 2.0 SP §5.3.2.1 item 4).
     pub constraint: issuance::SenderConstraint<'a>,
+    /// The pre-issuance policy check for an agent (`ast-lh3.10`).
+    ///
+    /// A device-code agent is an agent a person approved at a browser, and the
+    /// approval is not the policy: the person agreed to *this* flow, and the
+    /// tenant's rules decide whether the agent may hold the result.
+    pub agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     /// When the request arrived. One instant for every check and both tokens.
     pub now: OffsetDateTime,
 }
@@ -125,9 +131,14 @@ impl<'a> DeviceCode<'a> {
     /// of bug `ast-5c6` was. Copying them here rather than listing them again
     /// at the call site is what makes that identity structural.
     #[must_use]
-    pub fn sharing(code: &AuthorizationCode<'a>, device_codes: &'a PgDeviceCodeRepository) -> Self {
+    pub fn sharing(
+        code: &AuthorizationCode<'a>,
+        device_codes: &'a PgDeviceCodeRepository,
+        agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
+    ) -> Self {
         Self {
             device_codes,
+            agent_policy,
             grants: code.grants,
             refresh_tokens: code.refresh_tokens,
             sessions: code.sessions,
@@ -249,6 +260,24 @@ impl DeviceCode<'_> {
         // relying party that has to be told when it ends.
         issuance::remember_participant(self.sessions, &grant, self.now).await;
         let targeting = self.targeting(tenant, client, &grant, params).await?;
+        // `ast-lh3.10`, for a client that is an agent. After the audience is
+        // resolved, so the policy sees where the token would point. The device
+        // code is already spent by now and a deny does not give it back: RFC
+        // 8628 §3.5 has no code for "ask again later", and a flow the tenant's
+        // rules refuse is not one a retry should complete.
+        let audience: std::collections::BTreeSet<String> =
+            targeting.audience.values().map(str::to_owned).collect();
+        self.agent_policy
+            .permits(
+                tenant,
+                client,
+                &grant,
+                &audience,
+                GrantType::DeviceCode,
+                self.now,
+            )
+            .await
+            .map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
         // Read once for both tokens of this response; see the code grant.
         let held = issuance::held_roles(self.roles, &grant).await?;
 

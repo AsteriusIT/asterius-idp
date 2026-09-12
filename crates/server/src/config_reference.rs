@@ -222,6 +222,28 @@ fn authzen() -> Section {
                  an access the same caller could not have confirmed one \
                  evaluation at a time.",
             ),
+            key(
+                "issuance_fail_open",
+                "boolean",
+                "`false`".to_owned(),
+                "Whether an *agent* client (`ast-lh3.1`) is still issued a token when \
+                 the policy decision point cannot answer. Before it mints a token for \
+                 an agent, this server asks its own PDP whether that token may exist \
+                 — subject the agent and its owner, action `obtain_token` or \
+                 `exchange_token`, resource the audience, scopes and \
+                 `authorization_details` the token would carry — and a deny is RFC \
+                 6749 §5.2's `access_denied`. This key decides only what happens when \
+                 there is *no* answer: the policy could not be read, or an external \
+                 decision point did not reply. `false` is fail closed and is what a \
+                 credential held by a process nobody is watching deserves; `true` \
+                 falls back on the agent's registered limits and issues, which an \
+                 operator may prefer to every agent in the deployment stopping at \
+                 once. Both are recorded as `token.issuance_denied` with the \
+                 decision's reason, and the one that issued anyway says so. Read only \
+                 where `[features] authzen` is on — with no decision point there is \
+                 nothing to be unavailable — and never consulted for a client that is \
+                 not an agent.",
+            ),
         ],
     }
 }

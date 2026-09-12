@@ -213,6 +213,17 @@ pub struct ClientEndpoints {
     /// `logout::notify_participants` says so in the log and notifies nobody
     /// rather than reporting a notification it did not make.
     ///
+    /// The process-wide half of the pre-issuance policy check for agents
+    /// (`ast-lh3.10`): the short-lived decision cache and this deployment's
+    /// posture when the decision point cannot answer
+    /// (`[authzen] issuance_fail_open`).
+    ///
+    /// `None` is a deployment with no policy decision point — `[features]
+    /// authzen` off — in which an agent is bounded by its registration
+    /// (`ast-lh3.1`) and nothing here is consulted. It is deliberately not the
+    /// fail-closed case: an operator turning a feature off is a decision, and
+    /// an unreachable store is not.
+    pub issuance: Option<Arc<crate::http::agent_issuance::IssuanceGuard>>,
     /// Last in the struct, so a parallel change adding another member does not
     /// have to be reconciled line by line.
     pub outbox: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
@@ -3161,6 +3172,46 @@ struct Dispatching<'a> {
     now: time::OffsetDateTime,
 }
 
+/// The pre-issuance enforcement point for this request (`ast-lh3.10`).
+///
+/// Its own function rather than eight more lines in [`dispatch_grants`]: what
+/// it decides is whether the four agent grants consult a policy at all, and
+/// that is one statement — `[features] authzen` off means no decision point,
+/// which is not the same thing as one that failed to answer. The posture comes
+/// from the same guard the decision point does, so a deployment cannot end up
+/// failing open with no cache or closed with one.
+///
+/// The engine and the subject resolver are the ones the Access Evaluation
+/// endpoint builds, over the same pool and the same key: an agent stopped here
+/// is stopped by the document an administrator can test at the bench.
+fn agent_policy<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &asterius_domain::TenantId,
+    now: time::OffsetDateTime,
+) -> crate::http::agent_issuance::AgentPolicy<'a> {
+    let pdp = endpoints.issuance.as_ref().map(|guard| {
+        let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
+            asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
+        ));
+        let subjects = StoredSubjects::of(&endpoints.store, Arc::clone(&endpoints.kek), tenant);
+        Arc::new(crate::http::agent_issuance::PdpIssuance::new(
+            Box::new(engine),
+            Box::new(subjects),
+            acr_policy(),
+            Arc::clone(guard),
+            now,
+        )) as Arc<dyn asterius_domain::issuance::IssuancePolicy>
+    });
+    crate::http::agent_issuance::AgentPolicy {
+        policy: pdp,
+        fail_open: endpoints
+            .issuance
+            .as_ref()
+            .is_some_and(|guard| guard.fail_open()),
+        audit: endpoints.audit.as_ref(),
+    }
+}
+
 /// Builds every grant handler and hands the request to whichever owns it.
 ///
 /// Separate from [`token_endpoint_inner`] because the handlers borrow the
@@ -3234,6 +3285,11 @@ async fn dispatch_grants(
     // The third grant, on the same clock reading and the same proven key. It
     // needs neither codes nor sessions nor users: a client-only token is about
     // the client and nothing else (RFC 9068 §2.2).
+    // `ast-lh3.10`: the decision point the four agent grants ask before they
+    // mint, and the posture to take when it cannot answer. Absent —
+    // `[features] authzen` off — every handler below carries a policy of
+    // `None` and behaves exactly as it did.
+    let agent_policy = agent_policy(endpoints, &tenant.id, now);
     let client_credentials = ClientCredentials {
         grants: &grants,
         resource_servers: &resource_servers,
@@ -3244,13 +3300,14 @@ async fn dispatch_grants(
         ssf,
         lifetimes,
         constraint,
+        agent_policy: agent_policy.clone(),
         now,
     };
     // The fourth grant (RFC 8628 §3.4). Built from the code grant's own
     // borrows, so the two cannot be handed different repositories, a different
     // clock reading or a different proven key.
     let device_codes = scope.device_codes();
-    let device_code = DeviceCode::sharing(&authorization_code, &device_codes);
+    let device_code = DeviceCode::sharing(&authorization_code, &device_codes, agent_policy.clone());
     // The fifth grant (RFC 8693). It reads the client registry — the policy
     // that decides whether one client's token may be exchanged by another
     // lives on the client the token was minted for — and this deployment's
@@ -3261,6 +3318,7 @@ async fn dispatch_grants(
         &clients,
         endpoints.keys.as_ref(),
         endpoints.audit.as_ref(),
+        agent_policy.clone(),
     );
     let refresh_token = RefreshToken::sharing(&authorization_code, endpoints.audit.as_ref());
     // The sixth grant (CIBA Core 1.0 §10.1), on the same borrows as the device
@@ -3271,6 +3329,7 @@ async fn dispatch_grants(
         &authorization_code,
         &ciba_requests,
         endpoints.audit.as_ref(),
+        agent_policy,
     );
 
     let mut response = token::token(
@@ -4098,6 +4157,8 @@ struct LogoutStores<'a> {
     subjects: &'a asterius_store_pg::PgUserRepository,
     /// The refresh tokens a tenant with `revoke_refresh_on_logout` withdraws.
     credentials: &'a asterius_store_pg::PgRefreshTokenRepository,
+    /// The streams a CAEP `session-revoked` is queued on (`ast-o4u.3`).
+    queues: &'a crate::outbox::PgSsfQueues,
 }
 
 /// Builds the context both end-session handlers share.
@@ -4115,6 +4176,7 @@ fn logout_context<'a>(
         clients,
         subjects,
         credentials,
+        queues,
     } = *stores;
     logout::LogoutContext {
         // Replaced by the caller, which is the only thing that has the
@@ -4138,6 +4200,7 @@ fn logout_context<'a>(
             .outbox
             .as_deref()
             .map(|queue| queue as &dyn asterius_domain::outbox::OutboxQueue),
+        queues: Some(queues as &dyn crate::ssf::SsfQueues),
     }
 }
 
@@ -4170,11 +4233,19 @@ async fn end_session(
     // tokens issued under the session (`ast-o4u.2`).
     let credentials = scope.refresh_tokens();
     let revoke_refresh = revoke_refresh_on_logout(&endpoints, &tenant).await;
+    // The streams a CAEP `session-revoked` is queued on (`ast-o4u.3`), built
+    // per request like every other tenant-scoped store above.
+    let queues = crate::outbox::PgSsfQueues::new(
+        endpoints.store.clone(),
+        tenant.id.clone(),
+        Arc::clone(&endpoints.kek),
+    );
     let stores = LogoutStores {
         sessions: &sessions,
         clients: &clients,
         subjects: &subjects,
         credentials: &credentials,
+        queues: &queues,
     };
     let mut context = logout_context(
         &endpoints,
@@ -4218,11 +4289,19 @@ async fn end_session_form(
     // tokens issued under the session (`ast-o4u.2`).
     let credentials = scope.refresh_tokens();
     let revoke_refresh = revoke_refresh_on_logout(&endpoints, &tenant).await;
+    // The streams a CAEP `session-revoked` is queued on (`ast-o4u.3`), built
+    // per request like every other tenant-scoped store above.
+    let queues = crate::outbox::PgSsfQueues::new(
+        endpoints.store.clone(),
+        tenant.id.clone(),
+        Arc::clone(&endpoints.kek),
+    );
     let stores = LogoutStores {
         sessions: &sessions,
         clients: &clients,
         subjects: &subjects,
         credentials: &credentials,
+        queues: &queues,
     };
     let mut context = logout_context(
         &endpoints,

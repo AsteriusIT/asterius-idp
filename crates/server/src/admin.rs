@@ -62,6 +62,7 @@ pub struct Deployment {
     signer: Arc<dyn asterius_domain::keys::Signer>,
     queue: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
     argon2: asterius_domain::Argon2Parameters,
+    issuance: Option<Arc<crate::http::agent_issuance::IssuanceGuard>>,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -110,6 +111,7 @@ impl Deployment {
             signer: parts.signer,
             queue: parts.queue,
             argon2: parts.argon2,
+            issuance: parts.issuance,
         }
     }
 }
@@ -167,6 +169,13 @@ pub struct DeploymentParts {
     /// deployment's, so a console-created account is not cheaper to crack than
     /// one created at the recovery form.
     pub argon2: asterius_domain::Argon2Parameters,
+    /// The protocol endpoints' issuance decision cache (`ast-lh3.10`).
+    ///
+    /// The *same* handle `ClientEndpoints` holds, so that an administrator who
+    /// rewrites a tenant's policy empties the decisions the token endpoint is
+    /// about to reuse. A second guard here would be a cache nobody
+    /// invalidates. `None` where this deployment has no policy decision point.
+    pub issuance: Option<Arc<crate::http::agent_issuance::IssuanceGuard>>,
 }
 
 impl std::fmt::Debug for DeploymentParts {
@@ -566,11 +575,28 @@ impl DeploymentUsers {
     /// Every failure below the first is logged and degrades: an account that
     /// has been disabled must not come back because one relying party's
     /// registration would not load.
+    ///
+    /// # One signal per session, not one per cause (`ast-o4u.3`)
+    ///
+    /// Each session ended here produces its own CAEP `session-revoked` (§3.1),
+    /// whose complex subject names `{user, session}`: a receiver holding three
+    /// of this person's sessions has to be told which of them to drop, and an
+    /// event about the user alone would either say nothing or say "all of
+    /// them". That is the same shape as the back-channel logout tokens beside
+    /// it — one per session, per participating client — and it is why the
+    /// public `sid` is read back before the revocation rather than after.
+    ///
+    /// The list is [`live_digests_for_user`], so a session already revoked is
+    /// not in it: terminating twice ends nothing the second time, and emits
+    /// nothing.
+    ///
+    /// [`live_digests_for_user`]: asterius_store_pg::PgSessionRepository::live_digests_for_user
     async fn terminate_sessions(
         &self,
         tenant: &TenantId,
         user: UserId,
         reason: asterius_domain::SessionRevocation,
+        by: crate::ssf::RevokedBy,
         now: time::OffsetDateTime,
     ) -> Result<asterius_domain::Terminated, DomainError> {
         let scope = self.store.scope(tenant.clone());
@@ -579,12 +605,36 @@ impl DeploymentUsers {
 
         let mut terminated = asterius_domain::Terminated::default();
         for digest in digests {
+            // Read before revoking: the `sid` a receiver knows this session by
+            // is what the event's subject carries, and a row read back after a
+            // failed revocation would name a session that is still live.
+            let public_sid = match sessions.find(&digest).await {
+                Ok(Some(session)) => session.public_sid,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::error!(%error, tenant = %tenant, "cannot read a session to revoke it");
+                    continue;
+                }
+            };
             if let Err(error) = sessions.revoke(&digest, reason, now).await {
                 tracing::error!(%error, tenant = %tenant, "cannot revoke a session administratively");
                 continue;
             }
             terminated.sessions_revoked += 1;
             terminated.logout_tokens_queued += self.notify_participants(tenant, &digest, now).await;
+            self.emit_signal(
+                tenant,
+                &crate::ssf::Cause::SessionRevoked {
+                    user,
+                    sid: public_sid,
+                    by,
+                    // English: nobody negotiated a language with this server —
+                    // an operator acting on somebody else's account did.
+                    locale: asterius_domain::Locale::default(),
+                },
+                now,
+            )
+            .await;
         }
         Ok(terminated)
     }
@@ -779,12 +829,16 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
                 tenant,
                 id,
                 asterius_domain::SessionRevocation::AccountClosed,
+                crate::ssf::RevokedBy::AccountDisabled,
                 now,
             )
             .await?;
-        // RISC `account-disabled`. The per-session `session-revoked` signals
-        // are a follow-up: this path revokes in bulk by digest and does not
-        // hold the public `sid` each SET's complex subject needs.
+        // RISC `account-disabled`, on top of the per-session CAEP
+        // `session-revoked` each ended session produced above: the two answer
+        // different questions. A receiver acts on the first by refusing the
+        // account altogether and on the second by dropping one session, and a
+        // receiver subscribed to only one of the two event types must still
+        // hear the half it asked for.
         self.emit_signal(
             tenant,
             &crate::ssf::Cause::AccountDisabled {
@@ -838,7 +892,17 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
             .await?
             .ok_or(DomainError::NotFound)?;
 
-        let subject = sessions.find(&digest).await?.map(|session| session.user);
+        let held = sessions.find(&digest).await?.ok_or(DomainError::NotFound)?;
+        // Idempotence (`ast-o4u.3`): a session ends once. A second press of
+        // the button in the console — or a retried request — finds a row that
+        // is already revoked or expired, and answers "nothing was ended"
+        // rather than queueing a second set of logout tokens and a second
+        // `session-revoked`. A receiver that deduplicates by `jti` would still
+        // see two transactions, and an auditor counting SETs would see one
+        // session ended twice.
+        if !held.status(now).is_usable() {
+            return Ok(asterius_domain::Terminated::default());
+        }
         sessions
             .revoke(
                 &digest,
@@ -848,18 +912,17 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
             .await?;
         // CAEP §3.1: the session named by its public `sid`, which this path
         // has in hand.
-        if let Some(subject) = subject {
-            self.emit_signal(
-                tenant,
-                &crate::ssf::Cause::SessionRevoked {
-                    user: asterius_domain::UserId::new(subject),
-                    sid: public_sid.to_owned(),
-                    initiator: asterius_ssf::caep::InitiatingEntity::Admin,
-                },
-                now,
-            )
-            .await;
-        }
+        self.emit_signal(
+            tenant,
+            &crate::ssf::Cause::SessionRevoked {
+                user: asterius_domain::UserId::new(held.user),
+                sid: public_sid.to_owned(),
+                by: crate::ssf::RevokedBy::Administrator,
+                locale: asterius_domain::Locale::default(),
+            },
+            now,
+        )
+        .await;
         Ok(asterius_domain::Terminated {
             sessions_revoked: 1,
             logout_tokens_queued: self.notify_participants(tenant, &digest, now).await,
@@ -1015,6 +1078,7 @@ impl asterius_domain::UserAdministration for DeploymentUsers {
                 tenant,
                 user,
                 asterius_domain::SessionRevocation::CredentialChange,
+                crate::ssf::RevokedBy::PasswordReset,
                 now,
             )
             .await?;
@@ -1255,9 +1319,19 @@ impl AdminBackend for Deployment {
     /// PDP decides from — so what an administrator edits is what the
     /// evaluation endpoint reads.
     fn policies(&self) -> Arc<dyn asterius_domain::ports::PolicyStore> {
-        Arc::new(asterius_store_pg::PgPolicies::new(
-            self.store.pool().clone(),
-        ))
+        let store: Arc<dyn asterius_domain::ports::PolicyStore> = Arc::new(
+            asterius_store_pg::PgPolicies::new(self.store.pool().clone()),
+        );
+        // `ast-lh3.10`: a policy written here is a policy the token endpoint
+        // must not keep deciding against. Wrapped rather than called from the
+        // handlers, so that a route added later cannot forget it.
+        match &self.issuance {
+            Some(guard) => Arc::new(crate::http::agent_issuance::InvalidatingPolicies::new(
+                store,
+                Arc::clone(guard),
+            )),
+            None => store,
+        }
     }
 
     /// The PDP behind the console's policy test bench (`ast-f7m.9`).

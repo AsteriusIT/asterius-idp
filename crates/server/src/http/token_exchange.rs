@@ -127,6 +127,10 @@ pub struct TokenExchange<'a> {
     pub lifetimes: asterius_domain::TokenLifetimes,
     /// What this request proved possession of.
     pub constraint: issuance::SenderConstraint<'a>,
+    /// The pre-issuance policy check for an agent (`ast-lh3.10`), asked with
+    /// the `exchange_token` action: passing an authority on is a different
+    /// thing to decide than creating one.
+    pub agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     /// When the request arrived.
     pub now: OffsetDateTime,
 }
@@ -147,11 +151,13 @@ impl<'a> TokenExchange<'a> {
         clients: &'a dyn ClientRepository,
         keys: &'a dyn KeyStore,
         audit: &'a dyn AuditSink,
+        agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     ) -> Self {
         Self {
             clients,
             keys,
             audit,
+            agent_policy,
             grants: code.grants,
             resource_servers: code.resource_servers,
             signer: code.signer,
@@ -261,6 +267,32 @@ struct Issued {
 }
 
 impl TokenExchange<'_> {
+    /// `ast-lh3.10`'s pre-issuance decision, for a client that is an agent.
+    ///
+    /// Called after §4.1's chain, the agent's static limits and the audience
+    /// resolution, and before the grant is claimed: the policy is asked about
+    /// the delegation that would really be minted, at the depth it would really
+    /// reach. A client that is not an agent returns from it having read
+    /// nothing.
+    async fn permitted(
+        &self,
+        tenant: &Tenant,
+        client: &Client,
+        grant: &Grant,
+    ) -> Result<(), Failure> {
+        self.agent_policy
+            .permits(
+                tenant,
+                client,
+                grant,
+                &grant.resources.iter().cloned().collect(),
+                GrantType::TokenExchange,
+                self.now,
+            )
+            .await
+            .map_err(|refusal| Failure::Client(refusal.code, refusal.description))
+    }
+
     /// The exchange itself, with failures as `Err` so the checks read in order.
     async fn issue(
         &self,
@@ -354,6 +386,8 @@ impl TokenExchange<'_> {
             .targeting(tenant, client, &grant, &request, &limits)
             .await?;
         grant.resources = targeting.audience.values().map(str::to_owned).collect();
+
+        self.permitted(tenant, client, &grant).await?;
 
         let claimed = grant
             .claim(self.now)

@@ -174,6 +174,23 @@ impl EventType {
     /// them against one grant is a stolen token being tried, and splitting
     /// them across two types would hide that behind a join.
     pub const TOKEN_REFRESHED: Self = Self("token.refreshed");
+    /// A token this server was about to mint for an agent was stopped by the
+    /// tenant's policy, or by the absence of a decision (`ast-lh3.10`).
+    ///
+    /// Its own type rather than a [`Self::TOKEN_REFUSED`] with a detail,
+    /// because it answers a question that one cannot: "which agents did this
+    /// tenant's policy stop, and why". A missing proof, an over-wide scope and
+    /// a policy deny all end a token request, and only the last of them is
+    /// what an administrator looks for after tightening a rule — a filter that
+    /// had to read a detail map to find them would be a filter nobody runs.
+    ///
+    /// Always [`Outcome::Failure`], including the one case where the token was
+    /// nevertheless issued: a deployment that fails open
+    /// (`[authzen] issuance_fail_open`) minted an agent token that nobody
+    /// decided on, and `issued_anyway` in the detail says so. An outage that
+    /// left no row at all would be invisible in the trail, which is the state
+    /// this type exists to make visible.
+    pub const TOKEN_ISSUANCE_DENIED: Self = Self("token.issuance_denied");
     /// A token was revoked at the revocation endpoint (RFC 7009).
     ///
     /// Deliberately not [`Self::GRANT_REVOKED`]. Grant Management ID1 §6.5
@@ -528,7 +545,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 72] = [
+    pub const ALL: [Self; 73] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -553,6 +570,7 @@ impl EventType {
         Self::TOKEN_REFUSED,
         Self::TOKEN_EXCHANGED,
         Self::TOKEN_REFRESHED,
+        Self::TOKEN_ISSUANCE_DENIED,
         Self::TOKEN_REVOKED,
         Self::TOKEN_INTROSPECTED,
         Self::GRANT_REVOKED,

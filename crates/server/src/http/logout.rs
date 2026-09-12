@@ -36,11 +36,20 @@
 //! are told, what each one's token says about the person, and the row that
 //! carries it.
 //!
+//! # CAEP `session-revoked`
+//!
+//! Beside the logout tokens, and in the same function, every stream that
+//! subscribed to CAEP `session-revoked` is told this session ended
+//! (`ast-o4u.3`): `initiating_entity` `user`, because a relying party that
+//! sent the browser here is carrying the person's request. The two
+//! notifications reach different audiences — participants of *this session*
+//! versus receivers subscribed to *the event type* — and neither is a
+//! substitute for the other.
+//!
 //! # What is not built yet
 //!
-//! The **CAEP `session-revoked`** signal (`ast-o4u.3`) lands in the same
-//! function, beside the logout tokens, and there is still no front-channel
-//! logout and no session-management iframe (`ast-o4u.4`).
+//! There is still no front-channel logout and no session-management iframe
+//! (`ast-o4u.4`).
 //!
 //! Registered `post_logout_redirect_uris` (§3.1) *are* stored, and
 //! `registered_redirect_uris` reads them off the identified client's
@@ -112,6 +121,14 @@ pub struct LogoutContext<'a> {
     /// `None` notifies nobody and says so. See
     /// [`crate::http::protocol::ClientEndpoints::outbox`].
     pub outbox: Option<&'a dyn asterius_domain::outbox::OutboxQueue>,
+    /// Where the CAEP `session-revoked` Security Event Tokens of this
+    /// sign-out are queued (`ast-o4u.3`).
+    ///
+    /// `None` is a deployment with no stream storage wired: it tells no
+    /// receiver and says so in the log, the same degradation `outbox` above
+    /// makes — a signal that cannot be queued must not hold up a sign-out that
+    /// has already happened.
+    pub queues: Option<&'a dyn crate::ssf::SsfQueues>,
     /// The long-lived credentials issued under this session, for the tenant
     /// that has asked a logout to withdraw them.
     ///
@@ -384,8 +401,14 @@ async fn end_session(
 /// "notified 3" when one client is not a participant is a control an auditor
 /// would believe and should not.
 ///
-/// The CAEP `session-revoked` signal for the SSF transmitter (`ast-o4u.3`) is
-/// the other thing that lands in this function, and it is still to come.
+/// # The other notification: CAEP `session-revoked` (`ast-o4u.3`)
+///
+/// A logout token goes to the relying parties that *took part in this
+/// session*; a CAEP `session-revoked` Security Event Token goes to the
+/// receivers that *subscribed to the event type*, which is a different set and
+/// a different transport (SSF 1.0). Both are sent here, from the one place
+/// that knows a session has just ended, and neither is counted by the other:
+/// [`Notified`] is a receipt for §3's ordering and says nothing about SETs.
 async fn notify_participants(
     context: &LogoutContext<'_>,
     session: &Session,
@@ -399,7 +422,54 @@ async fn notify_participants(
         signer: context.signer,
         outbox: context.outbox,
     };
-    asterius_oidc::logout::notifying(|| notifier.notify(session, participants, now)).await
+    let receipt =
+        asterius_oidc::logout::notifying(|| notifier.notify(session, participants, now)).await;
+    emit_session_revoked(context, session, now).await;
+    receipt
+}
+
+/// **CAEP 1.0 §3.1: one `session-revoked` for the session that just ended.**
+///
+/// The subject is complex — `{user, session}` — so a receiver holding several
+/// of this person's sessions drops the one that ended and keeps the others;
+/// `initiating_entity` is `user` and the two reasons say "the user signed out"
+/// ([`crate::ssf::RevokedBy::EndSession`], CAEP §2).
+///
+/// Best-effort, after the revocation, and never fatal: the browser is on its
+/// way back to the relying party and the session is already gone. A receiver
+/// that could not be queued is the transmitter's log line, not this handler's
+/// error page.
+async fn emit_session_revoked(context: &LogoutContext<'_>, session: &Session, now: OffsetDateTime) {
+    let Some(queues) = context.queues else {
+        tracing::debug!(
+            tenant = %context.tenant.id,
+            "no security event queue is wired; no receiver was told a session ended"
+        );
+        return;
+    };
+    let transmitter = crate::ssf::SsfTransmitter {
+        tenant: &context.tenant.id,
+        issuer: &context.tenant.issuer,
+        queues,
+        clients: context.clients,
+        subjects: context.subjects,
+        signer: context.signer,
+    };
+    transmitter
+        .emit(
+            &crate::ssf::Cause::SessionRevoked {
+                user: asterius_domain::UserId::new(session.user),
+                // The public `sid`, which is what a receiver stored when it
+                // learned of the session — never the digest.
+                sid: session.public_sid.clone(),
+                by: crate::ssf::RevokedBy::EndSession,
+                // The language this logout was conducted in: the person is in
+                // front of the browser that asked for it.
+                locale: context.text.locale(),
+            },
+            now,
+        )
+        .await;
 }
 
 /// Withdraws the refresh tokens issued under this session, if the tenant asked
@@ -555,6 +625,15 @@ async fn record(
     let detail = Detail::new()
         .label("reason", SessionRevocation::UserLogout.as_str())
         .label("initiator", "rp_initiated_logout")
+        // CAEP §2's `initiating_entity`, in the words the SETs of this
+        // sign-out carry (`ast-o4u.3`): the trail and the signals must agree
+        // about who ended the session.
+        .label(
+            "initiating_entity",
+            crate::ssf::RevokedBy::EndSession
+                .initiating_entity()
+                .as_str(),
+        )
         .number("participants", i64::try_from(participants).unwrap_or(-1));
     let mut event = AuditEvent::new(
         context.tenant.id.clone(),

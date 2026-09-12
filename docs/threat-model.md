@@ -919,16 +919,31 @@ section down, plus one of its own — a SET is about a subject who is not presen
 | **A1** | **G1** | **Cross-token confusion.** A SET read where an ID token is expected, or the reverse. | The token is signed `typ: secevent+jwt` (SSF 1.0 §4.1.1), a constant this crate never parameterises; it carries no `sub` (§4.1.2) and no `exp` (§4.1.7), and its `sub_id` (§3.1) is structural — a SET without one does not typecheck. The whole envelope is `ast-0ju.2`'s and unchanged here. |
 | **A5** | **G2** | **A signal lost to a crash between the effect and the queue.** The SET is queued *after* the session is revoked, not in the same transaction. | Deliberate, and the same trade the back-channel logout token makes below: revoking is the session repository's statement, and the other order would announce a session that is still live. A crash under-notifies — a receiver is not told — rather than lying. The poll SETs of one cause share one transaction so a stream's backlog never gains half a cause, and every SET of one cause shares one `txn` (§4.1.9) so an operator sees them as one thing. |
 
-**Residual, stated rather than closed:** the console self-service paths do not
-emit yet — a passkey a user adds themselves (CAEP `credential-change` create),
-an RP-initiated logout, and a step-up (`assurance-level-change`) are recorded in
-the audit trail but not yet turned into SETs, because wiring the transmitter
-into those handlers threads a new dependency through the request context and its
-fixtures; the emitters and their goldens exist and the admin-API paths (session
-revoke, account disable/enable, admin passkey removal, forced password reset)
-are wired. Grant revocation has no CAEP event type and stays audit-only, by the
-spec. And, as one section up, a paused or deleted stream's already-queued SETs
-follow that section's rules.
+**Residual, stated rather than closed:** a step-up
+(`assurance-level-change`) is recorded in the audit trail but not yet turned
+into a SET, and so is a password reset completed through a recovery link
+(`crates/server/src/http/recovery.rs`), which ends every session of the account
+in bulk and notifies nobody — neither back-channel logout nor CAEP. Every other
+session-revocation path is wired (see the section below). Grant revocation has
+no CAEP event type and stays audit-only, by the spec. And, as one section up, a
+paused or deleted stream's already-queued SETs follow that section's rules.
+
+### Session revocation, propagated (`ast-o4u.3`)
+
+**Why this needs a section: propagation is the point, and propagation is also
+the disclosure.** Every door that ends a session — an administrator revoking
+one (admin API, console), the person closing one from `/account/sessions`, the
+end-session endpoint, and the cascades of a password change or a disabled
+account — now produces one CAEP `session-revoked` per session (CAEP 1.0 §3.1,
+complex subject `{user, session}`) beside the back-channel logout tokens, with
+`initiating_entity`, `reason_admin` and `reason_user` decided by the door
+(`crate::ssf::RevokedBy`, CAEP 1.0 §2).
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Learning that a person has a session, and when it ends.** Propagation tells a party something it did not ask for at that instant: a signal is a disclosure. | The audience is not widened by this ticket. A logout token goes only to a relying party that took an ID token *in that session* (Back-Channel Logout 1.0 §2.2), and a SET goes only to a stream whose receiver is a registered client that subscribed to the event type. Both name the person by the `sub` that receiver already holds (OIDC Core §8.1), never the local id — asserted by a test that greps the local id out of every queued SET. The free-text reasons name the door and never the operator, the account or an address, because a reason fans out to every subscribed receiver. |
+| **A2** | **G2** | **Replaying a revocation to make one session look like two.** Pressing "revoke" twice, or a retried admin request, produces a second set of logout tokens and a second SET; a receiver deduplicating on `jti` still sees two transactions, and an auditor counting signals over-counts. | Every path checks the session is still usable before it revokes: the admin API returns `sessions_revoked: 0` for a session already over, the cascades read `live_digests_for_user`, and the end-session endpoint resolves only a usable session from the cookie. One session, one revocation, one audit line, one SET — covered end to end in `crates/server/tests/logout.rs`. |
+| **A5** | **G2** | **A revocation that reaches the browser but no receiver.** | Unchanged from the emitters' section: the notifications are best-effort and come *after* the revocation, so a crash or an unreachable queue under-notifies rather than leaving a session open. The audit line is written whatever the receivers do, and carries the same `initiating_entity` the SET does, so the trail and the signals cannot disagree about who ended the session. |
 
 ### SSF stream status and subjects (`ast-0ju.4`)
 
@@ -1195,6 +1210,73 @@ copy that outlives the TLS connection it arrived on; it adds no confidentiality
 why it is a key rather than the default. A tenant with no active key serves the
 document unsigned and logs, rather than failing: an unsigned public document is
 the state every PEP already handles.
+
+### Pre-issuance policy for agents (`ast-lh3.10`)
+
+**What changes: a token for an agent is now a policy decision, taken at the
+instant of issuance.** An agent's registration (`ast-lh3.1`) bounds what it may
+ever ask for, and those bounds are static — written when the agent was
+registered, silent about this request, this audience and this hour. Before it
+signs a token for a client that carries an agent profile, the token endpoint
+asks this deployment's own PDP (`ast-pj0.4`) whether that token may exist:
+subject the agent and its owner, action `obtain_token` or `exchange_token`,
+resource the audience, scopes and `authorization_details` the token would carry,
+context the grant and the delegation depth (Authorization API 1.0 §5, §6.1). A
+deny is RFC 6749 §5.2's `access_denied` and mints nothing. It is asked through
+the same decision function the Access Evaluation endpoint and the console's test
+bench use, so a rule an administrator tested is the rule that stops an issuance.
+
+**A policy that refuses everything stops agents and nobody else.** The check is
+reached only from a client with an agent profile, and only from the four grants
+an agent may register for: `client_credentials`, token exchange, device code and
+CIBA. `authorization_code` and `refresh_token` — every grant with a person
+behind it — do not consult it and cannot be made to, because the asymmetry is
+the point: the failure mode of this feature is "agents stop working", which is
+visible, audited and recoverable, and never "people cannot sign in". A client
+that is not an agent takes the path it took before, at the latency it had: the
+check returns before it reads a policy, a cache or the trail.
+
+**An unavailable decision point is not a permit.** A PDP that cannot answer has
+said nothing, and `[authzen] issuance_fail_open` defaults to `false`: for a
+credential minted for a process nobody is watching, silence is a deny. The other
+posture exists because its blast radius is asymmetric in the other direction —
+an unreadable policy store stops every agent in the deployment at once — and an
+operator who has decided the registered limits are a sufficient floor should say
+so in the file. Both postures write an audit record; the one that issued anyway
+says so in `issued_anyway`, so an outage that minted agent tokens is not
+invisible in the trail.
+
+**Every refusal is in the trail, with the reason, under its own type.**
+`token.issuance_denied` carries the decision's `reason_admin`, the action, the
+grant, the owner, the chain depth and the audience — enough for "which agents
+did this tenant's policy stop, and why" to be a filter on the event type rather
+than a scan of detail maps. The client is told `access_denied` and nothing else:
+a reason describing the tenant's rules would be a description of the policy
+handed to whoever holds the agent's key.
+
+**The cache is a bounded obsolescence window, and it is the only staleness
+here.** A decision is kept for five seconds, keyed by the whole question — agent,
+owner, action, grant, audience, scopes, detail types, chain depth — so that an
+agent taking tokens in a loop walks the policy once rather than once per token.
+The consequence is stated rather than hidden: a permit taken seconds before an
+administrator tightened a rule can be honoured until it expires. Writing a
+policy through the admin API empties that tenant's decisions in the process that
+served the write, which is what makes a single-replica deployment and an
+administrator testing a change see the effect at once; across replicas the
+guarantee is the TTL, because there is no bus (ADR-0001) and an invalidation
+delivered through the outbox would arrive later than the window it is meant to
+close. The cache holds at most 4 096 decisions and empties itself rather than
+growing, so an agent that varies its audience cannot make it a memory leak.
+
+**What this check is not.** It spends no rate-limit token and writes no
+`access.evaluated` record: those belong to a PEP's request to the evaluation
+endpoint (§10.1, §11.7), and this decision was not asked for by a caller — it is
+this server consulting itself. Charging the agent's limiter twice for one token
+request would make an issuance cost two tokens at the bucket, and an
+`access.evaluated` row per issuance would describe an evaluation no PEP made.
+Nothing here parses anything a caller wrote, so there is no new fuzz target: the
+inputs are this server's own resolved values, and the one string that is built —
+the resource identifier — is bounded and falls back to a digest.
 
 ### Back-channel logout (`ast-o4u.2`)
 
@@ -1701,14 +1783,16 @@ intentions is worth nothing to a reviewer.
   `crates/domain/src/entities/resource_server.rs`; `crates/server/tests/discovery.rs`
   for what a tenant advertises.
 - **Beads.** `ast-gxh.7` (closed), `ast-lh3.8` (**open** — the MCP compatibility
-  profile itself), `ast-lh3.10` (**open** — the pre-issuance policy port),
+  profile itself), `ast-lh3.10` (closed — the pre-issuance policy port),
   `ast-m9c.8` (**blocked** — the decision on MCP public clients and Client ID
   Metadata Documents).
-- **Residual risk.** Two of the three controls the index table claims are beads
-  that have not landed: there is no MCP profile and no pre-issuance policy port
-  today. What exists is audience binding and confidential clients — the
-  substantive half — but the deputy problem is only fully answered when the
-  resource server *checks* `aud` and the AS takes a policy decision per mint.
+- **Residual risk.** One of the three controls the index table claims is a bead
+  that has not landed: there is no MCP profile today. The pre-issuance policy
+  decision now exists (`ast-lh3.10`), and it gates a mint for an *agent* client
+  — an MCP server registered as an ordinary confidential client does not reach
+  it. With audience binding and confidential clients, the deputy problem is
+  answered as far as this server can answer it; the rest is the resource server
+  *checking* `aud`.
 
 #### T-A13 — MCP token passthrough
 
@@ -1802,7 +1886,7 @@ rows below, which are listed in both places on purpose: §5 describes what ships
 | A resource server cannot be told which clients it serves, so `resource_access` is narrowed to the token's own client rather than to the audience. | `ast-gxh.7` asks for the roles in a token to be filtered by the resource server it is audienced at. Nothing in the schema records the relationship — there is no `resource_servers.clients` column and no registration field for one — so the only client whose roles can be disclosed without guessing is the one that authenticated at the token endpoint. That is the *conservative* end of the choice: an API audienced by two clients gets two tokens naming two different clients, and never learns about the other. The cost is that a resource server serving several front ends has to read each token's `resource_access` by its own `client_id` rather than finding one merged object, and that a deployment wanting a shared vocabulary must use tenant roles. | `ast-095`, `ast-gxh.7` |
 | Application roles are not shown at consent. | They are authorisation attributes the tenant assigned, not personal data the client asked for (OIDC Core §5.5), so they are not gated on a scope and do not appear on the consent screen — an application that silently received *no* roles would authorise as if the person held none, which is worse than one that received them. The residual is that a person approving a client is not told which of their roles that client will see. `ast-uwv.1` owns the screen if that decision is revisited. | `ast-095`, `ast-uwv.1` |
 | A client may put its own users' roles into a token that passes through a browser. | `ast-mqt` lets a client ask for `roles` and `resource_access` in its **ID token**, per authorization with OIDC Core §5.5's `claims` parameter or once with the `roles_in_id_token` registration member. Nothing is disclosed that the client does not already hold: an ID token is audienced at exactly one client, the claims are narrowed to that same client by `IdToken::with_roles`, and RFC 9068 §6 already makes an access token readable by the client holding it. What changes is the *container* — an ID token travels the front channel, is stored by the client and turns up in pasted logs — so the default is off, no scope ever turns it on, and the decision is the client's for its own users. The residual is that a client which asks for it and then logs its ID tokens has published which of its users hold which of its roles. | `ast-mqt`, `ast-095` |
-| A logout notifies the relying parties, but not synchronously and not the ones that registered no endpoint. | Back-channel logout is built (`ast-o4u.2`): every participating client that registered a `backchannel_logout_uri` is queued a `logout+jwt` and the outbox delivers it, so the section above is the threat model for it. What remains is the shape of the mechanism rather than a gap in it. A client that registered no endpoint is told nothing at all — there is no front-channel logout and no session-management iframe (`ast-o4u.4`) — and delivery is asynchronous, so between "the user logged out here" and "the application knows" there is a window measured by the receiver's availability rather than by the request. The CAEP `session-revoked` signal still has nothing queueing into it. | `ast-o4u.1`, `ast-o4u.2`, `ast-o4u.3`, `ast-o4u.4` |
+| A logout notifies the relying parties, but not synchronously and not the ones that registered no endpoint. | Back-channel logout is built (`ast-o4u.2`): every participating client that registered a `backchannel_logout_uri` is queued a `logout+jwt` and the outbox delivers it, so the section above is the threat model for it. What remains is the shape of the mechanism rather than a gap in it. A client that registered no endpoint is told nothing at all — there is no front-channel logout and no session-management iframe (`ast-o4u.4`) — and delivery is asynchronous, so between "the user logged out here" and "the application knows" there is a window measured by the receiver's availability rather than by the request. Every revocation path now also queues a CAEP `session-revoked` for the streams that subscribed (`ast-o4u.3`), which reaches receivers that took no part in the session — a second, slower channel with the same asynchronous window. | `ast-o4u.1`, `ast-o4u.2`, `ast-o4u.3`, `ast-o4u.4` |
 | A registered passkey cannot be renamed or removed by the person who owns it. | Enrolment writes a credential with a null `label` and there is no account page to list, rename or delete one — `ast-2vk.3` owns that surface. Until it lands, a passkey the user no longer trusts can only be removed by an operator, which is the wrong party for a decision about somebody's own device. | `ast-2vk.15`, `ast-2vk.3` |
 | A tenant reachable at a `custom_host` outside its issuer's domain cannot enrol a passkey there. | The RP ID is the issuer's host, and a credential scoped to it is one a browser will only offer at that host or below. A vanity host on an unrelated domain is therefore left out of the accepted origin list rather than added to it: listing it would accept a ceremony from an origin no credential of this tenant is scoped to, without making enrolment work there. Giving such a tenant its own RP ID is a per-tenant policy with a credential migration behind it. | `ast-2vk.15`, `ast-2vk.3` |
 | `uv=required` is the whole deployment's policy, not a per-tenant one. | `relying_party` hands `asterius-webauthn` `UserVerification::Required`, so a passkey that proved presence but not verification is refused at registration **and at authentication** — the same relying-party description drives both ceremonies, which is why the two cannot drift apart. That is the strict default FIDO's passkey guidance assumes, and it is the right one while passkeys are treated as sufficient on their own — but a tenant that wants passkeys as a second factor beside a password cannot say so yet. | `ast-2vk.15`, `ast-2vk.4`, `ast-2vk.3` |
