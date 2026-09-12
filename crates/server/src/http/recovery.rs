@@ -52,6 +52,21 @@
 //! hook exists and is named now, on the precedent of `notify_participants`:
 //! an extension point with a name is one a reviewer can find, and one that
 //! does not exist is a signal nobody remembers to send.
+//!
+//! # The sessions this ends are somebody else's problem too (`ast-l8b3`)
+//!
+//! Ending them is half the job. The other half is telling whoever is serving
+//! them: every relying party that took part in a session gets a logout token
+//! (Back-Channel Logout 1.0 §2.2, §2.5) and every subscribed stream gets a
+//! CAEP `session-revoked` naming that session (§3.1), one per session, exactly
+//! as `crate::http::account_password` does for the same cascade. This path in
+//! particular, because it is the account-takeover path: the session an
+//! attacker is holding is the one being closed here, and a receiver never told
+//! keeps honouring it long after the owner has taken the account back.
+//!
+//! The door is [`crate::ssf::RevokedBy::PasswordRecovery`], whose
+//! `initiating_entity` is `user`: the authority exercised was the person's own
+//! control of the mailbox on the account.
 
 use crate::http::cookies;
 use crate::http::throttle::LoginThrottle;
@@ -107,7 +122,17 @@ pub struct RecoveryContext<'a> {
     /// wired something else.
     pub mail: &'a dyn MailSender,
     /// Every session the account has, for ending them.
-    pub sessions: &'a dyn SessionRepository,
+    ///
+    /// The concrete repository rather than the port, for the reason
+    /// `crate::http::account_password` holds the same one: ending sessions one
+    /// by one needs `live_digests_for_user`, which is not on
+    /// [`SessionRepository`] — and a cascade that could not name the sessions
+    /// it closed could not tell anybody which ones ended.
+    pub sessions: &'a asterius_store_pg::PgSessionRepository,
+    /// The receivers that asked to be told (`ast-l8b3`): the relying parties
+    /// that took part in each session, and the streams subscribed to CAEP
+    /// `session-revoked`.
+    pub signals: crate::http::account::Signals<'a>,
     /// Where all four routes are recorded.
     pub audit: &'a dyn AuditSink,
     /// The limiter of `ast-2vk.9`, with this request's address.
@@ -487,17 +512,7 @@ async fn credential_changed(
     // Every session predating the change, including whichever one an attacker
     // may be holding. This is the half of NIST SP 800-63B §7.1 that makes a
     // recovery a recovery rather than a second way in beside the first.
-    let revoked = match context
-        .sessions
-        .revoke_all_for_user(*user.as_uuid(), SessionRevocation::CredentialChange, now)
-        .await
-    {
-        Ok(count) => count,
-        Err(error) => {
-            tracing::error!(%error, tenant = %context.tenant.id, "cannot revoke sessions");
-            0
-        }
-    };
+    let revoked = close_every_session(context, user, now).await;
 
     // Any other link that was outstanding. Somebody who quietly asked for one
     // before the change must not still be holding a way in after it.
@@ -542,6 +557,185 @@ async fn credential_changed(
     .await;
 
     notify_credential_change(context, user).await;
+}
+
+/// Ends every live session of the account and tells the receivers of each.
+///
+/// One session at a time rather than `revoke_all_for_user`, for the reason
+/// `crate::admin`'s administrative cascade gives (`ast-o4u.3`): a receiver
+/// holding three of this person's sessions has to be told *which* of them to
+/// drop, so each one needs its own logout token, its own CAEP
+/// `session-revoked` and its own line in the trail. A single statement that
+/// revoked them all would end them just as thoroughly and leave every relying
+/// party serving the attacker's.
+///
+/// The list is `live_digests_for_user`, so a session already revoked is not in
+/// it: a replayed link finds nothing to close and queues nothing — which is
+/// what makes this idempotent without a second mechanism.
+///
+/// Every failure below the first degrades rather than aborts: the credential
+/// is already replaced by the time this runs, and a relying party whose
+/// registration will not load must not leave the remaining sessions open.
+/// Returns how many sessions were closed, for the caller's trail.
+async fn close_every_session(
+    context: &RecoveryContext<'_>,
+    user: UserId,
+    now: OffsetDateTime,
+) -> usize {
+    let digests = match context
+        .sessions
+        .live_digests_for_user(*user.as_uuid(), now)
+        .await
+    {
+        Ok(digests) => digests,
+        Err(error) => {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot list live sessions");
+            return 0;
+        }
+    };
+
+    let mut closed = 0;
+    for digest in digests {
+        // Read before revoking: the `sid` a receiver knows this session by is
+        // what the event's subject carries, and a row read back after a failed
+        // revocation would name a session that is still live.
+        let named = match context.sessions.find(&digest).await {
+            Ok(Some(named)) => named,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::error!(%error, tenant = %context.tenant.id, "cannot read a session");
+                continue;
+            }
+        };
+        if let Err(error) = context
+            .sessions
+            .revoke(&digest, SessionRevocation::CredentialChange, now)
+            .await
+        {
+            tracing::error!(%error, tenant = %context.tenant.id, "cannot revoke a session");
+            continue;
+        }
+        closed += 1;
+        record_revocation(context, &named, now).await;
+        notify_participants(context, &named, now).await;
+        emit_revocation(context, &named, now).await;
+    }
+    closed
+}
+
+/// Queues one logout token per relying party that took part in this session
+/// (Back-Channel Logout 1.0 §2.2), through the same
+/// [`crate::backchannel::Notifier`] the end-session endpoint and the console
+/// use — it is the same act, so it must not reach receivers differently.
+async fn notify_participants(
+    context: &RecoveryContext<'_>,
+    revoked: &asterius_domain::Session,
+    now: OffsetDateTime,
+) {
+    let participants = match context.sessions.participants(&revoked.id_digest).await {
+        Ok(participants) => participants,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                tenant = %context.tenant.id,
+                "cannot read the participants of an ended session"
+            );
+            return;
+        }
+    };
+    if participants.is_empty() {
+        return;
+    }
+    let notifier = crate::backchannel::Notifier {
+        tenant: context.tenant,
+        clients: context.signals.clients,
+        subjects: context.signals.subjects,
+        signer: context.signals.signer,
+        outbox: context.signals.outbox,
+    };
+    notifier.notify(revoked, &participants, now).await;
+}
+
+/// Emits CAEP §3.1's `session-revoked` for one closed session, to every stream
+/// that subscribed.
+///
+/// Best-effort and after the revocation, the order every other door keeps: the
+/// session is already over, and a receiver that could not be told must not
+/// undo that.
+///
+/// The language is English and stated rather than negotiated: these pages are
+/// rendered from [`crate::http::i18n::UNTRANSLATED`], so English is the
+/// language the person was actually addressed in, and a `reason_user` tagged
+/// with anything else would be a claim about words this server never showed.
+async fn emit_revocation(
+    context: &RecoveryContext<'_>,
+    revoked: &asterius_domain::Session,
+    now: OffsetDateTime,
+) {
+    let Some(queues) = context.signals.queues else {
+        tracing::debug!(
+            tenant = %context.tenant.id,
+            "no security event queue is wired; no receiver was told a session ended"
+        );
+        return;
+    };
+    let transmitter = crate::ssf::SsfTransmitter {
+        tenant: &context.tenant.id,
+        issuer: &context.tenant.issuer,
+        queues,
+        clients: context.signals.clients,
+        subjects: context.signals.subjects,
+        signer: context.signals.signer,
+    };
+    transmitter
+        .emit(
+            &crate::ssf::Cause::SessionRevoked {
+                user: UserId::new(revoked.user),
+                sid: revoked.public_sid.clone(),
+                by: crate::ssf::RevokedBy::PasswordRecovery,
+                locale: crate::http::i18n::UNTRANSLATED.locale(),
+            },
+            now,
+        )
+        .await;
+}
+
+/// Records one session closed by a recovery (`ast-l8b3`).
+///
+/// [`EventType::SESSION_REVOKED`], the event the account pages, the admin API
+/// and the end-session endpoint write, because it is the same fact. One line
+/// per session, named by its digest: "a password was recovered" and "four
+/// sessions were closed" are different facts, and an auditor reconstructing a
+/// takeover needs the second one per session. `initiating_entity` carries the
+/// same word as the CAEP SET beside it (§2), so the trail and the receivers
+/// cannot disagree about who acted.
+async fn record_revocation(
+    context: &RecoveryContext<'_>,
+    revoked: &asterius_domain::Session,
+    now: OffsetDateTime,
+) {
+    let subject = revoked.user.to_string();
+    let event = AuditEvent::new(
+        context.tenant.id.clone(),
+        EventType::SESSION_REVOKED,
+        Outcome::Success,
+        Actor::User(subject.clone()),
+        now,
+    )
+    .session(asterius_domain::SessionId::new(revoked.id_digest.clone()))
+    .subject(subject)
+    .detail(
+        Detail::new()
+            .label("reason", SessionRevocation::CredentialChange.as_str())
+            .label("initiator", "recovery_link")
+            .label(
+                "initiating_entity",
+                crate::ssf::RevokedBy::PasswordRecovery
+                    .initiating_entity()
+                    .as_str(),
+            ),
+    );
+    record(context, event).await;
 }
 
 /// The CAEP `credential-change` seam.

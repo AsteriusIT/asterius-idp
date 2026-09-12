@@ -39,9 +39,9 @@ use asterius_domain::audit::AuditRecord;
 use asterius_domain::entities::session::{Lifetimes, Session, SessionId, SessionStatus};
 use asterius_domain::ports::{SessionRepository as _, TenantRepository as _};
 use asterius_domain::{
-    Argon2Parameters, AuthenticationMethod, Capabilities, ClaimSet, EndpointLimit, EndpointLimits,
-    Issuer, LoginLimits, RateLimit, RecoveryToken, Secret, Tenant, TenantId, TenantStatus, User,
-    UserId, UserStatus,
+    Argon2Parameters, AuthenticationMethod, Capabilities, ClaimSet, Client, ClientId,
+    ClientRegistration, ClientStatus, EndpointLimit, EndpointLimits, Issuer, LoginLimits,
+    RateLimit, RecoveryToken, Secret, Tenant, TenantId, TenantStatus, User, UserId, UserStatus,
 };
 use asterius_jose::LocalKek;
 use asterius_jose::kek::Kek;
@@ -53,6 +53,7 @@ use asterius_server::http::server::app;
 use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::tenant_settings::SettingsDirectory;
+use asterius_ssf::stream::{Delivery, StreamConfiguration, StreamId};
 use asterius_store_pg::{
     PgAuditSink, PgOutboxMailSender, PgPasswordVerifier, PgReplayGuard, PgSessionRepository,
     PgTenantRepository, PgTenantSettings, PgUserRepository, Store, TenantKeyStore,
@@ -77,6 +78,14 @@ const STRANGER: &str = "nobody@example.test";
 /// Past the NIST SP 800-63B §5.1.1.2 floor, and not on the deny list
 /// `AcceptedPassword::accept_locally` compiles in.
 const NEW_PASSWORD: &str = "a rather long and unremarkable passphrase";
+/// The relying party that took part in the account's sessions (`ast-l8b3`).
+const RELYING_PARTY: &str = "recovery-rp";
+/// Where its logout tokens are addressed (Back-Channel Logout 1.0 §2.2).
+const BACKCHANNEL_LOGOUT_URI: &str = "https://rp.example/backchannel-logout";
+/// The URI CAEP 1.0 §3.1 gives `session-revoked`.
+const SESSION_REVOKED: &str = "https://schemas.openid.net/secevent/caep/event-type/session-revoked";
+/// The receiver's poll stream, subscribed to that event.
+const STREAM: &str = "stream-recovery-0000000000000000000";
 
 /// What came back.
 struct Reply {
@@ -374,6 +383,126 @@ impl Flow {
         digest
     }
 
+    /// Registers the relying party that takes part in the sessions below.
+    ///
+    /// A real row, because every step of the notification reads it: the
+    /// back-channel notifier for its `backchannel_logout_uri` (§2.2), and the
+    /// transmitter for the sector identifier it derives this receiver's `sub`
+    /// under (OIDC Core §8.1).
+    async fn register_relying_party(&self) {
+        let document = serde_json::json!({
+            "client_name": "Recovery RP",
+            "redirect_uris": ["https://rp.example/callback"],
+            "backchannel_logout_uri": BACKCHANNEL_LOGOUT_URI,
+            "token_endpoint_auth_method": "private_key_jwt",
+            "jwks_uri": "https://rp.example/jwks",
+        });
+        let now = OffsetDateTime::now_utc();
+        self.store
+            .scope(self.tenant.id.clone())
+            .clients(Capabilities::default())
+            .upsert(&Client {
+                tenant: self.tenant.id.clone(),
+                id: ClientId::new(RELYING_PARTY),
+                registration: ClientRegistration::from_json(
+                    &serde_json::to_vec(&document).expect("serialise the registration"),
+                    Capabilities::default(),
+                )
+                .expect("a valid registration"),
+                status: ClientStatus::Active,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .expect("register the relying party");
+    }
+
+    /// Opens the receiver's poll stream, subscribed to `session-revoked`.
+    async fn subscribe_to_revocations(&self) {
+        self.store
+            .scope(self.tenant.id.clone())
+            .ssf_streams(Arc::clone(&self.kek))
+            .create(
+                &ClientId::new(RELYING_PARTY),
+                &StreamConfiguration {
+                    stream_id: StreamId::parse(STREAM).expect("a stream id"),
+                    audience: vec!["https://rp.example/events".to_owned()],
+                    events_requested: vec![SESSION_REVOKED.to_owned()],
+                    delivery: Delivery::Poll,
+                    description: None,
+                    inactivity_timeout: None,
+                },
+            )
+            .await
+            .expect("open the stream");
+    }
+
+    /// A session of the account the relying party took part in (§2.3).
+    async fn participating_session(&self, now: OffsetDateTime) -> String {
+        let digest = self.begin_session(now).await;
+        PgSessionRepository::new(self.store.pool().clone(), self.tenant.id.clone())
+            .record_participant(&digest, &ClientId::new(RELYING_PARTY), now)
+            .await
+            .expect("record the participant");
+        digest
+    }
+
+    /// Where this tenant's back-channel logout tokens were addressed.
+    ///
+    /// Read, not claimed. `PgOutbox::claim` is a *worker* API and is
+    /// deliberately not tenant-scoped, so a test that claimed would take the
+    /// rows of every test running beside it against the same database and put
+    /// them back with a delivery attempt spent and a backoff on them — which
+    /// is a flake manufactured in another test's tenant. A `select` cannot do
+    /// that to anybody. It is the one raw statement in this file, and it reads
+    /// a queue rather than an application row.
+    async fn queued_logout_tokens(&self) -> Vec<String> {
+        sqlx::query_scalar::<_, String>(
+            "select destination from outbox
+              where tenant_id = $1 and kind = 'logout.backchannel'
+              order by created_at, outbox_id",
+        )
+        .bind(self.tenant.id.as_str())
+        .fetch_all(self.store.pool())
+        .await
+        .expect("read the outbox")
+    }
+
+    /// The SETs waiting on the receiver's stream, decoded but not verified,
+    /// and acknowledged on the way out.
+    ///
+    /// Acknowledging is what a receiver does (SSF 1.0 §2.4) and it is what
+    /// makes two calls answer "what arrived since I last looked" rather than
+    /// "everything ever queued" — which is the question the idempotence test
+    /// asks. Verifying a SET against the tenant's published JWKS is
+    /// `ssf_stream_events.rs`'s job; what this file asserts is that a
+    /// revocation reached the stream at all, and what its claims say.
+    async fn queued_sets(&self) -> Vec<serde_json::Value> {
+        use base64::Engine as _;
+        let stream = StreamId::parse(STREAM).expect("a stream id");
+        let poll = self.store.scope(self.tenant.id.clone()).ssf_poll();
+        let batch = poll
+            .deliver(&stream, 50, OffsetDateTime::now_utc())
+            .await
+            .expect("read the poll queue");
+        let acknowledged: Vec<String> = batch.sets.iter().map(|set| set.jti.clone()).collect();
+        let payloads = batch
+            .sets
+            .into_iter()
+            .map(|set| {
+                let payload = set.jws.split('.').nth(1).expect("a JWS has three parts");
+                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(payload)
+                    .expect("base64url");
+                serde_json::from_slice(&bytes).expect("a JSON payload")
+            })
+            .collect();
+        poll.acknowledge(&stream, &acknowledged)
+            .await
+            .expect("acknowledge the batch");
+        payloads
+    }
+
     /// Whether a session is still usable.
     async fn session_is_active(&self, digest: &str) -> bool {
         PgSessionRepository::new(self.store.pool().clone(), self.tenant.id.clone())
@@ -461,9 +590,12 @@ fn assemble(
             endpoint_limits: generous_endpoint_limits(),
             signer,
             dpop,
-            // Account recovery does not queue outbox rows through this field;
-            // the back-channel logout path is `end_to_end.rs`'s.
-            outbox: None,
+            // The real outbox, on the same pool: a completed recovery ends
+            // every session the account had, and each participating relying
+            // party is owed a logout token queued here (`ast-l8b3`).
+            outbox: Some(Arc::new(asterius_store_pg::PgOutbox::new(
+                store.pool().clone(),
+            ))),
         })),
     });
 
@@ -953,6 +1085,187 @@ async fn the_mailed_link_carries_the_mount_prefix() {
     assert!(
         link.contains(&format!("/t/{}/recovery/new", flow.tenant.id.as_str())),
         "the link did not carry the mount prefix: {link}"
+    );
+    flow.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// The receivers a recovery owes a notification to (`ast-l8b3`)
+//
+// Back-Channel Logout 1.0 §2.2 (one logout token per participating relying
+// party, per session) and CAEP 1.0 §3.1 (`session-revoked`, whose complex
+// subject names the session that ended). A reset by mailed link is the account
+// takeover path: the sessions it closes are the attacker's, and a relying
+// party never told keeps serving one.
+// ---------------------------------------------------------------------------
+
+/// The acceptance criterion: two live sessions, one participating relying
+/// party, one subscribed stream — and the reset produces two logout tokens,
+/// two SETs and two `SESSION_REVOKED` records beside the closed sessions.
+///
+/// The counts are the point. A fan-out that emitted one event about the
+/// *person* would leave a receiver holding three sessions unable to tell which
+/// to drop, and a path that emitted none — which is what this was — leaves
+/// every receiver serving a session the owner has just taken back.
+#[tokio::test]
+async fn a_recovery_tells_the_relying_parties_and_the_streams_of_every_session() {
+    // Arrange
+    let mut flow = flow!();
+    let now = OffsetDateTime::now_utc();
+    flow.register_relying_party().await;
+    flow.subscribe_to_revocations().await;
+    let first = flow.participating_session(now).await;
+    let second = flow.participating_session(now).await;
+    let link = flow
+        .request_a_link(ADDRESS)
+        .await
+        .expect("a link was produced");
+
+    // Act
+    let reset = flow.use_the_link(&link, NEW_PASSWORD).await;
+
+    // Assert
+    assert_eq!(reset.status, StatusCode::SEE_OTHER);
+    assert!(!flow.session_is_active(&first).await);
+    assert!(!flow.session_is_active(&second).await);
+
+    let destinations = flow.queued_logout_tokens().await;
+    assert_eq!(
+        destinations,
+        vec![BACKCHANNEL_LOGOUT_URI.to_owned(); 2],
+        "one logout token per session, for the one participating client"
+    );
+
+    let sets = flow.queued_sets().await;
+    assert_eq!(sets.len(), 2, "one SET per session: {sets:?}");
+    let sids: std::collections::BTreeSet<String> = sets
+        .iter()
+        .map(|set| {
+            set["sub_id"]["session"]["id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(sids.len(), 2, "each SET names its own session: {sets:?}");
+
+    assert_eq!(
+        flow.audit_count("session.revoked").await,
+        2,
+        "one trail entry per session closed"
+    );
+    flow.cleanup().await;
+}
+
+/// CAEP §2: who initiated it, and why, in both the auditor's words and the
+/// person's.
+///
+/// `user` and not `admin`: the person proved possession of the mailbox on the
+/// account and reset their own credential. Nobody acted on somebody else's
+/// session here, and a receiver told `admin` would show "an administrator
+/// signed you out" for something the person did themselves.
+#[tokio::test]
+async fn a_recovery_says_the_person_initiated_it() {
+    // Arrange
+    let mut flow = flow!();
+    let now = OffsetDateTime::now_utc();
+    flow.register_relying_party().await;
+    flow.subscribe_to_revocations().await;
+    flow.participating_session(now).await;
+    let link = flow
+        .request_a_link(ADDRESS)
+        .await
+        .expect("a link was produced");
+
+    // Act
+    flow.use_the_link(&link, NEW_PASSWORD).await;
+
+    // Assert
+    let sets = flow.queued_sets().await;
+    assert_eq!(sets.len(), 1, "{sets:?}");
+    let events = sets[0]["events"].as_object().expect("an events member");
+    assert_eq!(events.len(), 1, "one SET, one event: {sets:?}");
+    let (uri, body) = events.iter().next().expect("one entry");
+    assert_eq!(uri, SESSION_REVOKED);
+    assert_eq!(body["initiating_entity"], serde_json::json!("user"));
+    assert_eq!(
+        body["reason_admin"],
+        serde_json::json!({"en": "The user reset their password with a recovery link"})
+    );
+    assert_eq!(
+        body["reason_user"],
+        serde_json::json!({"en": "You reset your password, so every session was closed."})
+    );
+    flow.cleanup().await;
+}
+
+/// A SET names the person by the `sub` the *receiver* knows them by (OIDC Core
+/// §8.1), never this server's identifier — the rule the logout token beside it
+/// keeps, applied to the other notification.
+#[tokio::test]
+async fn a_recovery_event_never_carries_the_local_user_id() {
+    // Arrange
+    let mut flow = flow!();
+    let now = OffsetDateTime::now_utc();
+    flow.register_relying_party().await;
+    flow.subscribe_to_revocations().await;
+    flow.participating_session(now).await;
+    let link = flow
+        .request_a_link(ADDRESS)
+        .await
+        .expect("a link was produced");
+
+    // Act
+    flow.use_the_link(&link, NEW_PASSWORD).await;
+
+    // Assert
+    let local_id = flow.user.as_uuid().to_string();
+    let sets = flow.queued_sets().await;
+    assert_eq!(sets.len(), 1, "{sets:?}");
+    assert!(
+        !sets[0].to_string().contains(&local_id),
+        "a SET must not carry the local user id: {sets:?}"
+    );
+    flow.cleanup().await;
+}
+
+/// Idempotence: a spent link tells the receivers nothing a second time.
+///
+/// The second submission finds no token, so no session is closed and no
+/// receiver is told. Without it a replayed link would hand every receiver a
+/// second transaction for sessions that ended once.
+#[tokio::test]
+async fn replaying_a_spent_link_tells_the_receivers_nothing_further() {
+    // Arrange
+    let mut flow = flow!();
+    let now = OffsetDateTime::now_utc();
+    flow.register_relying_party().await;
+    flow.subscribe_to_revocations().await;
+    flow.participating_session(now).await;
+    let link = flow
+        .request_a_link(ADDRESS)
+        .await
+        .expect("a link was produced");
+    let first = flow.use_the_link(&link, NEW_PASSWORD).await;
+    assert_eq!(first.status, StatusCode::SEE_OTHER);
+    let after_the_first = flow.queued_sets().await.len();
+    let tokens_after_the_first = flow.queued_logout_tokens().await.len();
+
+    // Act
+    let replayed = flow.use_the_link(&link, NEW_PASSWORD).await;
+
+    // Assert
+    assert_eq!(replayed.status, StatusCode::BAD_REQUEST);
+    assert_eq!(after_the_first, 1, "one session, one SET");
+    assert_eq!(tokens_after_the_first, 1, "one session, one logout token");
+    assert!(
+        flow.queued_sets().await.is_empty(),
+        "the replay must queue no further SET"
+    );
+    assert_eq!(
+        flow.queued_logout_tokens().await.len(),
+        1,
+        "the replay must queue no further logout token"
     );
     flow.cleanup().await;
 }

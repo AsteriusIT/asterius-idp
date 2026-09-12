@@ -751,6 +751,11 @@ catalogue! {
             "session-revoked.password-reset",
             en: "Your password was reset, so you were signed out.",
             fr: "Votre mot de passe a été réinitialisé, vous avez donc été déconnecté.";
+        SessionRevokedPasswordRecovered => session_revoked_password_recovered,
+            "session-revoked.password-recovered",
+            en: "You reset your password, so every session was closed.",
+            fr: "Vous avez réinitialisé votre mot de passe, toutes les sessions ont donc été \
+                 fermées.";
         SessionRevokedByOwner => session_revoked_by_owner, "session-revoked.by-owner",
             en: "You closed this session from your account pages.",
             fr: "Vous avez fermé cette session depuis les pages de votre compte.";

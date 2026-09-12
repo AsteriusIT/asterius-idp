@@ -4556,34 +4556,80 @@ fn throttle<'a>(
     )
 }
 
+/// The adapters the four recovery routes share, built once per request.
+///
+/// A struct rather than eight arguments, for the reason [`AccountParts`] is
+/// one: a recovery closes sessions, and closing a session tells the relying
+/// parties that took part in it and the streams subscribed to it
+/// (`ast-l8b3`) — so this path now needs the clients, the subjects, the
+/// signer and the queues as well, and a signature carrying them all would be
+/// unreadable at four call sites.
+struct RecoveryParts {
+    users: asterius_store_pg::PgUserRepository,
+    tokens: asterius_store_pg::PgRecoveryTokens,
+    mail: asterius_store_pg::PgOutboxMailSender,
+    sessions: asterius_store_pg::PgSessionRepository,
+    clients: asterius_store_pg::PgClientRepository,
+    /// `None` where the deployment has configured no password method.
+    passwords: Option<asterius_store_pg::PgPasswordVerifier>,
+    limiter: asterius_store_pg::PgRateLimitStore,
+    queues: crate::outbox::PgSsfQueues,
+}
+
+fn recovery_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> RecoveryParts {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    RecoveryParts {
+        users: scope.users(Arc::clone(&endpoints.kek)),
+        tokens: scope.recovery_tokens(),
+        mail: scope.mail(),
+        sessions: scope.sessions(),
+        clients: scope.clients(endpoints.capabilities),
+        passwords: endpoints.passwords(&tenant.id),
+        limiter: asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone()),
+        queues: crate::outbox::PgSsfQueues::new(
+            endpoints.store.clone(),
+            tenant.id.clone(),
+            Arc::clone(&endpoints.kek),
+        ),
+    }
+}
+
 /// Builds the context the four recovery routes share.
 ///
 /// One helper for the same reason `passkey_context` is one: four copies of a
 /// ten-field literal is four places for one of them to drift, and the field
 /// that would drift is the limiter.
-#[allow(clippy::too_many_arguments)]
 fn recovery_context<'a>(
     endpoints: &'a ClientEndpoints,
     tenant: &'a Tenant,
-    users: &'a asterius_store_pg::PgUserRepository,
-    passwords: Option<&'a asterius_store_pg::PgPasswordVerifier>,
-    tokens: &'a asterius_store_pg::PgRecoveryTokens,
-    mail: &'a asterius_store_pg::PgOutboxMailSender,
-    sessions: &'a asterius_store_pg::PgSessionRepository,
-    limiter: &'a asterius_store_pg::PgRateLimitStore,
+    parts: &'a RecoveryParts,
     client: Option<&crate::http::forwarded::ClientAddr>,
     nonce: &'a asterius_web::csp::Nonce,
     mount: MountPrefix,
 ) -> recovery::RecoveryContext<'a> {
     recovery::RecoveryContext {
         tenant,
-        users,
-        passwords,
-        tokens,
-        mail,
-        sessions,
+        users: &parts.users,
+        passwords: parts.passwords.as_ref(),
+        tokens: &parts.tokens,
+        mail: &parts.mail,
+        sessions: &parts.sessions,
+        // The same signer and the same queues the account pages and the
+        // console use, so a logout token or a SET from this path is signed by
+        // a key in the tenant's published JWKS and delivered by the worker
+        // that delivers everything else.
+        signals: crate::http::account::Signals {
+            clients: &parts.clients,
+            subjects: &parts.users,
+            signer: endpoints.signer.as_ref(),
+            queues: Some(&parts.queues),
+            outbox: endpoints
+                .outbox
+                .as_deref()
+                .map(|queue| queue as &dyn asterius_domain::outbox::OutboxQueue),
+        },
         audit: endpoints.audit.as_ref(),
-        throttle: throttle(endpoints, limiter, client),
+        throttle: throttle(endpoints, &parts.limiter, client),
         nonce,
         mount,
     }
@@ -4597,22 +4643,11 @@ async fn recovery_request_page(
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
 ) -> Response {
-    let scope = endpoints.store.scope(tenant.id.clone());
-    let users = scope.users(Arc::clone(&endpoints.kek));
-    let tokens = scope.recovery_tokens();
-    let mail = scope.mail();
-    let sessions = scope.sessions();
-    let passwords = endpoints.passwords(&tenant.id);
-    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let parts = recovery_parts(&endpoints, &tenant);
     recovery::show_request(&recovery_context(
         &endpoints,
         &tenant,
-        &users,
-        passwords.as_ref(),
-        &tokens,
-        &mail,
-        &sessions,
-        &limiter,
+        &parts,
         client.as_deref(),
         &nonce,
         mount_of(mount),
@@ -4630,23 +4665,12 @@ async fn recovery_request_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let scope = endpoints.store.scope(tenant.id.clone());
-    let users = scope.users(Arc::clone(&endpoints.kek));
-    let tokens = scope.recovery_tokens();
-    let mail = scope.mail();
-    let sessions = scope.sessions();
-    let passwords = endpoints.passwords(&tenant.id);
-    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let parts = recovery_parts(&endpoints, &tenant);
     recovery::submit_request(
         &recovery_context(
             &endpoints,
             &tenant,
-            &users,
-            passwords.as_ref(),
-            &tokens,
-            &mail,
-            &sessions,
-            &limiter,
+            &parts,
             client.as_deref(),
             &nonce,
             mount_of(mount),
@@ -4668,23 +4692,12 @@ async fn recovery_new_password_page(
     mount: Option<Extension<MountPrefix>>,
     uri: axum::http::Uri,
 ) -> Response {
-    let scope = endpoints.store.scope(tenant.id.clone());
-    let users = scope.users(Arc::clone(&endpoints.kek));
-    let tokens = scope.recovery_tokens();
-    let mail = scope.mail();
-    let sessions = scope.sessions();
-    let passwords = endpoints.passwords(&tenant.id);
-    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let parts = recovery_parts(&endpoints, &tenant);
     recovery::show_new_password(
         &recovery_context(
             &endpoints,
             &tenant,
-            &users,
-            passwords.as_ref(),
-            &tokens,
-            &mail,
-            &sessions,
-            &limiter,
+            &parts,
             client.as_deref(),
             &nonce,
             mount_of(mount),
@@ -4706,23 +4719,12 @@ async fn recovery_new_password_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let scope = endpoints.store.scope(tenant.id.clone());
-    let users = scope.users(Arc::clone(&endpoints.kek));
-    let tokens = scope.recovery_tokens();
-    let mail = scope.mail();
-    let sessions = scope.sessions();
-    let passwords = endpoints.passwords(&tenant.id);
-    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let parts = recovery_parts(&endpoints, &tenant);
     recovery::submit_new_password(
         &recovery_context(
             &endpoints,
             &tenant,
-            &users,
-            passwords.as_ref(),
-            &tokens,
-            &mail,
-            &sessions,
-            &limiter,
+            &parts,
             client.as_deref(),
             &nonce,
             mount_of(mount),

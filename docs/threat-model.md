@@ -612,7 +612,7 @@ passkeys are primary here, and an account with no address recovers nothing.
 | **A1** | **G1** | **Using a link that has been sitting in a mailbox.** | Fifteen minutes, enforced in SQL against a clock the caller does not choose, and tested against that predicate rather than a Rust-side copy of it. |
 | **A1** | **G1** | **Collecting links.** Somebody asks for three, uses one, and keeps two live takeovers for later — the two nobody will notice being used. | Issuing a token consumes every earlier one for that account in the same transaction. One mailbox, one live link. |
 | **A1** | **G1** | **Surviving the change.** An attacker quietly requests a link, the owner changes their password, and the attacker's link still works. | Any credential change invalidates every outstanding token for that user, and the recovery path calls that hook itself. |
-| **A1** | **G1** | **Keeping the session.** An attacker who got in first stays in after the owner recovers. | A completed recovery revokes **every** session the account had, with reason `credential_change`. The mirror case is covered by the same line: an owner recovering while an attacker holds a session ends it. |
+| **A1** | **G1** | **Keeping the session.** An attacker who got in first stays in after the owner recovers. | A completed recovery revokes **every** session the account had, with reason `credential_change`. The mirror case is covered by the same line: an owner recovering while an attacker holds a session ends it. Since `ast-l8b3` each of those sessions is closed one by one and *announced*: a back-channel logout token to every relying party that took part in it (Back-Channel Logout 1.0 §2.2) and a CAEP `session-revoked` to every subscribed stream (§3.1, `RevokedBy::PasswordRecovery`, `initiating_entity: user`), with its own audit line. Ending the session here and leaving a receiver serving it was the takeover surviving the recovery at one remove. |
 | **A1** | **G3** | **Enumerating accounts through the reset form.** The textbook oracle (RFC 9700 §4, OWASP Forgot Password Cheat Sheet). | `POST /recovery` renders one page, byte for byte, for an address with an account, an address with a *disabled* account, and an address with none — the page type has no field that could differ, so the absence is structural rather than conditional, and a test compares the two responses byte for byte. A mail-delivery failure does not change it either: "we could not send mail" is only sayable about an address that has an account. The audit trail records **every** request with `Success`, matching or not, so the oracle does not reappear in the database. |
 | **A1** | **G3** | **Using this server as a mail cannon.** An unauthenticated form that sends mail to an address the caller chooses, as often as they like. | Every request is counted against the per-account and per-address buckets of `ast-2vk.9` — the same limiter the login form uses, not a second one with its own opinions — and a full bucket refuses before any lookup. A limiter that cannot be read fails closed. |
 | **A1** | **G3** | **Burning somebody's link cross-site.** A page on the internet POSTs to `/recovery/new` and spends a link, denying its owner for fifteen minutes. | A `__Host-` prefixed, `SameSite=Lax`, `HttpOnly` synchroniser cookie double-submitted with a hidden field: a cross-site POST carries no cookie, so no match is possible, and the `__Host-` prefix stops a sibling subdomain writing one. A failed check re-renders the form **without spending the token**. |
@@ -921,23 +921,29 @@ section down, plus one of its own — a SET is about a subject who is not presen
 
 **Residual, stated rather than closed:** a step-up
 (`assurance-level-change`) is recorded in the audit trail but not yet turned
-into a SET, and so is a password reset completed through a recovery link
-(`crates/server/src/http/recovery.rs`), which ends every session of the account
-in bulk and notifies nobody — neither back-channel logout nor CAEP. Every other
-session-revocation path is wired (see the section below). Grant revocation has
-no CAEP event type and stays audit-only, by the spec. And, as one section up, a
-paused or deleted stream's already-queued SETs follow that section's rules.
+into a SET. Every session-revocation path is wired, the recovery link included
+since `ast-l8b3` (see the section below). Grant revocation has no CAEP event
+type and stays audit-only, by the spec. And, as one section up, a paused or
+deleted stream's already-queued SETs follow that section's rules.
 
 ### Session revocation, propagated (`ast-o4u.3`)
 
 **Why this needs a section: propagation is the point, and propagation is also
 the disclosure.** Every door that ends a session — an administrator revoking
 one (admin API, console), the person closing one from `/account/sessions`, the
-end-session endpoint, and the cascades of a password change or a disabled
-account — now produces one CAEP `session-revoked` per session (CAEP 1.0 §3.1,
-complex subject `{user, session}`) beside the back-channel logout tokens, with
-`initiating_entity`, `reason_admin` and `reason_user` decided by the door
-(`crate::ssf::RevokedBy`, CAEP 1.0 §2).
+end-session endpoint, and the cascades of a password change, a recovery link
+(`ast-l8b3`) or a disabled account — now produces one CAEP `session-revoked`
+per session (CAEP 1.0 §3.1, complex subject `{user, session}`) beside the
+back-channel logout tokens, with `initiating_entity`, `reason_admin` and
+`reason_user` decided by the door (`crate::ssf::RevokedBy`, CAEP 1.0 §2).
+
+The recovery link is the door this matters most at, and it was the last one
+left silent: a reset by mailed link is how an account is taken back — or taken
+over — so the sessions it closes in bulk are exactly the ones a relying party
+must stop honouring. Its `initiating_entity` is `user`, not `admin`: the only
+authority exercised is the person's own control of the mailbox on the account
+(NIST SP 800-63B §6.1.2.3), and `reason_admin` says so in the auditor's
+words.
 
 | Attacker | Goal | Attack it enables | Control |
 |---|---|---|---|
