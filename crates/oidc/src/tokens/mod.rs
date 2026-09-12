@@ -73,7 +73,7 @@ use serde_json::Value;
 use thiserror::Error;
 use time::Duration;
 
-pub use access::{AccessToken, Audience, Authentication, Confirmation};
+pub use access::{AUTHORISATION_CLAIMS, AccessToken, Audience, Authentication, Confirmation};
 pub use id_token::{IdToken, Session, token_hash};
 pub use logout_token::{LOGOUT_TOKEN_TYP, LogoutSubject, LogoutToken};
 
