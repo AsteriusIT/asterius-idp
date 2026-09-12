@@ -37,6 +37,7 @@ use crate::config::{
     DEFAULT_LIMIT_ACCESS_EVALUATION_PER_ADDRESS, DEFAULT_LIMIT_ACCESS_EVALUATION_PER_CLIENT,
     DEFAULT_LIMIT_BACKCHANNEL_PER_ADDRESS, DEFAULT_LIMIT_BACKCHANNEL_PER_CLIENT,
     DEFAULT_LIMIT_BACKCHANNEL_PER_USER, DEFAULT_LIMIT_CLIENT_CONFIGURATION_PER_ADDRESS,
+    DEFAULT_LIMIT_INTROSPECTION_PER_ADDRESS, DEFAULT_LIMIT_INTROSPECTION_PER_CLIENT,
     DEFAULT_LIMIT_PAR_PER_ADDRESS, DEFAULT_LIMIT_PAR_PER_CLIENT,
     DEFAULT_LIMIT_REGISTRATION_PER_ADDRESS, DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS,
     DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT, DEFAULT_LIMIT_TOKEN_PER_ADDRESS,
@@ -852,6 +853,26 @@ fn limits() -> Section {
                  There is no per-client limit, because the caller presents an access \
                  token and reading a client out of it before verifying it would be \
                  trusting a string the caller wrote.",
+            ),
+            key(
+                "introspection_per_address",
+                "integer",
+                DEFAULT_LIMIT_INTROSPECTION_PER_ADDRESS.to_string(),
+                "Requests per window to `POST /introspect` (RFC 7662) from one \
+                 address. Sized like UserInfo's and for the same reason: the callers \
+                 are resource servers, and one address is legitimately a fleet making \
+                 a request per API call.",
+            ),
+            key(
+                "introspection_per_client",
+                "integer",
+                DEFAULT_LIMIT_INTROSPECTION_PER_CLIENT.to_string(),
+                "The same, per authenticated caller — and the bucket that matters \
+                 here. RFC 7662 §2.1 authenticates the caller before anything is \
+                 looked up, so there is always a proven client to charge, and this is \
+                 what prices §4's token scanning: every answer to a scan is a 200 \
+                 saying `active: false`, so nothing in the protocol tells a caller \
+                 walking token values to stop.",
             ),
             key(
                 "ssf_subjects_per_address",

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into resource_servers\n                 (tenant_id, identifier, scopes, token_lifetime_seconds,\n                  introspection_clients)\n             values ($1, $2, $3, $4, $5)\n             on conflict (tenant_id, identifier) do update\n             set scopes = excluded.scopes,\n                 token_lifetime_seconds = excluded.token_lifetime_seconds,\n                 introspection_clients = excluded.introspection_clients",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "TextArray",
+        "Int4",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "736c5b5a730177f1e538f9e67631bbf108954d46dff270809135f686edebccce"
+}

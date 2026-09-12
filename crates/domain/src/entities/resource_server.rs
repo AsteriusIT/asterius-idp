@@ -158,6 +158,36 @@ pub struct ResourceServer {
     /// Recorded here and consumed by the lifetime story (`ast-5c6`); issuance
     /// keeps its own ceiling whatever this says.
     pub default_token_lifetime: Option<Duration>,
+    /// The clients that speak *for* this resource server, and may therefore
+    /// introspect the tokens audienced at it (RFC 7662 §2.1, `ast-1sk.1`).
+    ///
+    /// RFC 7662 §2.1: "the endpoint ... MUST ... require ... authorization",
+    /// and §4: "the authorization server ... MUST only allow ... protected
+    /// resources that are authorized to introspect" a given token. That is a
+    /// relation between a *caller* and an *audience*, and this is where it is
+    /// recorded: a resource server exists as a row already (RFC 8707 §3), and
+    /// what was missing is which registered client is allowed to act as its
+    /// mouth.
+    ///
+    /// # Why here and not on the client
+    ///
+    /// The alternative — a `resource_servers` list on the client
+    /// registration — was considered and rejected. A resource server is a
+    /// property of the deployment, which is the argument this module's opening
+    /// section already makes for the registry existing at all; the operator
+    /// who knows that `https://api.example/accounts` exists is the one who
+    /// knows which credential fronts it. Putting the list on the client would
+    /// also make it client metadata, which RFC 7591 §2 lets a client *send* at
+    /// registration — an endpoint where a self-registering client would be
+    /// naming the audiences it may read tokens for. There is no spelling of
+    /// that which is not a privilege escalation, so the authority lives on the
+    /// side no client can write.
+    ///
+    /// Empty is the default and means "no client introspects tokens for this
+    /// resource server": a deployment that registers nothing here has an
+    /// introspection endpoint only the token's own client can use, which is
+    /// the narrowest thing §2.1 permits.
+    pub introspection_clients: BTreeSet<crate::ClientId>,
 }
 
 impl ResourceServer {
@@ -167,6 +197,13 @@ impl ResourceServer {
         self.scopes
             .as_ref()
             .is_none_or(|allowed| allowed.contains(scope))
+    }
+
+    /// Whether `caller` may introspect tokens audienced at this resource
+    /// server (RFC 7662 §2.1).
+    #[must_use]
+    pub fn introspected_by(&self, caller: &crate::ClientId) -> bool {
+        self.introspection_clients.contains(caller)
     }
 }
 
@@ -289,6 +326,39 @@ impl ResourceRegistry {
         Ok(chosen)
     }
 
+    /// Whether `caller` is a registered resource server for **any** of the
+    /// audiences a token names (RFC 7662 §2.1, §4).
+    ///
+    /// Any and not all, and that is the reading of §4 this server takes. A
+    /// token audienced at two APIs was issued to be presented at each of them
+    /// in turn; the one it is presented at is entitled to decide whether to
+    /// act on it, and that decision is what introspection answers. Requiring
+    /// the caller to front *every* audience would mean a token for two APIs
+    /// could be introspected by neither, which is not a narrower rule — it is
+    /// a broken one, and the deployments that hit it would answer it by
+    /// issuing single-audience tokens, ending up in the same place with more
+    /// tokens in flight.
+    ///
+    /// What the caller learns is bounded accordingly: the response is the
+    /// token's own claims, and every audience named in it is one the caller
+    /// can already read out of a token presented to it.
+    ///
+    /// An audience this tenant no longer registers matches nothing, so
+    /// withdrawing a resource server withdraws its introspection rights in the
+    /// same act.
+    #[must_use]
+    pub fn introspects<'a>(
+        &self,
+        caller: &crate::ClientId,
+        audiences: impl IntoIterator<Item = &'a str>,
+    ) -> bool {
+        audiences.into_iter().any(|audience| {
+            self.0
+                .get(audience)
+                .is_some_and(|server| server.introspected_by(caller))
+        })
+    }
+
     /// The scopes a token for `targets` may carry.
     ///
     /// `granted` is what the grant holds; the result is the subset every named
@@ -328,11 +398,138 @@ mod tests {
             identifier: ResourceIdentifier::parse(identifier).expect("a test identifier"),
             scopes: scopes.map(|s| s.iter().map(|s| (*s).to_owned()).collect()),
             default_token_lifetime: None,
+            introspection_clients: BTreeSet::new(),
         }
     }
 
     fn set(values: &[&str]) -> BTreeSet<String> {
         values.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    fn fronted_by(identifier: &str, callers: &[&str]) -> ResourceServer {
+        ResourceServer {
+            introspection_clients: callers.iter().map(|c| crate::ClientId::new(*c)).collect(),
+            ..server(identifier, None)
+        }
+    }
+
+    /// RFC 7662 §2.1: the caller must be authorized for *this* token. A client
+    /// the operator registered as the mouth of an API introspects the tokens
+    /// audienced at that API.
+    #[test]
+    fn a_registered_resource_server_introspects_its_own_audience() {
+        // Arrange
+        let registry = ResourceRegistry::new([fronted_by(
+            "https://api.example/accounts",
+            &["accounts-api"],
+        )]);
+
+        // Act
+        let allowed = registry.introspects(
+            &crate::ClientId::new("accounts-api"),
+            ["https://api.example/accounts"],
+        );
+
+        // Assert
+        assert!(allowed);
+    }
+
+    /// §4: only the protected resources that are authorized. A client that
+    /// fronts one API learns nothing about another's tokens.
+    #[test]
+    fn a_resource_server_does_not_introspect_another_audience() {
+        // Arrange
+        let registry = ResourceRegistry::new([
+            fronted_by("https://api.example/accounts", &["accounts-api"]),
+            fronted_by("https://api.example/payments", &["payments-api"]),
+        ]);
+
+        // Act
+        let allowed = registry.introspects(
+            &crate::ClientId::new("accounts-api"),
+            ["https://api.example/payments"],
+        );
+
+        // Assert
+        assert!(!allowed);
+    }
+
+    /// A token audienced at two APIs is introspectable by each of them: the
+    /// one it is presented at is the one entitled to decide about it.
+    #[test]
+    fn any_named_audience_is_enough() {
+        // Arrange
+        let registry = ResourceRegistry::new([
+            fronted_by("https://api.example/accounts", &["accounts-api"]),
+            fronted_by("https://api.example/payments", &["payments-api"]),
+        ]);
+
+        // Act
+        let allowed = registry.introspects(
+            &crate::ClientId::new("payments-api"),
+            [
+                "https://api.example/accounts",
+                "https://api.example/payments",
+            ],
+        );
+
+        // Assert
+        assert!(allowed);
+    }
+
+    /// Withdrawing a resource server withdraws its introspection rights in the
+    /// same act: an audience nobody registers matches nothing.
+    #[test]
+    fn an_unregistered_audience_authorises_nobody() {
+        // Arrange
+        let registry = ResourceRegistry::new([fronted_by(
+            "https://api.example/accounts",
+            &["accounts-api"],
+        )]);
+
+        // Act
+        let allowed = registry.introspects(
+            &crate::ClientId::new("accounts-api"),
+            ["https://api.example/withdrawn"],
+        );
+
+        // Assert
+        assert!(!allowed);
+    }
+
+    /// The default is the narrow one: a resource server nobody was registered
+    /// to front is introspected by nobody, not by everybody.
+    #[test]
+    fn a_resource_server_with_no_registered_caller_authorises_nobody() {
+        // Arrange
+        let registry = ResourceRegistry::new([server("https://api.example/accounts", None)]);
+
+        // Act
+        let allowed = registry.introspects(
+            &crate::ClientId::new("accounts-api"),
+            ["https://api.example/accounts"],
+        );
+
+        // Assert
+        assert!(!allowed);
+    }
+
+    /// A token with no audience at all authorises nobody. RFC 9068 §2.2 makes
+    /// `aud` required, so this is not a token this server mints — and an empty
+    /// iterator must not fall through to "allowed".
+    #[test]
+    fn no_audience_authorises_nobody() {
+        // Arrange
+        let registry = ResourceRegistry::new([fronted_by(
+            "https://api.example/accounts",
+            &["accounts-api"],
+        )]);
+
+        // Act
+        let allowed = registry.introspects(&crate::ClientId::new("accounts-api"), []);
+
+        // Assert
+        assert!(!allowed);
     }
 
     /// RFC 8707 §2: "an absolute URI […] MUST NOT include a fragment

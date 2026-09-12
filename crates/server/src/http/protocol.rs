@@ -25,6 +25,7 @@ use crate::http::device_code::DeviceCode;
 use crate::http::dpop::DpopEndpoint;
 use crate::http::grant_management;
 use crate::http::interaction::{self, InteractionContext};
+use crate::http::introspection;
 use crate::http::logout;
 use crate::http::par::{self, PushContext};
 use crate::http::passkeys::{self, PasskeyContext, PasskeyLoginContext};
@@ -325,6 +326,14 @@ pub fn routes(state: ProtocolState) -> Router {
             .route(
                 Endpoint::Revocation.path(),
                 post(revocation_endpoint).with_state(Arc::clone(&endpoints)),
+            )
+            // RFC 7662 §2.1: `POST` only, form-encoded, client-authenticated.
+            // No DPoP check, for the reason the revocation endpoint has none:
+            // nothing is issued here, so there is no key to bind anything to,
+            // and the client authentication is what says who the caller is.
+            .route(
+                Endpoint::Introspection.path(),
+                post(introspection_endpoint).with_state(Arc::clone(&endpoints)),
             )
             // OIDC Core §3.1.2.1 permits GET and POST at the authorization
             // endpoint, and RFC 9126 §4 says what they carry: `client_id` and
@@ -837,6 +846,7 @@ fn mount_the_unbuilt(
                     Endpoint::PushedAuthorizationRequest
                         | Endpoint::Token
                         | Endpoint::Revocation
+                        | Endpoint::Introspection
                         | Endpoint::Authorization
                         | Endpoint::Registration
                         | Endpoint::EndSession
@@ -2711,6 +2721,192 @@ impl crate::http::ssf::SsfTokenStatus for StoredStreams {
         grant: Option<&asterius_domain::GrantId>,
     ) -> Result<Option<time::OffsetDateTime>, DomainError> {
         self.grants.revoked_before(client, grant).await
+    }
+}
+
+/// `POST /introspect` — RFC 7662 §2.
+///
+/// Wiring only, like the revocation endpoint: everything that decides anything
+/// is in [`crate::http::introspection::introspect`], and the caller is
+/// authenticated by the same closure the token endpoint passes — one
+/// authenticator, so there is no second opinion about who a caller is
+/// (§2.1).
+///
+/// The limiter runs in front, with the `client_id` the body claims. That
+/// claim is unverified at this point, exactly as at `/token`, and it is the
+/// right key for the same reason: a caller who lies about it spends somebody
+/// else's budget only for the requests it then fails to authenticate, while
+/// the address bucket counts it regardless. §4's token scanning is what this
+/// prices — every answer to a scan is a 200 saying `active: false`, so nothing
+/// in the protocol tells a caller walking values to stop.
+async fn introspection_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let limits = endpoint_limits(
+        &endpoints,
+        &tenant,
+        &limiter,
+        client.as_deref(),
+        time::OffsetDateTime::now_utc(),
+    );
+    let claimed = crate::http::limits::claimed_client_id(&body);
+    let certificate = certificate.as_deref().map(|presented| &presented.leaf);
+    crate::http::limits::guard(
+        &limits,
+        asterius_domain::LimitedEndpoint::Introspection,
+        claimed.as_deref(),
+        async || {
+            introspection_endpoint_inner(&endpoints, &tenant, &headers, &body, certificate).await
+        },
+    )
+    .await
+}
+
+/// The introspection request itself, once the limiter has admitted it.
+async fn introspection_endpoint_inner(
+    endpoints: &Arc<ClientEndpoints>,
+    tenant: &Arc<Tenant>,
+    headers: &axum::http::HeaderMap,
+    body: &axum::body::Bytes,
+    certificate: Option<&asterius_oidc::mtls::ClientCertificate>,
+) -> Response {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let clients = scope.clients(endpoints.capabilities);
+    let source = StoredIntrospection {
+        grants: scope.grants(),
+        refresh_tokens: scope.refresh_tokens(),
+        resource_servers: scope.resource_servers(),
+        grace: tenant.refresh.grace(),
+    };
+
+    // The same read the token endpoint makes, and the same answer: whether
+    // this tenant puts the `grant_id` correlator in its access tokens
+    // (`ast-txw`). A settings read that fails is a 503 rather than a response
+    // that guesses — guessing `true` would publish a correlator the operator
+    // switched off.
+    let grant_id_exposed = match issuing_policy(endpoints, tenant).await {
+        Ok(policy) => policy.grant_id_claim,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
+
+    let now = time::OffsetDateTime::now_utc();
+    let authenticator = Arc::clone(&endpoints.authenticator);
+    let tenant_for_auth = Arc::clone(tenant);
+    let clients_for_auth = scope.clients(endpoints.capabilities);
+
+    introspection::introspect(
+        introspection::IntrospectionContext {
+            tenant,
+            clients: &clients,
+            source: &source,
+            keys: endpoints.keys.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            grant_id_exposed,
+            now,
+            certificate,
+        },
+        headers,
+        body,
+        async |attempt: &Attempt<'_>, rules: &AssertionRules| {
+            authenticator
+                .authenticate(&tenant_for_auth, &clients_for_auth, attempt, rules, now)
+                .await
+        },
+    )
+    .await
+}
+
+/// The stored rows behind introspection.
+///
+/// Reads only, and exactly five of them. Narrow like [`StoredClaims`] and
+/// [`StoredTokens`]: RFC 7662 describes a token and changes nothing, so this
+/// endpoint must not be able to reach `revoke`, `redeem` or `claim` through a
+/// repository it happens to hold. `PgRefreshTokenRepository::describe` is the
+/// read-only sibling of `redeem` for the same reason — an introspection that
+/// pushed a token's idle deadline out would let a caller keep a credential
+/// alive by asking about it.
+#[derive(Debug)]
+struct StoredIntrospection {
+    grants: asterius_store_pg::PgGrantRepository,
+    refresh_tokens: asterius_store_pg::PgRefreshTokenRepository,
+    resource_servers: asterius_store_pg::PgResourceServers,
+    /// The tenant's supersession grace, so that what this endpoint calls
+    /// active is what `/token` would still accept.
+    grace: time::Duration,
+}
+
+#[async_trait::async_trait]
+impl introspection::IntrospectionSource for StoredIntrospection {
+    async fn is_denylisted(&self, jti: &str) -> Result<bool, DomainError> {
+        self.grants.is_denylisted(jti).await
+    }
+
+    async fn access_tokens_revoked_before(
+        &self,
+        client: &asterius_domain::ClientId,
+        grant: Option<&asterius_domain::GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, DomainError> {
+        self.grants.revoked_before(client, grant).await
+    }
+
+    async fn grant(
+        &self,
+        id: &asterius_domain::GrantId,
+    ) -> Result<Option<asterius_domain::Grant>, DomainError> {
+        self.grants.find(id).await
+    }
+
+    async fn resource_servers(&self) -> Result<asterius_domain::ResourceRegistry, DomainError> {
+        use asterius_domain::ports::ResourceServerRepository as _;
+        Ok(asterius_domain::ResourceRegistry::new(
+            self.resource_servers.list().await?,
+        ))
+    }
+
+    async fn refresh_token(
+        &self,
+        digest: &str,
+        client: &asterius_domain::ClientId,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<introspection::RefreshTokenFacts>, DomainError> {
+        let Some(record) = self
+            .refresh_tokens
+            .describe(digest, client, now, self.grace)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(introspection::RefreshTokenFacts {
+            grant: record.grant,
+            scopes: record.scopes,
+            issued_at: record.issued_at,
+            expires_at: record.absolute_expires_at,
+            // RFC 9449 §6.2 and RFC 8705 §3.1, rendered from whichever of the
+            // two columns the row carries. A certificate thumbprint is stored
+            // as bytes and published as base64url, which is the only spelling
+            // `x5t#S256` has.
+            confirmation: match &record.binding {
+                asterius_store_pg::RefreshBinding::Dpop(jkt) => {
+                    Some(serde_json::json!({ "jkt": jkt }))
+                }
+                asterius_store_pg::RefreshBinding::Certificate(digest) => {
+                    use base64::Engine as _;
+                    Some(serde_json::json!({
+                        "x5t#S256": base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .encode(digest),
+                    }))
+                }
+            },
+        }))
     }
 }
 
@@ -5774,6 +5970,7 @@ mod tests {
                 }
                 LimitedEndpoint::Token => "LimitedEndpoint::Token",
                 LimitedEndpoint::UserInfo => "LimitedEndpoint::UserInfo",
+                LimitedEndpoint::Introspection => "LimitedEndpoint::Introspection",
                 LimitedEndpoint::SsfSubjects => "LimitedEndpoint::SsfSubjects",
                 LimitedEndpoint::Backchannel => "LimitedEndpoint::Backchannel",
                 LimitedEndpoint::AccessEvaluation => "LimitedEndpoint::AccessEvaluation",

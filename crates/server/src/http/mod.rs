@@ -44,6 +44,7 @@ pub mod grant_management;
 pub mod i18n;
 pub mod id_token_hint;
 pub mod interaction;
+pub mod introspection;
 pub mod issuance;
 pub mod limits;
 pub mod logout;

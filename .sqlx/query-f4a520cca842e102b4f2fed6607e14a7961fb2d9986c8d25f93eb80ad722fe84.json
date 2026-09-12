@@ -1,0 +1,68 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select grant_id, client_id, scopes, dpop_jkt, cert_thumbprint,\n                    issued_at, absolute_expires_at, superseded_at\n               from refresh_tokens\n              where tenant_id = $1\n                and token_hash = $2\n                and client_id = $5\n                and revoked_at is null\n                and absolute_expires_at > $3\n                and (idle_expires_at is null or idle_expires_at > $3)\n                and (superseded_at is null or superseded_at > $4)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grant_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "dpop_jkt",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "cert_thumbprint",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "issued_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "absolute_expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "superseded_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Timestamptz",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "f4a520cca842e102b4f2fed6607e14a7961fb2d9986c8d25f93eb80ad722fe84"
+}

@@ -262,6 +262,34 @@ refuses any token of that grant minted at or before it. The grant stays live,
 so an authorization nobody withdrew is still there to mint from — which is why
 the mark had to be a line in time rather than a flag.
 
+### Introspection endpoint (RFC 7662)
+
+`ast-1sk.1` adds `POST /introspect`, which moves a trust boundary in a
+direction the other endpoints do not: it is the only place this server *tells a
+third party what a credential is*. Everywhere else a caller presents a token
+and is served or refused; here a caller presents somebody else's token and asks
+for its contents. RFC 7662 §4 is the whole section the design answers to.
+
+| Attacker | Goal | Attack it enables | Control | Bead |
+|---|---|---|---|---|
+| A1 | G1, G3 | **Token scanning** (§4, named there): a registered client walks values — from a log line, a proxy trace, a partial leak — and reads off the answer to "is this a live credential here?". The endpoint is the perfect oracle for it, because unlike `/revoke` it is designed to *describe* what it finds | One answer for three facts, as §2.2's note requires: expired or revoked, never issued here, and issued but none of this caller's business are all `{"active": false}` with a 200. The refusals a caller can tell apart are decided before any lookup — §2.1's client authentication (401, §2.3) and a malformed request (400) — so neither depends on what the store holds. `LimitedEndpoint::Introspection` prices the walk: the per-client bucket is the one that matters, because §2.1 guarantees a proven caller to charge | `ast-1sk.1` |
+| A1 | G1, G4 | Learns the contents of a token it was never meant to read: a registered client of the tenant introspects a token audienced at an API it has nothing to do with, and gets the `sub`, the scopes and the authorization details of somebody else's integration | Two authorized callers and no others: the client the token was issued to (`client_id`, read only after the signature verified) and a client the operator registered as a resource server for one of the token's audiences (`resource_servers.introspection_clients`, RFC 7662 §4's "only allow … protected resources that are authorized"). The list is operator-written and deliberately *not* client metadata: RFC 7591 §2 lets a client send its own metadata at registration, so a `resource_servers` field on the client row would be a self-registering client naming the audiences whose tokens it may read. Every existing deployment migrates into the empty list, which is the narrowest posture | `ast-1sk.1` |
+| A1 | G3 | Distinguishes the refusals by something other than the body: an unauthorized caller's request short-circuits before the denylist, the cutoffs, the grant and the registry are read, and the difference shows in latency, in database load and in the trail | Every read happens before the authorization decision and regardless of it; the decision is a comparison on values already in hand and chooses only which of two bodies is serialised. Asserted by counting the reads a fake source sees, not by a stopwatch — the property wanted is "the two did the same work", which is countable, rather than "the two took the same time", which is flaky and proves less | `ast-1sk.1` |
+| A1 | G1 | Introspects a *refresh* token that is not its own, or keeps one alive by asking about it: the idle deadline moves on every presentation, and an introspection is a presentation | The lookup is `PgRefreshTokenRepository::describe`, a read with the `client_id` inside the `where` clause — another client's row does not match, so "not yours" and "no such token" are one miss — and it is a sibling of `redeem` rather than a call to it, so nothing is stamped and no clock moves. A refresh token has no audience, so no registry entry can authorize a third party for one | `ast-1sk.1` |
+| A1, A5 | G4 | Correlates a person's activity across resource servers using the `grant_id` the response hands over: two answers carrying the same one say they came from a single authorization (RFC 9068 §6) | The private member follows the tenant switch `ast-txw` made for the claim itself, and is emitted only when the tenant already puts `grant_id` in its access tokens. A deployment that withholds the correlator from the token withholds it here too; handing it over at this endpoint instead would have spent the decision without making it. Everything else in the response is a projection of claims the token already carries, copied byte for byte rather than re-rendered, so a resource server acts on what the issuer signed | `ast-1sk.1`, `ast-txw` |
+| A5 | G4 | Reads a live credential, or the map of which resource server holds which client's tokens, out of the audit trail | The entry records the caller, the hint it sent and whether it was told the token was active. Not the token, not its `jti` — the first two are or identify a live credential — and not the client the token was issued to, which would turn the trail into exactly that map. Every call is recorded whatever the answer, because a scan is invisible in any single response and a run of entries against one caller is the only place it shows | `ast-1sk.1` |
+| A1, A2 | G1 | Turns an outage into an authorization decision: the registry or the denylist cannot be read, the endpoint answers `active: false`, and a resource server refuses a request its user is entitled to make | A storage failure is a 503 `temporarily_unavailable`, never `active: false`. §2.2's note collapses three facts *about a token* into that answer and an outage is not one of them; a resource server told `active: false` does not retry | `ast-1sk.1` |
+
+Two things this endpoint deliberately does **not** do. It does not answer
+§2.2's `username`: this server does not put one in an access token, and reading
+a user row to add it would hand every registered resource server a directory
+lookup keyed by a token — the `sub` is the identifier a resource server is
+meant to key by. And it does not fall back to UserInfo's search by `sub` and
+`client_id` when a tenant withholds `grant_id`: that search refuses when a
+person holds two grants to one client, so an `active: false` would depend on
+how many authorizations the person happens to hold, which is a fact about
+somebody else's account leaked through this endpoint.
+
 ### Admin console (first-party, same-origin)
 
 [ADR-0009](adr/0009-the-admin-console-is-a-first-party-same-origin-app.md)

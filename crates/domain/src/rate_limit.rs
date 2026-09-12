@@ -361,9 +361,7 @@ pub trait RateLimitStore: Debug + Send + Sync {
 /// already passed a limiter. `/authorize` and `/interaction` are absent
 /// deliberately: the sign-in they lead to is bounded by the login limiter
 /// (`ast-2vk.9`), and a second counter over the same requests would silently
-/// halve a number an operator configured once. `/introspect` is absent because
-/// it is not built — it answers 501 — and limiting a constant answer limits
-/// nothing.
+/// halve a number an operator configured once.
 ///
 /// `/revoke` is built (`ast-1sk.2`) and is *not* limited yet, which is a gap
 /// rather than a decision: it authenticates its caller with a signature
@@ -400,6 +398,17 @@ pub enum LimitedEndpoint {
     /// only one with a [`Scope::Subject`] bucket — see
     /// [`EndpointLimit::per_subject`].
     Backchannel,
+    /// `POST /introspect` — RFC 7662 §2.1 (`ast-1sk.1`).
+    ///
+    /// The endpoint §4 says an attacker uses "to determine whether a token is
+    /// valid", and the one whose refusals are indistinguishable from its
+    /// answers: every unauthorized or unknown token is `active: false` with a
+    /// 200, so nothing about a single response tells a caller to stop. The
+    /// limiter is what makes a scan cost something, and the client bucket is
+    /// the one that matters — §2.1 requires the caller to be authenticated, so
+    /// there is always a proven caller to charge, and one busy resource server
+    /// must not spend the budget of every other one behind the same address.
+    Introspection,
     /// `POST /access/v1/evaluation` — Authorization API 1.0 §10.1
     /// (`ast-pj0.1`).
     ///
@@ -416,12 +425,13 @@ pub enum LimitedEndpoint {
 impl LimitedEndpoint {
     /// Every endpoint that has limits, so a caller can iterate over them
     /// without writing the list a second time.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Registration,
         Self::ClientConfiguration,
         Self::PushedAuthorizationRequest,
         Self::Token,
         Self::UserInfo,
+        Self::Introspection,
         Self::SsfSubjects,
         Self::Backchannel,
         Self::AccessEvaluation,
@@ -436,6 +446,7 @@ impl LimitedEndpoint {
             Self::PushedAuthorizationRequest => "par",
             Self::Token => "token",
             Self::UserInfo => "userinfo",
+            Self::Introspection => "introspection",
             Self::SsfSubjects => "ssf_subjects",
             Self::Backchannel => "backchannel",
             Self::AccessEvaluation => "access_evaluation",
@@ -589,6 +600,8 @@ pub struct EndpointLimits {
     pub token: EndpointLimit,
     /// UserInfo.
     pub userinfo: EndpointLimit,
+    /// `POST /introspect`.
+    pub introspection: EndpointLimit,
     /// The SSF add-subject and remove-subject endpoints.
     pub ssf_subjects: EndpointLimit,
     /// `POST /bc-authorize`.
@@ -607,6 +620,7 @@ impl EndpointLimits {
             LimitedEndpoint::PushedAuthorizationRequest => self.par,
             LimitedEndpoint::Token => self.token,
             LimitedEndpoint::UserInfo => self.userinfo,
+            LimitedEndpoint::Introspection => self.introspection,
             LimitedEndpoint::SsfSubjects => self.ssf_subjects,
             LimitedEndpoint::Backchannel => self.backchannel,
             LimitedEndpoint::AccessEvaluation => self.access_evaluation,
@@ -731,6 +745,7 @@ mod tests {
             par: plain,
             token: plain,
             userinfo: plain,
+            introspection: plain,
             ssf_subjects: plain,
             backchannel: EndpointLimit {
                 per_subject: Some(RateLimit { max: 3, window }),

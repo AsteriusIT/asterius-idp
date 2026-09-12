@@ -11723,6 +11723,10 @@ db_test! {
             identifier: ResourceIdentifier::parse("https://reports.example/").expect("an identifier"),
             scopes: Some(["read".to_owned()].into_iter().collect()),
             default_token_lifetime: Some(time::Duration::seconds(120)),
+            introspection_clients: ["reports-api".to_owned()]
+                .into_iter()
+                .map(asterius_domain::ClientId::new)
+                .collect(),
         };
         registry.register(&scoped).await.expect("register");
 
@@ -11734,6 +11738,14 @@ db_test! {
             .expect("the registered resource server");
         assert_eq!(found.scopes, scoped.scopes);
         assert_eq!(found.default_token_lifetime, Some(time::Duration::seconds(120)));
+        // RFC 7662 §2.1, `ast-1sk.1`: which client speaks for this API is an
+        // operator's statement and survives the round trip. The seeded row has
+        // none, which is the posture a deployment that registered nothing gets.
+        assert_eq!(found.introspection_clients, scoped.introspection_clients);
+        assert!(
+            seeded[0].introspection_clients.is_empty(),
+            "a tenant's default audience was born introspectable by somebody"
+        );
 
         // A resource server that understands no scopes at all is a
         // configuration, not an absence.
@@ -11777,6 +11789,7 @@ db_test! {
                     .expect("an identifier"),
                 scopes: None,
                 default_token_lifetime: None,
+                introspection_clients: std::collections::BTreeSet::new(),
             })
             .await
             .expect("register");

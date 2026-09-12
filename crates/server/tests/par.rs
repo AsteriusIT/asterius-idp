@@ -65,6 +65,7 @@ fn registry() -> FakeResourceServers {
         identifier: ResourceIdentifier::parse(RESOURCE).expect("a resource indicator"),
         scopes: None,
         default_token_lifetime: None,
+        introspection_clients: std::collections::BTreeSet::new(),
     }])
 }
 

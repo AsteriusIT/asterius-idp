@@ -599,6 +599,12 @@ fn ssf_resource(tenant: &Tenant, offered: bool) -> Option<asterius_domain::Resou
         ),
         // No opinion: the tenant's own access-token lifetime applies.
         default_token_lifetime: None,
+        // Nobody introspects tokens for this audience (RFC 7662 §2.1,
+        // `ast-1sk.1`). This resource server *is* this deployment: it verifies
+        // the tokens presented to it with the keys it signed them with, and
+        // there is no third party to authorize. A client registered here would
+        // be a client entitled to read this server's own tokens.
+        introspection_clients: std::collections::BTreeSet::new(),
     })
 }
 
@@ -631,6 +637,12 @@ fn ssf_poll_resource(tenant: &Tenant, offered: bool) -> Option<asterius_domain::
                 .collect(),
         ),
         default_token_lifetime: None,
+        // Nobody introspects tokens for this audience (RFC 7662 §2.1,
+        // `ast-1sk.1`). This resource server *is* this deployment: it verifies
+        // the tokens presented to it with the keys it signed them with, and
+        // there is no third party to authorize. A client registered here would
+        // be a client entitled to read this server's own tokens.
+        introspection_clients: std::collections::BTreeSet::new(),
     })
 }
 
@@ -688,6 +700,12 @@ fn grant_management_resource(
         // No opinion: the tenant's own access-token lifetime applies, which is
         // the one an operator has already set.
         default_token_lifetime: None,
+        // Nobody introspects tokens for this audience (RFC 7662 §2.1,
+        // `ast-1sk.1`). This resource server *is* this deployment: it verifies
+        // the tokens presented to it with the keys it signed them with, and
+        // there is no third party to authorize. A client registered here would
+        // be a client entitled to read this server's own tokens.
+        introspection_clients: std::collections::BTreeSet::new(),
     })
 }
 

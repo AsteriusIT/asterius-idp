@@ -528,6 +528,8 @@ struct RawLimits {
     token_per_address: Option<u32>,
     token_per_client: Option<u32>,
     userinfo_per_address: Option<u32>,
+    introspection_per_address: Option<u32>,
+    introspection_per_client: Option<u32>,
     ssf_subjects_per_address: Option<u32>,
     ssf_subjects_per_client: Option<u32>,
     backchannel_per_address: Option<u32>,
@@ -835,6 +837,24 @@ pub(crate) const DEFAULT_LIMIT_TOKEN_PER_CLIENT: u32 = 1200;
 /// deployment on the day it got busy, and the endpoint is a read of claims the
 /// caller already holds a token for.
 pub(crate) const DEFAULT_LIMIT_USERINFO_PER_ADDRESS: u32 = 600;
+
+/// Introspection — per address, per window (RFC 7662, `ast-1sk.1`).
+///
+/// Sized like UserInfo's, and for the same reason: the callers are resource
+/// servers, a handful of machines making a request per API call each, often
+/// all behind one address.
+pub(crate) const DEFAULT_LIMIT_INTROSPECTION_PER_ADDRESS: u32 = 600;
+
+/// The same, per authenticated caller.
+///
+/// Higher than the address limit, for the reason `/token`'s is: several
+/// resource servers can share one address, and one that has proven who it is
+/// should not be bounded by traffic it did not make. This is the bucket that
+/// matters here — RFC 7662 §2.1 requires the caller to authenticate, so there
+/// is always a proven caller to charge, and it is the bucket that prices §4's
+/// token scanning: every answer to a scan is a 200 saying `active: false`, so
+/// nothing else tells a caller walking values to stop.
+pub(crate) const DEFAULT_LIMIT_INTROSPECTION_PER_CLIENT: u32 = 3_000;
 
 /// The SSF add-subject and remove-subject endpoints — per address, per window.
 ///
@@ -1310,6 +1330,35 @@ fn validate_limits(raw: &RawLimits, errors: &mut Collector) -> EndpointLimits {
 ///
 /// `limit` reports its own problems into the collector its caller holds, so a
 /// configuration with four bad numbers still reports four.
+/// What `POST /introspect` permits, per window (RFC 7662, `ast-1sk.1`).
+///
+/// A function of its own rather than three more lines in
+/// [`configured_endpoint_limits`], which is already at the length clippy
+/// refuses: the list there is long because the endpoints are many, and the
+/// next endpoint to be limited should pull its own paragraph out with it
+/// rather than push the list over the edge again.
+fn configured_introspection_limit(
+    raw: &RawLimits,
+    limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
+) -> EndpointLimit {
+    EndpointLimit {
+        per_address: limit(
+            "limits.introspection_per_address",
+            raw.introspection_per_address,
+            DEFAULT_LIMIT_INTROSPECTION_PER_ADDRESS,
+        ),
+        // Unlike UserInfo, this endpoint has a proven caller by the time it is
+        // counted: RFC 7662 §2.1 authenticates the client before anything is
+        // looked up, so the caller charged is one that proved who it is.
+        per_client: Some(limit(
+            "limits.introspection_per_client",
+            raw.introspection_per_client,
+            DEFAULT_LIMIT_INTROSPECTION_PER_CLIENT,
+        )),
+        per_subject: None,
+    }
+}
+
 fn configured_endpoint_limits(
     raw: &RawLimits,
     limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
@@ -1373,6 +1422,7 @@ fn configured_endpoint_limits(
             per_client: None,
             per_subject: None,
         },
+        introspection: configured_introspection_limit(raw, limit),
         backchannel: EndpointLimit {
             per_address: limit(
                 "limits.backchannel_per_address",

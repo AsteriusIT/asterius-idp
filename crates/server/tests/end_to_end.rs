@@ -725,6 +725,7 @@ impl Flow {
                 .expect("a resource indicator"),
             scopes: scopes.map(|s| s.iter().map(|s| (*s).to_owned()).collect()),
             default_token_lifetime: None,
+            introspection_clients: std::collections::BTreeSet::new(),
         })
         .await
         .expect("register the resource server");
@@ -1357,6 +1358,7 @@ fn generous_endpoint_limits() -> EndpointLimits {
         par: limit,
         token: limit,
         userinfo: limit,
+        introspection: limit,
         ssf_subjects: limit,
         // Generous here too, and present rather than absent: a fixture that
         // left `/bc-authorize` without a subject bucket would be a fixture
