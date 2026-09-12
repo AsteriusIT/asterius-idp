@@ -873,7 +873,11 @@ test('the policy editor refuses a bad document, saves a good one and answers the
     ),
   );
   await page.getByRole('button', { name: 'Save policy' }).click();
-  await expect(page.getByText('The policy was replaced.')).toBeVisible();
+  // The record, in the screen's one `status`, and not `getByText`: the
+  // document in the editor beside it spells the same sort of sentence, and the
+  // announcement of the same act is a toast (`ast-e9nd`).
+  await expect(page.getByRole('status')).toContainText('The policy was replaced.');
+  await expect(toastStrip(page)).toContainText('Policy saved');
   await expect(page.getByRole('cell', { name: 'anyone-may-read' })).toBeVisible();
 
   // Act: the bench, on a request the rule permits.
@@ -902,7 +906,7 @@ test('the policy editor refuses a bad document, saves a good one and answers the
   // other tests find it.
   await page.getByRole('button', { name: 'Remove policy' }).click();
   await page.getByRole('alertdialog').getByRole('button', { name: 'Remove it' }).click();
-  await expect(page.getByText('The policy was removed.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('The policy was removed.');
 });
 
 test('the shared-signals, audit and policy screens have no accessibility violation', async (
@@ -1249,6 +1253,28 @@ test('a field says what the server would refuse, without refusing it', async ({ 
 });
 
 /**
+ * The toast strip, whose contents are what was *announced*.
+ *
+ * Located by structure rather than by role on purpose: `Toaster` carries
+ * `aria-live` and deliberately no `role`, so that the one `status` on a screen
+ * stays the screen's record and not a second voice saying the same thing (see
+ * `console/src/components/ui/toast.tsx`). `Message` is a polite live region
+ * too, so `aria-live` alone would match the record as well; the dismiss button
+ * is the part only a toast has.
+ *
+ * Asserting inside this container is also what keeps the assertion off the
+ * screen's prose. `getByText('Client registered')` matched neither the toast
+ * nor the record when this file was fixed (`ast-e9nd`): it matched "Every
+ * client registered against …" and the empty state beside it, because
+ * `getByText` matches a substring, case-insensitively, anywhere on the page.
+ */
+function toastStrip(page: Page): Locator {
+  return page
+    .locator('[aria-live="polite"]')
+    .filter({ has: page.getByRole('button', { name: 'Dismiss' }) });
+}
+
+/**
  * (3) An act on the clients screen is announced by a toast *and* recorded
  * where it happened.
  *
@@ -1267,9 +1293,9 @@ test('registering a client raises a toast and keeps the record', async ({ page }
   await fillNewClient(page, name, 'https://app.example.test/callback');
   await page.getByRole('button', { name: 'Register client' }).click();
 
-  // Assert: the announcement, which carries no `role` of its own — see
-  // `console/src/components/ui/toast.tsx` — and the record, which is the
-  // screen's one `status`.
-  await expect(page.getByText('Client registered')).toBeVisible();
+  // Assert: the announcement, read inside the strip that holds it, and the
+  // record, which is the screen's one `status`. Each has its own container, so
+  // neither assertion can be satisfied — or broken — by the other's element.
+  await expect(toastStrip(page)).toContainText('Client registered');
   await expect(page.getByRole('status')).toContainText(/Registered as c\./);
 });
