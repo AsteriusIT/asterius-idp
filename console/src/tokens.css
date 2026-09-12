@@ -1,0 +1,159 @@
+/*
+ * The design tokens, and the *second* copy of them.
+ *
+ * The first is `crates/web/templates/style.css`, which is the one this file
+ * follows: `ast-fe39` asks the console to speak the visual language the
+ * user-facing pages were redrawn in (`7f428d2`, direction A), and a console
+ * whose indigo is a different indigo is a console that looks like a different
+ * product.
+ *
+ * # Why a copy and not one file
+ *
+ * The two consumers cannot read the same bytes. `style.css` is `include!`d
+ * into the one nonce-carrying `<style>` element of every server-rendered page,
+ * because ADR-0009's policy lets no stylesheet arrive from anywhere the
+ * document did not name with this response's nonce; the console's CSS is
+ * bundled by Vite into a content-hashed file that the entry document links,
+ * also nonced. One is a Rust `include_str!` at `crates/web/templates/`, the
+ * other an ES module import resolved by a bundler that does not exist at
+ * `cargo build` time, and the file a bundler can import is not a file askama
+ * can inline without either crossing a crate boundary with a relative path at
+ * build time or teaching Vite to read the templates directory.
+ *
+ * So the values are duplicated *and the duplication is checked*:
+ * `asterius_web::theme`'s `the_console_declares_the_same_design_tokens` parses
+ * the first `:root` rule of both files and fails if any token drifts. A
+ * duplicate nobody compares is a fork; a duplicate a test compares is a cache.
+ *
+ * # The one token that legitimately differs
+ *
+ * `--font`. The server-rendered pages are served Geist from this deployment's
+ * own origin, at a hashed path whose URL carries the request's mount prefix
+ * (`asterius_web::brand`) — a URL the console's bundle cannot know and whose
+ * `@font-face` lives in `base.html`. The console therefore takes the *tail* of
+ * that stack: the same faces a browser falls back to, and nothing fetched from
+ * an outside origin, which `font-src 'self'` would refuse anyway. The test
+ * asserts exactly that relationship rather than skipping the token.
+ */
+
+/* The shared layer: every token below is `style.css`'s, value for value. */
+:root {
+  color-scheme: light;
+  --fg: #18181b;
+  --bg: #ffffff;
+  --muted: #71717a;
+  --line: #e4e4e7;
+  --accent: #3f3fbf;
+  --accent-fg: #ffffff;
+  --danger: #b42318;
+  --radius: 8px;
+  --space: 8px;
+  --font: system-ui, -apple-system, Segoe UI, sans-serif;
+  --card: var(--bg);
+  --backdrop: #f8f7f4;
+  --backdrop: color-mix(in srgb, var(--bg) 94%, #a8a29e);
+  --ctl: 6px;
+  --tap: 44px;
+  --shadow: 0 1px 2px rgba(24, 24, 27, .05), 0 8px 24px rgba(24, 24, 27, .06);
+}
+
+/* The console layer: what a screen with a sidebar, tables and dialogs needs
+   and a centred card does not. Derived from the shared tokens wherever a value
+   can be derived, so a change above moves the console with it. */
+:root {
+  /* Spacing, as multiples of the shared 8px step. Named by size rather than by
+     use, because the same 12px is a form's row gap and a table cell's padding
+     and neither name would fit the other. */
+  --space-1: calc(var(--space) * .5);
+  --space-2: var(--space);
+  --space-3: calc(var(--space) * 1.5);
+  --space-4: calc(var(--space) * 2);
+  --space-5: calc(var(--space) * 3);
+  --space-6: calc(var(--space) * 4);
+
+  /* Radii. The card's and the control's are shared; a console also has
+     surfaces larger than a card and pills that are neither. */
+  --radius-lg: calc(var(--radius) * 1.5);
+  --radius-pill: 999px;
+
+  /* The type scale the user-facing pages already use, written down as steps so
+     a screen names a step rather than a literal. */
+  --text-xs: .75rem;
+  --text-sm: .8125rem;
+  --text-base: .875rem;
+  --text-md: .9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+
+  /* Surfaces. The console is a page of panels rather than one card, so it
+     needs a quieter plane behind them and a rail beside them. Both are the
+     backdrop's recipe at other strengths, so a palette change moves all three
+     together. */
+  --surface: var(--card);
+  --surface-sunken: color-mix(in srgb, var(--bg) 96%, #a8a29e);
+  --rail: color-mix(in srgb, var(--bg) 92%, #a8a29e);
+  --overlay: rgba(24, 24, 27, .45);
+
+  /* Meaning carried by colour is always carried by something else as well
+     (WCAG 2.2 §1.4.1); these are what that something else is *tinted* with.
+     Each clears 4.5:1 on `--card`. */
+  --success: #116343;
+  --warning: #7a4b00;
+  --info: var(--accent);
+  --tint-success: color-mix(in srgb, var(--success) 10%, var(--card));
+  --tint-warning: color-mix(in srgb, var(--warning) 10%, var(--card));
+  --tint-danger: color-mix(in srgb, var(--danger) 10%, var(--card));
+  --tint-accent: color-mix(in srgb, var(--accent) 10%, var(--card));
+
+  /* Elevation. The shared `--shadow` is the card's; a menu and a dialog sit
+     above it and a table header sits below. */
+  --shadow-sm: 0 1px 2px rgba(24, 24, 27, .06);
+  --shadow-lg: 0 12px 32px rgba(24, 24, 27, .18);
+
+  /* Motion. Short enough that nothing waits on it, and switched off entirely
+     for a visitor who asked for that (see `prefers-reduced-motion` in
+     `styles.css`). */
+  --motion-fast: 90ms;
+  --motion: 160ms;
+  --ease: cubic-bezier(.2, .6, .3, 1);
+
+  /* The rail's width, named because the header, the rail and the content grid
+     all have to agree on it. */
+  --rail-width: 15rem;
+  --content-max: 72rem;
+}
+
+/*
+ * Dark, and only here.
+ *
+ * `style.css` deliberately has no `prefers-color-scheme` block (`ast-vn7`): a
+ * tenant's palette is appended to it and a media query would substitute
+ * colours that tenant's contrast check never saw. The console is not themed by
+ * a tenant — it is this deployment's own tool, drawn in this deployment's own
+ * colours — so the objection does not apply, and the six pairings below were
+ * chosen against each other for AA on normal text.
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --fg: #f2f2f4;
+    --bg: #17171a;
+    --muted: #a3a3ad;
+    --line: #33333a;
+    --accent: #a9b4ff;
+    --accent-fg: #16161c;
+    --danger: #ff9d92;
+    --card: #1d1d21;
+    --backdrop: #121215;
+    --surface: var(--card);
+    --surface-sunken: #232329;
+    --rail: #1a1a1f;
+    --overlay: rgba(0, 0, 0, .6);
+    --success: #7ddba9;
+    --warning: #e7b667;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, .55);
+  }
+}
