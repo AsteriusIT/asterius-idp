@@ -53,6 +53,7 @@ import {
   Screen,
   Skeleton,
 } from './ui';
+import { emailAddress, username as usernameComplaint } from './validation';
 
 /** Whether an account may authenticate, mirroring `UserStatus`. */
 export type UserStatus = 'active' | 'disabled' | 'locked';
@@ -492,7 +493,9 @@ function NewAccount({
     <Panel id="new-account" title="Add an account">
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={submit}>
-        <Field label="Username" required>
+        {/* `accept_username` is what refuses one; this is the same rule said
+            a round trip earlier (`ast-f9j5` (2), `validation.ts`). */}
+        <Field label="Username" required error={usernameComplaint(username)}>
           {(props) => (
             <input
               {...props}
@@ -502,7 +505,7 @@ function NewAccount({
             />
           )}
         </Field>
-        <Field label="Email">
+        <Field label="Email" error={emailAddress(email)}>
           {(props) => (
             <input
               {...props}
@@ -1011,7 +1014,7 @@ function ClaimsEditor({
     <Panel id="claims" title="Claims">
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={save}>
-        <Field label="Email">
+        <Field label="Email" error={emailAddress(email)}>
           {(props) => (
             <input
               {...props}

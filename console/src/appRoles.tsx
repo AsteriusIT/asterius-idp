@@ -35,6 +35,7 @@ import { toast } from './components/ui/toast';
 import {
   Actions,
   Button,
+  DataTable,
   EmptyState,
   Field,
   LoadFailure,
@@ -42,6 +43,7 @@ import {
   Panel,
   Skeleton,
 } from './ui';
+import { roleDescription, roleName } from './validation';
 
 /** The scope a catalogue is read with. */
 export const READ_SCOPE = 'admin.app_roles:read';
@@ -241,34 +243,43 @@ export function RoleCatalogue({
         />
       )}
       {load.kind === 'ready' && load.value.roles.length > 0 && (
-        <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Role</th>
-              <th scope="col">What it is for</th>
-              {writable && <th scope="col">Delete</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {load.value.roles.map((role) => (
-              <tr key={role.name}>
-                <td>
-                  <code>{role.name}</code>
-                </td>
-                <td>{role.description ?? ''}</td>
-                {writable && (
-                  <td className="actions-cell">
-                    <Button small disabled={busy} onClick={() => remove(role.name)}>
-                      Delete
-                    </Button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
+        <DataTable
+          rows={load.value.roles}
+          rowKey={(role) => role.name}
+          search={{
+            of: (role) => `${role.name} ${role.description ?? ''}`,
+            placeholder: 'Filter the catalogue…',
+            label: 'Filter these roles by name or description',
+          }}
+          columns={[
+            {
+              key: 'name',
+              header: 'Role',
+              sortBy: (role) => role.name,
+              cell: (role) => <code>{role.name}</code>,
+            },
+            {
+              key: 'description',
+              header: 'What it is for',
+              sortBy: (role) => role.description ?? '',
+              cell: (role) => role.description ?? '',
+            },
+            ...(writable
+              ? [
+                  {
+                    key: 'delete',
+                    header: 'Delete',
+                    actions: true,
+                    cell: (role: AppRole) => (
+                      <Button small disabled={busy} onClick={() => remove(role.name)}>
+                        Delete <span className="visually-hidden">{role.name}</span>
+                      </Button>
+                    ),
+                  },
+                ]
+              : []),
+          ]}
+        />
       )}
       {writable && (
         <form
@@ -282,6 +293,11 @@ export function RoleCatalogue({
             <legend>Define a role</legend>
             <Field
               label="Name"
+              required
+              // Said while it is being typed, and never instead of the
+              // server's own refusal: `RoleName::parse` decides, this only
+              // saves the round trip. See `validation.ts`.
+              error={roleName(name)}
               hint={
                 <>
                   Lower case, digits and <code>-_.:</code>, up to 64 characters. The name is
@@ -304,6 +320,7 @@ export function RoleCatalogue({
             <Field
               label="What it is for"
               hint="For whoever assigns it. It is never issued in a token."
+              error={roleDescription(description)}
             >
               {(props) => (
                 <input
@@ -467,44 +484,52 @@ export function UserAppRoles({
         <EmptyState title="This account holds no application role." />
       )}
       {load.kind === 'ready' && held.length > 0 && (
-        <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Role</th>
-              <th scope="col">Catalogue</th>
-              {writable && <th scope="col">Withdraw</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {held.map((assignment) => (
-              <tr key={`${assignment.clientId ?? ''}:${assignment.role}`}>
-                <td>
-                  <code>{assignment.role}</code>
-                </td>
-                <td>
-                  {assignment.clientId === null ? (
-                    'the tenant'
-                  ) : (
-                    <code>{assignment.clientId}</code>
-                  )}
-                </td>
-                {writable && (
-                  <td className="actions-cell">
-                    <Button
-                      small
-                      disabled={busy || saving}
-                      onClick={() => withdraw(assignment.role, assignment.clientId)}
-                    >
-                      Withdraw
-                    </Button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        </div>
+        <DataTable
+          rows={held}
+          rowKey={(assignment) => `${assignment.clientId ?? ''}:${assignment.role}`}
+          search={{
+            of: (assignment) => `${assignment.role} ${assignment.clientId ?? 'the tenant'}`,
+            placeholder: 'Filter these assignments…',
+            label: 'Filter these assignments by role or catalogue',
+          }}
+          columns={[
+            {
+              key: 'role',
+              header: 'Role',
+              sortBy: (assignment) => assignment.role,
+              cell: (assignment) => <code>{assignment.role}</code>,
+            },
+            {
+              key: 'catalogue',
+              header: 'Catalogue',
+              sortBy: (assignment) => assignment.clientId ?? '',
+              cell: (assignment) =>
+                assignment.clientId === null ? (
+                  'the tenant'
+                ) : (
+                  <code>{assignment.clientId}</code>
+                ),
+            },
+            ...(writable
+              ? [
+                  {
+                    key: 'withdraw',
+                    header: 'Withdraw',
+                    actions: true,
+                    cell: (assignment: { role: string; clientId: string | null }) => (
+                      <Button
+                        small
+                        disabled={busy || saving}
+                        onClick={() => withdraw(assignment.role, assignment.clientId)}
+                      >
+                        Withdraw <span className="visually-hidden">{assignment.role}</span>
+                      </Button>
+                    ),
+                  },
+                ]
+              : []),
+          ]}
+        />
       )}
       {writable && (
         <form

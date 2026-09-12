@@ -124,7 +124,12 @@ export function Panel({
             <h3 id={headingId}>{title}</h3>
             {description !== undefined && <p className="muted">{description}</p>}
           </div>
-          {actions !== undefined && <CardAction>{actions}</CardAction>}
+          {/* A row with a gap: a panel's actions are a *set* of controls, and
+              `CardAction` is one grid cell, so two buttons dropped into it sat
+              edge to edge (`ast-f9j5`). */}
+          {actions !== undefined && (
+            <CardAction className="flex flex-wrap items-center gap-2">{actions}</CardAction>
+          )}
         </CardHeader>
         <CardContent className="flex flex-col gap-3">{children}</CardContent>
       </section>

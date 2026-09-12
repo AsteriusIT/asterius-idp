@@ -132,7 +132,11 @@ export function TenantSwitcher({ session }: { session: Session }): JSX.Element {
           role="combobox"
           aria-expanded={open}
           aria-label={`Tenant: ${session.tenant}. Switch tenant`}
-          className="h-auto w-full justify-start gap-2 px-2 py-2 text-left group-data-[collapsible=icon]:px-1.5"
+          // `min-w-0 overflow-hidden`: the trigger is as wide as the rail and
+          // its middle column is the only thing allowed to grow (`ast-f9j5`).
+          // Without it a long tenant name pushed the chevron past the rail's
+          // edge, where it was clipped.
+          className="h-auto w-full min-w-0 justify-start gap-2 overflow-hidden px-2 py-1.5 text-left group-data-[collapsible=icon]:px-1.5"
           title="Switch tenant (Ctrl+K)"
         >
           <BuildingIcon className="size-4 shrink-0" aria-hidden="true" />
@@ -185,9 +189,12 @@ export function TenantSwitcher({ session }: { session: Session }): JSX.Element {
                         }
                         aria-hidden="true"
                       />
+                      {/* The name and the id are one line and not two
+                          columns: an id set against the far edge of the menu
+                          reads as a second, unrelated label. */}
                       <span className="min-w-0 flex-1 truncate">
                         {tenant.display_name}
-                        <span className="ml-2 text-xs text-muted-foreground">
+                        <span className="ml-1.5 text-xs text-muted-foreground">
                           {tenant.tenant_id}
                         </span>
                       </span>

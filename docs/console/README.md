@@ -148,7 +148,7 @@ migrations a change of markup rather than a change of behaviour.
 | `Field` | Label, control, help, and the server's refusal at the field — wired with `aria-describedby` and `aria-invalid`. |
 | `Message` | `success` and `info` are `role="status"`, `error` is `role="alert"`. Mark, tint and rule, never colour alone. |
 | `Badge` | A state as a word first: `ok`, `warn`, `bad`, `accent`, neutral. |
-| `DataTable` | shadcn `Table`. Columns, one client-side sort with `aria-sort`, an optional client-side filter with a “3 of 20 shown” count, an empty state, right-aligned actions. |
+| `DataTable` | shadcn `Table`. Columns, one client-side sort with `aria-sort`, an optional client-side filter with a “3 of 20 shown” count, an empty state, right-aligned actions. Every list in the console is one since `ast-f9j5`. |
 | `EmptyState` | Nothing to show, and what to do about it. |
 | `Skeleton` | The shape of what is arriving. `aria-live`, and deliberately *not* `role="status"`. |
 | `LoadFailure` | A read that did not answer, and the way to ask again. |
@@ -302,6 +302,72 @@ The two older rules still hold and are now checked against the built bytes by
 `@import` survives into the stylesheet (Tailwind's own two are resolved at
 build time), no `url(`, and no `style=` written into markup by a chunk.
 
+
+## The finishing, and one class of defect it removed (`ast-f9j5`)
+
+`ast-gore` left four things unfinished and the owner, looking at the result,
+said there was "too much error in the UI". Both had **one cause worth writing
+down**: `styles.css` styles *elements* — `button { … }`, `input[type=…] { … }`
+— and shadcn components paint themselves with Tailwind utilities. Where a
+shadcn component carried no paint of its own, the element rule painted it.
+
+That is what produced, on one screen or another:
+
+* a **white 16px gutter down the right edge of the sidebar**, which was
+  `SidebarRail` — a deliberately transparent hit target — drawn as a 30px white
+  card with a border, sitting over the rail's edge and clipping the tenant
+  selector's chevron;
+* **column headers whose sort control was a box inside the header**;
+* a **border inside a border** on the tenant selector's search box, and every
+  filter box 44px tall — a `min-height` in a layer no `h-9` utility can beat;
+* an **invisible text field** on the Tenants screen: `<input name="tenant_id">`
+  carries no `type`, so it matched none of the `input[type=…]` selectors, and
+  Tailwind's preflight had already removed its border.
+
+The repair is in two lines of policy rather than in patches per component:
+
+1. **The element-level `button` rules are gone.** The console's controls are
+   shadcn `Button`s; the one consumer left is the audit screen's export link,
+   which asks for `.button` by name.
+2. **The form-control rules end in `:not([data-slot])`**, which is what every
+   shadcn component carries and no screen's own markup does. The list now says
+   which input *kinds* are excluded — check boxes, radios, colour wells, file
+   pickers — rather than which are included, so an input with no `type` is a
+   text field like any other.
+
+Two smaller things went with them: the screen title is `--text-xl`, the size
+the server-rendered pages give theirs (28px above a breadcrumb read as a
+different product), and a table's `<caption>` is drawn above the table rather
+than below it, where it read as a stray word after the last row.
+
+### The four the bead asked for
+
+1. **A filter and a count on every list.** Signing keys, Shared signals
+   (streams *and* dead letters), the Policy rule preview and both application
+   role tables are `DataTable`s now, so they have the sort, the filter, the
+   "3 of 20 shown" count and the "no row matches that filter" sentence that the
+   Users, Clients and Tenants tables already had. The count is the half that
+   matters: "nothing here" and "nothing here *matching*" are otherwise the same
+   picture.
+2. **A complaint at the field while it is being typed**, in
+   `console/src/validation.ts`. Every function there is an **echo** of a rule
+   written in Rust — `RoleName::parse`, `TenantId::parse`, `Issuer::parse`,
+   `accept_username`, `accept_email`, `RedirectUri::parse` — and the module
+   names the counterpart of each. Nothing there blocks a submission, disables a
+   control or is consulted when a refusal arrives: the server is still the
+   validator, and what it says is still what `Field` shows. An empty field is
+   never wrong, because a form that turns red before anything is typed teaches
+   an operator to ignore it.
+3. **Toasts on the acts of Clients, Shared signals and Policy**, which were
+   inline `Message`s alone. The division is the one `ast-gore` set: the toast
+   *announces* and the `Message` *records*. A refusal is never only a toast —
+   the sentence naming the field and the clause stays where the act happened —
+   and the Policy screen's toasts carry a title and no copy of that sentence,
+   because two elements saying the same words are two things to read.
+
+`e2e/tests/console.spec.ts` has one test per point: the key table filtering and
+counting, a field complaining while the control that submits stays enabled, and
+a registration that raises a toast *and* keeps the record.
 
 ## Taking the pictures again
 
