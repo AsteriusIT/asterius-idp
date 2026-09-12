@@ -792,7 +792,101 @@ test('the audit explorer filters the trail and exports it as NDJSON', async ({
   expect(refused.status()).toBe(401);
 });
 
-test('the shared-signals and audit screens have no accessibility violation', async (
+/** Walks the navigation to the policy editor (`ast-f7m.9`). */
+async function openPolicy(page: Page): Promise<void> {
+  await page.getByRole('link', { name: 'Policy' }).click();
+  await expect(page.getByRole('heading', { name: 'Policy', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Try a request' })).toBeVisible();
+}
+
+/**
+ * **The screen's whole loop, in a browser** (`ast-f7m.9`): write a document,
+ * have the server refuse a bad one with the path it names, save a good one,
+ * and ask the bench what it decides.
+ *
+ * The rules are deliberately ones whose answer does not depend on the sweep
+ * tenant's directory: a `permit` on the action alone, and the default deny for
+ * an action no rule names. A rule reading a group would be asserting what
+ * somebody's account claims, which is another screen's business.
+ *
+ * The document is left removed at the end, which is the state every other test
+ * in this file expects of the tenant: an evaluation denied.
+ */
+test('the policy editor refuses a bad document, saves a good one and answers the bench', async ({
+  page,
+}) => {
+  // Arrange
+  await signIn(page);
+  await openPolicy(page);
+  const document = page.getByLabel('The rule document, as the evaluator reads it');
+
+  // Act: a condition no build of this server knows.
+  await document.fill(
+    JSON.stringify(
+      { version: 1, rules: [{ id: 'bad', effect: 'permit', when: { eval: '1 + 1' } }] },
+      null,
+      2,
+    ),
+  );
+  await page.getByRole('button', { name: 'Save policy' }).click();
+
+  // Assert: the refusal names the path in the document, which is the whole
+  // point of showing the server's message rather than "save failed".
+  const refusal = page.getByRole('alert');
+  await expect(refusal).toContainText('rules[0].when');
+
+  // Act: a document this build does read.
+  await document.fill(
+    JSON.stringify(
+      {
+        version: 1,
+        rules: [
+          {
+            id: 'anyone-may-read',
+            effect: 'permit',
+            actions: ['read'],
+            reason_admin: 'reading is open to every subject',
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+  );
+  await page.getByRole('button', { name: 'Save policy' }).click();
+  await expect(page.getByText('The policy was replaced.')).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'anyone-may-read' })).toBeVisible();
+
+  // Act: the bench, on a request the rule permits.
+  await page.getByLabel('Subject', { exact: true }).fill('somebody');
+  await page.getByLabel('Action').fill('read');
+  await page.getByLabel('Resource type').fill('document');
+  await page.getByLabel('Resource', { exact: true }).fill('42');
+  await page.getByRole('button', { name: 'Ask the policy' }).click();
+
+  // Assert: the decision, and the reason the rule carries — read out of the
+  // decision itself and not off the page, where the document above spells the
+  // same words.
+  const decision = page.getByRole('region', { name: 'Decision' });
+  await expect(decision.getByText('permit', { exact: true })).toBeVisible();
+  await expect(decision.getByText('reading is open to every subject')).toBeVisible();
+  await expect(decision.getByText('anyone-may-read')).toBeVisible();
+
+  // Act: an action no rule names is the default deny.
+  await page.getByLabel('Action').fill('delete');
+  await page.getByRole('button', { name: 'Ask the policy' }).click();
+
+  // Assert
+  await expect(decision.getByText('deny', { exact: true })).toBeVisible();
+
+  // The tenant goes back to denying everything, which is how this file's
+  // other tests find it.
+  page.once('dialog', (dialog) => void dialog.accept());
+  await page.getByRole('button', { name: 'Remove policy' }).click();
+  await expect(page.getByText('The policy was removed.', { exact: false })).toBeVisible();
+});
+
+test('the shared-signals, audit and policy screens have no accessibility violation', async (
   { page },
   testInfo,
 ) => {
@@ -802,6 +896,7 @@ test('the shared-signals and audit screens have no accessibility violation', asy
   for (const [open, name] of [
     [openSharedSignals, 'shared-signals'],
     [openAudit, 'audit'],
+    [openPolicy, 'policy'],
   ] as const) {
     await open(page);
 

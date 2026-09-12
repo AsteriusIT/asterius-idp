@@ -113,6 +113,13 @@ async function request(path: string, init: RequestInit): Promise<unknown> {
   if (!response.ok) {
     throw new ApiError(response.status, await refusalMessage(response, init.method ?? 'GET', path));
   }
+  // A 204 is an answer, not a body. `Response.json()` on an empty one throws
+  // "Unexpected end of JSON input", and a caller that succeeded would then
+  // render a parse error as though the server had refused it — which is what
+  // `DELETE /policies` did until `ast-f7m.9` found it.
+  if (response.status === 204) {
+    return null;
+  }
   return (await response.json()) as unknown;
 }
 
@@ -146,6 +153,25 @@ export async function mutate(
     method,
     headers,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+}
+
+/**
+ * Asks a question whose parameters do not fit in a query string (`ast-f7m.9`).
+ *
+ * `POST /policies/try` is the one: the policy test bench sends the four
+ * entities of an Authorization API evaluation and gets a decision back, and it
+ * stores nothing. So this is not {@link mutate} — no `Idempotency-Key`, because
+ * there is no creation for a key to make happen at most once, and the server
+ * asks for one only on a `POST` that changes state. The synchroniser token is
+ * still sent: the session cookie is ambient, and a `POST` is a verb a
+ * cross-site form can emit.
+ */
+export async function probe(path: string, session: Session, body: unknown): Promise<unknown> {
+  return request(path, {
+    method: 'POST',
+    headers: { [CSRF_HEADER]: session.csrf_token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 }
 

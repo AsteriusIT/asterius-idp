@@ -234,7 +234,11 @@ fn idempotency_parameter() -> Value {
 }
 
 fn responses(operation: &Operation) -> Value {
-    let success = if operation.method() == crate::operations::Method::Post {
+    // A `POST` that creates answers 201; a probe answers 200, because it
+    // created nothing and has no `Location` to give (`ast-f7m.9`).
+    let success = if operation.method() == crate::operations::Method::Post
+        && operation.effect() == Effect::Mutates
+    {
         "201"
     } else {
         "200"

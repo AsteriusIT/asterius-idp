@@ -6,7 +6,7 @@
 //! "what may Alice do to account 123" — and the PDP answers with the entities
 //! that fill it. §8 says those entities "SHOULD" evaluate to permit. Here they
 //! **do**: every entity in every page is turned back into an ordinary
-//! [`EvaluationRequest`] by
+//! [`asterius_domain::policy::EvaluationRequest`] by
 //! [`asterius_oidc::authzen_search::SearchRequest::candidate`], resolved with
 //! the same [`SubjectFacts`](crate::http::access_evaluation::SubjectFacts) and decided by the same
 //! [`asterius_domain::ports::PolicyEngine`] a PEP would have called itself,
@@ -80,7 +80,7 @@
 //! `docs/threat-model.md` carries the row.
 
 use asterius_domain::audit::{Actor, AuditEvent, Detail, EventType, Outcome};
-use asterius_domain::policy::{ActiveGrant, Decision, EvaluationRequest, search};
+use asterius_domain::policy::{ActiveGrant, Decision, search};
 use asterius_domain::ports::PolicyStore;
 use asterius_domain::{ClientId, DomainError, LimitedEndpoint, TenantId};
 use asterius_oidc::authzen::SCOPE_EVALUATE;
@@ -91,7 +91,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 use crate::http::access_evaluation::{
-    AccessEvaluationContext, Api, Refused, ResolvedSubject, attach, authorize, echo_request_id,
+    AccessEvaluationContext, Api, Refused, authorize, decide_without_enforcing, echo_request_id,
     json, json_content_type, no_store, render,
 };
 
@@ -429,9 +429,22 @@ fn slice(named: BTreeSet<String>, after: Option<&str>, limit: usize) -> Candidat
 /// Whether one candidate evaluates to permit (§8: the results "SHOULD" — here
 /// do).
 ///
-/// The facts are resolved for the subject of *this* candidate: a subject search
-/// names a different principal in every candidate, so a single resolution would
-/// be a page decided about somebody else.
+/// Through [`decide_without_enforcing`], which is the *same* function the
+/// evaluation endpoint's own decision path and the console's test bench
+/// (`ast-f7m.9`) go through: it resolves the subject's facts from this
+/// server's rows, attaches them with `ActiveGrant::of` and the tenant's `acr`
+/// ladder, and asks the engine. A copy of those three steps here would be a
+/// second opinion about who a subject is, and a search whose page disagreed
+/// with the evaluation a PEP makes next is the one defect §8 cannot afford.
+///
+/// What the function deliberately does *not* do is the per-request work: no
+/// limiter token (one was spent for the whole search) and no
+/// `access.evaluated` record (nothing enforced this; the request is recorded
+/// once as `access.searched`).
+///
+/// The facts are resolved for the subject of *this* candidate: a subject
+/// search names a different principal in every candidate, so a single
+/// resolution would be a page decided about somebody else.
 async fn permits(
     context: &AccessSearchContext<'_>,
     request: &SearchRequest,
@@ -440,21 +453,15 @@ async fn permits(
     let evaluation = request
         .candidate(candidate)
         .map_err(|error| DomainError::invalid("search candidate", error.to_string()))?;
-    let facts: ResolvedSubject = context
-        .pdp
-        .subjects
-        .resolve(
-            &context.pdp.tenant.id,
-            evaluation.subject.kind(),
-            evaluation.subject.id(),
-        )
-        .await?;
-    let evaluation: EvaluationRequest = attach(&context.pdp, evaluation, &facts)?;
-    let decision: Decision = context
-        .pdp
-        .engine
-        .evaluate(&context.pdp.tenant.id, &evaluation)
-        .await?;
+    let decision: Decision = decide_without_enforcing(
+        context.pdp.engine,
+        context.pdp.subjects,
+        context.pdp.acr,
+        &context.pdp.tenant.id,
+        &evaluation,
+        context.pdp.now,
+    )
+    .await?;
     Ok(decision.permit())
 }
 

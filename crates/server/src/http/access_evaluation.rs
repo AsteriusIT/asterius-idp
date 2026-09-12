@@ -111,7 +111,7 @@ use crate::http::limits::LimitContext;
 use asterius_domain::audit::{Actor, AuditEvent, AuditSink, Detail, EventType, Outcome};
 use asterius_domain::entities::application_role::HeldRoles;
 use asterius_domain::keys::KeyStore;
-use asterius_domain::policy::{ActiveGrant, Context as PolicyContext, EvaluationRequest};
+use asterius_domain::policy::{ActiveGrant, Context as PolicyContext, Decision, EvaluationRequest};
 use asterius_domain::ports::PolicyEngine;
 use asterius_domain::{
     AcrPolicy, ClientId, DomainError, Grant, GrantId, LimitedEndpoint, Tenant, TenantId,
@@ -539,7 +539,7 @@ async fn decide_many(
         .map(|evaluation| {
             let key = (evaluation.subject.kind(), evaluation.subject.id());
             let resolved = facts.get(&key).and_then(Option::as_ref)?;
-            attach(context, evaluation.clone(), resolved)
+            attach(context.acr, context.now, evaluation.clone(), resolved)
                 .map_err(|error| {
                     tracing::error!(
                         %error,
@@ -704,7 +704,7 @@ async fn in_order<T, F: Future<Output = T>>(futures: Vec<F>) -> Vec<T> {
 /// The PEP's `properties` are already on it and are left exactly as they
 /// arrived; what is added is what only this tenant can answer. See
 /// [`SubjectFacts`].
-pub(crate) async fn resolved(
+async fn resolved(
     context: &AccessEvaluationContext<'_>,
     request: EvaluationRequest,
 ) -> Result<EvaluationRequest, DomainError> {
@@ -716,7 +716,49 @@ pub(crate) async fn resolved(
             request.subject.id(),
         )
         .await?;
-    attach(context, request, &facts)
+    attach(context.acr, context.now, request, &facts)
+}
+
+/// One evaluation decided outside the §6.1 request cycle: the console's policy
+/// test bench (`ast-f7m.9`) and each candidate of a §8 search (`ast-pj0.6`).
+///
+/// The same two steps the endpoints take once the credential checks are done —
+/// resolve the subject's facts from this server's store, attach them, ask the
+/// engine — and none of the ones that belong to *one PEP request*: no token to
+/// verify (the bench's caller proved itself to the admin API with a session;
+/// a search verified its PEP once, before the first candidate), no
+/// [`LimitedEndpoint::AccessEvaluation`] token spent here (the admin API has
+/// its own limiter, and a search charges one token for the whole request
+/// rather than one per candidate), and no `access.evaluated` record — nothing
+/// enforced this answer. A search writes one `access.searched` entry for the
+/// request it answered, which is a different event about a different thing.
+///
+/// This is a *function of this module* rather than a copy in the admin
+/// composition root or in `crate::http::access_search` on purpose. The one
+/// property a bench and a search must have is that they decide what the
+/// endpoint would decide, and that only holds while all three go through
+/// `attach` — the single place `ActiveGrant::of` filters the live grants and
+/// `authenticated_acr` reads the ladder.
+///
+/// # Errors
+///
+/// [`DomainError`] when the facts or the policy could not be read. Not a deny:
+/// §10.1.2's fail-closed `decision: false` exists because a PEP has to enforce
+/// *something*, and the administrator reading a bench has to be told that the
+/// answer is missing rather than shown a refusal their rules did not produce.
+pub async fn decide_without_enforcing(
+    engine: &dyn PolicyEngine,
+    subjects: &dyn SubjectFacts,
+    acr: &AcrPolicy,
+    tenant: &TenantId,
+    request: &EvaluationRequest,
+    now: OffsetDateTime,
+) -> Result<Decision, DomainError> {
+    let facts = subjects
+        .resolve(tenant, request.subject.kind(), request.subject.id())
+        .await?;
+    let resolved = attach(acr, now, request.clone(), &facts)?;
+    engine.evaluate(tenant, &resolved).await
 }
 
 /// The facts, attached — the half of [`resolved`] that reads no store.
@@ -725,8 +767,9 @@ pub(crate) async fn resolved(
 /// attaches the same facts to every evaluation that names it: one read, one
 /// view of the tenant, and no chance of two evaluations in one answer
 /// disagreeing about who the subject is.
-pub(crate) fn attach(
-    context: &AccessEvaluationContext<'_>,
+fn attach(
+    acr_policy: &AcrPolicy,
+    now: OffsetDateTime,
     request: EvaluationRequest,
     facts: &ResolvedSubject,
 ) -> Result<EvaluationRequest, DomainError> {
@@ -735,13 +778,12 @@ pub(crate) fn attach(
     let active: Vec<ActiveGrant> = facts
         .grants
         .iter()
-        .filter_map(|grant| ActiveGrant::of(grant, context.now))
+        .filter_map(|grant| ActiveGrant::of(grant, now))
         .collect();
-    let acr = authenticated_acr(context.acr, &facts.grants, context.now);
+    let acr = authenticated_acr(acr_policy, &facts.grants, now);
     let groups = facts.groups.clone();
     let roles = facts.roles.clone();
-    let ladder: Vec<String> = context
-        .acr
+    let ladder: Vec<String> = acr_policy
         .levels()
         .iter()
         .map(|level| level.value().to_owned())
