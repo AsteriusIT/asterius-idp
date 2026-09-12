@@ -1088,6 +1088,38 @@ strengthened since. That is the conservative direction, and it is the reason
 `ast-lh3.10`'s pre-issuance port, which *does* hold the authentication it is
 about, is the better home for a step-up decision.
 
+### PDP metadata (`ast-pj0.3`)
+
+**The PDP identifier is the tenant issuer; the token audience is the endpoint
+URL.** `/.well-known/authzen-configuration` publishes both, and they are
+deliberately not the same string. Authorization API 1.0 §9.2.3 has a PEP
+compare `policy_decision_point` against the identifier it derived the URL from,
+which is the tenant issuer — the one identity a tenant has here, shared with
+`iss` and with the SSF transmitter document. The credential check at
+`ast-pj0.1` stays narrower: `aud` must be `access_evaluation_endpoint`, so a
+PEP's token cannot be replayed at another endpoint of the same tenant. The
+document is what tells a PEP which of the two to ask its authorization server
+for, and both values come from the endpoint registry rather than from a
+configuration key, so neither can be pointed somewhere else by an operator or
+drift from the route that answers.
+
+**The document is public, and says only what is mounted.** It is served behind
+`Feature::Authzen`, deployment-wide and per tenant, so a tenant that runs no
+PDP answers 404 rather than publishing an evaluation endpoint somebody could
+start sending subjects to. No `search_*` member exists while `ast-pj0.6` is
+unbuilt and no `capabilities` array is emitted, on the same rule: a member here
+is a promise a PEP acts on without being able to check it.
+
+**`signed_metadata` (§9.1.3) is off unless asked for.** With `[authzen]
+signed_metadata` on, the document carries a JWT signed by the tenant's active
+key, typed `authzen-metadata+jwt` so a verifier with a loose policy cannot take
+it for an access token, carrying `iss` and no `exp`. It adds integrity for a
+copy that outlives the TLS connection it arrived on; it adds no confidentiality
+— the document is public — and it costs one signature per request, which is
+why it is a key rather than the default. A tenant with no active key serves the
+document unsigned and logs, rather than failing: an unsigned public document is
+the state every PEP already handles.
+
 ### Back-channel logout (`ast-o4u.2`)
 
 **Why this needs a section: the server now signs a JWT it sends to somebody

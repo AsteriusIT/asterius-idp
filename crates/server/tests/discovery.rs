@@ -126,6 +126,7 @@ fn server_with(capabilities: Capabilities, settings: Option<SettingsDirectory>) 
         // The discovery and JWKS handlers need no database; leaving this
         // `None` is what lets this suite run without one.
         clients: None,
+        signed_metadata: None,
     })
     .fallback(not_found);
 
@@ -281,6 +282,73 @@ async fn a_disabled_feature_is_neither_advertised_nor_routed() {
 /// `backchannel_authentication_endpoint`, so a document carrying one without
 /// the other is not a smaller CIBA document but an invalid one. The metadata
 /// side of the same statement is `asterius_oidc::metadata`.
+/// `ast-pj0.3`: the parity rule, extended to the AuthZEN endpoints and to the
+/// second document that names them.
+///
+/// An AuthZEN endpoint lives in two places — the OP's own metadata, where it
+/// has been since `ast-pj0.1`, and the PDP's document at
+/// `/.well-known/authzen-configuration` (Authorization API 1.0 §9.1.1) — and
+/// the route, the OP member and the PDP member appear and disappear together.
+/// Read from the registry rather than from a list, so `ast-pj0.2`'s boxcar
+/// endpoint is covered here the moment it is registered.
+#[tokio::test]
+async fn the_authzen_endpoints_are_routed_and_named_in_both_documents_or_neither() {
+    // Arrange
+    let on = Capabilities {
+        authzen: true,
+        ..Capabilities::default()
+    };
+    let off = Capabilities::default();
+    let authzen: Vec<Endpoint> = Endpoint::ALL
+        .into_iter()
+        .filter(|endpoint| endpoint.in_pdp_metadata())
+        .collect();
+    assert!(!authzen.is_empty(), "the registry mounts no PDP endpoint");
+
+    for capabilities in [on, off] {
+        let expected = capabilities.authzen;
+
+        // Act
+        let provider = document(capabilities).await;
+        let (pdp_status, _, pdp_body) = get(
+            server(capabilities),
+            "/t/demo/.well-known/authzen-configuration",
+        )
+        .await;
+
+        // Assert: the PDP document exists exactly with the feature (§9.2.2).
+        assert_eq!(
+            pdp_status == StatusCode::OK,
+            expected,
+            "the PDP document answered {pdp_status} with authzen={expected}"
+        );
+
+        for endpoint in &authzen {
+            let path = format!("/t/demo{}", endpoint.path());
+            let (routed, ..) = get(server(capabilities), &path).await;
+            assert_eq!(
+                routed != StatusCode::NOT_FOUND,
+                expected,
+                "{endpoint:?} is routed={} with authzen={expected}",
+                routed != StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                provider.get(endpoint.metadata_key()).is_some(),
+                expected,
+                "{endpoint:?} in the OP metadata with authzen={expected}"
+            );
+            if expected {
+                let pdp: Value = serde_json::from_str(&pdp_body).expect("the PDP document is JSON");
+                assert_eq!(
+                    pdp.get(endpoint.metadata_key()).and_then(Value::as_str),
+                    Some(format!("https://as.example/t/demo{}", endpoint.path()).as_str()),
+                    "{endpoint:?} is missing from the PDP document"
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn ciba_is_advertised_and_routed_together_or_not_at_all() {
     // Arrange
@@ -932,6 +1000,7 @@ fn two_tenant_server(demo: asterius_domain::TenantSettings) -> Router {
         capabilities: ALL_ON,
         tenant_settings: Some(SettingsDirectory::new(repository as _)),
         clients: None,
+        signed_metadata: None,
     })
     .fallback(not_found);
 

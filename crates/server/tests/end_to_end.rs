@@ -1277,6 +1277,7 @@ fn assemble(
         // never expressed an opinion reads back the defaults, and one that has
         // gets what it asked for (`ast-f7m.4`, `ast-5c6`).
         tenant_settings: Some(settings.clone()),
+        signed_metadata: None,
         clients: Some(Arc::new(ClientEndpoints {
             initial_access_tokens: None,
             authenticator,

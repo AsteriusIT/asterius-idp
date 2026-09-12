@@ -138,6 +138,9 @@ fn server_with(capabilities: Capabilities, settings: Option<SettingsDirectory>) 
         // This document needs no database, which is what lets this suite run
         // without one.
         clients: None,
+        // The transmitter document is unsigned; `[authzen] signed_metadata`
+        // signs the PDP document and nothing else.
+        signed_metadata: None,
     })
     .fallback(not_found);
 
