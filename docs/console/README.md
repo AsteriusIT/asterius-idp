@@ -8,7 +8,9 @@ what a screen is expected to do with them (`ast-fe39`).
 
 The pictures beside it are the same eight screens before the migration
 (`before/`) and after it (`after/`), taken by the same browser at 1280×900 by
-`e2e/tests/console-shots.spec.ts`.
+`e2e/tests/console-shots.spec.ts`. A ninth, `after/tenants.png`, has no
+"before": the screen did not exist until `ast-l5bl`, and it is photographed as
+the deployment administrator because nobody else is shown the link.
 
 ## The tokens
 
@@ -103,6 +105,10 @@ focus moves to the *cancelling* control when it opens, so a stray Return does
 nothing; Tab and Shift+Tab cycle inside it; Escape and a click on the scrim
 cancel; and the focus returns to whatever opened it. Four acts use it: disabling
 an account, forcing a password reset, withdrawing a grant, removing a policy.
+A fifth since `ast-l5bl`: suspending or restoring a tenant, where the dialog's
+sentence is doing the most work it does anywhere — it is the one act on this
+console that stops a whole tenant answering, for every client and every user it
+has.
 
 ## The shell
 
@@ -112,6 +118,16 @@ server re-checks every one of them); and a content column capped at
 `--content-max`. Below 60rem the rail becomes a scrolling row above the content,
 which is what makes a tablet usable. Routing stays on the fragment, so the
 document URL — and therefore every relative asset and API URL — never moves.
+
+A fragment may carry parameters since `ast-l5bl`: `#/settings?tenant=acme` is
+the tenant settings screen pointed at a tenant that is not the session's own.
+It exists for one link — the Tenants screen's hand-off to the settings of the
+row an operator is reading — and it is trusted for nothing: the parameter
+becomes the `{tenant_id}` of a path the server re-authorises, so a fragment
+naming a tenant this caller may not read is a 403 drawn as a failed load. The
+same screen hides the tenant's application-role catalogue when it is pointed
+elsewhere, because that catalogue's route names no tenant and would be showing
+the *session's* roles under another tenant's heading.
 
 ## Taking the pictures again
 

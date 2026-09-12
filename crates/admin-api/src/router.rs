@@ -281,6 +281,7 @@ async fn route(
         crate::TENANTS_LIST_ID => context.list_tenants().await,
         crate::TENANT_READ_ID => context.read_tenant().await,
         crate::TENANT_CREATE_ID => context.create_tenant(body).await,
+        crate::TENANT_STATUS_UPDATE_ID => context.update_tenant_status(body).await,
         crate::TENANT_SETTINGS_READ_ID => context.read_settings().await,
         crate::TENANT_SETTINGS_UPDATE_ID => context.update_settings(body).await,
         crate::CLIENTS_LIST_ID => context.list_clients().await,
@@ -650,6 +651,98 @@ impl Handling<'_> {
         .await;
 
         Ok(json_no_store(StatusCode::CREATED, &summarise(&tenant)))
+    }
+
+    /// `PUT /tenants/{tenant_id}/status` — suspends a tenant, or restores it
+    /// (`ast-l5bl`).
+    ///
+    /// No second authority check, unlike [`Self::read_tenant`] beside it, and
+    /// the difference is the operation's reach: [`crate::TENANT_STATUS_UPDATE`]
+    /// declares [`Reach::Deployment`], so the gate has already established that
+    /// this caller holds authority over *every* tenant — including the one
+    /// named in the path, and including ones that do not exist yet. A tenant
+    /// admin never arrives here at all.
+    ///
+    /// The tenant is re-read and only its `status` and `updated_at` are moved.
+    /// A status route that built a row from the body would be a second way to
+    /// change an issuer, and the whole-document `PUT` of a tenant is not a
+    /// thing this API offers.
+    async fn update_tenant_status(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let named = self
+            .path
+            .strip_suffix("/status")
+            .and_then(|prefix| prefix.rsplit('/').next())
+            .filter(|segment| !segment.is_empty())
+            .ok_or(AdminError::NotFound)?;
+        let named = TenantId::parse(named).map_err(|_| AdminError::NotFound)?;
+        let requested: RequestedTenantStatus = self.parse_body(body).await?;
+
+        let status = if requested.enabled {
+            TenantStatus::Active
+        } else {
+            TenantStatus::Disabled
+        };
+
+        // The one tenant this route will not suspend. ADR-0010 puts deployment
+        // authority on users of the reserved tenant, and a disabled tenant's
+        // endpoints behave as if it is not there — so suspending it would
+        // refuse the sessions of everybody who could restore it, and the way
+        // back would be an `update` typed against the database at three in the
+        // morning. Restoring it is still allowed: that direction only ever
+        // undoes damage.
+        if status == TenantStatus::Disabled
+            && self
+                .state
+                .reserved_tenant
+                .as_ref()
+                .is_some_and(|reserved| reserved == &named)
+        {
+            return Err(AdminError::Conflict(format!(
+                "tenant {named} holds this deployment's administrators and cannot be suspended"
+            )));
+        }
+
+        let found = self
+            .state
+            .backend
+            .tenants()
+            .find_by_id(&named)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::TENANT_STATUS_UPDATE_ID, &error))?
+            .ok_or(AdminError::NotFound)?;
+
+        let updated = Tenant {
+            status,
+            updated_at: self.now,
+            ..found
+        };
+        self.state
+            .backend
+            .tenants()
+            .upsert(&updated)
+            .await
+            .map_err(|error| AdminError::from_storage(crate::TENANT_STATUS_UPDATE_ID, &error))?;
+
+        // For the reason the creation gives, and more urgently: the routing
+        // snapshot is up to thirty seconds stale, and a tenant suspended
+        // because it is being abused must stop serving now rather than at the
+        // next refresh.
+        self.state.backend.tenant_directory_changed();
+
+        // Recorded against the tenant the *administrator* is in, like the
+        // creation: the trail of what this deployment did to its tenants lives
+        // there, and a suspended tenant's own trail is not somewhere anybody
+        // can conveniently read while it is suspended.
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::TENANT_STATUS_UPDATE_ID)
+                .label("status", status.as_str())
+                .text("tenant", updated.id.as_str()),
+        )
+        .await;
+
+        Ok(json_no_store(StatusCode::OK, &summarise(&updated)))
     }
 
     /// `GET /tenants/{tenant_id}/settings` — the flags and lifetimes in force.
@@ -3016,6 +3109,21 @@ struct NewTenant {
     default_resource: Option<String>,
     #[serde(default)]
     custom_host: Option<String>,
+}
+
+/// What `PUT /tenants/{tenant_id}/status` takes (`ast-l5bl`).
+///
+/// `enabled` has no `#[serde(default)]`, and that is the difference from
+/// [`users::RequestedStatus`] beside it. A missing member would default to
+/// `false`, so an empty body — a console bug, a truncated request, a `curl`
+/// somebody forgot to finish — would read as "suspend this tenant" and cut off
+/// every client and every user it serves. Making it required turns all of
+/// those into a 400.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestedTenantStatus {
+    /// `true` to serve this tenant again, `false` to suspend it.
+    enabled: bool,
 }
 
 /// What `PUT /tenants/{tenant_id}/settings` takes.
@@ -5454,6 +5562,11 @@ mod tests {
             // than the empty one, or "every route answers a deployment admin"
             // would be asserting a 400.
             crate::TENANT_SETTINGS_UPDATE_ID => settings_body(60, 300),
+            // `true`, so that the registry walks leave the fixture serving.
+            // `false` would suspend `acme` partway through a loop and every
+            // later assertion would be about a tenant the walk itself turned
+            // off. The route's own tests send both.
+            crate::TENANT_STATUS_UPDATE_ID => serde_json::json!({"enabled": true}),
             // A registration document, because that is what these two take:
             // the same document `POST /register` takes, validated by the same
             // call.
@@ -7458,6 +7571,262 @@ mod tests {
             .filter(|tenant| tenant.id.as_str() == "brand-new")
             .count();
         assert_eq!(created, 1);
+    }
+
+    // ---- suspending a tenant (`ast-l5bl`) ----------------------------------
+
+    /// Sends `PUT /tenants/{id}/status` as a signed-in deployment admin.
+    ///
+    /// A helper rather than six copies, because the interesting part of each
+    /// test below is the body and the row afterwards, not the four headers a
+    /// mutation needs to get past the gate.
+    async fn set_tenant_status(
+        world: &World,
+        id: &str,
+        body: serde_json::Value,
+        key: &str,
+    ) -> Response {
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+        world
+            .send(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri(
+                        crate::TENANT_STATUS_UPDATE
+                            .full_path()
+                            .replace("{tenant_id}", id),
+                    )
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .header(idempotency::HEADER, key)
+                    .body(Body::from(body.to_string()))
+                    .expect("a request"),
+            )
+            .await
+    }
+
+    /// What the repository holds for `id`, or `None` if it holds nothing.
+    fn stored_status(world: &World, id: &str) -> Option<TenantStatus> {
+        world
+            .handle
+            .0
+            .tenants
+            .lock()
+            .expect("an uncontended lock")
+            .iter()
+            .find(|tenant| tenant.id.as_str() == id)
+            .map(|tenant| tenant.status)
+    }
+
+    #[tokio::test]
+    async fn a_deployment_admin_suspends_a_tenant_and_restores_it() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+
+        // Act
+        let suspended =
+            set_tenant_status(&world, "acme", serde_json::json!({"enabled": false}), "off").await;
+        let suspended_status = suspended.status();
+        let suspended_body = body_of(suspended).await;
+        let after_suspension = stored_status(&world, "acme");
+        let restored =
+            set_tenant_status(&world, "acme", serde_json::json!({"enabled": true}), "on").await;
+        let restored_body = body_of(restored).await;
+
+        // Assert
+        assert_eq!(suspended_status, StatusCode::OK);
+        assert_eq!(suspended_body["status"], serde_json::json!("disabled"));
+        assert_eq!(after_suspension, Some(TenantStatus::Disabled));
+        assert_eq!(restored_body["status"], serde_json::json!("active"));
+        assert_eq!(stored_status(&world, "acme"), Some(TenantStatus::Active));
+    }
+
+    /// Everything else about the tenant survives the change: a status route
+    /// that rewrote the row from a body would silently move an issuer.
+    #[tokio::test]
+    async fn suspending_a_tenant_changes_nothing_but_its_status() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let before = tenant_named("acme");
+
+        // Act
+        set_tenant_status(&world, "acme", serde_json::json!({"enabled": false}), "off").await;
+
+        // Assert
+        let after = world
+            .handle
+            .0
+            .tenants
+            .lock()
+            .expect("an uncontended lock")
+            .iter()
+            .find(|tenant| tenant.id.as_str() == "acme")
+            .cloned()
+            .expect("the tenant is still there");
+        assert_eq!(after.issuer, before.issuer);
+        assert_eq!(after.display_name, before.display_name);
+        assert_eq!(after.default_resource, before.default_resource);
+        assert_eq!(after.created_at, before.created_at);
+        assert_eq!(after.status, TenantStatus::Disabled);
+    }
+
+    /// The routing snapshot is up to thirty seconds stale otherwise, and a
+    /// tenant that was suspended for a reason must stop serving now.
+    #[tokio::test]
+    async fn suspending_a_tenant_invalidates_the_tenant_directory() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+
+        // Act
+        set_tenant_status(&world, "acme", serde_json::json!({"enabled": false}), "off").await;
+
+        // Assert
+        assert_eq!(
+            *world
+                .handle
+                .0
+                .invalidations
+                .lock()
+                .expect("an uncontended lock"),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn suspending_a_tenant_is_recorded_with_the_tenant_and_the_new_status() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+
+        // Act
+        set_tenant_status(&world, "acme", serde_json::json!({"enabled": false}), "off").await;
+
+        // Assert
+        let events = world.handle.0.events.lock().expect("an uncontended lock");
+        let recorded = events.first().expect("one record");
+        assert_eq!(recorded.event_type, EventType::ADMIN_CHANGED);
+        assert_eq!(
+            rendered(detail_value(&recorded.detail, "operation").expect("an operation")).as_deref(),
+            Some(crate::TENANT_STATUS_UPDATE_ID)
+        );
+        assert_eq!(
+            rendered(detail_value(&recorded.detail, "status").expect("a status")).as_deref(),
+            Some("disabled")
+        );
+        assert_eq!(
+            rendered(detail_value(&recorded.detail, "tenant").expect("a tenant")).as_deref(),
+            Some("acme")
+        );
+    }
+
+    /// The reason this route reaches the deployment: a tenant admin who could
+    /// suspend their own tenant would lock every administrator of it — and
+    /// every user and client — out with one request, and the way back would be
+    /// an `update` typed against the database.
+    #[tokio::test]
+    async fn a_tenant_admin_cannot_suspend_its_own_tenant() {
+        // Arrange
+        let world = World::new();
+        let cookie = world.sign_in("acme", &[Role::TenantAdmin]);
+
+        // Act
+        let response = world
+            .send(
+                HttpRequest::builder()
+                    .method("PUT")
+                    .uri(
+                        crate::TENANT_STATUS_UPDATE
+                            .full_path()
+                            .replace("{tenant_id}", "acme"),
+                    )
+                    .header("origin", ORIGIN)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .header(idempotency::HEADER, "a-tenant-admin-key")
+                    .body(Body::from(
+                        serde_json::json!({"enabled": false}).to_string(),
+                    ))
+                    .expect("a request"),
+            )
+            .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(stored_status(&world, "acme"), Some(TenantStatus::Active));
+    }
+
+    /// The reserved tenant is where deployment authority lives (ADR-0010).
+    /// Suspending it would refuse the sessions of every administrator who
+    /// could restore it, which is not a state this API lets somebody reach by
+    /// clicking a button.
+    #[tokio::test]
+    async fn the_reserved_tenant_cannot_be_suspended() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+
+        // Act
+        let response = set_tenant_status(
+            &world,
+            "asterius-admin",
+            serde_json::json!({"enabled": false}),
+            "the-reserved-one",
+        )
+        .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            stored_status(&world, "asterius-admin"),
+            Some(TenantStatus::Active)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_status_change_for_a_tenant_that_does_not_exist_is_not_found() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+
+        // Act
+        let response = set_tenant_status(
+            &world,
+            "no-such-tenant",
+            serde_json::json!({"enabled": false}),
+            "a-missing-one",
+        )
+        .await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `enabled` has no default, and this is why: a body the console sent
+    /// empty by mistake must not be read as "suspend this tenant". The user
+    /// status route can afford a default; a route that cuts off a whole tenant
+    /// cannot.
+    #[tokio::test]
+    async fn a_status_body_that_names_no_state_is_refused() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+
+        // Act
+        let response =
+            set_tenant_status(&world, "acme", serde_json::json!({}), "an-empty-body").await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(stored_status(&world, "acme"), Some(TenantStatus::Active));
     }
 
     // ---- application roles (`ast-095`) ------------------------------------

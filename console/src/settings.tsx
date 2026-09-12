@@ -138,13 +138,33 @@ export function isDirty(settings: Settings, draft: Draft): boolean {
   );
 }
 
-export function TenantSettings({ session }: { session: Session }): JSX.Element {
+/**
+ * One tenant's settings: the session's own, or the one the Tenants screen named
+ * (`ast-l5bl`).
+ *
+ * `tenant` is a fragment parameter and is trusted for nothing: it becomes the
+ * `{tenant_id}` of a path the server re-authorises, and a caller who may not
+ * read that tenant gets the 403 drawn as a failed load. What it buys is the
+ * link `ast-l5bl` asks for — a deployment administrator reading a row in the
+ * tenant list can open that tenant's settings — without a second screen that
+ * would drift from this one.
+ */
+export function TenantSettings({
+  session,
+  tenant,
+}: {
+  session: Session;
+  /** The tenant to configure. The session's own when absent. */
+  tenant?: string | null;
+}): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const path = settingsPath(session.tenant);
+  const subject = tenant ?? session.tenant;
+  const elsewhere = subject !== session.tenant;
+  const path = settingsPath(subject);
 
   const refresh = useCallback(() => {
     setLoad({ kind: 'loading' });
@@ -234,6 +254,12 @@ export function TenantSettings({ session }: { session: Session }): JSX.Element {
         </>
       }
     >
+      {elsewhere && (
+        <Message tone="info">
+          These are the settings of <strong>{settings.tenant_id}</strong>, opened from the tenant
+          list. You are signed in to <strong>{session.tenant}</strong>.
+        </Message>
+      )}
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
 
@@ -343,7 +369,7 @@ export function TenantSettings({ session }: { session: Session }): JSX.Element {
         a tenant's settings is not automatically whoever names the roles its
         applications authorise against.
       */}
-      {mayReadAppRoles(session) && (
+      {!elsewhere && mayReadAppRoles(session) && (
         <RoleCatalogue
           session={session}
           path={TENANT_CATALOGUE}
