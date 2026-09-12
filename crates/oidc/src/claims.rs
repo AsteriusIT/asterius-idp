@@ -263,6 +263,11 @@ pub enum ReleasableClaim {
     Stored(ClaimName),
 }
 
+/// The RFC 9396 §7 claim a JWT access token carries its authorization details
+/// under, which the issuer computes from the grant and no user record may
+/// therefore release.
+const AUTHORIZATION_DETAILS: &str = "authorization_details";
+
 impl ReleasableClaim {
     /// Reads a requested claim name, or refuses it.
     ///
@@ -295,6 +300,19 @@ impl ReleasableClaim {
         // reach the ID token is `ClaimsRequest::role_claims` — the request is
         // kept, it simply does not resolve out of the user row.
         if RoleClaim::parse(base_name(raw)).is_some() {
+            return None;
+        }
+        // And `authorization_details` (RFC 9396 §7), for the same reason one
+        // step further out: it is what a resource server reads as the
+        // authority a token carries, and the issuer computes it from the
+        // grant — `AccessToken::claims` writes the elements that were actually
+        // granted. `ClaimName::SERVER_ISSUED` does not list it, because a user
+        // record *may* hold an attribute of that name: the list is what a bag
+        // cannot store, and making this one unstorable would turn an existing
+        // row into a user who can no longer be read. So the refusal is here,
+        // on the release path, where it also covers UserInfo and the copy kept
+        // on the grant (`ast-8ft2`, found by fuzzing `id_token_claims`).
+        if base_name(raw) == AUTHORIZATION_DETAILS {
             return None;
         }
         UserAttribute::parse(raw).map_or_else(
@@ -2047,6 +2065,43 @@ mod tests {
         assert!(ReleasableClaim::parse("roles").is_none());
         assert!(ReleasableClaim::parse("roles#en").is_none());
         assert!(ReleasableClaim::parse("resource_access").is_none());
+    }
+
+    /// RFC 9396 §7 makes `authorization_details` the authority a JWT access
+    /// token carries, computed by the issuer from the grant. A user record
+    /// holding one is an ordinary attribute until it is released, at which
+    /// point it is authorization data inside an identity assertion — so it is
+    /// refused on the release path, like the role claims (`ast-8ft2`).
+    #[test]
+    fn a_stored_claim_named_authorization_details_is_never_released() {
+        let mut user = a_user();
+        user.claims.insert(
+            ClaimName::parse("authorization_details").expect("an ordinary claim name"),
+            Claim::new(json!([{"type": "payment_initiation"}]), ClaimSource::Admin)
+                .expect("a claim"),
+        );
+        let request = ClaimsRequest::parse(
+            r#"{"id_token":{"authorization_details":null},"userinfo":{"authorization_details":null}}"#,
+        )
+        .expect("a request");
+
+        let resolved = resolve(
+            &user,
+            &scopes(&["openid", "profile"]),
+            &request,
+            &ClaimsLocales::default(),
+        );
+
+        assert!(!resolved.id_token.contains_key("authorization_details"));
+        assert!(!resolved.userinfo.contains_key("authorization_details"));
+    }
+
+    /// And not under a language tag either: `base()` is what the reserved
+    /// lists are compared against everywhere else here.
+    #[test]
+    fn authorization_details_is_unreleasable_under_a_language_tag_too() {
+        assert!(ReleasableClaim::parse("authorization_details").is_none());
+        assert!(ReleasableClaim::parse("authorization_details#en").is_none());
     }
 
     // -----------------------------------------------------------------------

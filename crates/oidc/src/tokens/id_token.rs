@@ -383,9 +383,12 @@ impl<'a> IdToken<'a> {
             }
             // And a name that is not releasable at all: `ClaimName::parse`'s
             // rules — length, control and bidirectional formatting characters,
-            // a `#` suffix that is not a language tag. `resolve` cannot produce
-            // one, because its output is keyed by `ReleasableClaim`; this is
-            // the check that the map actually came from there.
+            // a `#` suffix that is not a language tag — plus the names a token
+            // issuer computes although a bag may store them, which are the
+            // role claims and `authorization_details` (`ast-8ft2`). `resolve`
+            // cannot produce one, because its output is keyed by
+            // `ReleasableClaim`; this is the check that the map actually came
+            // from there.
             if ReleasableClaim::parse(&name).is_none() {
                 return Err(IssuanceError::UnreleasableClaim);
             }
@@ -1063,6 +1066,35 @@ mod tests {
             .build(),
             Err(IssuanceError::TooLarge { .. })
         ));
+    }
+
+    /// RFC 9396 §7: `authorization_details` is what the resource server reads
+    /// as the authority a token carries, and the authorization server computes
+    /// it from the grant. A stored user attribute of that name reaching an ID
+    /// token would be an administrator — or an importer — writing authorization
+    /// data into an identity assertion (`ast-8ft2`, found by fuzzing).
+    #[test]
+    fn a_released_authorization_details_never_reaches_an_id_token() {
+        let grant = grant_with(Some(SubjectId::new("SUBJECT-1")));
+        let claimed = grant.claim(now()).expect("a live grant");
+        for name in ["authorization_details", "authorization_details#en"] {
+            let mut released = Map::new();
+            released.insert(name.to_owned(), json!([{"type": "payment_initiation"}]));
+            assert_eq!(
+                IdToken::new(
+                    &issuer(),
+                    &claimed,
+                    SigningAlgorithm::Es256,
+                    authentication(),
+                    ACCESS_TOKEN,
+                    now(),
+                )
+                .releasing(released)
+                .build(),
+                Err(IssuanceError::UnreleasableClaim),
+                "a released {name} was accepted"
+            );
+        }
     }
 
     /// The other half of RFC 9068 §2.1's separation: an ID token carries none
