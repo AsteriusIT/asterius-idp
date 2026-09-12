@@ -205,10 +205,17 @@ pub async fn begin(
         return error_page(context, StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    // Relative, for `console::location_of`'s reason: the tenant prefix is not
-    // visible from here, and `interaction/{id}` resolved against
-    // `/t/x/account/passkeys` is this tenant's interaction page.
-    let Ok(redirect) = SeeOther::to(&format!("../interaction/{}", id.expose())) else {
+    // Root-absolute, through the prefix routing removed (`ast-295`). A
+    // relative `../interaction/{id}` resolves against the *request*: it named
+    // this tenant's page from `/t/x/account/passkeys` and the untenanted
+    // `/t/interaction/{id}` from `/t/x/account`, one segment shallower — a 404
+    // on the one page every signed-out visitor arrives at (`ast-jkom`). The
+    // mount is what knows the prefix, so it is what puts it back, and the
+    // answer no longer depends on how deep the page that asked for it sits.
+    let target = context
+        .mount
+        .absolute(&format!("/interaction/{}", id.expose()));
+    let Ok(redirect) = SeeOther::to(&target) else {
         tracing::error!(tenant = %context.tenant.id, "an interaction id is not a usable Location");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
