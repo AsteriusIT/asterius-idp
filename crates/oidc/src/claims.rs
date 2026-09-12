@@ -302,7 +302,7 @@ impl ReleasableClaim {
         // reason one step further out: `authorization_details` (RFC 9396 §7)
         // and `grant_id` are what a resource server reads as the authority a
         // token carries, and the issuer computes both from the grant —
-        // `AccessToken::claims` writes what was actually granted.
+        // `AccessToken::build` writes what was actually granted.
         //
         // `ClaimName::SERVER_ISSUED` does not list them, and deliberately: that
         // list is what a claim bag cannot *store*, and `ClaimSet`'s

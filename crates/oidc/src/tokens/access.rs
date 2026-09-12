@@ -83,7 +83,7 @@ use time::{Duration, OffsetDateTime};
 /// > omitted. Therefore, the `typ` value used SHOULD be `at+jwt`.
 pub const ACCESS_TOKEN_TYP: &str = "at+jwt";
 
-/// The claims [`AccessToken::claims`] emits that say what a token *authorises*,
+/// The claims [`AccessToken::build`] emits that say what a token *authorises*,
 /// as opposed to who its bearer is.
 ///
 /// RFC 9068 §2.1 profiles a JWT access token; an ID token is an identity
@@ -93,7 +93,7 @@ pub const ACCESS_TOKEN_TYP: &str = "at+jwt";
 /// [`crate::claims::ReleasableClaim::parse`], which refuses to *release* a
 /// stored attribute under one of these names — and three hand-copied lists
 /// would be three rules, drifting apart the first time this issuer learns a
-/// new claim. Every entry is written by `claims` above, computed by the server
+/// new claim. Every entry is written by `build` below, computed by the server
 /// from the grant.
 ///
 /// `sub`, `iss`, `aud`, `exp`, `iat`, `jti`, `acr`, `amr` and `auth_time` are

@@ -26,7 +26,7 @@
 //!   a mistake — in particular the "half of the digest, not 128 bits" one,
 //!   which only shows up under EdDSA's SHA-512.
 //! * **An ID token carries no authorisation.** None of
-//!   `AUTHORISATION_CLAIMS` — the list `AccessToken::claims` writes from, so
+//!   `AUTHORISATION_CLAIMS` — the list `AccessToken::build` writes from, so
 //!   this cannot fall behind it. It must never be usable, or mistakable, as an
 //!   access token (RFC 9068 §2.1). Two of those names, `authorization_details`
 //!   and `grant_id`, are ones a claim bag may legitimately *hold*: they are
@@ -353,7 +353,7 @@ fuzz_target!(|input: Input| {
     // --- an ID token carries no authorisation (RFC 9068 §2.1) --------------
 
     // `AUTHORISATION_CLAIMS` is the issuer's own list, not a copy: a claim
-    // `AccessToken::claims` learns tomorrow is fuzzed for the day it is added.
+    // `AccessToken::build` learns tomorrow is fuzzed for the day it is added.
     // A copy here is what let `grant_id` sit outside this property while
     // `authorization_details` was being fixed (`ast-8ft2`).
     for forbidden in AUTHORISATION_CLAIMS {
