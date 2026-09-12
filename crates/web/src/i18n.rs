@@ -731,6 +731,36 @@ catalogue! {
         SessionsOnlyThisOne => sessions_only_this_one, "sessions.only-this-one",
             en: "This is the only session open on your account.",
             fr: "C'est la seule session ouverte sur votre compte.";
+
+        // ---- why a session ended (CAEP `reason_user`, `ast-o4u.3`) --------
+        //
+        // Not rendered by any page: these are the sentences a *relying party*
+        // may show the person when it is told their session ended (CAEP 1.0
+        // §2's `reason_user`, "intended to be displayed to the user"). They
+        // live in the catalogue so that a receiver is handed the same words,
+        // in the same languages, as this server's own pages — and so that a
+        // tenant that overrides its wording overrides this too.
+        SessionRevokedByAdmin => session_revoked_by_admin, "session-revoked.by-admin",
+            en: "An administrator signed you out.",
+            fr: "Un administrateur vous a déconnecté.";
+        SessionRevokedAccountDisabled => session_revoked_account_disabled,
+            "session-revoked.account-disabled",
+            en: "Your account was disabled.",
+            fr: "Votre compte a été désactivé.";
+        SessionRevokedPasswordReset => session_revoked_password_reset,
+            "session-revoked.password-reset",
+            en: "Your password was reset, so you were signed out.",
+            fr: "Votre mot de passe a été réinitialisé, vous avez donc été déconnecté.";
+        SessionRevokedByOwner => session_revoked_by_owner, "session-revoked.by-owner",
+            en: "You closed this session from your account pages.",
+            fr: "Vous avez fermé cette session depuis les pages de votre compte.";
+        SessionRevokedPasswordChanged => session_revoked_password_changed,
+            "session-revoked.password-changed",
+            en: "You changed your password, so your other sessions were closed.",
+            fr: "Vous avez changé de mot de passe, vos autres sessions ont donc été fermées.";
+        SessionRevokedSignedOut => session_revoked_signed_out, "session-revoked.signed-out",
+            en: "You signed out.",
+            fr: "Vous vous êtes déconnecté.";
     }
     filled {
         // ---- consent ------------------------------------------------------

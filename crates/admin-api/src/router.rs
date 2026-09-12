@@ -2292,6 +2292,17 @@ impl Handling<'_> {
             Detail::new()
                 .label("operation", crate::USER_SESSION_REVOKE_ID)
                 .credential("sid", &sid)
+                // CAEP §2's `initiating_entity`, in the words the SETs of this
+                // revocation carry (`ast-o4u.3`): the trail and the signals
+                // must agree about who ended the session.
+                .label("initiating_entity", "admin")
+                // Zero for a session that was already over: this endpoint is
+                // idempotent, and a trail that recorded "revoked" for a second
+                // press would count one session as two.
+                .number(
+                    "sessions_revoked",
+                    i64::try_from(terminated.sessions_revoked).unwrap_or(-1),
+                )
                 .number(
                     "logout_tokens_queued",
                     i64::try_from(terminated.logout_tokens_queued).unwrap_or(-1),

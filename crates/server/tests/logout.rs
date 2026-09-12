@@ -71,34 +71,68 @@ const SECTOR_SUBJECT: &str = "the-sub-this-client-knows";
 /// `participants` must be reached and it must be reached after the revocation.
 #[derive(Debug, Default)]
 struct FakeSessions {
-    session: Mutex<Option<Session>>,
+    /// Every session this fake holds. Usually one; a fixture that counts what
+    /// *N* revocations produce (`ast-o4u.3`) seeds several, because "one
+    /// notification per session" and "one notification" are the same sentence
+    /// when there is only ever one session.
+    sessions: Mutex<Vec<Session>>,
     calls: Mutex<Vec<&'static str>>,
     participants: Vec<Participant>,
 }
 
 impl FakeSessions {
+    fn session(digest: &str, sid: &str, now: OffsetDateTime) -> Session {
+        Session {
+            tenant: TenantId::new("demo"),
+            id_digest: digest.to_owned(),
+            public_sid: sid.to_owned(),
+            user: uuid::Uuid::from_u128(1),
+            created_at: now,
+            authenticated_at: now,
+            last_seen_at: now,
+            expires_at: now + Duration::hours(8),
+            idle_expires_at: now + Duration::minutes(30),
+            acr: None,
+            amr: vec![AuthenticationMethod::Password],
+            revoked: None,
+        }
+    }
+
+    fn participating(now: OffsetDateTime) -> Vec<Participant> {
+        vec![Participant {
+            client: ClientId::new(CLIENT),
+            first_seen_at: now,
+            last_seen_at: now,
+        }]
+    }
+
     fn holding(digest: &str, now: OffsetDateTime) -> Self {
         Self {
-            session: Mutex::new(Some(Session {
-                tenant: TenantId::new("demo"),
-                id_digest: digest.to_owned(),
-                public_sid: "the-public-sid".to_owned(),
-                user: uuid::Uuid::from_u128(1),
-                created_at: now,
-                authenticated_at: now,
-                last_seen_at: now,
-                expires_at: now + Duration::hours(8),
-                idle_expires_at: now + Duration::minutes(30),
-                acr: None,
-                amr: vec![AuthenticationMethod::Password],
-                revoked: None,
-            })),
+            sessions: Mutex::new(vec![Self::session(digest, "the-public-sid", now)]),
             calls: Mutex::new(Vec::new()),
-            participants: vec![Participant {
-                client: ClientId::new(CLIENT),
-                first_seen_at: now,
-                last_seen_at: now,
-            }],
+            participants: Self::participating(now),
+        }
+    }
+
+    /// One session per browser in `browsers`, each with its own public `sid`:
+    /// the same person signed in `browsers.len()` times.
+    fn holding_each(browsers: &[String], now: OffsetDateTime) -> Self {
+        Self {
+            sessions: Mutex::new(
+                browsers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| {
+                        Self::session(
+                            &asterius_domain::sha256_hex(value.as_bytes()),
+                            &format!("public-sid-{index}"),
+                            now,
+                        )
+                    })
+                    .collect(),
+            ),
+            calls: Mutex::new(Vec::new()),
+            participants: Self::participating(now),
         }
     }
 
@@ -109,19 +143,20 @@ impl FakeSessions {
     /// The session this fake holds, for a test that calls the notifier
     /// directly rather than through the endpoint.
     fn held(&self) -> Session {
-        self.session
+        self.sessions
             .lock()
             .expect("lock")
-            .clone()
+            .first()
+            .cloned()
             .expect("a seeded session")
     }
 
     fn was_revoked(&self) -> bool {
-        self.session
+        self.sessions
             .lock()
             .expect("lock")
-            .as_ref()
-            .is_some_and(|session| session.revoked.is_some())
+            .iter()
+            .any(|session| session.revoked.is_some())
     }
 
     fn calls(&self) -> Vec<&'static str> {
@@ -137,11 +172,12 @@ impl SessionRepository for FakeSessions {
     async fn find(&self, digest: &str) -> Result<Option<Session>, DomainError> {
         self.calls.lock().expect("lock").push("find");
         Ok(self
-            .session
+            .sessions
             .lock()
             .expect("lock")
-            .clone()
-            .filter(|session| session.id_digest == digest))
+            .iter()
+            .find(|session| session.id_digest == digest)
+            .cloned())
     }
     async fn touch(&self, _d: &str, _n: OffsetDateTime, _i: Duration) -> Result<(), DomainError> {
         Ok(())
@@ -163,8 +199,12 @@ impl SessionRepository for FakeSessions {
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
         self.calls.lock().expect("lock").push("revoke");
-        if let Some(session) = self.session.lock().expect("lock").as_mut()
-            && session.id_digest == digest
+        if let Some(session) = self
+            .sessions
+            .lock()
+            .expect("lock")
+            .iter_mut()
+            .find(|session| session.id_digest == digest)
             && session.revoked.is_none()
         {
             session.revoked = Some((now, reason));
@@ -429,6 +469,86 @@ impl asterius_domain::outbox::OutboxQueue for FakeQueue {
     }
 }
 
+/// The SSF streams a CAEP `session-revoked` is queued on (`ast-o4u.3`).
+///
+/// One stream, delivered by poll, subscribed to everything it is asked about:
+/// what these tests count is how many SETs one revocation produces and what
+/// each one says, not which streams asked for them — that filtering has its
+/// own tests beside the transmitter. The receiver is the participating client,
+/// so the transmitter can derive a sector and a `sub` for it through the same
+/// fakes the logout token uses.
+#[derive(Debug, Default)]
+struct FakeStreams {
+    sets: Mutex<Vec<String>>,
+}
+
+impl FakeStreams {
+    const STREAM: &'static str = "stream-logout-00000000000000000000";
+
+    /// The compact serialisations queued, in order.
+    fn sets(&self) -> Vec<String> {
+        self.sets.lock().expect("lock").clone()
+    }
+
+    /// The payload of each queued SET, decoded but not verified.
+    ///
+    /// Verification against a published JWKS is `ssf_stream_events.rs`'s job
+    /// and is not repeated here; what this file asserts is the *claims* a
+    /// revocation produces.
+    fn payloads(&self) -> Vec<Value> {
+        self.sets()
+            .iter()
+            .map(|jws| {
+                let payload = jws.split('.').nth(1).expect("a JWS has three parts");
+                let bytes = base64_url_decode(payload);
+                serde_json::from_slice(&bytes).expect("a JSON payload")
+            })
+            .collect()
+    }
+}
+
+fn base64_url_decode(segment: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(segment)
+        .expect("base64url")
+}
+
+#[async_trait::async_trait]
+impl asterius_server::ssf::SsfQueues for FakeStreams {
+    async fn subscribed(
+        &self,
+        _event: &str,
+    ) -> Result<Vec<asterius_store_pg::Subscription>, DomainError> {
+        Ok(vec![asterius_store_pg::Subscription {
+            stream_id: asterius_ssf::stream::StreamId::parse(Self::STREAM).expect("a stream id"),
+            receiver: ClientId::new(CLIENT),
+            audience: vec!["https://rp.example/events".to_owned()],
+            delivery: asterius_store_pg::DeliveryMethod::Poll,
+        }])
+    }
+
+    async fn queue_poll(
+        &self,
+        sets: &[asterius_server::ssf::PolledSet<'_>],
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let mut queued = self.sets.lock().expect("lock");
+        for set in sets {
+            queued.push(set.jws.to_owned());
+        }
+        Ok(())
+    }
+
+    async fn queue_push(
+        &self,
+        _events: &[asterius_domain::outbox::QueuedEvent],
+        _now: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        Ok(())
+    }
+}
+
 /// The refresh tokens issued under a session, as revocations.
 #[derive(Debug, Default)]
 struct FakeCredentials {
@@ -593,6 +713,8 @@ struct Harness {
     /// Where back-channel logout tokens are queued, or `None` for the
     /// deployment that has no outbox wired.
     outbox: Option<FakeQueue>,
+    /// Where the CAEP `session-revoked` SETs land (`ast-o4u.3`).
+    streams: FakeStreams,
 }
 
 impl Harness {
@@ -612,6 +734,7 @@ impl Harness {
             subjects: FakeSubjects,
             signer: FakeSigner::default(),
             outbox: Some(FakeQueue::default()),
+            streams: FakeStreams::default(),
             credentials: FakeCredentials::default(),
             // The tenant default: a logout ends the session and leaves offline
             // access alone. One test turns it on.
@@ -672,6 +795,7 @@ impl Harness {
                 .outbox
                 .as_ref()
                 .map(|queue| queue as &dyn asterius_domain::outbox::OutboxQueue),
+            queues: Some(&self.streams),
             credentials: Some(&self.credentials),
             revoke_refresh: self.revoke_refresh,
         }
@@ -1155,9 +1279,20 @@ async fn a_host_resolved_tenant_keeps_the_bare_end_session_path() {
 // ---------------------------------------------------------------------------
 
 /// The `(typ, claims)` of the one logout token this harness signed.
+///
+/// Selected by `typ`: one sign-out signs a `logout+jwt` per participant *and*
+/// a `secevent+jwt` per subscribed stream (`ast-o4u.3`), and those are
+/// different statements to different audiences. A test about §2.4's claims
+/// that counted every signature would start failing the day the second one
+/// landed — which is exactly what it did.
 fn only_logout_token(harness: &Harness) -> (String, Value) {
-    let signed = harness.signer.signed();
-    assert_eq!(signed.len(), 1, "expected one signed token: {signed:?}");
+    let signed: Vec<(String, Value)> = harness
+        .signer
+        .signed()
+        .into_iter()
+        .filter(|(typ, _)| typ == asterius_oidc::tokens::LOGOUT_TOKEN_TYP)
+        .collect();
+    assert_eq!(signed.len(), 1, "expected one logout token: {signed:?}");
     signed.into_iter().next().expect("one token")
 }
 
@@ -1291,7 +1426,14 @@ async fn a_client_with_no_backchannel_logout_uri_is_not_notified() {
 
     // Assert
     assert!(harness.queued().is_empty());
-    assert!(harness.signer.signed().is_empty());
+    assert!(
+        !harness
+            .signer
+            .signed()
+            .iter()
+            .any(|(typ, _)| typ == asterius_oidc::tokens::LOGOUT_TOKEN_TYP),
+        "no logout token is minted for a client that is not a participant"
+    );
     let events = harness.audit.events();
     let detail = events
         .iter()
@@ -1456,4 +1598,203 @@ async fn an_administrative_revocation_without_an_outbox_notifies_nobody() {
 
     // Assert
     assert_eq!(queued, 0);
+}
+
+// ---------------------------------------------------------------------------
+// CAEP `session-revoked` (`ast-o4u.3`)
+//
+// CAEP 1.0 §2 (the claims common to every event: `event_timestamp`,
+// `initiating_entity`, `reason_admin`, `reason_user`) and §3.1
+// (`session-revoked`, which carries no event-specific claims and applies to
+// the sessions its complex subject matches).
+// ---------------------------------------------------------------------------
+
+/// The URI CAEP 1.0 §3.1 gives `session-revoked`.
+const SESSION_REVOKED: &str = "https://schemas.openid.net/secevent/caep/event-type/session-revoked";
+
+/// The `events` member of a SET (RFC 8417 §2), as `(uri, body)`.
+fn single_event(payload: &Value) -> (String, Value) {
+    let events = payload["events"].as_object().expect("an events member");
+    assert_eq!(events.len(), 1, "one SET, one event: {payload}");
+    let (uri, body) = events.iter().next().expect("one entry");
+    (uri.clone(), body.clone())
+}
+
+/// The cookie header one browser of a multi-session fixture sends.
+fn cookie_of(value: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::COOKIE,
+        format!("{COOKIE_NAME}={value}").parse().expect("header"),
+    );
+    headers
+}
+
+/// §3.1: the event names *the session that ended*, through a complex subject
+/// of `{user, session}` — not the person, whose other sessions a receiver must
+/// keep. §2: `initiating_entity` is `user` for a sign-out the person asked
+/// for, and both reasons are carried, one for an auditor and one for them.
+#[tokio::test]
+async fn a_logout_tells_the_subscribed_streams_which_session_ended() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    let payloads = harness.streams.payloads();
+    assert_eq!(payloads.len(), 1, "one stream subscribed, one SET");
+    let payload = &payloads[0];
+    let (uri, body) = single_event(payload);
+    assert_eq!(uri, SESSION_REVOKED);
+    assert_eq!(
+        payload["sub_id"]["session"]["id"],
+        json!("the-public-sid"),
+        "the public sid a receiver stored, never the digest: {payload}"
+    );
+    assert_eq!(payload["sub_id"]["user"]["sub"], json!(SECTOR_SUBJECT));
+    assert_eq!(body["initiating_entity"], json!("user"));
+    assert_eq!(
+        body["reason_admin"],
+        json!({"en": "The user signed out (RP-initiated logout)"})
+    );
+    assert_eq!(body["reason_user"], json!({"en": "You signed out."}));
+}
+
+/// A SET names the person by the `sub` *the receiver* knows them by (OIDC Core
+/// §8.1), so no receiver learns this server's user id — the rule the logout
+/// token beside it keeps, applied to the other notification.
+#[tokio::test]
+async fn a_security_event_token_never_carries_the_local_user_id() {
+    // Arrange / Act
+    let harness = logged_out(FakeClients::notified()).await;
+
+    // Assert
+    let local_id = harness.sessions.held().user.to_string();
+    for set in harness.streams.sets() {
+        assert!(
+            !set.contains(&local_id),
+            "a SET must not carry the local user id"
+        );
+    }
+}
+
+/// The acceptance criterion of `ast-o4u.3`: *N* revocations produce *N*
+/// back-channel deliveries per participating client and *N* SETs.
+///
+/// Three browsers, one participating relying party, one subscribed stream. The
+/// counts are the point: a fan-out that emitted one event about the *person*
+/// rather than one per session would pass every single-session test in this
+/// file and still leave a receiver unable to tell which session to drop.
+#[tokio::test]
+async fn revoking_three_sessions_produces_three_logout_tokens_and_three_events() {
+    // Arrange
+    let fixture = Fixture::new();
+    let browsers: Vec<String> = (0..3).map(|index| format!("browser-{index}")).collect();
+    let harness = Harness::notifying(
+        FakeClients::notified(),
+        FakeSessions::holding_each(&browsers, now()),
+        fixture.published(),
+    );
+
+    // Act
+    for browser in &browsers {
+        let token = confirmation_token(browser);
+        let (status, _, _) = harness
+            .post(
+                &cookie_of(browser),
+                &[("decision", "logout"), ("csrf", token.as_str())],
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // Assert
+    assert_eq!(
+        harness.queued().len(),
+        3,
+        "one logout token per session, for the one participating client"
+    );
+    let payloads = harness.streams.payloads();
+    assert_eq!(payloads.len(), 3, "one SET per session");
+    let sids: Vec<Value> = payloads
+        .iter()
+        .map(|payload| payload["sub_id"]["session"]["id"].clone())
+        .collect();
+    assert_eq!(
+        sids,
+        vec![
+            json!("public-sid-0"),
+            json!("public-sid-1"),
+            json!("public-sid-2")
+        ],
+        "each SET names its own session"
+    );
+    let transactions: std::collections::BTreeSet<String> = payloads
+        .iter()
+        .map(|payload| payload["txn"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(
+        transactions.len(),
+        3,
+        "three causes, three transaction identifiers (SSF 1.0 §4.1.9)"
+    );
+}
+
+/// Idempotence: a session ends once.
+///
+/// The second sign-out finds a revoked session, which this endpoint reads as
+/// no session at all, so nothing further is queued. Without it a receiver
+/// deduplicating by `jti` would still see two transactions, and an auditor
+/// counting SETs would see one session end twice.
+#[tokio::test]
+async fn signing_out_twice_tells_the_relying_parties_once() {
+    // Arrange
+    let fixture = Fixture::new();
+    let browsers = vec!["the-only-browser".to_owned()];
+    let harness = Harness::notifying(
+        FakeClients::notified(),
+        FakeSessions::holding_each(&browsers, now()),
+        fixture.published(),
+    );
+    let token = confirmation_token(&browsers[0]);
+    let body = [("decision", "logout"), ("csrf", token.as_str())];
+
+    // Act
+    let (first, _, _) = harness.post(&cookie_of(&browsers[0]), &body).await;
+    let (second, _, _) = harness.post(&cookie_of(&browsers[0]), &body).await;
+
+    // Assert
+    assert_eq!(first, StatusCode::OK);
+    assert_eq!(second, StatusCode::OK);
+    assert_eq!(harness.queued().len(), 1, "one logout token, not two");
+    assert_eq!(harness.streams.sets().len(), 1, "one SET, not two");
+}
+
+/// A deployment with no stream storage wired tells no receiver and does not
+/// fail the sign-out: the session is already over by then.
+#[tokio::test]
+async fn a_deployment_with_no_streams_still_signs_the_person_out() {
+    // Arrange
+    let fixture = Fixture::new();
+    let harness = Harness::notifying(
+        FakeClients::notified(),
+        FakeSessions::holding(&digest(), now()),
+        fixture.published(),
+    );
+    let mut context = harness.context();
+    context.queues = None;
+    let token = confirmation_token(SESSION_COOKIE_VALUE);
+
+    // Act
+    let response = submit(
+        context,
+        &cookie(),
+        &pairs(&[("decision", "logout"), ("csrf", &token)]),
+        now(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(harness.sessions.was_revoked());
+    assert!(harness.streams.sets().is_empty());
 }
