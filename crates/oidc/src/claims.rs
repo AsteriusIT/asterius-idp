@@ -69,6 +69,7 @@
 //! So a claim reaches the ID token only when a client named it and named the
 //! ID token, never as a side effect of a scope.
 
+use crate::tokens::AUTHORISATION_CLAIMS;
 use asterius_domain::{Claim, ClaimName, ClaimSet, Grant, RoleClaim, User};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -295,6 +296,26 @@ impl ReleasableClaim {
         // reach the ID token is `ClaimsRequest::role_claims` — the request is
         // kept, it simply does not resolve out of the user row.
         if RoleClaim::parse(base_name(raw)).is_some() {
+            return None;
+        }
+        // And the claims that say what a token *authorises*, for the same
+        // reason one step further out: `authorization_details` (RFC 9396 §7)
+        // and `grant_id` are what a resource server reads as the authority a
+        // token carries, and the issuer computes both from the grant —
+        // `AccessToken::build` writes what was actually granted.
+        //
+        // `ClaimName::SERVER_ISSUED` does not list them, and deliberately: that
+        // list is what a claim bag cannot *store*, and `ClaimSet`'s
+        // deserializer replays `ClaimName::parse` when a user row is read, so
+        // making these unstorable would turn a row that already holds one into
+        // a user who can no longer be read. The refusal belongs on the release
+        // path anyway, where it covers the ID token, UserInfo and the copy kept
+        // on the grant at once (`ast-8ft2`, found by fuzzing `id_token_claims`).
+        //
+        // The list is the issuer's own — `AUTHORISATION_CLAIMS` — so a claim
+        // the access token learns tomorrow is unreleasable the day it is added
+        // rather than the day somebody remembers this function.
+        if AUTHORISATION_CLAIMS.contains(&base_name(raw)) {
             return None;
         }
         UserAttribute::parse(raw).map_or_else(
@@ -2047,6 +2068,82 @@ mod tests {
         assert!(ReleasableClaim::parse("roles").is_none());
         assert!(ReleasableClaim::parse("roles#en").is_none());
         assert!(ReleasableClaim::parse("resource_access").is_none());
+    }
+
+    /// RFC 9396 §7 makes `authorization_details` the authority a JWT access
+    /// token carries, computed by the issuer from the grant. A user record
+    /// holding one is an ordinary attribute until it is released, at which
+    /// point it is authorization data inside an identity assertion — so it is
+    /// refused on the release path, like the role claims (`ast-8ft2`).
+    #[test]
+    fn a_stored_claim_named_authorization_details_is_never_released() {
+        let mut user = a_user();
+        user.claims.insert(
+            ClaimName::parse("authorization_details").expect("an ordinary claim name"),
+            Claim::new(json!([{"type": "payment_initiation"}]), ClaimSource::Admin)
+                .expect("a claim"),
+        );
+        let request = ClaimsRequest::parse(
+            r#"{"id_token":{"authorization_details":null},"userinfo":{"authorization_details":null}}"#,
+        )
+        .expect("a request");
+
+        let resolved = resolve(
+            &user,
+            &scopes(&["openid", "profile"]),
+            &request,
+            &ClaimsLocales::default(),
+        );
+
+        assert!(!resolved.id_token.contains_key("authorization_details"));
+        assert!(!resolved.userinfo.contains_key("authorization_details"));
+    }
+
+    /// And not under a language tag either: `base()` is what the reserved
+    /// lists are compared against everywhere else here.
+    ///
+    /// Walked over the issuer's own list, so a claim the access token learns
+    /// tomorrow is unreleasable the day it is added rather than the day
+    /// somebody remembers this test.
+    #[test]
+    fn no_claim_that_carries_authorisation_is_releasable() {
+        for name in AUTHORISATION_CLAIMS {
+            assert_eq!(
+                ReleasableClaim::parse(name),
+                None,
+                "{name} became releasable"
+            );
+            assert_eq!(
+                ReleasableClaim::parse(&format!("{name}#en")),
+                None,
+                "{name}#en became releasable"
+            );
+        }
+    }
+
+    /// `grant_id` names the grant a token was issued from (`ast-8ft2`), and is
+    /// as ordinary a name for a bag to hold as `roles` is — so it is refused
+    /// here, on the release path, rather than made unstorable.
+    #[test]
+    fn a_stored_claim_named_grant_id_is_never_released() {
+        let mut user = a_user();
+        user.claims.insert(
+            ClaimName::parse("grant_id").expect("an ordinary claim name"),
+            Claim::new(json!("grant-of-somebody-else"), ClaimSource::Admin).expect("a claim"),
+        );
+        let request =
+            ClaimsRequest::parse(r#"{"id_token":{"grant_id":null},"userinfo":{"grant_id":null}}"#)
+                .expect("a request");
+
+        let resolved = resolve(
+            &user,
+            &scopes(&["openid", "profile"]),
+            &request,
+            &ClaimsLocales::default(),
+        );
+
+        assert!(!resolved.id_token.contains_key("grant_id"));
+        assert!(!resolved.userinfo.contains_key("grant_id"));
     }
 
     // -----------------------------------------------------------------------

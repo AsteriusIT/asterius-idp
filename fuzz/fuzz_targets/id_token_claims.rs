@@ -25,9 +25,12 @@
 //!   from `sha2` directly, so the oracle and the code under test cannot share
 //!   a mistake — in particular the "half of the digest, not 128 bits" one,
 //!   which only shows up under EdDSA's SHA-512.
-//! * **An ID token carries no authorisation.** No `cnf`, no `scope`, no
-//!   `client_id`, no `authorization_details`. It must never be usable, or
-//!   mistakable, as an access token (RFC 9068 §2.1).
+//! * **An ID token carries no authorisation.** None of
+//!   `AUTHORISATION_CLAIMS` — the list `AccessToken::build` writes from, so
+//!   this cannot fall behind it. It must never be usable, or mistakable, as an
+//!   access token (RFC 9068 §2.1). Two of those names, `authorization_details`
+//!   and `grant_id`, are ones a claim bag may legitimately *hold*: they are
+//!   refused on the way out, by `ReleasableClaim::parse`.
 //! * **Building is a pure function**, so two replicas answering one token
 //!   request cannot hand a client two different identities.
 #![no_main]
@@ -36,7 +39,9 @@ use arbitrary::Arbitrary;
 use asterius_domain::{
     ClaimName, ClientId, Grant, GrantId, Issuer, SigningAlgorithm, SubjectId, TenantId,
 };
-use asterius_oidc::tokens::{Authentication, IdToken, IssuanceError, Session, token_hash};
+use asterius_oidc::tokens::{
+    AUTHORISATION_CLAIMS, Authentication, IdToken, IssuanceError, Session, token_hash,
+};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use libfuzzer_sys::fuzz_target;
@@ -46,7 +51,7 @@ use time::{Duration, OffsetDateTime};
 
 /// Claim names worth spending the budget on: every reserved one, the ordinary
 /// ones, and the near-misses. Random bytes are almost never any of these.
-const NAMES: [&str; 18] = [
+const NAMES: [&str; 21] = [
     "sub",
     "aud",
     "acr",
@@ -65,6 +70,12 @@ const NAMES: [&str; 18] = [
     "email",
     "",
     "\u{202e}given_name",
+    // What an access token says about authority, which an ID token must never
+    // repeat — neither of these is in `SERVER_ISSUED`, so random bytes are the
+    // only other way to reach the check below (`ast-8ft2`).
+    "authorization_details",
+    "grant_id",
+    "grant_id#en",
 ];
 
 /// Access token spellings, including the ones that are not ASCII at all — the
@@ -341,9 +352,13 @@ fuzz_target!(|input: Input| {
 
     // --- an ID token carries no authorisation (RFC 9068 §2.1) --------------
 
-    for forbidden in ["cnf", "scope", "client_id", "authorization_details", "act"] {
+    // `AUTHORISATION_CLAIMS` is the issuer's own list, not a copy: a claim
+    // `AccessToken::build` learns tomorrow is fuzzed for the day it is added.
+    // A copy here is what let `grant_id` sit outside this property while
+    // `authorization_details` was being fixed (`ast-8ft2`).
+    for forbidden in AUTHORISATION_CLAIMS {
         assert!(
-            !object.contains_key(forbidden),
+            !object.contains_key(*forbidden),
             "an ID token carried the access token claim {forbidden}"
         );
     }

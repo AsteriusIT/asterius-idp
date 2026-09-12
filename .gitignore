@@ -62,6 +62,9 @@ node_modules/
 !/fuzz/corpus/request_object_claims/
 /fuzz/corpus/request_object_claims/*
 !/fuzz/corpus/request_object_claims/crash-*
+!/fuzz/corpus/id_token_claims/
+/fuzz/corpus/id_token_claims/*
+!/fuzz/corpus/id_token_claims/crash-*
 
 # Subagent worktrees live inside the repo; they are separate checkouts,
 # never content.
