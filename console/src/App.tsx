@@ -245,10 +245,16 @@ function Overview({ session }: { session: Session }): JSX.Element {
         title="What you can reach"
         description="A screen is listed when this session holds the scope its first call needs. The server checks every one of them again."
       >
+        {/*
+          Names and not links, deliberately. The rail beside this panel is the
+          console's one navigation; a second set of links to the same eight
+          screens would be a second place for a keyboard user to tab through,
+          and two controls carrying one accessible name on one page.
+        */}
         <ul className="switches">
           {destinations.map((destination) => (
             <li key={destination.route}>
-              <a href={hrefOf(destination.route)}>{destination.label}</a>{' '}
+              <strong>{destination.label}</strong>{' '}
               <span className="muted">{destination.scope}</span>
             </li>
           ))}

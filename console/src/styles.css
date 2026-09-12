@@ -805,6 +805,11 @@ button.small {
    them. */
 .toolbar {
   display: flex;
+  /* `row`, and said out loud: these toolbars are `<form>` elements, and the
+     `form` rule above lays a form out as a column. A search box above its own
+     button, each one aligned to the far end of a column, is what that
+     inheritance draws. */
+  flex-direction: row;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--space-3);
