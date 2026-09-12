@@ -281,20 +281,33 @@ const MAX_CONCURRENT: usize = 8;
 /// over are the endpoint's own, and a token minted for §6.1's evaluation is
 /// not one §7's boxcar accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Api {
+pub(crate) enum Api {
     /// §6.1: one request, one Decision.
     Single,
     /// §7.1: an array of requests, an array of Decisions.
     Boxcar,
+    /// §8's searches, one entry per path (`ast-pj0.6`).
+    ///
+    /// Carried here rather than in `crate::http::access_search`, because what
+    /// [`authorize`] needs from an API is exactly this: the registry entry
+    /// whose URL is the audience a token must name and the URL a DPoP proof is
+    /// made over. A search endpoint that authenticated its callers from a
+    /// second copy of those five checks would be a second place for them to
+    /// drift.
+    Search(asterius_oidc::authzen_search::SearchKind),
 }
 
 impl Api {
     /// The registry entry, which is the path, the metadata member and the
     /// audience all at once (`ast-o0t.3`).
-    const fn endpoint(self) -> Endpoint {
+    pub(crate) const fn endpoint(self) -> Endpoint {
+        use asterius_oidc::authzen_search::SearchKind;
         match self {
             Self::Single => Endpoint::AccessEvaluation,
             Self::Boxcar => Endpoint::AccessEvaluations,
+            Self::Search(SearchKind::Subject) => Endpoint::SearchSubject,
+            Self::Search(SearchKind::Resource) => Endpoint::SearchResource,
+            Self::Search(SearchKind::Action) => Endpoint::SearchAction,
         }
     }
 }
@@ -347,7 +360,7 @@ async fn answered(
 /// Every variant is one of §10.1.2's four status codes. A *deny* is not in
 /// here: it is a 200, and the difference is the whole of the section.
 #[derive(Debug)]
-enum Refused {
+pub(crate) enum Refused {
     /// An RFC 6750 §3 refusal: 400, 401 or 403, in a `WWW-Authenticate`.
     Client(UserInfoError),
     /// §11.2's authentication is there and does not carry [`SCOPE_EVALUATE`].
@@ -706,22 +719,26 @@ async fn resolved(
     attach(context.acr, context.now, request, &facts)
 }
 
-/// One evaluation decided for a caller that is **not** a policy enforcement
-/// point: the console's policy test bench (`ast-f7m.9`).
+/// One evaluation decided outside the §6.1 request cycle: the console's policy
+/// test bench (`ast-f7m.9`) and each candidate of a §8 search (`ast-pj0.6`).
 ///
 /// The same two steps the endpoints take once the credential checks are done —
 /// resolve the subject's facts from this server's store, attach them, ask the
-/// engine — and none of the ones that only make sense for a PEP. There is no
-/// token to verify (the caller proved itself to the admin API with a session),
-/// no [`LimitedEndpoint::AccessEvaluation`] token spent (the admin API has its
-/// own limiter, so a bench cannot eat a PEP's budget), and no
-/// `access.evaluated` record (nothing enforced this answer).
+/// engine — and none of the ones that belong to *one PEP request*: no token to
+/// verify (the bench's caller proved itself to the admin API with a session;
+/// a search verified its PEP once, before the first candidate), no
+/// [`LimitedEndpoint::AccessEvaluation`] token spent here (the admin API has
+/// its own limiter, and a search charges one token for the whole request
+/// rather than one per candidate), and no `access.evaluated` record — nothing
+/// enforced this answer. A search writes one `access.searched` entry for the
+/// request it answered, which is a different event about a different thing.
 ///
 /// This is a *function of this module* rather than a copy in the admin
-/// composition root on purpose. The one property the bench has to have is that
-/// it decides what the endpoint would decide, and that only holds while both
-/// go through `attach` — the single place `ActiveGrant::of` filters the live
-/// grants and `authenticated_acr` reads the ladder.
+/// composition root or in `crate::http::access_search` on purpose. The one
+/// property a bench and a search must have is that they decide what the
+/// endpoint would decide, and that only holds while all three go through
+/// `attach` — the single place `ActiveGrant::of` filters the live grants and
+/// `authenticated_acr` reads the ladder.
 ///
 /// # Errors
 ///
@@ -867,7 +884,7 @@ async fn failed(
 ///
 /// Returns the PEP's `client_id`, which is what the limiter charges and what
 /// the trail names as the actor.
-async fn authorize(
+pub(crate) async fn authorize(
     api: Api,
     context: &AccessEvaluationContext<'_>,
     method: &Method,
@@ -1009,7 +1026,7 @@ fn carries_scope(verified: &Verified, wanted: &str) -> bool {
 /// Parameters are permitted — `application/json; charset=utf-8` is the same
 /// media type — and the comparison is case-insensitive, as RFC 9110 §8.3.1
 /// requires of a media type's name.
-fn json_content_type(headers: &HeaderMap) -> Result<(), Refused> {
+pub(crate) fn json_content_type(headers: &HeaderMap) -> Result<(), Refused> {
     let value = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -1200,7 +1217,7 @@ async fn record_many(
 // ---------------------------------------------------------------------------
 
 /// §10.1.2's error responses, each with the message string that table names.
-fn render(context: &AccessEvaluationContext<'_>, refusal: Refused) -> Response {
+pub(crate) fn render(context: &AccessEvaluationContext<'_>, refusal: Refused) -> Response {
     match refusal {
         Refused::Client(error) => refuse(&error),
         Refused::MissingScope => insufficient_scope(),
@@ -1232,7 +1249,7 @@ fn render(context: &AccessEvaluationContext<'_>, refusal: Refused) -> Response {
 }
 
 /// §6.2's body: JSON, with the media type §10.1 requires of a response.
-fn json(status: StatusCode, body: &Value) -> Response {
+pub(crate) fn json(status: StatusCode, body: &Value) -> Response {
     (status, axum::Json(body.clone())).into_response()
 }
 
@@ -1330,7 +1347,7 @@ fn dpop_challenge(refusal: &dpop::Refusal) -> Response {
 /// that is this server's own [`crate::http::RequestId`], drawn from the CSPRNG,
 /// because a caller that could choose the id in the trail could collide with
 /// another caller's entries.
-fn echo_request_id(mut response: Response, headers: &HeaderMap) -> Response {
+pub(crate) fn echo_request_id(mut response: Response, headers: &HeaderMap) -> Response {
     let Some(value) = headers.get(REQUEST_ID_HEADER) else {
         return response;
     };
@@ -1357,7 +1374,7 @@ fn empty(status: StatusCode) -> Response {
 
 /// Every response, without exception. A decision is about one person and one
 /// resource at one instant; it belongs in no shared cache.
-fn no_store(mut response: Response) -> Response {
+pub(crate) fn no_store(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));

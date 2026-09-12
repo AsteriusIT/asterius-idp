@@ -563,7 +563,7 @@ fn mount_access_evaluation(
     if !Endpoint::AccessEvaluation.is_enabled(&capabilities) {
         return router;
     }
-    router
+    let router = router
         .route(
             Endpoint::AccessEvaluation.path(),
             any(access_evaluation_endpoint).with_state(Arc::clone(endpoints)),
@@ -571,6 +571,44 @@ fn mount_access_evaluation(
         .route(
             Endpoint::AccessEvaluations.path(),
             any(access_evaluations_endpoint).with_state(Arc::clone(endpoints)),
+        );
+    mount_access_search(router, capabilities, endpoints)
+}
+
+/// Mounts the AuthZEN Search APIs (Authorization API 1.0 §8, §10.1,
+/// `ast-pj0.6`), where the deployment has them.
+///
+/// Three routes and one flag, from the registry like every other endpoint —
+/// so each URL the router matches is the URL its `search_*_endpoint` member
+/// advertises and the audience a PEP's token must carry there. The flag is
+/// [`asterius_domain::Feature::AuthzenSearch`], derived from `[authzen]
+/// search` *and* from `[features] authzen`: §8 is an extension of the
+/// evaluation API, and a deployment that searched without deciding would
+/// advertise a PDP that cannot answer §6.1.
+///
+/// Three routes together, for [`mount_access_evaluation`]'s reason: §9.1.1
+/// names the three searches separately and a PEP that found one and not the
+/// others would have to discover by trial which questions this PDP takes.
+fn mount_access_search(
+    router: Router,
+    capabilities: Capabilities,
+    endpoints: &Arc<ClientEndpoints>,
+) -> Router {
+    if !Endpoint::SearchSubject.is_enabled(&capabilities) {
+        return router;
+    }
+    router
+        .route(
+            Endpoint::SearchSubject.path(),
+            any(search_subject_endpoint).with_state(Arc::clone(endpoints)),
+        )
+        .route(
+            Endpoint::SearchResource.path(),
+            any(search_resource_endpoint).with_state(Arc::clone(endpoints)),
+        )
+        .route(
+            Endpoint::SearchAction.path(),
+            any(search_action_endpoint).with_state(Arc::clone(endpoints)),
         )
 }
 
@@ -741,6 +779,9 @@ fn mount_the_unbuilt(
                         | Endpoint::BackchannelAuthentication
                         | Endpoint::AccessEvaluation
                         | Endpoint::AccessEvaluations
+                        | Endpoint::SearchSubject
+                        | Endpoint::SearchResource
+                        | Endpoint::SearchAction
                 ))
         {
             continue;
@@ -2095,6 +2136,191 @@ async fn access_evaluations_endpoint(
         true,
     )
     .await
+}
+
+/// `POST /access/v1/search/subject` — the AuthZEN Subject Search
+/// (Authorization API 1.0 §8.4, §10.1, `ast-pj0.6`).
+///
+/// Wiring only, like [`access_evaluation_endpoint`]: what decides anything is
+/// in [`crate::http::access_search`].
+// The same seven extractors, for the same reasons.
+#[allow(clippy::too_many_arguments)]
+async fn search_subject_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    access_search_dispatch(
+        asterius_oidc::authzen_search::SearchKind::Subject,
+        &endpoints,
+        &tenant,
+        certificate.as_deref().map(|presented| &**presented),
+        client.as_deref(),
+        &method,
+        &headers,
+        &body,
+    )
+    .await
+}
+
+/// `POST /access/v1/search/resource` — the AuthZEN Resource Search (§8.5).
+// The same seven extractors, for the same reasons.
+#[allow(clippy::too_many_arguments)]
+async fn search_resource_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    access_search_dispatch(
+        asterius_oidc::authzen_search::SearchKind::Resource,
+        &endpoints,
+        &tenant,
+        certificate.as_deref().map(|presented| &**presented),
+        client.as_deref(),
+        &method,
+        &headers,
+        &body,
+    )
+    .await
+}
+
+/// `POST /access/v1/search/action` — the AuthZEN Action Search (§8.6).
+// The same seven extractors, for the same reasons.
+#[allow(clippy::too_many_arguments)]
+async fn search_action_endpoint(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    certificate: Option<Extension<Arc<crate::mtls::PresentedCertificate>>>,
+    client: Option<Extension<crate::http::forwarded::ClientAddr>>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    access_search_dispatch(
+        asterius_oidc::authzen_search::SearchKind::Action,
+        &endpoints,
+        &tenant,
+        certificate.as_deref().map(|presented| &**presented),
+        client.as_deref(),
+        &method,
+        &headers,
+        &body,
+    )
+    .await
+}
+
+/// The PDP the three searches are assembled from (§8, `ast-pj0.6`).
+///
+/// Everything [`access_evaluation_dispatch`] assembles, because a search
+/// authenticates and evaluates exactly as an evaluation does, plus the two
+/// things only a search reads: the policy document — to find out which
+/// resources and actions it *names* — and the directory a subject search
+/// walks.
+// The extractors of three handlers, passed on as they arrived.
+#[allow(clippy::too_many_arguments)]
+async fn access_search_dispatch(
+    kind: asterius_oidc::authzen_search::SearchKind,
+    endpoints: &Arc<ClientEndpoints>,
+    tenant: &Tenant,
+    certificate: Option<&crate::mtls::PresentedCertificate>,
+    client: Option<&crate::http::forwarded::ClientAddr>,
+    method: &axum::http::Method,
+    headers: &axum::http::HeaderMap,
+    body: &[u8],
+) -> Response {
+    let now = time::OffsetDateTime::now_utc();
+    let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
+    let scope = endpoints.store.scope(tenant.id.clone());
+    let policies = asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone());
+    let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
+        asterius_store_pg::PgPolicies::new(endpoints.store.pool().clone()),
+    ));
+    let subjects = StoredSubjects {
+        users: scope.users(Arc::clone(&endpoints.kek)),
+        roles: scope.application_roles(),
+        grants: scope.grants(),
+    };
+    let tokens = StoredPdpTokens {
+        grants: scope.grants(),
+    };
+    let directory = StoredAccounts {
+        users: scope.users(Arc::clone(&endpoints.kek)),
+    };
+
+    let context = crate::http::access_search::AccessSearchContext {
+        pdp: AccessEvaluationContext {
+            tenant,
+            engine: &engine,
+            subjects: &subjects,
+            tokens: &tokens,
+            keys: endpoints.keys.as_ref(),
+            dpop: endpoints.dpop.as_ref(),
+            audit: endpoints.audit.as_ref(),
+            certificate: certificate.map(|presented| &presented.leaf),
+            acr: acr_policy(),
+            limits: endpoint_limits(endpoints, tenant, &limiter, client, now),
+            now,
+        },
+        policies: &policies,
+        directory: &directory,
+    };
+
+    crate::http::access_search::search(kind, context, method, headers, body).await
+}
+
+/// The accounts a subject search walks (§8.4, `ast-pj0.6`).
+///
+/// One page of this tenant's users, in the order the directory walks them, and
+/// the subject identifiers each account is known by (`ast-2vk.6`: a `sub` is
+/// per sector, so an account may have several). Those identifiers are what a
+/// PEP can present back to this PDP, and an account no relying party has ever
+/// seen has none — so it contributes no candidate, because there is no
+/// identifier a PEP could have named it by.
+#[derive(Debug)]
+struct StoredAccounts {
+    users: asterius_store_pg::PgUserRepository,
+}
+
+#[async_trait::async_trait]
+impl crate::http::access_search::SubjectDirectory for StoredAccounts {
+    async fn page(
+        &self,
+        _tenant: &asterius_domain::TenantId,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::http::access_search::DirectorySubject>, DomainError> {
+        // The repository is already scoped to the tenant, and `search` with an
+        // empty term is the directory's own ordered walk — the same one the
+        // admin API lists users with, so a search cannot reach an account the
+        // console does not.
+        let users = self
+            .users
+            .search("", after, i64::try_from(limit).unwrap_or(i64::MAX))
+            .await?;
+        let mut page = Vec::with_capacity(users.len());
+        for user in users {
+            let ids = self
+                .users
+                .subjects(user.id)
+                .await?
+                .into_iter()
+                .map(|(_, subject)| subject.as_str().to_owned())
+                .collect();
+            page.push(crate::http::access_search::DirectorySubject {
+                cursor: user.username.clone(),
+                ids,
+            });
+        }
+        Ok(page)
+    }
 }
 
 /// The PDP both AuthZEN endpoints are assembled from.

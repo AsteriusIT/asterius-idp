@@ -183,6 +183,7 @@ async fn every_advertised_endpoint_resolves_to_a_route() {
         token_exchange: true,
         ssf: true,
         authzen: true,
+        authzen_search: true,
         dpop_nonce: true,
         request_object: true,
         dynamic_client_registration: true,
@@ -296,6 +297,7 @@ async fn the_authzen_endpoints_are_routed_and_named_in_both_documents_or_neither
     // Arrange
     let on = Capabilities {
         authzen: true,
+        authzen_search: true,
         ..Capabilities::default()
     };
     let off = Capabilities::default();
@@ -345,6 +347,71 @@ async fn the_authzen_endpoints_are_routed_and_named_in_both_documents_or_neither
                     "{endpoint:?} is missing from the PDP document"
                 );
             }
+        }
+    }
+}
+
+/// Authorization API 1.0 §8 is OPTIONAL, and §9.2.2 says a parameter with
+/// nothing to say is omitted: a deployment that decides but does not search
+/// advertises no `search_*_endpoint` and answers 404 at the three paths
+/// (`ast-pj0.6`).
+///
+/// The interesting case, because it is the one where the PDP exists: the
+/// evaluation endpoint is routed and named, and the searches are neither.
+#[tokio::test]
+async fn the_search_endpoints_follow_their_own_flag() {
+    // Arrange
+    let deciding = Capabilities {
+        authzen: true,
+        ..Capabilities::default()
+    };
+    let searching = Capabilities {
+        authzen: true,
+        authzen_search: true,
+        ..Capabilities::default()
+    };
+    let searches = [
+        Endpoint::SearchSubject,
+        Endpoint::SearchResource,
+        Endpoint::SearchAction,
+    ];
+
+    for capabilities in [deciding, searching] {
+        let expected = capabilities.authzen_search;
+
+        // Act
+        let provider = document(capabilities).await;
+        let (_, _, pdp_body) = get(
+            server(capabilities),
+            "/t/demo/.well-known/authzen-configuration",
+        )
+        .await;
+        let pdp: Value = serde_json::from_str(&pdp_body).expect("the PDP document is JSON");
+
+        // Assert
+        assert!(
+            pdp.get("access_evaluation_endpoint").is_some(),
+            "a PDP that decides stopped advertising its evaluation endpoint"
+        );
+        for endpoint in searches {
+            let path = format!("/t/demo{}", endpoint.path());
+            let (routed, ..) = get(server(capabilities), &path).await;
+            assert_eq!(
+                routed != StatusCode::NOT_FOUND,
+                expected,
+                "{endpoint:?} is routed={} with search={expected}",
+                routed != StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                pdp.get(endpoint.metadata_key()).is_some(),
+                expected,
+                "{endpoint:?} in the PDP document with search={expected}"
+            );
+            assert_eq!(
+                provider.get(endpoint.metadata_key()).is_some(),
+                expected,
+                "{endpoint:?} in the OP metadata with search={expected}"
+            );
         }
     }
 }
@@ -964,6 +1031,7 @@ const ALL_ON: Capabilities = Capabilities {
     token_exchange: true,
     ssf: true,
     authzen: true,
+    authzen_search: true,
     dpop_nonce: true,
     request_object: true,
     dynamic_client_registration: true,

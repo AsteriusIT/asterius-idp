@@ -97,11 +97,12 @@ pub struct Config {
     pub authzen: AuthzenConfig,
 }
 
-/// AuthZEN settings that are not capability flags (`ast-pj0.3`).
+/// AuthZEN settings that are not capability flags (`ast-pj0.3`, `ast-pj0.6`).
 ///
-/// One key today. A table rather than a flag under `[features]`, because
+/// Two keys. A table rather than flags under `[features]`, because
 /// `[features]` says *what this deployment does* — there is a PDP or there is
-/// not — and this says how the document describing it is served.
+/// not — and this says how the document describing it is served and which of
+/// the specification's optional APIs it answers.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AuthzenConfig {
     /// Whether `/.well-known/authzen-configuration` carries a
@@ -113,6 +114,19 @@ pub struct AuthzenConfig {
     /// set later, which is worth a signature per request only where somebody
     /// asked for it.
     pub signed_metadata: bool,
+    /// Whether this deployment answers the Search APIs (Authorization API 1.0
+    /// §8, `ast-pj0.6`).
+    ///
+    /// Off by default. §8 is OPTIONAL, and the reason to make an operator ask
+    /// for it is what it *is*: an evaluation answers a question about one
+    /// subject a PEP already named, and a search enumerates the entities of a
+    /// tenant that satisfy a policy. A deployment whose PEPs never need the
+    /// list is a deployment that should not offer one.
+    ///
+    /// Read as [`asterius_domain::Feature::AuthzenSearch`], which is why it
+    /// cannot widen anything on its own: with `[features] authzen` off there
+    /// is no PDP, and the derived flag is off with it.
+    pub search: bool,
 }
 
 /// The `[authzen]` table.
@@ -120,6 +134,7 @@ pub struct AuthzenConfig {
 #[serde(deny_unknown_fields)]
 struct RawAuthzen {
     signed_metadata: Option<bool>,
+    search: Option<bool>,
 }
 
 /// How the outbox worker paces itself and when it gives up (`ast-0ju.9`).
@@ -992,6 +1007,12 @@ impl RawConfig {
         // `registration_endpoint` that answers 403.
         let mut features = self.features;
         features.dynamic_client_registration = registration.mode().is_open_at_all();
+        // The second derived capability, for the same reason: Authorization
+        // API 1.0 §8's searches are an OPTIONAL extension *of* the PDP, so
+        // "are there search endpoints" is `[authzen] search` and `[features]
+        // authzen` asked once rather than a third flag that could contradict
+        // both (`ast-pj0.6`).
+        features.authzen_search = features.authzen && self.authzen.search.unwrap_or_default();
         let admin = validate_admin(self.admin, &tenants, &mut errors);
         let login = validate_login(&self.login, &mut errors);
         let limits = validate_limits(&self.limits, &mut errors);
@@ -1016,6 +1037,7 @@ impl RawConfig {
             mtls,
             authzen: AuthzenConfig {
                 signed_metadata: self.authzen.signed_metadata.unwrap_or_default(),
+                search: self.authzen.search.unwrap_or_default(),
             },
         })
     }

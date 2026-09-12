@@ -9,6 +9,7 @@
 pub mod authorize;
 pub mod authzen;
 pub mod authzen_configuration;
+pub mod authzen_search;
 pub mod ciba;
 pub mod claims;
 pub mod client_auth;

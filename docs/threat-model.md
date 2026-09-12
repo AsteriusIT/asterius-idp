@@ -1090,6 +1090,50 @@ strengthened since. That is the conservative direction, and it is the reason
 `ast-lh3.10`'s pre-issuance port, which *does* hold the authentication it is
 about, is the better home for a step-up decision.
 
+### The Search APIs (`ast-pj0.6`)
+
+**Why this needs a section: an evaluation answers a question about an entity
+the caller already named; a search hands the caller the entities.** Everything
+the section above says about who may ask applies unchanged — the same five
+credential checks, the same `authzen.evaluate` scope, the same
+`LimitedEndpoint::AccessEvaluation` budget, with the audience narrowed to the
+URL of the search that was called (§9.1.1 makes each one its own endpoint). The
+new exposure is the *shape* of the answer, and it is deliberate: §8 exists to
+let a PEP render a list.
+
+**Off unless asked for.** `[authzen] search` is false by default and derives
+`Feature::AuthzenSearch`, which gates the routes and the metadata members
+together; a tenant that switched AuthZEN off loses the searches with it. A
+deployment whose PEPs never need a list does not serve one.
+
+**Enumeration is the feature, and the scope is the control.** A subject search
+returns the subject identifiers of this tenant's accounts that a policy admits.
+That is a disclosure, and it is the same one a patient PEP could already have
+assembled one evaluation at a time — every candidate is put through the
+ordinary evaluator with facts resolved from this server's rows, so a search
+never returns an access the same credential could not have confirmed by
+evaluating. What it changes is the *cost* of doing so, which is why the answer
+is capped at a page, charged to the evaluation budget and recorded as its own
+event type.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Walking a tenant's directory.** A PEP whose credential leaked enumerates every account, then every action each of them may take. | The credential is a DPoP-bound token carrying `authzen.evaluate` and audienced at this endpoint; the page is capped at `MAX_PAGE` (100, the same number §7's boxcar is bounded at) and charged one token per request to the shared PDP budget; and every request is one `access.searched` record naming the PEP, which is a *different event type* from an evaluation precisely so that "who listed this tenant" is a filter rather than a scan of detail maps. The entities returned are not written to the trail: the shape of the disclosure is recorded, not a second copy of the directory. |
+| **A1** | **G1** | **Reading a policy by probing.** A caller varies the fixed entities to learn which rules exist. | A search answers only with entities that *permit*; there is no `context` on a successful search, so nothing reports why a candidate was dropped. A denied candidate is indistinguishable from one that was never a candidate. |
+| **A3** | **G3** | **Buying an unbounded walk.** `page.limit` of a million, or a search of a tenant with a hundred thousand accounts. | `limit` is clamped to `MAX_PAGE` and refused if it is not a count; candidates are produced *by the page* — the directory is walked with a cursor and a limit, the finite sets are sliced before anything is evaluated — so the work of one request is one page of evaluations whatever the tenant holds. |
+| **A1** | **G1** | **Forging or replaying a page token to reach another query's results.** | The token carries a digest of the query it was minted for, and a token presented against a request that differs outside `page` is a 400 (§8.2's "identical parameters"). It carries no authority of its own: the page it names is still authenticated by the caller's own token and every entity in it is evaluated at that instant, so a forged token reaches exactly what asking for the first page reaches. That is why the binding is a digest rather than a MAC — a MAC would mean a new symmetric secret shared across every replica, held for a property that grants nothing. |
+| **A4** | **G2** | **Mistaking an outage for an empty tenant.** A PEP renders "nobody may do this" because the policy store was unreachable. | A search that could not be performed answers an empty `results` *with* an `error` context (status 500), the same shape a fail-closed evaluation carries, and is recorded as a `Failure`. A candidate that could not be decided is dropped from the page and counted in the record. |
+
+**Residual, stated rather than closed.** A resource search is **not** a
+catalogue: this server holds no table of a tenant's documents, so §8.5 answers
+with the identifiers the rules name literally and the ones the subject's live
+authorizations name, and nothing else. A PEP that treated the answer as
+complete would under-report access rather than over-report it — the safe
+direction — but it would be wrong, and the endpoint's module documentation says
+so where an integrator reads it. Clients and agents are not enumerable as
+subjects for the same kind of reason: the rule language has no notion of a
+client as a principal.
+
 ### PDP metadata (`ast-pj0.3`)
 
 **The PDP identifier is the tenant issuer; the token audience is the endpoint
@@ -1108,9 +1152,10 @@ drift from the route that answers.
 **The document is public, and says only what is mounted.** It is served behind
 `Feature::Authzen`, deployment-wide and per tenant, so a tenant that runs no
 PDP answers 404 rather than publishing an evaluation endpoint somebody could
-start sending subjects to. No `search_*` member exists while `ast-pj0.6` is
-unbuilt and no `capabilities` array is emitted, on the same rule: a member here
-is a promise a PEP acts on without being able to check it.
+start sending subjects to. The three `search_*` members appear only where
+`[authzen] search` is on — `Feature::AuthzenSearch`, which is also what mounts
+the routes — and no `capabilities` array is emitted, on the same rule: a member
+here is a promise a PEP acts on without being able to check it.
 
 **`signed_metadata` (§9.1.3) is off unless asked for.** With `[authzen]
 signed_metadata` on, the document carries a JWT signed by the tenant's active

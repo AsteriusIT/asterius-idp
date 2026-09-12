@@ -204,6 +204,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "authzen_search"
+path = "fuzz_targets/authzen_search.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ciba_form"
 path = "fuzz_targets/ciba_form.rs"
 test = false

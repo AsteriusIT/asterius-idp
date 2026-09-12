@@ -75,6 +75,9 @@ fn capabilities(flags: u8) -> Capabilities {
         token_exchange: flags & 0b0001_0000 != 0,
         ssf: flags & 0b0010_0000 != 0,
         authzen: flags & 0b0100_0000 != 0,
+        // Not a token endpoint concern: §8's searches are their own routes,
+        // and this target does not reach them.
+        authzen_search: false,
         dpop_nonce: flags & 0b1000_0000 != 0,
         // Not a token endpoint concern either: JAR is a pushed-request flag
         // (RFC 9126 §3), and this target does not reach that endpoint.
@@ -110,6 +113,7 @@ fn registration(grants: &[GrantType]) -> Option<ClientRegistration> {
             token_exchange: true,
             ssf: true,
             authzen: true,
+            authzen_search: true,
             dpop_nonce: true,
             request_object: true,
             self_registration: false,

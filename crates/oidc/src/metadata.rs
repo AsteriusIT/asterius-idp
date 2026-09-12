@@ -69,11 +69,25 @@ pub enum Endpoint {
     /// mounts, the URL the document advertises and the audience the token must
     /// carry cannot come apart (`ast-o0t.3`).
     AccessEvaluations,
+    /// Authorization API 1.0 §8.4 — the Subject Search. Gated on
+    /// [`Feature::AuthzenSearch`].
+    ///
+    /// Its own entry for the reason [`Self::AccessEvaluations`] has one: §10.1
+    /// gives each search its own default path, §9.1.1 its own metadata member,
+    /// and a PEP's access token is audienced at the URL it will be presented
+    /// to (`ast-pj0.6`).
+    SearchSubject,
+    /// Authorization API 1.0 §8.5 — the Resource Search. Gated on
+    /// [`Feature::AuthzenSearch`].
+    SearchResource,
+    /// Authorization API 1.0 §8.6 — the Action Search. Gated on
+    /// [`Feature::AuthzenSearch`].
+    SearchAction,
 }
 
 impl Endpoint {
     /// Every endpoint, in the order metadata lists them.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 17] = [
         Self::Authorization,
         Self::PushedAuthorizationRequest,
         Self::Token,
@@ -88,6 +102,9 @@ impl Endpoint {
         Self::GrantManagement,
         Self::AccessEvaluation,
         Self::AccessEvaluations,
+        Self::SearchSubject,
+        Self::SearchResource,
+        Self::SearchAction,
     ];
 
     /// The path, relative to the tenant.
@@ -113,6 +130,9 @@ impl Endpoint {
             Self::GrantManagement => "/grants",
             Self::AccessEvaluation => "/access/v1/evaluation",
             Self::AccessEvaluations => "/access/v1/evaluations",
+            Self::SearchSubject => "/access/v1/search/subject",
+            Self::SearchResource => "/access/v1/search/resource",
+            Self::SearchAction => "/access/v1/search/action",
         }
     }
 
@@ -134,6 +154,9 @@ impl Endpoint {
             Self::GrantManagement => "grant_management_endpoint",
             Self::AccessEvaluation => "access_evaluation_endpoint",
             Self::AccessEvaluations => "access_evaluations_endpoint",
+            Self::SearchSubject => "search_subject_endpoint",
+            Self::SearchResource => "search_resource_endpoint",
+            Self::SearchAction => "search_action_endpoint",
         }
     }
 
@@ -145,6 +168,13 @@ impl Endpoint {
             Self::BackchannelAuthentication => Some(Feature::Ciba),
             Self::GrantManagement => Some(Feature::GrantManagement),
             Self::AccessEvaluation | Self::AccessEvaluations => Some(Feature::Authzen),
+            // §8 is OPTIONAL and off unless an operator asked for it, so it
+            // has a flag of its own — derived from `[authzen] search` and
+            // from `Feature::Authzen`, which `TenantSettings` subtracts
+            // together (`ast-pj0.6`).
+            Self::SearchSubject | Self::SearchResource | Self::SearchAction => {
+                Some(Feature::AuthzenSearch)
+            }
             // RFC 7591. Follows `[registration] mode`, narrowed per tenant by
             // the stored registration policy (`ast-m9c.6`): a tenant that
             // registers nobody neither advertises the endpoint nor answers at
@@ -182,7 +212,10 @@ impl Endpoint {
             | Self::EndSession
             | Self::GrantManagement
             | Self::AccessEvaluation
-            | Self::AccessEvaluations => false,
+            | Self::AccessEvaluations
+            | Self::SearchSubject
+            | Self::SearchResource
+            | Self::SearchAction => false,
         }
     }
 
@@ -224,7 +257,10 @@ impl Endpoint {
             | Self::BackchannelAuthentication
             | Self::GrantManagement
             | Self::AccessEvaluation
-            | Self::AccessEvaluations => true,
+            | Self::AccessEvaluations
+            | Self::SearchSubject
+            | Self::SearchResource
+            | Self::SearchAction => true,
         }
     }
 
@@ -244,7 +280,11 @@ impl Endpoint {
         match self {
             // §9.1.1 names both: `access_evaluation_endpoint` REQUIRED and
             // `access_evaluations_endpoint` OPTIONAL (`ast-pj0.2`).
-            Self::AccessEvaluation | Self::AccessEvaluations => true,
+            Self::AccessEvaluation
+            | Self::AccessEvaluations
+            | Self::SearchSubject
+            | Self::SearchResource
+            | Self::SearchAction => true,
             Self::Authorization
             | Self::PushedAuthorizationRequest
             | Self::Token
@@ -892,6 +932,7 @@ mod tests {
             dynamic_client_registration: true,
             self_registration: true,
             authzen: true,
+            authzen_search: true,
             dpop_nonce: true,
             request_object: true,
         }
