@@ -1042,7 +1042,7 @@ route into the engine is the admin API.
 
 [ADR-0011]: adr/0011-a-declarative-rule-model-for-the-built-in-pdp.md
 
-### The Access Evaluation endpoint (`ast-pj0.1`)
+### The Access Evaluation endpoints (`ast-pj0.1`, `ast-pj0.2`)
 
 **Why this needs a section: `POST /access/v1/evaluation` is the first route by
 which somebody outside the admin API can make this server walk a tenant's
@@ -1075,6 +1075,8 @@ replica.
 | **A1** | **G1** | **Asserting the facts that decide.** The request claims `subject.properties.groups`, a role, an active grant or an `acr`. | The parser produces a subject with those fields *empty* (`authzen_request` asserts it on arbitrary input), and the endpoint fills them from this tenant's own rows keyed by the `sub` the PEP named. A PEP can influence `attribute` conditions and nothing else. |
 | **A3** | **G3** | **Spending the PDP's CPU.** A megabyte of nested JSON, or an evaluation per packet. | 64 KiB and 16 levels, checked on the body before the members are read; the per-property bounds of the engine behind them; and the endpoint limiter in front of the policy load. A request that fails the credential checks costs no policy walk at all. |
 | **A1**, **A4** | **G2** | **Reading a decision out of a shared cache, or out of the trail.** | Every response is `no-store`. The trail records a *summary* — subject type, action, resource type, the rule and the latency — with the subject's and the resource's identifiers fingerprinted (an AuthZEN `id` is routinely an email address) and the PEP's `properties` not recorded at all: they are one application's data, arriving once per API call, and this table is kept for years. |
+| **A3** | **G3** | **Boxcarring for amplification.** §7's `evaluations` array turns one request — one rate-limiter token — into N policy walks, and §7.1.1's defaults make a hundred of them cheap to write. | The array is capped at `MAX_EVALUATIONS` (100, a constant and not a setting, so the limiter's budget cannot be silently divided by a config change), the evaluations are decided `MAX_CONCURRENT` (8) at a time so one request cannot own the connection pool, and the subject each one names is resolved once per distinct subject rather than once per item. The amplification a PEP can buy with one token is therefore bounded and known: 100 policy reads, 8 in flight. A short circuit (§7.1.2.1) stops evaluating at the decision that settled the answer, so it costs less, never more. |
+| **A4** | **G2** | **Hiding a refusal in a crowd.** A boxcar's decisions are recorded as one `access.evaluated` entry, so a deny among ninety-nine permits could pass unnoticed. | The entry's outcome is `Failure` unless *every* decided evaluation permitted, and it carries the semantic and the counts (asked, decided, permits, denies, failures): an operator filtering for refusals still finds the request. What the entry does not carry is the array's individual resources — the same trade the single endpoint makes with `properties`, and the PEP is the party that chose the list. |
 | **A1** | **G3** | **Poisoning a correlation header.** §10.1.3 requires the PDP to echo the caller's `X-Request-ID`, which is a caller-chosen string on a response header. | The echoed value is bounded at 128 bytes and must be a valid header value, or it is dropped. It is deliberately *not* the identifier the audit trail records: that one is this server's own, drawn from the CSPRNG, so a caller cannot collide with another caller's entries. |
 
 **Residual, stated rather than closed:** the `acr` a rule reads is taken from

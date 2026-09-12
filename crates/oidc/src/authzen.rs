@@ -1,11 +1,14 @@
 //! The AuthZEN Authorization API 1.0 wire format: what a PEP sends, and what a
-//! PDP answers (`ast-pj0.1`).
+//! PDP answers (`ast-pj0.1`, `ast-pj0.2`).
 //!
 //! Authorization API 1.0 (Final, 2026-01-12) §6.1 gives the Access Evaluation
 //! request four members — `subject`, `action` and `resource` REQUIRED, and
 //! `context` OPTIONAL — over the information model of §5, and §6.2 makes the
-//! response §5.5's Decision. This module is the translation between those
-//! bytes and [`asterius_domain::policy`], and nothing else: no I/O, no
+//! response §5.5's Decision. §7 boxcars that request: an `evaluations` array
+//! of the same objects, each one free to override the top-level entities that
+//! serve as its defaults, answered by an array of Decisions in the same order.
+//! This module is the translation between those bytes and
+//! [`asterius_domain::policy`], and nothing else: no I/O, no
 //! credential, no HTTP. `crate::http::access_evaluation` in the server crate is
 //! the endpoint; the evaluation itself is
 //! [`asterius_domain::ports::PolicyEngine`].
@@ -35,7 +38,11 @@
 //!   one;
 //! * the per-property bounds (`MAX_PROPERTIES`, `MAX_PROPERTY_DEPTH`,
 //!   `MAX_PROPERTY_NODES`) are the domain's, applied by
-//!   [`Properties::from_json`] as each bag is built.
+//!   [`Properties::from_json`] as each bag is built;
+//! * [`MAX_EVALUATIONS`] bounds §7's array, which is the one member of this
+//!   format whose length is a multiplier on the *work* rather than on the
+//!   parse: one request, one rate-limiter token, and as many policy walks as
+//!   the array is long.
 //!
 //! # I-JSON, and the duplicate member
 //!
@@ -122,6 +129,28 @@ pub enum AuthzenError {
     /// The request is well-formed and outside the bounds the evaluator accepts.
     #[error(transparent)]
     Request(#[from] RequestError),
+    /// §7.1's array holds more than [`MAX_EVALUATIONS`] requests.
+    #[error("the evaluations array holds more than {MAX_EVALUATIONS} requests")]
+    TooMany,
+    /// `options.evaluations_semantic` is not one of §7.1.2.1's three values.
+    #[error(
+        "options.evaluations_semantic is not one of execute_all, deny_on_first_deny          or permit_on_first_permit"
+    )]
+    UnknownSemantic,
+    /// One evaluation of §7.1's array will not be read, and the whole request
+    /// is refused with it (§7.1.1: a required entity missing from an item *and*
+    /// from the defaults is not an evaluation this PDP can take a decision on).
+    ///
+    /// The index is in the message because a PEP that boxcarred a hundred
+    /// requests and got "action is required" back has been told nothing it can
+    /// act on.
+    #[error("evaluations[{index}]: {error}")]
+    Item {
+        /// Where in the request's array, counting from zero.
+        index: usize,
+        /// Why that evaluation will not be read.
+        error: Box<AuthzenError>,
+    },
 }
 
 /// Reads an Access Evaluation request (§6.1).
@@ -140,55 +169,164 @@ pub enum AuthzenError {
 /// error message string that body carries.
 // fuzz-target: authzen_request
 pub fn parse_evaluation(body: &[u8]) -> Result<EvaluationRequest, AuthzenError> {
-    if body.len() > MAX_REQUEST_BYTES {
-        return Err(AuthzenError::TooLong);
+    let document = read_document(body)?;
+    // The document is its own defaults: §6.1's request is §7.1's request with
+    // an array of one, and the two must not be able to read `subject` twice.
+    evaluation(&document, &document)
+}
+
+/// The most evaluations §7.1's array may carry in one request.
+///
+/// A hundred, as a constant rather than a setting. Every other bound in this
+/// module is about *parsing* a document, and an operator tuning one is tuning
+/// how much text a PEP may send; this one is about how many policy walks a
+/// single rate-limiter token buys, and the answer that is safe to give a
+/// deployment is the same everywhere: enough that boxcarring is worth doing —
+/// a page of documents, a menu of actions — and few enough that the endpoint's
+/// worst case stays within the same order of magnitude as its typical one.
+///
+/// This is the number that makes the "one request, one token" charge in
+/// `crate::http` honest: the amplification a PEP can buy with one token is
+/// bounded by this, and `docs/threat-model.md` carries the row. Raise it and
+/// the limiter's budget has to be divided by the same factor.
+pub const MAX_EVALUATIONS: usize = 100;
+
+/// How §7.1.2.1 says the array is to be executed.
+///
+/// Three values, and no room for a fourth: a PEP that names something else
+/// gets [`AuthzenError::UnknownSemantic`] rather than the default, because a
+/// short circuit silently executed in full is a bill the PEP did not agree to,
+/// and a semantic from a later revision read as `execute_all` would be a
+/// response a PEP interprets as something this PDP never did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EvaluationsSemantic {
+    /// "Execute all of the requests (potentially in parallel), return all of
+    /// the results." The default (§7.1.2.1).
+    #[default]
+    ExecuteAll,
+    /// "Deny on first denial (or failure) … This essentially works like the
+    /// `&&` operator in programming languages."
+    DenyOnFirstDeny,
+    /// "Permit on first permit … the converse short-circuiting semantic,
+    /// working like the `||` operator."
+    PermitOnFirstPermit,
+}
+
+impl EvaluationsSemantic {
+    /// The value as §7.1.2.1 spells it, which is also what the trail records.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExecuteAll => "execute_all",
+            Self::DenyOnFirstDeny => "deny_on_first_deny",
+            Self::PermitOnFirstPermit => "permit_on_first_permit",
+        }
     }
-    let parsed: Value = unique_members(body)?;
-    // Before the members are looked for, and on the document rather than on
-    // each bag: what §11.7's nested payload costs is the walk, and a walk that
-    // started at `subject` would already have paid for the nesting under
-    // `context`.
-    if depth_of(&parsed) > MAX_DEPTH {
-        return Err(AuthzenError::TooDeep);
-    }
-    let document = parsed.as_object().ok_or_else(|| {
-        AuthzenError::Malformed("the top-level element is not an object".to_owned())
-    })?;
+}
 
-    let subject = entity(document, "subject")?;
-    let action = entity(document, "action")?;
-    let resource = entity(document, "resource")?;
+/// An Access Evaluations request (§7.1), with every default already merged.
+///
+/// The merge happens in the parser and not at the endpoint on purpose: what
+/// reaches [`asterius_domain::ports::PolicyEngine`] is a list of ordinary
+/// [`EvaluationRequest`]s, each one complete, so the evaluator has no idea it
+/// is in a boxcar and no rule can depend on which shape the PEP chose to write.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct EvaluationsRequest {
+    /// The requests, in the order the PEP wrote them — which is the order
+    /// §7.2 requires the decisions to come back in.
+    ///
+    /// Never empty: an absent or empty array is §6.1's single request, and
+    /// that is one evaluation rather than none.
+    pub evaluations: Vec<EvaluationRequest>,
+    /// Which of §7.1.2.1's semantics to execute under.
+    pub semantic: EvaluationsSemantic,
+    /// Whether the PEP actually sent an `evaluations` array.
+    ///
+    /// §7.1: "If an evaluations array is NOT present or is empty, the Access
+    /// Evaluations Request behaves in a backwards-compatible manner with the
+    /// (single) Access Evaluation API Request." The *response* shape differs —
+    /// §6.2's Decision rather than §7.2's array — so the endpoint has to know
+    /// which of the two it was asked, and it cannot tell from a list of one.
+    pub boxcar: bool,
+}
 
-    let subject = Subject::new(
-        member(subject, "subject.type")?,
-        member(subject, "subject.id")?,
-        properties(subject, "subject.properties")?,
-    )?;
-    let action = Action::new(
-        member(action, "action.name")?,
-        properties(action, "action.properties")?,
-    )?;
-    let resource = Resource::new(
-        member(resource, "resource.type")?,
-        member(resource, "resource.id")?,
-        properties(resource, "resource.properties")?,
-    )?;
+/// Reads an Access Evaluations request (§7.1), defaults and all.
+///
+/// Every evaluation comes back complete: §7.1.1's top-level `subject`,
+/// `action`, `resource` and `context` are applied to each item that does not
+/// name its own, and an entity named by an item replaces the default **whole**
+/// rather than merging member by member — §7.1.1 speaks of a key overriding a
+/// key, and a subject merged from two places would be a principal neither side
+/// wrote down.
+///
+/// # Errors
+///
+/// [`AuthzenError`], which is always §10.1.2's 400 for the *whole* request.
+/// A per-evaluation *failure to decide* is not one of these: §7.2.1 makes that
+/// a `decision: false` with an `error` in that item's context, which is
+/// [`engine_failure_response`] and is the endpoint's business, not the
+/// parser's.
+// fuzz-target: authzen_evaluations
+pub fn parse_evaluations(body: &[u8]) -> Result<EvaluationsRequest, AuthzenError> {
+    let document = read_document(body)?;
+    let semantic = semantic_of(&document)?;
 
-    // §6.1: `context` is OPTIONAL, and §5.4 makes it a bag of environment
-    // attributes rather than an entity — there is no `type` or `id` to read, so
-    // its members *are* the properties.
-    let context = match document.get("context") {
-        None | Some(Value::Null) => Properties::empty(),
-        Some(Value::Object(members)) => Properties::new(members.clone())?,
-        Some(_) => return Err(AuthzenError::WrongType("context")),
+    let items = match document.get("evaluations") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(items)) => Some(items),
+        Some(_) => return Err(AuthzenError::WrongType("evaluations")),
     };
+    let Some(items) = items.filter(|items| !items.is_empty()) else {
+        // §7.1's backwards-compatible shape: the document itself is the one
+        // request, read exactly as `parse_evaluation` reads it.
+        return Ok(EvaluationsRequest {
+            evaluations: vec![evaluation(&document, &document)?],
+            semantic,
+            boxcar: false,
+        });
+    };
+    // §11.7, and before anything is built: the length is known from the parse,
+    // so a thousand-request array costs the refusal rather than a thousand
+    // entity constructions.
+    if items.len() > MAX_EVALUATIONS {
+        return Err(AuthzenError::TooMany);
+    }
 
-    Ok(EvaluationRequest::new(
-        subject,
-        action,
-        resource,
-        Context::new(context),
-    ))
+    let mut evaluations = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let at = |error: AuthzenError| AuthzenError::Item {
+            index,
+            error: Box::new(error),
+        };
+        let Value::Object(item) = item else {
+            return Err(at(AuthzenError::WrongType("evaluations")));
+        };
+        evaluations.push(evaluation(item, &document).map_err(at)?);
+    }
+
+    Ok(EvaluationsRequest {
+        evaluations,
+        semantic,
+        boxcar: true,
+    })
+}
+
+/// §7.2's response: the decisions, in the order they were asked.
+///
+/// The top-level `decision` is omitted — §7.2: "In case the evaluations array
+/// is present, it is RECOMMENDED that the decision key of the response be
+/// omitted" — because there is no single decision to report and any value
+/// written there would be one a careless PEP could enforce.
+///
+/// Each element is whatever the endpoint made of that evaluation:
+/// [`decision_response`] for a decision taken, [`engine_failure_response`] for
+/// §7.2.1's per-item error.
+#[must_use]
+pub fn evaluations_response(decisions: Vec<Value>) -> Value {
+    let mut object = Map::new();
+    object.insert("evaluations".to_owned(), Value::Array(decisions));
+    Value::Object(object)
 }
 
 /// §6.2's response: §5.5's Decision, and nothing else.
@@ -238,13 +376,118 @@ pub fn engine_failure_response() -> Value {
     })
 }
 
-/// One of §6.1's three REQUIRED entities, as an object.
+/// The bytes as a JSON object, with §11.7's and §11.5's bounds applied.
+///
+/// Every bound is on the *document*: what a nested payload costs is the walk,
+/// and a walk that started at `subject` would already have paid for the
+/// nesting under `context` — or, in a boxcar, under the ninety-ninth
+/// evaluation.
+fn read_document(body: &[u8]) -> Result<Map<String, Value>, AuthzenError> {
+    if body.len() > MAX_REQUEST_BYTES {
+        return Err(AuthzenError::TooLong);
+    }
+    let parsed: Value = unique_members(body)?;
+    if depth_of(&parsed) > MAX_DEPTH {
+        return Err(AuthzenError::TooDeep);
+    }
+    match parsed {
+        Value::Object(document) => Ok(document),
+        _ => Err(AuthzenError::Malformed(
+            "the top-level element is not an object".to_owned(),
+        )),
+    }
+}
+
+/// One §6.1 request, read from `item` and completed from `defaults` (§7.1.1).
+///
+/// For a single request the two are the same map, which is the whole of the
+/// relationship between §6.1 and §7.1: one evaluation with itself for defaults.
+fn evaluation(
+    item: &Map<String, Value>,
+    defaults: &Map<String, Value>,
+) -> Result<EvaluationRequest, AuthzenError> {
+    let subject = entity(item, defaults, "subject")?;
+    let action = entity(item, defaults, "action")?;
+    let resource = entity(item, defaults, "resource")?;
+
+    let subject = Subject::new(
+        member(subject, "subject.type")?,
+        member(subject, "subject.id")?,
+        properties(subject, "subject.properties")?,
+    )?;
+    let action = Action::new(
+        member(action, "action.name")?,
+        properties(action, "action.properties")?,
+    )?;
+    let resource = Resource::new(
+        member(resource, "resource.type")?,
+        member(resource, "resource.id")?,
+        properties(resource, "resource.properties")?,
+    )?;
+
+    // §6.1: `context` is OPTIONAL, and §5.4 makes it a bag of environment
+    // attributes rather than an entity — there is no `type` or `id` to read, so
+    // its members *are* the properties. §7.1.1 gives it a default like the
+    // others.
+    let context = match specified(item, defaults, "context") {
+        None => Properties::empty(),
+        Some(Value::Object(members)) => Properties::new(members.clone())?,
+        Some(_) => return Err(AuthzenError::WrongType("context")),
+    };
+
+    Ok(EvaluationRequest::new(
+        subject,
+        action,
+        resource,
+        Context::new(context),
+    ))
+}
+
+/// §7.1.2.1's semantic, or `execute_all` where the PEP named none.
+fn semantic_of(document: &Map<String, Value>) -> Result<EvaluationsSemantic, AuthzenError> {
+    // §7.1.2 makes `options` an object and leaves it open for options this
+    // revision does not define, which §10.1.1's "ignore unknown fields" covers.
+    let options = match document.get("options") {
+        None | Some(Value::Null) => return Ok(EvaluationsSemantic::default()),
+        Some(Value::Object(members)) => members,
+        Some(_) => return Err(AuthzenError::WrongType("options")),
+    };
+    match options.get("evaluations_semantic") {
+        None | Some(Value::Null) => Ok(EvaluationsSemantic::default()),
+        Some(Value::String(named)) => match named.as_str() {
+            "execute_all" => Ok(EvaluationsSemantic::ExecuteAll),
+            "deny_on_first_deny" => Ok(EvaluationsSemantic::DenyOnFirstDeny),
+            "permit_on_first_permit" => Ok(EvaluationsSemantic::PermitOnFirstPermit),
+            _ => Err(AuthzenError::UnknownSemantic),
+        },
+        Some(_) => Err(AuthzenError::WrongType("options.evaluations_semantic")),
+    }
+}
+
+/// A member as the item gave it, or as the defaults did (§7.1.1).
+///
+/// A member written as `null` counts as not written: §11.5 asks senders to
+/// omit absent members rather than spell them out, so reading `null` as an
+/// override would make the two spellings of "I have nothing to say here" mean
+/// opposite things.
+fn specified<'a>(
+    item: &'a Map<String, Value>,
+    defaults: &'a Map<String, Value>,
+    name: &'static str,
+) -> Option<&'a Value> {
+    item.get(name)
+        .or_else(|| defaults.get(name))
+        .filter(|value| !value.is_null())
+}
+
+/// One of §6.1's three REQUIRED entities, from the item or its default.
 fn entity<'a>(
-    document: &'a Map<String, Value>,
+    item: &'a Map<String, Value>,
+    defaults: &'a Map<String, Value>,
     name: &'static str,
 ) -> Result<&'a Map<String, Value>, AuthzenError> {
-    match document.get(name) {
-        None | Some(Value::Null) => Err(AuthzenError::Missing(name)),
+    match specified(item, defaults, name) {
+        None => Err(AuthzenError::Missing(name)),
         Some(Value::Object(members)) => Ok(members),
         Some(_) => Err(AuthzenError::WrongType(name)),
     }
@@ -418,6 +661,10 @@ mod tests {
 
     fn parse(document: &Value) -> Result<EvaluationRequest, AuthzenError> {
         parse_evaluation(&serde_json::to_vec(document).expect("a JSON body"))
+    }
+
+    fn parse_many(document: &Value) -> Result<EvaluationsRequest, AuthzenError> {
+        parse_evaluations(&serde_json::to_vec(document).expect("a JSON body"))
     }
 
     /// §6.1: three REQUIRED entities, read into §5's model.
@@ -751,5 +998,375 @@ mod tests {
         assert_eq!(rendered["decision"], json!(false));
         assert_eq!(rendered["context"]["error"]["status"], json!(500));
         assert!(rendered["context"]["error"]["message"].is_string());
+    }
+
+    // ---- §7: the boxcar -------------------------------------------------
+
+    /// §7.1's first example: three requests, each carrying every entity, and
+    /// no defaults at all.
+    #[test]
+    fn three_requests_that_share_nothing_parse_into_three_evaluations() {
+        // Arrange
+        let document = json!({
+            "evaluations": [
+                {"subject": {"type": "user", "id": "alice@example.com"},
+                 "action": {"name": "can_read"},
+                 "resource": {"type": "document", "id": "boxcarring.md"},
+                 "context": {"time": "2024-05-31T15:22-07:00"}},
+                {"subject": {"type": "user", "id": "alice@example.com"},
+                 "action": {"name": "can_read"},
+                 "resource": {"type": "document", "id": "subject-search.md"},
+                 "context": {"time": "2024-05-31T15:22-07:00"}},
+                {"subject": {"type": "user", "id": "alice@example.com"},
+                 "action": {"name": "can_read"},
+                 "resource": {"type": "document", "id": "resource-search.md"},
+                 "context": {"time": "2024-05-31T15:22-07:00"}},
+            ]
+        });
+
+        // Act
+        let parsed = parse_many(&document).expect("§7.1's example");
+
+        // Assert
+        assert!(parsed.boxcar, "an evaluations array is a boxcar request");
+        assert_eq!(parsed.semantic, EvaluationsSemantic::ExecuteAll);
+        let resources: Vec<&str> = parsed
+            .evaluations
+            .iter()
+            .map(|evaluation| evaluation.resource.id())
+            .collect();
+        assert_eq!(
+            resources,
+            ["boxcarring.md", "subject-search.md", "resource-search.md"],
+            "§7.2: the decisions come back in the order they were asked"
+        );
+    }
+
+    /// §7.1.1: "The top-level subject, action, resource, and context keys
+    /// provide default values for each object in the evaluations array."
+    #[test]
+    fn a_top_level_entity_is_the_default_for_every_evaluation() {
+        // Arrange: §7.1.1's second example.
+        let document = json!({
+            "subject": {"type": "user", "id": "alice@example.com"},
+            "context": {"time": "2024-05-31T15:22-07:00"},
+            "evaluations": [
+                {"action": {"name": "can_read"},
+                 "resource": {"type": "document", "id": "boxcarring.md"}},
+                {"action": {"name": "can_read"},
+                 "resource": {"type": "document", "id": "subject-search.md"}},
+            ]
+        });
+
+        // Act
+        let parsed = parse_many(&document).expect("§7.1.1's example");
+
+        // Assert
+        for evaluation in &parsed.evaluations {
+            assert_eq!(evaluation.subject.id(), "alice@example.com");
+            assert_eq!(evaluation.action.name(), "can_read");
+            assert_eq!(
+                evaluation.context.properties().get("time"),
+                Some(&json!("2024-05-31T15:22-07:00"))
+            );
+        }
+    }
+
+    /// §7.1.1: "Any of these keys specified within an individual evaluation
+    /// object overrides the corresponding top-level default." The third
+    /// request of §7.1.1's last example asks a different action.
+    #[test]
+    fn an_evaluation_overrides_the_default_it_names() {
+        // Arrange
+        let document = json!({
+            "subject": {"type": "user", "id": "alice@example.com"},
+            "action": {"name": "can_read"},
+            "evaluations": [
+                {"resource": {"type": "document", "id": "boxcarring.md"}},
+                {"action": {"name": "can_edit"},
+                 "resource": {"type": "document", "id": "resource-search.md"}},
+            ]
+        });
+
+        // Act
+        let parsed = parse_many(&document).expect("§7.1.1's example");
+
+        // Assert
+        assert_eq!(parsed.evaluations[0].action.name(), "can_read");
+        assert_eq!(parsed.evaluations[1].action.name(), "can_edit");
+    }
+
+    /// An override replaces the default entity **whole**: §7.1.1 speaks of a
+    /// key overriding a key, not of members merging into one. A subject that
+    /// was merged member by member would let an evaluation name an `id` while
+    /// silently keeping the default's `type`, and the request would be about a
+    /// principal neither the PEP nor the PDP wrote down.
+    #[test]
+    fn an_override_replaces_the_default_entity_rather_than_merging_into_it() {
+        // Arrange
+        let document = json!({
+            "subject": {"type": "user", "id": "alice@example.com",
+                        "properties": {"department": "sales"}},
+            "action": {"name": "can_read"},
+            "resource": {"type": "document", "id": "1"},
+            "evaluations": [{"subject": {"type": "machine", "id": "bot-1"}}],
+        });
+
+        // Act
+        let parsed = parse_many(&document).expect("a boxcar request");
+
+        // Assert
+        assert_eq!(parsed.evaluations[0].subject.kind(), "machine");
+        assert_eq!(parsed.evaluations[0].subject.id(), "bot-1");
+        assert!(
+            parsed.evaluations[0].subject.properties().is_empty(),
+            "a default's properties survived an override"
+        );
+    }
+
+    /// §7.1.1: "Because subject, action, and resource are required for a valid
+    /// evaluation, any of these keys omitted from an evaluation object MUST be
+    /// provided as a top-level key." Missing from both is §10.1.1's 400 for
+    /// the whole request, and the message names the evaluation it was missing
+    /// from.
+    #[test]
+    fn an_entity_missing_from_an_evaluation_and_from_the_defaults_is_refused() {
+        // Arrange
+        let document = json!({
+            "subject": {"type": "user", "id": "alice@example.com"},
+            "evaluations": [
+                {"action": {"name": "can_read"},
+                 "resource": {"type": "document", "id": "1"}},
+                {"resource": {"type": "document", "id": "2"}},
+            ]
+        });
+
+        // Act
+        let refused = parse_many(&document).unwrap_err();
+
+        // Assert
+        let AuthzenError::Item { index, error } = &refused else {
+            panic!("a missing action was not refused: {refused:?}");
+        };
+        assert_eq!(*index, 1);
+        assert_eq!(**error, AuthzenError::Missing("action"));
+        assert!(refused.to_string().contains("evaluations[1]"), "{refused}");
+    }
+
+    /// §7.1: "If an evaluations array is NOT present or is empty, the Access
+    /// Evaluations Request behaves in a backwards-compatible manner with the
+    /// (single) Access Evaluation API Request."
+    #[test]
+    fn an_absent_or_empty_array_is_the_single_request_of_section_six() {
+        for document in [request(), {
+            let mut document = request();
+            document["evaluations"] = json!([]);
+            document
+        }] {
+            // Act
+            let parsed = parse_many(&document).expect("§7.1's compatible shape");
+
+            // Assert
+            assert!(!parsed.boxcar, "an empty array became a boxcar request");
+            assert_eq!(parsed.evaluations.len(), 1);
+            assert_eq!(parsed.evaluations[0].resource.id(), "123");
+        }
+    }
+
+    /// §7.1.2.1: three semantics, named exactly, with `execute_all` the
+    /// default "so an evaluations request without the
+    /// `options.evaluations_semantic` flag will execute using this semantic".
+    #[test]
+    fn every_semantic_of_the_options_object_is_read() {
+        for (written, expected) in [
+            (None, EvaluationsSemantic::ExecuteAll),
+            (Some("execute_all"), EvaluationsSemantic::ExecuteAll),
+            (
+                Some("deny_on_first_deny"),
+                EvaluationsSemantic::DenyOnFirstDeny,
+            ),
+            (
+                Some("permit_on_first_permit"),
+                EvaluationsSemantic::PermitOnFirstPermit,
+            ),
+        ] {
+            // Arrange
+            let mut document = request();
+            if let Some(written) = written {
+                document["options"] =
+                    json!({"evaluations_semantic": written, "another_option": "value"});
+            }
+
+            // Act
+            let parsed = parse_many(&document).expect("a request");
+
+            // Assert
+            assert_eq!(parsed.semantic, expected, "{written:?}");
+            assert_eq!(parsed.semantic.as_str(), expected.as_str());
+        }
+    }
+
+    /// A semantic this PDP does not implement is a 400 rather than a silent
+    /// `execute_all`: a PEP that asked for a short circuit and got every
+    /// evaluation executed has been charged for work it did not want, and one
+    /// that asked for a semantic from a later revision would read the answer
+    /// as though this PDP had honoured it.
+    #[test]
+    fn an_unknown_semantic_is_refused_rather_than_defaulted() {
+        // Arrange
+        let mut document = request();
+        document["options"] = json!({"evaluations_semantic": "permit_on_first_deny"});
+
+        // Act / Assert
+        assert_eq!(
+            parse_many(&document).unwrap_err(),
+            AuthzenError::UnknownSemantic
+        );
+    }
+
+    /// `options` is an object (§7.1.2) and `evaluations_semantic` a string
+    /// (§7.1.2.1); neither is read as absent when it is something else.
+    #[test]
+    fn an_options_member_of_the_wrong_type_is_refused() {
+        // Arrange
+        let mut wrong_options = request();
+        wrong_options["options"] = json!(["execute_all"]);
+        let mut wrong_semantic = request();
+        wrong_semantic["options"] = json!({"evaluations_semantic": 1});
+
+        // Act / Assert
+        assert_eq!(
+            parse_many(&wrong_options).unwrap_err(),
+            AuthzenError::WrongType("options")
+        );
+        assert_eq!(
+            parse_many(&wrong_semantic).unwrap_err(),
+            AuthzenError::WrongType("options.evaluations_semantic")
+        );
+    }
+
+    /// §7.1's array holds objects, "each typed as the object as defined in the
+    /// Access Evaluation Request".
+    #[test]
+    fn an_evaluation_that_is_not_an_object_is_refused() {
+        // Arrange
+        let mut document = request();
+        document["evaluations"] = json!([{"resource": {"type": "d", "id": "1"}}, "not an object"]);
+
+        // Act
+        let refused = parse_many(&document).unwrap_err();
+
+        // Assert
+        assert!(
+            matches!(&refused, AuthzenError::Item { index: 1, error }
+                     if **error == AuthzenError::WrongType("evaluations")),
+            "{refused:?}"
+        );
+    }
+
+    /// And the array itself is an array.
+    #[test]
+    fn an_evaluations_member_that_is_not_an_array_is_refused() {
+        // Arrange
+        let mut document = request();
+        document["evaluations"] = json!({"0": {"resource": {"type": "d", "id": "1"}}});
+
+        // Act / Assert
+        assert_eq!(
+            parse_many(&document).unwrap_err(),
+            AuthzenError::WrongType("evaluations")
+        );
+    }
+
+    /// §11.7: the array is bounded, and the bound is checked against its
+    /// length before a single evaluation is built.
+    #[test]
+    fn an_array_longer_than_the_bound_is_refused() {
+        // Arrange
+        let item = json!({"resource": {"type": "document", "id": "1"}});
+        let mut document = request();
+        document["evaluations"] = json!(vec![item.clone(); MAX_EVALUATIONS]);
+        let mut one_too_many = document.clone();
+        one_too_many["evaluations"] = json!(vec![item; MAX_EVALUATIONS + 1]);
+
+        // Act / Assert
+        assert_eq!(
+            parse_many(&document)
+                .expect("the bound itself is allowed")
+                .evaluations
+                .len(),
+            MAX_EVALUATIONS
+        );
+        assert_eq!(
+            parse_many(&one_too_many).unwrap_err(),
+            AuthzenError::TooMany
+        );
+    }
+
+    /// The bounds of §11.7 are the document's, and a boxcar is a document: a
+    /// body over the size bound is refused whatever it holds.
+    #[test]
+    fn the_payload_bounds_are_the_same_ones_the_single_request_has() {
+        // Arrange
+        let mut document = request();
+        document["evaluations"] = json!([{"resource": {"type": "d", "id": "1",
+            "properties": {"blob": "x".repeat(MAX_REQUEST_BYTES)}}}]);
+        let body = serde_json::to_vec(&document).expect("a JSON body");
+        let mut nest = json!("leaf");
+        for _ in 0..MAX_DEPTH {
+            nest = json!([nest]);
+        }
+        let mut deep = request();
+        deep["evaluations"] = json!([{"context": {"deep": nest}}]);
+
+        // Act / Assert
+        assert_eq!(parse_evaluations(&body).unwrap_err(), AuthzenError::TooLong);
+        assert_eq!(parse_many(&deep).unwrap_err(), AuthzenError::TooDeep);
+    }
+
+    /// A PEP asserts nothing here either: the defaults go through the same
+    /// entity parser, so a group claimed at the top level of a boxcar is no
+    /// more a fact than one claimed in a single request.
+    #[test]
+    fn a_boxcar_subject_holds_nothing_the_pep_claimed() {
+        // Arrange
+        let mut document = request();
+        document["subject"]["properties"] = json!({"groups": ["finance"]});
+        document["evaluations"] = json!([{"resource": {"type": "d", "id": "1"}}]);
+
+        // Act
+        let parsed = parse_many(&document).expect("a boxcar request");
+
+        // Assert
+        assert!(parsed.evaluations[0].subject.groups().is_empty());
+        assert!(parsed.evaluations[0].subject.grants().is_empty());
+        assert_eq!(parsed.evaluations[0].context.acr(), None);
+    }
+
+    /// §7.2: an `evaluations` array in request order, and — "In case the
+    /// evaluations array is present, it is RECOMMENDED that the decision key
+    /// of the response be omitted" — no top-level `decision`.
+    #[test]
+    fn the_response_is_an_array_in_request_order_with_no_top_level_decision() {
+        // Arrange
+        let decisions = vec![
+            json!({"decision": true}),
+            engine_failure_response(),
+            json!({"decision": false, "context": {"id": "viewer"}}),
+        ];
+
+        // Act
+        let rendered = evaluations_response(decisions);
+
+        // Assert
+        assert!(
+            rendered.get("decision").is_none(),
+            "§7.2 recommends omitting the top-level decision"
+        );
+        let evaluations = rendered["evaluations"].as_array().expect("an array");
+        assert_eq!(evaluations.len(), 3);
+        assert_eq!(evaluations[0], json!({"decision": true}));
+        assert_eq!(evaluations[1]["context"]["error"]["status"], json!(500));
+        assert_eq!(evaluations[2]["context"]["id"], json!("viewer"));
     }
 }

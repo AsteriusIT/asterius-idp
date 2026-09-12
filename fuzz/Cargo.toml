@@ -190,6 +190,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "authzen_evaluations"
+path = "fuzz_targets/authzen_evaluations.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "authzen_request"
 path = "fuzz_targets/authzen_request.rs"
 test = false

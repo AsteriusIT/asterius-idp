@@ -1,5 +1,5 @@
-//! The AuthZEN Access Evaluation endpoint (Authorization API 1.0 §6, §10.1,
-//! `ast-pj0.1`).
+//! The AuthZEN Access Evaluation and Access Evaluations endpoints
+//! (Authorization API 1.0 §6, §7, §10.1, `ast-pj0.1`, `ast-pj0.2`).
 //!
 //! Every test here goes through the real handler with a real signed access
 //! token, a real DPoP proof, the real verifier and the real
@@ -42,12 +42,12 @@ use asterius_domain::{
     ReplayPurpose, RoleName, Tenant, TenantId, TenantStatus,
 };
 use asterius_jose::{LocalKeyStore, SigningKey, thumbprint};
-use asterius_oidc::authzen::{MAX_DEPTH, MAX_REQUEST_BYTES, SCOPE_EVALUATE};
+use asterius_oidc::authzen::{MAX_DEPTH, MAX_EVALUATIONS, MAX_REQUEST_BYTES, SCOPE_EVALUATE};
 use asterius_oidc::metadata::Endpoint;
 use asterius_oidc::tokens::JwtId;
 use asterius_oidc::tokens::access::{AccessToken, Audience, Confirmation};
 use asterius_server::http::access_evaluation::{
-    AccessEvaluationContext, PdpTokenStatus, ResolvedSubject, SubjectFacts, evaluate,
+    AccessEvaluationContext, PdpTokenStatus, ResolvedSubject, SubjectFacts, evaluate, evaluate_many,
 };
 use asterius_server::http::dpop::{DpopEndpoint, HEADER as DPOP_HEADER};
 use asterius_server::http::limits::{EndpointThrottle, LimitContext};
@@ -97,6 +97,15 @@ fn url() -> String {
     format!("{ISSUER}{}", path())
 }
 
+/// §7's boxcar, from the same registry (§10.1's default path).
+fn many_path() -> &'static str {
+    Endpoint::AccessEvaluations.path()
+}
+
+fn many_url() -> String {
+    format!("{ISSUER}{}", many_path())
+}
+
 // ---------------------------------------------------------------------------
 // The fakes
 // ---------------------------------------------------------------------------
@@ -106,6 +115,12 @@ fn url() -> String {
 struct FakePolicies {
     rules: Mutex<Option<RuleSet>>,
     unreadable: Mutex<bool>,
+    /// How many times the engine has been asked for a decision.
+    ///
+    /// `DeclarativeEngine` loads the document once per evaluation, so this is
+    /// how a test proves that a short circuit (§7.1.2.1) stopped rather than
+    /// evaluated the rest of the array and truncated the answer.
+    loads: AtomicU64,
 }
 
 impl FakePolicies {
@@ -113,7 +128,12 @@ impl FakePolicies {
         Self {
             rules: Mutex::new(Some(rules)),
             unreadable: Mutex::new(false),
+            loads: AtomicU64::new(0),
         }
+    }
+
+    fn evaluations(&self) -> u64 {
+        self.loads.load(Ordering::SeqCst)
     }
 
     fn breaks(&self) {
@@ -124,6 +144,7 @@ impl FakePolicies {
 #[async_trait::async_trait]
 impl PolicyStore for FakePolicies {
     async fn load(&self, _tenant: &TenantId) -> Result<Option<StoredPolicy>, DomainError> {
+        self.loads.fetch_add(1, Ordering::SeqCst);
         if *self.unreadable.lock().expect("lock") {
             return Err(DomainError::Storage(
                 "the policy store is unreachable".into(),
@@ -164,6 +185,9 @@ impl PolicyStore for FakePolicies {
 struct FakeFacts {
     people: Mutex<BTreeMap<String, ResolvedSubject>>,
     unreadable: Mutex<bool>,
+    /// The subjects this directory will not answer for, so that a boxcar can
+    /// have one evaluation fail and the others decided (§7.2.1).
+    unreadable_for: Mutex<BTreeSet<String>>,
     /// Every `(type, id)` this endpoint asked about, so a test can prove the
     /// resolution happened at all.
     asked: Mutex<Vec<(String, String)>>,
@@ -180,6 +204,13 @@ impl FakeFacts {
     fn breaks(&self) {
         *self.unreadable.lock().expect("lock") = true;
     }
+
+    fn breaks_for(&self, subject: &str) {
+        self.unreadable_for
+            .lock()
+            .expect("lock")
+            .insert(subject.to_owned());
+    }
 }
 
 #[async_trait::async_trait]
@@ -194,7 +225,9 @@ impl SubjectFacts for FakeFacts {
             .lock()
             .expect("lock")
             .push((kind.to_owned(), id.to_owned()));
-        if *self.unreadable.lock().expect("lock") {
+        if *self.unreadable.lock().expect("lock")
+            || self.unreadable_for.lock().expect("lock").contains(id)
+        {
             return Err(DomainError::Storage("the directory is unreachable".into()));
         }
         Ok(self
@@ -345,6 +378,8 @@ struct Fixture {
     limits: EndpointLimits,
     acr: AcrPolicy,
     token: String,
+    /// Whether this fixture posts to §7's endpoint rather than §6.1's.
+    boxcar: bool,
 }
 
 impl Fixture {
@@ -360,6 +395,19 @@ impl Fixture {
 
     async fn with_policy(rules: RuleSet) -> Self {
         Self::with(rules, &[SCOPE_EVALUATE], &url()).await
+    }
+
+    /// A deployment whose PEP holds a token for §7's endpoint.
+    async fn boxcarring(rules: RuleSet) -> Self {
+        let mut fixture = Self::with(rules, &[SCOPE_EVALUATE], &many_url()).await;
+        fixture.boxcar = true;
+        fixture
+    }
+
+    /// The URL this fixture's requests are made to: the audience its token
+    /// carries, and the `htu` its DPoP proofs are made over.
+    fn target(&self) -> String {
+        if self.boxcar { many_url() } else { url() }
     }
 
     async fn with(rules: RuleSet, scopes: &[&str], audience: &str) -> Self {
@@ -381,6 +429,7 @@ impl Fixture {
             limits: limits(1_000),
             acr: AcrPolicy::default(),
             token,
+            boxcar: false,
         }
     }
 
@@ -404,30 +453,29 @@ impl Fixture {
         let tenant = tenant();
         let dpop = DpopEndpoint::new(Arc::new(FakeReplay), None);
         let engine = DeclarativeEngine::new(Arc::clone(&self.policies) as Arc<dyn PolicyStore>);
-        evaluate(
-            AccessEvaluationContext {
-                tenant: &tenant,
-                engine: &engine,
-                subjects: &self.facts,
-                tokens: &self.tokens,
-                keys: self.keys.as_ref(),
-                dpop: &dpop,
+        let context = AccessEvaluationContext {
+            tenant: &tenant,
+            engine: &engine,
+            subjects: &self.facts,
+            tokens: &self.tokens,
+            keys: self.keys.as_ref(),
+            dpop: &dpop,
+            audit: &self.audit,
+            certificate: None,
+            acr: &self.acr,
+            limits: LimitContext {
+                tenant: &tenant.id,
+                throttle: EndpointThrottle::new(&self.limiter, self.limits, Some(address())),
                 audit: &self.audit,
-                certificate: None,
-                acr: &self.acr,
-                limits: LimitContext {
-                    tenant: &tenant.id,
-                    throttle: EndpointThrottle::new(&self.limiter, self.limits, Some(address())),
-                    audit: &self.audit,
-                    now: now(),
-                },
                 now: now(),
             },
-            method,
-            headers,
-            body,
-        )
-        .await
+            now: now(),
+        };
+        if self.boxcar {
+            evaluate_many(context, method, headers, body).await
+        } else {
+            evaluate(context, method, headers, body).await
+        }
     }
 
     /// The headers a well-formed request carries, plus an optional
@@ -468,7 +516,7 @@ impl Fixture {
         let claims = json!({
             "jti": unique_jti(),
             "htm": method,
-            "htu": url(),
+            "htu": self.target(),
             "iat": now().unix_timestamp(),
             "ath": B64.encode(Sha256::digest(self.token.as_bytes())),
         });
@@ -1257,6 +1305,409 @@ fn rendered_detail(event: &AuditEvent) -> String {
         .map(|(key, value)| format!("{key}={value:?}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// ---------------------------------------------------------------------------
+// §7 — the boxcar
+// ---------------------------------------------------------------------------
+
+/// §7.1.2.1's example catalogue: "read" is permitted on a document the tenant
+/// has marked public, and refused otherwise.
+///
+/// The specification's own example asks `read` of documents `1`, `2` and `3`
+/// and answers `true`, `false`, `true`. Which of the three is refused is a
+/// property of the PDP's rules, which §2 puts out of scope, and ADR-0011's
+/// language matches attributes rather than resource identifiers (`ast-pj0.1`
+/// carries the same note) — so the three documents carry a `public` property
+/// and the rule reads it. The decisions, their order, and the truncation of
+/// each short circuit are the specification's.
+fn public_documents() -> RuleSet {
+    catalogue(
+        r#"[{"id": "read-public", "effect": "permit",
+             "resource_type": "document", "actions": ["read"],
+             "when": {"attribute": {"of": "resource", "name": "public", "equals": true}}}]"#,
+    )
+}
+
+/// §7.1.2.1's request, with the semantic under test.
+fn three_documents(semantic: &str) -> Value {
+    json!({
+        "subject": {"type": "user", "id": ALICE},
+        "action": {"name": "read"},
+        "options": {"evaluations_semantic": semantic},
+        "evaluations": [
+            {"resource": {"type": "document", "id": "1", "properties": {"public": true}}},
+            {"resource": {"type": "document", "id": "2", "properties": {"public": false}}},
+            {"resource": {"type": "document", "id": "3", "properties": {"public": true}}},
+        ]
+    })
+}
+
+fn decisions_of(body: &Value) -> Vec<bool> {
+    body["evaluations"]
+        .as_array()
+        .expect("§7.2's evaluations array")
+        .iter()
+        .map(|decision| decision["decision"].as_bool().expect("a decision"))
+        .collect()
+}
+
+/// §7.1.2.1, all three semantics, on the section's own example: `execute_all`
+/// answers every evaluation, and each short circuit truncates the array at the
+/// decision that settled it — *and stops evaluating*, which is the saving the
+/// option exists for.
+#[tokio::test]
+async fn the_three_semantics_answer_the_arrays_of_section_seven() {
+    for (semantic, expected) in [
+        ("execute_all", vec![true, false, true]),
+        ("deny_on_first_deny", vec![true, false]),
+        ("permit_on_first_permit", vec![true]),
+    ] {
+        // Arrange
+        let fixture = Fixture::boxcarring(public_documents()).await;
+
+        // Act
+        let response = fixture.post(&three_documents(semantic)).await;
+
+        // Assert
+        assert_eq!(response.status(), StatusCode::OK, "{semantic}");
+        let body = body_of(response).await;
+        assert_eq!(decisions_of(&body), expected, "{semantic}");
+        assert!(
+            body.get("decision").is_none(),
+            "§7.2: the top-level decision is omitted ({semantic})"
+        );
+        assert_eq!(
+            fixture.policies.evaluations(),
+            expected.len() as u64,
+            "{semantic} evaluated the whole array and truncated the answer"
+        );
+    }
+}
+
+/// §7.1.2.1: "`execute_all` is the default semantic, so an evaluations request
+/// without the `options.evaluations_semantic` flag will execute using this
+/// semantic."
+#[tokio::test]
+async fn an_array_with_no_options_executes_every_evaluation() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    let mut body = three_documents("execute_all");
+    body.as_object_mut().expect("an object").remove("options");
+
+    // Act
+    let response = fixture.post(&body).await;
+
+    // Assert
+    assert_eq!(decisions_of(&body_of(response).await), [true, false, true]);
+}
+
+/// §7.1.1: a required entity missing from an evaluation *and* from the
+/// defaults is §10.1.1's 400 — for the whole request, because there is no
+/// decision to report about an evaluation that was never a request.
+#[tokio::test]
+async fn an_entity_missing_after_the_defaults_refuses_the_whole_request() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    let body = json!({
+        "subject": {"type": "user", "id": ALICE},
+        "evaluations": [
+            {"action": {"name": "read"}, "resource": {"type": "document", "id": "1"}},
+            {"resource": {"type": "document", "id": "2"}},
+        ]
+    });
+
+    // Act
+    let response = fixture.post(&body).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let message = text_of(response).await;
+    assert!(message.contains("evaluations[1]"), "{message}");
+    assert!(message.contains("action"), "{message}");
+}
+
+/// §7.2.1's second kind of error: one evaluation this PDP could not decide is
+/// that evaluation's `decision: false` with an `error` in its context, and the
+/// others are answered as if nothing had happened.
+#[tokio::test]
+async fn an_evaluation_that_cannot_be_decided_denies_only_itself() {
+    // Arrange: the directory will not answer for the second subject.
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    fixture.facts.breaks_for("bob-subject-id");
+    let body = json!({
+        "action": {"name": "read"},
+        "resource": {"type": "document", "id": "1", "properties": {"public": true}},
+        "evaluations": [
+            {"subject": {"type": "user", "id": ALICE}},
+            {"subject": {"type": "user", "id": "bob-subject-id"}},
+            {"subject": {"type": "user", "id": ALICE}},
+        ]
+    });
+
+    // Act
+    let response = fixture.post(&body).await;
+
+    // Assert
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a per-item error is not a status code"
+    );
+    let body = body_of(response).await;
+    assert_eq!(decisions_of(&body), [true, false, true]);
+    let failed = &body["evaluations"][1];
+    assert_eq!(failed["context"]["error"]["status"], json!(500));
+    assert!(body["evaluations"][0]["context"]["error"].is_null());
+}
+
+/// §11.7: the array is bounded, and an array over the bound is a 400 for the
+/// whole request rather than the first hundred decisions.
+#[tokio::test]
+async fn an_array_over_the_cap_is_refused() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    let item = json!({"resource": {"type": "document", "id": "1", "properties": {"public": true}}});
+    let mut body = json!({
+        "subject": {"type": "user", "id": ALICE},
+        "action": {"name": "read"},
+    });
+    body["evaluations"] = json!(vec![item; MAX_EVALUATIONS + 1]);
+
+    // Act
+    let response = fixture.post(&body).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        fixture.policies.evaluations(),
+        0,
+        "an over-long array cost a policy walk"
+    );
+}
+
+/// §11.7's payload bounds are the endpoint's, not the shape's: the same 64
+/// kibibytes and the same nesting bound answer at §7's path.
+#[tokio::test]
+async fn the_payload_bounds_of_the_single_endpoint_apply_to_the_boxcar() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    let mut body = json!({
+        "subject": {"type": "user", "id": ALICE},
+        "action": {"name": "read"},
+        "evaluations": [{"resource": {"type": "document", "id": "1",
+                         "properties": {"blob": "x".repeat(MAX_REQUEST_BYTES)}}}],
+    });
+    let oversized = serde_json::to_vec(&body).expect("a JSON body");
+    let mut nest = json!("leaf");
+    for _ in 0..=MAX_DEPTH {
+        nest = json!([nest]);
+    }
+    body["evaluations"] = json!([{"resource": {"type": "document", "id": "1"},
+                                  "context": {"deep": nest}}]);
+
+    // Act
+    let too_long = fixture
+        .post_bytes(&fixture.headers("POST", None), &Method::POST, &oversized)
+        .await;
+    let too_deep = fixture.post(&body).await;
+
+    // Assert
+    assert_eq!(too_long.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(too_deep.status(), StatusCode::BAD_REQUEST);
+}
+
+/// RFC 9068 §3: the two endpoints are two resources, and a token audienced at
+/// §6.1's evaluation is not one §7's boxcar answers.
+#[tokio::test]
+async fn a_token_for_the_single_endpoint_is_not_accepted_at_the_boxcar() {
+    // Arrange
+    let mut fixture = Fixture::with(public_documents(), &[SCOPE_EVALUATE], &url()).await;
+    fixture.boxcar = true;
+
+    // Act
+    let response = fixture.post(&three_documents("execute_all")).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// The same scope gates both (§11.2): one authority, asked in two shapes.
+#[tokio::test]
+async fn the_boxcar_needs_the_evaluate_scope() {
+    // Arrange
+    let mut fixture = Fixture::with(public_documents(), &["openid"], &many_url()).await;
+    fixture.boxcar = true;
+
+    // Act
+    let response = fixture.post(&three_documents("execute_all")).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let challenge = response
+        .headers()
+        .get(header::WWW_AUTHENTICATE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(challenge.contains(SCOPE_EVALUATE), "{challenge}");
+}
+
+/// §11.7: one request is one token at the limiter, however many evaluations it
+/// carries — and the budget is the PDP's, shared with §6.1's endpoint.
+#[tokio::test]
+async fn a_boxcar_costs_one_token_however_long_the_array_is() {
+    // Arrange: a budget of one request per window.
+    let fixture = Fixture::boxcarring(public_documents()).await.allowing(1);
+
+    // Act
+    let first = fixture.post(&three_documents("execute_all")).await;
+    let second = fixture.post(&three_documents("execute_all")).await;
+
+    // Assert
+    assert_eq!(
+        first.status(),
+        StatusCode::OK,
+        "three evaluations spent more than one token"
+    );
+    assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+/// The trail: one entry per request, carrying the semantic and the counts —
+/// not one entry per evaluation, and not the resources of the array.
+#[tokio::test]
+async fn a_boxcar_is_one_audit_entry_naming_the_semantic_and_the_counts() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+
+    // Act
+    fixture.post(&three_documents("execute_all")).await;
+
+    // Assert
+    let trail = fixture.trail();
+    assert_eq!(trail.len(), 1, "one entry per request, not per evaluation");
+    let event = &trail[0];
+    assert_eq!(event.event_type, EventType::ACCESS_EVALUATED);
+    assert_eq!(
+        event.outcome,
+        Outcome::Failure,
+        "an array holding a deny is a refusal an operator must be able to filter for"
+    );
+    let rendered = rendered_detail(event);
+    assert!(rendered.contains("execute_all"), "{rendered}");
+    assert!(rendered.contains("evaluations"), "{rendered}");
+    assert!(rendered.contains("latency_us"), "{rendered}");
+    assert!(
+        !rendered.contains("subject-search"),
+        "the trail carried the array's resources: {rendered}"
+    );
+}
+
+/// A boxcar every one of whose evaluations permitted is a success in the
+/// trail, and names the subject they all shared (§7.1.1's common case).
+#[tokio::test]
+async fn a_boxcar_that_permitted_everything_is_recorded_as_a_success() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    let body = json!({
+        "subject": {"type": "user", "id": ALICE},
+        "action": {"name": "read"},
+        "evaluations": [
+            {"resource": {"type": "document", "id": "1", "properties": {"public": true}}},
+            {"resource": {"type": "document", "id": "3", "properties": {"public": true}}},
+        ]
+    });
+
+    // Act
+    fixture.post(&body).await;
+
+    // Assert
+    let event = &fixture.trail()[0];
+    assert_eq!(event.outcome, Outcome::Success);
+    assert!(rendered_detail(event).contains("subject_type"));
+}
+
+/// §7.1: "If an evaluations array is NOT present or is empty, the Access
+/// Evaluations Request behaves in a backwards-compatible manner with the
+/// (single) Access Evaluation API Request" — which means §6.2's response, a
+/// Decision, and not an array of one.
+#[tokio::test]
+async fn an_empty_array_is_answered_as_a_single_decision() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    let body = json!({
+        "subject": {"type": "user", "id": ALICE},
+        "action": {"name": "read"},
+        "resource": {"type": "document", "id": "1", "properties": {"public": true}},
+        "evaluations": [],
+    });
+
+    // Act
+    let response = fixture.post(&body).await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_of(response).await;
+    assert_eq!(body["decision"], json!(true));
+    assert!(body.get("evaluations").is_none());
+}
+
+/// §7.1.1's compact syntax is the common case, and it must not cost one
+/// directory read per evaluation: the subject shared by a whole array is
+/// resolved once, so the decisions are taken against one view of this tenant.
+#[tokio::test]
+async fn a_subject_shared_by_a_whole_array_is_resolved_once() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+
+    // Act
+    fixture.post(&three_documents("execute_all")).await;
+
+    // Assert
+    assert_eq!(
+        fixture.facts.asked.lock().expect("lock").len(),
+        1,
+        "one subject, three evaluations, more than one directory read"
+    );
+}
+
+/// §10.1 binds the whole API to POST, boxcar included.
+#[tokio::test]
+async fn the_boxcar_is_bound_to_post() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    let headers = fixture.headers("GET", None);
+
+    // Act
+    let response = fixture
+        .post_with(&headers, &Method::GET, &three_documents("execute_all"))
+        .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+/// §10.1.3: the request identifier comes back from this endpoint too.
+#[tokio::test]
+async fn the_boxcar_echoes_the_request_identifier() {
+    // Arrange
+    let fixture = Fixture::boxcarring(public_documents()).await;
+    let identifier = "bfe9eb29-ab87-4ca3-be83-a1d5d8305716";
+    let headers = fixture.headers("POST", Some(identifier));
+
+    // Act
+    let response = fixture
+        .post_with(&headers, &Method::POST, &three_documents("execute_all"))
+        .await;
+
+    // Assert
+    assert_eq!(
+        response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some(identifier)
+    );
 }
 
 // ---------------------------------------------------------------------------
