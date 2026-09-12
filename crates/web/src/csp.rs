@@ -429,6 +429,61 @@ mod tests {
         }
     }
 
+    /// `ast-gore`: the console moved to shadcn/ui and nobody's policy moved.
+    ///
+    /// The bead put a component framework inside the most privileged page this
+    /// deployment serves, and the obvious cost of that — the one it was told to
+    /// measure — is `style-src`. Radix positions its layers by writing to
+    /// `element.style`, which is the CSSOM and not the `style=` *attribute*
+    /// this directive governs, so nothing had to be given up; the one library
+    /// that does inject a `<style>` element is handed the response's nonce
+    /// (`console/src/main.tsx`), and Sonner, which cannot be, was not adopted.
+    ///
+    /// So the acceptance criterion is an **absence**, and it is asserted here
+    /// rather than in the console's own tests because this is the type that
+    /// would have had to grow a second policy for it. Two things are checked:
+    /// that `style-src` still names nothing but the nonce, and that this type
+    /// still has exactly one way to vary — a `Policy::for_console()` or a
+    /// route-scoped `'unsafe-inline'` would have to edit this test to land,
+    /// which is the point.
+    ///
+    /// The server-rendered pages are covered by the same two assertions,
+    /// because they are served by the same value: `Document::render` builds
+    /// `Policy::strict()` and `document::layer` is the only place a
+    /// `Content-Security-Policy` header is written.
+    #[test]
+    fn the_console_widened_style_src_for_nobody() {
+        let nonce = fixed_nonce("Ab3-_0");
+        let origin = FormActionOrigin::parse("https://rp.example").expect("an origin");
+
+        for policy in [Policy::strict(), Policy::strict().with_form_post_to(origin)] {
+            let rendered = policy.header_value(&nonce);
+            assert!(
+                rendered.contains("style-src 'nonce-Ab3-_0';"),
+                "style-src is no longer the nonce alone: {rendered}"
+            );
+            // The three spellings of "let a stylesheet in from somewhere else",
+            // each of which would also admit an injected one.
+            for widening in [
+                "style-src 'self'",
+                "style-src 'unsafe-inline'",
+                "style-src 'nonce-Ab3-_0' 'unsafe-inline'",
+                "style-src-attr",
+                "style-src-elem",
+            ] {
+                assert!(
+                    !rendered.contains(widening),
+                    "the policy grew {widening}: {rendered}"
+                );
+            }
+            assert_eq!(
+                rendered.matches(';').count(),
+                SEPARATORS,
+                "the console's policy has a different number of directives: {rendered}"
+            );
+        }
+    }
+
     /// CSP Level 3 §7.1: the whole policy rests on the nonce, so it has to be
     /// unique per response and unguessable.
     #[test]

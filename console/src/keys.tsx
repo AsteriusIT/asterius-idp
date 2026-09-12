@@ -33,6 +33,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
+import { toast } from './components/ui/toast';
 import { Badge, Button, EmptyState, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
 /**
@@ -197,12 +198,16 @@ export function Keys({ session }: { session: Session }): JSX.Element {
       setNotice(null);
       action().then(
         (value) => {
-          setNotice(describeResult(value));
+          const said = describeResult(value);
+          setNotice(said);
+          toast.success('The signing keys changed', said);
           setBusy(false);
           refresh();
         },
         (error: unknown) => {
-          setNotice(error instanceof Error ? error.message : 'the change was refused');
+          const said = error instanceof Error ? error.message : 'the change was refused';
+          setNotice(said);
+          toast.error('The keys were not changed', said);
           setBusy(false);
         },
       );

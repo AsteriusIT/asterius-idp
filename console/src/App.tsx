@@ -3,8 +3,23 @@ import type { JSX } from 'react';
 import { ApiError, endSession, loadSession, type Session } from './api';
 import { AuditExplorer } from './audit';
 import { Clients } from './clients';
+import { AppSidebar } from './components/app-sidebar';
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from './components/ui/breadcrumb';
+import { Separator } from './components/ui/separator';
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from './components/ui/sidebar';
+import { Toaster, toast } from './components/ui/toast';
 import { Keys } from './keys';
-import { visibleTo } from './navigation';
+import { DESTINATIONS, visibleTo } from './navigation';
 import { Policy } from './policy';
 import { hrefOf, paramsOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
@@ -73,7 +88,10 @@ export function App(): JSX.Element {
     setShell({ kind: 'loading' });
     endSession(session).then(
       () => setShell({ kind: 'signed-out' }),
-      () => setShell({ kind: 'signed-out' }),
+      () => {
+        toast.error('The server did not confirm the sign-out', 'The console was left anyway.');
+        setShell({ kind: 'signed-out' });
+      },
     );
   }, []);
 
@@ -104,48 +122,57 @@ export function App(): JSX.Element {
   const current = destinations.some((destination) => destination.route === route)
     ? route
     : (destinations[0]?.route ?? route);
+  const here = DESTINATIONS.find((destination) => destination.route === current);
 
+  /**
+   * The shell since `ast-gore`: a sidebar, and a bar that says where you are.
+   *
+   * There is no navigation header any more — the rail is the whole navigation
+   * — so the bar above the content carries exactly three things: the control
+   * that folds the rail, the trail that says which screen this is, and nothing
+   * else. It stays on a narrow window, where the rail has become a drawer and
+   * the trigger is the only way back to it.
+   */
   return (
-    <div className="app">
-      <a className="skip" href={`${hrefOf(current)}`} onClick={focusMain}>
+    <SidebarProvider>
+      <a
+        className="skip"
+        href={`${hrefOf(current)}`}
+        onClick={focusMain}
+      >
         Skip to content
       </a>
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            A
-          </span>
-          <h1 className="wordmark">Asterius console</h1>
-        </div>
-        <p className="topbar-session">
-          <span>
-            Signed in to <strong>{shell.session.tenant}</strong>
-          </span>{' '}
-          <button type="button" onClick={() => signOut(shell.session)}>
-            Sign out
-          </button>
-        </p>
-      </header>
-      <div className="app-body">
-        <nav className="rail" aria-label="Console sections">
-          <ul>
-            {destinations.map((destination) => (
-              <li key={destination.route}>
-                <a
-                  href={hrefOf(destination.route)}
-                  aria-current={destination.route === current ? 'page' : undefined}
-                >
-                  {destination.label}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </nav>
+      <AppSidebar
+        session={shell.session}
+        current={current}
+        onSignOut={() => signOut(shell.session)}
+      />
+      <SidebarInset>
+        <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4">
+          <SidebarTrigger className="-ml-1" />
+          <Separator orientation="vertical" className="mr-2 !h-4" />
+          <Breadcrumb>
+            <BreadcrumbList>
+              <BreadcrumbItem className="hidden sm:block">{shell.session.tenant}</BreadcrumbItem>
+              {here !== undefined && here.group !== 'Overview' && (
+                <>
+                  <BreadcrumbSeparator className="hidden sm:block" />
+                  <BreadcrumbItem className="hidden sm:block">{here.group}</BreadcrumbItem>
+                </>
+              )}
+              <BreadcrumbSeparator className="hidden sm:block" />
+              <BreadcrumbItem>
+                <BreadcrumbPage>{here?.label ?? 'Not found'}</BreadcrumbPage>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
+        </header>
         <main id="content" tabIndex={-1} className="content">
           <RouteScreen route={current} fragment={fragment} session={shell.session} />
         </main>
-      </div>
-    </div>
+      </SidebarInset>
+      <Toaster />
+    </SidebarProvider>
   );
 }
 
@@ -264,8 +291,8 @@ function Overview({ session }: { session: Session }): JSX.Element {
         description="A screen is listed when this session holds the scope its first call needs. The server checks every one of them again."
       >
         {/*
-          Names and not links, deliberately. The rail beside this panel is the
-          console's one navigation; a second set of links to the same eight
+          Names and not links, deliberately. The sidebar beside this panel is
+          the console's one navigation; a second set of links to the same nine
           screens would be a second place for a keyboard user to tab through,
           and two controls carrying one accessible name on one page.
         */}

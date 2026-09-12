@@ -32,6 +32,12 @@
 <p>This console needs JavaScript. The end-user pages of this server — sign-in,
 consent and sign-out — do not, and work without it.</p>
 </noscript>
-<script type="module" src="{{ script }}" {{ nonce_attribute|safe }}></script>
+{# The `id` is how the bundle reads this response's nonce back: a browser
+   blanks the nonce *content attribute* after parsing (CSP Level 3 §5.2) but
+   keeps `element.nonce` readable by script already running, so the one
+   dependency that injects a stylesheet — `react-remove-scroll`, behind every
+   modal — can be given a nonce without the value appearing anywhere an
+   injected page could scrape it. See `console/src/main.tsx`. #}
+<script id="console-entry" type="module" src="{{ script }}" {{ nonce_attribute|safe }}></script>
 </body>
 </html>

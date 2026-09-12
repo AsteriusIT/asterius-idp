@@ -1,29 +1,64 @@
 /**
- * The console's own components (`ast-fe39`).
+ * The console's components (`ast-fe39`, rebuilt on shadcn/ui by `ast-gore`).
  *
  * Nine screens were written one at a time, and each invented its own way of
  * saying the same six things: this is the screen you are on, this is a section
- * of it, this went wrong, this worked, this is a table, are you sure. The
- * result was a console that did not look like one product — and did not look
- * like the pages `7f428d2` redrew either.
+ * of it, this went wrong, this worked, this is a table, are you sure. So the
+ * six things live here — and the screens that call them did not have to change
+ * when what is underneath them did.
  *
- * So the six things live here, in the visual language of those pages
- * (`tokens.css`, `styles.css`). Nothing in this file talks to the network, and
- * no screen's behaviour lives here: a component takes what to draw and gives
- * back what was pressed. That is what makes the migration of a screen a change
- * of markup and not a change of what it does — the admin API calls, their
- * scopes and their refusals are exactly where they were.
+ * # What changed, and why a framework is now the answer
  *
- * # No component framework
+ * `ast-fe39` wrote these by hand and said why: "a UI library is a dependency
+ * tree inside the most privileged page this deployment serves". That objection
+ * is answered by *how* shadcn/ui ships rather than by ignoring it. It is not a
+ * dependency: the components are **copied into this repository**
+ * (`src/components/ui/`), reviewed like the rest of it and changed where this
+ * deployment disagrees — the sidebar's cookie is gone, Sonner is gone. What
+ * remains under them is Radix, which is behaviour and not paint: the focus
+ * traps, the roving tab indexes, the `aria-*` wiring and the dismiss semantics
+ * that `ConfirmDialog` had to get right by hand once and that every subsequent
+ * dialog would have had to get right again.
  *
- * On purpose, and it is the kind of decision that should be written down
- * rather than discovered. A UI library is a dependency tree inside the most
- * privileged page this deployment serves, shipped to every browser that opens
- * it, and the console needs a table, a dialog and six wrappers. React and
- * `react-dom` remain the console's only runtime dependencies.
+ * The paint is still ours. Every colour in `tailwind.css` is a `var(--token)`
+ * from `tokens.css`, which is a checked copy of the user-facing pages'
+ * `:root` — so the console still looks like the product and the Rust test
+ * `the_console_declares_the_same_design_tokens` still fails if it stops.
+ *
+ * # What is still true
+ *
+ * Nothing in this file talks to the network; a component takes what to draw
+ * and gives back what was pressed. The admin API calls, their scopes and their
+ * refusals are exactly where they were.
  */
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useId, useMemo, useState } from 'react';
 import type { JSX, ReactNode } from 'react';
+import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, SearchIcon } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Badge as ShadBadge } from '@/components/ui/badge';
+import { Button as ShadButton } from '@/components/ui/button';
+import { Card, CardAction, CardContent, CardHeader } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Skeleton as ShadSkeleton } from '@/components/ui/skeleton';
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { cn } from '@/lib/utils';
 
 /* ---- layout ------------------------------------------------------------ */
 
@@ -59,7 +94,7 @@ export function Screen({
 }
 
 /**
- * One section of a screen, drawn as a panel.
+ * One section of a screen, drawn as a shadcn `Card`.
  *
  * `aria-labelledby` rather than `aria-label`: the heading is on screen, and a
  * region labelled by text nobody can see is a second name for the same thing.
@@ -82,20 +117,22 @@ export function Panel({
   const generated = useId();
   const headingId = id ?? generated;
   return (
-    <section className="panel" aria-labelledby={headingId}>
-      <div className="panel-head">
-        <div className="panel-title">
-          <h3 id={headingId}>{title}</h3>
-          {description !== undefined && <p className="muted">{description}</p>}
-        </div>
-        {actions !== undefined && <div className="actions">{actions}</div>}
-      </div>
-      {children}
-    </section>
+    <Card asChild>
+      <section aria-labelledby={headingId}>
+        <CardHeader>
+          <div className="panel-title">
+            <h3 id={headingId}>{title}</h3>
+            {description !== undefined && <p className="muted">{description}</p>}
+          </div>
+          {actions !== undefined && <CardAction>{actions}</CardAction>}
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">{children}</CardContent>
+      </section>
+    </Card>
   );
 }
 
-/** The centred card the user-facing pages are drawn as: one sentence, one act. */
+/** The pages' centred card, for the three views that are one sentence. */
 export function CenteredCard({
   heading,
   children,
@@ -118,21 +155,24 @@ export function CenteredCard({
 
 /* ---- controls ---------------------------------------------------------- */
 
-/** Which of the three things a control does. */
+/** Which of the four things a control does. */
 export type Variant = 'primary' | 'secondary' | 'danger' | 'ghost';
 
 /**
  * A button.
  *
  * `primary` is spent once per view — direction A's rule, and the reason the
- * default is `secondary`: a screen where everything is emphasised has emphasised
- * nothing. `danger` is not red-filled, because a destructive act is *confirmed*
- * rather than shouted at; the dialog is where the weight is.
+ * default is `secondary`: a screen where everything is emphasised has
+ * emphasised nothing. `danger` is deliberately *not* the filled destructive
+ * button: a destructive act is confirmed rather than shouted at, and the
+ * dialog is where the weight is. The one filled red control in this console is
+ * the confirm inside `ConfirmDialog`.
  */
 export function Button({
   variant = 'secondary',
   small = false,
   type = 'button',
+  className,
   children,
   ...rest
 }: {
@@ -141,13 +181,21 @@ export function Button({
   // React 19 passes `ref` as an ordinary prop to a function component, so the
   // dialog can hold one without `forwardRef` in the tree.
 } & React.ComponentProps<'button'>): JSX.Element {
-  const classes = ['', variant === 'secondary' ? '' : variant, small ? 'small' : '']
-    .filter((name) => name !== '')
-    .join(' ');
+  const mapped = variant === 'primary' ? 'default' : variant === 'ghost' ? 'ghost' : 'outline';
   return (
-    <button type={type} className={classes === '' ? undefined : classes} {...rest}>
+    <ShadButton
+      type={type}
+      variant={mapped}
+      size={small ? 'sm' : 'default'}
+      className={cn(
+        variant === 'danger' &&
+          'border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive',
+        className,
+      )}
+      {...rest}
+    >
       {children}
-    </button>
+    </ShadButton>
   );
 }
 
@@ -231,8 +279,10 @@ export type Tone = 'success' | 'error' | 'info';
  * refusal in a polite live region would have an administrator reading "saved"
  * and "refused" in the same voice.
  *
- * The mark is decorative — the colour is not the message and neither is the
- * glyph, the sentence is — so it is hidden from the accessibility tree.
+ * It stays even though `ast-gore` added toasts, and the division is this: the
+ * toast is the *announcement* and this is the *record*. An outcome that scrolls
+ * away after six seconds is not where a refusal an operator has to act on
+ * belongs.
  */
 export function Message({
   tone,
@@ -264,7 +314,20 @@ export function Badge({
   tone?: 'neutral' | 'ok' | 'warn' | 'bad' | 'accent';
   children: ReactNode;
 }): JSX.Element {
-  return <span className={tone === 'neutral' ? 'badge' : `badge ${tone}`}>{children}</span>;
+  return (
+    <ShadBadge
+      variant="outline"
+      className={cn(
+        'font-medium',
+        tone === 'ok' && 'border-success/40 bg-success/10 text-success',
+        tone === 'warn' && 'border-warning/40 bg-warning/10 text-warning',
+        tone === 'bad' && 'border-destructive/40 bg-destructive/10 text-destructive',
+        tone === 'accent' && 'border-primary/40 bg-primary/10 text-primary',
+      )}
+    >
+      {children}
+    </ShadBadge>
+  );
 }
 
 /** Nothing to show, and — when there is one — what to do about it. */
@@ -278,10 +341,10 @@ export function EmptyState({
   action?: ReactNode;
 }): JSX.Element {
   return (
-    <div className="empty">
-      <strong>{title}</strong>
-      {body !== undefined && <p>{body}</p>}
-      {action}
+    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed px-6 py-10 text-center">
+      <strong className="text-sm font-semibold">{title}</strong>
+      {body !== undefined && <p className="max-w-prose text-sm text-muted-foreground">{body}</p>}
+      {action !== undefined && <div className="pt-1">{action}</div>}
     </div>
   );
 }
@@ -305,9 +368,9 @@ export function Skeleton({ rows = 3, label }: { rows?: number; label: string }):
       <p className="muted" aria-live="polite">
         {label}
       </p>
-      <div className="skeleton" aria-hidden="true">
+      <div className="flex flex-col gap-2" aria-hidden="true">
         {Array.from({ length: rows }, (_, index) => (
-          <div className="skeleton-line" key={index} />
+          <ShadSkeleton className="h-4 w-full" key={index} />
         ))}
       </div>
     </div>
@@ -358,14 +421,30 @@ export interface Column<Row> {
 type Direction = 'ascending' | 'descending';
 
 /**
- * A table with one sort.
+ * How a caller lets a table be searched (`ast-gore` (5)).
  *
- * The sort is *client-side and shallow*, and that is the whole of it: it
- * reorders the page the server already sent, and never re-reads. A console
- * that sorted by asking the server would be changing an API call, which this
- * migration does not do — and a directory of 20 rows an operator can see is
- * not a place where the difference matters. Where a screen paginates, the
- * caller says so in its own text.
+ * Client-side and over the page already on screen, exactly like the sort: it
+ * filters what the server sent and never re-reads. A screen that paginates
+ * still paginates, and the count beside the box says which of the two numbers
+ * an operator is looking at — "3 of 20 shown" is the difference between
+ * "nothing here" and "nothing here *matching*", which is the failure a filter
+ * without a count causes.
+ */
+export interface Search<Row> {
+  /** The text this row is searched by. */
+  readonly of: (row: Row) => string;
+  /** What the box says when it is empty. */
+  readonly placeholder?: string;
+  /** The label of the box, for a reader. */
+  readonly label?: string;
+}
+
+/**
+ * A table with one sort and, when the caller asks for one, one filter.
+ *
+ * The sort is *client-side and shallow*: it reorders the page the server
+ * already sent, and never re-reads. A console that sorted by asking the server
+ * would be changing an API call, which this work does not do.
  *
  * `aria-sort` on the header is what a screen reader announces; the arrow is
  * decorative and hidden.
@@ -376,30 +455,38 @@ export function DataTable<Row>({
   rows,
   rowKey,
   empty,
+  search,
 }: {
   caption?: string;
   columns: readonly Column<Row>[];
   rows: readonly Row[];
   rowKey: (row: Row) => string;
   empty?: ReactNode;
+  search?: Search<Row>;
 }): JSX.Element {
   const [sort, setSort] = useState<{ key: string; direction: Direction } | null>(null);
+  const [query, setQuery] = useState('');
+  const searchId = useId();
 
-  if (rows.length === 0 && empty !== undefined) {
-    return <>{empty}</>;
-  }
-
-  const sorted = (() => {
-    if (sort === null) {
+  const matched = useMemo(() => {
+    if (search === undefined || query.trim() === '') {
       return rows;
+    }
+    const needle = query.trim().toLowerCase();
+    return rows.filter((row) => search.of(row).toLowerCase().includes(needle));
+  }, [rows, query, search]);
+
+  const sorted = useMemo(() => {
+    if (sort === null) {
+      return matched;
     }
     const column = columns.find((candidate) => candidate.key === sort.key);
     const by = column?.sortBy;
     if (by === undefined) {
-      return rows;
+      return matched;
     }
     const factor = sort.direction === 'ascending' ? 1 : -1;
-    return [...rows].sort((left, right) => {
+    return [...matched].sort((left, right) => {
       const a = by(left);
       const b = by(right);
       if (a === b) {
@@ -407,74 +494,128 @@ export function DataTable<Row>({
       }
       return (a < b ? -1 : 1) * factor;
     });
-  })();
+  }, [matched, sort, columns]);
+
+  // The empty state belongs to the *screen* — it says what to do about there
+  // being nothing — so it replaces the table only when the server sent
+  // nothing. A filter that matched nothing is a different sentence, below.
+  if (rows.length === 0 && empty !== undefined) {
+    return <>{empty}</>;
+  }
+
+  const box =
+    search === undefined ? null : (
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="relative max-w-xs flex-1">
+          <SearchIcon
+            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <Input
+            id={searchId}
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={search.placeholder ?? 'Filter…'}
+            aria-label={search.label ?? 'Filter the rows below'}
+            className="pl-8"
+          />
+        </div>
+        {query.trim() !== '' && (
+          <p className="text-sm text-muted-foreground" aria-live="polite">
+            {matched.length} of {rows.length} shown
+          </p>
+        )}
+      </div>
+    );
 
   return (
-    <div className="table-wrap">
-      <table>
-        {caption !== undefined && <caption>{caption}</caption>}
-        <thead>
-          <tr>
-            {columns.map((column) => {
-              const sortable = column.sortBy !== undefined;
-              const active = sort?.key === column.key ? sort.direction : undefined;
-              return (
-                <th
-                  key={column.key}
-                  scope="col"
-                  className={column.numeric === true ? 'numeric' : undefined}
-                  {...(active === undefined ? {} : { 'aria-sort': active })}
-                >
-                  {column.actions === true ? (
-                    <span className="visually-hidden">
-                      {column.header === '' ? 'Actions' : column.header}
-                    </span>
-                  ) : sortable ? (
-                    <button
-                      type="button"
-                      className="sort"
-                      onClick={() =>
-                        setSort((current) =>
-                          current?.key === column.key && current.direction === 'ascending'
-                            ? { key: column.key, direction: 'descending' }
-                            : { key: column.key, direction: 'ascending' },
-                        )
-                      }
+    <div>
+      {box}
+      {sorted.length === 0 ? (
+        <EmptyState
+          title="No row matches that filter"
+          body={`Nothing in these ${rows.length} rows contains “${query.trim()}”.`}
+          action={
+            <Button small onClick={() => setQuery('')}>
+              Clear the filter
+            </Button>
+          }
+        />
+      ) : (
+        <div className="table-wrap">
+          <Table>
+            {caption !== undefined && <TableCaption>{caption}</TableCaption>}
+            <TableHeader>
+              <TableRow>
+                {columns.map((column) => {
+                  const sortable = column.sortBy !== undefined;
+                  const active = sort?.key === column.key ? sort.direction : undefined;
+                  return (
+                    <TableHead
+                      key={column.key}
+                      scope="col"
+                      className={cn(
+                        column.numeric === true && 'text-right tabular-nums',
+                        column.actions === true && 'text-right',
+                      )}
+                      {...(active === undefined ? {} : { 'aria-sort': active })}
                     >
-                      {column.header}
-                      <span className="arrow" aria-hidden="true">
-                        {active === 'ascending' ? '▲' : active === 'descending' ? '▼' : '⇅'}
-                      </span>
-                    </button>
-                  ) : (
-                    column.header
-                  )}
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((row) => (
-            <tr key={rowKey(row)}>
-              {columns.map((column) => (
-                <td
-                  key={column.key}
-                  className={
-                    column.actions === true
-                      ? 'actions-cell'
-                      : column.numeric === true
-                        ? 'numeric'
-                        : undefined
-                  }
-                >
-                  {column.cell(row)}
-                </td>
+                      {column.actions === true ? (
+                        <span className="sr-only">
+                          {column.header === '' ? 'Actions' : column.header}
+                        </span>
+                      ) : sortable ? (
+                        <button
+                          type="button"
+                          className="inline-flex items-center gap-1 rounded-sm font-medium hover:text-foreground"
+                          onClick={() =>
+                            setSort((current) =>
+                              current?.key === column.key && current.direction === 'ascending'
+                                ? { key: column.key, direction: 'descending' }
+                                : { key: column.key, direction: 'ascending' },
+                            )
+                          }
+                        >
+                          {column.header}
+                          <span aria-hidden="true">
+                            {active === 'ascending' ? (
+                              <ArrowUpIcon className="size-3.5" />
+                            ) : active === 'descending' ? (
+                              <ArrowDownIcon className="size-3.5" />
+                            ) : (
+                              <ChevronsUpDownIcon className="size-3.5 opacity-50" />
+                            )}
+                          </span>
+                        </button>
+                      ) : (
+                        column.header
+                      )}
+                    </TableHead>
+                  );
+                })}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sorted.map((row) => (
+                <TableRow key={rowKey(row)}>
+                  {columns.map((column) => (
+                    <TableCell
+                      key={column.key}
+                      className={cn(
+                        column.numeric === true && 'text-right tabular-nums',
+                        column.actions === true && 'actions-cell text-right',
+                      )}
+                    >
+                      {column.cell(row)}
+                    </TableCell>
+                  ))}
+                </TableRow>
               ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+            </TableBody>
+          </Table>
+        </div>
+      )}
     </div>
   );
 }
@@ -484,24 +625,22 @@ export function DataTable<Row>({
 /**
  * The question asked before something irreversible.
  *
- * It replaces `window.confirm`, which the screens used because "a modal of our
- * own is a focus trap to get right for no benefit an administrator would
- * name". The benefit turned out to be nameable: a native confirm cannot say
- * *what* is about to happen in more than one unstyled line, cannot be read in
- * the console's own voice, and is drawn by the browser in a place the page
- * does not control. So the focus trap is got right, once, here:
+ * It replaced `window.confirm` in `ast-fe39` and was a hand-written focus trap
+ * until `ast-gore`; it is now Radix's `AlertDialog`, which is the same
+ * behaviour with one difference worth naming: `role="alertdialog"` rather than
+ * `role="dialog"`. That is the correct role for a modal that interrupts to ask
+ * a question, and an assistive technology announces its description
+ * immediately rather than waiting to be asked.
  *
- *  - `role="dialog"` with `aria-modal="true"`, labelled by its heading and
- *    described by its sentence;
- *  - focus moves to the cancelling control when it opens — the safe one, so
- *    that a stray Return does nothing;
- *  - Tab and Shift+Tab cycle inside it and cannot leave;
- *  - Escape cancels;
- *  - focus returns to whatever opened it when it closes, which is what stops a
- *    keyboard user being dropped at the top of the document.
+ * Everything the hand-written one guaranteed still holds, and Radix is what
+ * guarantees it: focus moves into the dialog and to the *cancelling* control
+ * when it opens, so a stray Return does nothing; Tab cycles inside; Escape
+ * cancels; focus returns to whatever opened it. A click on the scrim cancels,
+ * which is deliberate for a *confirmation* — the accidental gesture lands on
+ * the harmless answer.
  *
- * A click on the scrim cancels too, and that is deliberate for a *confirmation*:
- * the accidental gesture lands on the harmless answer.
+ * The component is still mounted only while the question is being asked, so
+ * every caller is unchanged.
  */
 export function ConfirmDialog({
   title,
@@ -520,86 +659,34 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }): JSX.Element {
-  const surface = useRef<HTMLDivElement | null>(null);
-  const cancel = useRef<HTMLButtonElement | null>(null);
-  const headingId = useId();
-  const bodyId = `${headingId}-body`;
-
-  useEffect(() => {
-    const opener = document.activeElement;
-    cancel.current?.focus();
-    return () => {
-      if (opener instanceof HTMLElement && opener.isConnected) {
-        opener.focus();
-      }
-    };
-  }, []);
-
-  const onKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
+  const dismiss = useCallback(
+    (open: boolean) => {
+      if (!open) {
         onCancel();
-        return;
-      }
-      if (event.key !== 'Tab') {
-        return;
-      }
-      const focusable = surface.current?.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable === undefined || focusable.length === 0) {
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (first === undefined || last === undefined) {
-        return;
-      }
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
       }
     },
     [onCancel],
   );
 
   return (
-    // The scrim is not a control and carries no role: the dialog inside it is
-    // what an assistive technology sees. A pointer gesture on it cancels, and
-    // a keyboard user reaches the same answer through the cancelling button,
-    // which is where the focus already is.
-    <div
-      className="scrim"
-      onKeyDown={onKeyDown}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) {
-          onCancel();
-        }
-      }}
-    >
-      <div
-        className="dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={headingId}
-        aria-describedby={bodyId}
-        ref={surface}
-      >
-        <h3 id={headingId}>{title}</h3>
-        <p id={bodyId}>{body}</p>
-        <Actions end>
-          <Button ref={cancel} onClick={onCancel} disabled={busy}>
-            {cancelLabel}
-          </Button>
-          <Button variant="danger" onClick={onConfirm} disabled={busy}>
-            {confirmLabel}
-          </Button>
-        </Actions>
-      </div>
-    </div>
+    <AlertDialog open onOpenChange={dismiss}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{body}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>{cancelLabel}</AlertDialogCancel>
+          {/* `asChild` so the confirm is an ordinary button this screen owns:
+              the act runs on click and the dialog is unmounted by the caller
+              when the call settles, rather than closing before it has. */}
+          <AlertDialogAction asChild>
+            <ShadButton variant="destructive" disabled={busy} onClick={onConfirm}>
+              {confirmLabel}
+            </ShadButton>
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
