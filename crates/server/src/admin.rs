@@ -185,6 +185,58 @@ impl std::fmt::Debug for DeploymentParts {
 /// [`crate::ssf::SsfTransmitter`] the emitters use — same signer, same
 /// queues — so the SET a receiver gets is signed by a key in the tenant's
 /// published JWKS and delivered by the worker that delivers everything else.
+/// The policy test bench's decision path (`ast-f7m.9`): the PDP, asked by
+/// somebody who is not enforcing anything.
+///
+/// A type of its own for the reason [`DeploymentSsf`] is one — the handle is
+/// what a handler can reach, and this one can resolve a subject's facts and
+/// read a policy document, and nothing else. It cannot write a policy: the
+/// admin route that does holds a separate handle over
+/// [`asterius_domain::ports::PolicyStore`].
+#[derive(Clone)]
+struct DeploymentPolicyTrial {
+    store: Store,
+    kek: Arc<dyn asterius_jose::Kek>,
+}
+
+impl std::fmt::Debug for DeploymentPolicyTrial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeploymentPolicyTrial")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
+    /// What this tenant's stored rules decide about one request.
+    ///
+    /// Everything that makes the answer trustworthy lives in
+    /// [`crate::http::access_evaluation::decide_without_enforcing`], which is
+    /// the same code path the AuthZEN endpoints take once a PEP's credential
+    /// has been checked: the facts are read here, never taken from the body,
+    /// and the ladder is the deployment's.
+    async fn decide(
+        &self,
+        tenant: &TenantId,
+        request: &asterius_domain::policy::EvaluationRequest,
+    ) -> Result<asterius_domain::policy::Decision, DomainError> {
+        let engine = asterius_domain::policy::DeclarativeEngine::new(Arc::new(
+            asterius_store_pg::PgPolicies::new(self.store.pool().clone()),
+        ));
+        let subjects =
+            crate::http::protocol::StoredSubjects::of(&self.store, Arc::clone(&self.kek), tenant);
+        crate::http::access_evaluation::decide_without_enforcing(
+            &engine,
+            &subjects,
+            crate::http::protocol::deployment_acr_policy(),
+            tenant,
+            request,
+            time::OffsetDateTime::now_utc(),
+        )
+        .await
+    }
+}
+
 #[derive(Clone)]
 struct DeploymentSsf {
     store: Store,
@@ -1206,6 +1258,19 @@ impl AdminBackend for Deployment {
         Arc::new(asterius_store_pg::PgPolicies::new(
             self.store.pool().clone(),
         ))
+    }
+
+    /// The PDP behind the console's policy test bench (`ast-f7m.9`).
+    ///
+    /// The same engine over the same pool as [`Self::policies`], so a bench
+    /// answers about the document the editor just wrote, and the same
+    /// `SubjectFacts` the AuthZEN endpoints resolve through, so it answers
+    /// about the subject a relying party would be asking about.
+    fn policy_trial(&self) -> Arc<dyn asterius_admin_api::backend::PolicyTrial> {
+        Arc::new(DeploymentPolicyTrial {
+            store: self.store.clone(),
+            kek: Arc::clone(&self.kek),
+        })
     }
 
     /// The trail read back (`ast-lh3.9`), over the pool every endpoint

@@ -29,6 +29,42 @@ use std::sync::Arc;
 
 use crate::clients::RegistrationGate;
 
+/// One evaluation, decided against the tenant's stored policy for somebody who
+/// is not a policy enforcement point (`ast-f7m.9`).
+///
+/// The port the console's test bench is served through. Its implementation is
+/// the composition root's, and it does what the AuthZEN endpoint does minus
+/// the enforcement: resolve the subject's groups, application roles, active
+/// grants and `acr` from this server's own store, attach them to the request,
+/// and ask the engine.
+///
+/// # The facts are never the caller's
+///
+/// The `request` this takes carries only what the specification lets a caller
+/// state — the entity types, ids and `properties` — and the implementation
+/// overwrites everything else. That is the same split
+/// `asterius_domain::policy::request` documents, and the reason a bench is not
+/// an authority-granting tool: an administrator can ask "what would happen for
+/// a subject in group `admins`?" only by making somebody a member of it, which
+/// is an audited edit.
+#[async_trait::async_trait]
+pub trait PolicyTrial: std::fmt::Debug + Send + Sync {
+    /// The decision this tenant's policy takes on `request`.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError`] when the policy or the facts could not be read. Never a
+    /// deny standing in for a failure: the bench exists to tell an
+    /// administrator what the policy says, and "the store was down" rendered
+    /// as "denied" would be a lie they would then go and act on. The endpoint
+    /// turns this into a refusal the console shows as one.
+    async fn decide(
+        &self,
+        tenant: &TenantId,
+        request: &asterius_domain::policy::EvaluationRequest,
+    ) -> Result<asterius_domain::policy::Decision, DomainError>;
+}
+
 /// What an admin API request needs from below the API.
 #[async_trait::async_trait]
 pub trait AdminBackend: std::fmt::Debug + Send + Sync {
@@ -238,6 +274,15 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// on it that accepts a `Value`, so no admin route can store a document
     /// the evaluator would later refuse to read.
     fn policies(&self) -> Arc<dyn asterius_domain::ports::PolicyStore>;
+
+    /// The PDP, for the console's test bench (`ast-f7m.9`).
+    ///
+    /// A second handle beside [`Self::policies`] and not a method on it: the
+    /// store reads and writes a *document*, and this decides a *request*. The
+    /// composition root builds it over the same engine and the same pool the
+    /// AuthZEN endpoints decide from, so what the bench answers is what a
+    /// relying party would be told.
+    fn policy_trial(&self) -> Arc<dyn PolicyTrial>;
 
     /// The audit trail, for the query API and the export (`ast-lh3.9`).
     ///

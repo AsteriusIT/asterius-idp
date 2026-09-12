@@ -5,6 +5,7 @@ import { AuditExplorer } from './audit';
 import { Clients } from './clients';
 import { Keys } from './keys';
 import { visibleTo } from './navigation';
+import { Policy } from './policy';
 import { hrefOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
 import { SharedSignals } from './ssf';
@@ -152,6 +153,9 @@ function Screen({ route, session }: { route: string; session: Session }): JSX.El
   }
   if (route === 'audit') {
     return <AuditExplorer session={session} />;
+  }
+  if (route === 'policy') {
+    return <Policy session={session} />;
   }
   if (route === 'overview') {
     return (

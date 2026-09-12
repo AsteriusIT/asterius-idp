@@ -71,8 +71,31 @@ pub enum Mutating {
 pub enum Effect {
     /// Reads. No CSRF check, no idempotency key, no audit record.
     Reads,
+    /// Reads, over a body (`ast-f7m.9`).
+    ///
+    /// A question whose parameters do not fit in a query string — the policy
+    /// test bench sends §6.1's four entities — so it is mounted on `POST` and
+    /// changes nothing. It carries the console's ambient cookie, so it is
+    /// CSRF-checked like a mutation; it stores nothing, so there is no
+    /// `Idempotency-Key` to make it at-most-once and no 409 to document.
+    Probes,
     /// Changes state. Subject to CSRF, and audited with its actor.
     Mutates,
+}
+
+impl Effect {
+    /// Whether a console request for this operation must carry the session's
+    /// synchroniser token.
+    ///
+    /// Everything that is not a plain read: a `POST` that only computes is
+    /// still a `POST` a cross-site form can cause, and while the browser will
+    /// not let the forging page *read* the answer, an operation the console
+    /// mounts on a verb a form can emit is one this API refuses without the
+    /// header.
+    #[must_use]
+    pub const fn needs_csrf_token(self) -> bool {
+        matches!(self, Self::Probes | Self::Mutates)
+    }
 }
 
 /// The HTTP verb an operation is mounted on.
@@ -192,6 +215,38 @@ impl Operation {
         }
     }
 
+    /// Declares a read that takes a body (`ast-f7m.9`).
+    ///
+    /// [`Mutating::Post`] is the verb it is given, because `POST` is the only
+    /// verb a body may be sent on and be read; [`Effect::Probes`] is what it
+    /// records, so the router asks for the synchroniser token and does not ask
+    /// for an `Idempotency-Key`. A probe must not write: the one that exists
+    /// answers a question about a document its caller may already `GET`.
+    #[must_use]
+    pub const fn probe(
+        id: &'static str,
+        path: &'static str,
+        method: Mutating,
+        authority: Authority,
+        summary: &'static str,
+    ) -> Self {
+        let method = match method {
+            Mutating::Post => Method::Post,
+            Mutating::Put => Method::Put,
+            Mutating::Patch => Method::Patch,
+            Mutating::Delete => Method::Delete,
+        };
+        Self {
+            id,
+            path,
+            method,
+            effect: Effect::Probes,
+            authority,
+            summary,
+            paginated: false,
+        }
+    }
+
     /// Marks a read as cursor-paginated, which the `OpenAPI` document turns into
     /// the `cursor` and `limit` parameters and the envelope's `next_cursor`.
     #[must_use]
@@ -248,9 +303,11 @@ impl Operation {
     /// `POST` only. `PUT` and `DELETE` are idempotent by their own definition
     /// (RFC 9110 §9.2.2), and demanding a key for them would be ceremony
     /// without a property behind it.
+    /// A probe stores nothing, so there is nothing for a key to make happen at
+    /// most once; asking for one would be ceremony with no property behind it.
     #[must_use]
     pub const fn needs_idempotency_key(&self) -> bool {
-        matches!(self.method, Method::Post)
+        matches!(self.method, Method::Post) && matches!(self.effect, Effect::Mutates)
     }
 
     /// The full path a client calls, including the API's base.
@@ -283,6 +340,61 @@ mod tests {
             Authority::new(Reach::Tenant, "admin.things:write"),
             "Creates a thing",
         )
+    }
+
+    fn a_probe() -> Operation {
+        Operation::probe(
+            "thing.try",
+            "/things/try",
+            Mutating::Post,
+            Authority::new(Reach::Tenant, "admin.things:read"),
+            "Answers a question about a thing",
+        )
+    }
+
+    /// A probe is a read that happens to need a body: it is CSRF-checked like
+    /// a mutation, and it is asked for no key because it stores nothing.
+    #[test]
+    fn a_probe_reads_over_a_body() {
+        // Arrange / Act
+        let probe = a_probe();
+
+        // Assert
+        assert_eq!(probe.effect(), Effect::Probes);
+        assert_eq!(probe.method(), Method::Post);
+        assert!(!probe.needs_idempotency_key());
+        assert!(probe.effect().needs_csrf_token());
+    }
+
+    /// The cookie is ambient, so everything that is not a plain read has to
+    /// present the token as well.
+    #[test]
+    fn only_a_plain_read_skips_the_synchroniser_token() {
+        assert!(!Effect::Reads.needs_csrf_token());
+        assert!(Effect::Probes.needs_csrf_token());
+        assert!(Effect::Mutates.needs_csrf_token());
+    }
+
+    /// A probe that acquired a state change would be a mutation with no CSRF
+    /// difference and no key, so the registry is walked for the pairing that
+    /// makes one: a probe is a `POST` and nothing else.
+    #[test]
+    fn every_probe_is_mounted_on_post() {
+        for operation in crate::registry() {
+            if operation.effect() == Effect::Probes {
+                assert_eq!(
+                    operation.method(),
+                    Method::Post,
+                    "{} is a probe mounted on another verb",
+                    operation.id()
+                );
+                assert!(
+                    !operation.needs_idempotency_key(),
+                    "{} is a probe asking for an idempotency key",
+                    operation.id()
+                );
+            }
+        }
     }
 
     /// The guarantee ADR-0009 asks to be structural. The compiler enforces it

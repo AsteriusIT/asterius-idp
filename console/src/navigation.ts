@@ -77,7 +77,11 @@ export const DESTINATIONS: readonly Destination[] = [
   // The trail and its export share one scope, `admin.audit:read`, held by the
   // auditor and the administrators and by nobody else (`ast-lh3.9`).
   { route: 'audit', label: 'Audit trail', reach: 'tenant', scope: 'admin.audit:read', bead: 'ast-f7m.8' },
-  { route: 'policy', label: 'Policy', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.9' },
+  // The policy has its own scope: reading a tenant's lifetimes is not reading
+  // its authorization model (`ast-pj0.4`). The screen opens by reading the
+  // document, so `admin.policies:read` is what it asks for — an auditor holds
+  // it, and the editor's buttons ask for `admin.policies:write` separately.
+  { route: 'policy', label: 'Policy', reach: 'tenant', scope: 'admin.policies:read', bead: 'ast-f7m.9' },
   // A form nobody may save is worse than an absent link, so the settings
   // screen asks for the write scope its only button needs.
   { route: 'settings', label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn' },
