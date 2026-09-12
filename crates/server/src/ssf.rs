@@ -220,6 +220,16 @@ pub enum RevokedBy {
     /// Cascade: an administrator forced a password reset, which ends every
     /// session predating the new credential.
     PasswordReset,
+    /// Cascade: the person reset their own password through a mailed recovery
+    /// link, which ends every session the account had (`ast-l8b3`).
+    ///
+    /// A door of its own rather than [`Self::PasswordReset`]: that one is an
+    /// operator acting on somebody else's account, and this one is the person
+    /// proving possession of the mailbox on theirs. The two say opposite
+    /// things in `initiating_entity`, and a receiver told `admin` here would
+    /// show "an administrator signed you out" for the act by which somebody
+    /// took their own account back.
+    PasswordRecovery,
     /// The person closed the session from their own account pages.
     Owner,
     /// Cascade: the person changed their password and asked for their other
@@ -240,13 +250,18 @@ impl RevokedBy {
     /// sending a browser to `/logout` carries the person's request rather than
     /// making one of its own, and `policy` there would tell receivers this
     /// server decided to sign somebody out.
+    ///
+    /// A recovery by mailed link is `user` for the same reason: the only
+    /// authority exercised there is the person's own control of the mailbox on
+    /// the account (NIST SP 800-63B §6.1.2.3), nobody at this server decided
+    /// anything, and `system` would describe a policy that does not exist.
     #[must_use]
     pub const fn initiating_entity(self) -> caep::InitiatingEntity {
         match self {
             Self::Administrator | Self::AccountDisabled | Self::PasswordReset => {
                 caep::InitiatingEntity::Admin
             }
-            Self::Owner | Self::OwnerPasswordChange | Self::EndSession => {
+            Self::Owner | Self::OwnerPasswordChange | Self::PasswordRecovery | Self::EndSession => {
                 caep::InitiatingEntity::User
             }
         }
@@ -266,6 +281,7 @@ impl RevokedBy {
             Self::Administrator => "Revoked by an administrator",
             Self::AccountDisabled => "The account was disabled",
             Self::PasswordReset => "An administrator reset the password",
+            Self::PasswordRecovery => "The user reset their password with a recovery link",
             Self::Owner => "Closed by the user from the account pages",
             Self::OwnerPasswordChange => "The user changed their password",
             Self::EndSession => "The user signed out (RP-initiated logout)",
@@ -279,6 +295,7 @@ impl RevokedBy {
             Self::Administrator => MessageKey::SessionRevokedByAdmin,
             Self::AccountDisabled => MessageKey::SessionRevokedAccountDisabled,
             Self::PasswordReset => MessageKey::SessionRevokedPasswordReset,
+            Self::PasswordRecovery => MessageKey::SessionRevokedPasswordRecovered,
             Self::Owner => MessageKey::SessionRevokedByOwner,
             Self::OwnerPasswordChange => MessageKey::SessionRevokedPasswordChanged,
             Self::EndSession => MessageKey::SessionRevokedSignedOut,
@@ -1388,6 +1405,7 @@ mod tests {
             (RevokedBy::Administrator, "admin"),
             (RevokedBy::AccountDisabled, "admin"),
             (RevokedBy::PasswordReset, "admin"),
+            (RevokedBy::PasswordRecovery, "user"),
             (RevokedBy::Owner, "user"),
             (RevokedBy::OwnerPasswordChange, "user"),
             (RevokedBy::EndSession, "user"),
