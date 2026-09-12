@@ -18,8 +18,9 @@
 //!    (OIDC Back-Channel Logout 1.0 §2.2), through the same
 //!    [`crate::backchannel::Notifier`] the end-session endpoint uses;
 //! 3. CAEP `session-revoked` is emitted to every stream that subscribed
-//!    (`ast-0ju.8`), with [`caep::InitiatingEntity::User`] because the person
-//!    themselves pressed it.
+//!    (`ast-0ju.8`) as [`crate::ssf::RevokedBy::Owner`] — `initiating_entity`
+//!    `user`, because the person themselves pressed it, and a `reason_user` in
+//!    the language this page is being read in (CAEP 1.0 §2).
 //!
 //! The notifications come *after* the revocation and never fail it: the
 //! session is already over by the time a receiver is told, and a relying party
@@ -48,7 +49,6 @@ use asterius_domain::{
     FirstPartyDestination, Session, SessionId as DomainSessionId, SessionRepository,
     SessionRevocation, SessionSummary, UserId,
 };
-use asterius_ssf::caep;
 use asterius_store_pg::PgSessionRepository;
 use asterius_web::Brand;
 use asterius_web::Document;
@@ -395,7 +395,11 @@ async fn revoke(context: &SessionsContext<'_>, named: &Session, now: OffsetDateT
         &crate::ssf::Cause::SessionRevoked {
             user: UserId::new(named.user),
             sid: named.public_sid.clone(),
-            initiator: caep::InitiatingEntity::User,
+            by: crate::ssf::RevokedBy::Owner,
+            // The language this page is being read in: `reason_user` is the
+            // sentence a relying party may show the person, and the person is
+            // right here (CAEP §2).
+            locale: context.account.text.locale(),
         },
         now,
     )
@@ -561,7 +565,16 @@ async fn record(context: &SessionsContext<'_>, named: &Session, now: OffsetDateT
     )
     .session(DomainSessionId::new(named.id_digest.clone()))
     .subject(subject)
-    .detail(Detail::new().label("reason", "account_sessions_page"));
+    .detail(
+        Detail::new()
+            .label("reason", "account_sessions_page")
+            // CAEP §2's `initiating_entity`, in the words the SET of this
+            // revocation carries (`ast-o4u.3`).
+            .label(
+                "initiating_entity",
+                crate::ssf::RevokedBy::Owner.initiating_entity().as_str(),
+            ),
+    );
 
     if let Err(error) = context.audit.record(event).await {
         tracing::error!(

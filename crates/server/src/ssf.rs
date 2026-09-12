@@ -29,9 +29,10 @@
 //!
 //! # Why a transmitter and not a call at each site
 //!
-//! The five effects that map to events happen in five places, and each of
-//! them already does the hard part — revoking the session, disabling the
-//! account. What they must not each re-derive is the part where a mistake is a
+//! The effects that map to events happen in a dozen handlers — six of them
+//! end a session alone (`ast-o4u.3`) — and each already does the hard part:
+//! revoking the session, disabling the account. What they must not each
+//! re-derive is the part where a mistake is a
 //! security bug: the `sub` a *receiver* knows a user by (OIDC Core §8.1 — a
 //! pairwise receiver must never be handed the local id or another sector's
 //! subject), the one `txn` shared by every SET of one cause (SSF 1.0 §4.1.9),
@@ -66,7 +67,7 @@ use asterius_domain::keys::Signer;
 use asterius_domain::outbox::QueuedEvent;
 use asterius_domain::ports::SubjectResolver;
 use asterius_domain::{
-    ClientId, ClientRepository, DomainError, Issuer, SectorIdentifier, TenantId, UserId,
+    ClientId, ClientRepository, DomainError, Issuer, Locale, SectorIdentifier, TenantId, UserId,
 };
 use asterius_ssf::caep::{self, EventDetails};
 use asterius_ssf::stream_updated::stream_updated_event;
@@ -75,6 +76,7 @@ use asterius_ssf::{
     ComplexSubject, SecurityEvent, Set, SimpleSubject, StreamAudience, Subject, Txn,
 };
 use asterius_store_pg::{DeliveryMethod, Subscription};
+use asterius_web::i18n::{Catalog, MessageKey};
 use time::OffsetDateTime;
 
 /// The queues an emitted SET is put on.
@@ -143,8 +145,17 @@ pub enum Cause {
         user: UserId,
         /// The public session identifier.
         sid: String,
-        /// Who or what revoked it.
-        initiator: caep::InitiatingEntity,
+        /// Which door the revocation came through, which is what decides
+        /// `initiating_entity` and both reasons (CAEP §2).
+        by: RevokedBy,
+        /// The language `reason_user` is written in.
+        ///
+        /// The person's own on the paths that have negotiated one (the account
+        /// pages); [`Locale::default`] on the paths that have not — an
+        /// administrator acting on somebody else's account, or a relying party
+        /// posting to an endpoint, where the only language in front of this
+        /// server is its own.
+        locale: Locale,
     },
     /// CAEP §3.3: a credential changed.
     CredentialChange {
@@ -185,6 +196,117 @@ pub enum Cause {
     },
 }
 
+/// Which door a session revocation came through (`ast-o4u.3`).
+///
+/// CAEP 1.0 §2 lets an event say who initiated it (`initiating_entity`, one of
+/// `admin`, `user`, `policy`, `system`), why for an auditor (`reason_admin`)
+/// and why for the person (`reason_user`). Those three answers move together —
+/// an `initiating_entity` of `user` beside "an administrator signed you out"
+/// is a contradiction a receiver would have to resolve — so a call site names
+/// the *path* and this enum answers all three at once. There is deliberately
+/// no way to pass the three separately.
+///
+/// One variant per door that ends a session, so that cutting a new one makes
+/// the compiler ask what it means rather than letting it inherit whichever
+/// wording was nearest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RevokedBy {
+    /// An administrator ended one named session (admin API, console).
+    Administrator,
+    /// Cascade: an administrator disabled the account, which ends its
+    /// sessions.
+    AccountDisabled,
+    /// Cascade: an administrator forced a password reset, which ends every
+    /// session predating the new credential.
+    PasswordReset,
+    /// The person closed the session from their own account pages.
+    Owner,
+    /// Cascade: the person changed their password and asked for their other
+    /// sessions to be closed.
+    OwnerPasswordChange,
+    /// The person signed out at the end-session endpoint (OIDC RP-Initiated
+    /// Logout 1.0 §2), whichever relying party sent them there.
+    EndSession,
+}
+
+impl RevokedBy {
+    /// CAEP §2's `initiating_entity`.
+    ///
+    /// `admin` wherever an operator acted on somebody else's session, the
+    /// cascades included: "your account was disabled" is an administrator's
+    /// act however many sessions it reaches. `user` wherever the person
+    /// themselves acted, the end-session endpoint included — a relying party
+    /// sending a browser to `/logout` carries the person's request rather than
+    /// making one of its own, and `policy` there would tell receivers this
+    /// server decided to sign somebody out.
+    #[must_use]
+    pub const fn initiating_entity(self) -> caep::InitiatingEntity {
+        match self {
+            Self::Administrator | Self::AccountDisabled | Self::PasswordReset => {
+                caep::InitiatingEntity::Admin
+            }
+            Self::Owner | Self::OwnerPasswordChange | Self::EndSession => {
+                caep::InitiatingEntity::User
+            }
+        }
+    }
+
+    /// CAEP §2's `reason_admin`: the sentence "intended for logging and
+    /// auditing".
+    ///
+    /// English, and not the person's language: it is read by whoever is
+    /// reconstructing what happened at a receiver. It names the door and
+    /// carries no identifier — not the operator's, not the account's — because
+    /// a SET fans out to every subscribed receiver and a free-text reason is
+    /// not a place to widen what they are told.
+    #[must_use]
+    pub const fn reason_admin(self) -> &'static str {
+        match self {
+            Self::Administrator => "Revoked by an administrator",
+            Self::AccountDisabled => "The account was disabled",
+            Self::PasswordReset => "An administrator reset the password",
+            Self::Owner => "Closed by the user from the account pages",
+            Self::OwnerPasswordChange => "The user changed their password",
+            Self::EndSession => "The user signed out (RP-initiated logout)",
+        }
+    }
+
+    /// The catalogue key CAEP §2's `reason_user` is rendered from.
+    #[must_use]
+    pub const fn message(self) -> MessageKey {
+        match self {
+            Self::Administrator => MessageKey::SessionRevokedByAdmin,
+            Self::AccountDisabled => MessageKey::SessionRevokedAccountDisabled,
+            Self::PasswordReset => MessageKey::SessionRevokedPasswordReset,
+            Self::Owner => MessageKey::SessionRevokedByOwner,
+            Self::OwnerPasswordChange => MessageKey::SessionRevokedPasswordChanged,
+            Self::EndSession => MessageKey::SessionRevokedSignedOut,
+        }
+    }
+
+    /// The three §2 claims this door decides, on top of the timestamp.
+    ///
+    /// A reason that will not build is dropped rather than fatal: the event
+    /// that matters is `session-revoked` itself, and a receiver told a session
+    /// ended without being told why is strictly better than a receiver not
+    /// told. The wording here is built in, so that branch is unreachable
+    /// today; it exists because [`caep::Reason`] is fallible by design and
+    /// `expect` here would turn a future catalogue override into a panic on a
+    /// revocation path.
+    fn describe(self, details: EventDetails, locale: Locale) -> EventDetails {
+        let mut details = details.initiated_by(self.initiating_entity());
+        if let Ok(reason) = caep::Reason::english(self.reason_admin()) {
+            details = details.reason_admin(reason);
+        }
+        let words = Catalog::new(locale);
+        if let Ok(reason) = caep::Reason::new(locale.as_tag(), words.get(self.message())) {
+            details = details.reason_user(reason);
+        }
+        details
+    }
+}
+
 impl Cause {
     /// The event type URI this cause maps to, which is also what a stream must
     /// have in `events_requested` to hear about it.
@@ -210,15 +332,23 @@ impl Cause {
         }
     }
 
+    /// CAEP §2's common claims for this cause.
+    ///
+    /// A session revocation says more than the others: it is the one effect a
+    /// person may be standing in front of when it happens, so it carries both
+    /// reasons as well as the initiating entity ([`RevokedBy::describe`]). The
+    /// rest carry the entity alone, which is what `ast-0ju.8` emitted and what
+    /// their own tickets will widen.
     fn details(&self, now: OffsetDateTime) -> EventDetails {
+        let at = EventDetails::at(now);
         let initiator = match self {
-            Self::SessionRevoked { initiator, .. }
-            | Self::CredentialChange { initiator, .. }
+            Self::SessionRevoked { by, locale, .. } => return by.describe(at, *locale),
+            Self::CredentialChange { initiator, .. }
             | Self::AssuranceLevelChange { initiator, .. }
             | Self::AccountDisabled { initiator, .. }
             | Self::AccountEnabled { initiator, .. } => *initiator,
         };
-        EventDetails::at(now).initiated_by(initiator)
+        at.initiated_by(initiator)
     }
 
     /// The event body, and the `sub_id` a receiver at `receiver_sub` is told.
@@ -1084,7 +1214,8 @@ mod tests {
                 &Cause::SessionRevoked {
                     user: user(),
                     sid: "sid-1".to_owned(),
-                    initiator: caep::InitiatingEntity::User,
+                    by: RevokedBy::Owner,
+                    locale: Locale::English,
                 },
                 now(),
             )
@@ -1213,7 +1344,8 @@ mod tests {
                 &Cause::SessionRevoked {
                     user: user(),
                     sid: "sid-1".to_owned(),
-                    initiator: caep::InitiatingEntity::User,
+                    by: RevokedBy::Owner,
+                    locale: Locale::English,
                 },
                 now(),
             )
@@ -1222,5 +1354,109 @@ mod tests {
         assert_eq!(queued_count, 0);
         assert!(queues.polled.lock().expect("not poisoned").is_empty());
         assert!(queues.pushed.lock().expect("not poisoned").is_empty());
+    }
+
+    /// The event body a revocation renders, as JSON.
+    fn revocation_body(by: RevokedBy, locale: Locale) -> Value {
+        let cause = Cause::SessionRevoked {
+            user: user(),
+            sid: "sid-1".to_owned(),
+            by,
+            locale,
+        };
+        let issuer = issuer();
+        let rendered = cause.render(&issuer, "a-subject-this-server-minted", now());
+        let audience =
+            asterius_ssf::StreamAudience::single("https://receiver.example").expect("an audience");
+        let claims = Set::about(rendered.subject)
+            .reporting(rendered.event)
+            .caused_by(Txn::generate())
+            .issue(&issuer, &audience, now())
+            .expect("a SET")
+            .claims()
+            .clone();
+        claims["events"][caep::SESSION_REVOKED].clone()
+    }
+
+    /// CAEP §2: an administrator acting on somebody else's session is `admin`;
+    /// the person acting on their own is `user`. The cascades follow the
+    /// person who *caused* them, not the session they reached.
+    #[test]
+    fn each_door_states_who_initiated_the_revocation() {
+        // Arrange
+        let doors = [
+            (RevokedBy::Administrator, "admin"),
+            (RevokedBy::AccountDisabled, "admin"),
+            (RevokedBy::PasswordReset, "admin"),
+            (RevokedBy::Owner, "user"),
+            (RevokedBy::OwnerPasswordChange, "user"),
+            (RevokedBy::EndSession, "user"),
+        ];
+
+        // Act & assert
+        for (door, expected) in doors {
+            assert_eq!(
+                door.initiating_entity().as_str(),
+                expected,
+                "{door:?} names the wrong initiating entity"
+            );
+        }
+    }
+
+    /// CAEP §2: `reason_admin` and `reason_user` are objects keyed by a BCP 47
+    /// tag. The first is this server's own language because an auditor reads
+    /// it; the second is the person's, because a relying party may show it to
+    /// them.
+    #[test]
+    fn a_revocation_carries_both_reasons_the_person_reads_theirs_in_french() {
+        // Arrange & act
+        let body = revocation_body(RevokedBy::Owner, Locale::French);
+
+        // Assert
+        assert_eq!(
+            body["reason_admin"],
+            serde_json::json!({"en": "Closed by the user from the account pages"})
+        );
+        assert_eq!(
+            body["reason_user"],
+            serde_json::json!(
+                {"fr": "Vous avez fermé cette session depuis les pages de votre compte."}
+            )
+        );
+    }
+
+    /// The same door, read in English: the wording changes and the key with
+    /// it, so a receiver never sees a French sentence under an `en` tag.
+    #[test]
+    fn the_reason_the_person_reads_is_tagged_with_its_own_language() {
+        // Arrange & act
+        let body = revocation_body(RevokedBy::Administrator, Locale::English);
+
+        // Assert
+        assert_eq!(
+            body["reason_user"],
+            serde_json::json!({"en": "An administrator signed you out."})
+        );
+        assert_eq!(body["initiating_entity"], serde_json::json!("admin"));
+    }
+
+    /// §3.1 has no event-specific claims: what names the session is the
+    /// complex `sub_id`, and the body carries nothing but §2's common claims.
+    #[test]
+    fn a_revocation_adds_no_event_specific_claims() {
+        // Arrange & act
+        let body = revocation_body(RevokedBy::EndSession, Locale::English);
+
+        // Assert
+        let members: Vec<&String> = body.as_object().expect("an object").keys().collect();
+        assert_eq!(
+            members,
+            vec![
+                "event_timestamp",
+                "initiating_entity",
+                "reason_admin",
+                "reason_user"
+            ]
+        );
     }
 }

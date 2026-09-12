@@ -3902,6 +3902,8 @@ struct LogoutStores<'a> {
     subjects: &'a asterius_store_pg::PgUserRepository,
     /// The refresh tokens a tenant with `revoke_refresh_on_logout` withdraws.
     credentials: &'a asterius_store_pg::PgRefreshTokenRepository,
+    /// The streams a CAEP `session-revoked` is queued on (`ast-o4u.3`).
+    queues: &'a crate::outbox::PgSsfQueues,
 }
 
 /// Builds the context both end-session handlers share.
@@ -3919,6 +3921,7 @@ fn logout_context<'a>(
         clients,
         subjects,
         credentials,
+        queues,
     } = *stores;
     logout::LogoutContext {
         // Replaced by the caller, which is the only thing that has the
@@ -3942,6 +3945,7 @@ fn logout_context<'a>(
             .outbox
             .as_deref()
             .map(|queue| queue as &dyn asterius_domain::outbox::OutboxQueue),
+        queues: Some(queues as &dyn crate::ssf::SsfQueues),
     }
 }
 
@@ -3974,11 +3978,19 @@ async fn end_session(
     // tokens issued under the session (`ast-o4u.2`).
     let credentials = scope.refresh_tokens();
     let revoke_refresh = revoke_refresh_on_logout(&endpoints, &tenant).await;
+    // The streams a CAEP `session-revoked` is queued on (`ast-o4u.3`), built
+    // per request like every other tenant-scoped store above.
+    let queues = crate::outbox::PgSsfQueues::new(
+        endpoints.store.clone(),
+        tenant.id.clone(),
+        Arc::clone(&endpoints.kek),
+    );
     let stores = LogoutStores {
         sessions: &sessions,
         clients: &clients,
         subjects: &subjects,
         credentials: &credentials,
+        queues: &queues,
     };
     let mut context = logout_context(
         &endpoints,
@@ -4022,11 +4034,19 @@ async fn end_session_form(
     // tokens issued under the session (`ast-o4u.2`).
     let credentials = scope.refresh_tokens();
     let revoke_refresh = revoke_refresh_on_logout(&endpoints, &tenant).await;
+    // The streams a CAEP `session-revoked` is queued on (`ast-o4u.3`), built
+    // per request like every other tenant-scoped store above.
+    let queues = crate::outbox::PgSsfQueues::new(
+        endpoints.store.clone(),
+        tenant.id.clone(),
+        Arc::clone(&endpoints.kek),
+    );
     let stores = LogoutStores {
         sessions: &sessions,
         clients: &clients,
         subjects: &subjects,
         credentials: &credentials,
+        queues: &queues,
     };
     let mut context = logout_context(
         &endpoints,
