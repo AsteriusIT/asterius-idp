@@ -115,6 +115,12 @@ fn client_authenticator(
     Ok(Arc::new(authenticator))
 }
 
+// One line over the pedantic bound, and the line is a handle: `ast-lh3.10`
+// gave this deployment a pre-issuance decision cache that both the token
+// endpoint and the admin API have to be handed. Splitting the boot sequence to
+// get under a hundred would scatter the one place where the order things are
+// built in is visible, which is what this function is for.
+#[expect(clippy::too_many_lines, reason = "the composition root, in boot order")]
 fn serve_forever(path: &std::path::Path) -> Result<(), String> {
     let config = Config::load(path).map_err(|e| e.to_string())?;
 
@@ -249,6 +255,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 // back-channel logout token queued at the end-session endpoint
                 // is picked up by the worker in this process under the
                 // schedule this deployment configured (`ast-o4u.2`).
+                // `ast-lh3.10`: the decision cache and the posture, wired
+                // only where this deployment has a policy decision point.
+                // With `[features] authzen` off there is nothing to ask, and
+                // an agent is bounded by its registration as before.
+                issuance: admin_context.issuance.clone(),
                 outbox: Some(
                     Arc::new(outbox.clone()) as Arc<dyn asterius_domain::outbox::OutboxQueue>
                 ),
@@ -278,6 +289,23 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // be allowed to finish it rather than be dropped.
         workers.stop().await;
         served
+    })
+}
+
+/// The process's one pre-issuance decision cache (`ast-lh3.10`).
+///
+/// One guard, held by the token endpoint that reads it and by the admin API
+/// that empties it when a policy is written: two would be a cache nobody
+/// invalidates. `None` where this deployment has no policy decision point —
+/// `[features] authzen` off — in which an agent is bounded by its registration
+/// and no decision is asked for.
+fn issuance_guard(
+    config: &Config,
+) -> Option<Arc<asterius_server::http::agent_issuance::IssuanceGuard>> {
+    config.features.authzen.then(|| {
+        Arc::new(asterius_server::http::agent_issuance::IssuanceGuard::new(
+            config.authzen.issuance_fail_open,
+        ))
     })
 }
 
@@ -330,6 +358,13 @@ struct AdminContext {
     /// The key-encryption key the pairwise salts are sealed under, which those
     /// tokens' `sub` is derived through.
     kek: Arc<dyn asterius_jose::Kek>,
+    /// The process's pre-issuance decision cache (`ast-lh3.10`).
+    ///
+    /// Assembled here, with the deployment's other shared handles, and *cloned*
+    /// into `ClientEndpoints`: the token endpoint reads this cache and the
+    /// admin API empties it when a policy is written, and two guards would be a
+    /// cache nobody invalidates.
+    issuance: Option<Arc<asterius_server::http::agent_issuance::IssuanceGuard>>,
 }
 
 impl AdminContext {
@@ -346,6 +381,7 @@ impl AdminContext {
         kek: &Arc<dyn asterius_jose::Kek>,
     ) -> Self {
         Self {
+            issuance: issuance_guard(config),
             capabilities: config.features,
             registration: config.registration.clone(),
             outbound: Arc::clone(outbound),
@@ -404,6 +440,7 @@ fn admin_routes(
                 signer: prepare_signer(keys),
                 queue: Some(context.queue),
                 argon2: Argon2Parameters::default(),
+                issuance: context.issuance,
             },
         )),
         // `ast-a05.8` mints the tokens an automation caller would present.

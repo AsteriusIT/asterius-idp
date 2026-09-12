@@ -1183,6 +1183,73 @@ why it is a key rather than the default. A tenant with no active key serves the
 document unsigned and logs, rather than failing: an unsigned public document is
 the state every PEP already handles.
 
+### Pre-issuance policy for agents (`ast-lh3.10`)
+
+**What changes: a token for an agent is now a policy decision, taken at the
+instant of issuance.** An agent's registration (`ast-lh3.1`) bounds what it may
+ever ask for, and those bounds are static — written when the agent was
+registered, silent about this request, this audience and this hour. Before it
+signs a token for a client that carries an agent profile, the token endpoint
+asks this deployment's own PDP (`ast-pj0.4`) whether that token may exist:
+subject the agent and its owner, action `obtain_token` or `exchange_token`,
+resource the audience, scopes and `authorization_details` the token would carry,
+context the grant and the delegation depth (Authorization API 1.0 §5, §6.1). A
+deny is RFC 6749 §5.2's `access_denied` and mints nothing. It is asked through
+the same decision function the Access Evaluation endpoint and the console's test
+bench use, so a rule an administrator tested is the rule that stops an issuance.
+
+**A policy that refuses everything stops agents and nobody else.** The check is
+reached only from a client with an agent profile, and only from the four grants
+an agent may register for: `client_credentials`, token exchange, device code and
+CIBA. `authorization_code` and `refresh_token` — every grant with a person
+behind it — do not consult it and cannot be made to, because the asymmetry is
+the point: the failure mode of this feature is "agents stop working", which is
+visible, audited and recoverable, and never "people cannot sign in". A client
+that is not an agent takes the path it took before, at the latency it had: the
+check returns before it reads a policy, a cache or the trail.
+
+**An unavailable decision point is not a permit.** A PDP that cannot answer has
+said nothing, and `[authzen] issuance_fail_open` defaults to `false`: for a
+credential minted for a process nobody is watching, silence is a deny. The other
+posture exists because its blast radius is asymmetric in the other direction —
+an unreadable policy store stops every agent in the deployment at once — and an
+operator who has decided the registered limits are a sufficient floor should say
+so in the file. Both postures write an audit record; the one that issued anyway
+says so in `issued_anyway`, so an outage that minted agent tokens is not
+invisible in the trail.
+
+**Every refusal is in the trail, with the reason, under its own type.**
+`token.issuance_denied` carries the decision's `reason_admin`, the action, the
+grant, the owner, the chain depth and the audience — enough for "which agents
+did this tenant's policy stop, and why" to be a filter on the event type rather
+than a scan of detail maps. The client is told `access_denied` and nothing else:
+a reason describing the tenant's rules would be a description of the policy
+handed to whoever holds the agent's key.
+
+**The cache is a bounded obsolescence window, and it is the only staleness
+here.** A decision is kept for five seconds, keyed by the whole question — agent,
+owner, action, grant, audience, scopes, detail types, chain depth — so that an
+agent taking tokens in a loop walks the policy once rather than once per token.
+The consequence is stated rather than hidden: a permit taken seconds before an
+administrator tightened a rule can be honoured until it expires. Writing a
+policy through the admin API empties that tenant's decisions in the process that
+served the write, which is what makes a single-replica deployment and an
+administrator testing a change see the effect at once; across replicas the
+guarantee is the TTL, because there is no bus (ADR-0001) and an invalidation
+delivered through the outbox would arrive later than the window it is meant to
+close. The cache holds at most 4 096 decisions and empties itself rather than
+growing, so an agent that varies its audience cannot make it a memory leak.
+
+**What this check is not.** It spends no rate-limit token and writes no
+`access.evaluated` record: those belong to a PEP's request to the evaluation
+endpoint (§10.1, §11.7), and this decision was not asked for by a caller — it is
+this server consulting itself. Charging the agent's limiter twice for one token
+request would make an issuance cost two tokens at the bucket, and an
+`access.evaluated` row per issuance would describe an evaluation no PEP made.
+Nothing here parses anything a caller wrote, so there is no new fuzz target: the
+inputs are this server's own resolved values, and the one string that is built —
+the resource identifier — is bounded and falls back to a digest.
+
 ### Back-channel logout (`ast-o4u.2`)
 
 **Why this needs a section: the server now signs a JWT it sends to somebody
@@ -1688,14 +1755,16 @@ intentions is worth nothing to a reviewer.
   `crates/domain/src/entities/resource_server.rs`; `crates/server/tests/discovery.rs`
   for what a tenant advertises.
 - **Beads.** `ast-gxh.7` (closed), `ast-lh3.8` (**open** — the MCP compatibility
-  profile itself), `ast-lh3.10` (**open** — the pre-issuance policy port),
+  profile itself), `ast-lh3.10` (closed — the pre-issuance policy port),
   `ast-m9c.8` (**blocked** — the decision on MCP public clients and Client ID
   Metadata Documents).
-- **Residual risk.** Two of the three controls the index table claims are beads
-  that have not landed: there is no MCP profile and no pre-issuance policy port
-  today. What exists is audience binding and confidential clients — the
-  substantive half — but the deputy problem is only fully answered when the
-  resource server *checks* `aud` and the AS takes a policy decision per mint.
+- **Residual risk.** One of the three controls the index table claims is a bead
+  that has not landed: there is no MCP profile today. The pre-issuance policy
+  decision now exists (`ast-lh3.10`), and it gates a mint for an *agent* client
+  — an MCP server registered as an ordinary confidential client does not reach
+  it. With audience binding and confidential clients, the deputy problem is
+  answered as far as this server can answer it; the rest is the resource server
+  *checking* `aud`.
 
 #### T-A13 — MCP token passthrough
 

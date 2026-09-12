@@ -113,6 +113,12 @@ pub struct CibaGrant<'a> {
     /// What this request proved possession of. "Neither" is a refusal, as it
     /// is for every other grant (FAPI 2.0 SP §5.3.2.1 item 4).
     pub constraint: issuance::SenderConstraint<'a>,
+    /// The pre-issuance policy check for an agent (`ast-lh3.10`).
+    ///
+    /// CIBA Core 1.0 §10.1 redeems an `auth_req_id` a person approved on their
+    /// own device; the approval says the person agreed, and this says whether
+    /// the tenant's rules let this agent hold what they agreed to.
+    pub agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     /// When the request arrived. One instant for every check and both tokens.
     pub now: OffsetDateTime,
 }
@@ -129,9 +135,11 @@ impl<'a> CibaGrant<'a> {
         code: &AuthorizationCode<'a>,
         ciba_requests: &'a PgCibaRequestRepository,
         audit: &'a dyn AuditSink,
+        agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     ) -> Self {
         Self {
             ciba_requests,
+            agent_policy,
             grants: code.grants,
             refresh_tokens: code.refresh_tokens,
             sessions: code.sessions,
@@ -283,6 +291,15 @@ impl CibaGrant<'_> {
         // party that has to be told when it ends.
         issuance::remember_participant(self.sessions, &grant, self.now).await;
         let targeting = self.targeting(tenant, client, &grant, params).await?;
+        // `ast-lh3.10`, for a client that is an agent. After the audience is
+        // resolved and before anything is signed; the `auth_req_id` is already
+        // spent, and a policy deny does not give it back.
+        let audience: std::collections::BTreeSet<String> =
+            targeting.audience.values().map(str::to_owned).collect();
+        self.agent_policy
+            .permits(tenant, client, &grant, &audience, GrantType::Ciba, self.now)
+            .await
+            .map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
         let held = issuance::held_roles(self.roles, &grant).await?;
 
         let access = AccessToken::new(

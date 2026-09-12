@@ -19,6 +19,7 @@
 
 use asterius_domain::audit::{AuditEvent, AuditSink, EventType, Outcome};
 use asterius_domain::entities::grant::GrantStatus;
+use asterius_domain::issuance::{IssuanceDecision, IssuancePolicy, IssuanceQuery};
 use asterius_domain::ports::TenantRepository;
 use asterius_domain::{
     AgentLimits, Capabilities, Client, ClientId, ClientRegistration, ClientStatus, GrantId, Issuer,
@@ -28,6 +29,7 @@ use asterius_domain::{
 use asterius_jose::kek::Kek;
 use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
+use asterius_server::http::agent_issuance::AgentPolicy;
 use asterius_server::http::client_credentials::ClientCredentials;
 use asterius_server::http::issuance::SenderConstraint;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
@@ -64,6 +66,39 @@ impl FakeAudit {
     }
 }
 
+/// The pre-issuance decision point (`ast-lh3.10`), as a port implementation.
+///
+/// Three postures a test can put behind [`AgentPolicy`]: permit, deny with a
+/// reason, and "cannot answer". The real adapter is
+/// `asterius_server::http::agent_issuance::PdpIssuance`, which is exercised by
+/// its own unit tests; what these tests are about is what the *grant* does with
+/// each answer.
+#[derive(Debug)]
+enum FakePolicy {
+    Permit,
+    Deny,
+    Unavailable,
+}
+
+#[async_trait::async_trait]
+impl IssuancePolicy for FakePolicy {
+    async fn permits(
+        &self,
+        _tenant: &TenantId,
+        _query: &IssuanceQuery,
+    ) -> Result<IssuanceDecision, asterius_domain::DomainError> {
+        match self {
+            Self::Permit => Ok(IssuanceDecision::permit(None)),
+            Self::Deny => Ok(IssuanceDecision::deny(Some(
+                "rule no-agents-here denied".to_owned(),
+            ))),
+            Self::Unavailable => Err(asterius_domain::DomainError::Storage(
+                "the policy store is unreachable".into(),
+            )),
+        }
+    }
+}
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 const CLIENT: &str = "billing";
@@ -75,6 +110,14 @@ const OTHER_RESOURCE: &str = "https://reports.example/";
 const REGISTERED_SCOPE: &str = "payments.read payments.write openid offline_access";
 
 struct Fixture {
+    /// The decision point the agent grants consult (`ast-lh3.10`), and the
+    /// posture to take when it cannot answer.
+    ///
+    /// `None` in every test but the ones about it, which is what a deployment
+    /// with `[features] authzen` off wires: the check is not consulted at all,
+    /// and every other test in this file describes the grant as it was.
+    policy: Option<Arc<FakePolicy>>,
+    fail_open: bool,
     store: Store,
     keys: TenantKeyStore,
     audit: Arc<FakeAudit>,
@@ -133,6 +176,8 @@ impl Fixture {
         ));
 
         Some(Self {
+            policy: None,
+            fail_open: false,
             store,
             keys,
             audit,
@@ -141,6 +186,25 @@ impl Fixture {
             kek,
             now,
         })
+    }
+
+    /// The same fixture with a decision point behind the issuance check.
+    fn under_policy(mut self, policy: FakePolicy, fail_open: bool) -> Self {
+        self.policy = Some(Arc::new(policy));
+        self.fail_open = fail_open;
+        self
+    }
+
+    /// The enforcement point this fixture's handler carries.
+    fn agent_policy(&self) -> AgentPolicy<'_> {
+        AgentPolicy {
+            policy: self
+                .policy
+                .clone()
+                .map(|policy| policy as Arc<dyn IssuancePolicy>),
+            fail_open: self.fail_open,
+            audit: self.audit.as_ref(),
+        }
     }
 
     fn grants(&self) -> PgGrantRepository {
@@ -308,6 +372,7 @@ impl Fixture {
                 proof_key,
                 certificate: None,
             },
+            agent_policy: self.agent_policy(),
             now: self.now,
         };
         let handlers: [&dyn GrantHandler; 1] = [&handler];
@@ -930,6 +995,143 @@ db_test! {
 
         // Assert
         assert_eq!(status, StatusCode::OK, "{body}");
+        f.tear_down().await;
+    }
+}
+
+// ---- The pre-issuance policy (`ast-lh3.10`) -------------------------------
+
+db_test! {
+    /// A policy deny stops the issuance, and RFC 6749 §5.2's `access_denied` is
+    /// what the agent is told: "The resource owner or authorization server
+    /// denied the request."
+    async fn a_policy_deny_stops_an_agent_s_token(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::Deny, false);
+        let client = f.agent(AgentLimits::default()).await;
+
+        // Act
+        let (status, body) = f.request(&client, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "access_denied");
+        assert!(
+            body["access_token"].is_null(),
+            "a denied issuance mints nothing: {body}"
+        );
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// The refusal is recorded under its own type, with the decision's own
+    /// words, and what the client was told carries none of them.
+    async fn a_policy_deny_is_audited_under_its_own_type(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::Deny, false);
+        let client = f.agent(AgentLimits::default()).await;
+
+        // Act
+        let (_, body) = f.request(&client, &[]).await;
+
+        // Assert
+        let denied: Vec<AuditEvent> = f
+            .audit
+            .events()
+            .into_iter()
+            .filter(|event| event.event_type == EventType::TOKEN_ISSUANCE_DENIED)
+            .collect();
+        assert_eq!(denied.len(), 1, "one entry per refused issuance");
+        assert_eq!(denied[0].outcome, Outcome::Failure);
+        assert!(
+            !body.to_string().contains("no-agents-here"),
+            "the tenant's rules are not described to the client: {body}"
+        );
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// A decision point that cannot answer is not a permit. `[authzen]
+    /// issuance_fail_open = false` is the default, and an agent gets no token.
+    async fn an_unavailable_policy_fails_closed_for_an_agent(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::Unavailable, false);
+        let client = f.agent(AgentLimits::default()).await;
+
+        // Act
+        let (status, body) = f.request(&client, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "access_denied");
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// `issuance_fail_open = true` issues the token, and still writes the entry
+    /// that says nobody decided on it.
+    async fn a_deployment_that_fails_open_issues_and_says_so(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::Unavailable, true);
+        let client = f.agent(AgentLimits::default()).await;
+
+        // Act
+        let (status, body) = f.request(&client, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let denied: Vec<AuditEvent> = f
+            .audit
+            .events()
+            .into_iter()
+            .filter(|event| event.event_type == EventType::TOKEN_ISSUANCE_DENIED)
+            .collect();
+        assert_eq!(denied.len(), 1, "an outage that minted a token is recorded");
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// A client that is not an agent never reaches the check: the same policy
+    /// that denies every agent leaves an ordinary machine client alone, and
+    /// writes nothing about it.
+    async fn a_client_that_is_not_an_agent_does_not_meet_the_policy(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::Deny, false);
+        let client = f.client(&["client_credentials"]).await;
+
+        // Act
+        let (status, body) = f.request(&client, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            f.audit
+                .events()
+                .iter()
+                .all(|event| event.event_type != EventType::TOKEN_ISSUANCE_DENIED),
+            "nothing is recorded for a client the check does not apply to"
+        );
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// A permit changes nothing about the token that comes back.
+    async fn a_policy_permit_issues_the_token_it_would_have_issued(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::Permit, false);
+        let client = f.agent(AgentLimits::default()).await;
+
+        // Act
+        let (status, body) = f.request(&client, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["access_token"].is_string(), "{body}");
         f.tear_down().await;
     }
 }

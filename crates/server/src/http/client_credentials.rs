@@ -122,6 +122,13 @@ pub struct ClientCredentials<'a> {
     /// issue without one. Which of the two binds the token is the client's
     /// registered `TokenBinding` — see [`issuance::SenderConstraint`].
     pub constraint: issuance::SenderConstraint<'a>,
+    /// The pre-issuance policy check for an agent (`ast-lh3.10`).
+    ///
+    /// Consulted only for a client that carries an
+    /// [`asterius_domain::entities::agent::AgentProfile`]; every other client
+    /// reaching this grant — a resource server, an SSF receiver, a PEP — takes
+    /// the path it always took, at the latency it always had.
+    pub agent_policy: crate::http::agent_issuance::AgentPolicy<'a>,
     /// When the request arrived. One instant for the grant's stamps and the
     /// token's `iat` and `exp`, so they are judged against one clock reading.
     pub now: OffsetDateTime,
@@ -248,6 +255,24 @@ impl ClientCredentials<'_> {
         // trail should say what the token was minted *at*, not what the client
         // might have been allowed to ask for.
         grant.resources = targeting.audience.values().map(str::to_owned).collect();
+
+        // `ast-lh3.10`: the last check before an authority is created, and the
+        // first one that reads the tenant's rules rather than the
+        // registration. It is here — after the scopes, the lifetimes and the
+        // audience are settled and before `claim` — so that the policy is
+        // asked about the token that would really be signed, and so that a
+        // deny leaves no claimed grant behind.
+        self.agent_policy
+            .permits(
+                tenant,
+                client,
+                &grant,
+                &grant.resources.iter().cloned().collect(),
+                GrantType::ClientCredentials,
+                self.now,
+            )
+            .await
+            .map_err(|refusal| Failure::Client(refusal.code, refusal.description))?;
 
         // `claim` is the only constructor of the authority to mint, and it
         // refuses a grant that is not issuable. Taken from the assembled grant

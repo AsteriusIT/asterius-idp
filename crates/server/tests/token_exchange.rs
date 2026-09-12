@@ -24,6 +24,7 @@
 
 use asterius_domain::audit::{AuditEvent, AuditSink, EventType, Outcome};
 use asterius_domain::entities::client::GrantType;
+use asterius_domain::issuance::{IssuanceAction, IssuanceDecision, IssuancePolicy, IssuanceQuery};
 use asterius_domain::keys::Signer;
 use asterius_domain::ports::TenantRepository;
 use asterius_domain::{
@@ -36,6 +37,7 @@ use asterius_jose::{LocalKek, jws, keys_from_jwk_set};
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
 use asterius_oidc::tokens::JwtId;
 use asterius_oidc::tokens::access::{AccessToken, Audience, Confirmation};
+use asterius_server::http::agent_issuance::AgentPolicy;
 use asterius_server::http::issuance::SenderConstraint;
 use asterius_server::http::token::{GrantHandler, TokenContext, token};
 use asterius_server::http::token_exchange::TokenExchange;
@@ -93,7 +95,72 @@ fn capabilities() -> Capabilities {
     }
 }
 
+/// The pre-issuance decision point (`ast-lh3.10`), as a port implementation.
+///
+/// It records the questions it was asked, which is how a test can assert the
+/// §5.2 action this grant uses without reading the engine.
+#[derive(Debug)]
+struct FakePolicy {
+    answer: Answer,
+    asked: Mutex<Vec<IssuanceQuery>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Answer {
+    Permit,
+    Deny,
+    Unavailable,
+}
+
+impl FakePolicy {
+    /// A decision point that permits everything.
+    fn permit() -> Self {
+        Self::answering(Answer::Permit)
+    }
+
+    /// One that refuses everything, with a reason.
+    fn deny() -> Self {
+        Self::answering(Answer::Deny)
+    }
+
+    /// One that cannot answer at all.
+    fn unavailable() -> Self {
+        Self::answering(Answer::Unavailable)
+    }
+
+    fn answering(answer: Answer) -> Self {
+        Self {
+            answer,
+            asked: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl IssuancePolicy for FakePolicy {
+    async fn permits(
+        &self,
+        _tenant: &TenantId,
+        query: &IssuanceQuery,
+    ) -> Result<IssuanceDecision, asterius_domain::DomainError> {
+        self.asked.lock().expect("lock").push(query.clone());
+        match self.answer {
+            Answer::Permit => Ok(IssuanceDecision::permit(None)),
+            Answer::Deny => Ok(IssuanceDecision::deny(Some(
+                "rule no-delegation denied".to_owned(),
+            ))),
+            Answer::Unavailable => Err(asterius_domain::DomainError::Storage(
+                "the policy store is unreachable".into(),
+            )),
+        }
+    }
+}
+
 struct Fixture {
+    /// The decision point this fixture's handler consults (`ast-lh3.10`).
+    /// `None` in every test but the ones about it, which is a deployment with
+    /// `[features] authzen` off.
+    policy: Option<Arc<FakePolicy>>,
     store: Store,
     keys: TenantKeyStore,
     audit: Arc<FakeAudit>,
@@ -169,6 +236,7 @@ impl Fixture {
             .expect("create the person the agent acts for");
 
         Some(Self {
+            policy: None,
             store,
             keys,
             audit,
@@ -270,6 +338,20 @@ impl Fixture {
     ///
     /// A user's grant: `sub` is the person, and the scopes and resources are
     /// the ceiling every exchange below narrows from.
+    /// The same fixture with a decision point behind the issuance check.
+    fn under_policy(mut self, policy: FakePolicy) -> Self {
+        self.policy = Some(Arc::new(policy));
+        self
+    }
+
+    /// The questions the decision point was asked.
+    fn asked(&self) -> Vec<IssuanceQuery> {
+        self.policy
+            .as_ref()
+            .map(|policy| policy.asked.lock().expect("lock").clone())
+            .unwrap_or_default()
+    }
+
     async fn subject_grant(&self, client: &Client, scopes: &[&str]) -> Grant {
         self.subject_grant_after(client, scopes, &[]).await
     }
@@ -370,6 +452,14 @@ impl Fixture {
             constraint: SenderConstraint {
                 proof_key,
                 certificate: None,
+            },
+            agent_policy: AgentPolicy {
+                policy: self
+                    .policy
+                    .clone()
+                    .map(|policy| policy as Arc<dyn IssuancePolicy>),
+                fail_open: false,
+                audit: self.audit.as_ref(),
             },
             now: self.now,
         };
@@ -978,6 +1068,83 @@ db_test! {
                 asterius_domain::audit::Actor::Client(ClientId::new("c.first")),
             ]
         );
+
+        f.tear_down().await;
+    }
+}
+
+// ---- The pre-issuance policy (`ast-lh3.10`) -------------------------------
+
+db_test! {
+    /// A policy deny stops the exchange. The action asked about is
+    /// `exchange_token` and not `obtain_token`: passing an authority on is a
+    /// different thing for a rule to decide than creating one.
+    async fn a_policy_deny_stops_an_exchange(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::deny());
+        f.register_resource_server(RESOURCE).await;
+        let agent = f.agent(AGENT, exchanging(1)).await;
+        let grant = f.subject_grant(&agent, &["payments.read"]).await;
+        let key = thumbprint(21);
+        let subject = f.subject_token(&grant, &key, Duration::minutes(5)).await;
+
+        // Act
+        let (status, body) = f.exchange(&agent, &subject, &key, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "access_denied");
+        assert!(body["access_token"].is_null(), "{body}");
+
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// The action the policy is asked about, read off the request the fake
+    /// recorded: §5.2's `name`, and the one thing that tells this grant's
+    /// question from the three that mint a fresh token.
+    async fn an_exchange_asks_the_exchange_token_action(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::permit());
+        f.register_resource_server(RESOURCE).await;
+        let agent = f.agent(AGENT, exchanging(1)).await;
+        let grant = f.subject_grant(&agent, &["payments.read"]).await;
+        let key = thumbprint(22);
+        let subject = f.subject_token(&grant, &key, Duration::minutes(5)).await;
+
+        // Act
+        let (status, body) = f.exchange(&agent, &subject, &key, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            f.asked().first().map(|query| query.action),
+            Some(IssuanceAction::ExchangeToken)
+        );
+
+        f.tear_down().await;
+    }
+}
+
+db_test! {
+    /// Fail closed, for the grant that carries a delegation: a decision point
+    /// that cannot answer mints nothing.
+    async fn an_unavailable_policy_stops_an_exchange(f) {
+        // Arrange
+        let f = f.under_policy(FakePolicy::unavailable());
+        f.register_resource_server(RESOURCE).await;
+        let agent = f.agent(AGENT, exchanging(1)).await;
+        let grant = f.subject_grant(&agent, &["payments.read"]).await;
+        let key = thumbprint(23);
+        let subject = f.subject_token(&grant, &key, Duration::minutes(5)).await;
+
+        // Act
+        let (status, body) = f.exchange(&agent, &subject, &key, &[]).await;
+
+        // Assert
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"], "access_denied");
 
         f.tear_down().await;
     }

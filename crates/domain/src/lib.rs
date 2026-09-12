@@ -13,6 +13,7 @@ pub mod credentials;
 pub mod entities;
 pub mod error;
 pub mod ids;
+pub mod issuance;
 pub mod issuer;
 pub mod json_sentinel;
 pub mod keys;
