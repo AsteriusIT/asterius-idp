@@ -167,7 +167,8 @@ pub fn sections() -> Vec<Section> {
     ]
 }
 
-/// `[authzen]`: how the PDP presents itself (`ast-pj0.3`).
+/// `[authzen]`: how the PDP presents itself, and which of §8's optional APIs
+/// it answers (`ast-pj0.3`, `ast-pj0.6`).
 fn authzen() -> Section {
     Section {
         table: "authzen",
@@ -175,17 +176,22 @@ fn authzen() -> Section {
         blurb: "Read only when `[features] authzen` is on. Whether there is a PDP at \
                 all is the flag; this table says how the document that describes it \
                 — `/.well-known/authzen-configuration`, Authorization API 1.0 §9.2 — \
-                is served. The PDP identifier itself is not a key here and never \
+                is served, and whether the OPTIONAL Search APIs of §8 are answered. \
+                The PDP identifier itself is not a key here and never \
                 will be: it is the tenant's issuer, which is the identifier the \
                 well-known URL is derived from and the one §9.2.3 has a PEP compare \
                 against. A second spelling would be a second identity for a tenant \
-                that already has one.",
+                that already has one. `search` is the second key an operator writes \
+                that becomes a capability rather than a setting: it derives the \
+                `authzen_search` flag, which is why there is no \
+                `[features] authzen_search` to contradict it.",
         after: "",
-        keys: vec![key(
-            "signed_metadata",
-            "boolean",
-            "`false`".to_owned(),
-            "Whether the document carries a `signed_metadata` JWT (§9.1.3, the shape \
+        keys: vec![
+            key(
+                "signed_metadata",
+                "boolean",
+                "`false`".to_owned(),
+                "Whether the document carries a `signed_metadata` JWT (§9.1.3, the shape \
              RFC 8414 §2.1 defines), signed with the tenant's active key and \
              verifiable against the `jwks_uri` the OP metadata publishes. OPTIONAL in \
              the specification and off here, because a PEP fetching the document over \
@@ -194,7 +200,28 @@ fn authzen() -> Section {
              one signature per request and is worth it only where somebody asked. A \
              tenant with no active key serves the document unsigned rather than \
              failing, and says so in the log.",
-        )],
+            ),
+            key(
+                "search",
+                "boolean",
+                "`false`".to_owned(),
+                "Whether this deployment answers the Search APIs (§8): \
+                 `/access/v1/search/subject`, `/access/v1/search/resource` and \
+                 `/access/v1/search/action`, advertised as \
+                 `search_subject_endpoint`, `search_resource_endpoint` and \
+                 `search_action_endpoint` in the PDP document and answering 404 \
+                 when this is off. OPTIONAL in the specification and off here, \
+                 because a search is a different thing to hand a policy \
+                 enforcement point than a decision: an evaluation answers about \
+                 one subject the caller already named, and a search enumerates \
+                 the subjects, resources or actions of a tenant that satisfy a \
+                 policy. Read only where `[features] authzen` is on — there is \
+                 nothing to search without a policy decision point — and every \
+                 entity returned is evaluated first, so a search never reveals \
+                 an access the same caller could not have confirmed one \
+                 evaluation at a time.",
+            ),
+        ],
     }
 }
 

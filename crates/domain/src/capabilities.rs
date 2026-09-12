@@ -27,6 +27,19 @@ pub enum Feature {
     Ssf,
     /// AuthZEN Authorization API 1.0 policy decision point.
     Authzen,
+    /// The AuthZEN Search APIs (Authorization API 1.0 §8), `ast-pj0.6`.
+    ///
+    /// Derived from `[authzen] search` and from [`Self::Authzen`], never
+    /// written under `[features]`: §8 is an OPTIONAL extension *of* the
+    /// evaluation API — §9.1.1 advertises `search_*_endpoint` beside
+    /// `access_evaluation_endpoint` — so a deployment that searches without
+    /// deciding is not a smaller PDP but an incoherent one.
+    ///
+    /// Off by default, and off is the honest default: a search enumerates the
+    /// entities of a tenant that satisfy a policy, which is a different thing
+    /// to hand a PEP than an answer about one subject it already named.
+    /// `docs/threat-model.md` carries the row.
+    AuthzenSearch,
     /// Server-issued DPoP nonces (RFC 9449 §8).
     DpopNonce,
     /// Signed request objects inside a pushed request (JAR, RFC 9101).
@@ -64,7 +77,7 @@ pub enum Feature {
 
 impl Feature {
     /// Every flag, in a stable order. `/readyz` and the admin API iterate this.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Mtls,
         Self::GrantManagement,
         Self::Ciba,
@@ -72,6 +85,7 @@ impl Feature {
         Self::TokenExchange,
         Self::Ssf,
         Self::Authzen,
+        Self::AuthzenSearch,
         Self::DpopNonce,
         Self::RequestObject,
         Self::DynamicClientRegistration,
@@ -89,6 +103,7 @@ impl Feature {
             Self::TokenExchange => "token_exchange",
             Self::Ssf => "ssf",
             Self::Authzen => "authzen",
+            Self::AuthzenSearch => "authzen_search",
             Self::DpopNonce => "dpop_nonce",
             Self::RequestObject => "request_object",
             Self::DynamicClientRegistration => "dynamic_client_registration",
@@ -109,7 +124,7 @@ impl Feature {
     #[must_use]
     pub const fn is_derived(self) -> bool {
         match self {
-            Self::DynamicClientRegistration => true,
+            Self::DynamicClientRegistration | Self::AuthzenSearch => true,
             Self::Mtls
             | Self::GrantManagement
             | Self::Ciba
@@ -174,6 +189,16 @@ pub struct Capabilities {
     pub ssf: bool,
     /// AuthZEN Authorization API 1.0 policy decision point.
     pub authzen: bool,
+    /// The AuthZEN Search APIs (§8), derived from `[authzen] search` rather
+    /// than set directly — see [`Feature::AuthzenSearch`].
+    ///
+    /// Not deserialised, for the reason
+    /// [`Capabilities::dynamic_client_registration`] is not: with
+    /// `deny_unknown_fields`, an operator who writes `authzen_search = true`
+    /// under `[features]` is told the key is not one, rather than given a flag
+    /// that contradicts `[authzen] search`.
+    #[serde(skip_deserializing)]
+    pub authzen_search: bool,
     /// Server-issued DPoP nonces (RFC 9449 §8).
     pub dpop_nonce: bool,
     /// Signed request objects inside a pushed request (JAR, RFC 9101).
@@ -206,6 +231,7 @@ impl Capabilities {
             Feature::TokenExchange => self.token_exchange,
             Feature::Ssf => self.ssf,
             Feature::Authzen => self.authzen,
+            Feature::AuthzenSearch => self.authzen_search,
             Feature::DpopNonce => self.dpop_nonce,
             Feature::RequestObject => self.request_object,
             Feature::DynamicClientRegistration => self.dynamic_client_registration,
@@ -228,6 +254,7 @@ impl Capabilities {
             Feature::TokenExchange => self.token_exchange = false,
             Feature::Ssf => self.ssf = false,
             Feature::Authzen => self.authzen = false,
+            Feature::AuthzenSearch => self.authzen_search = false,
             Feature::DpopNonce => self.dpop_nonce = false,
             Feature::RequestObject => self.request_object = false,
             Feature::DynamicClientRegistration => self.dynamic_client_registration = false,
@@ -323,6 +350,7 @@ mod tests {
             token_exchange: true,
             ssf: true,
             authzen: true,
+            authzen_search: true,
             dpop_nonce: true,
             request_object: true,
             dynamic_client_registration: true,

@@ -477,6 +477,14 @@ impl TenantSettings {
         if self.registration.mode() == Some(RegistrationMode::Closed) {
             effective.disable(Feature::DynamicClientRegistration);
         }
+        // Authorization API 1.0 §8's searches are an extension of §6.1's
+        // evaluation and are advertised in the same document (§9.1.1), so a
+        // tenant that switched the PDP off has no search endpoints either.
+        // Subtracted here rather than checked at the router, so that the
+        // metadata and the 404 come from one decision (`ast-pj0.6`).
+        if !effective.is_enabled(Feature::Authzen) {
+            effective.disable(Feature::AuthzenSearch);
+        }
         effective
     }
 

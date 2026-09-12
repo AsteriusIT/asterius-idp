@@ -2635,6 +2635,7 @@ mod tests {
             token_exchange: true,
             ssf: true,
             authzen: true,
+            authzen_search: true,
             dpop_nonce: true,
             request_object: true,
             dynamic_client_registration: true,

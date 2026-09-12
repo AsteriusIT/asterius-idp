@@ -16,6 +16,8 @@
 //!   applied.
 //! * [`engine`] — evaluation, the [`Decision`] it produces and
 //!   [`DeclarativeEngine`], which answers [`crate::ports::PolicyEngine`].
+//! * [`search`] — what §8's Search APIs can enumerate from a document and a
+//!   subject's authorizations (`ast-pj0.6`).
 //!
 //! # The layering matters here
 //!
@@ -39,6 +41,7 @@
 pub mod document;
 pub mod engine;
 pub mod request;
+pub mod search;
 
 pub use document::{
     AttributeTest, Condition, Effect, GrantMatch, GrantResource, PolicyDocumentError, PolicyRuleId,

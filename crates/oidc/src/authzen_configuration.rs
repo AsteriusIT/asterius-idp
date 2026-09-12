@@ -50,13 +50,15 @@
 //!
 //! ## What is deliberately absent
 //!
-//! §9.2.2 says a parameter with no value is omitted rather than emptied, and
-//! three things are therefore missing.
+//! §9.2.2 says a parameter with no value is omitted rather than emptied, which
+//! is what decides each of the three OPTIONAL members below.
 //!
 //! `search_subject_endpoint`, `search_resource_endpoint` and
-//! `search_action_endpoint` (§9.1.1, OPTIONAL) wait for `ast-pj0.6`: there is
-//! no search in this build, no variant for one in the registry, and a URL here
-//! would be a URL that answers 404 — the parity rule `ast-o0t.3` exists for.
+//! `search_action_endpoint` (§9.1.1, OPTIONAL) are here since `ast-pj0.6` —
+//! and only where an operator switched §8 on. They come from the registry
+//! like the others, gated on [`asterius_domain::Feature::AuthzenSearch`], so a
+//! deployment that does not search advertises no URL that answers 404 and one
+//! that does cannot advertise a path it has not mounted (`ast-o0t.3`).
 //!
 //! `capabilities` (§9.1.2) is absent for a stricter reason: this build
 //! implements no capability beyond the evaluation API, so the member would be
@@ -223,7 +225,8 @@ mod tests {
     }
 
     /// §9.2.2: a parameter with nothing to say is omitted rather than empty.
-    /// Nothing here searches (`ast-pj0.6`), so no `search_*` member exists.
+    /// This deployment decides but does not search — §8 is OPTIONAL and off
+    /// unless asked for — so no `search_*` member exists (`ast-pj0.6`).
     #[test]
     fn nothing_unimplemented_is_advertised() {
         // Arrange, act
@@ -243,6 +246,49 @@ mod tests {
                 "{absent} is advertised by a PDP that does not implement it"
             );
         }
+    }
+
+    /// §9.1.1's three OPTIONAL search members appear exactly when this
+    /// deployment answers §8 — at the URLs the registry mounts, which is what
+    /// makes the `aud` a PEP asks for and the path that answers one value
+    /// (`ast-pj0.6`).
+    #[test]
+    fn the_search_endpoints_are_advertised_only_where_they_are_mounted() {
+        // Arrange
+        let searching = Capabilities {
+            authzen: true,
+            authzen_search: true,
+            ..Capabilities::default()
+        };
+
+        // Act
+        let document = pdp_metadata(&issuer(), &searching);
+
+        // Assert
+        for (member, endpoint) in [
+            (
+                "search_subject_endpoint",
+                crate::metadata::Endpoint::SearchSubject,
+            ),
+            (
+                "search_resource_endpoint",
+                crate::metadata::Endpoint::SearchResource,
+            ),
+            (
+                "search_action_endpoint",
+                crate::metadata::Endpoint::SearchAction,
+            ),
+        ] {
+            assert_eq!(
+                document[member],
+                serde_json::json!(endpoint.url(&issuer())),
+                "{member} is not the URL the registry mounts"
+            );
+        }
+        assert_eq!(
+            document["search_subject_endpoint"],
+            serde_json::json!("https://as.example/t/demo/access/v1/search/subject")
+        );
     }
 
     /// The document describes the endpoints this deployment mounts, so a

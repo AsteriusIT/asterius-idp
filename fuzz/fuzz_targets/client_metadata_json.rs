@@ -38,6 +38,7 @@ const EVERYTHING: Capabilities = Capabilities {
     token_exchange: true,
     ssf: true,
     authzen: true,
+    authzen_search: true,
     dpop_nonce: true,
     request_object: true,
     self_registration: false,

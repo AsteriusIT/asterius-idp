@@ -129,6 +129,21 @@ pub enum AuthzenError {
     /// The request is well-formed and outside the bounds the evaluator accepts.
     #[error(transparent)]
     Request(#[from] RequestError),
+    /// §8: a member that would name the entity being searched for is present,
+    /// and §8 says that member is the one a search omits.
+    #[error("{0} must be omitted from a search request: it is what the search is for")]
+    NotSearchable(&'static str),
+    /// §8.2: the page token is not one this PDP minted.
+    #[error("the page token is not one this policy decision point issued")]
+    PageToken,
+    /// §8.2: "the parameters of the request must be identical" between pages.
+    #[error(
+        "the page token was issued for a different search request: the parameters of a          paginated request must be identical between pages"
+    )]
+    PageChanged,
+    /// §8.2's `page.limit` is not a count.
+    #[error("page.limit must be a positive integer")]
+    PageLimit,
     /// §7.1's array holds more than [`MAX_EVALUATIONS`] requests.
     #[error("the evaluations array holds more than {MAX_EVALUATIONS} requests")]
     TooMany,
@@ -382,7 +397,7 @@ pub fn engine_failure_response() -> Value {
 /// and a walk that started at `subject` would already have paid for the
 /// nesting under `context` — or, in a boxcar, under the ninety-ninth
 /// evaluation.
-fn read_document(body: &[u8]) -> Result<Map<String, Value>, AuthzenError> {
+pub(crate) fn read_document(body: &[u8]) -> Result<Map<String, Value>, AuthzenError> {
     if body.len() > MAX_REQUEST_BYTES {
         return Err(AuthzenError::TooLong);
     }
@@ -499,7 +514,7 @@ fn entity<'a>(
 /// error message has to say for a PEP to find it: §10.1.1 requires the 400 and
 /// leaves the body a message string, and "id is required" would not say which
 /// entity's.
-fn member<'a>(
+pub(crate) fn member<'a>(
     entity: &'a Map<String, Value>,
     field: &'static str,
 ) -> Result<&'a str, AuthzenError> {
@@ -518,7 +533,7 @@ fn member<'a>(
 /// that layer there is nobody to tell; here there is, and a PEP that sent an
 /// array where the model has an object is a PEP whose request means something
 /// other than what this server would have evaluated.
-fn properties(
+pub(crate) fn properties(
     entity: &Map<String, Value>,
     field: &'static str,
 ) -> Result<Properties, AuthzenError> {

@@ -239,6 +239,7 @@ mod tests {
             dynamic_client_registration: true,
             self_registration: true,
             authzen: true,
+            authzen_search: true,
             dpop_nonce: true,
             request_object: true,
         }

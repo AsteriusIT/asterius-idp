@@ -362,6 +362,23 @@ impl EventType {
     /// data. Authorization API 1.0 §11.5's I-JSON and `docs/threat-model.md`
     /// carry the same row.
     pub const ACCESS_EVALUATED: Self = Self("access.evaluated");
+    /// A policy enforcement point asked a Search API for the entities that
+    /// satisfy a policy (Authorization API 1.0 §8, `ast-pj0.6`).
+    ///
+    /// Its own type rather than an [`Self::ACCESS_EVALUATED`] with a detail,
+    /// because it is a different question with a different risk: an evaluation
+    /// asks about one subject the PEP already named, and a search *enumerates*
+    /// the subjects, resources or actions of a tenant. "Which PEP listed this
+    /// tenant's users, and how often" must be answerable by a filter on the
+    /// event type rather than by reading a detail map — it is the query an
+    /// investigator runs after a PEP's credential leaks.
+    ///
+    /// One entry per request, whatever the page holds: the entry carries what
+    /// was searched, the entities the query fixed, how many candidates were
+    /// evaluated, how many were returned and whether there is another page.
+    /// The identifiers *returned* are not recorded, for the reason
+    /// [`Self::ACCESS_EVALUATED`] does not record `properties`.
+    pub const ACCESS_SEARCHED: Self = Self("access.searched");
     /// Audit records were removed by the retention policy.
     pub const AUDIT_PURGED: Self = Self("audit.purged");
     /// A backchannel authentication request was accepted (CIBA Core 1.0 §7.3).
@@ -496,7 +513,7 @@ impl EventType {
 
     /// Every event type, for the admin API's filter list and for the test that
     /// keeps this list honest.
-    pub const ALL: [Self; 70] = [
+    pub const ALL: [Self; 71] = [
         Self::PAR_ACCEPTED,
         Self::PAR_REJECTED,
         Self::AUTH_LOGIN,
@@ -548,6 +565,7 @@ impl EventType {
         Self::APP_ROLE_WITHDRAWN,
         Self::POLICY_UPDATED,
         Self::ACCESS_EVALUATED,
+        Self::ACCESS_SEARCHED,
         Self::AUDIT_PURGED,
         Self::BACKCHANNEL_REQUESTED,
         Self::BACKCHANNEL_REFUSED,
