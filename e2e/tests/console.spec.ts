@@ -44,7 +44,7 @@
  * `crates/admin-api/src/console.rs` from the template side.
  */
 import AxeBuilder from '@axe-core/playwright';
-import { type APIRequestContext, type Page, expect, test } from '@playwright/test';
+import { type APIRequestContext, type Locator, type Page, expect, test } from '@playwright/test';
 import {
   ADMIN_CONSOLE_URL,
   CONSOLE_URL,
@@ -53,7 +53,7 @@ import {
   signInAsDeploymentAdmin,
 } from '../src/console.js';
 import { CspWatcher } from '../src/csp.js';
-import { BASE_URL } from '../src/environment.js';
+import { ADMIN_BASE_URL, BASE_URL } from '../src/environment.js';
 
 const ORIGIN = new URL(BASE_URL).origin;
 
@@ -918,4 +918,132 @@ test('the shared-signals, audit and policy screens have no accessibility violati
     });
     expect(results.violations, `${name} screen`).toEqual([]);
   }
+});
+
+/**
+ * The tenants screen, walked by the only caller who can open it (`ast-l5bl`).
+ *
+ * `reach: 'deployment'` is not decoration: the link is absent for the
+ * `tenant_admin` every other test in this file signs in as, and the routes
+ * behind it refuse that caller as well. So this scenario is the deployment
+ * administrator's from end to end — list, creation, suspension, restoration,
+ * and the hand-off to that tenant's settings — and every step goes through the
+ * screen's own controls, because a `fetch` would be asserting the API that
+ * `crates/admin-api/src/router.rs` already covers.
+ *
+ * The tenant it creates is named `sweep-…`, and `e2e/fixtures/seed.sql` deletes
+ * that prefix before each run: no route deletes a tenant, so a database kept
+ * between runs would otherwise fill the first page of a cursor-paginated list
+ * with the leftovers of previous ones.
+ */
+function sweepTenantId(): string {
+  // `crypto.randomUUID`, reduced to the characters `TenantId::parse` accepts
+  // (lowercase, digits, `-` and `_`) and short enough to read in a failure.
+  return `sweep-${crypto.randomUUID().replace(/-/g, '').slice(0, 10)}`;
+}
+
+/**
+ * The table row for one tenant, found by its issuer.
+ *
+ * By the issuer and not by the id, because the id cell also carries a display
+ * name when the tenant has one — the reserved tenant does — and because an
+ * issuer is exact where an id is a prefix of its siblings: a cell named `e2e`
+ * matches the `e2e-admin` row too.
+ */
+function tenantRow(page: Page, issuer: string): Locator {
+  return page
+    .getByRole('row')
+    .filter({ has: page.getByRole('cell', { name: issuer, exact: true }) });
+}
+
+test('a deployment administrator lists, creates, suspends and restores a tenant', async ({
+  context,
+  page,
+}, testInfo) => {
+  // Arrange
+  const watcher = await CspWatcher.attach(context, true);
+  await signInAsDeploymentAdmin(page);
+  await openScreen(page, 'Tenants', 'Tenants');
+
+  // Assert: the deployment's tenants are listed beside each other, the
+  // reserved one included. This screen is the only place that happens.
+  await expect(tenantRow(page, BASE_URL)).toBeVisible();
+  await expect(tenantRow(page, ADMIN_BASE_URL)).toBeVisible();
+  // The features column is filled in by a second read per row, so it starts as
+  // an em dash and becomes a sentence. Either wording is an answer; an em dash
+  // that never changes would mean the settings document never arrived.
+  await expect(tenantRow(page, BASE_URL).getByText(/all on|off: /)).toBeVisible();
+
+  // Act: create one, asking for nothing the provisioning route does not take.
+  const id = sweepTenantId();
+  const issuer = `${ORIGIN}/t/${id}`;
+  await page.getByLabel('Tenant id').fill(id);
+  await page.getByLabel('Issuer').fill(issuer);
+  await page.getByRole('button', { name: 'Create tenant' }).click();
+
+  // Assert: the server made it, with its signing keys, and it is in the list.
+  await expect(page.getByRole('status').first()).toContainText('with its signing keys');
+  await expect(tenantRow(page, issuer).getByText('active', { exact: true })).toBeVisible();
+
+  // Act: suspend it, which is a confirmed act rather than a button press.
+  await tenantRow(page, issuer).getByRole('button', { name: 'Suspend' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('fails to obtain a token');
+  await dialog.getByRole('button', { name: 'Suspend tenant' }).click();
+
+  // Assert
+  await expect(page.getByRole('status').first()).toContainText('is suspended');
+  await expect(tenantRow(page, issuer).getByText('disabled', { exact: true })).toBeVisible();
+
+  // Act: and back, because a suspension an operator cannot undo from the same
+  // screen is a support ticket.
+  await tenantRow(page, issuer).getByRole('button', { name: 'Restore' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Restore tenant' }).click();
+
+  // Assert
+  await expect(page.getByRole('status').first()).toContainText('serving again');
+  await expect(tenantRow(page, issuer).getByText('active', { exact: true })).toBeVisible();
+
+  // Act: the hand-off. A fragment on this same console, because the settings
+  // routes name their tenant in the path and admit a deployment-scoped caller
+  // for any of them.
+  await tenantRow(page, issuer).getByRole('link', { name: 'Settings' }).click();
+
+  // Assert: the settings screen, looking at the tenant just created, and
+  // saying whose settings these are.
+  await expect(page.getByRole('heading', { name: 'Tenant settings' })).toBeVisible();
+  await expect(page.getByRole('status').first()).toContainText('opened from the tenant list');
+  await expect(page.getByRole('status').first()).toContainText(id);
+
+  // Assert: and no accessibility violation on the screen this test is about.
+  await openScreen(page, 'Tenants', 'Tenants');
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze();
+  await testInfo.attach('axe-tenants', {
+    body: JSON.stringify(results.violations, null, 2),
+    contentType: 'application/json',
+  });
+  expect(results.violations, 'tenants screen').toEqual([]);
+  watcher.assertClean('the tenants screen');
+});
+
+/**
+ * The other half of `reach: 'deployment'`: the screen is not offered to a
+ * tenant admin at all.
+ *
+ * Only the link is asserted here, deliberately. Whether the *routes* refuse a
+ * tenant admin is not a browser question and is not left to one: the registry
+ * walk in `crates/admin-api/src/router.rs`
+ * (`a_tenant_admin_is_refused_exactly_the_deployment_scoped_routes`) asserts it
+ * for every deployment-reach route there is, including the three this screen
+ * calls. What a browser can add is that the navigation agrees with them.
+ */
+test('a tenant admin is offered no tenants screen', async ({ page }) => {
+  // Arrange
+  await signIn(page);
+  await expect(page.getByRole('navigation', { name: 'Console sections' })).toBeVisible();
+
+  // Act / Assert
+  await expect(page.getByRole('link', { name: 'Tenants' })).toHaveCount(0);
 });

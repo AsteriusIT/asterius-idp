@@ -6,8 +6,9 @@ import { Clients } from './clients';
 import { Keys } from './keys';
 import { visibleTo } from './navigation';
 import { Policy } from './policy';
-import { hrefOf, routeOf } from './routes';
+import { hrefOf, paramsOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
+import { Tenants } from './tenants';
 import { SharedSignals } from './ssf';
 import { Badge, Button, CenteredCard, Panel, Screen } from './ui';
 import { Users } from './users';
@@ -27,10 +28,14 @@ type Shell =
 
 export function App(): JSX.Element {
   const [shell, setShell] = useState<Shell>({ kind: 'loading' });
-  const [route, setRoute] = useState(() => routeOf(window.location.hash));
+  // The whole fragment and not just the route it names: a fragment may carry
+  // parameters (`#/settings?tenant=acme`, `ast-l5bl`), and a state that held
+  // only the route would drop them on every hash change.
+  const [fragment, setFragment] = useState(() => window.location.hash);
+  const route = routeOf(fragment);
 
   useEffect(() => {
-    const onHashChange = (): void => setRoute(routeOf(window.location.hash));
+    const onHashChange = (): void => setFragment(window.location.hash);
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);
@@ -137,7 +142,7 @@ export function App(): JSX.Element {
           </ul>
         </nav>
         <main id="content" tabIndex={-1} className="content">
-          <RouteScreen route={current} session={shell.session} />
+          <RouteScreen route={current} fragment={fragment} session={shell.session} />
         </main>
       </div>
     </div>
@@ -158,7 +163,15 @@ function focusMain(): void {
  * administrator opening Users read that it was arriving with a ticket that was
  * already closed. See `navigation.ts`.
  */
-function RouteScreen({ route, session }: { route: string; session: Session }): JSX.Element {
+function RouteScreen({
+  route,
+  fragment,
+  session,
+}: {
+  route: string;
+  fragment: string;
+  session: Session;
+}): JSX.Element {
   if (route === 'users') {
     return <Users session={session} />;
   }
@@ -169,7 +182,12 @@ function RouteScreen({ route, session }: { route: string; session: Session }): J
     return <Keys session={session} />;
   }
   if (route === 'settings') {
-    return <TenantSettings session={session} />;
+    // The subject is the session's own tenant unless the Tenants screen named
+    // another one, which only a deployment-scoped caller can have reached.
+    return <TenantSettings session={session} tenant={paramsOf(fragment).get('tenant')} />;
+  }
+  if (route === 'tenants') {
+    return <Tenants session={session} />;
   }
   if (route === 'ssf') {
     return <SharedSignals session={session} />;

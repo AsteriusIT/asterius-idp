@@ -12,6 +12,26 @@
 \set ON_ERROR_STOP on
 
 -- --------------------------------------------------------------------------
+-- The tenants a previous run created, removed (`ast-l5bl`).
+--
+-- The tenants screen's sweep creates one tenant per run, through the console
+-- and through the real provisioning path, and the admin API has no route that
+-- deletes a tenant — deleting one destroys every client, user, session and
+-- signing key it holds, which is not a button a console offers. So a database
+-- kept between runs would accumulate them, and once fifty had piled up the
+-- newest would fall off the first page of a cursor-paginated list and the
+-- sweep would stop finding the row it had just created.
+--
+-- Only the `sweep-` prefix, which nothing but that test writes: the two
+-- configured tenants and the reserved one are named in
+-- `e2e/fixtures/asterius.toml.in` and are upserted by the server at boot. The
+-- cascade is the schema's (`0001_baseline.sql`), and the trigger that refuses
+-- to delete the reserved tenant is untouched, because no `sweep-` tenant is
+-- reserved.
+-- --------------------------------------------------------------------------
+delete from tenants where tenant_id like 'sweep-%';
+
+-- --------------------------------------------------------------------------
 -- One user, with one password.
 --
 -- The identifiers are constants so that a re-run updates the same rows rather

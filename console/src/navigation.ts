@@ -56,19 +56,27 @@ export interface HeldScopes {
  * with `ast-f7m.6`, and both were wrong — `.4` had shipped as tenant settings
  * and `.6` is Users itself. The tags below are the ones that are true at
  * `ast-f7m.6`: Users, Clients, Signing keys and Tenant settings are built and
- * their tags are historical; Shared signals and Policy name open tickets; and
- * Tenants names the epic, because no ticket carries it.
+ * their tags are historical; Shared signals and Policy name open tickets. The
+ * Tenants line named the *epic* for as long as no ticket carried that screen,
+ * and names `ast-l5bl` now that one has built it.
  */
 export const DESTINATIONS: readonly Destination[] = [
   { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.3' },
   { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6' },
   { route: 'clients', label: 'Clients', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5' },
-  // The epic and not a child ticket: no bead carries a tenants screen, and
-  // the two spellings this line has had — `ast-f7m.6`, which is the *users*
-  // screen — were both wrong. A placeholder naming a closed or nonexistent
-  // ticket tells an administrator that a screen is arriving when nobody is
-  // building it, so this one names the epic until a ticket exists.
-  { route: 'tenants', label: 'Tenants', reach: 'deployment', scope: 'admin.tenants:read', bead: 'ast-f7m' },
+  // Built by `ast-l5bl`, so the tag is historical like the four around it.
+  // The line kept the *epic* while it was a placeholder, because no child
+  // ticket carried a tenants screen and a placeholder naming a closed or
+  // nonexistent ticket tells an administrator that a screen is arriving when
+  // nobody is building it. One now does.
+  //
+  // The scope is the list's, `admin.tenants:read`, and the reach is the
+  // deployment's: a tenant admin holds that scope over their own tenant and
+  // must not be offered the deployment-wide list (see `reaches`). Creating a
+  // tenant and suspending one ask for `admin.tenants:write` at the same reach,
+  // and the screen hides those controls itself — the server refuses them
+  // either way.
+  { route: 'tenants', label: 'Tenants', reach: 'deployment', scope: 'admin.tenants:read', bead: 'ast-l5bl' },
   { route: 'keys', label: 'Signing keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-f7m.7' },
   // The screen opens by listing the streams (`admin.ssf:read`); the
   // dead-letter table beneath them is shown when the caller also holds

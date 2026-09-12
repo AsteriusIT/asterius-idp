@@ -29,7 +29,7 @@
  * and a heading are what the two have in common.
  */
 import { expect, test } from '@playwright/test';
-import { signIn } from '../src/console.js';
+import { signIn, signInAsDeploymentAdmin } from '../src/console.js';
 
 const DIRECTORY = process.env.E2E_SHOTS;
 
@@ -63,4 +63,27 @@ test('every console screen is photographed', async ({ page }) => {
     await page.waitForLoadState('networkidle');
     await page.screenshot({ path: `../${DIRECTORY}/${file}.png`, scale: 'css' });
   }
+});
+
+/**
+ * The tenants screen, photographed as the only caller who can open it
+ * (`ast-l5bl`).
+ *
+ * A second test and a second sign-in, because `reach: 'deployment'` means the
+ * shell the loop above photographs — a tenant admin's — simply has no Tenants
+ * link. Adding the screen to `SCREENS` would have photographed whatever the
+ * click landed on instead.
+ */
+test('the tenants screen is photographed as the deployment administrator', async ({ page }) => {
+  // Arrange
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await signInAsDeploymentAdmin(page);
+
+  // Act
+  await page.getByRole('link', { name: 'Tenants', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Tenants', exact: true }).first()).toBeVisible();
+  // The list, and then one settings read per row: the features column is the
+  // last thing to arrive, and the picture is not of the screen without it.
+  await page.waitForLoadState('networkidle');
+  await page.screenshot({ path: `../${DIRECTORY}/tenants.png`, scale: 'css' });
 });

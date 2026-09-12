@@ -96,6 +96,8 @@ pub const TENANTS_LIST_ID: &str = "tenants.list";
 pub const TENANT_READ_ID: &str = "tenants.read";
 /// The `operationId` of `POST /tenants`.
 pub const TENANT_CREATE_ID: &str = "tenants.create";
+/// The `operationId` of `PUT /tenants/{tenant_id}/status`.
+pub const TENANT_STATUS_UPDATE_ID: &str = "tenants.status.update";
 /// The `operationId` of `GET /tenants/{tenant_id}/settings`.
 pub const TENANT_SETTINGS_READ_ID: &str = "tenants.settings.read";
 /// The `operationId` of `PUT /tenants/{tenant_id}/settings`.
@@ -251,6 +253,32 @@ pub const TENANT_CREATE: Operation = Operation::mutation(
     M::Post,
     A::new(R::Deployment, "admin.tenants:write"),
     "Creates a tenant",
+);
+
+/// Switches a tenant on or off (`ast-l5bl`).
+///
+/// [`Reach::Deployment`], and that is the decision this route embodies. A
+/// disabled tenant's endpoints behave as if it is not there
+/// ([`asterius_domain::TenantStatus::Disabled`]), so the act cuts off every
+/// client and every user of that tenant at once — including the administrators
+/// who would switch it back on. Giving it [`Reach::Tenant`] would let a tenant
+/// admin lock their own tenant out of this API with one request, and the only
+/// way back would be a hand-written `update` against the database. Suspending
+/// a tenant is something the deployment does *to* a tenant.
+///
+/// A route of its own and not a member of the settings document, for the
+/// reason [`USER_STATUS_UPDATE`] gives: an audit trail and an RBAC policy both
+/// read the `operationId` as the name of what was done, and "suspended a
+/// tenant" must not be spelled "replaced some lifetimes".
+///
+/// `PUT` and not `POST`: the request states the state the tenant should be in,
+/// so sending it twice is the same as sending it once (RFC 9110 §9.2.2).
+pub const TENANT_STATUS_UPDATE: Operation = Operation::mutation(
+    TENANT_STATUS_UPDATE_ID,
+    "/tenants/{tenant_id}/status",
+    M::Put,
+    A::new(R::Deployment, "admin.tenants:write"),
+    "Suspends or restores a tenant, across every endpoint it serves",
 );
 
 /// One tenant's settings: its feature flags and its lifetimes.
@@ -1000,13 +1028,14 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 58] = [
+static REGISTRY: [Operation; 59] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
     TENANTS_LIST,
     TENANT_READ,
     TENANT_CREATE,
+    TENANT_STATUS_UPDATE,
     TENANT_SETTINGS_READ,
     TENANT_SETTINGS_UPDATE,
     CLIENTS_LIST,
