@@ -38,6 +38,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { UserAppRoles, mayRead as mayReadAppRoles } from './appRoles';
+import { toast } from './components/ui/toast';
 import {
   Actions,
   Badge,
@@ -335,6 +336,7 @@ function DirectoryScreen({
         session={session}
         onCreated={(created) => {
           setNotice(`${created.username} was created.`);
+          toast.success('Account created', created.username);
           setCursor(null);
           refresh(term, null);
         }}

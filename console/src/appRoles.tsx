@@ -31,6 +31,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
+import { toast } from './components/ui/toast';
 import {
   Actions,
   Button,
@@ -197,6 +198,7 @@ export function RoleCatalogue({
         setName('');
         setDescription('');
         setNotice(`${body.name as string} is in the catalogue.`);
+        toast.success('Role added', `${body.name as string} is in the catalogue.`);
         refresh();
       },
       (error: unknown) => {
@@ -214,6 +216,7 @@ export function RoleCatalogue({
       () => {
         setBusy(false);
         setNotice(`${role} is no longer in the catalogue.`);
+        toast.success('Role removed', `${role} is no longer in the catalogue.`);
         refresh();
       },
       (error: unknown) => {

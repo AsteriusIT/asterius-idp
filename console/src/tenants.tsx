@@ -40,6 +40,7 @@ import type { JSX } from 'react';
 import { type Session, mutate, read } from './api';
 import { hrefOf } from './routes';
 import { type Settings, settingsPath } from './settings';
+import { toast } from './components/ui/toast';
 import {
   Actions,
   Badge,
@@ -220,11 +221,13 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
         () => {
           setBusy(false);
           setPending(null);
-          setNotice(
-            subject.enable
-              ? `${subject.tenant.tenant_id} is serving again.`
-              : `${subject.tenant.tenant_id} is suspended. Every client and every user of it is now refused.`,
-          );
+          const said = subject.enable
+            ? `${subject.tenant.tenant_id} is serving again.`
+            : `${subject.tenant.tenant_id} is suspended. Every client and every user of it is now refused.`;
+          setNotice(said);
+          // The one act on this console that stops a whole tenant answering,
+          // so it is announced as well as recorded (`ast-gore` (5)).
+          toast.success(subject.enable ? 'Tenant restored' : 'Tenant suspended', said);
           refresh(cursor);
         },
         (error: unknown) => {
@@ -284,6 +287,7 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
           onCreated={(created) => {
             setRefusal(null);
             setNotice(`${created.tenant_id} was created, with its signing keys.`);
+            toast.success('Tenant created', `${created.tenant_id}, with its signing keys.`);
             setCursor(null);
             refresh(null);
           }}
@@ -325,6 +329,15 @@ function TenantTable({
       caption="Tenants"
       rows={rows}
       rowKey={(row) => row.tenant_id}
+      // Over the page already on screen, and the count beside the box says so
+      // (`ast-gore` (5)). The list paginates server-side; a filter that
+      // pretended to search the whole deployment would be lying about which of
+      // the two numbers an operator is reading.
+      search={{
+        of: (row) => `${row.tenant_id} ${row.display_name} ${row.issuer}`,
+        placeholder: 'id, name or issuer',
+        label: 'Filter the tenants on this page',
+      }}
       empty={
         <EmptyState
           title="This deployment serves no tenant yet."

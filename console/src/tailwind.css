@@ -1,0 +1,130 @@
+/*
+ * Tailwind, and the one place shadcn's palette is bound to ours (`ast-gore`).
+ *
+ * # Why `@theme inline` and not a second set of colours
+ *
+ * shadcn's components are written against `bg-background`, `text-foreground`,
+ * `border-border`, `ring-ring/50` and so on, and its own `globals.css` ships
+ * *values* for those names — a neutral palette that is not this deployment's.
+ * Taking those values would give the console an indigo that is not the pages'
+ * indigo, and `tokens.css` exists precisely to stop that (`ast-fe39`, and the
+ * Rust test `the_console_declares_the_same_design_tokens` that guards it).
+ *
+ * So the shadcn names are *mapped* rather than defined: every entry below is a
+ * `var(…)` pointing at a token, `@theme inline` emits the utility classes as
+ * references to those variables rather than copies of their values, and a
+ * palette change in `style.css` moves the components with it. There is no
+ * second source of colour in this bundle.
+ *
+ * # Why `@import` is allowed here and nowhere else
+ *
+ * `docs/console/README.md` records the rule: no `@import` may survive into the
+ * built stylesheet, because a stylesheet fetched by a stylesheet carries no
+ * nonce. The two below do not survive — `@tailwindcss/vite` resolves them at
+ * build time and emits one flat file, which `the_embedded_bundle_carries_nothing_the_style_policy_would_refuse` (in
+ * `crates/admin-api/src/console.rs`) asserts against the built bytes.
+ */
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/*
+ * Dark is a class, not a media query.
+ *
+ * `ast-gore` (2): light is the console's default, and the browser's setting is
+ * not consulted at all — `tokens.css` puts the dark palette behind `.dark` on
+ * the root element, and `theme.ts` is what puts the class there. This variant
+ * is how a Tailwind utility reaches the same switch.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  /* Type. One stack, the tokens', so nothing is fetched from another origin. */
+  --font-sans: var(--font);
+
+  /* Surfaces and ink. `--muted` is the *token* for quiet text and shadcn's
+     `muted` is a quiet *surface*; the two names collide, so the mapping is
+     where they are told apart rather than a redeclared token. */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-card: var(--card);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--surface);
+  --color-popover-foreground: var(--fg);
+  --color-muted: var(--surface-sunken);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--tint-accent);
+  --color-accent-foreground: var(--fg);
+  --color-secondary: var(--surface-sunken);
+  --color-secondary-foreground: var(--fg);
+
+  /* The one accent, spent once per view. */
+  --color-primary: var(--accent);
+  --color-primary-foreground: var(--accent-fg);
+
+  /* State. Each of these clears 4.5:1 on `--card` in both schemes. */
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--accent-fg);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+
+  /* Lines and focus. */
+  --color-border: var(--line);
+  --color-input: var(--line);
+  --color-ring: var(--accent);
+
+  /* The sidebar, which is the console's whole navigation since `ast-gore`. */
+  --color-sidebar: var(--rail);
+  --color-sidebar-foreground: var(--fg);
+  --color-sidebar-primary: var(--accent);
+  --color-sidebar-primary-foreground: var(--accent-fg);
+  --color-sidebar-accent: var(--tint-accent);
+  --color-sidebar-accent-foreground: var(--fg);
+  --color-sidebar-border: var(--line);
+  --color-sidebar-ring: var(--accent);
+
+  /* Radii, from the shared 8px card and 6px control. */
+  --radius-sm: var(--ctl);
+  --radius-md: var(--ctl);
+  --radius-lg: var(--radius);
+  --radius-xl: var(--radius-lg);
+
+  /* Elevation. */
+  --shadow-xs: var(--shadow-sm);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow);
+  --shadow-lg: var(--shadow-lg);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  /*
+   * The focus ring, once, for everything.
+   *
+   * The console is operated from the keyboard (`ast-gore` (5)) and a component
+   * that drew its own ring would be the one that forgets it.
+   */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* A visitor who asked for less motion gets none of it. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

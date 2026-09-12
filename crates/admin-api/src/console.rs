@@ -391,9 +391,15 @@ mod tests {
         for handler in [" onclick=", " onload=", " onerror=", " onsubmit="] {
             assert!(!html.contains(handler), "an inline handler: {html}");
         }
-        // One script element, and it has a src rather than a body.
+        // One script element, and it has a src rather than a body. The `id`
+        // between the tag and its type is `ast-gore`'s: the bundle reads this
+        // response's nonce back off that element (see the template), so the
+        // attribute order is part of what is asserted rather than incidental.
         assert_eq!(html.matches("<script").count(), 1, "{html}");
-        assert!(html.contains("<script type=\"module\" src="), "{html}");
+        assert!(
+            html.contains("<script id=\"console-entry\" type=\"module\" src="),
+            "{html}"
+        );
     }
 
     #[tokio::test]
@@ -584,6 +590,70 @@ mod tests {
         }
     }
 
+    /// What `style-src 'nonce-…'` refuses, asserted against the built bytes
+    /// (`ast-gore`).
+    ///
+    /// The console now carries Tailwind and a copy of shadcn/ui, and both
+    /// arrive through a bundler that could plausibly emit either of the two
+    /// things this policy will not load:
+    ///
+    ///  - an **`@import`** that survived into the stylesheet. `tailwind.css`
+    ///    opens with two of them; the Tailwind plugin is supposed to resolve
+    ///    them at build time into one flat file. If one ever survived, the
+    ///    browser would fetch a stylesheet named by a stylesheet — a request
+    ///    that carries no nonce — and the console would lose a layer of its
+    ///    paint for a reason nobody would look for in a bundler.
+    ///  - a **`style=` attribute** in the markup a chunk writes. React sets
+    ///    inline styles through the CSSOM (`node.style`), which this directive
+    ///    does not govern, but a component that assembled HTML text with a
+    ///    `style=` in it would be silently unstyled.
+    ///
+    /// Both are absences, and an absence is what a source audit is for: only a
+    /// browser can prove the policy holds at runtime (`e2e/tests/console.spec.ts`
+    /// watches for violations), and only this can prove the bytes shipped
+    /// inside the binary never had the chance.
+    #[test]
+    fn the_embedded_bundle_carries_nothing_the_style_policy_would_refuse() {
+        let embedded = Bundle::embedded();
+        assert!(
+            !(std::env::var_os("CI").is_some() && embedded.assets.is_empty()),
+            "no console asset is embedded, so this check has nothing to read: \
+             run ./scripts/build-console.sh before cargo"
+        );
+        for asset in embedded.assets {
+            let Ok(text) = std::str::from_utf8(asset.bytes) else {
+                continue;
+            };
+            // The bundler writes the extension, and it writes it lower
+            // case; `Path::extension` is what clippy asks for and is also
+            // what says "the last dot" rather than "the last four bytes".
+            if std::path::Path::new(asset.path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("css"))
+            {
+                assert!(
+                    !text.contains("@import"),
+                    "{} kept an @import, which the browser would fetch without \
+                     a nonce",
+                    asset.path
+                );
+                assert!(
+                    !text.contains("url("),
+                    "{} fetches something; the console's stylesheet is one \
+                     file and no requests",
+                    asset.path
+                );
+            } else {
+                assert!(
+                    !text.contains("style=\""),
+                    "{} writes a style attribute into markup, which \
+                     `style-src 'nonce-…'` refuses",
+                    asset.path
+                );
+            }
+        }
+    }
+
     /// A template with its `{# … #}` comments removed, as
     /// `crates/web/src/source_audit.rs` does: a comment explaining why a
     /// keyword is forbidden must not be the thing that trips the check.
@@ -609,6 +679,15 @@ mod tests {
         let lowered = source.to_lowercase();
 
         assert_eq!(lowered.matches("<script").count(), 1);
+        // `ast-gore`: the bundle reads this response's nonce back off that one
+        // script element (`element.nonce`, which a browser keeps readable
+        // while blanking the attribute) and hands it to the one dependency
+        // that injects a stylesheet. Without the id there is nothing to find,
+        // and a modal would open with its scroll lock unstyled.
+        assert!(
+            lowered.contains("id=\"console-entry\""),
+            "the entry script lost the id the bundle reads its nonce from"
+        );
         assert!(!lowered.contains("javascript:"));
         assert!(!lowered.contains("<style"));
         for handler in [" onclick=", " onload=", " onerror=", " onsubmit="] {

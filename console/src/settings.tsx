@@ -39,6 +39,7 @@ import {
   TENANT_CATALOGUE,
   mayRead as mayReadAppRoles,
 } from './appRoles';
+import { toast } from './components/ui/toast';
 import { Actions, Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
 /**
@@ -204,6 +205,7 @@ export function TenantSettings({
           setLoad({ kind: 'ready', settings });
           setDraft(draftOf(settings));
           setNotice('Saved.');
+          toast.success('The tenant settings were saved');
           setBusy(false);
         },
         (error: unknown) => {

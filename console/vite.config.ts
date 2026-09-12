@@ -29,9 +29,17 @@
  * binary.
  */
 import { defineConfig } from 'vite';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   base: './',
+  plugins: [tailwindcss()],
+  resolve: {
+    // `@/…` is what the shadcn components are written against. Resolved from
+    // this file's own URL so that no `node:path` import — and therefore no
+    // `@types/node` — enters a config the bundle is built from.
+    alias: { '@': new URL('./src/', import.meta.url).pathname },
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

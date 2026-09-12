@@ -125,35 +125,42 @@
 }
 
 /*
- * Dark, and only here.
+ * Dark, and only when it is asked for.
  *
- * `style.css` deliberately has no `prefers-color-scheme` block (`ast-vn7`): a
- * tenant's palette is appended to it and a media query would substitute
- * colours that tenant's contrast check never saw. The console is not themed by
- * a tenant — it is this deployment's own tool, drawn in this deployment's own
- * colours — so the objection does not apply, and the six pairings below were
+ * Two things are true here and they are separate. First, `style.css`
+ * deliberately has no `prefers-color-scheme` block (`ast-vn7`): a tenant's
+ * palette is appended to it and a media query would substitute colours that
+ * tenant's contrast check never saw. The console is not themed by a tenant —
+ * it is this deployment's own tool, drawn in this deployment's own colours —
+ * so the objection does not apply to this file, and the pairings below were
  * chosen against each other for AA on normal text.
+ *
+ * Second, and new in `ast-gore`: the *browser's* setting no longer selects
+ * them. Light is the console's default, and dark is a choice this
+ * administrator made and this browser remembered (`theme.ts` writes the class
+ * and `localStorage` keeps it). A console that renders dark because an
+ * operating system is dark is a console nobody chose, and the owner's was one.
+ * `.dark` on the root element is the whole switch; `@custom-variant dark` in
+ * `tailwind.css` is how a Tailwind utility reaches it.
  */
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --fg: #f2f2f4;
-    --bg: #17171a;
-    --muted: #a3a3ad;
-    --line: #33333a;
-    --accent: #a9b4ff;
-    --accent-fg: #16161c;
-    --danger: #ff9d92;
-    --card: #1d1d21;
-    --backdrop: #121215;
-    --surface: var(--card);
-    --surface-sunken: #232329;
-    --rail: #1a1a1f;
-    --overlay: rgba(0, 0, 0, .6);
-    --success: #7ddba9;
-    --warning: #e7b667;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
-    --shadow-lg: 0 12px 32px rgba(0, 0, 0, .55);
-  }
+.dark {
+  color-scheme: dark;
+  --fg: #f2f2f4;
+  --bg: #17171a;
+  --muted: #a3a3ad;
+  --line: #33333a;
+  --accent: #a9b4ff;
+  --accent-fg: #16161c;
+  --danger: #ff9d92;
+  --card: #1d1d21;
+  --backdrop: #121215;
+  --surface: var(--card);
+  --surface-sunken: #232329;
+  --rail: #1a1a1f;
+  --overlay: rgba(0, 0, 0, .6);
+  --success: #7ddba9;
+  --warning: #e7b667;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, .55);
 }
