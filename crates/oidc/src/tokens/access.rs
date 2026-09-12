@@ -83,6 +83,39 @@ use time::{Duration, OffsetDateTime};
 /// > omitted. Therefore, the `typ` value used SHOULD be `at+jwt`.
 pub const ACCESS_TOKEN_TYP: &str = "at+jwt";
 
+/// The claims [`AccessToken::build`] emits that say what a token *authorises*,
+/// as opposed to who its bearer is.
+///
+/// RFC 9068 §2.1 profiles a JWT access token; an ID token is an identity
+/// assertion (OIDC Core §2) and carries none of these. The list exists because
+/// that separation is asserted in three places — [`super::id_token`]'s tests,
+/// the `id_token_claims` fuzz target, and
+/// [`crate::claims::ReleasableClaim::parse`], which refuses to *release* a
+/// stored attribute under one of these names — and three hand-copied lists
+/// would be three rules, drifting apart the first time this issuer learns a
+/// new claim. Every entry is written by `build` below, computed by the server
+/// from the grant.
+///
+/// `sub`, `iss`, `aud`, `exp`, `iat`, `jti`, `acr`, `amr` and `auth_time` are
+/// not here: an ID token carries them too, and legitimately.
+/// `roles`/`resource_access` are not here either — `ast-mqt` puts them in both
+/// tokens on purpose — and they are refused on the release path by
+/// `RoleClaim::parse`, which is their own rule.
+pub const AUTHORISATION_CLAIMS: &[&str] = &[
+    // RFC 8693 §4.1: the actor chain a delegated token was issued through.
+    "act",
+    // RFC 9396 §7: what the resource server reads as the authority granted.
+    "authorization_details",
+    // RFC 9068 §2.2: the client the token was issued to.
+    "client_id",
+    // RFC 7800 §3.1: what the token is bound to.
+    "cnf",
+    // The grant this token came from (RFC 9396 grant management).
+    "grant_id",
+    // RFC 8693 §4.2: what was granted.
+    "scope",
+];
+
 // ---------------------------------------------------------------------------
 // Sender constraining
 // ---------------------------------------------------------------------------
