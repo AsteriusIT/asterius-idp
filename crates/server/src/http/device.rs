@@ -708,7 +708,7 @@ fn error_page(context: &DeviceContext<'_>, status: StatusCode) -> Response {
         pages::render(&ErrorPage {
             text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
-            message: "This did not work. Nothing was connected.",
+            message: crate::http::i18n::UNTRANSLATED.error_nothing_connected(),
             // Nothing to quote: the reason is in the log with the tenant, and
             // a person on this page cannot act on an identifier anyway.
             correlation_id: "",

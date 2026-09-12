@@ -706,7 +706,7 @@ fn error_page(context: &GrantsContext<'_>, status: StatusCode) -> Response {
         pages::render(&ErrorPage {
             text: context.text,
             tenant_name: &context.tenant.display_name,
-            message: "This did not work. Nothing was withdrawn.",
+            message: context.text.error_nothing_withdrawn(),
             correlation_id: "",
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",

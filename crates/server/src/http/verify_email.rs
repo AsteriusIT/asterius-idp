@@ -618,7 +618,7 @@ async fn refused(context: &VerificationContext<'_>, reason: &str, now: OffsetDat
         pages::render(&ErrorPage {
             text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
-            message: "That link is no longer usable. Ask for a new one.",
+            message: crate::http::i18n::UNTRANSLATED.error_link_unusable(),
             correlation_id: &asterius_web::interaction::correlation_id(),
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",
@@ -638,7 +638,7 @@ fn error_page(context: &VerificationContext<'_>, status: StatusCode) -> Response
         pages::render(&ErrorPage {
             text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
-            message: "Something went wrong. Please try again.",
+            message: crate::http::i18n::UNTRANSLATED.error_try_again(),
             correlation_id: &asterius_web::interaction::correlation_id(),
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",

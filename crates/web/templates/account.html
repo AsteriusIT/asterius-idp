@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ text.account_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# The front door of the self-service pages (`ast-1xd`).
+
+   It exists because the four pages under it are useless if nobody can find
+   them: a person who has lost a passkey, or who thinks somebody else is signed
+   in as them, reaches for one URL and has to get from it to the credential and
+   to the session. So this page is a list of links and nothing else — it holds
+   no form, no token and no button, because there is nothing here to press.
+
+   No script, like everything in this tree. #}
+<div class="stack tight">
+<h2>{{ text.account_heading() }}</h2>
+<p class="muted">{{ text.account_signed_in_as(username) }}</p>
+<p class="muted">{{ text.account_intro() }}</p>
+</div>
+
+<ul class="scopes">
+<li>
+  <a href="{{ passkeys_href }}">{{ text.account_passkeys_link() }}</a>
+  <br><span class="muted">{{ text.account_passkeys_explains() }}</span>
+</li>
+<li>
+  <a href="{{ password_href }}">{{ text.account_password_link() }}</a>
+  <br><span class="muted">{{ text.account_password_explains() }}</span>
+</li>
+<li>
+  <a href="{{ sessions_href }}">{{ text.account_sessions_link() }}</a>
+  <br><span class="muted">{{ text.account_sessions_explains() }}</span>
+</li>
+<li>
+  <a href="{{ approvals_href }}">{{ text.account_approvals_link() }}</a>
+  <br><span class="muted">{{ text.account_approvals_explains() }}</span>
+</li>
+<li>
+  <a href="{{ grants_href }}">{{ text.account_grants_link() }}</a>
+  <br><span class="muted">{{ text.account_grants_explains() }}</span>
+</li>
+</ul>
+{% endblock %}

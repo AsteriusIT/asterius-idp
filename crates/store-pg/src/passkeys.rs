@@ -76,7 +76,8 @@ impl PgPasskeyRepository {
         user: &UserId,
     ) -> Result<Vec<asterius_domain::PasskeySummary>, DomainError> {
         let rows = sqlx::query!(
-            "select credential_id, label, passkey_rp_id, created_at, last_used_at, disabled_at
+            "select credential_id, label, passkey_rp_id, passkey_aaguid,
+                    created_at, last_used_at, disabled_at
              from credentials
              where tenant_id = $1 and user_id = $2 and kind = 'passkey'
              order by created_at",
@@ -97,6 +98,7 @@ impl PgPasskeyRepository {
                 // other kinds, and an empty string is the honest rendering of
                 // a row that somehow has none.
                 rp_id: row.passkey_rp_id.unwrap_or_default(),
+                aaguid: row.passkey_aaguid,
                 created_at: row.created_at,
                 last_used_at: row.last_used_at,
                 disabled_at: row.disabled_at,
@@ -144,6 +146,50 @@ impl PgPasskeyRepository {
             label: row.label,
         }))
     }
+
+    /// Renames one of an account's passkeys, by the credential row.
+    ///
+    /// Scoped to the user as well as to the tenant, for the reason
+    /// [`Self::disable_for_user`] is: a credential id that names somebody
+    /// else's passkey renames nothing, and the caller answers that exactly as
+    /// it answers a credential that does not exist.
+    ///
+    /// A blocked credential is renamed like any other: the label is how a
+    /// person recognises the row, and a passkey disabled after a counter
+    /// regression is one they most need to be able to name.
+    ///
+    /// Returns what the row now is, so the caller can report the change
+    /// without reading it back — `None` is a credential this account does not
+    /// hold.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::Storage`] if the write fails.
+    pub async fn rename_for_user(
+        &self,
+        user: &UserId,
+        credential: uuid::Uuid,
+        label: Option<&str>,
+    ) -> Result<Option<RenamedPasskey>, DomainError> {
+        let row = sqlx::query!(
+            "update credentials set label = $4
+             where tenant_id = $1 and user_id = $2 and credential_id = $3
+               and kind = 'passkey'
+             returning passkey_aaguid, passkey_backup_eligible, label",
+            self.tenant.as_str(),
+            user.as_uuid(),
+            credential,
+            label
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        Ok(row.map(|row| RenamedPasskey {
+            aaguid: row.passkey_aaguid,
+            backup_eligible: row.passkey_backup_eligible.unwrap_or(false),
+            label: row.label,
+        }))
+    }
 }
 
 /// What a passkey was, as the CAEP `credential-change` that reports its
@@ -161,6 +207,24 @@ pub struct RemovedPasskey {
     /// WebAuthn L3 §6.1.3's backup-eligible flag.
     pub backup_eligible: bool,
     /// The user's label for the credential.
+    pub label: Option<String>,
+}
+
+/// What a passkey is now, after the person renamed it (`ast-1xd`).
+///
+/// The same three facts [`RemovedPasskey`] carries, for the same reason: the
+/// CAEP `credential-change` that reports an `update` names the authenticator
+/// and the friendly name, and never key material. A separate type rather than
+/// a reuse, because the two events are not the same event and a reader
+/// following `ChangeType::Update` back to its source should land on a name
+/// that says so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenamedPasskey {
+    /// The authenticator's AAGUID, where the attestation carried one.
+    pub aaguid: Option<uuid::Uuid>,
+    /// WebAuthn L3 §6.1.3's backup-eligible flag.
+    pub backup_eligible: bool,
+    /// The label the row now holds.
     pub label: Option<String>,
 }
 

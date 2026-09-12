@@ -43,11 +43,12 @@
 use crate::csp::Nonce;
 use crate::i18n::Catalog;
 use crate::pages::{
-    ApprovalLine, ApprovalsPage, ConsentPage, DelegationLine, DetailLine, DeviceConfirmationPage,
-    DeviceOutcomePage, DevicePage, EmailVerificationPage, ErrorPage, FormPostPage, GrantLine,
-    GrantsPage, LoggedOutPage, LoginPage, LogoutConfirmationPage, NewPasswordPage, PasskeyPage,
+    AccountPage, AccountPasswordPage, AccountSessionsPage, ApprovalLine, ApprovalsPage,
+    ConsentPage, DelegationLine, DetailLine, DeviceConfirmationPage, DeviceOutcomePage, DevicePage,
+    EmailVerificationPage, ErrorPage, FormPostPage, GrantLine, GrantsPage, LoggedOutPage,
+    LoginPage, LogoutConfirmationPage, NewPasswordPage, PasskeyLine, PasskeyPage, PasskeysPage,
     PasswordResetRequestPage, PasswordResetSentPage, RegistrationPage, ResponseField, ScopeLine,
-    nonce_attribute, render,
+    SessionLine, nonce_attribute, render,
 };
 use asterius_domain::Locale;
 use std::path::{Path, PathBuf};
@@ -213,7 +214,7 @@ fn error(text: &Catalog) -> String {
     render(&ErrorPage {
         text,
         tenant_name: TENANT,
-        message: "We could not complete that request.",
+        message: text.error_generic(),
         correlation_id: "01JQ0000000000000000000000",
         nonce_attribute: nonce(),
         theme_css: &theme(),
@@ -427,6 +428,128 @@ fn grants(text: &Catalog, standing: bool) -> String {
     })
 }
 
+/// The account home page (`ast-1xd`).
+fn account(text: &Catalog) -> String {
+    render(&AccountPage {
+        text,
+        tenant_name: TENANT,
+        username: USER,
+        passkeys_href: "/account/passkeys",
+        password_href: "/account/password",
+        sessions_href: "/account/sessions",
+        approvals_href: "/account/approvals",
+        grants_href: "/account/grants",
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
+
+/// The passkey list (`ast-1xd`).
+///
+/// The populated rendering is deliberately the awkward one: a labelled
+/// credential beside one that has never been named and has to be described by
+/// the day it was registered, one of them blocked, and the last-passkey rule
+/// visible as the password field. A snapshot of two tidy rows would not notice
+/// the day the derived name or that field stopped rendering.
+fn account_passkeys(text: &Catalog, any: bool) -> String {
+    let passkeys = if any {
+        vec![
+            PasskeyLine {
+                reference: "9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f".to_owned(),
+                name: "The laptop".to_owned(),
+                label: "The laptop".to_owned(),
+                registered_at: "2026-01-01T00:00:00Z".to_owned(),
+                last_used: Some("2026-01-02T09:30:00Z".to_owned()),
+                model: Some("08987058-cadc-4b81-b6e1-30de50dcbe96".to_owned()),
+                blocked: false,
+                needs_password: false,
+                removable: true,
+            },
+            PasskeyLine {
+                reference: "11111111-1111-4111-8111-111111111111".to_owned(),
+                name: "Passkey registered on 2026-01-03T00:00:00Z".to_owned(),
+                label: String::new(),
+                registered_at: "2026-01-03T00:00:00Z".to_owned(),
+                last_used: None,
+                model: None,
+                blocked: true,
+                needs_password: true,
+                removable: true,
+            },
+        ]
+    } else {
+        Vec::new()
+    };
+    render(&PasskeysPage {
+        text,
+        tenant_name: TENANT,
+        passkeys,
+        action: "/account/passkeys",
+        sign_in_href: "/account/passkeys/sign-in",
+        account_href: "/account",
+        password_href: "/account/password",
+        csrf: CSRF,
+        maximum_label_length: 64,
+        message: None,
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
+
+/// The password page (`ast-1xd`), in both of its two shapes.
+fn account_password(text: &Catalog, has_password: bool) -> String {
+    render(&AccountPasswordPage {
+        text,
+        tenant_name: TENANT,
+        has_password,
+        action: "/account/password",
+        sign_in_href: "/account/password/sign-in",
+        account_href: "/account",
+        csrf: CSRF,
+        minimum_password_length: 12,
+        minimum_password_length_text: "12".to_owned(),
+        message: None,
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
+
+/// The session list (`ast-1xd`).
+fn account_sessions(text: &Catalog) -> String {
+    render(&AccountSessionsPage {
+        text,
+        tenant_name: TENANT,
+        sessions: vec![
+            SessionLine {
+                reference: "snapshot-current-sid".to_owned(),
+                started_at: "2026-01-02T08:00:00Z".to_owned(),
+                last_seen_at: "2026-01-02T09:30:00Z".to_owned(),
+                methods: "pwd, hwk".to_owned(),
+                current: true,
+            },
+            SessionLine {
+                reference: "snapshot-other-sid".to_owned(),
+                started_at: "2026-01-01T08:00:00Z".to_owned(),
+                last_seen_at: "2026-01-01T19:00:00Z".to_owned(),
+                methods: String::new(),
+                current: false,
+            },
+        ],
+        others: true,
+        action: "/account/sessions",
+        sign_in_href: "/account/sessions/sign-in",
+        account_href: "/account",
+        csrf: CSRF,
+        message: None,
+        nonce_attribute: nonce(),
+        theme_css: &theme(),
+        brand: brand(),
+    })
+}
+
 fn registration(text: &Catalog) -> String {
     render(&RegistrationPage {
         text,
@@ -508,7 +631,7 @@ fn new_password(text: &Catalog) -> String {
 /// `ast-ndk.5` moved the authorization journey. Everything else in
 /// [`every_page`] is still English under whatever `lang` it is handed; see this
 /// module's documentation.
-const TRANSLATED: [&str; 10] = [
+const TRANSLATED: [&str; 16] = [
     "login",
     "consent",
     "error",
@@ -524,6 +647,16 @@ const TRANSLATED: [&str; 10] = [
     // pressing them.
     "grants",
     "grants.empty",
+    // `ast-1xd`'s self-service pages, in the catalogue from their first day for
+    // the inbox's reason and one of their own: these are the pages somebody
+    // reads when they have lost a credential or think an attacker is signed in
+    // as them, and that is not the moment to be reading a second language.
+    "account",
+    "account_passkeys",
+    "account_passkeys.empty",
+    "account_password.set",
+    "account_password.change",
+    "account_sessions",
 ];
 
 /// Every snapshot this crate keeps, as `(name, locale, rendering)`.
@@ -557,6 +690,12 @@ fn every_page(locale: Locale) -> Vec<(&'static str, String)> {
         ("password_reset", password_reset_request(text)),
         ("password_reset_sent", password_reset_sent(text)),
         ("password_new", new_password(text)),
+        ("account", account(text)),
+        ("account_passkeys", account_passkeys(text, true)),
+        ("account_passkeys.empty", account_passkeys(text, false)),
+        ("account_password.set", account_password(text, false)),
+        ("account_password.change", account_password(text, true)),
+        ("account_sessions", account_sessions(text)),
     ]
 }
 

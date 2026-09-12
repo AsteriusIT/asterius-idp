@@ -1331,6 +1331,57 @@ what refuses it is the cutoff the revocation writes, read on the resource path
 nothing until the token expires. The transmitter that would tell it is
 `ast-0ju.8`, and the seam this page calls is named for whoever builds it.
 
+### Self-service account pages (`ast-1xd`)
+
+**Why this needs a section: these pages move a boundary.** Before them, a
+stolen session could read this server's pages and authorise clients; it could
+not take the account. `/account/passkeys`, `/account/password` and
+`/account/sessions` change that — the same session can now remove the owner's
+credential, set a password, and close the sessions they would have noticed it
+from. The pages exist because the alternative is worse: until this bead the
+person whose passkey was stolen could not remove it, and the person looking at
+a session they did not start could not close it, without an administrator.
+
+| Attacker | Goal | Attack it enables | Control |
+|---|---|---|---|
+| **A1** | **G1** | **Account takeover from a session somebody walked away from.** A browser left open in a café, or one an attacker reached hours after the person authenticated: remove the passkey, set a password, sign the owner out. | Every write requires an authentication within `account::FRESHNESS` (two minutes), the approvals inbox's rule and its mechanism — the stale session is not refused, it is sent through the interaction pages with a `FirstPartyDestination` (never a redirect parameter, ADR-0009) and comes back, so the authentication and the change are one act. Freshness is decided *before* any row is read, so a stale session also learns nothing about whether the identifier it submitted names anything. |
+| **A1** | **G1** | **Removing the last way in.** The one step on these pages that cannot be undone: the credential the real owner would use to come back. | Removing the last *usable* passkey needs the account's password as well as the fresh authentication — a different factor from the one a stolen session may have re-presented. An account that has no password cannot remove its last passkey at all: the page offers `/account/password` instead of a button that could only refuse, and the handler refuses it independently, so the rule is not enforced in markup. A blocked credential does not count as a way in, which is the case the rule exists for. |
+| **A1** | **G1** | **Changing the password with the session alone.** | An account that has a password must present it. Freshness says somebody authenticated two minutes ago; it does not say *with what*, and a stolen session that re-authenticated with a stolen passkey is fresh. The current password is the second, different thing, and it is the credential being replaced — NIST SP 800-63B §5.1.1.2's change flow. A refusal is audited as a `credential.changed` failure, because somebody trying passwords against that field is somebody trying passwords. |
+| **A1** | **G2** | **Enumerating credentials or sessions.** A guessed credential id, or a `sid` obtained from somewhere else — a relying party holds these. | Every statement carries the signed-in account in its predicate, and a row belonging to somebody else is answered *exactly* as one that does not exist: the same sentence, and `404` rather than `403`, because `403` is the answer that says "this exists and is not yours". The shape checks (`account_passkeys::change`, `account_sessions::revocation`, both fuzzed) mean an identifier that could never name a row never reaches a query. |
+| **A1** | **G1, G3** | **Cross-site forgery.** A page on another origin makes the browser post a removal or a revocation; the session cookie rides along. | Every form carries a synchroniser token derived from the session's *digest* — a value the browser never holds — compared in constant time, under a separator of each page's own (`account::csrf_for`), so a token lifted from the inbox, the dashboard or another account page is not one this page accepts. Each route is `POST` only and unreachable by a top-level navigation. |
+| **A1** | **G3** | **Aiming "close every other session".** A body that named which sessions to close would be a button an attacker can point. | It takes no argument at all: the parser drops a `session` field on that verb, and the server computes the set from the cookie it is holding. The one thing the person is asking for — "everything except this browser" — is the one thing the request can express. |
+| **A1** | **G2** | **Reading a page out of a cache or a shared browser.** | Every response is `no-store`: these pages carry a synchroniser token, the list of a person's credentials, and the list of where they are signed in. |
+| **A1** | **G1** | **A name that lies.** A passkey label is text its owner types and this page renders back. | Escaped like every other value (askama autoescaping, with `crates/web/src/source_audit.rs` failing the build on a second `\|safe`), bounded at `account_passkeys::MAX_LABEL_CHARS`, and not otherwise sanitised — a parser that stripped characters would be the one place a reviewer later believed the escaping had happened. The trail records *that* a name changed and never what it says. |
+
+**Residual — a closed session is not closed everywhere at once.** Revoking one
+queues a back-channel logout token per participating relying party (§2.2) and a
+CAEP `session-revoked` per subscribed stream; both are best-effort and after
+the revocation, because the session is already over and a receiver that cannot
+be reached must not undo it. An application that ignores back-channel logout
+and holds an unexpired access token keeps it until the access-token cutoff
+reaches it (`ast-m9c.13`).
+
+**Residual — a password change does not end the other sessions unless asked.**
+The page says so before it is submitted and offers a box. A voluntary change is
+not a recovery: the recovery path ends every session because the person there
+may be locked out by somebody who is signed in, and this page has no such
+reason to sign somebody out of four devices they are holding. An attacker who
+has changed a password has, by then, already had to present the old one or the
+last passkey.
+
+**Residual — no user agent and no address on the session list.** "Which of
+these is me" is answered by marking the current browser and by the timestamps;
+the `sessions` table records neither a user agent nor an address, and a page
+cannot show a fact nobody stored. Until it does, a person recognising an
+unfamiliar session is relying on when it started and when it was last used.
+
+**Residual — no notification when a passkey is removed.** Setting or changing a
+password sends the account's own "this changed" message
+(`Notification::credential_changed`); removing a credential does not, because
+the adapter this repository ships writes an outbox row and a log line and the
+message would be one more thing nobody receives. The audit trail records every
+removal with the deciding session.
+
 ### Load, and the token endpoint as a denial-of-service surface (`ast-p2l.8`)
 
 **Why this needs a section: FAPI 2.0 SP §6.1 moves the load onto this

@@ -4967,6 +4967,7 @@ mod tests {
                 id: uuid::Uuid::parse_str(SEEDED_CREDENTIAL_ID).expect("a fixed uuid"),
                 label: Some("a laptop".to_owned()),
                 rp_id: "as.example".to_owned(),
+                aaguid: None,
                 created_at: OffsetDateTime::UNIX_EPOCH,
                 last_used_at: None,
                 disabled_at: None,

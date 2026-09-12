@@ -10572,6 +10572,71 @@ mod passkeys {
     }
 
     db_test! {
+        /// `ast-1xd`: a person renames their own credential, and the new name
+        /// is what the list reads back. The label is the only field on a
+        /// passkey its owner chooses, and it is how they tell two of them
+        /// apart before pressing remove.
+        async fn a_passkey_is_renamed_by_its_owner(db) {
+            // Arrange
+            let user = uuid::Uuid::new_v4();
+            seed_session(&db.pool, "demo", user).await;
+            let repo = repo(&db.pool, "demo");
+            let credential = repo
+                .register(&a_passkey(UserId::new(user), b"the-credential-id"))
+                .await
+                .expect("register");
+
+            // Act
+            let renamed = repo
+                .rename_for_user(&UserId::new(user), credential, Some("The laptop"))
+                .await
+                .expect("rename");
+
+            // Assert
+            assert_eq!(renamed.map(|row| row.label), Some(Some("The laptop".to_owned())));
+            let listed = repo
+                .summaries_for_user(&UserId::new(user))
+                .await
+                .expect("list");
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].label.as_deref(), Some("The laptop"));
+        }
+    }
+
+    db_test! {
+        /// The statement is scoped to the account as well as to the tenant, so
+        /// a credential id belonging to somebody else renames nothing at all —
+        /// which is what lets the page answer a guessed id exactly as it
+        /// answers one that does not exist (`ast-1xd`).
+        async fn a_passkey_of_another_account_is_not_renamed(db) {
+            // Arrange
+            let mine = uuid::Uuid::new_v4();
+            let theirs = uuid::Uuid::new_v4();
+            seed_session(&db.pool, "demo", mine).await;
+            seed_session(&db.pool, "demo", theirs).await;
+            let repo = repo(&db.pool, "demo");
+            let hers = repo
+                .register(&a_passkey(UserId::new(theirs), b"hers"))
+                .await
+                .expect("register");
+
+            // Act
+            let renamed = repo
+                .rename_for_user(&UserId::new(mine), hers, Some("mine now"))
+                .await
+                .expect("rename");
+
+            // Assert
+            assert_eq!(renamed, None);
+            let listed = repo
+                .summaries_for_user(&UserId::new(theirs))
+                .await
+                .expect("list");
+            assert_eq!(listed[0].label, None, "somebody else's label was written");
+        }
+    }
+
+    db_test! {
         /// `excludeCredentials` is built from this, and it is scoped to one
         /// user: offering somebody else's credential ids to an authenticator
         /// would answer a question nobody asked.

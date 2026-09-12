@@ -41,6 +41,7 @@ use crate::http::ssf_management::VERIFICATION_PATH as SSF_VERIFICATION_PATH;
 use crate::http::token::{self, TokenContext};
 use crate::http::userinfo;
 use crate::http::verify_email;
+use crate::http::{account_passkeys, account_password, account_sessions};
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
 use asterius_domain::{Capabilities, DomainError, KeyStore, Tenant, TokenLifetimes};
@@ -471,6 +472,7 @@ fn mount_features(
     let router = mount_access_evaluation(router, capabilities, &endpoints);
     let router = router.merge(approvals_pages(Arc::clone(&endpoints)));
     let router = router.merge(grants_pages(Arc::clone(&endpoints)));
+    let router = router.merge(account_pages(Arc::clone(&endpoints)));
     router.merge(device_pages(endpoints))
 }
 
@@ -749,6 +751,59 @@ fn grants_pages(endpoints: Arc<ClientEndpoints>) -> Router {
         .route(
             account_grants::SIGN_IN_PATH,
             get(grants_sign_in).with_state(endpoints),
+        )
+}
+
+/// The self-service account pages (`ast-1xd`), which are ten routes and no
+/// endpoint.
+///
+/// Not in the [`Endpoint`] registry and therefore not in the discovery
+/// document, for the reason the inbox and the dashboard are not: this is this
+/// server's own user interface, reached with a session cookie, and no client
+/// has business linking into it.
+///
+/// Behind no feature flag. A deployment that has accounts has credentials and
+/// sessions, and a person's ability to remove their own passkey or close their
+/// own session is not an optional protocol feature — it is the difference
+/// between an incident somebody can stop and one they have to file a support
+/// ticket about. Where a deployment has configured no password method the
+/// password page answers 501 and the passkey page refuses to remove a last
+/// credential; both are decided per request rather than by mounting.
+fn account_pages(endpoints: Arc<ClientEndpoints>) -> Router {
+    Router::new()
+        .route(
+            crate::http::account::PAGE_PATH,
+            get(account_home).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_passkeys::PAGE_PATH,
+            get(account_passkeys_page)
+                .post(account_passkeys_submit)
+                .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_passkeys::SIGN_IN_PATH,
+            get(account_passkeys_sign_in).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_password::PAGE_PATH,
+            get(account_password_page)
+                .post(account_password_submit)
+                .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_password::SIGN_IN_PATH,
+            get(account_password_sign_in).with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_sessions::PAGE_PATH,
+            get(account_sessions_page)
+                .post(account_sessions_submit)
+                .with_state(Arc::clone(&endpoints)),
+        )
+        .route(
+            account_sessions::SIGN_IN_PATH,
+            get(account_sessions_sign_in).with_state(endpoints),
         )
 }
 
@@ -5202,6 +5257,330 @@ async fn grants_sign_in(
             &nonce,
             mount,
         ),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// What the seven account-page handlers borrow for one request.
+///
+/// `GrantsParts`' reason for existing, and the widest set of the three: these
+/// pages read credentials and sessions, write both, and tell the receivers
+/// that asked — so the repositories, the queues and the signer are all here,
+/// built from one `scope` so that no two of them can end up scoped to
+/// different tenants.
+struct AccountParts {
+    sessions: asterius_store_pg::PgSessionRepository,
+    interactions: asterius_store_pg::PgAuthRequestRepository,
+    clients: asterius_store_pg::PgClientRepository,
+    users: asterius_store_pg::PgUserRepository,
+    passkeys: asterius_store_pg::PgPasskeyRepository,
+    /// `None` where the deployment has configured no password method, which is
+    /// a deployment whose accounts sign in with passkeys only.
+    passwords: Option<asterius_store_pg::PgPasswordVerifier>,
+    mail: asterius_store_pg::PgOutboxMailSender,
+    queues: crate::outbox::PgSsfQueues,
+}
+
+fn account_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> AccountParts {
+    let scope = endpoints.store.scope(tenant.id.clone());
+    AccountParts {
+        sessions: scope.sessions(),
+        interactions: scope.auth_requests(),
+        clients: scope.clients(endpoints.capabilities),
+        users: scope.users(Arc::clone(&endpoints.kek)),
+        passkeys: scope.passkeys(),
+        passwords: endpoints.passwords(&tenant.id),
+        mail: scope.mail(),
+        queues: crate::outbox::PgSsfQueues::new(
+            endpoints.store.clone(),
+            tenant.id.clone(),
+            Arc::clone(&endpoints.kek),
+        ),
+    }
+}
+
+fn account_context<'a>(
+    tenant: &'a Tenant,
+    parts: &'a AccountParts,
+    text: &'a asterius_web::Catalog,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: Option<Extension<MountPrefix>>,
+) -> crate::http::account::AccountContext<'a> {
+    crate::http::account::AccountContext {
+        tenant,
+        sessions: &parts.sessions,
+        interactions: &parts.interactions,
+        acr: acr_policy(),
+        text,
+        nonce,
+        mount: mount_of(mount),
+    }
+}
+
+/// The receivers an account page tells, assembled once.
+///
+/// The same signer and the same queues the emitters and the console use, so a
+/// SET from these pages is signed by a key in the tenant's published JWKS and
+/// delivered by the worker that delivers everything else.
+fn account_signals<'a>(
+    endpoints: &'a ClientEndpoints,
+    parts: &'a AccountParts,
+) -> crate::http::account::Signals<'a> {
+    crate::http::account::Signals {
+        clients: &parts.clients,
+        subjects: &parts.users,
+        signer: endpoints.signer.as_ref(),
+        queues: Some(&parts.queues),
+        outbox: endpoints
+            .outbox
+            .as_deref()
+            .map(|queue| queue as &dyn asterius_domain::outbox::OutboxQueue),
+    }
+}
+
+fn passkeys_account_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    parts: &'a AccountParts,
+    text: &'a asterius_web::Catalog,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: Option<Extension<MountPrefix>>,
+) -> account_passkeys::PasskeysContext<'a> {
+    account_passkeys::PasskeysContext {
+        account: account_context(tenant, parts, text, nonce, mount),
+        passkeys: &parts.passkeys,
+        passwords: parts.passwords.as_ref(),
+        users: &parts.users,
+        audit: endpoints.audit.as_ref(),
+        signals: account_signals(endpoints, parts),
+    }
+}
+
+fn password_account_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    parts: &'a AccountParts,
+    text: &'a asterius_web::Catalog,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: Option<Extension<MountPrefix>>,
+) -> account_password::PasswordContext<'a> {
+    account_password::PasswordContext {
+        account: account_context(tenant, parts, text, nonce, mount),
+        passwords: parts.passwords.as_ref(),
+        users: &parts.users,
+        sessions: &parts.sessions,
+        mail: &parts.mail,
+        audit: endpoints.audit.as_ref(),
+        signals: account_signals(endpoints, parts),
+    }
+}
+
+fn sessions_account_context<'a>(
+    endpoints: &'a ClientEndpoints,
+    tenant: &'a Tenant,
+    parts: &'a AccountParts,
+    text: &'a asterius_web::Catalog,
+    nonce: &'a asterius_web::csp::Nonce,
+    mount: Option<Extension<MountPrefix>>,
+) -> account_sessions::SessionsContext<'a> {
+    account_sessions::SessionsContext {
+        account: account_context(tenant, parts, text, nonce, mount),
+        store: &parts.sessions,
+        audit: endpoints.audit.as_ref(),
+        signals: account_signals(endpoints, parts),
+    }
+}
+
+/// `GET /account` — the account pages, as links.
+async fn account_home(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    crate::http::account::page(
+        &account_context(&tenant, &parts, &text, &nonce, mount),
+        &parts.users,
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/passkeys` — what this person can sign in with.
+async fn account_passkeys_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_passkeys::page(
+        &passkeys_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /account/passkeys` — rename one credential, or remove one.
+async fn account_passkeys_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_passkeys::submit(
+        &passkeys_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/passkeys/sign-in` — authenticate again, and come back.
+async fn account_passkeys_sign_in(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_passkeys::sign_in(
+        &passkeys_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/password` — set a password, or change the one there is.
+async fn account_password_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_password::page(
+        &password_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /account/password` — write the credential.
+async fn account_password_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_password::submit(
+        &password_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/password/sign-in` — authenticate again, and come back.
+async fn account_password_sign_in(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_password::sign_in(
+        &password_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/sessions` — where this person is signed in.
+async fn account_sessions_page(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_sessions::page(
+        &sessions_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        &headers,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `POST /account/sessions` — close one session, or all the others.
+async fn account_sessions_submit(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_sessions::submit(
+        &sessions_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
+        &headers,
+        &body,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// `GET /account/sessions/sign-in` — authenticate again, and come back.
+async fn account_sessions_sign_in(
+    State(endpoints): State<Arc<ClientEndpoints>>,
+    Extension(tenant): Extension<Arc<Tenant>>,
+    Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    mount: Option<Extension<MountPrefix>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let parts = account_parts(&endpoints, &tenant);
+    let language = page_language(&endpoints, &tenant, &headers).await;
+    let text = language.for_request(&asterius_domain::locale::UiLocales::default());
+    account_sessions::sign_in(
+        &sessions_account_context(&endpoints, &tenant, &parts, &text, &nonce, mount),
         time::OffsetDateTime::now_utc(),
     )
     .await

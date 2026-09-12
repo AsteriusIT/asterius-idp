@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ text.passkeys_title() }} — {{ tenant_name }}{% endblock %}
+{% block content %}
+{# The passkeys on an account, and what their owner can do to them
+   (`ast-1xd`).
+
+   WebAuthn L3 §6.1 gives a credential no name: the label is this server's
+   column and it is null for every passkey enrolled before this page existed.
+   A list of four rows all reading "Passkey" is a list nobody can remove the
+   right row from, so a row with no label is named after the day it was
+   registered, with the model the authenticator reported beside it — facts,
+   not a guess at a device name.
+
+   Everything a person types here is escaped like any other value: a label is
+   text they chose, and this page renders it back to them.
+
+   Removing the *last* passkey is the one irreversible thing on the page, and
+   it asks for the password on top of the fresh sign-in that every button here
+   needs: a browser somebody walked away from must not be able to take away
+   the credential its owner would use to come back.
+
+   No script. Enrolling a passkey needs one — it is a browser API — and that
+   ceremony lives on its own page; nothing here is a ceremony. #}
+{% include "error_summary.html" %}
+
+<div class="stack tight">
+<h2>{{ text.passkeys_heading() }}</h2>
+</div>
+
+{% if passkeys.is_empty() %}
+<p class="muted">{{ text.passkeys_empty() }}</p>
+{% else %}
+<p class="muted">{{ text.passkeys_explains() }}</p>
+{% for passkey in passkeys %}
+<p class="separator"></p>
+<div class="stack tight">
+<p>{{ passkey.name }}</p>
+<p class="muted">
+  <time datetime="{{ passkey.registered_at }}">{{ text.passkeys_registered_on(passkey.registered_at) }}</time>
+</p>
+<p class="muted">
+{% if let Some(used) = passkey.last_used %}
+  <time datetime="{{ used }}">{{ text.passkeys_last_used(used) }}</time>
+{% else %}
+  {{ text.passkeys_never_used() }}
+{% endif %}
+</p>
+{% if let Some(model) = passkey.model %}
+<p class="muted">{{ text.passkeys_model(model) }}</p>
+{% endif %}
+{% if passkey.blocked %}
+<p class="muted">{{ text.passkeys_blocked() }}</p>
+{% endif %}
+
+{# One form, two submit buttons. A rename and a removal act on the same row
+   under the same token, and a browser sends the name and value of the button
+   that was pressed — which is how a page with no script offers two verbs. #}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<input type="hidden" name="credential" value="{{ passkey.reference }}">
+<label>
+  <span>{{ text.passkeys_label() }}</span>
+  <input type="text" name="label" value="{{ passkey.label }}"
+         maxlength="{{ maximum_label_length }}" autocomplete="off">
+</label>
+{% if passkey.needs_password %}
+<label>
+  <span>{{ text.passkeys_password() }}</span>
+  <input type="password" name="password" autocomplete="current-password">
+  <span class="muted">{{ text.passkeys_last_needs_password() }}</span>
+</label>
+{% endif %}
+<div class="actions">
+  <button type="submit" name="do" value="rename">{{ text.passkeys_rename() }}</button>
+{% if passkey.removable %}
+  <button type="submit" name="do" value="remove" class="secondary">{{ text.passkeys_remove() }}</button>
+{% endif %}
+</div>
+</form>
+{% if !passkey.removable %}
+<p class="muted">{{ text.passkeys_last_without_password() }}</p>
+<p class="link-row"><a href="{{ password_href }}">{{ text.passkeys_set_password() }}</a></p>
+{% endif %}
+</div>
+{% endfor %}
+{% endif %}
+
+{# Offered on every rendering rather than only on a stale one, like the grants
+   dashboard's: changing a credential needs a fresh sign-in, and a person who
+   finds the link already there does not have to discover it from a refusal. #}
+<p class="link-row"><a href="{{ sign_in_href }}">{{ text.passkeys_sign_in_again() }}</a></p>
+<p class="link-row"><a href="{{ account_href }}">{{ text.account_back() }}</a></p>
+{% endblock %}

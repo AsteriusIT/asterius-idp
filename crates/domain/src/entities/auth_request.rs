@@ -162,6 +162,30 @@ pub enum FirstPartyDestination {
     /// a destination that is data is a destination somebody else can supply,
     /// and this one leads to a page whose buttons revoke things.
     GrantsDashboard,
+    /// The account home page (`ast-1xd`).
+    ///
+    /// Where a person lands who opened `/account` with no session, or with one
+    /// too old for the pages it links to. A destination rather than a
+    /// parameter, for the reason every other variant here is one: a
+    /// destination that is data is a destination somebody else can supply.
+    AccountHome,
+    /// The passkey list (`ast-1xd`).
+    ///
+    /// A person whose session is too old to rename or remove a credential is
+    /// sent to authenticate again and comes back here. It leads to a page
+    /// whose buttons take away a way of signing in, which is why it is a
+    /// variant and not a URL.
+    AccountPasskeys,
+    /// The password page (`ast-1xd`).
+    ///
+    /// Setting or changing a password needs a fresh authentication, and this
+    /// is where that authentication returns to.
+    AccountPassword,
+    /// The session list (`ast-1xd`).
+    ///
+    /// A person closing a session they do not recognise re-authenticates and
+    /// comes back here, which is the page the revocation is pressed on.
+    AccountSessions,
 }
 
 impl FirstPartyDestination {
@@ -173,6 +197,10 @@ impl FirstPartyDestination {
             Self::DeviceVerification => "device_verification",
             Self::ApprovalsInbox => "approvals_inbox",
             Self::GrantsDashboard => "grants_dashboard",
+            Self::AccountHome => "account_home",
+            Self::AccountPasskeys => "account_passkeys",
+            Self::AccountPassword => "account_password",
+            Self::AccountSessions => "account_sessions",
         }
     }
 
@@ -189,6 +217,10 @@ impl FirstPartyDestination {
             "device_verification" => Some(Self::DeviceVerification),
             "approvals_inbox" => Some(Self::ApprovalsInbox),
             "grants_dashboard" => Some(Self::GrantsDashboard),
+            "account_home" => Some(Self::AccountHome),
+            "account_passkeys" => Some(Self::AccountPasskeys),
+            "account_password" => Some(Self::AccountPassword),
+            "account_sessions" => Some(Self::AccountSessions),
             _ => None,
         }
     }

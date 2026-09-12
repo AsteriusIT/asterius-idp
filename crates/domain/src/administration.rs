@@ -85,6 +85,15 @@ pub struct PasskeySummary {
     pub label: Option<String>,
     /// The relying party id it is scoped to.
     pub rp_id: String,
+    /// The authenticator model, where the registration recorded one
+    /// (WebAuthn L3 §6.4.1). `None` for an authenticator that declined to say,
+    /// which is every all-zero AAGUID.
+    ///
+    /// Read by the self-service list (`ast-1xd`) to name a credential whose
+    /// owner never labelled one: "the passkey you enrolled on 3 March" is a
+    /// row a person can act on, and the model is what makes two of them tell
+    /// apart.
+    pub aaguid: Option<Uuid>,
     /// When it was enrolled.
     pub created_at: OffsetDateTime,
     /// When it was last asserted, if it ever was.

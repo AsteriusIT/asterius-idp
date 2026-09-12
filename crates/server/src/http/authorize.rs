@@ -560,7 +560,7 @@ fn error_page(context: &AuthorizeContext<'_>, status: StatusCode) -> Response {
         asterius_web::pages::render(&ErrorPage {
             text,
             tenant_name: &context.tenant.display_name,
-            message: "This sign-in request cannot be continued.",
+            message: text.error_sign_in_cannot_continue(),
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
             theme_css: "",

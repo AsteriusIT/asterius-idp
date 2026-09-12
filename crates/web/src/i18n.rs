@@ -255,6 +255,44 @@ catalogue! {
             en: "Something went wrong",
             fr: "Une erreur est survenue";
 
+        // The sentence *under* the heading on `error.html`, which until
+        // `ast-1xd` was an English literal handed in by each caller: a French
+        // error page declared `lang="fr"` and then said "Something went wrong,
+        // and this request cannot continue" (the finding of `ast-yc5`). One
+        // key per distinct sentence, so a caller still chooses what the page
+        // says and the catalogue decides what language it says it in.
+        //
+        // Every one of them is deliberately vague, for the reason the template
+        // gives: this page is reached by a browser that may not be the user's,
+        // in a flow that may not be theirs.
+        ErrorGeneric => error_generic, "error.generic",
+            en: "We could not complete that request.",
+            fr: "Nous n'avons pas pu traiter cette demande.";
+        ErrorTryAgain => error_try_again, "error.try-again",
+            en: "Something went wrong. Please try again.",
+            fr: "Une erreur est survenue. Veuillez réessayer.";
+        ErrorLinkUnusable => error_link_unusable, "error.link-unusable",
+            en: "That link is no longer usable. Ask for a new one.",
+            fr: "Ce lien n'est plus utilisable. Demandez-en un nouveau.";
+        ErrorCannotContinue => error_cannot_continue, "error.cannot-continue",
+            en: "Something went wrong, and this request cannot continue.",
+            fr: "Une erreur est survenue : cette demande ne peut pas se poursuivre.";
+        ErrorNothingConnected => error_nothing_connected, "error.nothing-connected",
+            en: "This did not work. Nothing was connected.",
+            fr: "Cela n'a pas fonctionné. Aucun appareil n'a été connecté.";
+        ErrorSignInCannotContinue => error_sign_in_cannot_continue, "error.sign-in-cannot-continue",
+            en: "This sign-in request cannot be continued.",
+            fr: "Cette demande de connexion ne peut pas se poursuivre.";
+        ErrorNothingDecided => error_nothing_decided, "error.nothing-decided",
+            en: "This did not work. Nothing was decided.",
+            fr: "Cela n'a pas fonctionné. Aucune décision n'a été enregistrée.";
+        ErrorNothingWithdrawn => error_nothing_withdrawn, "error.nothing-withdrawn",
+            en: "This did not work. Nothing was withdrawn.",
+            fr: "Cela n'a pas fonctionné. Aucun accès n'a été retiré.";
+        ErrorNothingChanged => error_nothing_changed, "error.nothing-changed",
+            en: "This did not work. Nothing was changed.",
+            fr: "Cela n'a pas fonctionné. Rien n'a été modifié.";
+
         // ---- logout -------------------------------------------------------
         LogoutTitle => logout_title, "logout.title",
             en: "Log out",
@@ -460,6 +498,239 @@ catalogue! {
         GrantsSignInAgain => grants_sign_in_again, "grants.sign-in-again",
             en: "Sign in again",
             fr: "Se reconnecter";
+
+        // ---- the account pages (`ast-1xd`) --------------------------------
+        //
+        // The self-service half of what an administrator can already do from
+        // the console: a person removes a passkey they have lost, sets or
+        // changes a password, and closes a session they do not recognise. In
+        // the catalogue from the first day, for the approvals inbox's reason —
+        // these are the pages somebody reads in a hurry, on their own phone,
+        // when something has gone wrong.
+        AccountTitle => account_title, "account.title",
+            en: "Your account",
+            fr: "Votre compte";
+        AccountHeading => account_heading, "account.heading",
+            en: "Your account",
+            fr: "Gérer votre compte";
+        AccountIntro => account_intro, "account.intro",
+            en: "What you sign in with, where you are signed in, and what you have allowed.",
+            fr: "Ce avec quoi vous vous connectez, où vous êtes connecté, et ce que vous avez \
+                 autorisé.";
+        AccountPasskeysLink => account_passkeys_link, "account.passkeys-link",
+            en: "Passkeys",
+            fr: "Clés d'accès";
+        AccountPasskeysExplains => account_passkeys_explains, "account.passkeys-explains",
+            en: "Name a passkey, or remove one you no longer have.",
+            fr: "Nommer une clé d'accès, ou retirer celle que vous n'avez plus.";
+        AccountPasswordLink => account_password_link, "account.password-link",
+            en: "Password",
+            fr: "Mot de passe";
+        AccountPasswordExplains => account_password_explains, "account.password-explains",
+            en: "Set a password, or change the one you have.",
+            fr: "Définir un mot de passe, ou changer celui que vous avez.";
+        AccountSessionsLink => account_sessions_link, "account.sessions-link",
+            en: "Where you are signed in",
+            fr: "Vos sessions ouvertes";
+        AccountSessionsExplains => account_sessions_explains, "account.sessions-explains",
+            en: "See the sessions open on your account, and close any you do not recognise.",
+            fr: "Voir les sessions ouvertes sur votre compte et fermer celles que vous ne \
+                 reconnaissez pas.";
+        AccountApprovalsLink => account_approvals_link, "account.approvals-link",
+            en: "Requests waiting for you",
+            fr: "Demandes en attente";
+        AccountApprovalsExplains => account_approvals_explains, "account.approvals-explains",
+            en: "Answer something that is asking to act as you.",
+            fr: "Répondre à ce qui demande à agir en votre nom.";
+        AccountGrantsLink => account_grants_link, "account.grants-link",
+            en: "Access you have allowed",
+            fr: "Les accès que vous avez autorisés";
+        AccountGrantsExplains => account_grants_explains, "account.grants-explains",
+            en: "See what has standing access to your account, and withdraw it.",
+            fr: "Voir ce qui dispose d'un accès permanent à votre compte, et le retirer.";
+        AccountBack => account_back, "account.back",
+            en: "Back to your account",
+            fr: "Retour à votre compte";
+
+        // ---- passkeys (`ast-1xd`) -----------------------------------------
+        PasskeysTitle => passkeys_title, "passkeys.title",
+            en: "Your passkeys",
+            fr: "Vos clés d'accès";
+        PasskeysHeading => passkeys_heading, "passkeys.heading",
+            en: "The passkeys registered on your account",
+            fr: "Les clés d'accès enregistrées sur votre compte";
+        PasskeysEmpty => passkeys_empty, "passkeys.empty",
+            en: "You have no passkeys. You sign in with your password.",
+            fr: "Vous n'avez aucune clé d'accès. Vous vous connectez avec votre mot de passe.";
+        PasskeysExplains => passkeys_explains, "passkeys.explains",
+            en: "A passkey you remove stops working immediately, on every device it is \
+                 synchronised to.",
+            fr: "Une clé d'accès retirée cesse immédiatement de fonctionner, sur tous les \
+                 appareils où elle est synchronisée.";
+        PasskeysLabel => passkeys_label, "passkeys.label",
+            en: "Name",
+            fr: "Nom";
+        PasskeysRename => passkeys_rename, "passkeys.rename",
+            en: "Save this name",
+            fr: "Enregistrer ce nom";
+        PasskeysRemove => passkeys_remove, "passkeys.remove",
+            en: "Remove this passkey",
+            fr: "Retirer cette clé d'accès";
+        PasskeysRenamed => passkeys_renamed, "passkeys.renamed",
+            en: "That passkey was renamed.",
+            fr: "Cette clé d'accès a été renommée.";
+        PasskeysRemoved => passkeys_removed, "passkeys.removed",
+            en: "That passkey was removed.",
+            fr: "Cette clé d'accès a été retirée.";
+        // One sentence for every refusal that is about the credential: a
+        // passkey already removed, one belonging to somebody else, one that
+        // never existed, a form this server would not read. The grants
+        // dashboard's reasoning — the person cannot act on the difference, and
+        // each distinction answers a question about a row they may not hold.
+        PasskeysGone => passkeys_gone, "passkeys.gone",
+            en: "That passkey is no longer there.",
+            fr: "Cette clé d'accès n'existe plus.";
+        PasskeysStale => passkeys_stale, "passkeys.stale",
+            en: "Sign in again to rename or remove a passkey.",
+            fr: "Reconnectez-vous pour renommer ou retirer une clé d'accès.";
+        PasskeysSignInAgain => passkeys_sign_in_again, "passkeys.sign-in-again",
+            en: "Sign in again",
+            fr: "Se reconnecter";
+        PasskeysBlocked => passkeys_blocked, "passkeys.blocked",
+            en: "Blocked: this passkey cannot be used to sign in.",
+            fr: "Bloquée : cette clé d'accès ne permet pas de se connecter.";
+        PasskeysNeverUsed => passkeys_never_used, "passkeys.never-used",
+            en: "Never used",
+            fr: "Jamais utilisée";
+        // Removing the last way in is the one irreversible thing on this page,
+        // so it asks for the password as well as for a fresh sign-in: a
+        // session somebody walked away from must not be able to take away the
+        // credential its owner would use to get back in.
+        PasskeysLastNeedsPassword => passkeys_last_needs_password, "passkeys.last-needs-password",
+            en: "This is your last passkey. Type your password to remove it.",
+            fr: "C'est votre dernière clé d'accès. Saisissez votre mot de passe pour la retirer.";
+        PasskeysPassword => passkeys_password, "passkeys.password",
+            en: "Your password",
+            fr: "Votre mot de passe";
+        PasskeysWrongPassword => passkeys_wrong_password, "passkeys.wrong-password",
+            en: "That password did not match. Nothing was removed.",
+            fr: "Ce mot de passe ne correspond pas. Rien n'a été retiré.";
+        PasskeysLastWithoutPassword => passkeys_last_without_password,
+            "passkeys.last-without-password",
+            en: "Removing this passkey would leave you with no way to sign in. Set a password \
+                 first.",
+            fr: "Retirer cette clé d'accès vous priverait de tout moyen de connexion. \
+                 Définissez d'abord un mot de passe.";
+        PasskeysSetPassword => passkeys_set_password, "passkeys.set-password",
+            en: "Set a password",
+            fr: "Définir un mot de passe";
+
+        // ---- password (`ast-1xd`) -----------------------------------------
+        PasswordTitle => password_title, "password.title",
+            en: "Your password",
+            fr: "Votre mot de passe";
+        PasswordHeadingSet => password_heading_set, "password.heading-set",
+            en: "Set a password",
+            fr: "Définir un mot de passe";
+        PasswordHeadingChange => password_heading_change, "password.heading-change",
+            en: "Change your password",
+            fr: "Changer votre mot de passe";
+        PasswordExplainsSet => password_explains_set, "password.explains-set",
+            en: "You sign in with a passkey today. A password is a second way in, for a device \
+                 your passkey is not on.",
+            fr: "Vous vous connectez aujourd'hui avec une clé d'accès. Un mot de passe est un \
+                 second moyen d'entrer, depuis un appareil où votre clé n'est pas.";
+        PasswordExplainsChange => password_explains_change, "password.explains-change",
+            en: "Your current password is asked for so that a browser somebody else is holding \
+                 cannot change it.",
+            fr: "Votre mot de passe actuel est demandé afin qu'un navigateur laissé ouvert par \
+                 quelqu'un d'autre ne puisse pas le changer.";
+        PasswordCurrent => password_current, "password.current",
+            en: "Current password",
+            fr: "Mot de passe actuel";
+        PasswordNew => password_new, "password.new",
+            en: "New password",
+            fr: "Nouveau mot de passe";
+        PasswordConfirm => password_confirm, "password.confirm",
+            en: "Repeat the new password",
+            fr: "Répétez le nouveau mot de passe";
+        PasswordSubmit => password_submit, "password.submit",
+            en: "Save this password",
+            fr: "Enregistrer ce mot de passe";
+        PasswordChanged => password_changed, "password.changed",
+            en: "Your password was changed.",
+            fr: "Votre mot de passe a été changé.";
+        PasswordWasSet => password_was_set, "password.was-set",
+            en: "Your password was set.",
+            fr: "Votre mot de passe a été défini.";
+        PasswordMismatch => password_mismatch, "password.mismatch",
+            en: "Those two did not match.",
+            fr: "Les deux saisies ne correspondent pas.";
+        // Deliberately the same sentence for a wrong current password and for
+        // an account that turns out to have none: both are "this submission
+        // does not prove you are the person whose password this is".
+        PasswordWrongCurrent => password_wrong_current, "password.wrong-current",
+            en: "That is not your current password. Nothing was changed.",
+            fr: "Ce n'est pas votre mot de passe actuel. Rien n'a été modifié.";
+        PasswordRefused => password_refused, "password.refused",
+            en: "That password cannot be used. Choose a longer or less common one.",
+            fr: "Ce mot de passe ne peut pas être utilisé. Choisissez-en un plus long ou moins \
+                 courant.";
+        PasswordStale => password_stale, "password.stale",
+            en: "Sign in again to change your password.",
+            fr: "Reconnectez-vous pour changer votre mot de passe.";
+        PasswordSignInAgain => password_sign_in_again, "password.sign-in-again",
+            en: "Sign in again",
+            fr: "Se reconnecter";
+        // NIST SP 800-63B §5.1.1.2 does not require ending every session on a
+        // voluntary change, and this server does not do it silently: the other
+        // sessions keep running unless the person asks otherwise here.
+        PasswordSessionsKeep => password_sessions_keep, "password.sessions-keep",
+            en: "Changing your password does not close your other sessions.",
+            fr: "Changer votre mot de passe ne ferme pas vos autres sessions.";
+        PasswordSignOutOthers => password_sign_out_others, "password.sign-out-others",
+            en: "Close my other sessions as well",
+            fr: "Fermer également mes autres sessions";
+
+        // ---- sessions (`ast-1xd`) -----------------------------------------
+        SessionsTitle => sessions_title, "sessions.title",
+            en: "Where you are signed in",
+            fr: "Vos sessions ouvertes";
+        SessionsHeading => sessions_heading, "sessions.heading",
+            en: "Sessions open on your account",
+            fr: "Les sessions ouvertes sur votre compte";
+        SessionsExplains => sessions_explains, "sessions.explains",
+            en: "Closing a session signs that browser out and tells the applications it was \
+                 signed in to.",
+            fr: "Fermer une session déconnecte ce navigateur et en informe les applications où \
+                 il était connecté.";
+        SessionsCurrent => sessions_current, "sessions.current",
+            en: "This browser",
+            fr: "Ce navigateur";
+        SessionsRevoke => sessions_revoke, "sessions.revoke",
+            en: "Close this session",
+            fr: "Fermer cette session";
+        SessionsRevokeOthers => sessions_revoke_others, "sessions.revoke-others",
+            en: "Close every other session",
+            fr: "Fermer toutes les autres sessions";
+        SessionsRevoked => sessions_revoked, "sessions.revoked",
+            en: "That session was closed.",
+            fr: "Cette session a été fermée.";
+        SessionsOthersRevoked => sessions_others_revoked, "sessions.others-revoked",
+            en: "Your other sessions were closed.",
+            fr: "Vos autres sessions ont été fermées.";
+        SessionsGone => sessions_gone, "sessions.gone",
+            en: "That session is no longer there.",
+            fr: "Cette session n'existe plus.";
+        SessionsStale => sessions_stale, "sessions.stale",
+            en: "Sign in again to close a session.",
+            fr: "Reconnectez-vous pour fermer une session.";
+        SessionsSignInAgain => sessions_sign_in_again, "sessions.sign-in-again",
+            en: "Sign in again",
+            fr: "Se reconnecter";
+        SessionsOnlyThisOne => sessions_only_this_one, "sessions.only-this-one",
+            en: "This is the only session open on your account.",
+            fr: "C'est la seule session ouverte sur votre compte.";
     }
     filled {
         // ---- consent ------------------------------------------------------
@@ -526,6 +797,44 @@ catalogue! {
         GrantsDelegatedTo => grants_delegated_to, "grants.delegated-to",
             en: "Passed on to {0}",
             fr: "Transmis à {0}";
+
+        // ---- the account pages (`ast-1xd`) --------------------------------
+        AccountSignedInAs => account_signed_in_as, "account.signed-in-as",
+            en: "Signed in as {0}",
+            fr: "Connecté en tant que {0}";
+        // The name a passkey is listed under when nobody has given it one.
+        // `label` is null for every credential enrolled before this page
+        // existed, and a list of four rows all reading "Passkey" is a list
+        // nobody can remove the right row from — so the derived name carries
+        // the day it was enrolled, which is the one fact its owner remembers.
+        PasskeysUnnamed => passkeys_unnamed, "passkeys.unnamed",
+            en: "Passkey registered on {0}",
+            fr: "Clé d'accès enregistrée le {0}";
+        PasskeysRegisteredOn => passkeys_registered_on, "passkeys.registered-on",
+            en: "Registered on {0}",
+            fr: "Enregistrée le {0}";
+        PasskeysLastUsed => passkeys_last_used, "passkeys.last-used",
+            en: "Last used {0}",
+            fr: "Dernière utilisation le {0}";
+        // WebAuthn L3 §6.4.1's AAGUID, rendered as the identifier it is and
+        // never as a product name: this server ships no metadata service
+        // (`ast-1xd` SUITE), so what it can honestly say is which model
+        // identifier the authenticator reported.
+        PasskeysModel => passkeys_model, "passkeys.model",
+            en: "Authenticator model {0}",
+            fr: "Modèle d'authentificateur {0}";
+        PasswordMinimum => password_minimum, "password.minimum",
+            en: "At least {0} characters.",
+            fr: "Au moins {0} caractères.";
+        SessionsStarted => sessions_started, "sessions.started",
+            en: "Started {0}",
+            fr: "Ouverte le {0}";
+        SessionsLastSeen => sessions_last_seen, "sessions.last-seen",
+            en: "Last used {0}",
+            fr: "Dernière activité le {0}";
+        SessionsMethods => sessions_methods, "sessions.methods",
+            en: "Signed in with {0}",
+            fr: "Connexion par {0}";
 
         ApprovalsDeviceIntro => approvals_device_intro, "approvals.device-intro",
             en: "Enter the code shown on the device you are setting up, and {0} will show you \

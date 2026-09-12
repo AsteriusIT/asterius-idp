@@ -57,6 +57,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "account_passkey_change"
+path = "fuzz_targets/account_passkey_change.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "account_password_form"
+path = "fuzz_targets/account_password_form.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "account_session_revocation"
+path = "fuzz_targets/account_session_revocation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "acr_policy"
 path = "fuzz_targets/acr_policy.rs"
 test = false

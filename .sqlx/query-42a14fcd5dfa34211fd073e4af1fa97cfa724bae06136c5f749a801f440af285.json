@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select credential_id, label, passkey_rp_id, created_at, last_used_at, disabled_at\n             from credentials\n             where tenant_id = $1 and user_id = $2 and kind = 'passkey'\n             order by created_at",
+  "query": "select credential_id, label, passkey_rp_id, passkey_aaguid,\n                    created_at, last_used_at, disabled_at\n             from credentials\n             where tenant_id = $1 and user_id = $2 and kind = 'passkey'\n             order by created_at",
   "describe": {
     "columns": [
       {
@@ -20,16 +20,21 @@
       },
       {
         "ordinal": 3,
+        "name": "passkey_aaguid",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "last_used_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "disabled_at",
         "type_info": "Timestamptz"
       }
@@ -44,10 +49,11 @@
       false,
       true,
       true,
+      true,
       false,
       true,
       true
     ]
   },
-  "hash": "cc1d4ff4344742458c8d23ed89b6a31f531cf431d2c257a6727e3f5f2115dfa2"
+  "hash": "42a14fcd5dfa34211fd073e4af1fa97cfa724bae06136c5f749a801f440af285"
 }
