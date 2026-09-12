@@ -62,6 +62,7 @@ pub struct Deployment {
     signer: Arc<dyn asterius_domain::keys::Signer>,
     queue: Option<Arc<dyn asterius_domain::outbox::OutboxQueue>>,
     argon2: asterius_domain::Argon2Parameters,
+    issuance: Option<Arc<crate::http::agent_issuance::IssuanceGuard>>,
 }
 
 impl std::fmt::Debug for Deployment {
@@ -110,6 +111,7 @@ impl Deployment {
             signer: parts.signer,
             queue: parts.queue,
             argon2: parts.argon2,
+            issuance: parts.issuance,
         }
     }
 }
@@ -167,6 +169,13 @@ pub struct DeploymentParts {
     /// deployment's, so a console-created account is not cheaper to crack than
     /// one created at the recovery form.
     pub argon2: asterius_domain::Argon2Parameters,
+    /// The protocol endpoints' issuance decision cache (`ast-lh3.10`).
+    ///
+    /// The *same* handle `ClientEndpoints` holds, so that an administrator who
+    /// rewrites a tenant's policy empties the decisions the token endpoint is
+    /// about to reuse. A second guard here would be a cache nobody
+    /// invalidates. `None` where this deployment has no policy decision point.
+    pub issuance: Option<Arc<crate::http::agent_issuance::IssuanceGuard>>,
 }
 
 impl std::fmt::Debug for DeploymentParts {
@@ -1255,9 +1264,19 @@ impl AdminBackend for Deployment {
     /// PDP decides from — so what an administrator edits is what the
     /// evaluation endpoint reads.
     fn policies(&self) -> Arc<dyn asterius_domain::ports::PolicyStore> {
-        Arc::new(asterius_store_pg::PgPolicies::new(
-            self.store.pool().clone(),
-        ))
+        let store: Arc<dyn asterius_domain::ports::PolicyStore> = Arc::new(
+            asterius_store_pg::PgPolicies::new(self.store.pool().clone()),
+        );
+        // `ast-lh3.10`: a policy written here is a policy the token endpoint
+        // must not keep deciding against. Wrapped rather than called from the
+        // handlers, so that a route added later cannot forget it.
+        match &self.issuance {
+            Some(guard) => Arc::new(crate::http::agent_issuance::InvalidatingPolicies::new(
+                store,
+                Arc::clone(guard),
+            )),
+            None => store,
+        }
     }
 
     /// The PDP behind the console's policy test bench (`ast-f7m.9`).

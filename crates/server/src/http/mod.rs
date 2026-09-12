@@ -24,6 +24,7 @@ pub mod account_grants;
 pub mod account_passkeys;
 pub mod account_password;
 pub mod account_sessions;
+pub mod agent_issuance;
 pub mod approvals;
 pub mod assets;
 pub mod authorization_code;
