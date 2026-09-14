@@ -127,10 +127,10 @@ export function issuerUrl(value: string): Complaint {
     return 'An issuer must name a host.';
   }
   if (url.search !== '') {
-    return 'An issuer carries no query string (RFC 8414 §2).';
+    return 'An issuer carries no query string.';
   }
   if (value.includes('#')) {
-    return 'An issuer carries no fragment (RFC 8414 §2).';
+    return 'An issuer carries no fragment.';
   }
   if (url.username !== '' || url.password !== '') {
     return 'An issuer carries no user:password@ part.';
@@ -224,7 +224,7 @@ function oneRedirectUri(value: string, applicationType: string): Complaint {
     return 'this is not an absolute URI.';
   }
   if (value.includes('#')) {
-    return 'a redirect URI carries no fragment (RFC 6749 §3.1.2).';
+    return 'a redirect URI carries no fragment.';
   }
   if (url.username !== '' || url.password !== '') {
     return 'a redirect URI carries no user:password@ part.';
@@ -234,11 +234,11 @@ function oneRedirectUri(value: string, applicationType: string): Complaint {
   }
   if (url.protocol === 'http:') {
     if (applicationType !== 'native') {
-      return 'http is admissible only for a loopback redirect on a native client (FAPI 2.0 SP §5.3.2.2 item 8).';
+      return 'http is admissible only for a loopback redirect on a native client.';
     }
     return url.hostname === '127.0.0.1' || url.hostname === '[::1]'
       ? null
-      : 'http is admissible only on 127.0.0.1 or [::1]; localhost resolves through DNS (RFC 8252 §8.3).';
+      : 'http is admissible only on 127.0.0.1 or [::1]; localhost resolves through DNS.';
   }
   return 'the scheme must be https.';
 }

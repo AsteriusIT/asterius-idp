@@ -1048,9 +1048,9 @@ function ClaimsEditor({
               Email verified
             </label>
             <p className="muted">
-              OIDC Core §5.1: this asserts that this deployment has taken affirmative steps to
-              check that the address belongs to this person. Relying parties are entitled to act
-              on it.
+              This asserts that someone here has taken active steps to check that the address
+              belongs to this person. Applications that sign people in through this server are
+              entitled to act on it.
             </p>
           </li>
         </ul>

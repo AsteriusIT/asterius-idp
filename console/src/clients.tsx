@@ -80,14 +80,25 @@ export const REGISTRATION_PATH = 'registration';
  * says, and a grant the server knows about that is missing here still arrives
  * in a client's document and is still rendered (see {@link grantRows}) — so
  * editing a client cannot silently drop one.
+ *
+ * The identifier is the value the API takes and is shown as it is typed;
+ * the description beside it is the product's own words rather than a
+ * citation (`ast-k7az.4`). The two `urn:ietf:…` grants are RFC 8628's and
+ * RFC 8693's, and `urn:openid:…` is CIBA's.
  */
 const KNOWN_GRANTS: readonly (readonly [string, string])[] = [
   ['authorization_code', 'The code flow. Almost every client wants this one.'],
   ['refresh_token', 'Refresh tokens, rotated on every use.'],
   ['client_credentials', 'Machine-to-machine, with no end user.'],
-  ['urn:ietf:params:oauth:grant-type:device_code', 'Device authorization grant (RFC 8628).'],
+  [
+    'urn:ietf:params:oauth:grant-type:device_code',
+    'Sign-in on a device with no keyboard; the code is entered on another screen.',
+  ],
   ['urn:openid:params:grant-type:ciba', 'CIBA backchannel authentication.'],
-  ['urn:ietf:params:oauth:grant-type:token-exchange', 'Token exchange (RFC 8693).'],
+  [
+    'urn:ietf:params:oauth:grant-type:token-exchange',
+    'This client swaps one token for another to act on someone’s behalf.',
+  ],
 ];
 
 /** The signing algorithms this profile permits (ADR-0003, FAPI 2.0 SP §5.4.1). */
@@ -739,7 +750,7 @@ function Editor({
               onChange={(event) => onChange({ ...draft, scope: event.target.value })}
             />
           </p>
-          <p className="muted">Space-delimited, as RFC 6749 §3.3 defines it.</p>
+          <p className="muted">The scope names this client may ask for, separated by spaces.</p>
         </fieldset>
 
         <fieldset disabled={busy}>
@@ -766,8 +777,8 @@ function Editor({
             )}
           </Field>
           <p className="muted">
-            One or the other, never both (RFC 7591 §2). A URL is re-fetched when the client
-            rotates its keys; an inline set is changed here.
+            One or the other, never both. A URL is re-fetched when the client rotates its keys;
+            an inline set is changed here.
           </p>
           <p>
             <label htmlFor="id-token-alg">ID token signing algorithm</label>
@@ -815,8 +826,8 @@ function Editor({
             />
           </p>
           <p className="muted">
-            Fetched and checked when the client is saved (OIDC Registration §5): every redirect
-            URI above has to appear in the document it serves.
+            Fetched and checked when the client is saved: every redirect URI above has to appear
+            in the document it serves.
           </p>
         </fieldset>
 
@@ -840,8 +851,8 @@ function Editor({
             Off by default (<code>ast-mqt</code>). The claims are always in the access token and
             at <code>/userinfo</code>; an ID token travels through the browser and is kept by the
             client, so the authority it carries is the client&rsquo;s decision for its own users.
-            A client can also ask per authorization with the <code>claims</code> parameter (OIDC
-            Core §5.5). Either way a token names only this client in{' '}
+            A client can also ask for them one sign-in at a time, with the <code>claims</code>{' '}
+            parameter. Either way a token names only this client in{' '}
             <code>resource_access</code>.
           </p>
         </fieldset>
