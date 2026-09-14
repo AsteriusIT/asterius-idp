@@ -5,15 +5,17 @@
  *
  * shadcn's components are written against `bg-background`, `text-foreground`,
  * `border-border`, `ring-ring/50` and so on, and its own `globals.css` ships
- * *values* for those names — a neutral palette that is not this deployment's.
- * Taking those values would give the console an indigo that is not the pages'
- * indigo, and `tokens.css` exists precisely to stop that (`ast-fe39`, and the
- * Rust test `the_console_declares_the_same_design_tokens` that guards it).
+ * *values* for those names — a palette whose blue is spent on chrome rather
+ * than on information, and which is not this deployment's. Taking it would
+ * give the console a second source of colour; `tokens.css` exists precisely to
+ * stop that (`ast-fe39`, and the Rust tests
+ * `the_console_declares_the_same_design_tokens` and
+ * `the_consoles_colour_is_reserved_for_state` that guard it).
  *
  * So the shadcn names are *mapped* rather than defined: every entry below is a
  * `var(…)` pointing at a token, `@theme inline` emits the utility classes as
  * references to those variables rather than copies of their values, and a
- * palette change in `style.css` moves the components with it. There is no
+ * palette change in `tokens.css` moves the components with it. There is no
  * second source of colour in this bundle.
  *
  * # Why `@import` is allowed here and nowhere else
@@ -57,7 +59,9 @@
   --color-secondary: var(--surface-sunken);
   --color-secondary-foreground: var(--fg);
 
-  /* The one accent, spent once per view. */
+  /* The one accent, spent once per view, and since `ast-k7az.1` it is ink
+     rather than a hue: a primary button is `--bg` on near-black in light and
+     near-black on near-white in dark. */
   --color-primary: var(--accent);
   --color-primary-foreground: var(--accent-fg);
 
@@ -68,10 +72,13 @@
   --color-warning: var(--warning);
   --color-info: var(--info);
 
-  /* Lines and focus. */
+  /* Lines and focus. The ring is `--info` and not `--accent` (`ast-k7az.1`):
+     an ink-coloured ring is invisible beside body text and against a primary
+     button's own fill, and telling the keyboard where it is *is* information.
+     The decision is recorded in `tokens.css`. */
   --color-border: var(--line);
   --color-input: var(--line);
-  --color-ring: var(--accent);
+  --color-ring: var(--info);
 
   /* The sidebar, which is the console's whole navigation since `ast-gore`. */
   --color-sidebar: var(--rail);
@@ -81,7 +88,7 @@
   --color-sidebar-accent: var(--tint-accent);
   --color-sidebar-accent-foreground: var(--fg);
   --color-sidebar-border: var(--line);
-  --color-sidebar-ring: var(--accent);
+  --color-sidebar-ring: var(--info);
 
   /* Radii, from the shared 8px card and 6px control. */
   --radius-sm: var(--ctl);
@@ -112,7 +119,7 @@
    * that drew its own ring would be the one that forgets it.
    */
   :focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--info);
     outline-offset: 2px;
   }
 

@@ -389,7 +389,7 @@ function KeyTable({
                   ? 'ok'
                   : key.state === 'retired' || key.state === 'purged'
                     ? 'neutral'
-                    : 'accent'
+                    : 'info'
               }
             >
               {key.state}

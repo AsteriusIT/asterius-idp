@@ -1,9 +1,15 @@
 # The console's design
 
 The admin console is drawn in the language `7f428d2` gave the user-facing
-pages: one warm neutral backdrop, hairline borders, an 8px card and a 6px
-control, 44px targets, and a single indigo accent spent on one decision per
-view. This file says where the values live, what the pieces are called, and
+pages: hairline borders, an 8px card and a 6px control, 44px targets, and a
+single accent spent on one decision per view. Since `ast-k7az.1` the console is
+**greyscale**, and the pages are not: the accent here is ink rather than
+indigo, the backdrop is a neutral grey rather than the pages' warm one, and the
+only colour on the screen names a state — green succeeded, red failed, blue
+informs, amber warns. The two tokens that diverge are listed in
+`console/src/tokens.css` and asserted as divergences by
+`the_console_declares_the_same_design_tokens`; everything else is still a
+checked copy. This file says where the values live, what the pieces are called, and
 what a screen is expected to do with them (`ast-fe39`, rebuilt on **shadcn/ui**
 by `ast-gore`).
 
@@ -44,7 +50,7 @@ duplicate a test compares is a cache.
 | Radii | `--radius-lg`, `--radius-pill` |
 | Type | `--text-xs` … `--text-2xl` |
 | Surfaces | `--surface`, `--surface-sunken`, `--rail`, `--overlay` |
-| State | `--success` `--warning` `--info` and their `--tint-*` |
+| State | `--success` `--warning` `--info` and their `--tint-*`. `--info` is a blue of its own since `ast-k7az.1`, not `var(--accent)`, and it is also the focus ring. |
 | Elevation | `--shadow-sm`, `--shadow-lg` |
 | Motion | `--motion-fast` `--motion` `--ease` |
 | Layout | `--rail-width`, `--content-max` |
@@ -106,8 +112,8 @@ deployment's palette, and every entry in its `@theme inline` block is a
 | `primary` / `primary-foreground` | `--accent` / `--accent-fg` |
 | `muted` / `muted-foreground` | `--surface-sunken` / `--muted` |
 | `destructive`, `success`, `warning`, `info` | `--danger`, `--success`, `--warning`, `--info` |
-| `border`, `input`, `ring` | `--line`, `--line`, `--accent` |
-| `sidebar*` | `--rail`, `--fg`, `--accent`, `--tint-accent`, `--line` |
+| `border`, `input`, `ring` | `--line`, `--line`, `--info` |
+| `sidebar*` | `--rail`, `--fg`, `--accent`, `--tint-accent`, `--line`; its ring is `--info` |
 | `radius-sm/md`, `radius-lg/xl` | `--ctl`, `--radius` / `--radius-lg` |
 
 shadcn's own `globals.css` ships *values* for those names — a neutral palette
@@ -147,7 +153,7 @@ migrations a change of markup rather than a change of behaviour.
 | `Actions` | A row of controls, the decisive one last. |
 | `Field` | Label, control, help, and the server's refusal at the field — wired with `aria-describedby` and `aria-invalid`. |
 | `Message` | `success` and `info` are `role="status"`, `error` is `role="alert"`. Mark, tint and rule, never colour alone. |
-| `Badge` | A state as a word first: `ok`, `warn`, `bad`, `accent`, neutral. |
+| `Badge` | A state as a word first: `ok`, `warn`, `bad`, `info`, neutral. |
 | `DataTable` | shadcn `Table`. Columns, one client-side sort with `aria-sort`, an optional client-side filter with a “3 of 20 shown” count, an empty state, right-aligned actions. Every list in the console is one since `ast-f9j5`. |
 | `EmptyState` | Nothing to show, and what to do about it. |
 | `Skeleton` | The shape of what is arriving. `aria-live`, and deliberately *not* `role="status"`. |

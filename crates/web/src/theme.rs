@@ -257,12 +257,25 @@ mod tests {
     /// is not running then — so the values are duplicated and this test is
     /// what keeps the duplicate a cache rather than a fork.
     ///
-    /// `--font` is the one token that differs, and the difference is checked
+    /// `--font` is one token that differs, and the difference is checked
     /// rather than skipped: the pages are served Geist from a hashed path
     /// whose URL carries the request's mount prefix (`asterius_web::brand`, an
     /// `@font-face` that lives in `base.html`), which a bundle cannot name. So
     /// the console takes the *tail* of the same stack — the faces a browser
     /// falls back to, and nothing from an outside origin.
+    ///
+    /// [`DIVERGENT_COLOUR_TOKENS`] are the others, since `ast-k7az.1`: the
+    /// console is greyscale and the pages are not. The reason is not taste.
+    /// `--accent` and `--backdrop` are *tenant* tokens here — `--accent` is
+    /// one of the six `asterius_domain::Theme` contrast-checks and a tenant's
+    /// own rule overwrites it on every server-rendered page — while the
+    /// console is this deployment's own tool, themed by nobody, so an accent
+    /// it spends on links, primary buttons and the rail's current item is free
+    /// to be ink rather than a hue. Sharing them would also mean repainting
+    /// every tenant's sign-in page to restyle an admin screen. The divergence
+    /// is asserted rather than tolerated: these two tokens *must* differ, so a
+    /// future edit that quietly re-copies the indigo fails here instead of
+    /// shipping.
     #[test]
     fn the_console_declares_the_same_design_tokens() {
         const STYLESHEET: &str = include_str!("../templates/style.css");
@@ -283,9 +296,104 @@ mod tests {
                 );
                 continue;
             }
+            if DIVERGENT_COLOUR_TOKENS.contains(property) {
+                assert_ne!(
+                    &theirs, value,
+                    "{property} is admitted as a console/pages divergence but no longer \
+                     differs; drop it from DIVERGENT_COLOUR_TOKENS or restore the \
+                     greyscale value"
+                );
+                continue;
+            }
             assert_eq!(
                 &theirs, value,
                 "{property} differs between style.css and console/src/tokens.css"
+            );
+        }
+
+        for property in DIVERGENT_COLOUR_TOKENS {
+            assert!(
+                pages.contains_key(property) && console.contains_key(property),
+                "{property} is admitted as a divergence but one side declares it nowhere"
+            );
+        }
+    }
+
+    /// The tokens the console draws in its own greyscale (`ast-k7az.1`).
+    ///
+    /// Both are colour, and both are colour the console has no tenant to
+    /// answer to about; every other token in the shared `:root` — the ink, the
+    /// background, `--danger`, the radii, the shadow — is still copied value
+    /// for value and still checked by
+    /// [`the_console_declares_the_same_design_tokens`].
+    const DIVERGENT_COLOUR_TOKENS: [&str; 2] = ["--accent", "--backdrop"];
+
+    /// A stylesheet with its `/* … */` spans removed.
+    ///
+    /// Whole spans rather than the lines that open one: `tokens.css` writes
+    /// down the indigo it used to be, in prose, and an explanation must not be
+    /// what makes a check fire.
+    fn without_comments(css: &str) -> String {
+        let mut declarations = String::with_capacity(css.len());
+        let mut rest = css;
+        while let Some(start) = rest.find("/*") {
+            declarations.push_str(&rest[..start]);
+            match rest[start..].find("*/") {
+                Some(end) => rest = &rest[start + end + 2..],
+                None => break,
+            }
+        }
+        declarations.push_str(rest);
+        declarations
+    }
+
+    /// Every value a property is given in a stylesheet, in document order.
+    fn values_of<'a>(css: &'a str, property: &str) -> Vec<&'a str> {
+        let needle = format!("{property}:");
+        let mut values = Vec::new();
+        let mut rest = css;
+        while let Some(start) = rest.find(&needle) {
+            rest = &rest[start + needle.len()..];
+            let end = rest.find(';').expect("a declaration ends in a semicolon");
+            values.push(rest[..end].trim());
+            rest = &rest[end..];
+        }
+        values
+    }
+
+    /// `ast-k7az.1`: in the console, colour means state and nothing else.
+    ///
+    /// The accent is ink, so the hue budget is spent on `--success`,
+    /// `--danger`, `--warning` and `--info` — and `--info` has to be a blue of
+    /// its own rather than the alias of `--accent` it used to be, or an
+    /// informational message would be drawn in the same near-black as the body
+    /// text it sits beside. Asserted per scheme, because the light and the
+    /// dark palettes are two independent pairs.
+    #[test]
+    fn the_consoles_colour_is_reserved_for_state() {
+        const CONSOLE: &str = include_str!("../../../console/src/tokens.css");
+        let tokens = without_comments(CONSOLE);
+
+        for indigo in ["#3f3fbf", "#a9b4ff"] {
+            assert!(
+                !tokens.contains(indigo),
+                "{indigo} is still a live value in the console's tokens"
+            );
+        }
+
+        let accents = values_of(&tokens, "--accent");
+        let infos = values_of(&tokens, "--info");
+        assert_eq!(accents.len(), 2, "one accent per scheme, light and dark");
+        assert_eq!(infos.len(), 2, "one informational blue per scheme");
+        for (scheme, (accent, info)) in ["light", "dark"].iter().zip(accents.iter().zip(&infos)) {
+            assert_ne!(
+                accent, info,
+                "the {scheme} `--info` is the accent again, so information has no colour \
+                 of its own"
+            );
+            assert!(
+                info.starts_with('#'),
+                "the {scheme} `--info` is `{info}`, not a colour of its own"
             );
         }
     }
