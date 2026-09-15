@@ -44,6 +44,8 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     assetsDir: 'assets',
+    // Fonts must remain same-origin assets, never data: URLs.
+    assetsInlineLimit: 0,
     manifest: true,
     cssCodeSplit: false,
     modulePreload: { polyfill: false },

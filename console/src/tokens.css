@@ -73,22 +73,20 @@
  * So the values are duplicated *and the duplication is checked*:
  * `asterius_web::theme`'s `the_console_declares_the_same_design_tokens` parses
  * the first `:root` rule of both files and fails if any token drifts, bar the
- * three named above and below. A duplicate nobody compares is a fork; a
+ * two named above. A duplicate nobody compares is a fork; a
  * duplicate a test compares is a cache.
  *
- * # The third token that legitimately differs
+ * # Fonts served by the console
  *
- * `--font`. The server-rendered pages are served Geist from this deployment's
- * own origin, at a hashed path whose URL carries the request's mount prefix
- * (`asterius_web::brand`) — a URL the console's bundle cannot know and whose
- * `@font-face` lives in `base.html`. The console therefore takes the *tail* of
- * that stack: the same faces a browser falls back to, and nothing fetched from
- * an outside origin, which `font-src 'self'` would refuse anyway. The test
- * asserts exactly that relationship rather than skipping the token.
+ * The console uses the same Geist stack as the pages. Its own @font-face
+ * rules in fonts.css import the vendored WOFF2 files through Vite, which
+ * emits hashed assets beside the stylesheet. Relative URLs preserve the
+ * tenant mount prefix; font-src 'self' permits these requests without any
+ * change to style-src. Geist Mono supplies identifiers and JSON.
  */
 
 /* The shared layer: every token below is `style.css`'s, value for value,
-   except the three the header names — `--accent`, `--backdrop` and `--font`. */
+   except the two the header names — `--accent` and `--backdrop`. */
 :root {
   color-scheme: light;
   --fg: #18181b;
@@ -103,7 +101,7 @@
   --danger: #b42318;
   --radius: 8px;
   --space: 8px;
-  --font: system-ui, -apple-system, Segoe UI, sans-serif;
+  --font: Geist, system-ui, -apple-system, Segoe UI, sans-serif;
   --card: var(--bg);
   /* Neutral, where the pages are warm. The literal is the fallback for a
      browser without `color-mix`, and it is what the mix computes to. */
@@ -135,6 +133,7 @@
 
   /* The type scale the user-facing pages already use, written down as steps so
      a screen names a step rather than a literal. */
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --text-xs: .75rem;
   --text-sm: .8125rem;
   --text-base: .875rem;

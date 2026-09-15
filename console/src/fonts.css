@@ -1,0 +1,18 @@
+/* Local, OFL-licensed fonts. Vite hashes these files and keeps the URLs
+   relative to the stylesheet, including under a tenant's mount prefix.
+   These requests use font-src 'self'; the stylesheet still needs its nonce. */
+@font-face {
+  font-family: Geist;
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../crates/web/assets/fonts/Geist-Variable.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../../crates/web/assets/fonts/GeistMono-Variable.woff2') format('woff2');
+}
