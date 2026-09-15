@@ -279,7 +279,7 @@ function Overview({ session }: { session: Session }): JSX.Element {
               {session.roles.length > 0 ? (
                 <span className="row">
                   {session.roles.map((role) => (
-                    <Badge key={role} tone="accent">
+                    <Badge key={role} tone="neutral">
                       {role}
                     </Badge>
                   ))}

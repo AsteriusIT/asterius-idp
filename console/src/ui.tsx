@@ -311,12 +311,19 @@ export function Message({
   );
 }
 
-/** A state, as a word first and a colour second. */
+/**
+ * A state, as a word first and a colour second.
+ *
+ * The four tones are the four things colour is allowed to mean in this console
+ * (`ast-k7az.1`): nothing at all, it worked, look at this, it failed. `info`
+ * was `accent` until the accent became ink — a badge in it would have been the
+ * surrounding text in a border, which is what `neutral` is for.
+ */
 export function Badge({
   tone = 'neutral',
   children,
 }: {
-  tone?: 'neutral' | 'ok' | 'warn' | 'bad' | 'accent';
+  tone?: 'neutral' | 'ok' | 'warn' | 'bad' | 'info';
   children: ReactNode;
 }): JSX.Element {
   return (
@@ -327,7 +334,7 @@ export function Badge({
         tone === 'ok' && 'border-success/40 bg-success/10 text-success',
         tone === 'warn' && 'border-warning/40 bg-warning/10 text-warning',
         tone === 'bad' && 'border-destructive/40 bg-destructive/10 text-destructive',
-        tone === 'accent' && 'border-primary/40 bg-primary/10 text-primary',
+        tone === 'info' && 'border-info/40 bg-info/10 text-info',
       )}
     >
       {children}

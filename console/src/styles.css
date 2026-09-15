@@ -2,11 +2,15 @@
  * The console's one stylesheet (`ast-fe39`).
  *
  * It is the console half of the language `7f428d2` gave the user-facing pages:
- * the same warm neutral backdrop, the same hairline borders and 8px card
- * radius, the same 44px controls, the same single indigo accent spent on one
- * decision per view. The tokens come from `tokens.css`, which is a checked copy
- * of `crates/web/templates/style.css`'s `:root` — see that file for why the
- * values are duplicated and what stops the copy drifting.
+ * the same hairline borders and 8px card radius, the same 44px controls, the
+ * same single accent spent on one decision per view. Two things are its own
+ * since `ast-k7az.1`: the backdrop is a neutral grey rather than the pages'
+ * warm one, and the accent is ink rather than indigo, so that the only colour
+ * on the screen is a state — green succeeded, red failed, blue informs. The
+ * tokens come from `tokens.css`, a checked copy of
+ * `crates/web/templates/style.css`'s `:root` — see that file for why the values
+ * are duplicated, what stops the copy drifting, and which two tokens are
+ * allowed to differ.
  *
  * Where the pages are one centred card, the console is a rail and a plane of
  * panels: an operator moves between nine screens and compares rows, which is
@@ -612,8 +616,8 @@
   input:not([data-slot]):focus,
   select:not([data-slot]):focus,
   textarea:not([data-slot]):focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--tint-accent);
+    border-color: var(--info);
+    box-shadow: 0 0 0 3px var(--tint-info);
   }
 
   input[aria-invalid='true'],
@@ -717,8 +721,9 @@
     background: var(--surface-sunken);
   }
 
-  /* The one accent-coloured control in a view: the decision this screen exists
-     to take. Direction A spends the indigo exactly once. */
+  /* The one filled control in a view: the decision this screen exists to take.
+     Ink on paper, and paper on ink in the dark scheme (`ast-k7az.1`) — one per
+     view, as direction A had it, minus the hue. */
   .button.primary {
     background: var(--accent);
     border-color: transparent;
@@ -761,9 +766,11 @@
     max-width: 22rem;
   }
 
-  /* Focus is visible everywhere, in the accent, and never removed. SC 2.4.7. */
+  /* Focus is visible everywhere, in the informational blue, and never removed
+     (SC 2.4.7). Not the accent: that is ink now, and an ink ring disappears
+     beside body text and against a primary button's own fill. */
   :focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--info);
     outline-offset: 2px;
   }
 
@@ -831,9 +838,9 @@
   }
 
   .message.info {
-    border-left-color: var(--accent);
-    background: var(--tint-accent);
-    color: var(--accent);
+    border-left-color: var(--info);
+    background: var(--tint-info);
+    color: var(--info);
   }
 
   .message.success strong,

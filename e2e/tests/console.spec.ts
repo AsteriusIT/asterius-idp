@@ -1098,6 +1098,36 @@ test('the console opens in the light theme and remembers the dark one', async ({
 });
 
 /**
+ * `ast-k7az.1`: the dark palette is checked too, and by the same tool.
+ *
+ * The console's axe run above is a light-theme run, and a greyscale palette is
+ * exactly the kind that passes in one scheme and fails in the other: the
+ * distance between the ink, the rail, the sunken surface and the quiet text is
+ * chosen twice, once per scheme, and only one of the two was ever measured
+ * here. `colour-contrast` is what this test is for — it is in `wcag2aa`, so
+ * the whole tag set is run rather than that rule alone, and a violation of any
+ * of them in the dark theme fails it.
+ */
+test('the dark theme has no accessibility violation either', async ({ page }, testInfo) => {
+  // Arrange
+  await signIn(page);
+  await page.getByRole('button', { name: 'Switch to the dark theme' }).click();
+  await expect(page.locator('html')).toHaveClass(/dark/);
+
+  // Act
+  const results = await new AxeBuilder({ page })
+    .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+    .analyze();
+
+  // Assert
+  await testInfo.attach('axe-dark', {
+    body: JSON.stringify(results.violations, null, 2),
+    contentType: 'application/json',
+  });
+  expect(results.violations).toEqual([]);
+});
+
+/**
  * `ast-gore` (3): the rail folds, and folding it loses no destination.
  *
  * The icon mode is where a sidebar usually stops being usable: the labels go,

@@ -4,8 +4,58 @@
  * The first is `crates/web/templates/style.css`, which is the one this file
  * follows: `ast-fe39` asks the console to speak the visual language the
  * user-facing pages were redrawn in (`7f428d2`, direction A), and a console
- * whose indigo is a different indigo is a console that looks like a different
- * product.
+ * whose greys are a different set of greys is a console that looks like a
+ * different product.
+ *
+ * # The console is greyscale, and the pages are not (`ast-k7az.1`)
+ *
+ * Two tokens of the shared block are deliberately *not* the pages': `--accent`
+ * and `--backdrop`. The console is drawn in black, white and grey, and the
+ * only colour in it names a state — green succeeded, red failed, blue is the
+ * system telling you something. An indigo on every link, every primary button
+ * and the rail's current item spends the eye's attention on chrome and leaves
+ * nothing to distinguish the one badge that says a key rotation is pending.
+ *
+ * The pages keep their indigo, and the reason is not symmetry. `--accent` is
+ * a *tenant* token there: it is one of the six colours
+ * `asterius_domain::Theme` contrast-checks, and a tenant's own `:root` rule is
+ * appended after `style.css` and overwrites it on every server-rendered page
+ * (`ast-vn7`). Repainting it would restyle every tenant's sign-in screen to
+ * change an admin tool, and would rewrite the rendered-page golden files for a
+ * change no visitor to those pages asked for. The console answers to no
+ * tenant, so its accent is free to be ink.
+ *
+ * `--backdrop` follows for a duller reason: the pages nudge the background 6%
+ * towards `#a8a29e`, a warm grey that reads as beige behind a card. Behind a
+ * console's panels and rail it tints the whole tool, so the console mixes
+ * towards a neutral `#a1a1aa` instead, at the same three strengths.
+ *
+ * The divergence is a *list*, not a licence: `the_console_declares_the_same_
+ * design_tokens` names those two tokens, asserts they differ, and still
+ * compares every other token value for value.
+ *
+ * # Two decisions this file is the record of
+ *
+ * *The focus ring is `--info`, the blue*, and not the accent it used to be.
+ * With the accent now near-black in light and near-white in dark, a ring in it
+ * would be invisible against the body text on one side and against a primary
+ * button's own fill on the other. Blue is not decoration here: the ring is the
+ * system saying where the keyboard is, which is exactly what this palette
+ * reserves blue for. 6.7:1 on `--card` light, 8.5:1 dark.
+ *
+ * # The ratios, as measured
+ *
+ * Light, on `--card` (`#ffffff`): accent 17.7, info 6.7, success 7.3, warning
+ * 7.4, danger 6.6, muted 4.8. Dark, on `--card` (`#18181b`): accent 16.1, info
+ * 8.5, success 10.6, warning 9.5, danger 8.9, muted 6.9. The tightest pair in
+ * the file is `--muted` on `--rail` in light, at 4.51 — the same 4.5-ish it
+ * was before this ticket, because the neutral mixer below was chosen to match
+ * the warm one's lightness rather than only its hue.
+ *
+ * *A primary button is ink on paper*: `--bg`-coloured text on a near-black
+ * fill in light, near-black text on a near-white fill in dark — `--accent`
+ * with `--accent-fg`, unchanged names. One per view, as before; what changed
+ * is only that the one is no longer a hue competing with the state colours.
  *
  * # Why a copy and not one file
  *
@@ -22,10 +72,11 @@
  *
  * So the values are duplicated *and the duplication is checked*:
  * `asterius_web::theme`'s `the_console_declares_the_same_design_tokens` parses
- * the first `:root` rule of both files and fails if any token drifts. A
- * duplicate nobody compares is a fork; a duplicate a test compares is a cache.
+ * the first `:root` rule of both files and fails if any token drifts, bar the
+ * three named above and below. A duplicate nobody compares is a fork; a
+ * duplicate a test compares is a cache.
  *
- * # The one token that legitimately differs
+ * # The third token that legitimately differs
  *
  * `--font`. The server-rendered pages are served Geist from this deployment's
  * own origin, at a hashed path whose URL carries the request's mount prefix
@@ -36,22 +87,28 @@
  * asserts exactly that relationship rather than skipping the token.
  */
 
-/* The shared layer: every token below is `style.css`'s, value for value. */
+/* The shared layer: every token below is `style.css`'s, value for value,
+   except the three the header names — `--accent`, `--backdrop` and `--font`. */
 :root {
   color-scheme: light;
   --fg: #18181b;
   --bg: #ffffff;
   --muted: #71717a;
   --line: #e4e4e7;
-  --accent: #3f3fbf;
+  /* Ink, not a hue (`ast-k7az.1`): the pages' indigo is a tenant token and
+     this one is not. 17.7:1 against `--accent-fg`, which is a primary
+     button's label. */
+  --accent: #18181b;
   --accent-fg: #ffffff;
   --danger: #b42318;
   --radius: 8px;
   --space: 8px;
   --font: system-ui, -apple-system, Segoe UI, sans-serif;
   --card: var(--bg);
-  --backdrop: #f8f7f4;
-  --backdrop: color-mix(in srgb, var(--bg) 94%, #a8a29e);
+  /* Neutral, where the pages are warm. The literal is the fallback for a
+     browser without `color-mix`, and it is what the mix computes to. */
+  --backdrop: #f9f9fa;
+  --backdrop: color-mix(in srgb, var(--bg) 94%, #a1a1aa);
   --ctl: 6px;
   --tap: 44px;
   --shadow: 0 1px 2px rgba(24, 24, 27, .05), 0 8px 24px rgba(24, 24, 27, .06);
@@ -91,8 +148,8 @@
      backdrop's recipe at other strengths, so a palette change moves all three
      together. */
   --surface: var(--card);
-  --surface-sunken: color-mix(in srgb, var(--bg) 96%, #a8a29e);
-  --rail: color-mix(in srgb, var(--bg) 92%, #a8a29e);
+  --surface-sunken: color-mix(in srgb, var(--bg) 96%, #a1a1aa);
+  --rail: color-mix(in srgb, var(--bg) 92%, #a1a1aa);
   --overlay: rgba(24, 24, 27, .45);
 
   /* Meaning carried by colour is always carried by something else as well
@@ -100,11 +157,17 @@
      Each clears 4.5:1 on `--card`. */
   --success: #116343;
   --warning: #7a4b00;
-  --info: var(--accent);
+  /* A blue of its own, and no longer `var(--accent)`: the accent is ink now,
+     and an informational message drawn in it would be the body text with a
+     border. 6.7:1 on `--card`, and the colour of the focus ring. */
+  --info: #1d4ed8;
   --tint-success: color-mix(in srgb, var(--success) 10%, var(--card));
   --tint-warning: color-mix(in srgb, var(--warning) 10%, var(--card));
   --tint-danger: color-mix(in srgb, var(--danger) 10%, var(--card));
-  --tint-accent: color-mix(in srgb, var(--accent) 10%, var(--card));
+  --tint-info: color-mix(in srgb, var(--info) 10%, var(--card));
+  /* Grey, being 10% of ink: the quiet fill behind a hovered menu item or the
+     rail's current row, which carries no meaning colour has to spell. */
+  --tint-accent: color-mix(in srgb, var(--accent) 8%, var(--card));
 
   /* Elevation. The shared `--shadow` is the card's; a menu and a dialog sit
      above it and a table header sits below. */
@@ -145,21 +208,25 @@
  */
 .dark {
   color-scheme: dark;
-  --fg: #f2f2f4;
-  --bg: #17171a;
-  --muted: #a3a3ad;
-  --line: #33333a;
-  --accent: #a9b4ff;
-  --accent-fg: #16161c;
+  --fg: #f4f4f5;
+  --bg: #121215;
+  --muted: #a1a1aa;
+  --line: #2e2e33;
+  /* The light scheme's pair, swapped: paper-coloured fill, ink-coloured
+     label. */
+  --accent: #f4f4f5;
+  --accent-fg: #18181b;
   --danger: #ff9d92;
-  --card: #1d1d21;
-  --backdrop: #121215;
+  --card: #18181b;
+  --backdrop: #0b0b0d;
   --surface: var(--card);
-  --surface-sunken: #232329;
-  --rail: #1a1a1f;
+  --surface-sunken: #212124;
+  --rail: #131316;
   --overlay: rgba(0, 0, 0, .6);
   --success: #7ddba9;
   --warning: #e7b667;
+  /* 8.5:1 on this scheme's `--card`, and unmistakably not the accent. */
+  --info: #8ab4ff;
   --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .35);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, .55);
