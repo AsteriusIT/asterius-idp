@@ -514,7 +514,7 @@ function NewTenant({
         <Field
           label="Issuer"
           required
-          hint="The https URL this tenant identifies itself by, with no trailing slash (RFC 8414 §2)."
+          hint="The https URL this tenant identifies itself by: no trailing slash, no query string, no fragment."
           error={refused === 'issuer' ? mark : issuerUrl(issuer)}
         >
           {(props) => (

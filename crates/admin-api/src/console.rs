@@ -654,6 +654,66 @@ mod tests {
         }
     }
 
+    /// No standards reference reaches the screen (`ast-k7az.4`).
+    ///
+    /// The console is read by administrators, not by editors of the
+    /// specifications it implements. Somebody deciding whether to grant a
+    /// client the device flow needs to be told that it signs in a screen with
+    /// no keyboard; being told it is "RFC 8628" names the document that would
+    /// have explained it and explains nothing itself. The product's own words
+    /// are the labels, and the references stay where they earn their keep — in
+    /// the comments of `console/src`, which this cannot see, because the
+    /// bundler drops them.
+    ///
+    /// That is why the assertion is made against the *built* bytes rather than
+    /// the sources: what survives minification is, near enough, what a person
+    /// reads. Identifiers the API demands are exempt by construction — a
+    /// `urn:ietf:params:oauth:grant-type:…` is a value to be typed into a
+    /// field, not a citation, and none of the needles below occurs inside one.
+    ///
+    /// Vacuous without a built console, and refused under `CI`, for the
+    /// reasons given on
+    /// [`the_embedded_bundle_names_no_third_party_origin_it_could_fetch`].
+    #[test]
+    fn the_embedded_bundle_cites_no_specification_at_the_reader() {
+        let embedded = Bundle::embedded();
+        assert!(
+            !(std::env::var_os("CI").is_some() && embedded.assets.is_empty()),
+            "no console asset is embedded, so this check has nothing to read: \
+             run ./scripts/build-console.sh before cargo"
+        );
+        for asset in embedded.assets {
+            let Ok(text) = std::str::from_utf8(asset.bytes) else {
+                continue;
+            };
+            // Case-sensitive on purpose. `openid` is a scope name an
+            // administrator types, and `oidc` turns up inside identifiers the
+            // protocol defines; it is the prose capitalisation that marks a
+            // sentence addressed to a specification's reader.
+            for cited in ["RFC ", "\u{a7}", "OIDC", "OpenID"] {
+                let Some(at) = text.find(cited) else {
+                    continue;
+                };
+                let from = text[..at]
+                    .char_indices()
+                    .rev()
+                    .nth(60)
+                    .map_or(0, |(index, _)| index);
+                let to = text[at..]
+                    .char_indices()
+                    .nth(60)
+                    .map_or(text.len(), |(index, _)| at + index);
+                panic!(
+                    "{} says {cited:?} to the reader, in {:?}; write the label \
+                     in the product's words and leave the reference in a \
+                     comment",
+                    asset.path,
+                    &text[from..to]
+                );
+            }
+        }
+    }
+
     /// A template with its `{# … #}` comments removed, as
     /// `crates/web/src/source_audit.rs` does: a comment explaining why a
     /// keyword is forbidden must not be the thing that trips the check.

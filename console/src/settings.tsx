@@ -53,16 +53,28 @@ import { Actions, Button, Field, LoadFailure, Message, Panel, Screen, Skeleton }
  * forgotten still arrives in `disabled_features` and is still rendered (see
  * {@link featureRows}), so a flag the console does not know about cannot be
  * silently switched on by saving the form.
+ *
+ * The label says what the feature does for the deployment, not which
+ * document defines it (`ast-k7az.4`): an administrator deciding whether to
+ * switch `device_flow` on is served by "a device with no keyboard" and not
+ * by "RFC 8628". In order: RFC 8705, Grant Management for OAuth 2.0,
+ * CIBA, RFC 8628, RFC 8693, SSF 1.0, AuthZEN 1.0, RFC 9449 §8.
  */
 const KNOWN_FEATURES: readonly (readonly [string, string])[] = [
-  ['mtls', 'mTLS client authentication and certificate-bound tokens (RFC 8705)'],
+  [
+    'mtls',
+    'Clients prove themselves with a TLS certificate, and their tokens work only from it',
+  ],
   ['grant_management', 'Grant Management for OAuth 2.0'],
   ['ciba', 'CIBA backchannel authentication'],
-  ['device_flow', 'Device Authorization Grant (RFC 8628)'],
-  ['token_exchange', 'Token Exchange (RFC 8693)'],
+  ['device_flow', 'Sign-in on a device with no keyboard, by entering a code on another screen'],
+  ['token_exchange', 'A service swaps one token for another to act on someone’s behalf'],
   ['ssf', 'Shared Signals Framework transmitter'],
   ['authzen', 'AuthZEN Authorization API'],
-  ['dpop_nonce', 'Server-issued DPoP nonces (RFC 9449 §8)'],
+  [
+    'dpop_nonce',
+    'Clients sign a challenge this server hands out, so a captured proof cannot be reused',
+  ],
 ];
 
 /** The ceilings the server sends with the document. */
