@@ -23,23 +23,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 
-/**
- * Where the rail's state is remembered (`ast-gore`).
- *
- * shadcn writes a `sidebar_state` **cookie** at `path=/`, which this
- * deployment must not do: the origin serving this console also serves the
- * token, authorization and interaction endpoints, so an upstream cookie
- * written by a bundle would be attached to every one of those requests, would
- * not carry the `__Host-` prefix every other cookie here carries, and would be
- * a second piece of ambient state on an origin whose cookie policy ADR-0009
- * spells out. Whether a rail is folded is a property of this browser and of
- * nothing the server does, so it is stored the same way the colour scheme is.
- */
-const SIDEBAR_STORAGE_KEY = "asterius.console.sidebar"
 const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_MOBILE = "18rem"
-const SIDEBAR_WIDTH_ICON = "3rem"
-const SIDEBAR_KEYBOARD_SHORTCUT = "b"
+const SIDEBAR_WIDTH_ICON = "4.5rem"
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
@@ -80,14 +66,7 @@ function SidebarProvider({
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
-  const [_open, _setOpen] = React.useState(() => {
-    try {
-      const remembered = window.localStorage.getItem(SIDEBAR_STORAGE_KEY)
-      return remembered === null ? defaultOpen : remembered === "true"
-    } catch {
-      return defaultOpen
-    }
-  })
+  const [_open, _setOpen] = React.useState(defaultOpen)
   const open = openProp ?? _open
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
@@ -97,14 +76,6 @@ function SidebarProvider({
       } else {
         _setOpen(openState)
       }
-
-      // Remembered for the next visit; see SIDEBAR_STORAGE_KEY for why this
-      // is not the cookie shadcn ships.
-      try {
-        window.localStorage.setItem(SIDEBAR_STORAGE_KEY, String(openState))
-      } catch {
-        // A browser that refuses storage still gets a working rail.
-      }
     },
     [setOpenProp, open]
   )
@@ -113,22 +84,6 @@ function SidebarProvider({
   const toggleSidebar = React.useCallback(() => {
     return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open)
   }, [isMobile, setOpen, setOpenMobile])
-
-  // Adds a keyboard shortcut to toggle the sidebar.
-  React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (
-        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
-      ) {
-        event.preventDefault()
-        toggleSidebar()
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [toggleSidebar])
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.
@@ -297,31 +252,6 @@ function SidebarTrigger({
       <PanelLeftIcon />
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
-  )
-}
-
-function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
-  const { toggleSidebar } = useSidebar()
-
-  return (
-    <button
-      data-sidebar="rail"
-      data-slot="sidebar-rail"
-      aria-label="Toggle Sidebar"
-      tabIndex={-1}
-      onClick={toggleSidebar}
-      title="Toggle Sidebar"
-      className={cn(
-        "absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] hover:after:bg-sidebar-border sm:flex",
-        "in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize",
-        "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
-        "group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full hover:group-data-[collapsible=offcanvas]:bg-sidebar",
-        "[[data-side=left][data-collapsible=offcanvas]_&]:-right-2",
-        "[[data-side=right][data-collapsible=offcanvas]_&]:-left-2",
-        className
-      )}
-      {...props}
-    />
   )
 }
 
@@ -752,7 +682,6 @@ export {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
   SidebarProvider,
-  SidebarRail,
   SidebarSeparator,
   SidebarTrigger,
   useSidebar,

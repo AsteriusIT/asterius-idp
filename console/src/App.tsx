@@ -3,25 +3,14 @@ import type { JSX } from 'react';
 import { ApiError, endSession, loadSession, type Session } from './api';
 import { AuditExplorer } from './audit';
 import { Clients } from './clients';
-import { AppSidebar } from './components/app-sidebar';
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from './components/ui/breadcrumb';
-import { Separator } from './components/ui/separator';
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from './components/ui/sidebar';
+import { AppSidebar, NAVIGATION_ICONS } from './components/app-sidebar';
+import { AppTopbar } from './components/app-topbar';
+import { SidebarInset, SidebarProvider } from './components/ui/sidebar';
 import { Toaster, toast } from './components/ui/toast';
 import { Keys } from './keys';
 import { DESTINATIONS, visibleTo } from './navigation';
 import { Policy } from './policy';
+import { Preferences } from './preferences';
 import { hrefOf, paramsOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
 import { Tenants } from './tenants';
@@ -125,17 +114,8 @@ export function App(): JSX.Element {
     : (destinations[0]?.route ?? route);
   const here = DESTINATIONS.find((destination) => destination.route === current);
 
-  /**
-   * The shell since `ast-gore`: a sidebar, and a bar that says where you are.
-   *
-   * There is no navigation header any more — the rail is the whole navigation
-   * — so the bar above the content carries exactly three things: the control
-   * that folds the rail, the trail that says which screen this is, and nothing
-   * else. It stays on a narrow window, where the rail has become a drawer and
-   * the trigger is the only way back to it.
-   */
   return (
-    <SidebarProvider>
+    <SidebarProvider open={false}>
       <a
         className="skip"
         href={`${hrefOf(current)}`}
@@ -143,40 +123,13 @@ export function App(): JSX.Element {
       >
         Skip to content
       </a>
-      <AppSidebar
-        session={shell.session}
-        current={current}
-        onSignOut={() => signOut(shell.session)}
-      />
+      <AppSidebar session={shell.session} current={current} />
       <SidebarInset>
-        {/* The bar is full width — it is the top of the pane — but what is in
-            it starts where the content starts (`ast-f9j5`): a breadcrumb at
-            the far left above a centred column read as two pages stacked. */}
-        <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center border-b bg-background">
-          <div className="mx-auto flex w-full max-w-[var(--content-max)] items-center gap-2 px-[var(--space-5)]">
-          <SidebarTrigger />
-          <Separator orientation="vertical" className="mr-2 !h-4" />
-          <Breadcrumb>
-            <BreadcrumbList>
-              {current === 'settings' && paramsOf(fragment).get('tenant') !== null ? (
-                <>
-                  <BreadcrumbItem>
-                    <BreadcrumbLink href={hrefOf('settings')}>Tenant settings</BreadcrumbLink>
-                  </BreadcrumbItem>
-                  <BreadcrumbSeparator />
-                  <BreadcrumbItem>
-                    <BreadcrumbPage>{paramsOf(fragment).get('tenant')}</BreadcrumbPage>
-                  </BreadcrumbItem>
-                </>
-              ) : (
-                <BreadcrumbItem>
-                  <BreadcrumbPage>{here?.label ?? 'Not found'}</BreadcrumbPage>
-                </BreadcrumbItem>
-              )}
-            </BreadcrumbList>
-          </Breadcrumb>
-          </div>
-        </header>
+        <AppTopbar
+          session={shell.session}
+          page={here?.label ?? 'Not found'}
+          onSignOut={() => signOut(shell.session)}
+        />
         <main id="content" tabIndex={-1} className="content">
           <RouteScreen route={current} fragment={fragment} session={shell.session} />
         </main>
@@ -223,6 +176,9 @@ function RouteScreen({
     // another one, which only a deployment-scoped caller can have reached.
     return <TenantSettings session={session} tenant={paramsOf(fragment).get('tenant')} />;
   }
+  if (route === 'preferences') {
+    return <Preferences />;
+  }
   if (route === 'tenants') {
     return <Tenants session={session} />;
   }
@@ -265,56 +221,68 @@ function RouteScreen({
  * of its own.
  */
 function Overview({ session }: { session: Session }): JSX.Element {
-  const destinations = visibleTo(session);
+  const destinations = visibleTo(session).filter((destination) => destination.route !== 'overview');
   return (
-    <Screen title="Overview" description="Who this session is, and what it reaches.">
-      <Panel title="This session">
-        <dl className="stats">
-          <div className="stat">
-            <dt>Tenant</dt>
-            <dd>{session.tenant}</dd>
+    <Screen
+      title="Overview"
+      description={`A clear view of ${session.tenant} and the tools available to this session.`}
+    >
+      <div className="overview-bento">
+        <Panel
+          className="overview-identity"
+          title="Workspace"
+          description="The active tenant and your effective access."
+        >
+          <dl className="stats">
+            <div className="stat">
+              <dt>Tenant</dt>
+              <dd>{session.tenant}</dd>
+            </div>
+            <div className="stat">
+              <dt>User</dt>
+              <dd className="wrap-anywhere">{session.user}</dd>
+            </div>
+            <div className="stat">
+              <dt>Roles</dt>
+              <dd>
+                {session.roles.length > 0 ? (
+                  <span className="row">
+                    {session.roles.map((role) => (
+                      <Badge key={role} tone="neutral">
+                        {role}
+                      </Badge>
+                    ))}
+                  </span>
+                ) : (
+                  'none'
+                )}
+              </dd>
+            </div>
+          </dl>
+        </Panel>
+        <Panel
+          className="overview-access"
+          title="Available areas"
+          description={`${destinations.length} areas are available with your current permissions.`}
+        >
+          <div className="workspace-grid">
+            {destinations.map((destination) => {
+              const Icon = NAVIGATION_ICONS[destination.route];
+              return (
+                <div className="workspace-card" key={destination.route}>
+                  <span className="workspace-icon" aria-hidden="true">
+                    {Icon !== undefined && <Icon />}
+                  </span>
+                  <span>
+                    <strong>{destination.label}</strong>
+                    <small>{destination.group}</small>
+                  </span>
+                </div>
+              );
+            })}
           </div>
-          <div className="stat">
-            <dt>User</dt>
-            <dd className="wrap-anywhere">{session.user}</dd>
-          </div>
-          <div className="stat">
-            <dt>Roles</dt>
-            <dd>
-              {session.roles.length > 0 ? (
-                <span className="row">
-                  {session.roles.map((role) => (
-                    <Badge key={role} tone="neutral">
-                      {role}
-                    </Badge>
-                  ))}
-                </span>
-              ) : (
-                'none'
-              )}
-            </dd>
-          </div>
-        </dl>
-      </Panel>
-      <Panel
-        title="What you can reach"
-        description="A screen is listed when this session holds the scope its first call needs. The server checks every one of them again."
-      >
-        {/*
-          Names and not links, deliberately. The sidebar beside this panel is
-          the console's one navigation; a second set of links to the same nine
-          screens would be a second place for a keyboard user to tab through,
-          and two controls carrying one accessible name on one page.
-        */}
-        <ul className="switches">
-          {destinations.map((destination) => (
-            <li key={destination.route}>
-              <strong>{destination.label}</strong>{' '}
-              <span className="muted">{destination.scope}</span>
-            </li>
-          ))}
-        </ul>
-      </Panel>
+        </Panel>
+      </div>
     </Screen>
   );
 }

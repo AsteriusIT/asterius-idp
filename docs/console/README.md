@@ -13,18 +13,16 @@ checked copy. This file says where the values live, what the pieces are called, 
 what a screen is expected to do with them (`ast-fe39`, rebuilt on **shadcn/ui**
 by `ast-gore`).
 
-Four things changed in `ast-gore` and each has a section below: the components
-are shadcn's, copied into `console/src/components/ui/`; the theme is **light by
-default** with a remembered toggle; the navigation is **one sidebar** and
-nothing else; and that sidebar carries a **tenant selector**. The policy the
-whole thing is served under did not change, which took measuring — see
+The components are shadcn's, copied into `console/src/components/ui/`. The
+application shell uses a fixed icon rail, a contextual topbar and bento-style
+content cards. Theme and density are browser preferences on one Settings page;
+tenant configuration remains a separate domain page. The policy the whole
+thing is served under did not change, which took measuring — see
 [Under the policy](#under-the-policy).
 
-The pictures beside it are the same eight screens before the migration
-(`before/`) and after it (`after/`), taken by the same browser at 1440×900 by
+The pictures beside it cover every screen at 1440×900 and are produced by
 `e2e/tests/console-shots.spec.ts`. The matching dark-theme series lives under
-`after/dark/`. A ninth, `after/tenants.png`, has no
-"before": the screen did not exist until `ast-l5bl`, and it is photographed as
+`after/dark/`. Tenants has no historical “before” image and is photographed as
 the deployment administrator because nobody else is shown the link.
 
 ## The tokens
@@ -88,8 +86,8 @@ Two deliberate differences from `style.css`:
   reviewed like the rest of the tree and edited where this deployment
   disagrees. Two such edits so far: the sidebar's `sidebar_state` **cookie** is
   gone (it would have been written at `path=/` on the origin that serves the
-  token endpoint, without the `__Host-` prefix every other cookie here carries)
-  and lives in `localStorage`; and Sonner is not installed at all, for the
+  token endpoint, without the `__Host-` prefix every other cookie here carries);
+  the fixed desktop rail needs no persistence at all. Sonner is not installed, for the
   reason [Under the policy](#under-the-policy) gives.
 
   What is underneath is Radix, and Radix is **behaviour, not paint**: focus
@@ -137,7 +135,7 @@ The purge is Tailwind v4's own content detection over `console/src`, and
 `cssCodeSplit: false` keeps the output one file — which is what lets the entry
 document link one stylesheet with one nonce.
 
-`styles.css` — the screen-level classes nine screens still use (`.stack`,
+`styles.css` — the screen-level classes the routes still use (`.stack`,
 `.muted`, `.detail`, `.table-wrap`, the form rules) — is wrapped in
 `@layer components`. Cascade layers, and the rule that an *unlayered*
 declaration beats every layered one: a `button { … }` outside any layer would
@@ -162,7 +160,7 @@ migrations a change of markup rather than a change of behaviour.
 | `Field` | Label, control, help, and the server's refusal at the field — wired with `aria-describedby` and `aria-invalid`. |
 | `Message` | `success` and `info` are `role="status"`, `error` is `role="alert"`. Mark, tint and rule, never colour alone. |
 | `Badge` | A state as a word first: `ok`, `warn`, `bad`, `info`, neutral. |
-| `DataTable` | shadcn `Table`. Columns, one client-side sort with `aria-sort`, an optional client-side filter with a “3 of 20 shown” count, an empty state, right-aligned actions, and a persisted comfortable/compact density choice. Every list in the console is one since `ast-f9j5`. |
+| `DataTable` | shadcn `Table`. Columns, one client-side sort with `aria-sort`, an optional client-side filter with a “3 of 20 shown” count, an empty state and right-aligned actions. Its persisted comfortable/compact density is selected once on Settings. Every list in the console is one since `ast-f9j5`. |
 | `EmptyState` | Nothing to show, and what to do about it. |
 | `Skeleton` | The shape of what is arriving. `aria-live`, and deliberately *not* `role="status"`. |
 | `LoadFailure` | A read that did not answer, and the way to ask again. |
@@ -190,30 +188,30 @@ sentence is doing the most work it does anywhere — it is the one act on this
 console that stops a whole tenant answering, for every client and every user it
 has.
 
+Dialogs are reserved for these short confirmations. Creating an account or a
+tenant and registering or editing an application are multi-field tasks, so
+each opens a dedicated page state with a clear back action instead of sharing
+the list or being placed in a modal.
+
 ## The shell
 
-**One navigation, and it is the sidebar** (`ast-gore` (3)). The sticky header
-is gone: everything it carried — the mark, the wordmark, which tenant, who is
-signed in, how to leave — is in the rail, because a console with two
-navigations has two tab orders to walk and two places to look, and the header's
-row was the half that broke first on a narrow window. What is left above the
-content is a bar with the fold control and a breadcrumb, which says where you
-are and nothing else.
+The shell deliberately separates navigation from context. A fixed icon-only
+rail answers “where next?”; the sticky topbar carries the active tenant, the
+current page, a direct Settings action and the signed-in user. Labels remain
+available as accessible names and tooltips, while the mobile drawer shows them
+visibly.
 
 The rail is shadcn's `Sidebar`, and it:
 
-* **groups** the nine destinations under five headings — Overview; Directory;
+* **groups** the ten destinations under five headings — Overview; Directory;
   Trust; Observability; Deployment (`navigation.ts`, `Group`). A heading with
   nothing under it is not drawn, so a caller who reaches neither Tenants nor
   Tenant settings sees no "Deployment";
-* **folds to icons** with `Ctrl`/`⌘`+`B` or the rail's own edge control, and
-  every label survives as the button's accessible name and as a tooltip;
+* is **always an icon rail on desktop**, with no resize cursor or inert edge
+  affordance; every label survives as the link's accessible name and tooltip;
 * **becomes a drawer** (`Sheet`) below the mobile breakpoint;
-* remembers whether it was folded in `localStorage` — *not* in the
-  `sidebar_state` cookie shadcn ships, which would have been an unprefixed
-  cookie at `path=/` on the origin that also serves the token endpoint;
-* carries the **tenant selector** at the top and the **account menu** at the bottom, with the signed-in identifier and roles,
-  theme switch, copy identifier and sign-out.
+* leaves tenant and account context to the topbar, where it remains visible
+  without widening navigation.
 
 `visibleTo` still decides what appears, and is still a courtesy rather than a
 control: the server re-checks every route (`crates/admin-api/src/rbac.rs`).
@@ -236,13 +234,15 @@ Light is the default and the browser is not asked (`ast-gore` (2)). Until this
 bead the palette hung off `prefers-color-scheme`, so an administrator whose
 operating system was dark got a dark console they had never chosen and could
 not turn off. Now `.dark` on `<html>` is the whole switch, `console/src/theme.ts`
-is what puts it there, and `localStorage` is what remembers it. There is
+is what puts it there, and `localStorage` is what remembers it. The control is
+on the dedicated Settings page beside the global table-density preference,
+rather than inside the account menu or repeated on data screens. There is
 deliberately no third "system" value: that value is how the console got dark in
 the first place.
 
 ### The tenant selector
 
-A combobox in the sidebar's header (`Popover` over `Command`), opened from
+A combobox in the topbar (`Popover` over `Command`), opened from
 anywhere with `Ctrl`/`⌘`+`K`: the tenant this session is in, and the tenants it
 may reach.
 
@@ -427,7 +427,7 @@ E2E_SHOTS=docs/console/after/dark E2E_SHOTS_THEME=dark \
 skips, because it asserts nothing and every console criterion is asserted by
 `e2e/tests/console.spec.ts`.
 
-The final assembled sweep opens all nine destinations at 1440px and 400px in
+The final assembled sweep opens all ten destinations at 1440px and 400px in
 both the light and dark themes. At every stop it checks that the document did
 not widen the viewport and runs the WCAG A/AA axe rules. That matrix is kept in
 the ordinary console spec so a later change cannot update the pictures while
@@ -435,22 +435,21 @@ silently weakening the executable guard.
 
 ## Navigation and account menu (`ast-k7az.5`)
 
-The rail groups screens by the operator's task: Overview, Directory (Users,
+The icon rail groups screens by the operator's task: Overview, Directory (Users,
 Applications), Trust (Signing keys, Access policy), Observability (Shared
-signals, Audit trail), and Deployment (Tenants, Tenant settings). A neutral
+signals, Audit trail), and Deployment (Tenants, Tenant settings, Settings). A neutral
 monogram identifies the console because its session API exposes no deployment
 brand. The active screen has a grey fill and a two-pixel marker. Fragment routes,
 scopes, reach and API calls are unchanged.
 
-The tenant selector shows its identifier and the roles reported by the session.
-The footer has one account menu with an avatar, truncated identifier and role;
+The topbar tenant selector shows its identifier and the roles reported by the session.
+The right side has one account menu with an avatar, truncated identifier and role;
 the full identifier remains available in its tooltip and through Copy account
 identifier. Radix supplies menu keyboard navigation, Escape dismissal and focus
-return. Theme selection still persists locally; sign-out uses the existing flow.
+return. Sign-out uses the existing flow.
 
-Breadcrumbs name only the screen, followed by the target tenant when opening
-that tenant's settings. The tenant already appears in the rail. Ctrl/Command+B
-still folds the sidebar and Ctrl/Command+K opens the tenant selector. On mobile,
+The page label in the topbar gives local context without duplicating navigation.
+Ctrl/Command+K opens the tenant selector. On mobile,
 choosing a screen closes the drawer so the content is immediately visible.
 
 ## Bundled fonts (`ast-k7az.2`)

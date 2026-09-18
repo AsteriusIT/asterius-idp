@@ -57,6 +57,7 @@ const SCREENS: readonly (readonly [string, string])[] = [
   ['Audit trail', 'audit'],
   ['Access policy', 'policy'],
   ['Tenant settings', 'settings'],
+  ['Settings', 'preferences'],
 ];
 
 test('every console screen is photographed', async ({ page }) => {

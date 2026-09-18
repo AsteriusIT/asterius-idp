@@ -171,6 +171,7 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
   const [refusal, setRefusal] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   const refresh = useCallback((from: string | null) => {
     setLoad({ kind: 'loading' });
@@ -244,10 +245,35 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
 
   const writable = mayWrite(session);
 
+  if (creating) {
+    return (
+      <Screen
+        title="Add a tenant"
+        description="Provision the tenant and its initial signing keys in one operation."
+        actions={<Button onClick={() => setCreating(false)}>Back to tenants</Button>}
+      >
+        <NewTenant
+          session={session}
+          onCreated={(created) => {
+            setRefusal(null);
+            setNotice(`${created.tenant_id} was created, with its signing keys.`);
+            toast.success('Tenant created', `${created.tenant_id}, with its signing keys.`);
+            setCreating(false);
+            setCursor(null);
+            refresh(null);
+          }}
+        />
+      </Screen>
+    );
+  }
+
   return (
     <Screen
       title="Tenants"
       description="Every tenant this deployment serves. Suspending one stops it answering at every endpoint, for every client and every user it has."
+      actions={writable ? (
+        <Button variant="primary" onClick={() => setCreating(true)}>Add tenant</Button>
+      ) : undefined}
     >
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
@@ -282,19 +308,6 @@ export function Tenants({ session }: { session: Session }): JSX.Element {
           </>
         )}
       </Panel>
-
-      {writable && (
-        <NewTenant
-          session={session}
-          onCreated={(created) => {
-            setRefusal(null);
-            setNotice(`${created.tenant_id} was created, with its signing keys.`);
-            toast.success('Tenant created', `${created.tenant_id}, with its signing keys.`);
-            setCursor(null);
-            refresh(null);
-          }}
-        />
-      )}
 
       {pending !== null && (
         <ConfirmDialog
@@ -488,7 +501,7 @@ function NewTenant({
   return (
     <Panel
       id="new-tenant"
-      title="Add a tenant"
+      title="Tenant details"
       description="The server generates this tenant's signing keys in the same step, so there is no key material to supply. Its features and lifetimes are set afterwards, on its settings screen."
     >
       {refusal !== null && <Message tone="error">{refusal}</Message>}

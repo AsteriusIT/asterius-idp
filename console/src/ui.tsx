@@ -120,18 +120,20 @@ export function Panel({
   id,
   description,
   actions,
+  className,
   children,
 }: {
   title: string;
   id?: string;
   description?: ReactNode;
   actions?: ReactNode;
+  className?: string;
   children: ReactNode;
 }): JSX.Element {
   const generated = useId();
   const headingId = id ?? generated;
   return (
-    <Card asChild>
+    <Card asChild className={className}>
       <section aria-labelledby={headingId}>
         <CardHeader>
           <div className="panel-title">
@@ -509,7 +511,7 @@ export interface Column<Row> {
 /** Which way a sorted column is sorted. */
 type Direction = 'ascending' | 'descending';
 
-type TableDensity = 'comfortable' | 'compact';
+export type TableDensity = 'comfortable' | 'compact';
 const TABLE_DENSITY_KEY = 'asterius.console.table-density';
 const TABLE_DENSITY_EVENT = 'asterius:table-density';
 
@@ -520,7 +522,7 @@ function storedTableDensity(): TableDensity {
   return window.localStorage.getItem(TABLE_DENSITY_KEY) === 'compact' ? 'compact' : 'comfortable';
 }
 
-function useTableDensity(): readonly [TableDensity, (density: TableDensity) => void] {
+export function useTableDensity(): readonly [TableDensity, (density: TableDensity) => void] {
   const [density, setDensity] = useState<TableDensity>(storedTableDensity);
 
   useEffect(() => {
@@ -540,31 +542,6 @@ function useTableDensity(): readonly [TableDensity, (density: TableDensity) => v
     window.dispatchEvent(new Event(TABLE_DENSITY_EVENT));
   };
   return [density, choose] as const;
-}
-
-/** One persisted density choice shared by every table in the console. */
-export function TableDensityControl(): JSX.Element {
-  const [density, choose] = useTableDensity();
-  return (
-    <div className="density-control" role="group" aria-label="Table density">
-      <Button
-        small
-        variant="ghost"
-        aria-pressed={density === 'comfortable'}
-        onClick={() => choose('comfortable')}
-      >
-        Comfortable
-      </Button>
-      <Button
-        small
-        variant="ghost"
-        aria-pressed={density === 'compact'}
-        onClick={() => choose('compact')}
-      >
-        Compact
-      </Button>
-    </div>
-  );
 }
 
 /**
@@ -676,7 +653,6 @@ export function DataTable<Row>({
         )}
         </div>
       )}
-      <TableDensityControl />
     </div>
   );
 

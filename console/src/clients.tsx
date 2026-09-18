@@ -443,6 +443,38 @@ export function Clients({ session }: { session: Session }): JSX.Element {
     [query, refresh, session],
   );
 
+  if (draft !== null && editing.kind !== 'none') {
+    const title = editing.kind === 'existing'
+      ? `Edit ${editing.document.client_name}`
+      : 'Register an application';
+    return (
+      <Screen
+        title={title}
+        description="Identity, callbacks, grants and signing material belong to one focused configuration workflow."
+        actions={<Button onClick={close}>Back to applications</Button>}
+      >
+        {notice !== null && <Message tone="success">{notice}</Message>}
+        {refusal !== null && <Message tone="error">{refusal}</Message>}
+        <Editor
+          draft={draft}
+          editing={editing}
+          busy={busy}
+          onChange={setDraft}
+          onSubmit={() => save(draft, editing)}
+          onClose={close}
+        />
+        {editing.kind === 'existing' && mayReadAppRoles(session) && (
+          <RoleCatalogue
+            session={session}
+            path={clientCatalogue(editing.document.client_id)}
+            title={`Application roles of ${editing.document.client_id}`}
+            explanation="Issued to this client alone, under resource_access.{client_id}.roles. A token issued to another client never names them. Deleting one is refused while any account still holds it."
+          />
+        )}
+      </Screen>
+    );
+  }
+
   return (
     <Screen
       title="Applications"
@@ -488,31 +520,6 @@ export function Clients({ session }: { session: Session }): JSX.Element {
 
         <Inventory load={load} onOpen={openExisting} onRetry={() => refresh(query)} busy={busy} />
       </Panel>
-
-      {draft !== null && editing.kind !== 'none' && (
-        <Editor
-          draft={draft}
-          editing={editing}
-          busy={busy}
-          onChange={setDraft}
-          onSubmit={() => save(draft, editing)}
-          onClose={close}
-        />
-      )}
-
-      {/*
-        This client's own role catalogue (`ast-095`), under the editor and only
-        for an existing client: a role belongs to a client that exists, and the
-        catalogue of one being registered would have nowhere to be written.
-      */}
-      {editing.kind === 'existing' && mayReadAppRoles(session) && (
-        <RoleCatalogue
-          session={session}
-          path={clientCatalogue(editing.document.client_id)}
-          title={`Application roles of ${editing.document.client_id}`}
-          explanation="Issued to this client alone, under resource_access.{client_id}.roles. A token issued to another client never names them. Deleting one is refused while any account still holds it."
-        />
-      )}
 
       {gate !== null && <Gate gate={gate} />}
 
