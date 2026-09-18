@@ -243,6 +243,69 @@ test('the console screen has no accessibility violation', async ({ page }, testI
 });
 
 /**
+ * `ast-k7az.7`: the assembled console, rather than one representative screen.
+ *
+ * Individual tests below exercise each screen's behaviour. This matrix is the
+ * final visual guard: every destination is opened through the navigation and
+ * measured by axe after all of the redesign children have been assembled.
+ * Both palettes and both layout breakpoints matter because contrast and
+ * overflow defects can exist in only one member of that matrix.
+ */
+const ASSEMBLED_SCREENS = [
+  'Overview',
+  'Users',
+  'Applications',
+  'Signing keys',
+  'Shared signals',
+  'Audit trail',
+  'Access policy',
+  'Tenants',
+  'Tenant settings',
+] as const;
+
+for (const theme of ['light', 'dark'] as const) {
+  for (const width of [1440, 400] as const) {
+    test(`every screen passes axe in the ${theme} theme at ${width}px`, async ({ page }, testInfo) => {
+      test.setTimeout(120_000);
+      await page.setViewportSize({ width, height: 900 });
+      await page.addInitScript((selectedTheme) => {
+        window.localStorage.setItem('asterius.console.theme', selectedTheme);
+      }, theme);
+      await signInAsDeploymentAdmin(page);
+      await expect(page.locator('html')).toHaveClass(theme === 'dark' ? /dark/ : /^(?!.*dark)/);
+
+      const violations: { screen: string; violations: unknown[] }[] = [];
+      for (const screen of ASSEMBLED_SCREENS) {
+        if (screen !== 'Overview') {
+          if (width === 400) {
+            await page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).click();
+          }
+          await page.getByRole('link', { name: screen, exact: true }).click();
+        }
+        await expect(page.getByRole('heading', { name: screen, exact: true }).first()).toBeVisible();
+        await page.waitForLoadState('networkidle');
+        expect(
+          await page.evaluate(() => document.documentElement.scrollWidth),
+          `${screen} widened the ${width}px viewport`,
+        ).toBeLessThanOrEqual(width);
+        const result = await new AxeBuilder({ page })
+          .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+          .analyze();
+        if (result.violations.length > 0) {
+          violations.push({ screen, violations: result.violations });
+        }
+      }
+
+      await testInfo.attach(`axe-${theme}-${width}`, {
+        body: JSON.stringify(violations, null, 2),
+        contentType: 'application/json',
+      });
+      expect(violations).toEqual([]);
+    });
+  }
+}
+
+/**
  * Walks the navigation to the tenant settings screen (`ast-bfn`).
  *
  * By its link and not by a fragment typed into the address bar: the criterion

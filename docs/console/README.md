@@ -21,8 +21,9 @@ whole thing is served under did not change, which took measuring — see
 [Under the policy](#under-the-policy).
 
 The pictures beside it are the same eight screens before the migration
-(`before/`) and after it (`after/`), taken by the same browser at 1280×900 by
-`e2e/tests/console-shots.spec.ts`. A ninth, `after/tenants.png`, has no
+(`before/`) and after it (`after/`), taken by the same browser at 1440×900 by
+`e2e/tests/console-shots.spec.ts`. The matching dark-theme series lives under
+`after/dark/`. A ninth, `after/tenants.png`, has no
 "before": the screen did not exist until `ast-l5bl`, and it is photographed as
 the deployment administrator because nobody else is shown the link.
 
@@ -95,6 +96,15 @@ Two deliberate differences from `style.css`:
   traps, roving tab indexes, `aria-*` wiring, dismiss semantics. That is the
   half `ConfirmDialog` had to get right by hand, and the half every dialog
   after it would have had to get right again.
+
+### Visible copy names the task, not the standard
+
+Standards citations belong in source comments and architecture records, where
+they help maintainers preserve the protocol. They do not appear in headings,
+labels, help text or errors shown to an operator. The embedded-bundle test
+`the_embedded_bundle_cites_no_specification_at_the_reader` scans the production
+JavaScript for the citation forms removed by `ast-k7az.4`; changing a visible
+sentence back to a protocol reference therefore fails before release.
 
 ## Tailwind, and where the colours come from
 
@@ -408,11 +418,20 @@ a registration that raises a toast *and* keeps the record.
 ```sh
 E2E_SHOTS=docs/console/after ./scripts/browser-tests.sh \
   --project=js tests/console-shots.spec.ts
+
+E2E_SHOTS=docs/console/after/dark E2E_SHOTS_THEME=dark \
+  ./scripts/browser-tests.sh --project=js tests/console-shots.spec.ts
 ```
 
 `E2E_SHOTS` is a directory relative to the repository root; without it the spec
 skips, because it asserts nothing and every console criterion is asserted by
 `e2e/tests/console.spec.ts`.
+
+The final assembled sweep opens all nine destinations at 1440px and 400px in
+both the light and dark themes. At every stop it checks that the document did
+not widen the viewport and runs the WCAG A/AA axe rules. That matrix is kept in
+the ordinary console spec so a later change cannot update the pictures while
+silently weakening the executable guard.
 
 ## Navigation and account menu (`ast-k7az.5`)
 

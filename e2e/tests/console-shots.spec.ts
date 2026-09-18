@@ -5,7 +5,8 @@
  * written to `docs/console/`, so that a redesign can be reviewed as what it is
  * — a change to what people see — rather than as a diff of class names. The
  * pair it produces is what the ticket asks for: the same eight screens before
- * the migration and after it, taken by the same browser at the same size.
+ * the migration and after it, taken by the same browser at the same size. Set
+ * `E2E_SHOTS_THEME=dark` for the matching dark-theme series.
  *
  * # Why it does not run with the sweep
  *
@@ -32,8 +33,19 @@ import { expect, test } from '@playwright/test';
 import { signIn, signInAsDeploymentAdmin } from '../src/console.js';
 
 const DIRECTORY = process.env.E2E_SHOTS;
+const THEME = process.env.E2E_SHOTS_THEME ?? 'light';
 
 test.skip(DIRECTORY === undefined, 'set E2E_SHOTS to a directory to take the pictures');
+
+if (THEME !== 'light' && THEME !== 'dark') {
+  throw new Error('E2E_SHOTS_THEME must be either light or dark');
+}
+
+async function prepareTheme(page: Parameters<typeof signIn>[0]): Promise<void> {
+  await page.addInitScript((theme) => {
+    window.localStorage.setItem('asterius.console.theme', theme);
+  }, THEME);
+}
 
 /** The screens, as the navigation names them, and the file each one gets. */
 const SCREENS: readonly (readonly [string, string])[] = [
@@ -48,10 +60,12 @@ const SCREENS: readonly (readonly [string, string])[] = [
 ];
 
 test('every console screen is photographed', async ({ page }) => {
-  // Arrange: one signed-in shell, at a tablet-and-up width.
-  await page.setViewportSize({ width: 1280, height: 900 });
+  // Arrange: one signed-in shell, at the desktop sweep width.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await prepareTheme(page);
   await signIn(page);
   await expect(page.getByRole('heading', { name: 'Asterius console' })).toBeVisible();
+  await expect(page.locator('html')).toHaveClass(THEME === 'dark' ? /dark/ : /^(?!.*dark)/);
 
   for (const [label, file] of SCREENS) {
     // Act: through the navigation, which is how an administrator gets there.
@@ -76,7 +90,8 @@ test('every console screen is photographed', async ({ page }) => {
  */
 test('the tenants screen is photographed as the deployment administrator', async ({ page }) => {
   // Arrange
-  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await prepareTheme(page);
   await signInAsDeploymentAdmin(page);
 
   // Act
