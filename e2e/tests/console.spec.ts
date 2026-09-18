@@ -1304,6 +1304,43 @@ async function openSigningKeys(page: Page): Promise<void> {
 }
 
 /**
+ * `ast-k7az.3`: the public key set is readable JSON, not a page-width test.
+ *
+ * The seeded RSA modulus is the hostile value here: one uninterrupted string
+ * hundreds of characters long. It must wrap or scroll inside the named JSON
+ * region while the document itself stays at viewport width. Copying is part
+ * of the component rather than a selection trick, and axe covers the
+ * focusable scrolling region and its labelled control together.
+ */
+test('the JWK Set is highlighted, copyable and contained by its own region', async ({
+  context,
+  page,
+}) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await signIn(page);
+  await openSigningKeys(page);
+
+  const json = page.getByRole('region', { name: 'Published JWK Set JSON' });
+  await expect(json).toBeVisible();
+  await expect(json.locator('.json-key').first()).toBeVisible();
+  await expect(json.locator('.json-string').first()).toBeVisible();
+  await expect(page.getByText(/\d+ lines/)).toBeVisible();
+
+  const documentFits = await page.evaluate(
+    () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+  );
+  expect(documentFits, 'the JSON widened the whole console').toBe(true);
+
+  await page.getByRole('button', { name: 'Copy Published JWK Set JSON' }).click();
+  expect(JSON.parse(await page.evaluate(() => navigator.clipboard.readText()))).toHaveProperty(
+    'keys',
+  );
+
+  const audit = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(audit.violations, JSON.stringify(audit.violations, null, 2)).toEqual([]);
+});
+
+/**
  * (1) A filter, and the count beside it, on a table that had neither.
  *
  * The count is the half that matters and the half a filter is usually shipped

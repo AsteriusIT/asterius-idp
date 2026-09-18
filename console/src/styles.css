@@ -197,6 +197,84 @@
     overflow-wrap: anywhere;
   }
 
+  /* ---- JSON ------------------------------------------------------------ */
+
+  /* The scroll belongs to the JSON document, never to the page. The region is
+     focusable in `JsonView`, so keyboard users can reach a document whose
+     punctuation or indentation still needs horizontal movement. */
+  .json-view,
+  .json-code {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .json-view {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .json-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .json-code {
+    margin: 0;
+    padding: var(--space-3);
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--ctl);
+    background: var(--surface-sunken);
+    color: var(--fg);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    tab-size: 2;
+  }
+
+  .json-code:focus-visible {
+    outline: 2px solid var(--info);
+    outline-offset: 2px;
+  }
+
+  .json-inline {
+    display: inline;
+    max-width: 100%;
+    white-space: normal;
+  }
+
+  .claim-json-preview {
+    display: block;
+    max-width: 32ch;
+    margin-top: var(--space-1);
+    color: var(--muted);
+  }
+
+  .json-token.json-key {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .json-token.json-string {
+    color: var(--info);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .json-token.json-number,
+  .json-token.json-boolean {
+    color: var(--success);
+  }
+
+  .json-token.json-null,
+  .json-token.json-punctuation {
+    color: var(--muted);
+  }
+
   /* ---- screens and panels ---------------------------------------------- */
 
   .screen {

@@ -50,6 +50,7 @@ import type { JSX } from 'react';
 import { ApiError, mutate, read, type Session } from './api';
 import { RoleCatalogue, clientCatalogue, mayRead as mayReadAppRoles } from './appRoles';
 import { toast } from './components/ui/toast';
+import { JsonView } from './components/json-view';
 import {
   Actions,
   Badge,
@@ -755,6 +756,9 @@ function Editor({
 
         <fieldset disabled={busy}>
           <legend>Keys and subjects</legend>
+          {editing.kind === 'existing' && editing.document.jwks !== undefined && (
+            <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
+          )}
           <p>
             <label htmlFor="jwks-uri">JWK Set URL</label>
             <input

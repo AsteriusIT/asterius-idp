@@ -39,6 +39,7 @@ import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
 import { UserAppRoles, mayRead as mayReadAppRoles } from './appRoles';
 import { toast } from './components/ui/toast';
+import { JsonValue } from './components/json-view';
 import {
   Actions,
   Badge,
@@ -231,6 +232,24 @@ export function parseClaimValue(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+/** A live highlighted reading of a structured claim; plain strings need none. */
+function ClaimJsonPreview({ text }: { text: string }): JSX.Element | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof value === 'string') {
+    return null;
+  }
+  return (
+    <span className="claim-json-preview" aria-label="Structured claim preview">
+      <JsonValue value={value} />
+    </span>
+  );
 }
 
 /** What the screen is looking at. */
@@ -1105,6 +1124,7 @@ function ClaimsEditor({
                       )
                     }
                   />
+                  <ClaimJsonPreview text={claim.text} />
                 </td>
                 <td>
                   <label className="visually-hidden" htmlFor={`claim-verified-${index}`}>

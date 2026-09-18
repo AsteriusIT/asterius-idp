@@ -26,13 +26,14 @@
  * # No third-party anything
  *
  * The console runs under a strict CSP with `connect-src 'self'` (ADR-0009), so
- * every request is same-origin and relative, and the JWK Set is rendered by
- * `JSON.stringify` rather than by a syntax-highlighting library. A CDN here
- * would not be a slow page, it would be a CSP violation.
+ * every request is same-origin and relative. The JWK Set is highlighted by the
+ * small first-party tokenizer in `json-tokenizer.ts`; a CDN here would not be
+ * a slow page, it would be a CSP violation.
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
+import { JsonView } from './components/json-view';
 import { toast } from './components/ui/toast';
 import {
   Badge,
@@ -310,7 +311,7 @@ export function Keys({ session }: { session: Session }): JSX.Element {
         title="Published JWK Set"
         description="What a relying party fetches from this tenant right now. Public halves only."
       >
-        <pre>{JSON.stringify(load.jwks, null, 2)}</pre>
+        <JsonView value={load.jwks} label="Published JWK Set JSON" />
       </Panel>
     </Screen>
   );
