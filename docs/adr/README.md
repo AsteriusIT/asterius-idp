@@ -20,3 +20,4 @@ Copy [`0000-template.md`](0000-template.md) to start one.
 | [0009](0009-the-admin-console-is-a-first-party-same-origin-app.md) | The admin console is a first-party same-origin app, not an OAuth client | Accepted |
 | [0010](0010-deployment-admins-live-in-a-reserved-tenant.md) | Deployment admins are users of a reserved tenant | Accepted |
 | [0011](0011-a-declarative-rule-model-for-the-built-in-pdp.md) | The built-in PDP evaluates declarative rules, not a policy language | Accepted |
+| [0012](0012-mcp-clients-remain-confidential.md) | MCP compatibility is limited to confidential clients; CIMD is not implemented | Accepted |

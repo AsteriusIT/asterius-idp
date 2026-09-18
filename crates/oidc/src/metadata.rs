@@ -1357,6 +1357,23 @@ mod tests {
         }
     }
 
+    /// ADR-0012 keeps the client model confidential-only. CIMD would let an
+    /// unregistered URL act as `client_id`, so absence is the capability: a
+    /// client must use pre-registration or policy-gated DCR instead. Check the
+    /// all-on document too, because no existing feature flag may imply CIMD.
+    #[test]
+    fn client_id_metadata_documents_are_never_advertised() {
+        for capabilities in [Capabilities::default(), all_features()] {
+            let document = metadata_of(&issuer(), &capabilities, &AcrPolicy::default(), &[]);
+            assert!(
+                document
+                    .get("client_id_metadata_document_supported")
+                    .is_none(),
+                "CIMD was advertised by {capabilities:?}: {document}"
+            );
+        }
+    }
+
     #[test]
     fn grant_types_follow_their_flags() {
         assert_eq!(
