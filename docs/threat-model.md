@@ -1787,18 +1787,20 @@ intentions is worth nothing to a reviewer.
   a second MCP server is a second client with its own consent screen.
 - **Tests.** The `ResourceRegistry` tests in
   `crates/domain/src/entities/resource_server.rs`; `crates/server/tests/discovery.rs`
-  for what a tenant advertises.
-- **Beads.** `ast-gxh.7` (closed), `ast-lh3.8` (**open** — the MCP compatibility
-  profile itself), `ast-lh3.10` (closed — the pre-issuance policy port),
+  for what a tenant advertises; and
+  `a_confidential_mcp_client_registers_and_receives_its_canonical_audience`
+  for discovery, DCR, PAR, code exchange, DPoP binding and JWT validation as
+  one assembled-server journey.
+- **Beads.** `ast-gxh.7` (closed), `ast-lh3.8` (confidential MCP compatibility),
+  `ast-lh3.10` (closed — the pre-issuance policy port),
   `ast-m9c.8` (closed by ADR-0012 — MCP clients remain confidential and Client
   ID Metadata Documents are not implemented).
-- **Residual risk.** One of the three controls the index table claims is a bead
-  that has not landed: there is no MCP profile today. The pre-issuance policy
-  decision now exists (`ast-lh3.10`), and it gates a mint for an *agent* client
-  — an MCP server registered as an ordinary confidential client does not reach
-  it. With audience binding and confidential clients, the deputy problem is
-  answered as far as this server can answer it; the rest is the resource server
-  *checking* `aud`.
+- **Residual risk.** The pre-issuance policy decision gates a mint for an
+  *agent* client; an MCP client registered under `mcp-confidential` is an
+  ordinary confidential client and does not reach that agent-only hook. With
+  audience binding and confidential clients, the deputy problem is answered as
+  far as this server can answer it; the rest is the resource server *checking*
+  `aud` as described in `docs/integrating-an-mcp-server.md`.
 
 #### T-A13 — MCP token passthrough
 
@@ -1816,12 +1818,13 @@ intentions is worth nothing to a reviewer.
 - **Tests.** `crates/server/tests/token.rs` and `crates/server/tests/userinfo.rs`
   cover audience and binding on issuance and on presentation; fuzz:
   [`fuzz/fuzz_targets/access_token_claims.rs`](../fuzz/fuzz_targets/access_token_claims.rs).
-- **Beads.** `ast-gxh.7` (closed), `ast-a05.3` (closed), `ast-lh3.8` (open).
+- **Beads.** `ast-gxh.7` (closed), `ast-a05.3` (closed), `ast-lh3.8`.
 - **Residual risk.** Passthrough is a *resource server* failure, and this
   repository ships no resource server. An AS cannot stop an RS from accepting a
   token addressed to somebody else; all it can do is make the token say who it
-  is for, which it does. `ast-lh3.8` owns the guidance that tells an MCP
-  implementer to check `aud` and to refuse a token it did not request.
+  is for, which it does. The MCP integration guide tells an implementer to
+  check `aud` and to refuse a token it did not request or whose DPoP binding
+  does not match the request proof.
 
 #### T-A14 — Loopback redirect URIs on agent and MCP clients
 

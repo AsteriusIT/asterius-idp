@@ -472,10 +472,43 @@ impl RegistrationPolicy {
         }
     }
 
+    /// The confidential-client compatibility profile for MCP (`E11_08`).
+    ///
+    /// This is deliberately an RFC 7591 compatibility profile, not a public
+    /// OAuth client mode: the client authenticates with an inline key and
+    /// `private_key_jwt`, uses the authorization-code flow, and reaches the
+    /// authorization endpoint through PAR. Redirect URI and resource bounds
+    /// remain tenant/client configuration rather than defaults in the preset.
+    #[must_use]
+    pub fn mcp_confidential_profile() -> Self {
+        Self {
+            mode: Some(RegistrationMode::InitialAccessToken),
+            auth_methods: Some(BTreeSet::from([TokenEndpointAuthMethod::PrivateKeyJwt])),
+            grant_types: Some(BTreeSet::from([
+                GrantType::AuthorizationCode,
+                GrantType::RefreshToken,
+            ])),
+            scopes: None,
+            resources: None,
+            redirect_uri_hosts: None,
+            // An MCP client using this profile must not turn registration into
+            // an outbound fetch. Inline keys are also what private_key_jwt can
+            // use immediately after DCR.
+            jwks: JwksRequirement::Inline,
+            software_statement: SoftwareStatementRule::default(),
+            max_clients_per_initial_access_token: None,
+            unused_client_expiry: None,
+            rotate_registration_access_token: false,
+            registration_access_token_grace: None,
+            agent: None,
+        }
+    }
+
     /// The name of a preset, or `None` for a spelling this build does not know.
     fn profile(name: &str) -> Option<Self> {
         match name {
             "agent" => Some(Self::agent_profile()),
+            "mcp-confidential" => Some(Self::mcp_confidential_profile()),
             _ => None,
         }
     }
@@ -705,7 +738,7 @@ impl RegistrationPolicy {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "profile": { "type": "string", "enum": ["agent"] },
+                "profile": { "type": "string", "enum": ["agent", "mcp-confidential"] },
                 "mode": { "type": "string", "enum": ["closed", "initial_access_token", "open"] },
                 "token_endpoint_auth_methods": {
                     "type": "array",
@@ -1711,6 +1744,80 @@ mod tests {
             Some(BTreeSet::from([GrantType::ClientCredentials]))
         );
         assert_eq!(policy.mode(), Some(RegistrationMode::InitialAccessToken));
+    }
+
+    /// `mcp-confidential` is the narrow bridge described by ADR-0012: DCR is
+    /// gated, the browser flow is available, and the client brings an inline
+    /// key for `private_key_jwt`.
+    #[test]
+    fn the_mcp_confidential_profile_accepts_its_confidential_code_client() {
+        // Arrange
+        let policy = RegistrationPolicy::from_json(Some(&serde_json::json!({
+            "profile": "mcp-confidential"
+        })))
+        .expect("the built-in MCP profile is valid");
+        let mut client = registration();
+        client.grant_types.insert(GrantType::RefreshToken);
+        client.jwks = JwksSource::Inline(serde_json::json!({ "keys": [] }));
+
+        // Act & Assert
+        assert_eq!(policy.evaluate(&client), Ok(()));
+        assert_eq!(policy.mode(), Some(RegistrationMode::InitialAccessToken));
+        assert!(!policy.software_statement().is_required());
+    }
+
+    #[test]
+    fn the_mcp_confidential_profile_refuses_a_remote_jwks() {
+        // Arrange
+        let policy = RegistrationPolicy::mcp_confidential_profile();
+        let client = registration();
+
+        // Act & Assert
+        assert_eq!(
+            policy.evaluate(&client),
+            Err(PolicyViolation::new(RuleId::JwksSource))
+        );
+    }
+
+    #[test]
+    fn the_mcp_confidential_profile_refuses_machine_grants_and_mtls() {
+        // Arrange
+        let policy = RegistrationPolicy::mcp_confidential_profile();
+        let mut client = registration();
+        client.jwks = JwksSource::Inline(serde_json::json!({ "keys": [] }));
+        client.grant_types = BTreeSet::from([GrantType::ClientCredentials]);
+
+        // Act & Assert
+        assert_eq!(
+            policy.evaluate(&client),
+            Err(PolicyViolation::new(RuleId::GrantType))
+        );
+
+        client.grant_types = BTreeSet::from([GrantType::AuthorizationCode]);
+        client.token_endpoint_auth_method = TokenEndpointAuthMethod::TlsClientAuth;
+        assert_eq!(
+            policy.evaluate(&client),
+            Err(PolicyViolation::new(RuleId::AuthMethod))
+        );
+    }
+
+    #[test]
+    fn the_mcp_confidential_profile_is_stored_as_expanded_policy() {
+        // Arrange
+        let policy = RegistrationPolicy::from_json(Some(&serde_json::json!({
+            "profile": "mcp-confidential",
+            "scopes": ["mcp:tools"]
+        })))
+        .expect("a valid MCP policy");
+
+        // Act
+        let stored = policy.to_json();
+        let reread = RegistrationPolicy::from_json(Some(&stored))
+            .expect("the expanded policy remains readable");
+
+        // Assert
+        assert!(stored.get("profile").is_none());
+        assert_eq!(reread, policy);
     }
 
     /// A stored policy is written out in full, so a preset that changes in this

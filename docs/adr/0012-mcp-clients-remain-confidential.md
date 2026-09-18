@@ -47,7 +47,7 @@ because Asterius implements none of the CIMD protocol.
 
 The MCP compatibility work in `ast-lh3.8` is limited to **confidential MCP
 clients** that are pre-registered or use the backwards-compatible DCR path with
-a public `jwks`/`jwks_uri`, authenticate with `private_key_jwt`, push every
+an inline public `jwks`, authenticate with `private_key_jwt`, push every
 authorization request through PAR, use PKCE `S256`, and request DPoP-bound
 tokens. Its documentation and tests must not claim compatibility with generic
 off-the-shelf MCP clients or conformance to the complete MCP authorization

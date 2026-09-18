@@ -665,6 +665,8 @@ The deployment's posture is a ceiling, not the whole answer. Each tenant carries
 
 Every member is optional and every list is *closed*: an absent list means "this tenant has no opinion", and an empty one means "none". `mode: "closed"` removes the endpoint from that tenant's discovery document and unmounts its route; `mode: "open"` cannot open an endpoint the deployment gated. `profile: "agent"` selects the preset for onboarding agents — `client_credentials` only, no callbacks, a software statement required, a quota and an expiry — which the other members then override; a policy that requires a statement and names no trusted issuer is refused, because nothing could ever register under it.
 
+`profile: "mcp-confidential"` selects the narrow MCP compatibility preset from ADR-0012: initial-access-token DCR, `private_key_jwt`, authorization code plus refresh token, and inline `jwks`. It does not enable public clients, make PAR optional, or advertise Client ID Metadata Documents. Redirect URI, scope and resource restrictions may be added with the ordinary members above. See `docs/integrating-an-mcp-server.md` for the complete client and resource-server flow.
+
 A software statement issuer is a **root of trust**: RFC 7591 §2.3 makes a statement's claims override the request's, so whoever holds that signing key can create clients in this tenant with metadata of their choosing. Both URLs must be `https`, the `iss` is compared byte-exactly, and the keys are fetched through the one outbound path. See `docs/threat-model.md`.
 
 Both quota members are enforced since `ast-cu3`:
