@@ -157,6 +157,7 @@ migrations a change of markup rather than a change of behaviour.
 | `LoadFailure` | A read that did not answer, and the way to ask again. |
 | `ConfirmDialog` | The question before something irreversible, on Radix `AlertDialog`. |
 | `toast` / `Toaster` | The announcement of an act that succeeded, in `components/ui/toast.tsx`. First-party; see [Under the policy](#under-the-policy). |
+| `JsonView` / `JsonValue` | First-party JSON highlighting from `json-tokenizer.ts`, with no runtime dependency or inline style. A document owns its horizontal scroll, long strings may wrap, and the block form offers copy plus a line count. |
 
 ### Two rules that are easy to undo by accident
 

@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { read, type Session } from './api';
+import { JsonValue } from './components/json-view';
 import {
   Actions,
   Badge,
@@ -410,7 +411,7 @@ function Chain({ links }: { links: readonly string[] }): JSX.Element {
 }
 
 function DetailList({ row }: { row: AuditRow }): JSX.Element {
-  const entries: [string, string][] = [];
+  const entries: [string, unknown][] = [];
   if (row.client_id !== undefined) {
     entries.push(['client', row.client_id]);
   }
@@ -421,7 +422,7 @@ function DetailList({ row }: { row: AuditRow }): JSX.Element {
     entries.push(['session', row.session_id]);
   }
   for (const [key, value] of Object.entries(row.detail ?? {})) {
-    entries.push([key, typeof value === 'string' ? value : JSON.stringify(value)]);
+    entries.push([key, value]);
   }
   if (entries.length === 0) {
     return <span className="muted">none</span>;
@@ -432,12 +433,16 @@ function DetailList({ row }: { row: AuditRow }): JSX.Element {
         <div key={key}>
           <dt>{key}</dt>
           <dd>
-            {/* Elided rather than wrapped one character at a time, and whole
-                in the `title` (`ast-f9j5`): a session id is opaque, and a
-                column of six-character fragments is not a reading of it. */}
-            <code>
-              <Truncate text={value} className="max-w-[14ch]" />
-            </code>
+            {typeof value === 'string' ? (
+              /* Elided rather than wrapped one character at a time, and whole
+                 in the `title` (`ast-f9j5`): a session id is opaque, and a
+                 column of six-character fragments is not a reading of it. */
+              <code>
+                <Truncate text={value} className="max-w-[14ch]" />
+              </code>
+            ) : (
+              <JsonValue value={value} />
+            )}
           </dd>
         </div>
       ))}

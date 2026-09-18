@@ -34,6 +34,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, probe, read, type Session } from './api';
+import { JsonValue } from './components/json-view';
 import { toast } from './components/ui/toast';
 import {
   Actions,
@@ -415,7 +416,7 @@ export function Policy({ session }: { session: Session }): JSX.Element {
               key: 'condition',
               header: 'Condition',
               cell: ({ rule }) => (
-                <code>{rule.when === undefined ? 'always' : JSON.stringify(rule.when)}</code>
+                rule.when === undefined ? <code>always</code> : <JsonValue value={rule.when} />
               ),
             },
             { key: 'reason', header: 'Reason', cell: ({ rule }) => rule.reason_admin ?? '' },
@@ -666,7 +667,7 @@ function Verdict({ answer }: { answer: Answer }): JSX.Element {
         <div>
           <dt>Error</dt>
           <dd>
-            <code>{JSON.stringify(context.error)}</code>
+            <JsonValue value={context.error} />
           </dd>
         </div>
       )}
