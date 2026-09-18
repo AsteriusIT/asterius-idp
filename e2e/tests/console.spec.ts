@@ -309,8 +309,8 @@ test('the tenant settings screen has no accessibility violation', async ({ page 
  * criterion is that the screen is reachable through the navigation.
  */
 async function openClients(page: Page): Promise<void> {
-  await page.getByRole('link', { name: 'Clients' }).click();
-  await expect(page.getByRole('heading', { name: 'Clients', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Applications' }).click();
+  await expect(page.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
   // Drawn from the document the API answered with, so a visible search box and
   // a settled table mean the read succeeded rather than that a skeleton
   // rendered.
@@ -473,7 +473,8 @@ test('an administrator can sign out, and the session is dead afterwards', async 
   await expect(page.getByRole('heading', { name: 'Asterius console' })).toBeVisible();
 
   // Act
-  await page.getByRole('button', { name: 'Sign out' }).click();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Sign out', exact: true }).click();
 
   // Assert: the screen an administrator lands on, and no navigation loop.
   await expect(page.getByRole('heading', { name: 'Signed out' })).toBeVisible();
@@ -813,8 +814,8 @@ test('the audit explorer filters the trail and exports it as NDJSON', async ({
 
 /** Walks the navigation to the policy editor (`ast-f7m.9`). */
 async function openPolicy(page: Page): Promise<void> {
-  await page.getByRole('link', { name: 'Policy' }).click();
-  await expect(page.getByRole('heading', { name: 'Policy', exact: true })).toBeVisible();
+  await page.getByRole('link', { name: 'Access policy' }).click();
+  await expect(page.getByRole('heading', { name: 'Access policy', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Try a request' })).toBeVisible();
 }
 
@@ -1087,14 +1088,16 @@ test('the console opens in the light theme and remembers the dark one', async ({
   await expect(page.locator('html')).not.toHaveClass(/dark/);
 
   // Act
-  await page.getByRole('button', { name: 'Switch to the dark theme' }).click();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Switch to the dark theme' }).click();
 
   // Assert: applied…
   await expect(page.locator('html')).toHaveClass(/dark/);
   // …and remembered, which a reload is the only honest test of.
   await page.reload();
   await expect(page.locator('html')).toHaveClass(/dark/);
-  await expect(page.getByRole('button', { name: 'Switch to the light theme' })).toBeVisible();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Switch to the light theme' })).toBeVisible();
 });
 
 /**
@@ -1111,8 +1114,21 @@ test('the console opens in the light theme and remembers the dark one', async ({
 test('the dark theme has no accessibility violation either', async ({ page }, testInfo) => {
   // Arrange
   await signIn(page);
-  await page.getByRole('button', { name: 'Switch to the dark theme' }).click();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Switch to the dark theme' }).click();
   await expect(page.locator('html')).toHaveClass(/dark/);
+
+  // Font loading and the theme's colour transitions can still be in flight
+  // after the class changes. Measure the settled palette, not a frame mixing
+  // the light background with dark text; no fixed timeout is needed.
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await Promise.allSettled(
+      document.getAnimations()
+        .filter((animation) => animation instanceof CSSTransition)
+        .map((animation) => animation.finished),
+    );
+  });
 
   // Act
   const results = await new AxeBuilder({ page })
@@ -1135,6 +1151,41 @@ test('the dark theme has no accessibility violation either', async ({ page }, te
  * buttons called nothing. The shortcut is asserted alongside it because it is
  * the way back to the rail once it is folded, without a pointer.
  */
+test('the account menu copies the full identifier and returns keyboard focus', async ({ context, page }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await signIn(page);
+  const session = await (await page.request.get(`${BASE_URL}/admin/api/v1/session`)).json();
+  const account = page.getByRole('button', { name: 'Account menu', exact: true });
+  await account.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('menuitem', { name: 'Copy account identifier' })).toBeVisible();
+  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(results.violations).toEqual([]);
+  await page.getByRole('menuitem', { name: 'Copy account identifier' }).click();
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await expect(account).toBeFocused();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(session.user);
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Escape');
+  await expect(account).toBeFocused();
+});
+
+test('mobile navigation closes after choosing a screen and keeps account actions reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 400, height: 900 });
+  await signIn(page);
+  await page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: 'Console sections' })).toBeVisible();
+  await page.getByRole('link', { name: 'Applications', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: 'Console sections' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'breadcrumb' })).toHaveText('Applications');
+  await page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).click();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Sign out', exact: true })).toBeVisible();
+  const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(results.violations).toEqual([]);
+});
+
 test('the sidebar folds to icons without losing a destination', async ({ page }) => {
   // Arrange
   await signIn(page);
@@ -1147,6 +1198,9 @@ test('the sidebar folds to icons without losing a destination', async ({ page })
   // Assert: folded, and Users is still a link that says "Users".
   await expect(sidebar).toHaveAttribute('data-state', 'collapsed');
   await expect(page.getByRole('link', { name: 'Users' })).toBeVisible();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Sign out', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
 
   // Act / Assert: and it comes back.
   await page.keyboard.press('Control+b');

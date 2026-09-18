@@ -29,6 +29,9 @@ import type { JSX } from 'react';
 import { useSyncExternalStore } from 'react';
 import {
   AppWindowIcon,
+  ChevronsUpDownIcon,
+  CopyIcon,
+  UserRoundIcon,
   Building2Icon,
   KeyRoundIcon,
   LayoutDashboardIcon,
@@ -43,6 +46,9 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Session } from '@/api';
+import { DropdownMenu } from 'radix-ui';
+import { toast } from '@/components/ui/toast';
+import { sessionRoleLabel } from '@/session-label';
 import { TenantSwitcher } from '@/components/tenant-switcher';
 import {
   Sidebar,
@@ -57,6 +63,7 @@ import {
   SidebarMenuItem,
   SidebarRail,
   SidebarSeparator,
+  useSidebar,
 } from '@/components/ui/sidebar';
 import { sectionsFor } from '@/navigation';
 import { hrefOf } from '@/routes';
@@ -91,6 +98,7 @@ export function AppSidebar({
   onSignOut: () => void;
 }): JSX.Element {
   const sections = sectionsFor(session);
+  const { setOpenMobile } = useSidebar();
 
   return (
     <Sidebar collapsible="icon">
@@ -135,9 +143,11 @@ export function AppSidebar({
                           asChild
                           isActive={active}
                           tooltip={destination.label}
+                          className="console-nav-link"
                         >
                           <a
                             href={hrefOf(destination.route)}
+                            onClick={() => setOpenMobile(false)}
                             aria-current={active ? 'page' : undefined}
                           >
                             {Icon !== undefined && <Icon aria-hidden="true" />}
@@ -156,47 +166,65 @@ export function AppSidebar({
 
       <SidebarFooter>
         <SidebarSeparator />
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <ThemeToggle />
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              onClick={onSignOut}
-              tooltip={`Sign out of ${session.user}`}
-            >
-              <LogOutIcon aria-hidden="true" />
-              <span className="truncate">Sign out</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-        <p className="truncate px-2 pb-1 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-          {session.user}
-        </p>
+        <AccountMenu session={session} onSignOut={onSignOut} />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>
   );
 }
 
-/**
- * Light or dark, as one button (`ast-gore` (2)).
- *
- * A switch and not a menu: there are two schemes and no "system", so a menu
- * would be a list of two with a third answer nobody wanted. The label says
- * what pressing it *does*, which is what a screen reader announces.
- */
-function ThemeToggle(): JSX.Element {
+/** One account control works in the full rail, icon rail and mobile drawer. */
+function AccountMenu({ session, onSignOut }: {
+  session: Session;
+  onSignOut: () => void;
+}): JSX.Element {
   const theme = useSyncExternalStore(subscribe, themeNow, themeNow);
   const next = theme === 'dark' ? 'light' : 'dark';
+  const { isMobile } = useSidebar();
+  const copyIdentifier = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(session.user);
+      toast.success('Account identifier copied');
+    } catch {
+      toast.error('Could not copy the account identifier');
+    }
+  };
   return (
-    <SidebarMenuButton
-      onClick={() => setTheme(next)}
-      tooltip={`Switch to the ${next} theme`}
-      aria-label={`Switch to the ${next} theme`}
-    >
-      {theme === 'dark' ? <SunIcon aria-hidden="true" /> : <MoonIcon aria-hidden="true" />}
-      <span className="truncate">{theme === 'dark' ? 'Light theme' : 'Dark theme'}</span>
-    </SidebarMenuButton>
+    <SidebarMenu>
+      <SidebarMenuItem>
+        {/* This is an action menu, not a modal: keep surrounding navigation
+            available to assistive technology and ordinary Tab navigation. */}
+        <DropdownMenu.Root modal={false}>
+          <DropdownMenu.Trigger asChild>
+            <SidebarMenuButton size="lg" tooltip="Account menu" aria-label="Account menu">
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent" aria-hidden="true">
+                <UserRoundIcon className="size-4" />
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col text-left group-data-[collapsible=icon]:hidden">
+                <span className="truncate text-sm font-medium" title={session.user}>{session.user}</span>
+                <span className="truncate text-xs text-foreground">{sessionRoleLabel(session)}</span>
+              </span>
+              <ChevronsUpDownIcon className="ml-auto size-4 group-data-[collapsible=icon]:hidden" aria-hidden="true" />
+            </SidebarMenuButton>
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Portal>
+            <DropdownMenu.Content className="account-menu" side={isMobile ? 'top' : 'right'} align="end" sideOffset={8}>
+              <DropdownMenu.Label className="account-menu-label">Signed in account</DropdownMenu.Label>
+              <DropdownMenu.Item className="account-menu-item" onSelect={() => setTheme(next)} aria-label={`Switch to the ${next} theme`}>
+                {theme === 'dark' ? <SunIcon aria-hidden="true" /> : <MoonIcon aria-hidden="true" />}
+                {theme === 'dark' ? 'Light theme' : 'Dark theme'}
+              </DropdownMenu.Item>
+              <DropdownMenu.Item className="account-menu-item" onSelect={() => { void copyIdentifier(); }}>
+                <CopyIcon aria-hidden="true" />Copy account identifier
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className="account-menu-separator" />
+              <DropdownMenu.Item className="account-menu-item" onSelect={onSignOut}>
+                <LogOutIcon aria-hidden="true" />Sign out
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu.Portal>
+        </DropdownMenu.Root>
+      </SidebarMenuItem>
+    </SidebarMenu>
   );
 }

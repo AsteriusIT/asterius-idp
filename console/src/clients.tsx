@@ -444,7 +444,7 @@ export function Clients({ session }: { session: Session }): JSX.Element {
 
   return (
     <Screen
-      title="Clients"
+      title="Applications"
       description={
         <>
           Every client registered against <strong>{session.tenant}</strong>. A client created here

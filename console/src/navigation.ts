@@ -13,7 +13,9 @@
 export type Reach = 'tenant' | 'deployment';
 
 /**
- * The headings the sidebar files the destinations under (`ast-gore` (3)).
+ * The sidebar groups (`ast-k7az.5`): Directory holds people and applications,
+ * Trust holds keys and access policy, Observability holds audit and signals,
+ * and Deployment holds tenant administration. Routes and authority stay stable.
  *
  * Nine flat links in one column is a list an administrator reads from the top
  * every time. The groups are what a screen is *about* rather than which API
@@ -24,14 +26,14 @@ export type Reach = 'tenant' | 'deployment';
  * `Overview` is a group of one, drawn without a heading: it is where the
  * console opens, and a heading above a single item says the item's name twice.
  */
-export type Group = 'Overview' | 'Identities' | 'Security' | 'Signals' | 'Deployment';
+export type Group = 'Overview' | 'Directory' | 'Trust' | 'Observability' | 'Deployment';
 
 /** The order the groups appear in, top to bottom. */
 export const GROUPS: readonly Group[] = [
   'Overview',
-  'Identities',
-  'Security',
-  'Signals',
+  'Directory',
+  'Trust',
+  'Observability',
   'Deployment',
 ];
 
@@ -87,8 +89,8 @@ export interface HeldScopes {
  */
 export const DESTINATIONS: readonly Destination[] = [
   { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.3', group: 'Overview' },
-  { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'Identities' },
-  { route: 'clients', label: 'Clients', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Identities' },
+  { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'Directory' },
+  { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Directory' },
   // Built by `ast-l5bl`, so the tag is historical like the four around it.
   // The line kept the *epic* while it was a placeholder, because no child
   // ticket carried a tenants screen and a placeholder naming a closed or
@@ -102,19 +104,19 @@ export const DESTINATIONS: readonly Destination[] = [
   // and the screen hides those controls itself — the server refuses them
   // either way.
   { route: 'tenants', label: 'Tenants', reach: 'deployment', scope: 'admin.tenants:read', bead: 'ast-l5bl', group: 'Deployment' },
-  { route: 'keys', label: 'Signing keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-f7m.7', group: 'Security' },
+  { route: 'keys', label: 'Signing keys', reach: 'tenant', scope: 'admin.keys:read', bead: 'ast-f7m.7', group: 'Trust' },
   // The screen opens by listing the streams (`admin.ssf:read`); the
   // dead-letter table beneath them is shown when the caller also holds
   // `admin.outbox:read`, and the buttons when it holds the write scopes.
-  { route: 'ssf', label: 'Shared signals', reach: 'tenant', scope: 'admin.ssf:read', bead: 'ast-f7m.8', group: 'Signals' },
+  { route: 'ssf', label: 'Shared signals', reach: 'tenant', scope: 'admin.ssf:read', bead: 'ast-f7m.8', group: 'Observability' },
   // The trail and its export share one scope, `admin.audit:read`, held by the
   // auditor and the administrators and by nobody else (`ast-lh3.9`).
-  { route: 'audit', label: 'Audit trail', reach: 'tenant', scope: 'admin.audit:read', bead: 'ast-f7m.8', group: 'Signals' },
+  { route: 'audit', label: 'Audit trail', reach: 'tenant', scope: 'admin.audit:read', bead: 'ast-f7m.8', group: 'Observability' },
   // The policy has its own scope: reading a tenant's lifetimes is not reading
   // its authorization model (`ast-pj0.4`). The screen opens by reading the
   // document, so `admin.policies:read` is what it asks for — an auditor holds
   // it, and the editor's buttons ask for `admin.policies:write` separately.
-  { route: 'policy', label: 'Policy', reach: 'tenant', scope: 'admin.policies:read', bead: 'ast-f7m.9', group: 'Security' },
+  { route: 'policy', label: 'Access policy', reach: 'tenant', scope: 'admin.policies:read', bead: 'ast-f7m.9', group: 'Trust' },
   // A form nobody may save is worse than an absent link, so the settings
   // screen asks for the write scope its only button needs.
   { route: 'settings', label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn', group: 'Deployment' },

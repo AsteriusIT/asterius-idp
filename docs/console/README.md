@@ -193,8 +193,8 @@ are and nothing else.
 
 The rail is shadcn's `Sidebar`, and it:
 
-* **groups** the nine destinations under five headings — Overview; Identities;
-  Security; Signals; Deployment (`navigation.ts`, `Group`). A heading with
+* **groups** the nine destinations under five headings — Overview; Directory;
+  Trust; Observability; Deployment (`navigation.ts`, `Group`). A heading with
   nothing under it is not drawn, so a caller who reaches neither Tenants nor
   Tenant settings sees no "Deployment";
 * **folds to icons** with `Ctrl`/`⌘`+`B` or the rail's own edge control, and
@@ -203,8 +203,8 @@ The rail is shadcn's `Sidebar`, and it:
 * remembers whether it was folded in `localStorage` — *not* in the
   `sidebar_state` cookie shadcn ships, which would have been an unprefixed
   cookie at `path=/` on the origin that also serves the token endpoint;
-* carries the **tenant selector** at the top and the **theme toggle**, the
-  signed-in user and the sign-out at the bottom.
+* carries the **tenant selector** at the top and the **account menu** at the bottom, with the signed-in identifier and roles,
+  theme switch, copy identifier and sign-out.
 
 `visibleTo` still decides what appears, and is still a courtesy rather than a
 control: the server re-checks every route (`crates/admin-api/src/rbac.rs`).
@@ -413,3 +413,23 @@ E2E_SHOTS=docs/console/after ./scripts/browser-tests.sh \
 `E2E_SHOTS` is a directory relative to the repository root; without it the spec
 skips, because it asserts nothing and every console criterion is asserted by
 `e2e/tests/console.spec.ts`.
+
+## Navigation and account menu (`ast-k7az.5`)
+
+The rail groups screens by the operator's task: Overview, Directory (Users,
+Applications), Trust (Signing keys, Access policy), Observability (Shared
+signals, Audit trail), and Deployment (Tenants, Tenant settings). A neutral
+monogram identifies the console because its session API exposes no deployment
+brand. The active screen has a grey fill and a two-pixel marker. Fragment routes,
+scopes, reach and API calls are unchanged.
+
+The tenant selector shows its identifier and the roles reported by the session.
+The footer has one account menu with an avatar, truncated identifier and role;
+the full identifier remains available in its tooltip and through Copy account
+identifier. Radix supplies menu keyboard navigation, Escape dismissal and focus
+return. Theme selection still persists locally; sign-out uses the existing flow.
+
+Breadcrumbs name only the screen, followed by the target tenant when opening
+that tenant's settings. The tenant already appears in the rail. Ctrl/Command+B
+still folds the sidebar and Ctrl/Command+K opens the tenant selector. On mobile,
+choosing a screen closes the drawer so the content is immediately visible.
