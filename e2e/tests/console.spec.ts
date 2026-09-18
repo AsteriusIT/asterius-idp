@@ -81,6 +81,37 @@ async function refuseTheNextSessionRead(page: Page, api: APIRequestContext): Pro
   return refusal.status();
 }
 
+test('the console loads its own Geist fonts under the tenant mount', async ({ context, page }) => {
+  const watcher = await CspWatcher.attach(context, true);
+  const fonts: { url: string; status: number; type: string }[] = [];
+  page.on('response', (response) => {
+    if (response.url().includes('/admin/assets/') && response.url().endsWith('.woff2')) {
+      fonts.push({ url: response.url(), status: response.status(), type: response.headers()['content-type'] });
+    }
+  });
+  await signIn(page);
+  const loaded = await page.evaluate(async () => {
+    const sans = await document.fonts.load('400 16px Geist');
+    const mono = await document.fonts.load('400 16px "Geist Mono"');
+    await document.fonts.ready;
+    return {
+      sans: sans.map((font) => font.status),
+      mono: mono.map((font) => font.status),
+      body: getComputedStyle(document.body).fontFamily,
+    };
+  });
+  expect(loaded.sans).toEqual(['loaded']);
+  expect(loaded.mono).toEqual(['loaded']);
+  expect(loaded.body).toContain('Geist');
+  expect(fonts).toHaveLength(2);
+  for (const font of fonts) {
+    expect(font.url.startsWith(`${BASE_URL}/admin/assets/`)).toBe(true);
+    expect(font.status).toBe(200);
+    expect(font.type).toBe('font/woff2');
+  }
+  watcher.assertClean('local console fonts');
+});
+
 test('the shell starts, provokes no CSP violation and calls nobody else', async ({
   context,
   page,

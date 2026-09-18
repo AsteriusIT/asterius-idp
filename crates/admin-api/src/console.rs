@@ -637,12 +637,40 @@ mod tests {
                      a nonce",
                     asset.path
                 );
-                assert!(
-                    !text.contains("url("),
-                    "{} fetches something; the console's stylesheet is one \
-                     file and no requests",
-                    asset.path
-                );
+                // A font URL is governed by font-src, not style-src. Admit
+                // only a src in @font-face naming a WOFF2 we actually embed.
+                // No external origin, data URL, traversal or image request.
+                let mut remaining = text;
+                while let Some((before, after)) = remaining.split_once("url(") {
+                    assert!(
+                        before
+                            .rsplit_once('{')
+                            .is_some_and(|(selector, declarations)| selector
+                                .trim_end()
+                                .ends_with("@font-face")
+                                && declarations.trim_end().ends_with("src:")),
+                        "{} has a URL outside a font-face src",
+                        asset.path
+                    );
+                    let (raw, rest) = after.split_once(')').expect("bundled CSS URL closes");
+                    let url = raw.trim().trim_matches(['\"', '\'']);
+                    let name = url.strip_prefix("./").unwrap_or(url);
+                    assert!(
+                        !name.contains(['/', '\\', ':', '?', '#', '%'])
+                            && std::path::Path::new(name)
+                                .extension()
+                                .is_some_and(|ext| ext.eq_ignore_ascii_case("woff2"))
+                            && embedded
+                                .assets
+                                .iter()
+                                .any(|font| font.path == format!("assets/{name}")
+                                    && font.content_type == "font/woff2"
+                                    && font.bytes.starts_with(b"wOF2")),
+                        "{} names an unreviewed font URL: {url}",
+                        asset.path
+                    );
+                    remaining = rest;
+                }
             } else {
                 assert!(
                     !text.contains("style=\""),

@@ -257,12 +257,9 @@ mod tests {
     /// is not running then — so the values are duplicated and this test is
     /// what keeps the duplicate a cache rather than a fork.
     ///
-    /// `--font` is one token that differs, and the difference is checked
-    /// rather than skipped: the pages are served Geist from a hashed path
-    /// whose URL carries the request's mount prefix (`asterius_web::brand`, an
-    /// `@font-face` that lives in `base.html`), which a bundle cannot name. So
-    /// the console takes the *tail* of the same stack — the faces a browser
-    /// falls back to, and nothing from an outside origin.
+    /// Both surfaces serve Geist from their own origin and share its stack.
+    /// The console imports the vendored font through Vite; the pages use the
+    /// hashed URL in `base.html`.
     ///
     /// [`DIVERGENT_COLOUR_TOKENS`] are the others, since `ast-k7az.1`: the
     /// console is greyscale and the pages are not. The reason is not taste.
@@ -288,14 +285,6 @@ mod tests {
             let theirs = console.get(property).copied().unwrap_or_else(|| {
                 panic!("{property} is a page token the console declares nowhere")
             });
-            if *property == "--font" {
-                assert_eq!(
-                    value.strip_prefix("Geist, "),
-                    Some(theirs),
-                    "the console's font stack is not the page stack without its served face"
-                );
-                continue;
-            }
             if DIVERGENT_COLOUR_TOKENS.contains(property) {
                 assert_ne!(
                     &theirs, value,

@@ -45,10 +45,10 @@ duplicate a test compares is a cache.
 
 | Layer | Tokens |
 | --- | --- |
-| Shared with the pages | `--fg` `--bg` `--muted` `--line` `--accent` `--accent-fg` `--danger` `--card` `--backdrop` `--radius` `--ctl` `--tap` `--space` `--shadow` `--font` |
+| Shared with the pages | `--fg` `--bg` `--muted` `--line` `--accent-fg` `--danger` `--card` `--radius` `--ctl` `--tap` `--space` `--shadow` `--font` |
 | Spacing | `--space-1` … `--space-6`, all multiples of the shared 8px step |
 | Radii | `--radius-lg`, `--radius-pill` |
-| Type | `--text-xs` … `--text-2xl` |
+| Type | `--text-xs` … `--text-2xl`, `--font-mono` |
 | Surfaces | `--surface`, `--surface-sunken`, `--rail`, `--overlay` |
 | State | `--success` `--warning` `--info` and their `--tint-*`. `--info` is a blue of its own since `ast-k7az.1`, not `var(--accent)`, and it is also the focus ring. |
 | Elevation | `--shadow-sm`, `--shadow-lg` |
@@ -57,13 +57,10 @@ duplicate a test compares is a cache.
 
 Two deliberate differences from `style.css`:
 
-* **`--font`** is the page stack *without* Geist. The pages are served that face
-  from this deployment's own origin at a hashed path whose URL carries the
-  request's mount prefix (`asterius_web::brand`), and the `@font-face` for it
-  lives in `base.html` — a URL a bundle cannot know. The console takes the tail
-  of the same stack, so nothing is fetched from an outside origin;
-  `font-src 'self'` would refuse it anyway. The test asserts exactly this
-  relationship rather than skipping the token.
+* **Neutral chrome.** The console's `--accent` and `--backdrop` use neutral
+  greys; the pages retain their tenant-controlled palette. All other shared
+  tokens, including the Geist font stack, match value for value. The test
+  names and checks the two colour exceptions.
 * **A dark scheme, behind a class.** `style.css` has none on purpose
   (`ast-vn7`): a tenant's palette is appended to it, and a
   `prefers-color-scheme` block would substitute colours that tenant's contrast
@@ -78,10 +75,10 @@ Two deliberate differences from `style.css`:
 * **Nothing inline.** The policy is `script-src 'nonce-…' 'strict-dynamic'` and
   `style-src 'nonce-…'` (ADR-0009). One stylesheet, linked by the entry document
   with the response's nonce, and no `style=` attribute anywhere in the bundle.
-* **No `@import`, no `url(`.** `tokens.css` is imported by `main.tsx` so Vite
-  concatenates it into that one file; an `@import` that survived bundling would
-  be a stylesheet fetched by a stylesheet, carrying no nonce. `url(` would be a
-  request to an origin nobody reviewed.
+* **No `@import`; URLs only for embedded fonts.** `main.tsx` imports
+  `tokens.css`, so Vite concatenates it into that one file; an `@import` that survived bundling would
+  be a stylesheet fetched by a stylesheet, carrying no nonce. `url()` is
+  admitted only in a font-face source naming a WOFF2 asset embedded beside the stylesheet; other CSS requests remain forbidden.
 * **No *runtime* dependency this repository has not read.** `ast-fe39` wrote
   the components by hand and gave the reason: "a UI library is a dependency
   tree inside the most privileged page this deployment serves". `ast-gore`
@@ -306,7 +303,8 @@ What was measured, and what it turned on:
 The two older rules still hold and are now checked against the built bytes by
 `the_embedded_bundle_carries_nothing_the_style_policy_would_refuse`: no
 `@import` survives into the stylesheet (Tailwind's own two are resolved at
-build time), no `url(`, and no `style=` written into markup by a chunk.
+build time), only embedded WOFF2 font-face URLs, and no `style=` written into
+markup by a chunk.
 
 
 ## The finishing, and one class of defect it removed (`ast-f9j5`)
@@ -433,3 +431,19 @@ Breadcrumbs name only the screen, followed by the target tenant when opening
 that tenant's settings. The tenant already appears in the rail. Ctrl/Command+B
 still folds the sidebar and Ctrl/Command+K opens the tenant selector. On mobile,
 choosing a screen closes the drawer so the content is immediately visible.
+
+## Bundled fonts (`ast-k7az.2`)
+
+The console uses Geist Variable for interface text and Geist Mono Variable for
+code, identifiers, keyboard hints and JSON. Both are vendored under SIL OFL 1.1
+in `crates/web/assets/fonts/`; the console reuses the pages' Geist bytes.
+`fonts.css` imports them through Vite, which emits hashed WOFF2 files beside the
+CSS. The existing embedded asset route serves them as `font/woff2`. Relative
+URLs preserve both path-mounted and host-mounted tenant deployments.
+
+The stylesheet still requires its response nonce. Font requests are governed
+by `font-src 'self'`, so no CSP directive changes and no data URLs are needed.
+The bundle audit allows a CSS URL only in an `@font-face` source, pointing to
+an embedded WOFF2 with the correct MIME type and signature. `font-display: swap` keeps text available while fonts load; the existing system stacks remain
+as fallbacks. The browser test loads both faces and checks the tenant-prefixed
+URLs, response types and absence of CSP violations.

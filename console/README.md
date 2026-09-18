@@ -33,9 +33,10 @@ frame-ancestors 'none'; base-uri 'none'; object-src 'none'
 - **Nothing is inline.** No inline script, no inline style, no event handler
   attribute, no `eval`. `modulePreload.polyfill` is off because that polyfill
   is an inline script.
-- **Nothing is off-origin.** No CDN, no web font, no analytics. System fonts
-  only, because `font-src 'self'` admits nothing else and because an admin
-  console should not tell a third party who is administering what.
+- **Nothing is off-origin.** No CDN or analytics. Geist and Geist Mono are
+  vendored under the SIL OFL and embedded as hashed WOFF2 assets. Relative
+  URLs in `fonts.css` preserve the tenant mount; `font-src 'self'` permits
+  these fonts without disclosing an administrator to another origin.
 - **There is no dev server.** Vite's hot-reload transport is a websocket to
   another origin, which `connect-src 'self'` refuses. Develop against a built
   bundle served by the binary; `./scripts/build-console.sh` takes a second.

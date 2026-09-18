@@ -18,9 +18,9 @@
  *
  * # Constraints this file works under
  *
- * System fonts only, and no `url(` anywhere: `font-src 'self'` forbids a face
- * from an outside origin, and the console is the most privileged page this
- * deployment serves. No inline style attribute exists in the bundle either —
+ * Fonts are vendored and emitted by fonts.css as same-origin assets;
+ * font-src 'self' permits them without changing the stylesheet policy.
+ * No inline style attribute exists in the bundle either —
  * the policy is `style-src 'nonce-…'` and this file is the one stylesheet the
  * entry document links with the response's nonce.
  *
@@ -180,8 +180,9 @@
 
   code,
   pre,
+  kbd,
   textarea {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
   }
 
   /*
@@ -886,7 +887,7 @@
     border-radius: var(--radius-pill);
     background: var(--card);
     color: var(--muted);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
     font-size: var(--text-xs);
   }
 

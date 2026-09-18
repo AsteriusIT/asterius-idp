@@ -33,6 +33,7 @@ import { startTheme } from './theme';
 // order into the one hashed file the document links, and a rule that reads a
 // custom property declared after it reads nothing.
 import './tokens.css';
+import './fonts.css';
 import './tailwind.css';
 import './styles.css';
 
