@@ -318,9 +318,10 @@ impl NormalisedUri {
     ///
     /// Returns [`DpopError::UriMismatch`] if `raw` is not an absolute
     /// `http`/`https` URI with a host, carries userinfo, or is longer than
-    /// [`MAX_URI_BYTES`]. One error for all of them: the caller's next move is
-    /// the same in every case, and a finer answer would tell whoever sent the
-    /// proof how far their URL got through this function.
+    /// [`MAX_URI_BYTES`], either before or after normalisation. One error for
+    /// all of them: the caller's next move is the same in every case, and a
+    /// finer answer would tell whoever sent the proof how far their URL got
+    /// through this function.
     // fuzz-target: dpop_proof
     pub fn parse(raw: &str) -> Result<Self, DpopError> {
         if raw.len() > MAX_URI_BYTES {
@@ -365,7 +366,16 @@ impl NormalisedUri {
         ))
         .map_err(|_| DpopError::UriMismatch)?;
 
-        Ok(Self(reparsed.into()))
+        let rendered: String = reparsed.into();
+        // Escaping a stray `%` can turn one input byte into three output
+        // bytes. Keep the canonical form inside the same resource bound as
+        // the input; besides bounding work, this makes every successful
+        // normalisation valid input to the next pass (`ast-flsq`).
+        if rendered.len() > MAX_URI_BYTES {
+            return Err(DpopError::UriMismatch);
+        }
+
+        Ok(Self(rendered))
     }
 
     /// The normalised form.
@@ -1518,6 +1528,19 @@ mod tests {
             let twice = NormalisedUri::parse(once.as_str()).expect("re-parse");
             assert_eq!(once, twice, "normalising {raw:?} twice changed the answer");
         }
+    }
+
+    /// Canonicalising malformed percent escapes can grow the URI. A result
+    /// over the public input bound must be refused on the first pass, rather
+    /// than returned even though a second pass would reject it (`ast-flsq`,
+    /// found by the `dpop_proof` fuzz target).
+    #[test]
+    fn normalisation_refuses_a_canonical_form_over_the_size_limit() {
+        let prefix = "https://as.example/";
+        let raw = format!("{prefix}{}", "%".repeat(MAX_URI_BYTES - prefix.len()));
+
+        assert_eq!(raw.len(), MAX_URI_BYTES);
+        assert_eq!(NormalisedUri::parse(&raw), Err(DpopError::UriMismatch));
     }
 
     /// RFC 3986 §2.1: a `%` in a URI always introduces a triplet. One that
