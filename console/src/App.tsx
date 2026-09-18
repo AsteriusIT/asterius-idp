@@ -7,6 +7,7 @@ import { AppSidebar } from './components/app-sidebar';
 import {
   Breadcrumb,
   BreadcrumbItem,
+  BreadcrumbLink,
   BreadcrumbList,
   BreadcrumbPage,
   BreadcrumbSeparator,
@@ -157,17 +158,21 @@ export function App(): JSX.Element {
           <Separator orientation="vertical" className="mr-2 !h-4" />
           <Breadcrumb>
             <BreadcrumbList>
-              <BreadcrumbItem className="hidden sm:block">{shell.session.tenant}</BreadcrumbItem>
-              {here !== undefined && here.group !== 'Overview' && (
+              {current === 'settings' && paramsOf(fragment).get('tenant') !== null ? (
                 <>
-                  <BreadcrumbSeparator className="hidden sm:block" />
-                  <BreadcrumbItem className="hidden sm:block">{here.group}</BreadcrumbItem>
+                  <BreadcrumbItem>
+                    <BreadcrumbLink href={hrefOf('settings')}>Tenant settings</BreadcrumbLink>
+                  </BreadcrumbItem>
+                  <BreadcrumbSeparator />
+                  <BreadcrumbItem>
+                    <BreadcrumbPage>{paramsOf(fragment).get('tenant')}</BreadcrumbPage>
+                  </BreadcrumbItem>
                 </>
+              ) : (
+                <BreadcrumbItem>
+                  <BreadcrumbPage>{here?.label ?? 'Not found'}</BreadcrumbPage>
+                </BreadcrumbItem>
               )}
-              <BreadcrumbSeparator className="hidden sm:block" />
-              <BreadcrumbItem>
-                <BreadcrumbPage>{here?.label ?? 'Not found'}</BreadcrumbPage>
-              </BreadcrumbItem>
             </BreadcrumbList>
           </Breadcrumb>
           </div>

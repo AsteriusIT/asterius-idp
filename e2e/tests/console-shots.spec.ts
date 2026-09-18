@@ -39,11 +39,11 @@ test.skip(DIRECTORY === undefined, 'set E2E_SHOTS to a directory to take the pic
 const SCREENS: readonly (readonly [string, string])[] = [
   ['Overview', 'overview'],
   ['Users', 'users'],
-  ['Clients', 'clients'],
+  ['Applications', 'clients'],
   ['Signing keys', 'keys'],
   ['Shared signals', 'ssf'],
   ['Audit trail', 'audit'],
-  ['Policy', 'policy'],
+  ['Access policy', 'policy'],
   ['Tenant settings', 'settings'],
 ];
 

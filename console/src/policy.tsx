@@ -313,7 +313,7 @@ export function Policy({ session }: { session: Session }): JSX.Element {
 
   if (load.kind === 'loading') {
     return (
-      <Screen title="Policy">
+      <Screen title="Access policy">
         <Panel title="Reading">
           <Skeleton rows={5} label="Reading the policy." />
         </Panel>
@@ -322,7 +322,7 @@ export function Policy({ session }: { session: Session }): JSX.Element {
   }
   if (load.kind === 'failed') {
     return (
-      <Screen title="Policy">
+      <Screen title="Access policy">
         <Panel title="The policy could not be read">
           <LoadFailure message={load.message} onRetry={refresh} />
         </Panel>
@@ -336,7 +336,7 @@ export function Policy({ session }: { session: Session }): JSX.Element {
 
   return (
     <Screen
-      title="Policy"
+      title="Access policy"
       description={
         <>
           The rules <strong>{session.tenant}</strong> is decided by. An enforcement point asks

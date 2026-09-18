@@ -54,6 +54,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
+import { sessionRoleLabel } from '@/session-label';
 import { BuildingIcon, CheckIcon, ChevronsUpDownIcon } from 'lucide-react';
 import { read, type Session } from '@/api';
 import { Button } from '@/components/ui/button';
@@ -141,8 +142,8 @@ export function TenantSwitcher({ session }: { session: Session }): JSX.Element {
         >
           <BuildingIcon className="size-4 shrink-0" aria-hidden="true" />
           <span className="flex min-w-0 flex-1 flex-col group-data-[collapsible=icon]:hidden">
-            <span className="text-xs text-muted-foreground">Tenant</span>
             <span className="truncate text-sm font-medium">{session.tenant}</span>
+            <span className="truncate text-xs text-foreground">{sessionRoleLabel(session)}</span>
           </span>
           <ChevronsUpDownIcon
             className="size-4 shrink-0 opacity-60 group-data-[collapsible=icon]:hidden"
