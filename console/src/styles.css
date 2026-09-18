@@ -298,6 +298,10 @@
     min-width: 0;
   }
 
+  .screen-title > .muted {
+    max-width: 72ch;
+  }
+
   .screen-actions {
     display: flex;
     flex-wrap: wrap;
@@ -337,6 +341,48 @@
     flex-direction: column;
     gap: 2px;
     min-width: 0;
+  }
+
+  .panel-title h3 {
+    font-size: var(--text-md);
+  }
+
+  .filter-panel {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--card);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .filter-panel > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-5);
+    font-size: var(--text-md);
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .filter-panel > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .filter-panel > summary::after {
+    content: '+';
+    color: var(--muted);
+    font-size: var(--text-lg);
+    line-height: 1;
+  }
+
+  .filter-panel[open] > summary::after {
+    content: '\2212';
+  }
+
+  .filter-panel-body {
+    padding: 0 var(--space-5) var(--space-4);
   }
 
   /* A console screen is a column of sections; the ones that were written before
@@ -458,6 +504,43 @@
     color: var(--muted);
   }
 
+  .chain li {
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    padding: 2px 7px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-pill);
+    background: var(--surface-sunken);
+    white-space: nowrap;
+  }
+
+  .chain li + li::before {
+    margin-left: calc(-1 * var(--space-2));
+  }
+
+  .table-time {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .audit-detail > summary {
+    color: var(--fg);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .audit-detail .detail {
+    min-width: 18rem;
+    margin-top: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--line);
+    border-radius: var(--ctl);
+    background: var(--card);
+  }
+
   /* ---- tables ----------------------------------------------------------- */
 
   /* The scroll lives on a labelled, focusable region rather than on the table:
@@ -470,6 +553,30 @@
     border: 1px solid var(--line);
     border-radius: var(--ctl);
     background: var(--card);
+  }
+
+  .table-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: var(--space-3);
+  }
+
+  .density-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: var(--ctl);
+    background: var(--surface-sunken);
+  }
+
+  .density-control [aria-pressed='true'] {
+    background: var(--card);
+    box-shadow: var(--shadow-sm);
   }
 
   table {
@@ -490,7 +597,7 @@
   th,
   td {
     text-align: left;
-    padding: var(--space-1) var(--space-3);
+    padding: var(--table-cell-y) var(--space-3);
     border-bottom: 1px solid var(--line);
     vertical-align: top;
   }
@@ -516,6 +623,14 @@
   }
 
   tbody tr:hover {
+    background: var(--surface-sunken);
+  }
+
+  tbody tr:nth-child(even) {
+    background: color-mix(in srgb, var(--surface-sunken) 45%, transparent);
+  }
+
+  tbody tr:nth-child(even):hover {
     background: var(--surface-sunken);
   }
 
@@ -1084,6 +1199,39 @@
   @media (max-width: 40rem) {
     h2 {
       font-size: var(--text-xl);
+    }
+
+    .content {
+      padding-right: var(--space-2);
+      padding-left: var(--space-2);
+    }
+
+    .screen-head {
+      align-items: flex-start;
+    }
+
+    .screen-actions,
+    .screen-actions > * {
+      width: 100%;
+    }
+
+    .filter-panel > summary,
+    .filter-panel-body {
+      padding-right: var(--space-3);
+      padding-left: var(--space-3);
+    }
+
+    .toolbar .field {
+      flex-basis: 100%;
+      max-width: none;
+    }
+
+    .density-control {
+      width: 100%;
+    }
+
+    .density-control > button {
+      flex: 1 1 0;
     }
   }
 }

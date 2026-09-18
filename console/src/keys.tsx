@@ -45,6 +45,7 @@ import {
   Panel,
   Screen,
   Skeleton,
+  Timestamp,
 } from './ui';
 
 /**
@@ -335,9 +336,7 @@ function SchedulePanel({ schedule }: { schedule: Schedule }): JSX.Element {
       <div className="stat">
         <dt>Last rotated</dt>
         <dd>
-          {schedule.last_rotated_at === null
-            ? 'never'
-            : new Date(schedule.last_rotated_at * 1000).toISOString()}
+          <Timestamp value={schedule.last_rotated_at} />
         </dd>
       </div>
     </dl>
@@ -407,7 +406,7 @@ function KeyTable({
           key: 'created',
           header: 'Created',
           sortBy: (key) => key.created_at,
-          cell: (key) => new Date(key.created_at * 1000).toISOString(),
+          cell: (key) => <Timestamp value={key.created_at} />,
         },
         {
           key: 'retire',

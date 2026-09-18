@@ -31,7 +31,7 @@
  * and gives back what was pressed. The admin API calls, their scopes and their
  * refusals are exactly where they were.
  */
-import { useCallback, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { JSX, ReactNode } from 'react';
 import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, SearchIcon } from 'lucide-react';
 import {
@@ -68,6 +68,26 @@ import { cn } from '@/lib/utils';
  * The heading is an `<h2>` because the shell owns the `<h1>` — one document,
  * one first-level heading, and the screens are sections of it.
  */
+export function PageHeader({
+  title,
+  description,
+  actions,
+}: {
+  title: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+}): JSX.Element {
+  return (
+    <header className="screen-head">
+      <div className="screen-title">
+        <h2>{title}</h2>
+        {description !== undefined && <p className="muted">{description}</p>}
+      </div>
+      {actions !== undefined && <div className="screen-actions">{actions}</div>}
+    </header>
+  );
+}
+
 export function Screen({
   title,
   description,
@@ -81,13 +101,7 @@ export function Screen({
 }): JSX.Element {
   return (
     <div className="screen">
-      <div className="screen-head">
-        <div className="screen-title">
-          <h2>{title}</h2>
-          {description !== undefined && <p className="muted">{description}</p>}
-        </div>
-        {actions !== undefined && <div className="screen-actions">{actions}</div>}
-      </div>
+      <PageHeader title={title} description={description} actions={actions} />
       {children}
     </div>
   );
@@ -134,6 +148,19 @@ export function Panel({
         <CardContent className="flex flex-col gap-3">{children}</CardContent>
       </section>
     </Card>
+  );
+}
+
+/** A native, keyboard-operable disclosure for a screen's larger filter set. */
+export function FilterPanel({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <details className="filter-panel" open>
+      <summary>
+        <span>Filters</span>
+        <span className="muted">Show or hide</span>
+      </summary>
+      <div className="filter-panel-body">{children}</div>
+    </details>
   );
 }
 
@@ -375,6 +402,23 @@ export function Truncate({
   );
 }
 
+/** A compact UTC timestamp that retains the exact instant as metadata. */
+export function Timestamp({ value }: { value: string | number | null }): JSX.Element {
+  if (value === null) {
+    return <span className="muted">never</span>;
+  }
+  const exact = typeof value === 'number' ? new Date(value * 1000).toISOString() : value;
+  const parsed = new Date(exact);
+  const short = Number.isNaN(parsed.valueOf())
+    ? exact
+    : parsed.toISOString().slice(0, 19).replace('T', ' ');
+  return (
+    <time className="table-time" dateTime={exact} title={exact}>
+      {short}
+    </time>
+  );
+}
+
 /** Nothing to show, and — when there is one — what to do about it. */
 export function EmptyState({
   title,
@@ -465,6 +509,64 @@ export interface Column<Row> {
 /** Which way a sorted column is sorted. */
 type Direction = 'ascending' | 'descending';
 
+type TableDensity = 'comfortable' | 'compact';
+const TABLE_DENSITY_KEY = 'asterius.console.table-density';
+const TABLE_DENSITY_EVENT = 'asterius:table-density';
+
+function storedTableDensity(): TableDensity {
+  if (typeof window === 'undefined') {
+    return 'comfortable';
+  }
+  return window.localStorage.getItem(TABLE_DENSITY_KEY) === 'compact' ? 'compact' : 'comfortable';
+}
+
+function useTableDensity(): readonly [TableDensity, (density: TableDensity) => void] {
+  const [density, setDensity] = useState<TableDensity>(storedTableDensity);
+
+  useEffect(() => {
+    document.documentElement.dataset.tableDensity = density;
+    const synchronise = (): void => setDensity(storedTableDensity());
+    window.addEventListener(TABLE_DENSITY_EVENT, synchronise);
+    window.addEventListener('storage', synchronise);
+    return () => {
+      window.removeEventListener(TABLE_DENSITY_EVENT, synchronise);
+      window.removeEventListener('storage', synchronise);
+    };
+  }, [density]);
+
+  const choose = (next: TableDensity): void => {
+    window.localStorage.setItem(TABLE_DENSITY_KEY, next);
+    setDensity(next);
+    window.dispatchEvent(new Event(TABLE_DENSITY_EVENT));
+  };
+  return [density, choose] as const;
+}
+
+/** One persisted density choice shared by every table in the console. */
+export function TableDensityControl(): JSX.Element {
+  const [density, choose] = useTableDensity();
+  return (
+    <div className="density-control" role="group" aria-label="Table density">
+      <Button
+        small
+        variant="ghost"
+        aria-pressed={density === 'comfortable'}
+        onClick={() => choose('comfortable')}
+      >
+        Comfortable
+      </Button>
+      <Button
+        small
+        variant="ghost"
+        aria-pressed={density === 'compact'}
+        onClick={() => choose('compact')}
+      >
+        Compact
+      </Button>
+    </div>
+  );
+}
+
 /**
  * How a caller lets a table be searched (`ast-gore` (5)).
  *
@@ -548,9 +650,10 @@ export function DataTable<Row>({
     return <>{empty}</>;
   }
 
-  const box =
-    search === undefined ? null : (
-      <div className="mb-3 flex flex-wrap items-center gap-3">
+  const box = (
+    <div className="table-tools">
+      {search !== undefined && (
+        <div className="flex min-w-52 flex-1 flex-wrap items-center gap-3">
         <div className="relative max-w-xs flex-1">
           <SearchIcon
             className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
@@ -571,8 +674,11 @@ export function DataTable<Row>({
             {matched.length} of {rows.length} shown
           </p>
         )}
-      </div>
-    );
+        </div>
+      )}
+      <TableDensityControl />
+    </div>
+  );
 
   return (
     <div>

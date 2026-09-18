@@ -143,15 +143,16 @@ migrations a change of markup rather than a change of behaviour.
 
 | Component | What it is |
 | --- | --- |
-| `Screen` | One screen: `<h2>`, a sentence, and the actions that apply to all of it. The shell owns the `<h1>`. |
+| `PageHeader` / `Screen` | One screen: `<h2>`, one short purpose sentence, and the actions that apply to all of it. The shell owns the `<h1>`; `Screen` composes the shared header with the body. |
 | `Panel` | One section, as a card, labelled by its own `<h3>` through `aria-labelledby`. |
+| `FilterPanel` | A native disclosure for a larger filter set. It starts open, stays keyboard-operable and gives a narrow screen its space back when collapsed. |
 | `CenteredCard` | The pages' centred card, for the three views that are one sentence: loading, signed out, could not start. |
 | `Button` | `primary` (once per view), `secondary` (the default), `danger`, `ghost`; `small` for a table row. |
 | `Actions` | A row of controls, the decisive one last. |
 | `Field` | Label, control, help, and the server's refusal at the field — wired with `aria-describedby` and `aria-invalid`. |
 | `Message` | `success` and `info` are `role="status"`, `error` is `role="alert"`. Mark, tint and rule, never colour alone. |
 | `Badge` | A state as a word first: `ok`, `warn`, `bad`, `info`, neutral. |
-| `DataTable` | shadcn `Table`. Columns, one client-side sort with `aria-sort`, an optional client-side filter with a “3 of 20 shown” count, an empty state, right-aligned actions. Every list in the console is one since `ast-f9j5`. |
+| `DataTable` | shadcn `Table`. Columns, one client-side sort with `aria-sort`, an optional client-side filter with a “3 of 20 shown” count, an empty state, right-aligned actions, and a persisted comfortable/compact density choice. Every list in the console is one since `ast-f9j5`. |
 | `EmptyState` | Nothing to show, and what to do about it. |
 | `Skeleton` | The shape of what is arriving. `aria-live`, and deliberately *not* `role="status"`. |
 | `LoadFailure` | A read that did not answer, and the way to ask again. |
