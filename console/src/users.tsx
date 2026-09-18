@@ -53,6 +53,7 @@ import {
   Panel,
   Screen,
   Skeleton,
+  Timestamp,
   Truncate,
 } from './ui';
 import { emailAddress, username as usernameComplaint } from './validation';
@@ -1207,8 +1208,8 @@ function PasskeyTable({
           <tr key={passkey.credential_id}>
             <td>{passkey.label ?? '—'}</td>
             <td>{passkey.rp_id}</td>
-            <td>{moment(passkey.created_at)}</td>
-            <td>{moment(passkey.last_used_at)}</td>
+            <td><Timestamp value={passkey.created_at} /></td>
+            <td><Timestamp value={passkey.last_used_at} /></td>
             <td>
               <Badge tone={passkey.disabled_at === null ? 'ok' : 'bad'}>
                 {passkey.disabled_at === null ? 'usable' : 'blocked'}
@@ -1263,9 +1264,9 @@ function SessionTable({
             <td>
               <code>{row.sid}</code>
             </td>
-            <td>{moment(row.authenticated_at)}</td>
-            <td>{moment(row.last_seen_at)}</td>
-            <td>{moment(row.expires_at)}</td>
+            <td><Timestamp value={row.authenticated_at} /></td>
+            <td><Timestamp value={row.last_seen_at} /></td>
+            <td><Timestamp value={row.expires_at} /></td>
             <td>{row.amr.length === 0 ? '—' : row.amr.join(', ')}</td>
             <td>
               <Badge tone={row.live ? 'ok' : 'neutral'}>
@@ -1320,12 +1321,12 @@ function GrantTable({
               <code>{grant.client_id}</code>
             </td>
             <td>{grant.scopes.length === 0 ? '—' : grant.scopes.join(' ')}</td>
-            <td>{moment(grant.created_at)}</td>
+            <td><Timestamp value={grant.created_at} /></td>
             <td>
               {grant.revoked_at === null ? (
                 <Badge tone="ok">active</Badge>
               ) : (
-                <span className="muted">withdrawn {moment(grant.revoked_at)}</span>
+                <span className="muted">withdrawn <Timestamp value={grant.revoked_at} /></span>
               )}
             </td>
             <td className="actions-cell">

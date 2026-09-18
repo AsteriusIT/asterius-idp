@@ -34,10 +34,13 @@ import {
   Button,
   EmptyState,
   Field,
+  FilterPanel,
   LoadFailure,
   Panel,
   Screen,
   Skeleton,
+  TableDensityControl,
+  Timestamp,
   Truncate,
 } from './ui';
 
@@ -252,7 +255,7 @@ export function AuditExplorer({ session }: { session: Session }): JSX.Element {
         ) : undefined
       }
     >
-      <Panel title="Filters">
+      <FilterPanel>
         <form
           className="toolbar"
           role="search"
@@ -270,6 +273,7 @@ export function AuditExplorer({ session }: { session: Session }): JSX.Element {
           {field('until', 'Until', '2026-12-31T00:00:00Z')}
           <Actions>
             <Button
+              variant="ghost"
               onClick={() => {
                 setDraft(EMPTY_FILTERS);
                 setApplied(EMPTY_FILTERS);
@@ -282,9 +286,9 @@ export function AuditExplorer({ session }: { session: Session }): JSX.Element {
             </Button>
           </Actions>
         </form>
-      </Panel>
+      </FilterPanel>
 
-      <Panel title="Records">
+      <Panel title="Records" actions={<TableDensityControl />}>
         <Trail load={load} more={more} onMore={loadMore} onRetry={() => refresh(applied)} />
       </Panel>
     </Screen>
@@ -345,7 +349,13 @@ function Trail({
                 </>
               ) : (
                 <>
-                  <td>{row.occurred_at}</td>
+                  <td>
+                    {row.occurred_at === undefined ? (
+                      <span className="muted">—</span>
+                    ) : (
+                      <Timestamp value={row.occurred_at} />
+                    )}
+                  </td>
                   <td>
                     {/* One token, never broken across two lines (`ast-f9j5`):
                         `auth.login` printed as "auth.l / ogin" is what a
@@ -428,24 +438,29 @@ function DetailList({ row }: { row: AuditRow }): JSX.Element {
     return <span className="muted">none</span>;
   }
   return (
-    <dl className="detail">
-      {entries.map(([key, value]) => (
-        <div key={key}>
-          <dt>{key}</dt>
-          <dd>
-            {typeof value === 'string' ? (
-              /* Elided rather than wrapped one character at a time, and whole
-                 in the `title` (`ast-f9j5`): a session id is opaque, and a
-                 column of six-character fragments is not a reading of it. */
-              <code>
-                <Truncate text={value} className="max-w-[14ch]" />
-              </code>
-            ) : (
-              <JsonValue value={value} />
-            )}
-          </dd>
-        </div>
-      ))}
-    </dl>
+    <details className="audit-detail">
+      <summary>
+        {entries.length} {entries.length === 1 ? 'field' : 'fields'}
+      </summary>
+      <dl className="detail">
+        {entries.map(([key, value]) => (
+          <div key={key}>
+            <dt>{key}</dt>
+            <dd>
+              {typeof value === 'string' ? (
+                /* Elided rather than wrapped one character at a time, and whole
+                   in the `title` (`ast-f9j5`): a session id is opaque, and a
+                   column of six-character fragments is not a reading of it. */
+                <code>
+                  <Truncate text={value} className="max-w-[20ch]" />
+                </code>
+              ) : (
+                <JsonValue value={value} />
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </details>
   );
 }

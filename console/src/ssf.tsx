@@ -39,6 +39,7 @@ import {
   Panel,
   Screen,
   Skeleton,
+  Timestamp,
 } from './ui';
 
 /** §8.1.2's three states. Only the first two are written from here. */
@@ -520,13 +521,13 @@ function DeadLetterTable({
           key: 'queued',
           header: 'Queued',
           sortBy: (letter) => letter.created_at,
-          cell: (letter) => letter.created_at,
+          cell: (letter) => <Timestamp value={letter.created_at} />,
         },
         {
           key: 'last-attempt',
           header: 'Last attempt',
           sortBy: (letter) => letter.last_attempt_at ?? '',
-          cell: (letter) => letter.last_attempt_at ?? 'never',
+          cell: (letter) => <Timestamp value={letter.last_attempt_at ?? null} />,
         },
         { key: 'last-error', header: 'Last error', cell: (letter) => letter.last_error ?? '' },
         ...(mayWrite

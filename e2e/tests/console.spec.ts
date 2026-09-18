@@ -843,6 +843,46 @@ test('the audit explorer filters the trail and exports it as NDJSON', async ({
   expect(refused.status()).toBe(401);
 });
 
+/**
+ * `ast-k7az.6`: the dense audit screen remains a readable page at either end
+ * of the viewport range. The preference is deliberately checked after a
+ * reload: a density toggle that resets on every visit is decoration rather
+ * than a preference.
+ */
+test('the audit layout is compactable, collapsible and responsive', async ({ page }) => {
+  await signIn(page);
+  await openAudit(page);
+
+  const filters = page.locator('details.filter-panel');
+  await expect(filters).toHaveAttribute('open', '');
+  await filters.locator('summary').click();
+  await expect(page.getByLabel('Event type')).not.toBeVisible();
+  await filters.locator('summary').click();
+
+  await page.getByLabel('Event type').fill('key.rotated');
+  await page.getByRole('button', { name: 'Apply filters' }).click();
+  const row = page.getByRole('row').filter({ hasText: 'key.rotated' }).first();
+  await expect(row.locator('time')).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  await expect(row.locator('details.audit-detail')).toBeVisible();
+
+  const density = page.getByRole('group', { name: 'Table density' });
+  await density.getByRole('button', { name: 'Compact' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-table-density', 'compact');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-table-density', 'compact');
+
+  await page.setViewportSize({ width: 400, height: 900 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+    'the audit layout widened the 400px viewport',
+  ).toBe(true);
+
+  const audit = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(audit.violations, JSON.stringify(audit.violations, null, 2)).toEqual([]);
+});
+
 /** Walks the navigation to the policy editor (`ast-f7m.9`). */
 async function openPolicy(page: Page): Promise<void> {
   await page.getByRole('link', { name: 'Access policy' }).click();

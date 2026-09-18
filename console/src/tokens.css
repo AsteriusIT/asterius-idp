@@ -183,7 +183,14 @@
   /* The rail's width, named because the header, the rail and the content grid
      all have to agree on it. */
   --rail-width: 15rem;
-  --content-max: 72rem;
+  --content-max: 96rem;
+  --table-head-height: 2.5rem;
+  --table-cell-y: .5rem;
+}
+
+:root[data-table-density='compact'] {
+  --table-head-height: 2rem;
+  --table-cell-y: .25rem;
 }
 
 /*
