@@ -35,7 +35,7 @@
 | CAEP Interoperability Profile | Implementer's Draft | track (E17_10) |
 | AuthZEN Authorization API 1.0 | Final (2026-01-12) | E13 |
 | JARM | Final (errata 1) | track with Message Signing |
-| MCP Authorization (2025-11-25) | MCP spec (references OAuth 2.1 draft, CIMD draft-00) | E11_08, decisions E03_08 |
+| MCP Authorization (2026-07-28) | MCP spec (references OAuth 2.1 draft and CIMD; DCR deprecated) | E11_08, decision E03_08 |
 | IETF: RFC 6749/6750/7009/7519/7521/7523/7591/7592/7636/7662/8414/8628/8693/8705/8707/8725/8935/8936/9068/9101/9126/9207/9396/9449/9493/9700/9728 | RFCs | cited per story (section numbers from memory where noted — verify while implementing) |
 | OAuth 2.1, RFC 7523bis, Client ID Metadata Documents, Identity Assertion Authz Grant | IETF working drafts | track (E17_02, E17_03, E17_11) |
 
@@ -98,6 +98,7 @@ Single binary `asterius` with crates: `domain` (entities, ports), `oidc` (protoc
 - README documents the crate map and the rule 'protocol code talks to the outside world only through ports'.
 
 **Depends on:** —
+
 
 ### E01_02 — Configuration, feature flags & issuer identity validation
 
@@ -536,11 +537,13 @@ One function used at registration, PAR and token endpoint. FAPI 2.0 permits unre
 
 ### E03_08 — Decision: MCP public clients & Client ID Metadata Documents (CIMD)
 
-*decision · P2 · labels: adr, differentiator:agents, spec:mcp, status:draft*
+*decision · P2 · labels: adr, differentiator:agents, spec:mcp, status:final*
 
-**Spec:** MCP Authorization (2025-11-25): AS MUST implement OAuth 2.1 'for both confidential and public clients'; AS SHOULD support Client ID Metadata Documents (draft-ietf-oauth-client-id-metadata-document-00 — IETF working draft: track, don't implement); AS MAY support RFC 7591; FAPI 2.0 SP §5.3.2.1 item 3 (confidential clients only).
+**Spec:** MCP Authorization (2026-07-28): AS MUST implement OAuth 2.1 'for both confidential and public clients'; AS and client SHOULD support Client ID Metadata Documents; RFC 7591 DCR is deprecated and retained for backwards compatibility; draft-ietf-oauth-client-id-metadata-document-02 is an IETF working draft (track, don't implement); FAPI 2.0 SP §5.3.2.1 item 3 (confidential clients only).
 
-Two fixed product decisions conflict for off-the-shelf MCP clients (public, no PAR, localhost redirect). Options: (a) FAPI-only — MCP compatibility limited to confidential MCP clients registered via DCR with `jwks` + private_key_jwt, PAR and DPoP (E11_08); (b) a tenant-level 'OAuth 2.1 public-client profile' (PKCE S256 + DPoP-bound tokens + exact loopback redirect, PAR optional) that weakens the baseline. Recommendation: (a) for v1; revisit when CIMD is an RFC and OIDF conformance has a public-client FAPI-adjacent profile.
+Decision: option (a), recorded by ADR-0012. Asterius remains FAPI-only; MCP compatibility is limited to confidential MCP clients that are pre-registered or use the backwards-compatible DCR path with `jwks` + `private_key_jwt`, PAR, PKCE S256 and DPoP (E11_08). Generic public MCP clients are not supported. `client_id_metadata_document_supported` stays absent. Revisit a separate tenant-level public-client mode only when CIMD is an RFC and OIDF conformance has a public-client FAPI-adjacent profile; that mode must report `fapi_compliant=false`.
+
+The 2026-07-28 MCP revision now prefers CIMD and deprecates DCR. That makes E11_08 a deliberately narrow compatibility path, not a claim of complete MCP Authorization conformance. The current IETF work is draft revision `-02`; E17_02 continues to track it.
 
 **Acceptance tests**
 
@@ -1566,9 +1569,9 @@ Wire the capability registry and the client validator for both flows.
 
 *feature · P2 · labels: area:agents, spec:mcp, spec:rfc8414, spec:rfc8707, spec:rfc9728, differentiator:agents*
 
-**Spec:** MCP Authorization (2025-11-25): AS MUST provide RFC 8414 or OIDC Discovery (clients try path-inserted RFC 8414, path-inserted OIDC, path-appended OIDC); OIDC discovery MUST include `code_challenge_methods_supported`; AS MUST validate exact redirect URIs; clients MUST send `resource` (RFC 8707) in authorization and token requests; AS SHOULD issue short-lived ATs; MCP servers MUST implement RFC 9728 with `authorization_servers` and validate `aud`; DCR MAY; CIMD SHOULD (IETF draft → track per E03_08).
+**Spec:** MCP Authorization (2026-07-28): AS MUST provide RFC 8414 or OIDC Discovery; AS MUST validate exact redirect URIs; clients MUST send `resource` (RFC 8707) in authorization and token requests; MCP servers MUST implement RFC 9728 and validate `aud`; CIMD SHOULD; DCR is deprecated but retained for backwards compatibility (IETF draft → track per E03_08).
 
-Make a FAPI-compliant Asterius tenant usable by MCP clients that are confidential (DCR with `jwks` → private_key_jwt, PAR, PKCE S256, DPoP) and document the resource-server side.
+Make a FAPI-compliant Asterius tenant usable by MCP clients that explicitly support a confidential profile (pre-registration or backwards-compatible DCR with `jwks` → private_key_jwt, PAR, PKCE S256, DPoP) and document the resource-server side. This is not complete MCP Authorization conformance; ADR-0012 deliberately excludes public clients and CIMD.
 
 **Acceptance tests**
 
@@ -2316,13 +2319,13 @@ Non-repudiation profile on top of FAPI 2.0 SP. E05_09 (JAR in PAR) is the only p
 
 *task · P4 · labels: track, spec:mcp, status:draft*
 
-**Spec:** draft-ietf-oauth-client-id-metadata-document-00 (IETF working draft); MCP Authorization 2025-11-25 (AS SHOULD support; `client_id_metadata_document_supported`).
+**Spec:** draft-ietf-oauth-client-id-metadata-document-02 (IETF working draft); MCP Authorization 2026-07-28 (AS SHOULD support CIMD and DCR is deprecated; `client_id_metadata_document_supported`).
 
-Would let MCP clients use an https URL as `client_id`; requires SSRF-hardened fetching and a trust policy; only meaningful together with a public-client decision (E03_08).
+Would let MCP clients use an https URL as `client_id`; requires SSRF-hardened fetching, mutable-metadata handling and a trust policy. ADR-0012 declines it for v1 even for confidential clients and keeps the metadata signal absent.
 
 **Acceptance tests**
 
-- Revisit when the draft is in WGLC/RFC and E03_08 is revisited.
+- Revisit when the draft is an RFC and ADR-0012's public-client/conformance boundary is reconsidered.
 
 **Depends on:** E03_08
 
@@ -2465,4 +2468,3 @@ Common asks explicitly deferred. SCIM is the most likely first addition (fits th
 - Product owner reviews this bead at each release planning.
 
 **Depends on:** —
-

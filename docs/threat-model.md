@@ -1790,8 +1790,8 @@ intentions is worth nothing to a reviewer.
   for what a tenant advertises.
 - **Beads.** `ast-gxh.7` (closed), `ast-lh3.8` (**open** — the MCP compatibility
   profile itself), `ast-lh3.10` (closed — the pre-issuance policy port),
-  `ast-m9c.8` (**blocked** — the decision on MCP public clients and Client ID
-  Metadata Documents).
+  `ast-m9c.8` (closed by ADR-0012 — MCP clients remain confidential and Client
+  ID Metadata Documents are not implemented).
 - **Residual risk.** One of the three controls the index table claims is a bead
   that has not landed: there is no MCP profile today. The pre-issuance policy
   decision now exists (`ast-lh3.10`), and it gates a mint for an *agent* client
@@ -1847,12 +1847,14 @@ intentions is worth nothing to a reviewer.
   and `a_loopback_registration_matches_every_port_but_only_its_own_path`. Fuzz:
   [`fuzz/fuzz_targets/redirect_uri.rs`](../fuzz/fuzz_targets/redirect_uri.rs).
 - **Beads.** `ast-m9c.7` (closed), `ast-m9c.10` (closed), `ast-m9c.8`
-  (blocked — public MCP clients).
+  (closed by ADR-0012 — no public MCP clients in v1).
 - **Residual risk.** A local attacker who wins the port race still learns that a
   flow happened and can deny service to the honest client. And because this
   server has no public clients, the MCP "native app on a laptop" shape is a
-  *confidential* client with a private key on that laptop — a different residual
-  (a client key at rest on a shared machine), owned by `ast-m9c.8`.
+  *confidential* client with a private key on that laptop — a different residual:
+  the key at rest on a shared machine can be copied. ADR-0012 accepts that cost
+  only for clients which explicitly choose this narrow profile; generic desktop
+  MCP clients remain incompatible.
 
 ### 4.2 FAPI 2.0 SP §6 security considerations, one row each
 
