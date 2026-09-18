@@ -94,7 +94,7 @@ impl ResourceIdentifier {
     /// A host is required as well, which is narrower than "absolute URI" and
     /// deliberate: every identifier this deployment can register is an `https`
     /// origin plus a path — the canonical MCP server URI of MCP Authorization
-    /// 2025-11-25 is one — and a scheme-only URI (`urn:example:api`) is a value
+    /// 2026-07-28 is one — and a scheme-only URI (`urn:example:api`) is a value
     /// no resource server derives from the request it received. Registering one
     /// would be registering an audience nothing can check.
     ///
@@ -411,6 +411,26 @@ mod tests {
             introspection_clients: callers.iter().map(|c| crate::ClientId::new(*c)).collect(),
             ..server(identifier, None)
         }
+    }
+
+    /// MCP Authorization requires the canonical MCP server URI as `resource`.
+    /// RFC 8707 comparison is byte-exact: URL-equivalent spellings do not name
+    /// the registered audience.
+    #[test]
+    fn an_mcp_resource_uses_the_exact_canonical_uri() {
+        // Arrange
+        let registry = ResourceRegistry::new([server("https://mcp.example.com/mcp", None)]);
+
+        // Act & Assert
+        assert!(registry.resolve("https://mcp.example.com/mcp").is_ok());
+        assert_eq!(
+            registry.resolve("https://mcp.example.com/mcp/"),
+            Err(InvalidTarget)
+        );
+        assert_eq!(
+            registry.resolve("https://MCP.example.com/mcp"),
+            Err(InvalidTarget)
+        );
     }
 
     /// RFC 7662 §2.1: the caller must be authorized for *this* token. A client

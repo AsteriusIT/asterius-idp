@@ -37,11 +37,14 @@
 //! touches nothing outside it, and deletes it at the end.
 
 use asterius_domain::entities::user::{User, UserStatus};
-use asterius_domain::ports::{PasskeyRepository, TenantRepository, TenantSettingsRepository};
+use asterius_domain::ports::{
+    InitialAccessTokenStore, PasskeyRepository, TenantRepository, TenantSettingsRepository,
+};
 use asterius_domain::{
     Argon2Parameters, Capabilities, ClaimSet, Client, ClientId, ClientRegistration, ClientStatus,
-    EndpointLimit, EndpointLimits, Issuer, Kid, Lifetimes, LoginLimits, NewPasskey, RateLimit,
-    SigningAlgorithm, Tenant, TenantId, TenantSettings, TenantStatus, UserId,
+    EndpointLimit, EndpointLimits, Issuer, Kid, Lifetimes, LoginLimits, NewInitialAccessToken,
+    NewPasskey, RateLimit, SigningAlgorithm, Tenant, TenantId, TenantSettings, TenantStatus,
+    UserId,
 };
 use asterius_jose::kek::Kek;
 use asterius_jose::verify::KeyResolver;
@@ -51,15 +54,15 @@ use asterius_oidc::metadata::Endpoint;
 use asterius_server::config::{ServerConfig, TransportMode};
 use asterius_server::http::dpop::DpopEndpoint;
 use asterius_server::http::protocol::{self, ClientEndpoints, ProtocolState};
-use asterius_server::http::register::RegistrationPolicy;
+use asterius_server::http::register::{InitialAccessTokens, RegistrationPolicy};
 use asterius_server::http::server::app;
 use asterius_server::outbox::Deliverer as _;
 use asterius_server::signing::CachedSigner;
 use asterius_server::tenancy::{TenantDirectory, TenantState};
 use asterius_server::tenant_settings::SettingsDirectory;
 use asterius_store_pg::{
-    PgAuditSink, PgPasskeyRepository, PgReplayGuard, PgSessionRepository, PgTenantRepository,
-    PgTenantSettings, PgUserRepository, Redemption, Store, TenantKeyStore,
+    PgAuditSink, PgInitialAccessTokens, PgPasskeyRepository, PgReplayGuard, PgSessionRepository,
+    PgTenantRepository, PgTenantSettings, PgUserRepository, Redemption, Store, TenantKeyStore,
 };
 use aws_lc_rs::rand::SystemRandom;
 use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair};
@@ -88,6 +91,8 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 const HOST: &str = "as.example";
 const ORIGIN: &str = "https://as.example";
 const CLIENT: &str = "billing";
+const MCP_INITIAL_ACCESS_TOKEN: &str = "mcp-initial-access-token-for-tests";
+const MCP_RESOURCE: &str = "https://mcp.example.com/mcp";
 /// A second registered client, for RFC 7009 §2.2: a token issued to one
 /// client is not revocable by another.
 const OTHER_CLIENT: &str = "reporting";
@@ -619,6 +624,53 @@ impl Flow {
         self.send(request).await
     }
 
+    async fn post_json_bearer(&mut self, path: &str, body: &Value, bearer: &str) -> Reply {
+        let request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::HOST, HOST)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+            .body(Body::from(body.to_string()))
+            .expect("a request");
+        self.send(request).await
+    }
+
+    /// Enables and funds the tenant-owned DCR gate used by the confidential
+    /// MCP profile. The plaintext credential exists only in this test process;
+    /// the database receives its digest, as the admin API would write it.
+    async fn enable_mcp_confidential_registration(&self) -> String {
+        let policy = asterius_domain::RegistrationPolicy::from_json(Some(&json!({
+            "profile": "mcp-confidential"
+        })))
+        .expect("the built-in MCP profile");
+        let settings = TenantSettings::default().with_registration(policy);
+        PgTenantSettings::new(self.store.pool().clone())
+            .save(&self.tenant.id, &settings)
+            .await
+            .expect("store the tenant's MCP registration policy");
+        self.settings.invalidate();
+
+        let now = OffsetDateTime::now_utc();
+        let plaintext = format!("{MCP_INITIAL_ACCESS_TOKEN}-{}", self.tenant.id.as_str());
+        PgInitialAccessTokens::new(self.store.pool().clone())
+            .issue(
+                &NewInitialAccessToken::new(
+                    self.tenant.id.clone(),
+                    "MCP compatibility test",
+                    Sha256::digest(plaintext.as_bytes()).into(),
+                    Some(1),
+                    None,
+                    "integration-test",
+                    now,
+                )
+                .expect("a valid initial access token"),
+            )
+            .await
+            .expect("issue the tenant's initial access token");
+        plaintext
+    }
+
     /// RFC 9126 §2: pushes the request, pinned to `key`, and returns the
     /// reference the client is handed.
     ///
@@ -786,12 +838,17 @@ impl Flow {
     }
 
     async fn allow_client_resources(&self, allowed: &[&str]) {
+        self.allow_client_resources_as(CLIENT, allowed).await;
+    }
+
+    async fn allow_client_resources_as(&self, client_id: &str, allowed: &[&str]) {
         let scope = self.store.scope(self.tenant.id.clone());
         let clients = scope.clients(Capabilities::default());
-        let mut client = asterius_domain::ClientRepository::find(&clients, &ClientId::new(CLIENT))
-            .await
-            .expect("read the client")
-            .expect("the client is registered");
+        let mut client =
+            asterius_domain::ClientRepository::find(&clients, &ClientId::new(client_id))
+                .await
+                .expect("read the client")
+                .expect("the client is registered");
         client.registration.resources = allowed.iter().map(|r| (*r).to_owned()).collect();
         clients.upsert(&client).await.expect("store the client");
     }
@@ -1284,7 +1341,7 @@ fn assemble(
             // deployment with `[features] authzen` off wires. Agents are
             // bounded by their registration and nothing here is consulted.
             issuance: None,
-            initial_access_tokens: None,
+            initial_access_tokens: Some(Arc::new(PgInitialAccessTokens::new(store.pool().clone()))),
             authenticator,
             store: store.clone(),
             keys: key_store,
@@ -1295,7 +1352,9 @@ fn assemble(
             // lifetime writes the tenant a setting instead (`ast-5c6`).
             lifetimes: asterius_domain::TokenLifetimes::default(),
             kek: Arc::clone(kek),
-            registration: RegistrationPolicy::Closed,
+            registration: RegistrationPolicy::Gated(InitialAccessTokens::from_tokens([
+                MCP_INITIAL_ACCESS_TOKEN,
+            ])),
             outbound,
             audit,
             session_lifetimes: Lifetimes::default().clamped(),
@@ -1411,6 +1470,156 @@ fn parameter(url: &str, name: &str) -> Option<String> {
 }
 
 // ---- the chain -----------------------------------------------------------
+
+async fn assert_mcp_discovery(flow: &mut Flow) {
+    let tenant = flow.tenant.id.as_str();
+    let paths = [
+        format!("/.well-known/oauth-authorization-server/t/{tenant}"),
+        format!("/.well-known/openid-configuration/t/{tenant}"),
+        format!("/t/{tenant}/.well-known/openid-configuration"),
+    ];
+    let mut documents = Vec::new();
+    for path in paths {
+        let response = flow.get(&path).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+        documents.push(response.json());
+    }
+    assert!(documents.windows(2).all(|pair| pair[0] == pair[1]));
+    assert_eq!(
+        documents[0]["code_challenge_methods_supported"],
+        json!(["S256"])
+    );
+    assert!(
+        documents[0]["scopes_supported"]
+            .as_array()
+            .is_some_and(|scopes| scopes.iter().any(|scope| scope == "openid"))
+    );
+    assert!(
+        documents[0]
+            .get("client_id_metadata_document_supported")
+            .is_none()
+    );
+}
+
+/// The confidential MCP compatibility path from discovery through a
+/// sender-constrained, audience-bound token. The official MCP TypeScript SDK
+/// does not currently orchestrate PAR, so this deliberately exercises its
+/// HTTP contract through the assembled Asterius router rather than claiming a
+/// generic SDK can drive a FAPI authorization flow unaided.
+#[tokio::test]
+async fn a_confidential_mcp_client_registers_and_receives_its_canonical_audience() {
+    // Arrange
+    let Some(mut flow) = Flow::with_capabilities(Capabilities {
+        dynamic_client_registration: true,
+        ..Capabilities::default()
+    })
+    .await
+    else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let initial_access_token = flow.enable_mcp_confidential_registration().await;
+    flow.register_resource_server(MCP_RESOURCE, Some(&["openid", "offline_access"]))
+        .await;
+
+    // MCP Authorization discovery probes these three forms. They describe one
+    // issuer, advertise PKCE/scopes, and do not advertise unsupported CIMD.
+    assert_mcp_discovery(&mut flow).await;
+
+    // DCR under the preset: inline JWK Set and private_key_jwt, with the exact
+    // callback and resource this client will subsequently use.
+    let (client_key, client_jwks) = client_credentials();
+    let registration = flow
+        .post_json_bearer(
+            &format!("{}{}", flow.prefix(), Endpoint::Registration.path()),
+            &json!({
+                "client_name": "Confidential MCP client",
+                "redirect_uris": [REDIRECT],
+                "grant_types": ["authorization_code", "refresh_token"],
+                "response_types": ["code"],
+                "scope": "openid offline_access",
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks": client_jwks
+            }),
+            &initial_access_token,
+        )
+        .await;
+    assert_eq!(
+        registration.status,
+        StatusCode::CREATED,
+        "DCR failed: {}",
+        registration.text()
+    );
+    let client_id = registration.json()["client_id"]
+        .as_str()
+        .expect("DCR returns client_id")
+        .to_owned();
+    flow.allow_client_resources_as(&client_id, &[MCP_RESOURCE])
+        .await;
+
+    // PAR -> browser code -> DPoP token, retaining the exact canonical MCP
+    // resource at both authorization and token requests.
+    let dpop = ProofKey::generate();
+    let pushed = flow
+        .push_as(
+            &client_id,
+            Some(&client_key),
+            "openid offline_access",
+            &dpop,
+            &[("resource", MCP_RESOURCE)],
+        )
+        .await;
+    assert_eq!(pushed.status, StatusCode::CREATED, "{}", pushed.text());
+    let interaction = flow.authorize_as(&client_id, &pushed.request_uri()).await;
+    flow.sign_in(&interaction).await;
+    let code = flow.consent(&interaction).await;
+    let token = flow
+        .token_as(
+            &client_id,
+            Some(&client_key),
+            &dpop,
+            "mcp-code-redemption",
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+                ("code_verifier", VERIFIER),
+                ("resource", MCP_RESOURCE),
+            ],
+        )
+        .await;
+    assert_eq!(token.status, StatusCode::OK, "{}", token.text());
+    assert_eq!(token.json()["token_type"], "DPoP");
+
+    // A resource-server validation sample: verify the JWT against discovery's
+    // JWKS, then enforce issuer, exact audience, scope and DPoP confirmation.
+    let token_body = token.json();
+    let access_token = token_body["access_token"]
+        .as_str()
+        .expect("an access token");
+    let keys = asterius_jose::client_keys::parse_jwk_set(
+        &serde_json::to_vec(&flow.jwks().await).expect("serialise JWKS"),
+    )
+    .expect("the published key set parses");
+    let parsed = jws::parse(access_token).expect("the access token is a JWS");
+    let payload = keys
+        .candidates(parsed.kid().as_ref())
+        .iter()
+        .find_map(|key| jws::parse(access_token).expect("a JWS").verify(key).ok())
+        .expect("a published key verifies the access token");
+    let claims: Value = serde_json::from_slice(&payload).expect("JWT claims");
+    assert_eq!(claims["iss"], flow.tenant.issuer.as_str());
+    assert_eq!(claims["aud"], MCP_RESOURCE);
+    let scopes: BTreeSet<&str> = claims["scope"]
+        .as_str()
+        .expect("a scope claim")
+        .split_whitespace()
+        .collect();
+    assert_eq!(scopes, BTreeSet::from(["openid", "offline_access"]));
+    assert_eq!(claims["cnf"]["jkt"], dpop.thumbprint().as_str());
+
+    flow.tear_down().await;
+}
 
 /// **The scenario the conformance suite runs, in one test** (`ast-ixl`).
 ///

@@ -110,7 +110,9 @@ through it. Every value in the stack is a
 development value; [`deploy/README.md`](deploy/README.md) lists what has to
 change before the shape is safe anywhere real, and
 [`docs/configuration.md`](docs/configuration.md) documents every configuration
-key with its type, its default and where its secrets should come from.
+key with its type, its default and where its secrets should come from. For MCP,
+[`docs/integrating-an-mcp-server.md`](docs/integrating-an-mcp-server.md) covers
+the confidential-client flow and the protected-resource checks.
 [`docs/performance.md`](docs/performance.md) is the measured baseline — token
 endpoint throughput and latency, the code flow, SSF poll — with the pool and
 lifetime sizing that follows from it, reproducible with `scripts/load/`.
