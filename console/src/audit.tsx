@@ -39,7 +39,6 @@ import {
   Panel,
   Screen,
   Skeleton,
-  TableDensityControl,
   Timestamp,
   Truncate,
 } from './ui';
@@ -288,7 +287,7 @@ export function AuditExplorer({ session }: { session: Session }): JSX.Element {
         </form>
       </FilterPanel>
 
-      <Panel title="Records" actions={<TableDensityControl />}>
+      <Panel title="Records">
         <Trail load={load} more={more} onMore={loadMore} onRetry={() => refresh(applied)} />
       </Panel>
     </Screen>

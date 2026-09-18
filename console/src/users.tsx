@@ -256,6 +256,7 @@ function ClaimJsonPreview({ text }: { text: string }): JSX.Element | null {
 /** What the screen is looking at. */
 type View =
   | { readonly kind: 'directory' }
+  | { readonly kind: 'new' }
   | { readonly kind: 'account'; readonly id: string };
 
 /** What a load is doing. */
@@ -271,6 +272,24 @@ function failure(error: unknown, fallback: string): string {
 export function Users({ session }: { session: Session }): JSX.Element {
   const [view, setView] = useState<View>({ kind: 'directory' });
 
+  if (view.kind === 'new') {
+    return (
+      <Screen
+        title="Add an account"
+        description="Create the identity first. Credentials and access can be managed from its detail page afterwards."
+        actions={<Button onClick={() => setView({ kind: 'directory' })}>Back to users</Button>}
+      >
+        <NewAccount
+          session={session}
+          onCreated={(created) => {
+            toast.success('Account created', created.username);
+            setView({ kind: 'account', id: created.user_id });
+          }}
+        />
+      </Screen>
+    );
+  }
+
   if (view.kind === 'account') {
     return (
       <Account
@@ -280,21 +299,28 @@ export function Users({ session }: { session: Session }): JSX.Element {
       />
     );
   }
-  return <DirectoryScreen session={session} onOpen={(id) => setView({ kind: 'account', id })} />;
+  return (
+    <DirectoryScreen
+      session={session}
+      onNew={() => setView({ kind: 'new' })}
+      onOpen={(id) => setView({ kind: 'account', id })}
+    />
+  );
 }
 
-/** The searchable list, and the form that adds to it. */
+/** The searchable account list. Creation has its own task-focused page. */
 function DirectoryScreen({
   session,
+  onNew,
   onOpen,
 }: {
   session: Session;
+  onNew: () => void;
   onOpen: (id: string) => void;
 }): JSX.Element {
   const [load, setLoad] = useState<Load<Directory>>({ kind: 'loading' });
   const [term, setTerm] = useState('');
   const [cursor, setCursor] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
   const refresh = useCallback(
     (search: string, from: string | null) => {
@@ -319,8 +345,13 @@ function DirectoryScreen({
   useEffect(() => refresh(term, cursor), [refresh, term, cursor]);
 
   return (
-    <Screen title="Users" description="The accounts of this tenant, and what each one can sign in with.">
-      {notice !== null && <Message tone="success">{notice}</Message>}
+    <Screen
+      title="Users"
+      description="The accounts of this tenant, and what each one can sign in with."
+      actions={session.scopes.includes('admin.users:write') ? (
+        <Button variant="primary" onClick={onNew}>Add account</Button>
+      ) : undefined}
+    >
       <Panel
         title="Directory"
         description="Search by username or email. The list is one page at a time, in the order the server returns."
@@ -354,15 +385,6 @@ function DirectoryScreen({
           </>
         )}
       </Panel>
-      <NewAccount
-        session={session}
-        onCreated={(created) => {
-          setNotice(`${created.username} was created.`);
-          toast.success('Account created', created.username);
-          setCursor(null);
-          refresh(term, null);
-        }}
-      />
     </Screen>
   );
 }
@@ -520,7 +542,7 @@ function NewAccount({
   };
 
   return (
-    <Panel id="new-account" title="Add an account">
+    <Panel id="new-account" title="Account details">
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       <form onSubmit={submit}>
         {/* `accept_username` is what refuses one; this is the same rule said

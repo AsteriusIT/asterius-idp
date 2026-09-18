@@ -261,6 +261,7 @@ const ASSEMBLED_SCREENS = [
   'Access policy',
   'Tenants',
   'Tenant settings',
+  'Settings',
 ] as const;
 
 for (const theme of ['light', 'dark'] as const) {
@@ -631,6 +632,7 @@ const CREATED_PASSWORD = 'a created account passphrase';
  */
 async function createAccount(page: Page): Promise<string> {
   const username = freshUsername();
+  await page.getByRole('button', { name: 'Add account' }).click();
   await page.getByLabel('Username').fill(username);
   // Deliberately *not* the username. The directory renders both in the same
   // row, and an account whose two columns carry one string makes every locator
@@ -639,6 +641,8 @@ async function createAccount(page: Page): Promise<string> {
   await page.getByLabel('Email').fill(username.replace('created-', 'inbox-'));
   await page.getByLabel('Password').fill(CREATED_PASSWORD);
   await page.getByRole('button', { name: 'Create account' }).click();
+  await expect(page.getByRole('heading', { name: username })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to users' }).click();
   await expect(page.getByRole('cell', { name: username })).toBeVisible();
   return username;
 }
@@ -928,11 +932,13 @@ test('the audit layout is compactable, collapsible and responsive', async ({ pag
   await expect(row.locator('time')).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   await expect(row.locator('details.audit-detail')).toBeVisible();
 
+  await page.getByRole('link', { name: 'Display settings' }).click();
   const density = page.getByRole('group', { name: 'Table density' });
   await density.getByRole('button', { name: 'Compact' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-table-density', 'compact');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-table-density', 'compact');
+  await openAudit(page);
 
   await page.setViewportSize({ width: 400, height: 900 });
   expect(
@@ -1129,6 +1135,7 @@ test('a deployment administrator lists, creates, suspends and restores a tenant'
   // Act: create one, asking for nothing the provisioning route does not take.
   const id = sweepTenantId();
   const issuer = `${ORIGIN}/t/${id}`;
+  await page.getByRole('button', { name: 'Add tenant' }).click();
   await page.getByLabel('Tenant id').fill(id);
   await page.getByLabel('Issuer').fill(issuer);
   await page.getByRole('button', { name: 'Create tenant' }).click();
@@ -1222,16 +1229,15 @@ test('the console opens in the light theme and remembers the dark one', async ({
   await expect(page.locator('html')).not.toHaveClass(/dark/);
 
   // Act
-  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Switch to the dark theme' }).click();
+  await page.getByRole('link', { name: 'Display settings' }).click();
+  await page.getByRole('button', { name: /^Dark/ }).click();
 
   // Assert: applied…
   await expect(page.locator('html')).toHaveClass(/dark/);
   // …and remembered, which a reload is the only honest test of.
   await page.reload();
   await expect(page.locator('html')).toHaveClass(/dark/);
-  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await expect(page.getByRole('menuitem', { name: 'Switch to the light theme' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Light/ })).toBeVisible();
 });
 
 /**
@@ -1248,8 +1254,8 @@ test('the console opens in the light theme and remembers the dark one', async ({
 test('the dark theme has no accessibility violation either', async ({ page }, testInfo) => {
   // Arrange
   await signIn(page);
-  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Switch to the dark theme' }).click();
+  await page.getByRole('link', { name: 'Display settings' }).click();
+  await page.getByRole('button', { name: /^Dark/ }).click();
   await expect(page.locator('html')).toHaveClass(/dark/);
 
   // Font loading and the theme's colour transitions can still be in flight
@@ -1312,33 +1318,23 @@ test('mobile navigation closes after choosing a screen and keeps account actions
   await page.getByRole('link', { name: 'Applications', exact: true }).click();
   await expect(page.getByRole('navigation', { name: 'Console sections' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
-  await expect(page.getByRole('navigation', { name: 'breadcrumb' })).toHaveText('Applications');
-  await page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).click();
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: 'Sign out', exact: true })).toBeVisible();
   const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(results.violations).toEqual([]);
 });
 
-test('the sidebar folds to icons without losing a destination', async ({ page }) => {
+test('the desktop sidebar stays a fixed icon rail without a resize affordance', async ({ page }) => {
   // Arrange
   await signIn(page);
   const sidebar = page.locator('[data-slot="sidebar"]').first();
-  await expect(sidebar).toHaveAttribute('data-state', 'expanded');
-
-  // Act: the documented shortcut, not the button.
-  await page.keyboard.press('Control+b');
-
-  // Assert: folded, and Users is still a link that says "Users".
   await expect(sidebar).toHaveAttribute('data-state', 'collapsed');
-  await expect(page.getByRole('link', { name: 'Users' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Users', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Toggle Sidebar', exact: true })).toBeHidden();
+  await expect(page.locator('[data-slot="sidebar-rail"]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: 'Sign out', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
-
-  // Act / Assert: and it comes back.
-  await page.keyboard.press('Control+b');
-  await expect(sidebar).toHaveAttribute('data-state', 'expanded');
 });
 
 /**

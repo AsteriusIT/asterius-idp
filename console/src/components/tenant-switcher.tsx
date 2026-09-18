@@ -3,7 +3,7 @@
  *
  * # What it is
  *
- * A combobox in the sidebar's header: the tenant this session is signed in to,
+ * A combobox in the application topbar: the tenant this session is signed in to,
  * and — when the session may see them — every other tenant of the deployment,
  * searchable, keyboard-driven (`Command` over `Popover`), opened from anywhere
  * with `Ctrl`/`⌘`+`K`.
@@ -68,6 +68,7 @@ import {
 } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { type TenantPage, type TenantRow, tenantConsoleUrl } from '@/tenants';
+import { cn } from '@/lib/utils';
 
 /** Where a switch lands. See the module docs for why it is not the current route. */
 export const LANDING_ROUTE = 'overview';
@@ -84,7 +85,13 @@ type Load =
   | { readonly kind: 'ready'; readonly tenants: readonly TenantRow[] }
   | { readonly kind: 'failed'; readonly message: string };
 
-export function TenantSwitcher({ session }: { session: Session }): JSX.Element {
+export function TenantSwitcher({
+  session,
+  className,
+}: {
+  session: Session;
+  className?: string;
+}): JSX.Element {
   const [open, setOpen] = useState(false);
   const [load, setLoad] = useState<Load>({ kind: 'idle' });
   const switchable = maySwitch(session);
@@ -137,16 +144,19 @@ export function TenantSwitcher({ session }: { session: Session }): JSX.Element {
           // its middle column is the only thing allowed to grow (`ast-f9j5`).
           // Without it a long tenant name pushed the chevron past the rail's
           // edge, where it was clipped.
-          className="h-auto w-full min-w-0 justify-start gap-2 overflow-hidden px-2 py-1.5 text-left group-data-[collapsible=icon]:px-1.5"
+          className={cn(
+            'h-auto w-full min-w-0 justify-start gap-2 overflow-hidden px-2 py-1.5 text-left',
+            className,
+          )}
           title="Switch tenant (Ctrl+K)"
         >
           <BuildingIcon className="size-4 shrink-0" aria-hidden="true" />
-          <span className="flex min-w-0 flex-1 flex-col group-data-[collapsible=icon]:hidden">
+          <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate text-sm font-medium">{session.tenant}</span>
             <span className="truncate text-xs text-foreground">{sessionRoleLabel(session)}</span>
           </span>
           <ChevronsUpDownIcon
-            className="size-4 shrink-0 opacity-60 group-data-[collapsible=icon]:hidden"
+            className="size-4 shrink-0 opacity-60"
             aria-hidden="true"
           />
         </Button>

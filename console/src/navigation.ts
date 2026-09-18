@@ -53,7 +53,7 @@ export interface Destination {
    * accounts (`admin.users:read`), Tenant settings opens on a form that only
    * means something to somebody who may save it (`admin.tenants:write`).
    */
-  readonly scope: string;
+  readonly scope: string | null;
   /** The bead that fills the screen in. */
   readonly bead: string;
   /** Which heading the sidebar files it under (`ast-gore`). */
@@ -120,6 +120,9 @@ export const DESTINATIONS: readonly Destination[] = [
   // A form nobody may save is worse than an absent link, so the settings
   // screen asks for the write scope its only button needs.
   { route: 'settings', label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn', group: 'Deployment' },
+  // Local-only browser preferences. It makes no API call, so there is no
+  // server scope to require and every signed-in console user can reach it.
+  { route: 'preferences', label: 'Settings', reach: 'tenant', scope: null, bead: 'ast-f7m.10', group: 'Deployment' },
 ];
 
 /**
@@ -130,6 +133,9 @@ export const DESTINATIONS: readonly Destination[] = [
  * tenant must not be offered the deployment-wide tenant list.
  */
 export function reaches(held: HeldScopes, destination: Destination): boolean {
+  if (destination.scope === null) {
+    return true;
+  }
   const granted =
     destination.reach === 'deployment' ? held.deployment_scopes : held.scopes;
   return granted.includes(destination.scope);
