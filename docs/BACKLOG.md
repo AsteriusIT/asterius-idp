@@ -2331,9 +2331,17 @@ optional in v1. JARM and signed introspection responses remain post-v1.
 
 *task · P4 · labels: track, spec:mcp, status:draft*
 
-**Spec:** draft-ietf-oauth-client-id-metadata-document-02 (IETF working draft); MCP Authorization 2026-07-28 (AS SHOULD support CIMD and DCR is deprecated; `client_id_metadata_document_supported`).
+**Spec:** draft-ietf-oauth-client-id-metadata-document-02 (active IETF OAuth WG
+document); MCP Authorization 2026-07-28 (AS SHOULD support CIMD and DCR is
+deprecated; `client_id_metadata_document_supported`). As of 2026-09-19 the
+draft has no document shepherd, responsible AD or telechat date and has not
+entered WGLC or become an RFC.
 
 Would let MCP clients use an https URL as `client_id`; requires SSRF-hardened fetching, mutable-metadata handling and a trust policy. ADR-0012 declines it for v1 even for confidential clients and keeps the metadata signal absent.
+
+No implementation follows from this status refresh. ADR-0012 and the metadata
+regression tests already enforce the confidential-only v1 boundary; CIMD URL
+resolution, outbound fetching, caching and trust-policy code remain absent.
 
 **Acceptance tests**
 
