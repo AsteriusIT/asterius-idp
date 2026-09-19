@@ -19,6 +19,16 @@
 node_modules/
 /console/dist/
 
+# Runnable examples generate credentials and frontend bundles locally. The
+# source, lockfiles and safe `.env.example` stay versioned; runtime key material
+# and compiler output do not.
+/examples/api/.secrets/
+/examples/webapp/dist/
+
+# Per-user IDE connection state. The shared Sonar project and VS Code settings
+# are already represented by tracked repository configuration.
+/.sonarlint/
+
 # cargo-fuzz
 /fuzz/target/
 /fuzz/artifacts/
