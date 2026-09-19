@@ -2450,13 +2450,20 @@ Keep `sub` generation and claims model pluggable; nothing else.
 
 *task · P4 · labels: track, spec:openid-caep-interop, status:impl-draft*
 
-**Spec:** CAEP Interoperability Profile 1.0 (Implementer's Draft); SSF 1.0 receiver responsibilities (§3.6 receiver subject processing, §8).
+**Spec:** CAEP Interoperability Profile 1.0 (Implementer's Draft; latest Draft
+01 is undergoing renewed Final review); SSF 1.0 receiver responsibilities
+(§3.6 receiver subject processing, §8).
 
 Post-v1: consume upstream signals (e.g., revoke sessions on `credential-compromise` from an upstream IdP); align event set with the interop profile.
 
+Design: [`ssf-receiver-design.md`](ssf-receiver-design.md). The receiver uses a
+durable inbox for verified upstream SETs and the existing transactional outbox
+only for local notifications caused by the applied event.
+
 **Acceptance tests**
 
-- Re-evaluate after v1; receiver design note referencing outbox and SET verification.
+- Re-evaluate after v1 using the receiver design note, including its SET
+  verification, inbox/outbox transaction, subject-mapping and algorithm gates.
 
 **Depends on:** E12_08
 
