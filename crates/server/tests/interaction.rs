@@ -307,7 +307,7 @@ impl SessionRepository for FakeSessions {
             .iter_mut()
             .find(|session| session.id_digest == old)
             .ok_or(DomainError::NotFound)?;
-        session.id_digest = new.to_owned();
+        new.clone_into(&mut session.id_digest);
         session.amr = methods.to_vec();
         session.acr = acr.map(ToOwned::to_owned);
         session.authenticated_at = authenticated_at;
