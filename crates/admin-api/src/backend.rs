@@ -23,7 +23,7 @@ use asterius_domain::ports::{
 };
 use asterius_domain::{
     AuditSink, Capabilities, DomainError, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role,
-    Session, TenantId, UserId,
+    Session, Tenant, TenantId, UserId,
 };
 use std::sync::Arc;
 
@@ -352,14 +352,10 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
 
 /// A DPoP-bound access token, resolved to what it authorises.
 ///
-/// Separate from [`AdminBackend`] because the thing that implements it does
-/// not exist yet. `ast-a05.8` has since made the `client_credentials` grant
-/// real, so a service token can now be *minted*; what is still missing is the
-/// resolver that turns one back into what it authorises here. Wiring `None`
-/// therefore means the
-/// automation mode answers 401 rather than pretending — see
-/// [`crate::auth::authenticate`] — while every decision the mode makes is
-/// implemented, exercised and tested here against a fake.
+/// Separate from [`AdminBackend`] because token verification belongs to the
+/// server's HTTP/JOSE composition, while the backend is the administrative
+/// data plane. Keeping the ports separate also lets builds without an
+/// automation verifier wire `None` and fail closed with 401.
 #[async_trait::async_trait]
 pub trait AdminTokens: std::fmt::Debug + Send + Sync {
     /// Resolves a presented token.
@@ -369,6 +365,8 @@ pub trait AdminTokens: std::fmt::Debug + Send + Sync {
     /// bound to this request's method and URL. `None` means "not a token this
     /// server will act on", with no further detail — a token endpoint that
     /// explains *why* a token was refused is an oracle.
+    /// `tenant` is the tenant the request was routed to. It may differ from
+    /// the issuer for a deployment-wide token minted by the reserved tenant.
     ///
     /// # Errors
     ///
@@ -376,6 +374,7 @@ pub trait AdminTokens: std::fmt::Debug + Send + Sync {
     /// the same as a refusal and must not be reported as one.
     async fn resolve(
         &self,
+        tenant: &Tenant,
         presented: &PresentedToken<'_>,
     ) -> Result<Option<TokenPrincipal>, DomainError>;
 }

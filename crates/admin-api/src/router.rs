@@ -60,9 +60,9 @@ pub struct ClientAddress(pub Option<IpAddr>);
 pub struct AdminState {
     /// Where the API reaches the deployment.
     pub backend: Arc<dyn AdminBackend>,
-    /// How a DPoP-bound access token is resolved, when the deployment can mint
-    /// one. `None` until `ast-a05.8` lands, which makes the automation mode
-    /// answer 401 rather than accept something nothing verified.
+    /// How a DPoP-bound access token is resolved. `None` is a build without
+    /// automation support, which answers 401 rather than accepting something
+    /// nothing verified.
     pub tokens: Option<Arc<dyn AdminTokens>>,
     /// Requests one address may make per window.
     pub rate_limit: asterius_domain::RateLimit,
@@ -195,7 +195,10 @@ async fn handle(
 
     // 2. Who is this?
     let origin = origin_of(&tenant);
-    let url = format!("{origin}{}", parts.uri.path());
+    // DPoP binds to the resource's absolute URI, which is under the canonical
+    // issuer (including `/t/{tenant}` for path-based tenancy), not merely the
+    // web origin used by the CSRF comparison below.
+    let url = format!("{}{}", tenant.issuer.as_str(), parts.uri.path());
     let principal = authenticate(
         backend,
         state.tokens.as_deref(),
@@ -8537,8 +8540,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    /// The automation mode is implemented and not yet buildable: refusing is
-    /// the honest answer until `ast-a05.8` can mint a token to resolve.
+    /// Omitting the verifier is an explicitly fail-closed deployment mode.
     #[tokio::test]
     async fn a_token_call_is_refused_while_no_verifier_is_wired() {
         // Arrange

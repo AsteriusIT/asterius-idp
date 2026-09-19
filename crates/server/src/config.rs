@@ -1537,26 +1537,32 @@ fn configured_endpoint_limits(
             )),
             per_subject: None,
         },
-        ssf_subjects: EndpointLimit {
-            per_address: limit(
-                "limits.ssf_subjects_per_address",
-                raw.ssf_subjects_per_address,
-                DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS,
-            ),
-            // Unlike UserInfo, this endpoint *does* have a proven client by
-            // the time it is counted: the limiter runs after the five checks
-            // of `asterius_server::http::ssf`, so the receiver charged is one
-            // that presented a verified, sender-constrained token for this
-            // resource.
-            per_client: Some(limit(
-                "limits.ssf_subjects_per_client",
-                raw.ssf_subjects_per_client,
-                DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT,
-            )),
-            // No subject bucket: the SSF endpoints name a subject but do not
-            // bother them with anything. Nothing is sent to a person here.
-            per_subject: None,
-        },
+        ssf_subjects: configured_ssf_subjects_limit(raw, limit),
+    }
+}
+
+fn configured_ssf_subjects_limit(
+    raw: &RawLimits,
+    limit: &mut dyn FnMut(&str, Option<u32>, u32) -> RateLimit,
+) -> EndpointLimit {
+    EndpointLimit {
+        per_address: limit(
+            "limits.ssf_subjects_per_address",
+            raw.ssf_subjects_per_address,
+            DEFAULT_LIMIT_SSF_SUBJECTS_PER_ADDRESS,
+        ),
+        // Unlike UserInfo, this endpoint *does* have a proven client by the
+        // time it is counted: the limiter runs after the five checks of
+        // `asterius_server::http::ssf`, so the receiver charged is one that
+        // presented a verified, sender-constrained token for this resource.
+        per_client: Some(limit(
+            "limits.ssf_subjects_per_client",
+            raw.ssf_subjects_per_client,
+            DEFAULT_LIMIT_SSF_SUBJECTS_PER_CLIENT,
+        )),
+        // No subject bucket: the SSF endpoints name a subject but do not
+        // bother them with anything. Nothing is sent to a person here.
+        per_subject: None,
     }
 }
 

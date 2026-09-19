@@ -63,13 +63,48 @@ pub async fn verify(
     token: &str,
     now: OffsetDateTime,
 ) -> Result<Verified, Rejected> {
+    verify_with_audience(tenant, keys, token, None, now).await
+}
+
+/// Verifies an access token this tenant issued for one resource.
+///
+/// This is the resource-server form of [`verify`]. The signature, media type,
+/// issuer, algorithms and time claims are identical; the additional audience
+/// is the URL of the API accepting the token. Keeping the two forms here means
+/// an endpoint cannot accidentally add an audience check while dropping one
+/// of the access-token profile's other checks.
+///
+/// # Errors
+///
+/// As [`verify`], including [`Rejected::Token`] when `aud` does not contain
+/// `audience`.
+pub async fn verify_for_audience(
+    tenant: &Tenant,
+    keys: &dyn KeyStore,
+    token: &str,
+    audience: &str,
+    now: OffsetDateTime,
+) -> Result<Verified, Rejected> {
+    verify_with_audience(tenant, keys, token, Some(audience), now).await
+}
+
+async fn verify_with_audience(
+    tenant: &Tenant,
+    keys: &dyn KeyStore,
+    token: &str,
+    audience: Option<&str>,
+    now: OffsetDateTime,
+) -> Result<Verified, Rejected> {
     let resolver = published(tenant, keys).await?;
 
-    let policy = Policy::new(
+    let mut policy = Policy::new(
         TypRule::Exactly(asterius_oidc::tokens::access::ACCESS_TOKEN_TYP),
         SigningAlgorithm::ALL.to_vec(),
     )
     .issued_by(tenant.issuer.as_str());
+    if let Some(audience) = audience {
+        policy = policy.for_audience(audience);
+    }
 
     asterius_jose::verify::verify(token, &policy, &resolver, now).map_err(Rejected::Token)
 }

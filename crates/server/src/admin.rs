@@ -18,9 +18,11 @@
 //! handed one.
 
 use asterius_admin_api::clients::RegistrationGate;
-use asterius_admin_api::{AdminBackend, ClientAddress};
+use asterius_admin_api::{
+    AdminBackend, AdminTokens, ClientAddress, PresentedToken, TokenPrincipal,
+};
 use asterius_domain::MailSender as _;
-use asterius_domain::keys::KeyAdministration;
+use asterius_domain::keys::{KeyAdministration, KeyStore};
 use asterius_domain::ports::PasskeyRepository as _;
 use asterius_domain::ports::RecoveryTokenStore as _;
 use asterius_domain::ports::{
@@ -28,8 +30,8 @@ use asterius_domain::ports::{
 };
 use asterius_domain::{
     AuditSink, Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration,
-    DomainError, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role, Session,
-    SessionRepository as _, TenantId, UserId,
+    DomainError, GrantId, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role, Session,
+    SessionRepository as _, Tenant, TenantId, UserId,
 };
 
 use crate::http::register::RegistrationPolicy;
@@ -38,12 +40,271 @@ use asterius_store_pg::{
     PgAuditSink, PgRateLimitStore, PgReplayGuard, PgRoleRepository, PgTenantSettings, Store,
 };
 use axum::extract::Request;
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
 use std::sync::Arc;
 
 use crate::tenancy::TenantDirectory;
 use crate::tenant_settings::SettingsDirectory;
+
+/// Resolves the access tokens used by non-browser admin API clients.
+///
+/// Token verification is deliberately composed from the same access-token and
+/// DPoP primitives as UserInfo and the other protected resources. The only
+/// policy added here is specific to the admin API: its audience, its
+/// `client_credentials` subject shape, and whether the issuer is the routed
+/// tenant or the reserved tenant that may issue deployment-wide authority.
+#[derive(Clone)]
+pub struct AutomationTokens {
+    status: Arc<dyn AutomationTokenStatus>,
+    keys: Arc<dyn KeyStore>,
+    dpop: Arc<crate::http::dpop::DpopEndpoint>,
+    directory: TenantDirectory,
+    reserved_tenant: Option<TenantId>,
+}
+
+impl std::fmt::Debug for AutomationTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutomationTokens")
+            .field("reserved_tenant", &self.reserved_tenant)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AutomationTokens {
+    /// Uses the process's existing key, DPoP, tenant-directory and token-status
+    /// handles. No verifier or replay cache is constructed per request.
+    #[must_use]
+    pub fn new(
+        store: Store,
+        keys: Arc<dyn KeyStore>,
+        dpop: Arc<crate::http::dpop::DpopEndpoint>,
+        directory: TenantDirectory,
+        reserved_tenant: Option<TenantId>,
+    ) -> Self {
+        Self {
+            status: Arc::new(PgAutomationTokenStatus { store }),
+            keys,
+            dpop,
+            directory,
+            reserved_tenant,
+        }
+    }
+
+    async fn issuers(&self, routed: &Tenant) -> Result<Vec<Tenant>, DomainError> {
+        let mut issuers = vec![routed.clone()];
+        if let Some(reserved) = self
+            .reserved_tenant
+            .as_ref()
+            .filter(|reserved| *reserved != &routed.id)
+        {
+            let tenant = self.directory.by_id(reserved).await?.ok_or_else(|| {
+                DomainError::invalid(
+                    "admin.tenant",
+                    "the configured reserved tenant is not in the tenant directory",
+                )
+            })?;
+            issuers.push((*tenant).clone());
+        }
+        Ok(issuers)
+    }
+
+    async fn verify(
+        &self,
+        routed: &Tenant,
+        token: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<Option<(asterius_jose::verify::Verified, Tenant)>, DomainError> {
+        let mut unavailable = None;
+        for issuer in self.issuers(routed).await? {
+            let audience = format!(
+                "{}{}",
+                issuer.issuer.as_str(),
+                asterius_admin_api::BASE_PATH
+            );
+            match crate::http::access_token::verify_for_audience(
+                &issuer,
+                self.keys.as_ref(),
+                token,
+                &audience,
+                now,
+            )
+            .await
+            {
+                Ok(verified) => return Ok(Some((verified, issuer))),
+                Err(crate::http::access_token::Rejected::Token(error)) => {
+                    tracing::debug!(%error, "an admin API access token did not verify");
+                }
+                Err(crate::http::access_token::Rejected::Unavailable(error)) => {
+                    unavailable = Some(error);
+                }
+            }
+        }
+        match unavailable {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
+    }
+
+    async fn sender_constrained(
+        &self,
+        routed: &Tenant,
+        presented: &PresentedToken<'_>,
+        verified: &asterius_jose::verify::Verified,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DomainError> {
+        let path = presented
+            .url
+            .strip_prefix(routed.issuer.as_str())
+            .filter(|path| path.starts_with(asterius_admin_api::BASE_PATH));
+        let Some(path) = path else {
+            return Ok(false);
+        };
+        let Ok(method) = Method::from_bytes(presented.method.as_bytes()) else {
+            return Ok(false);
+        };
+        let Ok(proof) = HeaderValue::from_str(presented.proof) else {
+            return Ok(false);
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(crate::http::dpop::HEADER, proof);
+
+        crate::http::access_token::check_sender_constraint(
+            &crate::http::access_token::Presented {
+                tenant: routed,
+                dpop: self.dpop.as_ref(),
+                target: crate::http::dpop::ProofTarget::at_path(path),
+                certificate: None,
+                method: &method,
+                headers: &headers,
+                presented: asterius_oidc::userinfo::Presentation::Dpop(presented.token),
+                now,
+            },
+            verified,
+        )
+        .await
+        .map(|()| true)
+        .or_else(|failure| match failure {
+            crate::http::access_token::NotBound::Dpop(refusal)
+                if refusal.status() == StatusCode::SERVICE_UNAVAILABLE =>
+            {
+                Err(DomainError::Storage(Box::new(std::io::Error::other(
+                    "the DPoP replay store is unavailable",
+                ))))
+            }
+            crate::http::access_token::NotBound::Refused
+            | crate::http::access_token::NotBound::Dpop(_) => Ok(false),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl AdminTokens for AutomationTokens {
+    async fn resolve(
+        &self,
+        routed: &Tenant,
+        presented: &PresentedToken<'_>,
+    ) -> Result<Option<TokenPrincipal>, DomainError> {
+        let now = time::OffsetDateTime::now_utc();
+        let Some((verified, issuer)) = self.verify(routed, presented.token, now).await? else {
+            return Ok(None);
+        };
+
+        if !self
+            .sender_constrained(routed, presented, &verified, now)
+            .await?
+        {
+            return Ok(None);
+        }
+
+        let Some(jti) = verified.claim_str("jti") else {
+            return Ok(None);
+        };
+        let Some(client) = verified.claim_str("client_id") else {
+            return Ok(None);
+        };
+        // Automation is a client-credentials mode. A user-delegated token may
+        // carry the same scope names but its `sub` is a person, and accepting
+        // it here would turn a browser authorization into service authority.
+        if verified.claim_str("sub") != Some(client) {
+            return Ok(None);
+        }
+
+        if self.status.is_denylisted(&issuer.id, jti).await? {
+            return Ok(None);
+        }
+        let client_id = ClientId::new(client.to_owned());
+        let grant_id = verified
+            .claim_str("grant_id")
+            .map(|id| GrantId::new(id.to_owned()));
+        let cutoff = self
+            .status
+            .revoked_before(&issuer.id, &client_id, grant_id.as_ref())
+            .await?;
+        if crate::http::access_token::withdrawn(&verified, cutoff) {
+            return Ok(None);
+        }
+
+        let scopes = verified
+            .claim_str("scope")
+            .unwrap_or_default()
+            .split_ascii_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let tenant = if self.reserved_tenant.as_ref() == Some(&issuer.id) {
+            None
+        } else {
+            Some(issuer.id)
+        };
+        Ok(Some(TokenPrincipal {
+            subject: client.to_owned(),
+            tenant,
+            scopes,
+        }))
+    }
+}
+
+#[async_trait::async_trait]
+trait AutomationTokenStatus: std::fmt::Debug + Send + Sync {
+    async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError>;
+
+    async fn revoked_before(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        grant: Option<&GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, DomainError>;
+}
+
+#[derive(Debug)]
+struct PgAutomationTokenStatus {
+    store: Store,
+}
+
+#[async_trait::async_trait]
+impl AutomationTokenStatus for PgAutomationTokenStatus {
+    async fn is_denylisted(&self, tenant: &TenantId, jti: &str) -> Result<bool, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .grants()
+            .is_denylisted(jti)
+            .await
+    }
+
+    async fn revoked_before(
+        &self,
+        tenant: &TenantId,
+        client: &ClientId,
+        grant: Option<&GrantId>,
+    ) -> Result<Option<time::OffsetDateTime>, DomainError> {
+        self.store
+            .scope(tenant.clone())
+            .grants()
+            .revoked_before(client, grant)
+            .await
+    }
+}
 
 /// This deployment, as the admin API sees it.
 #[derive(Clone)]
@@ -1431,4 +1692,431 @@ pub async fn client_address_layer(mut request: Request, next: Next) -> Response 
         .map(|client| client.ip);
     request.extensions_mut().insert(ClientAddress(resolved));
     next.run(request).await
+}
+
+#[cfg(test)]
+mod automation_tests {
+    use super::*;
+    use asterius_domain::keys::{Signer as _, SigningAlgorithm};
+    use asterius_domain::ports::TenantRepository;
+    use asterius_domain::{Issuer, ReplayCheck, ReplayPurpose, TenantStatus};
+    use asterius_jose::{LocalKeyStore, SigningKey, thumbprint};
+    use asterius_oidc::tokens::JwtId;
+    use asterius_oidc::tokens::access::{AccessToken, Audience, Confirmation};
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+    use serde_json::{Value, json};
+    use sha2::{Digest as _, Sha256};
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+
+    fn tenant(id: &str) -> Tenant {
+        Tenant {
+            id: TenantId::new(id),
+            issuer: Issuer::parse(&format!("https://as.example/t/{id}")).expect("a valid issuer"),
+            default_resource: "https://api.example/".to_owned(),
+            custom_host: None,
+            display_name: id.to_owned(),
+            status: TenantStatus::Active,
+            refresh: asterius_domain::RefreshPolicy::default(),
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn admin_url(tenant: &Tenant, path: &str) -> String {
+        format!("{}{path}", tenant.issuer.as_str())
+    }
+
+    #[derive(Debug)]
+    struct Tenants(Vec<Tenant>);
+
+    #[async_trait::async_trait]
+    impl TenantRepository for Tenants {
+        async fn find_by_id(&self, id: &TenantId) -> Result<Option<Tenant>, DomainError> {
+            Ok(self.0.iter().find(|tenant| &tenant.id == id).cloned())
+        }
+
+        async fn find_by_issuer(&self, issuer: &Issuer) -> Result<Option<Tenant>, DomainError> {
+            Ok(self
+                .0
+                .iter()
+                .find(|tenant| &tenant.issuer == issuer)
+                .cloned())
+        }
+
+        async fn find_by_host(&self, host: &str) -> Result<Option<Tenant>, DomainError> {
+            Ok(self
+                .0
+                .iter()
+                .find(|tenant| tenant.custom_host.as_deref() == Some(host))
+                .cloned())
+        }
+
+        async fn list(&self) -> Result<Vec<Tenant>, DomainError> {
+            Ok(self.0.clone())
+        }
+
+        async fn upsert(&self, _: &Tenant) -> Result<(), DomainError> {
+            unreachable!("read-only test repository")
+        }
+
+        async fn delete(&self, _: &TenantId) -> Result<(), DomainError> {
+            unreachable!("read-only test repository")
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Status;
+
+    #[async_trait::async_trait]
+    impl AutomationTokenStatus for Status {
+        async fn is_denylisted(&self, _: &TenantId, _: &str) -> Result<bool, DomainError> {
+            Ok(false)
+        }
+
+        async fn revoked_before(
+            &self,
+            _: &TenantId,
+            _: &ClientId,
+            _: Option<&GrantId>,
+        ) -> Result<Option<time::OffsetDateTime>, DomainError> {
+            Ok(None)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Replay(Mutex<BTreeSet<String>>);
+
+    #[async_trait::async_trait]
+    impl ReplayGuard for Replay {
+        async fn claim(
+            &self,
+            _: &TenantId,
+            _: ReplayPurpose,
+            subject: &str,
+            jti: &str,
+            _: time::OffsetDateTime,
+        ) -> Result<ReplayCheck, DomainError> {
+            let key = format!("{subject}|{jti}");
+            Ok(if self.0.lock().expect("lock").insert(key) {
+                ReplayCheck::FirstUse
+            } else {
+                ReplayCheck::Replay
+            })
+        }
+    }
+
+    struct Fixture {
+        resolver: AutomationTokens,
+        keys: Arc<LocalKeyStore>,
+        dpop_key: SigningKey,
+    }
+
+    impl Fixture {
+        fn new(tenants: Vec<Tenant>, reserved: Option<TenantId>) -> Self {
+            let keys = Arc::new(LocalKeyStore::new());
+            for tenant in &tenants {
+                keys.generate(&tenant.id, SigningAlgorithm::DEFAULT)
+                    .expect("a signing key");
+            }
+            let dpop_key = SigningKey::generate(SigningAlgorithm::EdDsa).expect("a DPoP key");
+            let directory = TenantDirectory::new(Arc::new(Tenants(tenants)));
+            let resolver = AutomationTokens {
+                status: Arc::new(Status),
+                keys: Arc::clone(&keys) as Arc<dyn KeyStore>,
+                dpop: Arc::new(crate::http::dpop::DpopEndpoint::new(
+                    Arc::new(Replay::default()),
+                    None,
+                )),
+                directory,
+                reserved_tenant: reserved,
+            };
+            Self {
+                resolver,
+                keys,
+                dpop_key,
+            }
+        }
+
+        async fn token(&self, issuer: &Tenant, audience: &str, scopes: &[&str]) -> String {
+            let now = time::OffsetDateTime::now_utc();
+            let mut grant = asterius_domain::Grant::new(
+                issuer.id.clone(),
+                ClientId::new("admin-automation"),
+                now,
+            );
+            grant.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+            grant.claimed_at = Some(now);
+            let claimed = grant.claim(now).expect("a live grant");
+            let jkt = thumbprint(&self.dpop_key.public_jwk().expect("a public JWK"))
+                .expect("a thumbprint");
+            let unsigned = AccessToken::new(
+                &issuer.issuer,
+                &grant,
+                &claimed,
+                Audience::new([audience]).expect("an audience"),
+                Confirmation::dpop(&jkt).expect("a confirmation"),
+                JwtId::generate(),
+                now,
+            )
+            .with_grant_id()
+            .build()
+            .expect("an access token");
+            self.keys
+                .sign(
+                    &issuer.id,
+                    unsigned.required_algorithm(),
+                    unsigned.typ(),
+                    unsigned.claims(),
+                )
+                .await
+                .expect("a signature")
+                .as_str()
+                .to_owned()
+        }
+
+        fn proof(&self, token: &str, method: &str, url: &str, jti: &str) -> String {
+            let header = json!({
+                "typ": "dpop+jwt",
+                "alg": "EdDSA",
+                "jwk": self.dpop_key.public_jwk().expect("a public JWK"),
+            });
+            let claims = json!({
+                "jti": jti,
+                "htm": method,
+                "htu": url,
+                "iat": time::OffsetDateTime::now_utc().unix_timestamp(),
+                "ath": B64.encode(Sha256::digest(token.as_bytes())),
+            });
+            sign_by_hand(&self.dpop_key, &header, &claims)
+        }
+    }
+
+    fn sign_by_hand(key: &SigningKey, header: &Value, claims: &Value) -> String {
+        let signing_input = format!(
+            "{}.{}",
+            B64.encode(serde_json::to_vec(header).expect("a header")),
+            B64.encode(serde_json::to_vec(claims).expect("claims"))
+        );
+        let signature = key.sign(signing_input.as_bytes()).expect("a signature");
+        format!("{signing_input}.{}", B64.encode(signature))
+    }
+
+    #[tokio::test]
+    async fn a_valid_dpop_token_resolves_to_its_admin_scopes() {
+        let routed = tenant("acme");
+        let fixture = Fixture::new(vec![routed.clone()], None);
+        let audience = admin_url(&routed, asterius_admin_api::BASE_PATH);
+        let token = fixture
+            .token(&routed, &audience, &["admin.users:read"])
+            .await;
+        let url = admin_url(&routed, "/admin/api/v1/users");
+        let proof = fixture.proof(&token, "GET", &url, "valid-proof");
+
+        let resolved = fixture
+            .resolver
+            .resolve(
+                &routed,
+                &PresentedToken {
+                    token: &token,
+                    proof: &proof,
+                    method: "GET",
+                    url: &url,
+                },
+            )
+            .await
+            .expect("the stores answer")
+            .expect("valid credentials");
+
+        assert_eq!(resolved.subject, "admin-automation");
+        assert_eq!(resolved.tenant, Some(routed.id));
+        assert_eq!(resolved.scopes, ["admin.users:read"]);
+    }
+
+    #[tokio::test]
+    async fn a_proof_is_single_use() {
+        let routed = tenant("acme");
+        let fixture = Fixture::new(vec![routed.clone()], None);
+        let audience = admin_url(&routed, asterius_admin_api::BASE_PATH);
+        let token = fixture
+            .token(&routed, &audience, &["admin.users:read"])
+            .await;
+        let url = admin_url(&routed, "/admin/api/v1/users");
+        let proof = fixture.proof(&token, "GET", &url, "replayed-proof");
+        let presented = PresentedToken {
+            token: &token,
+            proof: &proof,
+            method: "GET",
+            url: &url,
+        };
+
+        assert!(
+            fixture
+                .resolver
+                .resolve(&routed, &presented)
+                .await
+                .expect("the stores answer")
+                .is_some()
+        );
+        assert!(
+            fixture
+                .resolver
+                .resolve(&routed, &presented)
+                .await
+                .expect("the stores answer")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_for_another_audience_is_refused() {
+        let routed = tenant("acme");
+        let fixture = Fixture::new(vec![routed.clone()], None);
+        let token = fixture
+            .token(
+                &routed,
+                "https://api.example/accounts",
+                &["admin.users:read"],
+            )
+            .await;
+        let url = admin_url(&routed, "/admin/api/v1/users");
+        let proof = fixture.proof(&token, "GET", &url, "wrong-audience");
+
+        assert!(
+            fixture
+                .resolver
+                .resolve(
+                    &routed,
+                    &PresentedToken {
+                        token: &token,
+                        proof: &proof,
+                        method: "GET",
+                        url: &url,
+                    },
+                )
+                .await
+                .expect("the stores answer")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tenant_token_is_refused_at_another_tenant() {
+        let acme = tenant("acme");
+        let other = tenant("other");
+        let fixture = Fixture::new(vec![acme.clone(), other.clone()], None);
+        let audience = admin_url(&acme, asterius_admin_api::BASE_PATH);
+        let token = fixture.token(&acme, &audience, &["admin.users:read"]).await;
+        let url = admin_url(&other, "/admin/api/v1/users");
+        let proof = fixture.proof(&token, "GET", &url, "cross-tenant");
+
+        assert!(
+            fixture
+                .resolver
+                .resolve(
+                    &other,
+                    &PresentedToken {
+                        token: &token,
+                        proof: &proof,
+                        method: "GET",
+                        url: &url,
+                    },
+                )
+                .await
+                .expect("the stores answer")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reserved_tenant_may_issue_deployment_wide_automation() {
+        let reserved = tenant("asterius-admin");
+        let routed = tenant("acme");
+        let fixture = Fixture::new(
+            vec![reserved.clone(), routed.clone()],
+            Some(reserved.id.clone()),
+        );
+        let audience = admin_url(&reserved, asterius_admin_api::BASE_PATH);
+        let token = fixture
+            .token(&reserved, &audience, &["admin.users:read"])
+            .await;
+        let url = admin_url(&routed, "/admin/api/v1/users");
+        let proof = fixture.proof(&token, "GET", &url, "deployment-wide");
+
+        let resolved = fixture
+            .resolver
+            .resolve(
+                &routed,
+                &PresentedToken {
+                    token: &token,
+                    proof: &proof,
+                    method: "GET",
+                    url: &url,
+                },
+            )
+            .await
+            .expect("the stores answer")
+            .expect("reserved-tenant token");
+
+        assert_eq!(resolved.tenant, None);
+        assert_eq!(resolved.scopes, ["admin.users:read"]);
+    }
+
+    #[tokio::test]
+    async fn a_valid_token_without_the_route_scope_is_not_authorized() {
+        let routed = tenant("acme");
+        let fixture = Fixture::new(vec![routed.clone()], None);
+        let audience = admin_url(&routed, asterius_admin_api::BASE_PATH);
+        let token = fixture
+            .token(&routed, &audience, &["admin.clients:read"])
+            .await;
+        let url = admin_url(&routed, "/admin/api/v1/users");
+        let proof = fixture.proof(&token, "GET", &url, "insufficient-scope");
+        let resolved = fixture
+            .resolver
+            .resolve(
+                &routed,
+                &PresentedToken {
+                    token: &token,
+                    proof: &proof,
+                    method: "GET",
+                    url: &url,
+                },
+            )
+            .await
+            .expect("the stores answer")
+            .expect("a valid but under-scoped token");
+        let held = asterius_admin_api::Held::Scopes {
+            tenant: resolved.tenant,
+            scopes: resolved.scopes,
+        };
+
+        assert!(!held.satisfies(asterius_admin_api::USERS_LIST.authority(), &routed.id));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_access_token_is_refused() {
+        let routed = tenant("acme");
+        let fixture = Fixture::new(vec![routed.clone()], None);
+        let url = admin_url(&routed, "/admin/api/v1/users");
+        let proof = fixture.proof("not-a-jwt", "GET", &url, "invalid-token");
+
+        assert!(
+            fixture
+                .resolver
+                .resolve(
+                    &routed,
+                    &PresentedToken {
+                        token: "not-a-jwt",
+                        proof: &proof,
+                        method: "GET",
+                        url: &url,
+                    },
+                )
+                .await
+                .expect("the stores answer")
+                .is_none()
+        );
+    }
 }
