@@ -266,9 +266,17 @@ swapped a tenant id into this page's state would leave those calls pointing at
 the first tenant's API with the first tenant's session — a 403 per screen at
 best, and at worst a cross-tenant read from a session never authorised for it.
 Sending the browser to the other console makes the tenant a property of the
-document again, and the session for it is opened by the login flow that already
-exists (`ast-wr4`): a browser with no session there meets the ordinary sign-in
-page, which is the correct outcome and not an error.
+document again. For path-based tenants on the reserved tenant's origin, the
+browser sends the same `__Host-asterius_session` cookie and the entry guard
+resolves it only against that configured reserved tenant; it serves the shell
+only when the account holds deployment-scoped authority (`ast-w4g3`). The API
+behind the shell applies the same rule (`ast-8gm`). An ordinary tenant session
+is never a cross-tenant credential.
+
+A custom-host tenant is deliberately different: its origin receives no
+`__Host-` cookie set by the reserved tenant's origin. It therefore meets the
+ordinary local sign-in page (`ast-wr4`). No session token is put in the URL or
+transferred between origins to make that navigation silent.
 
 **The landing screen is Overview**, deliberately, and not the screen the
 operator was on. What this administrator may reach in the other tenant is

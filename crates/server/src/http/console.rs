@@ -43,9 +43,12 @@
 //!
 //! ADR-0010 keeps `Session::tenant` non-optional, and the deployment
 //! administrator is a user of the reserved tenant (`ast-1cj`). So the console
-//! is at `/t/{tenant}/admin/` and there is no console at the root: a session
-//! opened in one tenant is not a session in another, and this module refuses
-//! one that names a different tenant even if a lookup ever handed it over.
+//! is at `/t/{tenant}/admin/` and there is no console at the root. The one
+//! cross-tenant case is a deployment-scoped role held in that configured
+//! reserved tenant: it may open a path-based tenant console with the same
+//! `__Host-` cookie, just as the API behind the shell does (`ast-8gm`). No
+//! other tenant is consulted, and a reserved-tenant session holding only a
+//! tenant-scoped role is refused.
 
 use crate::http::redirect::SeeOther;
 use asterius_domain::entities::session;
@@ -116,12 +119,20 @@ pub const fn location_of(destination: FirstPartyDestination) -> &'static str {
 /// session-bound CSRF defence ADR-0009 requires, and a state-changing route
 /// that could be reached by a top-level navigation is exactly what that ADR
 /// forbids.
-pub fn routes(store: asterius_store_pg::Store, bundle: asterius_admin_api::Bundle) -> Router {
+pub fn routes(
+    store: asterius_store_pg::Store,
+    bundle: asterius_admin_api::Bundle,
+    reserved_tenant: Option<asterius_domain::TenantId>,
+) -> Router {
     asterius_admin_api::console::assets(bundle)
         .merge(slashless())
         .route(
             asterius_admin_api::console::INDEX_PATH,
-            axum::routing::get(index).with_state(ConsoleState { store, bundle }),
+            axum::routing::get(index).with_state(ConsoleState {
+                store,
+                bundle,
+                reserved_tenant,
+            }),
         )
 }
 
@@ -164,33 +175,39 @@ async fn slashless_redirect() -> Response {
 struct ConsoleState {
     store: asterius_store_pg::Store,
     bundle: asterius_admin_api::Bundle,
+    reserved_tenant: Option<asterius_domain::TenantId>,
 }
 
 /// [`AdminStanding`] against this deployment's store.
 #[derive(Debug, Clone)]
 struct StoredStanding {
     store: asterius_store_pg::Store,
-    tenant: asterius_domain::TenantId,
 }
 
 #[async_trait::async_trait]
 impl AdminStanding for StoredStanding {
-    async fn roles(&self, user: UserId) -> Result<Vec<Role>, DomainError> {
-        let granted = asterius_store_pg::PgRoleRepository::new(
-            self.store.pool().clone(),
-            self.tenant.clone(),
-        )
-        .roles_of(user)
-        .await?;
+    async fn roles(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        user: UserId,
+    ) -> Result<Vec<Role>, DomainError> {
+        let granted =
+            asterius_store_pg::PgRoleRepository::new(self.store.pool().clone(), tenant.clone())
+                .roles_of(user)
+                .await?;
         Ok(granted.into_iter().map(|role| role.role).collect())
     }
 
-    async fn passkey_enrolment(&self, user: UserId) -> Result<PasskeyEnrolment, DomainError> {
+    async fn passkey_enrolment(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        user: UserId,
+    ) -> Result<PasskeyEnrolment, DomainError> {
         use asterius_domain::ports::PasskeyRepository as _;
 
         let credentials = self
             .store
-            .scope(self.tenant.clone())
+            .scope(tenant.clone())
             .passkeys()
             .credential_ids(&user)
             .await?;
@@ -212,15 +229,23 @@ async fn index(
     let scope = state.store.scope(tenant.id.clone());
     let interactions = scope.auth_requests();
     let sessions = scope.sessions();
+    let reserved_sessions = state
+        .reserved_tenant
+        .as_ref()
+        .filter(|reserved| *reserved != &tenant.id)
+        .map(|reserved| state.store.scope(reserved.clone()).sessions());
     let standing = StoredStanding {
         store: state.store.clone(),
-        tenant: tenant.id.clone(),
     };
     enter(
         &ConsoleContext {
             tenant: &tenant,
             interactions: &interactions,
             sessions: &sessions,
+            reserved_tenant: state.reserved_tenant.as_ref(),
+            reserved_sessions: reserved_sessions
+                .as_ref()
+                .map(|sessions| sessions as &dyn SessionRepository),
             standing: &standing,
             nonce: &nonce,
             bundle: state.bundle,
@@ -249,25 +274,37 @@ pub trait AdminStanding: Send + Sync {
     /// # Errors
     ///
     /// [`DomainError`] if the store could not be read.
-    async fn roles(&self, user: UserId) -> Result<Vec<Role>, DomainError>;
+    async fn roles(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        user: UserId,
+    ) -> Result<Vec<Role>, DomainError>;
 
     /// Whether the user has a passkey that could have been asked for.
     ///
     /// # Errors
     ///
     /// [`DomainError`] if the store could not be read.
-    async fn passkey_enrolment(&self, user: UserId) -> Result<PasskeyEnrolment, DomainError>;
+    async fn passkey_enrolment(
+        &self,
+        tenant: &asterius_domain::TenantId,
+        user: UserId,
+    ) -> Result<PasskeyEnrolment, DomainError>;
 }
 
 /// What the console entry needs.
 pub struct ConsoleContext<'a> {
-    /// The tenant this request arrived at, and the only tenant whose session
-    /// counts here.
+    /// The tenant this request arrived at.
     pub tenant: &'a Tenant,
     /// Where a first-party interaction is opened.
     pub interactions: &'a dyn InteractionRepository,
     /// Where the cookie's session is looked up.
     pub sessions: &'a dyn SessionRepository,
+    /// The configured home of deployment-scoped administrators, if any.
+    pub reserved_tenant: Option<&'a asterius_domain::TenantId>,
+    /// Sessions of [`Self::reserved_tenant`], when it differs from the request
+    /// tenant. No other tenant is ever a fallback.
+    pub reserved_sessions: Option<&'a dyn SessionRepository>,
     /// What the visitor holds, and what they could have proved (`ast-895`).
     pub standing: &'a dyn AdminStanding,
     /// The CSP nonce this response was drawn with.
@@ -295,7 +332,7 @@ pub async fn enter(
 ) -> Response {
     if let Some(session) = signed_in(context, headers, now).await {
         match admission(context, &session).await {
-            Ok(AdminAdmission::Admitted | AdminAdmission::AdmittedPendingEnrolment) => {
+            Ok(Some(AdminAdmission::Admitted | AdminAdmission::AdmittedPendingEnrolment)) => {
                 return asterius_admin_api::console::document(context.bundle, context.nonce);
             }
             // `ast-895`: a deployment admin whose session records only a
@@ -308,7 +345,7 @@ pub async fn enter(
             // everything that is not the admin surface, and revoking it here
             // would sign the user out of the tenant to enforce a rule about
             // the console.
-            Ok(AdminAdmission::StepUpRequired) => return begin(context, now).await,
+            Ok(Some(AdminAdmission::StepUpRequired) | None) => return begin(context, now).await,
             // "We could not tell what you hold" is not "then come in", and it
             // is not "you have no session" either: sending an administrator
             // round the login loop for a database that is down would look like
@@ -342,15 +379,31 @@ pub async fn enter(
 async fn admission(
     context: &ConsoleContext<'_>,
     session: &Session,
-) -> Result<AdminAdmission, DomainError> {
+) -> Result<Option<AdminAdmission>, DomainError> {
     let user = UserId::new(session.user);
-    let roles = context.standing.roles(user).await?;
+    let roles = context.standing.roles(&session.tenant, user).await?;
 
-    if !admin_access_policy::enrolment_decides(&roles, &session.amr) {
-        return Ok(AdminAdmission::Admitted);
+    // Resolving the reserved-tenant row is not admitting it. Only authority
+    // whose scope is the whole deployment crosses this boundary; an ordinary
+    // role in the reserved tenant remains confined there, like every other
+    // tenant-scoped role.
+    if session.tenant != context.tenant.id && !admin_access_policy::is_deployment_scoped(&roles) {
+        tracing::warn!(
+            tenant = %context.tenant.id,
+            session_tenant = %session.tenant,
+            "a tenant-scoped session was presented at another tenant's console"
+        );
+        return Ok(None);
     }
 
-    let enrolment = context.standing.passkey_enrolment(user).await?;
+    if !admin_access_policy::enrolment_decides(&roles, &session.amr) {
+        return Ok(Some(AdminAdmission::Admitted));
+    }
+
+    let enrolment = context
+        .standing
+        .passkey_enrolment(&session.tenant, user)
+        .await?;
 
     let admission = admin_access_policy::admit(&roles, &session.amr, enrolment);
     if admission == AdminAdmission::AdmittedPendingEnrolment {
@@ -361,7 +414,7 @@ async fn admission(
              passkey, and the enrolment window stays open until it registers one"
         );
     }
-    Ok(admission)
+    Ok(Some(admission))
 }
 
 /// The answer when this server cannot decide, which is not "come in".
@@ -377,14 +430,12 @@ fn unavailable() -> Response {
         .into_response()
 }
 
-/// The session behind the cookie, when there is a usable one *of this tenant*.
+/// The session behind the cookie, when there is a usable local or reserved one.
 ///
-/// The repository is already scoped to the tenant, so a session digest from
-/// another one does not resolve here — the tenant comparison is the second
-/// lock on that door, and it is cheap. Both are needed: the scoping is a
-/// property of how this handler was assembled, and the criterion "a session in
-/// tenant A does not open the console of tenant B" should not rest on an
-/// assembly step being remembered.
+/// The request tenant is consulted first. A miss may be looked up in exactly
+/// one other place: the configured reserved tenant. [`admission`] separately
+/// requires deployment scope before that row opens a different tenant's
+/// shell, so resolution never becomes authority by accident.
 async fn signed_in(
     context: &ConsoleContext<'_>,
     headers: &HeaderMap,
@@ -393,8 +444,8 @@ async fn signed_in(
     let cookies = crate::http::cookies(headers);
     let value = interaction::cookie_value(&cookies, session::COOKIE_NAME)?;
     let digest = asterius_domain::sha256_hex(value.as_bytes());
-    let session = match context.sessions.find(&digest).await {
-        Ok(session) => session?,
+    let mut session = match context.sessions.find(&digest).await {
+        Ok(session) => session,
         Err(error) => {
             // A session that cannot be read is not a session. The visitor
             // meets a sign-in page, which is what this server does everywhere
@@ -403,7 +454,32 @@ async fn signed_in(
             return None;
         }
     };
-    if session.tenant != context.tenant.id {
+
+    if session.is_none()
+        && let (Some(reserved), Some(reserved_sessions)) =
+            (context.reserved_tenant, context.reserved_sessions)
+        && reserved != &context.tenant.id
+    {
+        session = match reserved_sessions.find(&digest).await {
+            Ok(session) => session,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    tenant = %context.tenant.id,
+                    reserved_tenant = %reserved,
+                    "cannot read the reserved-tenant session at the console"
+                );
+                return None;
+            }
+        };
+    }
+
+    let session = session?;
+    let is_local = session.tenant == context.tenant.id;
+    let is_reserved = context
+        .reserved_tenant
+        .is_some_and(|reserved| reserved == &session.tenant);
+    if !is_local && !is_reserved {
         tracing::warn!(
             tenant = %context.tenant.id,
             "a session of another tenant was presented at this console"

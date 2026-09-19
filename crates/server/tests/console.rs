@@ -183,14 +183,18 @@ impl FakeStanding {
 
 #[async_trait::async_trait]
 impl AdminStanding for FakeStanding {
-    async fn roles(&self, _user: UserId) -> Result<Vec<Role>, DomainError> {
+    async fn roles(&self, _tenant: &TenantId, _user: UserId) -> Result<Vec<Role>, DomainError> {
         if self.fail {
             return Err(DomainError::Storage("the store is down".into()));
         }
         Ok(self.roles.clone())
     }
 
-    async fn passkey_enrolment(&self, _user: UserId) -> Result<PasskeyEnrolment, DomainError> {
+    async fn passkey_enrolment(
+        &self,
+        _tenant: &TenantId,
+        _user: UserId,
+    ) -> Result<PasskeyEnrolment, DomainError> {
         if self.fail {
             return Err(DomainError::Storage("the store is down".into()));
         }
@@ -301,6 +305,38 @@ async fn visit_as(
             tenant,
             interactions,
             sessions,
+            reserved_tenant: None,
+            reserved_sessions: None,
+            standing,
+            nonce: &nonce,
+            bundle: bundle(),
+        },
+        headers,
+        OffsetDateTime::now_utc(),
+    )
+    .await
+}
+
+/// Visits a tenant while allowing the configured reserved tenant to resolve
+/// the presented cookie. This is the production shape for path-based tenants:
+/// one origin sends the same `__Host-` cookie beneath both issuer paths.
+async fn visit_with_reserved(
+    tenant: &Tenant,
+    interactions: &FakeInteractions,
+    sessions: &FakeSessions,
+    reserved_tenant: &TenantId,
+    reserved_sessions: &FakeSessions,
+    standing: &FakeStanding,
+    headers: &HeaderMap,
+) -> axum::response::Response {
+    let nonce = Nonce::generate();
+    enter(
+        &ConsoleContext {
+            tenant,
+            interactions,
+            sessions,
+            reserved_tenant: Some(reserved_tenant),
+            reserved_sessions: Some(reserved_sessions),
             standing,
             nonce: &nonce,
             bundle: bundle(),
@@ -428,6 +464,106 @@ async fn a_session_of_another_tenant_does_not_open_this_console() {
         "another tenant's session opened this console"
     );
     assert!(!body_of(response).await.contains(SCRIPT));
+}
+
+/// The shell follows the same reserved-tenant exception as the admin API: a
+/// deployment-scoped role may reach a path-based tenant with the one session
+/// the browser already has at their shared origin.
+#[tokio::test]
+async fn a_reserved_tenant_deployment_admin_opens_another_tenant_console() {
+    // Arrange
+    let now = OffsetDateTime::now_utc();
+    let tenant = tenant("demo");
+    let reserved_tenant = TenantId::new("asterius-admin");
+    let interactions = FakeInteractions::default();
+    let sessions = FakeSessions::default();
+    let reserved_sessions = FakeSessions::default();
+    let (session, value) = session_of(reserved_tenant.as_str(), now);
+    reserved_sessions.begin(&session).await.expect("a session");
+    let standing = FakeStanding::holding(&[Role::DeploymentAdmin], PasskeyEnrolment::None);
+
+    // Act
+    let response = visit_with_reserved(
+        &tenant,
+        &interactions,
+        &sessions,
+        &reserved_tenant,
+        &reserved_sessions,
+        &standing,
+        &cookie(&value),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(body_of(response).await.contains(SCRIPT));
+    assert!(interactions.opened.lock().expect("lock").is_empty());
+}
+
+/// Resolving a reserved-tenant session is not authority. A role scoped to that
+/// tenant cannot open another tenant's shell, just as it cannot call that
+/// tenant's API.
+#[tokio::test]
+async fn a_reserved_tenant_user_without_deployment_scope_is_refused_elsewhere() {
+    // Arrange
+    let now = OffsetDateTime::now_utc();
+    let tenant = tenant("demo");
+    let reserved_tenant = TenantId::new("asterius-admin");
+    let interactions = FakeInteractions::default();
+    let sessions = FakeSessions::default();
+    let reserved_sessions = FakeSessions::default();
+    let (session, value) = session_of(reserved_tenant.as_str(), now);
+    reserved_sessions.begin(&session).await.expect("a session");
+    let standing = FakeStanding::holding(&[Role::TenantAdmin], PasskeyEnrolment::None);
+
+    // Act
+    let response = visit_with_reserved(
+        &tenant,
+        &interactions,
+        &sessions,
+        &reserved_tenant,
+        &reserved_sessions,
+        &standing,
+        &cookie(&value),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status().as_u16(), SEE_OTHER);
+    assert!(!body_of(response).await.contains(SCRIPT));
+    assert_eq!(interactions.opened.lock().expect("lock").len(), 1);
+}
+
+/// A custom-host tenant is a different origin, so the reserved origin's
+/// `__Host-asterius_session` cookie is not sent there. The explicit outcome is
+/// the ordinary local sign-in door; no server-side hand-off or bearer value is
+/// introduced to bridge the origins.
+#[tokio::test]
+async fn a_custom_host_without_the_reserved_origins_cookie_opens_local_sign_in() {
+    // Arrange
+    let mut tenant = tenant("demo");
+    tenant.custom_host = Some("login.demo.example".to_owned());
+    let reserved_tenant = TenantId::new("asterius-admin");
+    let interactions = FakeInteractions::default();
+    let sessions = FakeSessions::default();
+    let reserved_sessions = FakeSessions::default();
+    let standing = FakeStanding::holding(&[Role::DeploymentAdmin], PasskeyEnrolment::None);
+
+    // Act: a cross-origin navigation carries no reserved-origin cookie.
+    let response = visit_with_reserved(
+        &tenant,
+        &interactions,
+        &sessions,
+        &reserved_tenant,
+        &reserved_sessions,
+        &standing,
+        &HeaderMap::new(),
+    )
+    .await;
+
+    // Assert
+    assert_eq!(response.status().as_u16(), SEE_OTHER);
+    assert_eq!(interactions.opened.lock().expect("lock").len(), 1);
 }
 
 /// A cookie naming nothing is a visitor with no session, not an error.
