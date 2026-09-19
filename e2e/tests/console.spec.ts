@@ -508,6 +508,9 @@ test('the console cannot register a client dynamic registration would refuse', a
   // asserted against the same validator in
   // `crates/admin-api/src/router.rs`, where a table costs one test rather than
   // one browser round trip each.
+  for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) {
+    await dismiss.click();
+  }
   await page.getByRole('button', { name: 'Close' }).click();
   await page.getByLabel('Search clients').fill('Refused by the validator');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
@@ -539,6 +542,9 @@ test('a valid client can be registered, found and saved again unchanged', async 
   await expect(page.getByRole('alert')).toHaveCount(0);
 
   // It is in the inventory, and it is what the search finds.
+  for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) {
+    await dismiss.click();
+  }
   await page.getByRole('button', { name: 'Close' }).click();
   await page.getByLabel('Search clients').fill(name);
   await page.getByRole('button', { name: 'Search', exact: true }).click();
@@ -800,6 +806,7 @@ test('a deployment administrator reaches the users screen', async ({ page }) => 
 
   // Assert: the directory answered rather than 403ing, so the screen shows its
   // list and its form rather than a refusal.
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Add an account' })).toBeVisible();
 });
 
@@ -1395,7 +1402,7 @@ test('the tenant selector lists the deployment and hands over to the chosen cons
 
   // Act: choose the ordinary path-based tenant on this origin. The reserved
   // tenant's `__Host-` cookie is therefore sent on the navigation.
-  await page.getByRole('option', { name: /^e2e e2e$/ }).click();
+  await page.getByRole('option', { name: /^e2e\s*e2e$/ }).click();
 
   // Assert: the complete hand-off works — entry guard, shell, `GET /session`,
   // and then a tenant-scoped screen backed by that tenant's admin API.
@@ -1405,7 +1412,7 @@ test('the tenant selector lists the deployment and hands over to the chosen cons
   await expect(workspace).toBeVisible();
   await workspace.click();
   await expect(page.locator('.tenant-menu-heading strong')).toHaveText('e2e');
-  await expect(page.getByRole('option', { name: /^e2e e2e$/ }).locator('svg')).toHaveClass(
+  await expect(page.getByRole('option', { name: /^e2e\s*e2e$/ }).locator('svg')).toHaveClass(
     /opacity-100/,
   );
   await page.getByRole('link', { name: 'Applications', exact: true }).click();
@@ -1525,6 +1532,7 @@ test('a field says what the server would refuse, without refusing it', async ({ 
   // Arrange
   await signIn(page);
   await page.getByRole('link', { name: 'Users', exact: true }).click();
+  await page.getByRole('button', { name: 'Add account', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Add an account' })).toBeVisible();
   const email = page.getByLabel('Email');
 

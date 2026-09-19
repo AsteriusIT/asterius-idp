@@ -76,3 +76,10 @@ set redirect_uris = excluded.redirect_uris,
     scopes        = excluded.scopes,
     jwks          = excluded.jwks,
     status        = 'active';
+
+-- Keep the denial action available after remembered consent (ast-k5u).
+-- Preserve all unrelated tenant options while enabling the conformance posture.
+update tenants
+set settings = jsonb_set(settings, '{options}',
+    coalesce(settings->'options', '{}'::jsonb) || '{"always_ask_consent":true}'::jsonb)
+where tenant_id = :'tenant';
