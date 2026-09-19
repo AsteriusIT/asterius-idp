@@ -15,4 +15,3 @@ export function rateError(value: string, maximum: number): string | null {
   return !Number.isInteger(number) || number < 1 || number > maximum
     ? `Enter a whole number from 1 to ${maximum}, or leave empty to inherit the deployment limit.` : null;
 }
-
