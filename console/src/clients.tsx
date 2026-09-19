@@ -69,6 +69,16 @@ import {
   Skeleton,
 } from './ui';
 import { jsonDocument, redirectUris } from './validation';
+import {
+  documentFrom,
+  draftOf,
+  emptyDraft,
+  type ClientDocument,
+  type Draft,
+} from './client-draft';
+
+export { documentFrom, draftOf, emptyDraft, linesOf, listFrom } from './client-draft';
+export type { ClientDocument, Draft } from './client-draft';
 
 /** Where the client collection lives, relative to the API base. */
 export const CLIENTS_PATH = 'clients';
@@ -118,6 +128,17 @@ const GRANT_PRESENTATION: Record<string, { label: string; icon: typeof KeyRoundI
 /** The signing algorithms this profile permits (ADR-0003, FAPI 2.0 SP §5.4.1). */
 const ALGORITHMS: readonly string[] = ['EdDSA', 'ES256', 'PS256'];
 
+/** Optional algorithm choices, including a value introduced by a newer server. */
+function algorithmOptions(value: string): readonly { value: string; label: string }[] {
+  const options = [
+    { value: '', label: 'Not configured' },
+    ...ALGORITHMS.map((algorithm) => ({ value: algorithm, label: algorithm })),
+  ];
+  return value === '' || ALGORITHMS.includes(value)
+    ? options
+    : [...options, { value, label: `${value} (unrecognized; preserved)` }];
+}
+
 /** One row of the inventory, as `GET /clients` renders it. */
 export interface ClientRow {
   readonly client_id: string;
@@ -137,51 +158,12 @@ interface Page {
   readonly next_cursor: string | null;
 }
 
-/** One client's registration, as `GET /clients/{client_id}` renders it. */
-export interface ClientDocument {
-  readonly client_id: string;
-  readonly status: string;
-  readonly client_name: string;
-  readonly application_type: string;
-  readonly token_endpoint_auth_method: string;
-  readonly redirect_uris: readonly string[];
-  readonly post_logout_redirect_uris: readonly string[];
-  readonly grant_types: readonly string[];
-  readonly scope: string;
-  readonly id_token_signed_response_alg: string;
-  readonly subject_type: string;
-  readonly resources: readonly string[];
-  readonly authorization_details_types: readonly string[];
-  /** `ast-mqt`: whether this client's ID tokens carry the role claims. */
-  readonly roles_in_id_token: boolean;
-  readonly jwks?: unknown;
-  readonly jwks_uri?: string;
-  readonly sector_identifier_uri?: string;
-}
-
 /** The registration gate, as `GET /registration` reports it. */
 export interface RegistrationGate {
   readonly mode: string;
   readonly configured_tokens: number;
   readonly tokens_stored_hashed: boolean;
   readonly console_issuance: boolean;
-}
-
-/** What the form holds while it is being edited. */
-export interface Draft {
-  readonly client_name: string;
-  readonly application_type: string;
-  readonly redirect_uris: string;
-  readonly post_logout_redirect_uris: string;
-  readonly grant_types: readonly string[];
-  readonly scope: string;
-  readonly id_token_signed_response_alg: string;
-  readonly subject_type: string;
-  readonly sector_identifier_uri: string;
-  readonly jwks_uri: string;
-  readonly jwks: string;
-  readonly status: string;
-  readonly roles_in_id_token: boolean;
 }
 
 /** The path of one client, relative to the API base. */
@@ -193,67 +175,6 @@ export function clientPath(clientId: string): string {
 export function listPath(query: string): string {
   const trimmed = query.trim();
   return trimmed === '' ? CLIENTS_PATH : `${CLIENTS_PATH}?q=${encodeURIComponent(trimmed)}`;
-}
-
-/** One URI per line, which is how the textareas hold a list. */
-export function linesOf(value: readonly string[]): string {
-  return value.join('\n');
-}
-
-/**
- * A textarea back into a list.
- *
- * Blank lines are dropped, because an operator ends a list with a newline and
- * an empty `redirect_uris` entry is refused by the validator with a message
- * about entry three that they did not type.
- */
-export function listFrom(value: string): string[] {
-  return value
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '');
-}
-
-/** The draft a freshly read document starts as. */
-export function draftOf(document: ClientDocument): Draft {
-  return {
-    client_name: document.client_name,
-    application_type: document.application_type,
-    redirect_uris: linesOf(document.redirect_uris),
-    post_logout_redirect_uris: linesOf(document.post_logout_redirect_uris ?? []),
-    grant_types: [...document.grant_types],
-    scope: document.scope,
-    id_token_signed_response_alg: document.id_token_signed_response_alg,
-    subject_type: document.subject_type,
-    sector_identifier_uri: document.sector_identifier_uri ?? '',
-    jwks_uri: document.jwks_uri ?? '',
-    // Pretty-printed, because an operator who has to paste a JWK Set in has to
-    // be able to read the one that is there.
-    jwks: document.jwks === undefined ? '' : JSON.stringify(document.jwks, null, 2),
-    status: document.status,
-    // Absent in a document from an older release reads as off, which is the
-    // default the server applies to the same client.
-    roles_in_id_token: document.roles_in_id_token === true,
-  };
-}
-
-/** The draft a new client starts as: this profile's defaults, spelled out. */
-export function emptyDraft(): Draft {
-  return {
-    client_name: '',
-    application_type: 'web',
-    redirect_uris: '',
-    post_logout_redirect_uris: '',
-    grant_types: ['authorization_code'],
-    scope: 'openid',
-    id_token_signed_response_alg: 'EdDSA',
-    subject_type: 'public',
-    sector_identifier_uri: '',
-    jwks_uri: '',
-    jwks: '',
-    status: 'active',
-    roles_in_id_token: false,
-  };
 }
 
 /**
@@ -273,47 +194,6 @@ export function grantRows(
     ...KNOWN_GRANTS,
     ...unknown.map((name) => [name, 'A grant type this console does not know about.'] as const),
   ];
-}
-
-/**
- * The registration document a draft posts.
- *
- * `jwks` is parsed here rather than sent as a string, because RFC 7591 §2 makes
- * it a JSON object: sending the text would be refused by the validator with a
- * type error naming a line number, and "that is not JSON" is something this
- * form can say about the box the operator is looking at. Everything else is
- * passed through as typed — no normalising, no lower-casing, no trimming of a
- * redirect URI, because ADR-0005 compares them byte for byte and a console that
- * quietly repaired one would register a callback nobody typed.
- *
- * @throws SyntaxError if the JWK Set box does not hold JSON.
- */
-export function documentFrom(draft: Draft): Record<string, unknown> {
-  const document: Record<string, unknown> = {
-    client_name: draft.client_name,
-    application_type: draft.application_type,
-    redirect_uris: listFrom(draft.redirect_uris),
-    post_logout_redirect_uris: listFrom(draft.post_logout_redirect_uris),
-    grant_types: [...draft.grant_types],
-    scope: draft.scope,
-    id_token_signed_response_alg: draft.id_token_signed_response_alg,
-    subject_type: draft.subject_type,
-    status: draft.status,
-    roles_in_id_token: draft.roles_in_id_token,
-  };
-  if (draft.sector_identifier_uri.trim() !== '') {
-    document.sector_identifier_uri = draft.sector_identifier_uri.trim();
-  }
-  // RFC 7591 §2: never both. The form offers both boxes because a client has
-  // one or the other and an operator switching between them needs to see both;
-  // only the filled one is sent, and a document carrying both is refused by the
-  // server anyway.
-  if (draft.jwks.trim() !== '') {
-    document.jwks = JSON.parse(draft.jwks) as unknown;
-  } else if (draft.jwks_uri.trim() !== '') {
-    document.jwks_uri = draft.jwks_uri.trim();
-  }
-  return document;
 }
 
 /** What the screen is doing. */
@@ -812,6 +692,61 @@ function Editor({
           <p className="muted">
             This tenant must hold an active key for it, or the client could never be issued an ID
             token — the server refuses the registration in that case.
+          </p>
+          <p>
+            <label htmlFor="userinfo-response-alg">UserInfo response signing algorithm</label>
+            <FormSelect
+              id="userinfo-response-alg"
+              name="userinfo_signed_response_alg"
+              value={draft.userinfo_signed_response_alg}
+              onValueChange={(value) =>
+                onChange({ ...draft, userinfo_signed_response_alg: value })
+              }
+              disabled={busy}
+              options={algorithmOptions(draft.userinfo_signed_response_alg)}
+            />
+          </p>
+          <p className="muted">
+            When configured, <code>/userinfo</code> returns a signed JWT instead of a plain JSON
+            object. The client must verify its signature and audience.
+          </p>
+          <p>
+            <label htmlFor="request-object-alg">Request object signing algorithm</label>
+            <FormSelect
+              id="request-object-alg"
+              name="request_object_signing_alg"
+              value={draft.request_object_signing_alg}
+              onValueChange={(value) =>
+                onChange({ ...draft, request_object_signing_alg: value })
+              }
+              disabled={busy}
+              options={algorithmOptions(draft.request_object_signing_alg)}
+            />
+          </p>
+          <p className="muted">
+            Configuring this opts the client into signed authorization request objects. Every
+            request object must use this algorithm and a registered client key.
+          </p>
+          <p>
+            <label>
+              <input
+                type="checkbox"
+                name="tls_client_certificate_bound_access_tokens"
+                checked={draft.tls_client_certificate_bound_access_tokens === true}
+                onChange={(event) =>
+                  onChange({
+                    ...draft,
+                    tls_client_certificate_bound_access_tokens: event.target.checked,
+                  })
+                }
+              />{' '}
+              Bind access tokens to this client&rsquo;s TLS certificate
+            </label>
+          </p>
+          <p className="muted">
+            Access and refresh tokens can then be used only with the certificate presented at the
+            token endpoint. Leave this off for DPoP-bound tokens; enabling it requires the
+            deployment&rsquo;s mutual-TLS endpoints and a registered client certificate identity.
           </p>
           <p>
             <label htmlFor="subject-type">Subject type</label>
