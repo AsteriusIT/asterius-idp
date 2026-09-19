@@ -1446,6 +1446,37 @@ impl DeploymentUsers {
 
 #[async_trait::async_trait]
 impl AdminBackend for Deployment {
+    async fn overview(
+        &self,
+        tenant: &TenantId,
+        metric: asterius_admin_api::backend::OverviewMetric,
+        now: time::OffsetDateTime,
+    ) -> Result<u64, DomainError> {
+        let metric = match metric {
+            asterius_admin_api::backend::OverviewMetric::Users => {
+                asterius_store_pg::OverviewMetric::Users
+            }
+            asterius_admin_api::backend::OverviewMetric::Sessions => {
+                asterius_store_pg::OverviewMetric::Sessions
+            }
+            asterius_admin_api::backend::OverviewMetric::Applications => {
+                asterius_store_pg::OverviewMetric::Applications
+            }
+            asterius_admin_api::backend::OverviewMetric::Authentication => {
+                asterius_store_pg::OverviewMetric::Authentication
+            }
+            asterius_admin_api::backend::OverviewMetric::Keys => {
+                asterius_store_pg::OverviewMetric::Keys
+            }
+            asterius_admin_api::backend::OverviewMetric::Delivery => {
+                asterius_store_pg::OverviewMetric::Delivery
+            }
+        };
+        asterius_store_pg::PgOverview::new(self.store.pool().clone())
+            .read(tenant, metric, now)
+            .await
+    }
+
     async fn session(
         &self,
         tenant: &TenantId,

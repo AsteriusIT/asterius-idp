@@ -91,6 +91,12 @@ pub const BASE_PATH: &str = "/admin/api/v1";
 pub const SESSION_READ_ID: &str = "session.read";
 /// The `operationId` of `DELETE /session`.
 pub const SESSION_END_ID: &str = "session.end";
+pub const OVERVIEW_USERS_ID: &str = "overview.users";
+pub const OVERVIEW_SESSIONS_ID: &str = "overview.sessions";
+pub const OVERVIEW_APPLICATIONS_ID: &str = "overview.applications";
+pub const OVERVIEW_AUTHENTICATION_ID: &str = "overview.authentication";
+pub const OVERVIEW_KEYS_ID: &str = "overview.keys";
+pub const OVERVIEW_DELIVERY_ID: &str = "overview.delivery";
 /// The `operationId` of `GET /openapi.json`.
 pub const OPENAPI_READ_ID: &str = "openapi.read";
 /// The `operationId` of `GET /tenants`.
@@ -227,6 +233,52 @@ pub const SESSION_READ: Operation = Operation::read(
     S::Get,
     A::new(R::Authenticated, "admin.session:read"),
     "The signed-in administrator, active workspace, roles, and this session's CSRF token",
+);
+
+/// Overview figures are separate resources so each request passes the same
+/// scope gate as the detailed screen behind it. A partial outage or refusal
+/// therefore affects one card and cannot reveal another resource's count.
+pub const OVERVIEW_USERS: Operation = Operation::read(
+    OVERVIEW_USERS_ID,
+    "/overview/users",
+    S::Get,
+    A::new(R::Tenant, "admin.users:read"),
+    "Counts active accounts in this tenant; current state, no time window",
+);
+pub const OVERVIEW_SESSIONS: Operation = Operation::read(
+    OVERVIEW_SESSIONS_ID,
+    "/overview/sessions",
+    S::Get,
+    A::new(R::Tenant, "admin.sessions:read"),
+    "Counts unrevoked, unexpired browser sessions in this tenant at collection time",
+);
+pub const OVERVIEW_APPLICATIONS: Operation = Operation::read(
+    OVERVIEW_APPLICATIONS_ID,
+    "/overview/applications",
+    S::Get,
+    A::new(R::Tenant, "admin.clients:read"),
+    "Counts registered applications in this tenant; current state, no time window",
+);
+pub const OVERVIEW_AUTHENTICATION: Operation = Operation::read(
+    OVERVIEW_AUTHENTICATION_ID,
+    "/overview/authentication",
+    S::Get,
+    A::new(R::Tenant, "admin.audit:read"),
+    "Counts failed authentication audit events in this tenant during the preceding 24 hours",
+);
+pub const OVERVIEW_KEYS: Operation = Operation::read(
+    OVERVIEW_KEYS_ID,
+    "/overview/keys",
+    S::Get,
+    A::new(R::Tenant, "admin.keys:read"),
+    "Counts active signing keys in this tenant; current state, no time window",
+);
+pub const OVERVIEW_DELIVERY: Operation = Operation::read(
+    OVERVIEW_DELIVERY_ID,
+    "/overview/delivery",
+    S::Get,
+    A::new(R::Tenant, "admin.outbox:read"),
+    "Counts retry and abandoned delivery attempts in this tenant during the preceding 24 hours",
 );
 
 /// Ends the caller's own session: the console's "Sign out".
@@ -1252,9 +1304,15 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 79] = [
+static REGISTRY: [Operation; 85] = [
     SESSION_READ,
     SESSION_END,
+    OVERVIEW_USERS,
+    OVERVIEW_SESSIONS,
+    OVERVIEW_APPLICATIONS,
+    OVERVIEW_AUTHENTICATION,
+    OVERVIEW_KEYS,
+    OVERVIEW_DELIVERY,
     OPENAPI_READ,
     TENANTS_LIST,
     TENANT_READ,

@@ -5,7 +5,7 @@ import { AuditExplorer } from './audit';
 import { AuthorizationDetailsTypes } from './authorizationDetailsTypes';
 import { Roles } from './appRoles';
 import { Clients } from './clients';
-import { AppSidebar, NAVIGATION_ICONS } from './components/app-sidebar';
+import { AppSidebar } from './components/app-sidebar';
 import { AppTopbar } from './components/app-topbar';
 import { SidebarInset, SidebarProvider } from './components/ui/sidebar';
 import { Toaster, toast } from './components/ui/toast';
@@ -14,12 +14,13 @@ import { DESTINATIONS, visibleTo } from './navigation';
 import { Policy } from './policy';
 import { Preferences } from './preferences';
 import { ResourceServers } from './resourceServers';
-import { hrefOf, paramsOf, routeOf } from './routes';
+import { paramsOf, routeOf } from './routes';
 import { TenantSettings } from './settings';
 import { Tenants } from './tenants';
 import { SharedSignals } from './ssf';
-import { Badge, Button, CenteredCard, Panel, Screen } from './ui';
+import { Button, CenteredCard, Panel, Screen } from './ui';
 import { Users } from './users';
+import { Overview } from './overview';
 
 /**
  * What the shell is doing, as one value.
@@ -214,77 +215,10 @@ function RouteScreen({
  *
  * It answers the question an administrator asks first — "why can I not see
  * Clients?" — by naming the roles the session carries and the screens they open,
- * rather than leaving the rail's absences unexplained. Every value comes from
- * `GET /session`, which the shell has already read: the overview makes no call
- * of its own.
+ * rather than leaving the rail's absences unexplained. Workspace identity
+ * comes from `GET /session`; the activity cards are loaded independently by
+ * `overview.tsx`, each under the detailed resource's own read scope.
  */
-function Overview({ session }: Readonly<{ session: Session }>): JSX.Element {
-  const destinations = visibleTo(session).filter((destination) => destination.route !== 'overview' && !destination.menuOnly);
-  return (
-    <Screen
-      title="Overview"
-      description={`A clear view of ${session.workspace} and the tools available to this session.`}
-    >
-      <div className="overview-bento">
-        <Panel
-          className="overview-identity"
-          title="Workspace"
-          description="The active tenant and your effective access."
-        >
-          <dl className="stats">
-            <div className="stat">
-              <dt>Tenant</dt>
-              <dd>{session.workspace}</dd>
-            </div>
-            <div className="stat">
-              <dt>User</dt>
-              <dd className="wrap-anywhere">{session.user}</dd>
-            </div>
-            <div className="stat">
-              <dt>Roles</dt>
-              <dd>
-                {session.roles.length > 0 ? (
-                  <span className="row">
-                    {session.roles.map((role) => (
-                      <Badge key={role} tone="neutral">
-                        {role}
-                      </Badge>
-                    ))}
-                  </span>
-                ) : (
-                  'none'
-                )}
-              </dd>
-            </div>
-          </dl>
-        </Panel>
-        <Panel
-          className="overview-access"
-          title="Available areas"
-          description={`${destinations.length} areas are available with your current permissions.`}
-        >
-          <div className="workspace-grid">
-            {destinations.map((destination) => {
-              const Icon = NAVIGATION_ICONS[destination.route];
-              return (
-                <a className="workspace-card" key={destination.route} href={hrefOf(destination.route)}>
-                  <span className="workspace-icon" aria-hidden="true">
-                    {Icon !== undefined && <Icon />}
-                  </span>
-                  <span>
-                    <strong>{destination.label}</strong>
-                    <small>{destination.group}</small>
-                  </span>
-                </a>
-              );
-            })}
-          </div>
-        </Panel>
-      </div>
-    </Screen>
-  );
-}
-
 /**
  * What the console shows when the API says 401.
  *

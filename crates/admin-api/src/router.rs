@@ -277,6 +277,9 @@ async fn route(
     context: &Handling<'_>,
     body: axum::body::Body,
 ) -> Result<Response, AdminError> {
+    if is_overview(id) {
+        return context.overview(id).await;
+    }
     if is_group_route(id) {
         return route_groups(id, context, body).await;
     }
@@ -381,6 +384,18 @@ async fn route(
     }
 }
 
+fn is_overview(id: &str) -> bool {
+    matches!(
+        id,
+        crate::OVERVIEW_USERS_ID
+            | crate::OVERVIEW_SESSIONS_ID
+            | crate::OVERVIEW_APPLICATIONS_ID
+            | crate::OVERVIEW_AUTHENTICATION_ID
+            | crate::OVERVIEW_KEYS_ID
+            | crate::OVERVIEW_DELIVERY_ID
+    )
+}
+
 fn is_group_route(id: &str) -> bool {
     matches!(
         id,
@@ -427,6 +442,68 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    /// One independently-authorized overview aggregate.
+    async fn overview(&self, operation: &str) -> Result<Response, AdminError> {
+        use crate::backend::OverviewMetric;
+
+        let (metric, name, definition, window_seconds) = match operation {
+            crate::OVERVIEW_USERS_ID => (
+                OverviewMetric::Users,
+                "enabled_users",
+                "Accounts whose current status is active.",
+                None,
+            ),
+            crate::OVERVIEW_SESSIONS_ID => (
+                OverviewMetric::Sessions,
+                "active_sessions",
+                "Browser sessions that are unrevoked and inside both absolute and idle expiry at collection time.",
+                None,
+            ),
+            crate::OVERVIEW_APPLICATIONS_ID => (
+                OverviewMetric::Applications,
+                "applications",
+                "Registered applications currently owned by this tenant.",
+                None,
+            ),
+            crate::OVERVIEW_AUTHENTICATION_ID => (
+                OverviewMetric::Authentication,
+                "authentication_failures_24h",
+                "Authentication attempts recorded as auth.failed during the preceding 24 hours.",
+                Some(86_400),
+            ),
+            crate::OVERVIEW_KEYS_ID => (
+                OverviewMetric::Keys,
+                "active_signing_keys",
+                "Keys for signature use whose current state is active.",
+                None,
+            ),
+            crate::OVERVIEW_DELIVERY_ID => (
+                OverviewMetric::Delivery,
+                "delivery_failures_24h",
+                "Delivery attempts ending in retry or abandonment during the preceding 24 hours.",
+                Some(86_400),
+            ),
+            _ => return Err(AdminError::Unavailable),
+        };
+        let value = self
+            .state
+            .backend
+            .overview(&self.tenant.id, metric, self.now)
+            .await
+            .map_err(|error| AdminError::from_storage("overview.read", &error))?;
+
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "metric": name,
+                "value": value,
+                "definition": definition,
+                "window_seconds": window_seconds,
+                "collected_at": self.now.unix_timestamp(),
+            }),
+        ))
+    }
+
     async fn read_theme(&self) -> Result<Response, AdminError> {
         let theme = self
             .state
@@ -5991,6 +6068,21 @@ mod tests {
 
     #[async_trait::async_trait]
     impl AdminBackend for Handle {
+        async fn overview(
+            &self,
+            _tenant: &TenantId,
+            metric: crate::backend::OverviewMetric,
+            _now: OffsetDateTime,
+        ) -> Result<u64, DomainError> {
+            Ok(match metric {
+                crate::backend::OverviewMetric::Users | crate::backend::OverviewMetric::Keys => 3,
+                crate::backend::OverviewMetric::Sessions => 2,
+                crate::backend::OverviewMetric::Applications => 4,
+                crate::backend::OverviewMetric::Authentication => 1,
+                crate::backend::OverviewMetric::Delivery => 0,
+            })
+        }
+
         async fn session(
             &self,
             tenant: &TenantId,
@@ -8586,6 +8678,37 @@ mod tests {
                 world.as_role(operation, Role::UserSupport).await.status(),
                 StatusCode::FORBIDDEN,
                 "{}",
+                operation.id()
+            );
+        }
+    }
+
+    /// A support role may read account and session totals, but no application,
+    /// key, audit or delivery count. Each card goes through its own route gate,
+    /// so the composite screen cannot turn one read scope into all six.
+    #[tokio::test]
+    async fn overview_metrics_are_authorized_independently() {
+        let world = World::new();
+
+        for operation in [&crate::OVERVIEW_USERS, &crate::OVERVIEW_SESSIONS] {
+            let response = world.as_role(operation, Role::UserSupport).await;
+            assert_eq!(response.status(), StatusCode::OK, "{}", operation.id());
+            let body = body_of(response).await;
+            assert!(body.get("value").is_some());
+            assert!(body.get("definition").is_some());
+            assert!(body.get("collected_at").is_some());
+        }
+
+        for operation in [
+            &crate::OVERVIEW_APPLICATIONS,
+            &crate::OVERVIEW_AUTHENTICATION,
+            &crate::OVERVIEW_KEYS,
+            &crate::OVERVIEW_DELIVERY,
+        ] {
+            assert_eq!(
+                world.as_role(operation, Role::UserSupport).await.status(),
+                StatusCode::FORBIDDEN,
+                "{} leaked an unauthorized aggregate",
                 operation.id()
             );
         }
