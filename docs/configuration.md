@@ -77,7 +77,7 @@ One PostgreSQL instance holds everything. There is no second store to keep consi
 | --- | --- | --- | --- |
 | `keys.kek_file` | path (**points at a secret**) | **required**, unless `kek_env` is set | The production shape: the orchestrator mounts the file read-only and it is never in the image. |
 | `keys.kek_env` | variable name (**names a secret**) | **required**, unless `kek_file` is set | Convenient in a container and readable through `/proc/self/environ`, so the file is preferred. |
-| `keys.kek_previous_file` | path (**points at a secret**) | optional | The key a rotation is moving *away* from, during the rotation only. A row that does not open under the current key is retried under this one, which is what lets `asterius rewrap-kek` run without a window in which a replica cannot open a row that has already moved. Nothing is ever written under it. **Remove it once the re-wrap is complete**: while it is set, a retired key stays readable by this process. See `docs/runbooks/backup-restore.md` §4. |
+| `keys.kek_previous_file` | path (**points at a secret**) | optional | The key a rotation is moving *away* from, during the rotation only. A row that does not open under the current key is retried under this one, which is what lets `asterius rewrap-kek` run without a window in which a replica cannot open a row that has already moved. Nothing is ever written under it. **Remove it once the re-wrap is complete**: while it is set, a retired key stays readable by this process. Follow the [KEK rotation runbook](runbooks/kek-rotation.md). |
 | `keys.kek_previous_env` | variable name (**names a secret**) | optional | The same, from the environment. Set at most one of `kek_previous_file` and `kek_previous_env`. |
 
 ## `[features]` — optional capabilities
@@ -369,9 +369,14 @@ development values and says so in every file.
 | Deployment admin password | `admin.password_file`, `admin.password_env` | A read-only mount, or a variable from the same secret store. Hashed with Argon2id at startup, so the database holds no plaintext; the source is read on every boot, which is what makes rotating it an edit to the secret and a restart. |
 | DPoP nonce secret | `dpop.nonce_secret_file`, `dpop.nonce_secret_env` | Only meaningful under `features.dpop_nonce`. The same shapes and the same parser as the key-encryption key, and the same 32 bytes of base64. Absent means per-process nonces, which is a round trip rather than a failure. |
 
-Rotating the key-encryption key is not a restart with a new value: the old key
-must still be able to open existing rows while they are re-wrapped. Until the
-rotation runbook lands, treat the KEK as unrotatable and keep it backed up —
+Rotating the key-encryption key is an online, explicit re-wrap. Configure the
+new key as `kek_file` or `kek_env` and the old key as the matching
+`kek_previous_*` source, restart every replica, then run `asterius rewrap-kek`
+with that configuration. After the command and the database checks show that
+every row uses the new key, remove the previous-key source and restart again.
+Do not destroy the old material before those checks. The [KEK rotation
+runbook](runbooks/kek-rotation.md) gives the complete procedure, rollback and
+offline variant. Keep the current KEK backed up separately from the database:
 losing it loses every signing key in the database.
 
 ### Generating the values

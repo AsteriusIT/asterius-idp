@@ -588,8 +588,8 @@ fn keys_table() -> Section {
                  which is what lets `asterius rewrap-kek` run without a window in which a \
                  replica cannot open a row that has already moved. Nothing is ever \
                  written under it. **Remove it once the re-wrap is complete**: while it \
-                 is set, a retired key stays readable by this process. See \
-                 `docs/runbooks/backup-restore.md` §4.",
+                 is set, a retired key stays readable by this process. Follow the \
+                 [KEK rotation runbook](runbooks/kek-rotation.md).",
             ),
             key(
                 "kek_previous_env",
@@ -1423,9 +1423,14 @@ meaningful under `features.dpop_nonce`. The same shapes and the same parser as \
 the key-encryption key, and the same 32 bytes of base64. Absent means per-process \
 nonces, which is a round trip rather than a failure. |\n\
 \n\
-Rotating the key-encryption key is not a restart with a new value: the old key\n\
-must still be able to open existing rows while they are re-wrapped. Until the\n\
-rotation runbook lands, treat the KEK as unrotatable and keep it backed up —\n\
+Rotating the key-encryption key is an online, explicit re-wrap. Configure the\n\
+new key as `kek_file` or `kek_env` and the old key as the matching\n\
+`kek_previous_*` source, restart every replica, then run `asterius rewrap-kek`\n\
+with that configuration. After the command and the database checks show that\n\
+every row uses the new key, remove the previous-key source and restart again.\n\
+Do not destroy the old material before those checks. The [KEK rotation\n\
+runbook](runbooks/kek-rotation.md) gives the complete procedure, rollback and\n\
+offline variant. Keep the current KEK backed up separately from the database:\n\
 losing it loses every signing key in the database.\n\
 \n\
 ### Generating the values\n\
