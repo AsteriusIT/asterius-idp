@@ -178,7 +178,7 @@ export function humanise(seconds: number): string {
   return `${seconds} seconds`;
 }
 
-export function Keys({ session }: { session: Session }): JSX.Element {
+export function Keys({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -318,7 +318,7 @@ export function Keys({ session }: { session: Session }): JSX.Element {
   );
 }
 
-function SchedulePanel({ schedule }: { schedule: Schedule }): JSX.Element {
+function SchedulePanel({ schedule }: Readonly<{ schedule: Schedule }>): JSX.Element {
   return (
     <dl className="stats">
       <div className="stat">
@@ -347,11 +347,15 @@ function KeyTable({
   group,
   busy,
   onRetire,
-}: {
+}: Readonly<{
   group: AlgorithmGroup;
   busy: boolean;
   onRetire: (kid: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
+  const keyTone = (state: KeyState): 'neutral' | 'ok' | 'info' => {
+    if (state === 'active') return 'ok';
+    return state === 'retired' || state === 'purged' ? 'neutral' : 'info';
+  };
   return (
     <DataTable
       rows={group.keys}
@@ -383,15 +387,7 @@ function KeyTable({
           header: 'State',
           sortBy: (key) => key.state,
           cell: (key) => (
-            <Badge
-              tone={
-                key.state === 'active'
-                  ? 'ok'
-                  : key.state === 'retired' || key.state === 'purged'
-                    ? 'neutral'
-                    : 'info'
-              }
-            >
+            <Badge tone={keyTone(key.state)}>
               {key.state}
             </Badge>
           ),

@@ -115,7 +115,11 @@ export function statusPath(tenant: string): string {
  * every tenant reached through a custom host.
  */
 export function tenantConsoleUrl(issuer: string, route: string): string {
-  return `${issuer.replace(/\/+$/, '')}/admin/#/${route}`;
+  let base = issuer;
+  while (base.endsWith('/')) {
+    base = base.slice(0, -1);
+  }
+  return `${base}/admin/#/${route}`;
 }
 
 /**
@@ -150,7 +154,7 @@ export function refusedField(message: string | null): 'tenant_id' | 'issuer' | n
   return null;
 }
 
-export function Tenants({ session }: { session: Session }): JSX.Element {
+export function Tenants({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [cursor, setCursor] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -288,11 +292,11 @@ function TenantTable({
   rows,
   writable,
   onChange,
-}: {
+}: Readonly<{
   rows: readonly TenantRow[];
   writable: boolean;
   onChange: (tenant: TenantRow, enable: boolean) => void;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <DataTable
       caption="Tenants"
@@ -403,10 +407,10 @@ function TenantTable({
 function NewTenant({
   session,
   onCreated,
-}: {
+}: Readonly<{
   session: Session;
   onCreated: (created: TenantRow) => void;
-}): JSX.Element {
+}>): JSX.Element {
   const [id, setId] = useState('');
   const [issuer, setIssuer] = useState('');
   const [displayName, setDisplayName] = useState('');

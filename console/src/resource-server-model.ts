@@ -12,11 +12,13 @@ export function audienceError(value: string): string | null {
 }
 
 export function parseScopes(value: string): readonly string[] {
-  return [...new Set(value.split(/\s+/u).map(scope => scope.trim()).filter(Boolean))].sort();
+  return [...new Set(value.split(/\s+/u).map(scope => scope.trim()).filter(Boolean))].sort(
+    (left, right) => left.localeCompare(right),
+  );
 }
 
 export function scopesError(value: string): string | null {
-  const invalid = parseScopes(value).find(scope => scope.length > 128 || !/^[!#-\[\]-~]+$/u.test(scope));
+  const invalid = parseScopes(value).find(scope => scope.length > 128 || !/^[!#-[\]-~]+$/u.test(scope));
   return invalid === undefined ? null : `'${invalid}' is not an OAuth scope token.`;
 }
 
@@ -33,7 +35,9 @@ export function parseLifetime(value: string): number | null {
 
 /** One client id per line: unlike scopes, OAuth client ids may contain spaces. */
 export function parseIntrospectionClients(value: string): readonly string[] {
-  return [...new Set(value.split(/\r?\n/u).map(client => client.trim()).filter(Boolean))].sort();
+  return [...new Set(value.split(/\r?\n/u).map(client => client.trim()).filter(Boolean))].sort(
+    (left, right) => left.localeCompare(right),
+  );
 }
 
 export function introspectionClientsError(value: string): string | null {

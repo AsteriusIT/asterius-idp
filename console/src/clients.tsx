@@ -188,8 +188,8 @@ export function listPath(query: string): string {
 export function grantRows(
   granted: readonly string[],
 ): readonly (readonly [string, string])[] {
-  const known = KNOWN_GRANTS.map(([name]) => name);
-  const unknown = granted.filter((name) => !known.includes(name));
+  const known = new Set(KNOWN_GRANTS.map(([name]) => name));
+  const unknown = granted.filter((name) => !known.has(name));
   return [
     ...KNOWN_GRANTS,
     ...unknown.map((name) => [name, 'A grant type this console does not know about.'] as const),
@@ -208,7 +208,7 @@ type Editing =
   | { readonly kind: 'new' }
   | { readonly kind: 'existing'; readonly document: ClientDocument };
 
-export function Clients({ session }: { session: Session }): JSX.Element {
+export function Clients({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [query, setQuery] = useState('');
   const [tab, setTab] = useState('settings');
@@ -424,8 +424,8 @@ export function Clients({ session }: { session: Session }): JSX.Element {
 
       <Panel id="clients-not-here" title="Not editable yet">
         <p className="muted">
-          The per-tenant registration policy (<code>ast-m9c.6</code>), the agent profile (
-          <code>ast-lh3.1</code>) and the per-client resource allow-list are not served by this
+          The per-tenant registration policy (<code>ast-m9c.6</code>), the agent profile{' '}
+          (<code>ast-lh3.1</code>) and the per-client resource allow-list are not served by this
           release&rsquo;s admin API, so this screen does not offer them. A control that saved
           nowhere would be worse than none.
         </p>
@@ -439,12 +439,12 @@ function Inventory({
   onOpen,
   onRetry,
   busy,
-}: {
+}: Readonly<{
   load: Load;
   onOpen: (clientId: string) => void;
   onRetry: () => void;
   busy: boolean;
-}): JSX.Element {
+}>): JSX.Element {
   if (load.kind === 'loading') {
     return <Skeleton rows={4} label="Reading the clients." />;
   }
@@ -513,14 +513,14 @@ function Editor({
   onChange,
   onSubmit,
   onClose,
-}: {
+}: Readonly<{
   draft: Draft;
   editing: Editing;
   busy: boolean;
   onChange: (draft: Draft) => void;
   onSubmit: () => void;
   onClose: () => void;
-}): JSX.Element {
+}>): JSX.Element {
   const heading =
     editing.kind === 'existing' ? `Editing ${editing.document.client_id}` : 'New client';
   const toggleGrant = (name: string, on: boolean): void =>
@@ -820,7 +820,7 @@ function Editor({
  * The sentence about issuance is on the screen rather than only in a bead,
  * because an operator looking for the button has to be told why there is none.
  */
-function Gate({ gate }: { gate: RegistrationGate }): JSX.Element {
+function Gate({ gate }: Readonly<{ gate: RegistrationGate }>): JSX.Element {
   return (
     <Panel id="registration-gate" title="Dynamic client registration">
       <dl className="stats">

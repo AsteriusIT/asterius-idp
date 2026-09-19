@@ -9,7 +9,7 @@ function serialise(value: unknown, pretty: boolean): string {
   return rendered ?? 'null';
 }
 
-function Highlighted({ source }: { source: string }): JSX.Element {
+function Highlighted({ source }: Readonly<{ source: string }>): JSX.Element {
   return (
     <>
       {tokenizeJson(source).map((token, index) => (
@@ -22,7 +22,7 @@ function Highlighted({ source }: { source: string }): JSX.Element {
 }
 
 /** Compact syntax-highlighted JSON for a table cell or description value. */
-export function JsonValue({ value }: { value: unknown }): JSX.Element {
+export function JsonValue({ value }: Readonly<{ value: unknown }>): JSX.Element {
   const source = serialise(value, false);
   return (
     <code className="json-inline" title={source}>
@@ -36,7 +36,7 @@ export function JsonValue({ value }: { value: unknown }): JSX.Element {
  * page. Long string tokens may wrap, so a single RSA modulus does not turn the
  * region into a several-screen-wide strip.
  */
-export function JsonView({ value, label }: { value: unknown; label: string }): JSX.Element {
+export function JsonView({ value, label }: Readonly<{ value: unknown; label: string }>): JSX.Element {
   const source = serialise(value, true);
   const lines = source.split('\n').length;
 
@@ -68,4 +68,3 @@ export function JsonView({ value, label }: { value: unknown; label: string }): J
     </div>
   );
 }
-

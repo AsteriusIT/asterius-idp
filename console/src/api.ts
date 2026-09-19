@@ -111,7 +111,7 @@ async function request(path: string, init: RequestInit): Promise<unknown> {
     // `include`: there is no other origin to send it to.
     credentials: 'same-origin',
     redirect: 'error',
-    headers: { Accept: 'application/json', ...(init.headers ?? {}) },
+    headers: { Accept: 'application/json', ...init.headers },
   });
 
   if (!response.ok) {

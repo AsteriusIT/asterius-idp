@@ -238,7 +238,7 @@ export function parseClaimValue(text: string): unknown {
 }
 
 /** A live highlighted reading of a structured claim; plain strings need none. */
-function ClaimJsonPreview({ text }: { text: string }): JSX.Element | null {
+function ClaimJsonPreview({ text }: Readonly<{ text: string }>): JSX.Element | null {
   let value: unknown;
   try {
     value = JSON.parse(text) as unknown;
@@ -271,7 +271,7 @@ function failure(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-export function Users({ session }: { session: Session }): JSX.Element {
+export function Users({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [view, setView] = useState<View>({ kind: 'directory' });
 
   if (view.kind === 'new') {
@@ -315,11 +315,11 @@ function DirectoryScreen({
   session,
   onNew,
   onOpen,
-}: {
+}: Readonly<{
   session: Session;
   onNew: () => void;
   onOpen: (id: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   const [load, setLoad] = useState<Load<Directory>>({ kind: 'loading' });
   const [term, setTerm] = useState('');
   const [cursor, setCursor] = useState<string | null>(null);
@@ -392,7 +392,7 @@ function DirectoryScreen({
   );
 }
 
-function Search({ onSearch }: { onSearch: (term: string) => void }): JSX.Element {
+function Search({ onSearch }: Readonly<{ onSearch: (term: string) => void }>): JSX.Element {
   const [typed, setTyped] = useState('');
   return (
     <form
@@ -424,10 +424,10 @@ function Search({ onSearch }: { onSearch: (term: string) => void }): JSX.Element
 function UserTable({
   rows,
   onOpen,
-}: {
+}: Readonly<{
   rows: readonly UserRow[];
   onOpen: (id: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <DataTable
       caption="Accounts"
@@ -475,9 +475,12 @@ function UserTable({
  * The word is the same one the API uses, so an operator reading a screen and an
  * operator reading a response are reading the same vocabulary.
  */
-function StatusBadge({ status }: { status: UserStatus }): JSX.Element {
+function StatusBadge({ status }: Readonly<{ status: UserStatus }>): JSX.Element {
+  let tone: 'ok' | 'warn' | 'bad' = 'bad';
+  if (status === 'active') tone = 'ok';
+  if (status === 'locked') tone = 'warn';
   return (
-    <Badge tone={status === 'active' ? 'ok' : status === 'locked' ? 'warn' : 'bad'}>{status}</Badge>
+    <Badge tone={tone}>{status}</Badge>
   );
 }
 
@@ -499,10 +502,10 @@ function StatusBadge({ status }: { status: UserStatus }): JSX.Element {
 function NewAccount({
   session,
   onCreated,
-}: {
+}: Readonly<{
   session: Session;
   onCreated: (created: UserRow) => void;
-}): JSX.Element {
+}>): JSX.Element {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -592,11 +595,11 @@ function Account({
   session,
   id,
   onBack,
-}: {
+}: Readonly<{
   session: Session;
   id: string;
   onBack: () => void;
-}): JSX.Element {
+}>): JSX.Element {
   const [tab, setTab] = useState('details');
   const [load, setLoad] = useState<Load<Detail>>({ kind: 'loading' });
   const [notice, setNotice] = useState<string | null>(null);
@@ -937,14 +940,14 @@ function RoleEditor({
   isSelf,
   busy,
   onSaved,
-}: {
+}: Readonly<{
   session: Session;
   base: string;
   held: RolesDocument;
   isSelf: boolean;
   busy: boolean;
   onSaved: (message: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   const [editing, setEditing] = useState(false);
   const [chosen, setChosen] = useState<readonly string[]>(held.roles);
   const [saving, setSaving] = useState(false);
@@ -1040,13 +1043,13 @@ function ClaimsEditor({
   user,
   busy,
   onSaved,
-}: {
+}: Readonly<{
   session: Session;
   base: string;
   user: UserDocument;
   busy: boolean;
   onSaved: (message: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   interface Editable {
     readonly name: string;
     readonly text: string;
@@ -1228,11 +1231,11 @@ function PasskeyTable({
   passkeys,
   busy,
   onRemove,
-}: {
+}: Readonly<{
   passkeys: readonly PasskeyRow[];
   busy: boolean;
   onRemove: (credential: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <div className="table-wrap">
     <table>
@@ -1280,11 +1283,11 @@ function SessionTable({
   sessions,
   busy,
   onRevoke,
-}: {
+}: Readonly<{
   sessions: readonly SessionRow[];
   busy: boolean;
   onRevoke: (sid: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <div className="table-wrap">
     <table>
@@ -1336,11 +1339,11 @@ function GrantTable({
   grants,
   busy,
   onRevoke,
-}: {
+}: Readonly<{
   grants: readonly GrantRow[];
   busy: boolean;
   onRevoke: (grant: string, client: string) => void;
-}): JSX.Element {
+}>): JSX.Element {
   return (
     <div className="table-wrap">
     <table>

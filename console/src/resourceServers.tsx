@@ -22,7 +22,12 @@ interface ResourceServer {
 type Load = { readonly kind: 'loading' } | { readonly kind: 'failed'; readonly message: string }
   | { readonly kind: 'ready'; readonly items: readonly ResourceServer[] };
 
-export function ResourceServers({ session }: { session: Session }): JSX.Element {
+function scopeDescription(scopes: readonly string[] | null): string {
+  if (scopes === null) return 'All granted scopes';
+  return scopes.length === 0 ? 'No scopes' : scopes.join(' ');
+}
+
+export function ResourceServers({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [audience, setAudience] = useState('');
   const [scopes, setScopes] = useState('');
@@ -89,7 +94,7 @@ export function ResourceServers({ session }: { session: Session }): JSX.Element 
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && (load.items.length === 0 ? <p className="muted">No resource servers are registered.</p> :
         <table><caption className="visually-hidden">Registered resource servers</caption><thead><tr><th>Audience</th><th>Supported scopes</th><th>Token lifetime</th><th>Introspection clients</th>{mayWrite && <th>Actions</th>}</tr></thead>
-          <tbody>{load.items.map(item => <tr key={item.identifier}><td><code>{item.identifier}</code></td><td>{item.scopes === null ? 'All granted scopes' : item.scopes.length === 0 ? 'No scopes' : item.scopes.join(' ')}</td>
+          <tbody>{load.items.map(item => <tr key={item.identifier}><td><code>{item.identifier}</code></td><td>{scopeDescription(item.scopes)}</td>
             <td>{item.default_token_lifetime_seconds === null ? 'Tenant default' : `${item.default_token_lifetime_seconds} seconds`}</td>
             <td>{item.introspection_clients.length === 0 ? 'None' : item.introspection_clients.join(', ')}</td>
             {mayWrite && <td><Button small disabled={busy} onClick={() => { setAudience(item.identifier); setScopes(item.scopes?.join(' ') ?? ''); setUnrestricted(item.scopes === null); setLifetime(item.default_token_lifetime_seconds?.toString() ?? ''); setIntrospectionClients(item.introspection_clients.join('\n')); }}>Edit</Button> <Button small variant="danger" disabled={busy} onClick={() => void withdraw(item.identifier)}>Withdraw</Button></td>}</tr>)}</tbody></table>)}

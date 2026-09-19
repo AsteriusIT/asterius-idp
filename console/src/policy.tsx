@@ -126,6 +126,14 @@ export const EMPTY_QUESTION: Question = {
   context: '',
 };
 
+function policySummary(ruleCount: number, updatedAt: string | null): string {
+  if (ruleCount === 0) {
+    return 'This tenant has no policy yet, so every evaluation is denied.';
+  }
+  const noun = ruleCount === 1 ? 'rule' : 'rules';
+  return `${ruleCount} ${noun}, last changed ${updatedAt ?? 'never'}.`;
+}
+
 /**
  * Where a refusal points, as the server's message carries it.
  *
@@ -234,7 +242,7 @@ type Load =
   | { readonly kind: 'ready'; readonly policy: PolicyDocument }
   | { readonly kind: 'failed'; readonly message: string };
 
-export function Policy({ session }: { session: Session }): JSX.Element {
+export function Policy({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [draft, setDraft] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -343,9 +351,7 @@ export function Policy({ session }: { session: Session }): JSX.Element {
           The rules <strong>{session.workspace}</strong> is decided by. An enforcement point asks
           whether a subject may take an action on a resource, and this document answers; an
           explicit deny wins, and a request no rule matches is denied.{' '}
-          {load.policy.rule_count === 0
-            ? 'This tenant has no policy yet, so every evaluation is denied.'
-            : `${load.policy.rule_count} rule${load.policy.rule_count === 1 ? '' : 's'}, last changed ${load.policy.updated_at ?? 'never'}.`}
+          {policySummary(load.policy.rule_count, load.policy.updated_at)}
         </>
       }
     >
@@ -506,7 +512,7 @@ type Answer =
  * no" are different things to learn, and merging them would send an
  * administrator to edit a rule that was never consulted.
  */
-function TestBench({ session }: { session: Session }): JSX.Element {
+function TestBench({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [question, setQuestion] = useState<Question>(EMPTY_QUESTION);
   const [answer, setAnswer] = useState<Answer>({ kind: 'idle' });
 
@@ -608,7 +614,7 @@ function TestBench({ session }: { session: Session }): JSX.Element {
   );
 }
 
-function Verdict({ answer }: { answer: Answer }): JSX.Element {
+function Verdict({ answer }: Readonly<{ answer: Answer }>): JSX.Element {
   if (answer.kind === 'idle') {
     return <p className="muted">No request asked yet.</p>;
   }

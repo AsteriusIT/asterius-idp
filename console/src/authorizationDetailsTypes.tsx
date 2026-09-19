@@ -15,7 +15,7 @@ type Load = { readonly kind: 'loading' } | { readonly kind: 'failed'; readonly m
 
 const EMPTY_SCHEMA = JSON.stringify({ type: 'object' }, null, 2);
 
-export function AuthorizationDetailsTypes({ session }: { session: Session }): JSX.Element {
+export function AuthorizationDetailsTypes({ session }: Readonly<{ session: Session }>): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
   const [name, setName] = useState('');
   const [schema, setSchema] = useState(EMPTY_SCHEMA);

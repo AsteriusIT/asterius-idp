@@ -15,7 +15,76 @@ export interface JsonToken {
 }
 
 const STRING = /"(?:\\["\\/bfnrt]|\\u[0-9a-fA-F]{4}|[^"\\])*"/y;
-const NUMBER = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+const NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+interface TokenMatch {
+  readonly kind: JsonTokenKind;
+  readonly text: string;
+  readonly end: number;
+}
+
+function whitespaceEnd(source: string, start: number): number {
+  let end = start;
+  while (end < source.length && /\s/u.test(source[end] ?? '')) {
+    end += 1;
+  }
+  return end;
+}
+
+function stringToken(source: string, cursor: number): TokenMatch | null {
+  if (source[cursor] !== '"') {
+    return null;
+  }
+  STRING.lastIndex = cursor;
+  const match = STRING.exec(source);
+  if (match === null) {
+    return null;
+  }
+  const after = whitespaceEnd(source, STRING.lastIndex);
+  return {
+    kind: source[after] === ':' ? 'key' : 'string',
+    text: match[0],
+    end: STRING.lastIndex,
+  };
+}
+
+function numberToken(source: string, cursor: number): TokenMatch | null {
+  NUMBER.lastIndex = cursor;
+  const match = NUMBER.exec(source);
+  return match === null
+    ? null
+    : { kind: 'number', text: match[0], end: NUMBER.lastIndex };
+}
+
+function keywordToken(source: string, cursor: number): TokenMatch | null {
+  const keyword = ['true', 'false', 'null'].find((word) => source.startsWith(word, cursor));
+  return keyword === undefined
+    ? null
+    : {
+        kind: keyword === 'null' ? 'null' : 'boolean',
+        text: keyword,
+        end: cursor + keyword.length,
+      };
+}
+
+function tokenAt(source: string, cursor: number): TokenMatch {
+  const end = whitespaceEnd(source, cursor);
+  if (end !== cursor) {
+    return { kind: 'plain', text: source.slice(cursor, end), end };
+  }
+
+  const matched = stringToken(source, cursor) ?? numberToken(source, cursor) ?? keywordToken(source, cursor);
+  if (matched !== null) {
+    return matched;
+  }
+
+  const character = source[cursor] ?? '';
+  return {
+    kind: '{}[],:'.includes(character) ? 'punctuation' : 'plain',
+    text: character,
+    end: cursor + 1,
+  };
+}
 
 /**
  * Splits valid JSON source for presentation without parsing or rewriting it.
@@ -38,59 +107,10 @@ export function tokenizeJson(source: string): readonly JsonToken[] {
   };
 
   while (cursor < source.length) {
-    const character = source[cursor];
-    if (character === undefined) {
-      break;
-    }
-
-    if (/\s/u.test(character)) {
-      let end = cursor + 1;
-      while (end < source.length && /\s/u.test(source[end] ?? '')) {
-        end += 1;
-      }
-      push('plain', source.slice(cursor, end));
-      cursor = end;
-      continue;
-    }
-
-    if (character === '"') {
-      STRING.lastIndex = cursor;
-      const match = STRING.exec(source);
-      if (match !== null) {
-        const text = match[0];
-        let after = STRING.lastIndex;
-        while (after < source.length && /\s/u.test(source[after] ?? '')) {
-          after += 1;
-        }
-        push(source[after] === ':' ? 'key' : 'string', text);
-        cursor = STRING.lastIndex;
-        continue;
-      }
-    }
-
-    NUMBER.lastIndex = cursor;
-    const number = NUMBER.exec(source);
-    if (number !== null) {
-      push('number', number[0]);
-      cursor = NUMBER.lastIndex;
-      continue;
-    }
-
-    const keyword = ['true', 'false', 'null'].find((word) => source.startsWith(word, cursor));
-    if (keyword !== undefined) {
-      push(keyword === 'null' ? 'null' : 'boolean', keyword);
-      cursor += keyword.length;
-      continue;
-    }
-
-    if ('{}[],:'.includes(character)) {
-      push('punctuation', character);
-    } else {
-      push('plain', character);
-    }
-    cursor += 1;
+    const token = tokenAt(source, cursor);
+    push(token.kind, token.text);
+    cursor = token.end;
   }
 
   return tokens;
 }
-

@@ -377,7 +377,7 @@
     color: var(--info);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   .json-token.json-number,
@@ -730,6 +730,7 @@
 
   .chain li + li::before {
     content: '\2192';
+    margin-left: calc(-1 * var(--space-2));
     margin-right: var(--space-1);
     color: var(--muted);
   }
@@ -743,10 +744,6 @@
     border-radius: var(--radius-pill);
     background: var(--surface-sunken);
     white-space: nowrap;
-  }
-
-  .chain li + li::before {
-    margin-left: calc(-1 * var(--space-2));
   }
 
   .table-time {

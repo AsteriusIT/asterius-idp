@@ -90,10 +90,10 @@ type Load =
 export function TenantSwitcher({
   session,
   className,
-}: {
+}: Readonly<{
   session: Session;
   className?: string;
-}): JSX.Element {
+}>): JSX.Element {
   const [open, setOpen] = useState(false);
   const [load, setLoad] = useState<Load>({ kind: 'idle' });
   const switchable = maySwitch(session);
