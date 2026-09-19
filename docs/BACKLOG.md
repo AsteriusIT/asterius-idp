@@ -2369,9 +2369,9 @@ Keep client/key models compatible (entity id = https URL, JWKS by reference). No
 
 *task · P4 · labels: track, spec:openid-ida, status:final*
 
-**Spec:** OpenID Connect for Identity Assurance 1.0 (Final) — `verified_claims` structure.
+**Spec:** OpenID Connect for Identity Assurance 1.0 and OpenID Identity Assurance Schema Definition 1.0 (Final, incorporating errata set 1) — delivery and `verified_claims` structure respectively.
 
-E06_06 stores per-claim source/verification metadata so `verified_claims` can be projected later.
+E06_06 stores each value with its source and verification time in a JSONB claim object, so claims can later be grouped into `verified_claims` without a SQL schema migration. This is schema readiness only: the required `verification.trust_framework` and optional assurance/evidence metadata are deliberately not modelled or emitted in v1.
 
 **Acceptance tests**
 

@@ -5,16 +5,20 @@
 //!
 //! **Claims are a bag, not columns.** OIDC Core §5.1 names about twenty
 //! standard claims, and every profile built on it adds more: Identity Assurance
-//! projects `verified_claims` with a whole verification record per claim
-//! (`ast-s36.5`), verifiable credentials arrive as claims asserted by somebody
-//! else (`ast-s36.6`), and a tenant may carry claims nobody has standardised. A
+//! groups claim values under `verified_claims` with a sibling verification
+//! record (`ast-s36.5`), verifiable credentials arrive as claims asserted by
+//! somebody else (`ast-s36.6`), and a tenant may carry claims nobody has
+//! standardised. A
 //! column per claim would make each of those a migration. So a claim is a
 //! [`Claim`] — a value, the [`ClaimSource`] that asserted it, and when it was
 //! last verified — and the set of them is a [`ClaimSet`] living in one JSONB
 //! column. `source` is what makes the model *issuer-agnostic*: a claim knows
 //! whether this server, an operator, an import or **another issuer** put it
 //! there, so an assertion from a wallet or an upstream OP does not need a new
-//! shape to be stored in.
+//! shape to be stored in. The v1 model retains provenance and verification
+//! time, but deliberately does not model Identity Assurance's trust framework
+//! or evidence yet; those can extend each claim's JSON object later without a
+//! SQL schema migration.
 //!
 //! Which claims a client actually receives is a different question — scopes,
 //! the `claims` request parameter, `claims_locales` — and belongs to the claims
@@ -1787,10 +1791,16 @@ mod tests {
     // Storage round trip
     // -----------------------------------------------------------------------
 
-    /// The bag is one JSONB column, so its wire shape is part of the schema
-    /// even though the schema does not describe it.
+    /// OpenID Identity Assurance Schema Definition 1.0 §5 puts values in
+    /// `verified_claims.claims` and describes their verification in the sibling
+    /// `verification` object. We do not implement that projection in v1, but
+    /// its grouping inputs must survive independently for every claim: value,
+    /// provenance and verification time. The bag is one JSONB column, so this
+    /// exact wire shape is the compatibility boundary even though SQL does not
+    /// describe it. A future trust-framework/evidence field can extend each
+    /// claim object without changing the column.
     #[test]
-    fn a_claim_set_round_trips_through_the_json_it_is_stored_as() {
+    fn claim_storage_keeps_identity_assurance_projection_inputs_per_claim() {
         let mut claims = ClaimSet::new();
         claims.insert(name("name"), claim(json!("Alice")));
         claims.insert(
