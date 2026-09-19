@@ -42,6 +42,7 @@ import { AssuranceEditor } from './assurance-policy';
 import { draftOf, isDirty, type Draft, type Settings } from './settings-model';
 import { RateLimitFields } from './rate-limit-fields';
 import { rateDocument } from './rate-limit-model';
+import { OidcDetails } from './oidc-details';
 
 /**
  * The optional features this console draws a switch for, mirroring
@@ -273,7 +274,7 @@ export function TenantSettings({
           save(draft);
         }}
       >
-        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}{settings.rate_limit_bounds !== undefined && <TabsTrigger value="rate-limits">Rate limits</TabsTrigger>}</TabsList>
+        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}{settings.rate_limit_bounds !== undefined && <TabsTrigger value="rate-limits">Rate limits</TabsTrigger>}<TabsTrigger value="oidc">OIDC endpoints</TabsTrigger></TabsList>
         <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
           <legend>Sign-in and access capabilities</legend>
           <p className="muted">
@@ -381,6 +382,7 @@ export function TenantSettings({
           <RateLimitFields bounds={settings.rate_limit_bounds} effective={settings.effective_rate_limits ?? settings.rate_limit_bounds}
             draft={draft.rateLimits} refusal={refusal} onChange={(rateLimits) => setDraft({ ...draft, rateLimits })} />
         </fieldset></TabsContent>}
+        <TabsContent value="oidc"><OidcDetails tenant={settings.tenant_id} /></TabsContent>
         </Tabs>
 
         <Actions>

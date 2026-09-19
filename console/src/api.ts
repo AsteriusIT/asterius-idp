@@ -104,8 +104,8 @@ async function refusalMessage(response: Response, method: string, path: string):
   }
 }
 
-async function request(path: string, init: RequestInit): Promise<unknown> {
-  const response = await fetch(API_BASE + path, {
+async function request(target: string, init: RequestInit, label = target): Promise<unknown> {
+  const response = await fetch(target, {
     ...init,
     // The session cookie is the credential. `same-origin` rather than
     // `include`: there is no other origin to send it to.
@@ -115,7 +115,7 @@ async function request(path: string, init: RequestInit): Promise<unknown> {
   });
 
   if (!response.ok) {
-    throw new ApiError(response.status, await refusalMessage(response, init.method ?? 'GET', path));
+    throw new ApiError(response.status, await refusalMessage(response, init.method ?? 'GET', label));
   }
   // A 204 is an answer, not a body. `Response.json()` on an empty one throws
   // "Unexpected end of JSON input", and a caller that succeeded would then
@@ -129,7 +129,12 @@ async function request(path: string, init: RequestInit): Promise<unknown> {
 
 /** Reads a resource. */
 export async function read(path: string): Promise<unknown> {
-  return request(path, { method: 'GET' });
+  return request(API_BASE + path, { method: 'GET' }, path);
+}
+
+/** Reads a public protocol document at the tenant's canonical issuer URL. */
+export async function readUrl(url: string): Promise<unknown> {
+  return request(url, { method: 'GET' });
 }
 
 /**
@@ -153,11 +158,11 @@ export async function mutate(
   if (method === 'POST') {
     headers[IDEMPOTENCY_HEADER] = idempotencyKey();
   }
-  return request(path, {
+  return request(API_BASE + path, {
     method,
     headers,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+  }, path);
 }
 
 /**

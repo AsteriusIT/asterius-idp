@@ -32,7 +32,9 @@ import type { JSX } from 'react';
 import { type Session, mutate, read } from './api';
 import { hrefOf } from './routes';
 import { toast } from './components/ui/toast';
-import { describeFeatures } from './tenant-list-model';
+import {
+  describeFeatures,
+} from './tenant-list-model';
 import {
   Actions,
   Badge,
