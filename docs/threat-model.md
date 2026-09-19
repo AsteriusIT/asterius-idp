@@ -2233,3 +2233,20 @@ refuses admission. Existing tenant-keyed PostgreSQL counters isolate tenants;
 updates remain scope-checked, atomic and audited. See
 [tenant rate limits](tenant-rate-limits.md) for coverage and the existing
 concurrent in-flight admission limitation.
+
+### Confidential-client onboarding (`ast-6uqw.1`)
+
+The console refuses pasted private or symmetric JWK material before upload.
+The domain validator independently rejects it on registration and metadata updates,
+including mixed public/private key sets. Export uses an allowlist of the saved
+client's public configuration and excludes keys and reusable secrets. API scope
+checks remain authoritative when console controls are hidden or disabled.
+
+### Managed group persistence (`ast-6uqw.9`)
+
+Composite tenant foreign keys prevent memberships from referring to another
+tenant's user or group. Revision checks reject stale administrative writes and
+membership updates advance the group revision. Managed memberships do not yet
+feed policy evaluation: legacy `groups_of` claims keep their existing authority
+until an explicit migration enables the new source. See
+[group migration](groups-migration.md) for the staged transition.

@@ -318,7 +318,6 @@ impl TenantSettings {
         Ok(self)
     }
 
-
     /// This tenant's bounded rate-limit maxima; windows stay deployment-owned.
     #[must_use]
     pub const fn rate_limits(&self) -> &crate::tenant_rate_limits::TenantRateLimits {
@@ -756,8 +755,12 @@ impl TenantSettings {
             .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
             .requiring_a_verified_email(require_verified_email)
             .with_always_ask_consent(always_ask_consent)
-            .with_session_policy(crate::entities::session::SessionPolicy::from_json(object.get("session_policy"))?)
-            .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(object.get("rate_limits"))?)
+            .with_session_policy(crate::entities::session::SessionPolicy::from_json(
+                object.get("session_policy"),
+            )?)
+            .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(
+                object.get("rate_limits"),
+            )?)
             .with_acr_policy(acr_policy)
     }
 }

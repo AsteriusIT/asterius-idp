@@ -347,7 +347,10 @@ fn operational_routes(store: &Store, config: &Config, metrics: Metrics) -> Opera
 /// protocol endpoints', and the two would then disagree about what a valid
 /// client is.
 struct AdminContext {
-    rate_limit_policy: (asterius_domain::LoginLimits, asterius_domain::EndpointLimits),
+    rate_limit_policy: (
+        asterius_domain::LoginLimits,
+        asterius_domain::EndpointLimits,
+    ),
     capabilities: asterius_domain::Capabilities,
     registration: asterius_server::http::register::RegistrationPolicy,
     outbound: Arc<dyn asterius_domain::ports::ClientUrlFetcher>,
@@ -445,8 +448,8 @@ fn admin_routes(
         context.reserved_tenant.clone(),
     ));
     asterius_admin_api::AdminApi::new(&asterius_admin_api::AdminState {
-        backend: Arc::new(asterius_server::admin::Deployment::new(
-            asterius_server::admin::DeploymentParts {
+        backend: Arc::new(
+            asterius_server::admin::Deployment::new(asterius_server::admin::DeploymentParts {
                 store: store.clone(),
                 tenants: Arc::clone(tenants),
                 keys: Arc::clone(keys) as Arc<dyn asterius_domain::KeyAdministration>,
@@ -462,8 +465,9 @@ fn admin_routes(
                 queue: Some(context.queue),
                 argon2: Argon2Parameters::default(),
                 issuance: context.issuance,
-            },
-        ).with_rate_limit_policy(context.rate_limit_policy.0, context.rate_limit_policy.1)),
+            })
+            .with_rate_limit_policy(context.rate_limit_policy.0, context.rate_limit_policy.1),
+        ),
         tokens: Some(tokens),
         rate_limit: asterius_admin_api::throttle::DEFAULT_LIMIT,
         reserved_tenant: context.reserved_tenant,

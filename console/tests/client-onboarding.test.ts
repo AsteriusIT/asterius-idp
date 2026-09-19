@@ -36,6 +36,8 @@ test('field errors match exact validator fields and missing required values', ()
   assert.equal(clientFieldError('redirect_uri: use https', 'redirect_uris'), 'redirect_uri: use https');
   assert.equal(clientFieldError('redirect_uris[2]: duplicate', 'redirect_uris'), 'redirect_uris[2]: duplicate');
   assert.equal(clientFieldError('post_logout_redirect_uris[0]: use https', 'post_logout_redirect_uris'), 'post_logout_redirect_uris[0]: use https');
+  assert.equal(clientFieldError('invalid_client_metadata: dpop_bound_access_tokens: binding required', 'dpop_bound_access_tokens'), 'invalid_client_metadata: dpop_bound_access_tokens: binding required');
+  assert.equal(clientFieldError('invalid_redirect_uri: redirect_uris[0]: use https', 'redirect_uris'), 'invalid_redirect_uri: redirect_uris[0]: use https');
   assert.equal(clientFieldError('jwks is required', 'jwks'), 'jwks is required');
   assert.equal(clientFieldError('tls_client_auth_san_dns: required', 'tls_client_auth_san_dns'), 'tls_client_auth_san_dns: required');
   assert.equal(clientFieldError('post_logout_redirect_uris: use https', 'redirect_uris'), null);

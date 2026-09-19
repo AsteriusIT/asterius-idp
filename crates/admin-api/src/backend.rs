@@ -349,7 +349,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
 
     /// Deployment ceilings for tenant-configurable abuse controls.
     /// Backends without protocol limiters cannot accept overrides.
-    fn rate_limit_policy(&self) -> Option<(asterius_domain::LoginLimits, asterius_domain::EndpointLimits)> {
+    fn rate_limit_policy(
+        &self,
+    ) -> Option<(
+        asterius_domain::LoginLimits,
+        asterius_domain::EndpointLimits,
+    )> {
         None
     }
 

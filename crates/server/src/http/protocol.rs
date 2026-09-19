@@ -3214,6 +3214,16 @@ struct Dispatching<'a> {
     now: time::OffsetDateTime,
 }
 
+impl Dispatching<'_> {
+    /// RFC 9449 §8.2: successful proof-bound requests receive the next nonce.
+    fn supply_next_nonce(&self, mut response: Response) -> Response {
+        if let Some(binding) = self.binding {
+            DpopEndpoint::supply_nonce(&mut response, binding);
+        }
+        response
+    }
+}
+
 /// The pre-issuance enforcement point for this request (`ast-lh3.10`).
 ///
 /// Its own function rather than eight more lines in [`dispatch_grants`]: what
@@ -3377,7 +3387,7 @@ async fn dispatch_grants(
         agent_policy,
     );
 
-    let mut response = token::token(
+    let response = token::token(
         TokenContext {
             tenant,
             clients: &clients,
@@ -3402,13 +3412,7 @@ async fn dispatch_grants(
     )
     .await;
 
-    // RFC 9449 §8.2: hand the client the next nonce on a successful response,
-    // so a well-behaved one sees the `use_dpop_nonce` refusal exactly once
-    // rather than on every request.
-    if let Some(binding) = request.binding {
-        DpopEndpoint::supply_nonce(&mut response, binding);
-    }
-    response
+    request.supply_next_nonce(response)
 }
 
 /// `POST /register` — RFC 7591 §3.
@@ -4644,7 +4648,8 @@ fn endpoint_limits<'a>(
             limiter,
             endpoints.endpoint_limits,
             client.map(|client| client.ip),
-        ).with_tenant_settings(endpoints.tenant_settings.as_ref()),
+        )
+        .with_tenant_settings(endpoints.tenant_settings.as_ref()),
         audit: endpoints.audit.as_ref(),
         now,
     }
@@ -4663,7 +4668,8 @@ fn throttle<'a>(
         limiter,
         endpoints.login_limits,
         client.map(|client| client.ip),
-    ).with_tenant_settings(endpoints.tenant_settings.as_ref())
+    )
+    .with_tenant_settings(endpoints.tenant_settings.as_ref())
 }
 
 /// The adapters the four recovery routes share, built once per request.

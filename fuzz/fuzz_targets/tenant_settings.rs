@@ -61,16 +61,33 @@ fuzz_target!(|data: &[u8]| {
         assert!(clocks.absolute.whole_seconds() <= 43_200);
     }
 
-    let rate = asterius_domain::RateLimit { max: 20, window: time::Duration::seconds(60) };
-    let login = asterius_domain::LoginLimits { per_address: rate, per_account: rate };
+    let rate = asterius_domain::RateLimit {
+        max: 20,
+        window: time::Duration::seconds(60),
+    };
+    let login = asterius_domain::LoginLimits {
+        per_address: rate,
+        per_account: rate,
+    };
     let effective = settings.rate_limits().login(login);
     assert!(effective.per_address.max <= rate.max && effective.per_account.max <= rate.max);
     assert_eq!(effective.per_address.window, rate.window);
     assert_eq!(effective.per_account.window, rate.window);
     for endpoint in asterius_domain::LimitedEndpoint::ALL {
-        let deployment = asterius_domain::EndpointLimit { per_address: rate, per_client: Some(rate), per_subject: Some(rate) };
+        let deployment = asterius_domain::EndpointLimit {
+            per_address: rate,
+            per_client: Some(rate),
+            per_subject: Some(rate),
+        };
         let effective = settings.rate_limits().endpoint(endpoint, deployment);
-        for limit in [Some(effective.per_address), effective.per_client, effective.per_subject].into_iter().flatten() {
+        for limit in [
+            Some(effective.per_address),
+            effective.per_client,
+            effective.per_subject,
+        ]
+        .into_iter()
+        .flatten()
+        {
             assert!(limit.max <= rate.max);
             assert_eq!(limit.window, rate.window);
         }

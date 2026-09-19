@@ -122,15 +122,25 @@ impl<'a> EndpointThrottle<'a> {
 
     /// Resolves tenant maxima through the shared settings repository.
     #[must_use]
-    pub const fn with_tenant_settings(mut self, settings: Option<&'a crate::tenant_settings::SettingsDirectory>) -> Self {
+    pub const fn with_tenant_settings(
+        mut self,
+        settings: Option<&'a crate::tenant_settings::SettingsDirectory>,
+    ) -> Self {
         self.settings = settings;
         self
     }
 
-    async fn effective_limit(&self, tenant: &TenantId, endpoint: LimitedEndpoint) -> Result<asterius_domain::EndpointLimit, DomainError> {
+    async fn effective_limit(
+        &self,
+        tenant: &TenantId,
+        endpoint: LimitedEndpoint,
+    ) -> Result<asterius_domain::EndpointLimit, DomainError> {
         let deployment = self.limits.for_endpoint(endpoint);
         match self.settings {
-            Some(settings) => Ok(settings.rate_limits_for(tenant).await?.endpoint(endpoint, deployment)),
+            Some(settings) => Ok(settings
+                .rate_limits_for(tenant)
+                .await?
+                .endpoint(endpoint, deployment)),
             None => Ok(deployment),
         }
     }
@@ -141,7 +151,12 @@ impl<'a> EndpointThrottle<'a> {
     /// the request named no client — UserInfo presents an access token rather
     /// than a `client_id`, and reading one out of a token before verifying it
     /// would be trusting a string an attacker wrote.
-    fn buckets(&self, endpoint: LimitedEndpoint, client_id: Option<&str>, limit: asterius_domain::EndpointLimit) -> Vec<Full> {
+    fn buckets(
+        &self,
+        endpoint: LimitedEndpoint,
+        client_id: Option<&str>,
+        limit: asterius_domain::EndpointLimit,
+    ) -> Vec<Full> {
         let mut buckets = Vec::with_capacity(2);
         if let Some(address) = self.address {
             buckets.push(Full {
@@ -375,7 +390,11 @@ pub async fn guard_subject(
     endpoint: LimitedEndpoint,
     subject: &str,
 ) -> Option<Response> {
-    let effective = match context.throttle.effective_limit(context.tenant, endpoint).await {
+    let effective = match context
+        .throttle
+        .effective_limit(context.tenant, endpoint)
+        .await
+    {
         Ok(limit) => limit,
         Err(error) => {
             tracing::error!(%error, tenant = %context.tenant, "subject rate-limit settings unavailable");
@@ -587,7 +606,11 @@ mod tests {
         ) -> Result<u32, DomainError> {
             let counters = self.0.lock().expect("the test store is not poisoned");
             Ok(*counters
-                .get(&(tenant.as_str().to_owned(), bucket.as_str().to_owned(), window_start.unix_timestamp()))
+                .get(&(
+                    tenant.as_str().to_owned(),
+                    bucket.as_str().to_owned(),
+                    window_start.unix_timestamp(),
+                ))
                 .unwrap_or(&0))
         }
 
@@ -600,7 +623,11 @@ mod tests {
         ) -> Result<u32, DomainError> {
             let mut counters = self.0.lock().expect("the test store is not poisoned");
             let entry = counters
-                .entry((tenant.as_str().to_owned(), bucket.as_str().to_owned(), window_start.unix_timestamp()))
+                .entry((
+                    tenant.as_str().to_owned(),
+                    bucket.as_str().to_owned(),
+                    window_start.unix_timestamp(),
+                ))
                 .or_default();
             *entry += 1;
             Ok(*entry)
@@ -608,7 +635,8 @@ mod tests {
 
         async fn clear(&self, tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
             let mut counters = self.0.lock().expect("the test store is not poisoned");
-            counters.retain(|(owner, key, _), _| owner != tenant.as_str() || key != bucket.as_str());
+            counters
+                .retain(|(owner, key, _), _| owner != tenant.as_str() || key != bucket.as_str());
             Ok(())
         }
     }
@@ -1189,60 +1217,144 @@ mod tests {
     fn tenant_rate_limits_resolve_assertion_only_clients_for_the_same_budget() {
         use base64::Engine as _;
         let encoder = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let assertion = format!("{}.{}.AA", encoder.encode(br#"{"alg":"ES256"}"#), encoder.encode(br#"{"sub":"assertion-client"}"#));
+        let assertion = format!(
+            "{}.{}.AA",
+            encoder.encode(br#"{"alg":"ES256"}"#),
+            encoder.encode(br#"{"sub":"assertion-client"}"#)
+        );
         let form = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("client_assertion", &assertion).finish();
-        assert_eq!(claimed_client_id(form.as_bytes()).as_deref(), Some("assertion-client"));
+            .append_pair("client_assertion", &assertion)
+            .finish();
+        assert_eq!(
+            claimed_client_id(form.as_bytes()).as_deref(),
+            Some("assertion-client")
+        );
         assert_eq!(claimed_client_id(b"client_assertion=not-a-jwt"), None);
         let explicit = format!("{form}&client_id=explicit-client");
-        assert_eq!(claimed_client_id(explicit.as_bytes()).as_deref(), Some("explicit-client"));
+        assert_eq!(
+            claimed_client_id(explicit.as_bytes()).as_deref(),
+            Some("explicit-client")
+        );
     }
 
     #[tokio::test]
     async fn tenant_rate_limits_enforce_each_endpoint_with_isolated_tenant_counters() {
         use asterius_domain::{TenantSettings, TenantSettingsRepository};
-        let repository = std::sync::Arc::new(crate::tenant_settings::RateLimitTestRepository::default());
+        let repository =
+            std::sync::Arc::new(crate::tenant_settings::RateLimitTestRepository::default());
         let directory = crate::tenant_settings::SettingsDirectory::new(repository.clone());
         let other = TenantId::parse("other").expect("tenant");
-        let overrides: serde_json::Map<String, serde_json::Value> = LimitedEndpoint::ALL.into_iter()
-            .map(|endpoint| (endpoint.as_str().to_owned(), json!({"per_address":1}))).collect();
-        let settings = TenantSettings::from_json(Some(&json!({"rate_limits":overrides}))).expect("valid settings");
+        let overrides: serde_json::Map<String, serde_json::Value> = LimitedEndpoint::ALL
+            .into_iter()
+            .map(|endpoint| (endpoint.as_str().to_owned(), json!({"per_address":1})))
+            .collect();
+        let settings = TenantSettings::from_json(Some(&json!({"rate_limits":overrides})))
+            .expect("valid settings");
         repository.save(&tenant(), &settings).await.expect("save");
         let store = Counters::default();
         let audit = Trail::default();
-        let throttle = EndpointThrottle::new(&store, limits(), Some(address())).with_tenant_settings(Some(&directory));
-        let context = LimitContext { tenant: &TENANT, throttle, audit: &audit, now: now() };
+        let throttle = EndpointThrottle::new(&store, limits(), Some(address()))
+            .with_tenant_settings(Some(&directory));
+        let context = LimitContext {
+            tenant: &TENANT,
+            throttle,
+            audit: &audit,
+            now: now(),
+        };
         for endpoint in LimitedEndpoint::ALL {
-            assert_eq!(guard(&context, endpoint, None, ok).await.status(), StatusCode::OK);
-            assert_eq!(guard(&context, endpoint, None, ok).await.status(), StatusCode::TOO_MANY_REQUESTS);
-            let other_context = LimitContext { tenant: &other, ..context };
-            assert_eq!(guard(&other_context, endpoint, None, ok).await.status(), StatusCode::OK);
+            assert_eq!(
+                guard(&context, endpoint, None, ok).await.status(),
+                StatusCode::OK
+            );
+            assert_eq!(
+                guard(&context, endpoint, None, ok).await.status(),
+                StatusCode::TOO_MANY_REQUESTS
+            );
+            let other_context = LimitContext {
+                tenant: &other,
+                ..context
+            };
+            assert_eq!(
+                guard(&other_context, endpoint, None, ok).await.status(),
+                StatusCode::OK
+            );
         }
     }
 
     #[tokio::test]
     async fn tenant_rate_limits_reload_across_replicas_without_resetting_client_counters() {
         use asterius_domain::{TenantSettings, TenantSettingsRepository};
-        let repository = std::sync::Arc::new(crate::tenant_settings::RateLimitTestRepository::default());
+        let repository =
+            std::sync::Arc::new(crate::tenant_settings::RateLimitTestRepository::default());
         let first_directory = crate::tenant_settings::SettingsDirectory::new(repository.clone());
         let second_directory = crate::tenant_settings::SettingsDirectory::new(repository.clone());
         // Prime both ordinary caches: limiter policy must bypass stale entries.
-        first_directory.for_tenant(&tenant()).await.expect("settings");
-        second_directory.for_tenant(&tenant()).await.expect("settings");
+        first_directory
+            .for_tenant(&tenant())
+            .await
+            .expect("settings");
+        second_directory
+            .for_tenant(&tenant())
+            .await
+            .expect("settings");
         let store = Counters::default();
         let audit = Trail::default();
-        let context = LimitContext { tenant: &TENANT, audit: &audit, now: now(),
-            throttle: EndpointThrottle::new(&store, limits(), Some(address())).with_tenant_settings(Some(&first_directory)) };
-        assert_eq!(guard(&context, LimitedEndpoint::Token, Some("client"), ok).await.status(), StatusCode::OK);
-        let settings = TenantSettings::from_json(Some(&json!({"rate_limits":{"token":{"per_client":1},"backchannel":{"per_subject":1}}}))).expect("settings");
+        let context = LimitContext {
+            tenant: &TENANT,
+            audit: &audit,
+            now: now(),
+            throttle: EndpointThrottle::new(&store, limits(), Some(address()))
+                .with_tenant_settings(Some(&first_directory)),
+        };
+        assert_eq!(
+            guard(&context, LimitedEndpoint::Token, Some("client"), ok)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let settings = TenantSettings::from_json(Some(
+            &json!({"rate_limits":{"token":{"per_client":1},"backchannel":{"per_subject":1}}}),
+        ))
+        .expect("settings");
         repository.save(&tenant(), &settings).await.expect("save");
-        let replica = LimitContext { throttle: EndpointThrottle::new(&store, limits(), Some(address())).with_tenant_settings(Some(&second_directory)), ..context };
-        assert_eq!(guard(&replica, LimitedEndpoint::Token, Some("client"), ok).await.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert!(guard_subject(&replica, LimitedEndpoint::Backchannel, "person").await.is_none());
-        assert_eq!(guard_subject(&replica, LimitedEndpoint::Backchannel, "person").await.expect("limited").status(), StatusCode::TOO_MANY_REQUESTS);
-        repository.fail_reads.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(guard(&replica, LimitedEndpoint::UserInfo, None, ok).await.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(guard_subject(&replica, LimitedEndpoint::Backchannel, "another").await.expect("unavailable").status(), StatusCode::SERVICE_UNAVAILABLE);
+        let replica = LimitContext {
+            throttle: EndpointThrottle::new(&store, limits(), Some(address()))
+                .with_tenant_settings(Some(&second_directory)),
+            ..context
+        };
+        assert_eq!(
+            guard(&replica, LimitedEndpoint::Token, Some("client"), ok)
+                .await
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        assert!(
+            guard_subject(&replica, LimitedEndpoint::Backchannel, "person")
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            guard_subject(&replica, LimitedEndpoint::Backchannel, "person")
+                .await
+                .expect("limited")
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        repository
+            .fail_reads
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            guard(&replica, LimitedEndpoint::UserInfo, None, ok)
+                .await
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            guard_subject(&replica, LimitedEndpoint::Backchannel, "another")
+                .await
+                .expect("unavailable")
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
     }
-
 }

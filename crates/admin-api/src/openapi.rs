@@ -240,16 +240,24 @@ fn operation_object(operation: &Operation) -> Value {
 fn rate_limits_schema() -> Value {
     let maximum = json!({"type": "integer", "minimum": 1, "maximum": u32::MAX});
     let mut properties = Map::new();
-    properties.insert("login".to_owned(), json!({
-        "type": "object", "additionalProperties": false,
-        "properties": {"per_address": maximum, "per_account": maximum}
-    }));
+    properties.insert(
+        "login".to_owned(),
+        json!({
+            "type": "object", "additionalProperties": false,
+            "properties": {"per_address": maximum, "per_account": maximum}
+        }),
+    );
     for endpoint in asterius_domain::LimitedEndpoint::ALL {
         let mut buckets = json!({"per_address": maximum, "per_client": maximum});
-        if endpoint.as_str() == "backchannel" { buckets["per_subject"] = maximum.clone(); }
-        properties.insert(endpoint.as_str().to_owned(), json!({
-            "type": "object", "additionalProperties": false, "properties": buckets
-        }));
+        if endpoint.as_str() == "backchannel" {
+            buckets["per_subject"] = maximum.clone();
+        }
+        properties.insert(
+            endpoint.as_str().to_owned(),
+            json!({
+                "type": "object", "additionalProperties": false, "properties": buckets
+            }),
+        );
     }
     json!({"type": "object", "additionalProperties": false, "properties": properties,
         "description": "Overrides may only lower enabled deployment maxima. Omission preserves stored overrides; an empty object resets inheritance. Windows stay deployment-owned. GET also exposes rate_limit_bounds and effective_rate_limits, mapping the same groups/buckets to max and window_seconds. Shared counters retain existing concurrent check/charge semantics."})

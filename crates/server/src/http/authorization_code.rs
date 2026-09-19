@@ -255,24 +255,7 @@ impl AuthorizationCode<'_> {
 
         Self::check_redirect_uri(client, params, &binding.redirect_uri)?;
 
-        // RFC 7636 §4.6. `pkce::redeem` parses the verifier and compares in
-        // constant time; a malformed verifier and a wrong one are one answer.
-        let challenge = asterius_oidc::pkce::CodeChallenge::parse(
-            Some(&binding.code_challenge),
-            Some(pkce::S256),
-        )
-        .map_err(|_| {
-            // The challenge was validated at PAR, so a stored one that
-            // no longer parses is a corrupted row, not a bad request.
-            Failure::Server(DomainError::invalid(
-                "code_challenge",
-                "the stored code challenge is not a valid S256 challenge",
-            ))
-        })?;
-        let verifier = params.get("code_verifier").map_err(|_| {
-            Failure::Client("invalid_request", "code_verifier was sent more than once")
-        })?;
-        pkce::redeem(&challenge, verifier).map_err(|_| invalid_grant())?;
+        Self::check_pkce(params, &binding.code_challenge)?;
 
         // RFC 9449 §10.1: a code pushed with a `dpop_jkt` is redeemable only
         // with a proof for that key. Checked for every client, including a
@@ -453,6 +436,25 @@ impl AuthorizationCode<'_> {
             .await?;
 
         Ok(minted.expose().to_owned())
+    }
+
+    fn check_pkce(params: &Parameters, stored_challenge: &str) -> Result<(), Failure> {
+        // RFC 7636 §4.6. `pkce::redeem` parses the verifier and compares in
+        // constant time; a malformed verifier and a wrong one are one answer.
+        let challenge =
+            asterius_oidc::pkce::CodeChallenge::parse(Some(stored_challenge), Some(pkce::S256))
+                .map_err(|_| {
+                    // The challenge was validated at PAR, so a stored one that
+                    // no longer parses is a corrupted row, not a bad request.
+                    Failure::Server(DomainError::invalid(
+                        "code_challenge",
+                        "the stored code challenge is not a valid S256 challenge",
+                    ))
+                })?;
+        let verifier = params.get("code_verifier").map_err(|_| {
+            Failure::Client("invalid_request", "code_verifier was sent more than once")
+        })?;
+        pkce::redeem(&challenge, verifier).map_err(|_| invalid_grant())
     }
 
     /// OIDC Core §3.1.3.2 and threat model A1/G1 on `ast-a05.2`.

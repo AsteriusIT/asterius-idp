@@ -80,8 +80,16 @@ impl SettingsDirectory {
     ///
     /// # Errors
     /// Propagates storage or validation errors; limiters fail closed.
-    pub async fn rate_limits_for(&self, tenant: &TenantId) -> Result<asterius_domain::tenant_rate_limits::TenantRateLimits, DomainError> {
-        Ok(self.repository.settings(tenant).await?.rate_limits().clone())
+    pub async fn rate_limits_for(
+        &self,
+        tenant: &TenantId,
+    ) -> Result<asterius_domain::tenant_rate_limits::TenantRateLimits, DomainError> {
+        Ok(self
+            .repository
+            .settings(tenant)
+            .await?
+            .rate_limits()
+            .clone())
     }
 
     /// This tenant's settings, from the cache or from the repository.
@@ -127,11 +135,20 @@ impl TenantSettingsRepository for RateLimitTestRepository {
         if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(DomainError::NotFound);
         }
-        Ok(self.values.lock().expect("uncontended test lock").get(tenant.as_str()).cloned().unwrap_or_default())
+        Ok(self
+            .values
+            .lock()
+            .expect("uncontended test lock")
+            .get(tenant.as_str())
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn save(&self, tenant: &TenantId, settings: &TenantSettings) -> Result<(), DomainError> {
-        self.values.lock().expect("uncontended test lock").insert(tenant.as_str().to_owned(), settings.clone());
+        self.values
+            .lock()
+            .expect("uncontended test lock")
+            .insert(tenant.as_str().to_owned(), settings.clone());
         Ok(())
     }
 }
@@ -252,7 +269,9 @@ mod tests {
             .unwrap()
             .get_mut(tenant().as_str())
             .unwrap()
-            .1 = Instant::now() - CACHE_TTL;
+            .1 = Instant::now()
+            .checked_sub(CACHE_TTL)
+            .expect("test clock supports the cache TTL lookback");
         assert!(
             replica
                 .for_tenant(&tenant())

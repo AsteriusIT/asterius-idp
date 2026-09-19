@@ -447,11 +447,11 @@ async function openClients(page: Page): Promise<void> {
 async function fillNewClient(page: Page, name: string, callback: string): Promise<void> {
   await page.getByRole('button', { name: 'Register a client' }).click();
   await expect(page.getByRole('heading', { name: 'Register an application' })).toBeVisible();
-  await page.getByLabel('Client name').fill(name);
+  await page.getByRole('tabpanel').getByLabel('Client name').fill(name);
   await page.getByRole('tab', { name: 'Callbacks', exact: true }).click();
-  await page.getByLabel('Redirect URIs (one per line)', { exact: true }).fill(callback);
+  await page.getByRole('tabpanel').getByLabel('Redirect URIs (one per line)', { exact: true }).fill(callback);
   await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
-  await page.getByLabel('JWK Set URL').fill('https://app.example.test/jwks.json');
+  await page.getByRole('tabpanel').getByLabel('JWK Set URL').fill('https://app.example.test/jwks.json');
 }
 
 test('the clients screen is reachable and reads the admin API', async ({ context, page }) => {
@@ -507,9 +507,9 @@ test('the console cannot register a client dynamic registration would refuse', a
   // Act: a client with no key source at all, which RFC 7591 §2 leaves this
   // server nothing to verify a `private_key_jwt` assertion with.
   await page.getByRole('tab', { name: 'Callbacks', exact: true }).click();
-  await page.getByLabel('Redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/callback');
+  await page.getByRole('tabpanel').getByLabel('Redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/callback');
   await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
-  await page.getByLabel('JWK Set URL').fill('');
+  await page.getByRole('tabpanel').getByLabel('JWK Set URL').fill('');
   await page.getByRole('button', { name: 'Register client' }).click();
 
   // Assert
@@ -565,7 +565,7 @@ test('a valid client can be registered, found and saved again unchanged', async 
 
   // And an unedited save is accepted.
   await page.getByRole('button', { name: `Edit ${name}` }).click();
-  await expect(page.getByRole('heading', { name: /^Editing c\./ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: `Edit ${name}`, exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Save client' }).click();
   await expect(page.getByRole('status')).toContainText('Saved.');
   await expect(page.getByRole('alert')).toHaveCount(0);
@@ -1646,7 +1646,7 @@ test('application tabs retain edits and selects support keyboard choice', async 
   await signIn(page);
   await openClients(page);
   await page.getByRole('button', { name: 'Register a client' }).click();
-  await page.getByLabel('Client name', { exact: true }).fill('Unsaved application draft');
+  await page.getByRole('tabpanel').getByLabel('Client name', { exact: true }).fill('Unsaved application draft');
   await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
   const algorithm = page.getByRole('combobox', { name: 'ID token signing algorithm', exact: true });
   await algorithm.focus();
@@ -1656,7 +1656,7 @@ test('application tabs retain edits and selects support keyboard choice', async 
   await page.getByRole('tab', { name: 'Grant types', exact: true }).click();
   await page.getByRole('checkbox', { name: /Machine to machine/ }).check();
   await page.getByRole('tab', { name: 'Settings', exact: true }).click();
-  await expect(page.getByLabel('Client name', { exact: true })).toHaveValue('Unsaved application draft');
+  await expect(page.getByRole('tabpanel').getByLabel('Client name', { exact: true })).toHaveValue('Unsaved application draft');
   await page.getByRole('tab', { name: 'Grant types', exact: true }).click();
   await expect(page.getByRole('checkbox', { name: /Machine to machine/ })).toBeChecked();
 });
@@ -1708,10 +1708,10 @@ test('guided application onboarding creates, reloads and copies only saved confi
   const name = `Guided application ${Date.now()}`;
   await page.getByRole('button', { name: 'Register a client' }).click();
   await expect(page.getByRole('tab', { name: 'Setup guide' })).toHaveAttribute('aria-selected', 'true');
-  await page.getByLabel('Client name', { exact: true }).fill(name);
-  await page.getByLabel('Redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/callback');
-  await page.getByLabel('Post-logout redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/signed-out');
-  await page.getByLabel('Inline JWK Set', { exact: true }).fill(JSON.stringify({ keys: [{
+  await page.getByRole('tabpanel').getByLabel('Client name', { exact: true }).fill(name);
+  await page.getByRole('tabpanel').getByLabel('Redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/callback');
+  await page.getByRole('tabpanel').getByLabel('Post-logout redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/signed-out');
+  await page.getByRole('tabpanel').getByLabel('Inline JWK Set', { exact: true }).fill(JSON.stringify({ keys: [{
     kty: 'OKP', crv: 'Ed25519', kid: 'onboarding-public-key',
     x: '11qYAYdk9JpBAd0-1J1Py3aM5AEKFkxYUNprN9S9Dhs',
   }] }));
@@ -1722,7 +1722,7 @@ test('guided application onboarding creates, reloads and copies only saved confi
   const stored = await response.json();
   await expect(page.getByRole('status')).toContainText(`Registered as ${stored.client_id}`);
   await page.getByRole('tab', { name: 'Saved configuration', exact: true }).click();
-  const region = page.getByRole('region', { name: 'Saved client configuration', exact: true });
+  const region = page.getByRole('tabpanel', { name: 'Saved configuration', exact: true }).locator('pre[aria-label="Saved client configuration"]');
   const configuration = JSON.parse(await region.innerText());
   for (const key of ['client_id', 'client_name', 'redirect_uris', 'post_logout_redirect_uris', 'scope',
     'token_endpoint_auth_method', 'dpop_bound_access_tokens', 'tls_client_certificate_bound_access_tokens',
@@ -1736,7 +1736,7 @@ test('guided application onboarding creates, reloads and copies only saved confi
   await page.getByRole('button', { name: 'Copy Saved client configuration', exact: true }).click();
   expect(JSON.parse(await page.evaluate(() => navigator.clipboard.readText()))).toEqual(configuration);
   await page.getByRole('tab', { name: 'Setup guide' }).click();
-  await page.getByLabel('Client name', { exact: true }).fill('An unsaved name');
+  await page.getByRole('tabpanel').getByLabel('Client name', { exact: true }).fill('An unsaved name');
   await page.getByRole('tab', { name: 'Saved configuration', exact: true }).click();
   expect(JSON.parse(await region.innerText())).toEqual(configuration);
   await page.reload();
@@ -1749,22 +1749,29 @@ test('guided application onboarding attaches callback key and security refusals 
   await signIn(page);
   await openClients(page);
   await page.getByRole('button', { name: 'Register a client' }).click();
-  await page.getByLabel('Client name', { exact: true }).fill('Invalid guided application');
-  const callbacks = page.getByLabel('Redirect URIs (one per line)', { exact: true });
+  await page.getByRole('tabpanel').getByLabel('Client name', { exact: true }).fill('Invalid guided application');
+  const callbacks = page.getByRole('tabpanel').getByLabel('Redirect URIs (one per line)', { exact: true });
   await callbacks.fill('http://app.example.test/callback');
-  await page.getByLabel('JWK Set URL', { exact: true }).fill('https://app.example.test/jwks');
+  await page.getByRole('tabpanel').getByLabel('JWK Set URL', { exact: true }).fill('https://app.example.test/jwks');
   await page.getByRole('button', { name: 'Register client', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText(/redirect_uri|https/);
   await expect(callbacks).toHaveAttribute('aria-invalid', 'true');
+  for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
   await callbacks.fill('https://app.example.test/callback');
-  await page.getByLabel('JWK Set URL', { exact: true }).fill('');
-  const keys = page.getByLabel('Inline JWK Set', { exact: true });
+  await page.getByRole('tabpanel').getByLabel('JWK Set URL', { exact: true }).fill('');
+  const keys = page.getByRole('tabpanel').getByLabel('Inline JWK Set', { exact: true });
+  const privateKeyRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.method() === 'POST' && request.url().endsWith('/api/v1/clients')) privateKeyRequests.push(request.postData() ?? '');
+  });
   await keys.fill('{"keys":[{"kty":"OKP","crv":"Ed25519","d":"private-material-must-be-refused"}]}');
   await page.getByRole('button', { name: 'Register client', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText(/jwks|private/);
   await expect(keys).toHaveAttribute('aria-invalid', 'true');
+  expect(privateKeyRequests).toEqual([]);
+  for (const dismiss of await page.getByRole('button', { name: 'Dismiss', exact: true }).all()) await dismiss.click();
   await keys.fill('');
-  await page.getByLabel('JWK Set URL', { exact: true }).fill('https://app.example.test/jwks');
+  await page.getByRole('tabpanel').getByLabel('JWK Set URL', { exact: true }).fill('https://app.example.test/jwks');
   // A stale or manipulated client cannot weaken the server's FAPI baseline.
   await page.route('**/api/v1/clients', (route) => {
     if (route.request().method() !== 'POST') return route.continue();
@@ -1778,6 +1785,11 @@ test('guided application onboarding attaches callback key and security refusals 
 
 test('guided application onboarding hides writes for a read-only session and retains saved export', async ({ page }) => {
   await signIn(page);
+  await openClients(page);
+  const name = `Read-only application ${Date.now()}`;
+  await fillNewClient(page, name, 'https://app.example.test/callback');
+  await page.getByRole('button', { name: 'Register client', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Registered as');
   await page.route(`**${SESSION_ENDPOINT}`, async (route) => {
     const response = await route.fetch();
     const session = await response.json();
@@ -1786,13 +1798,13 @@ test('guided application onboarding hides writes for a read-only session and ret
   await page.reload();
   await openClients(page);
   await expect(page.getByRole('button', { name: 'Register a client', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: /^Edit / }).first().click();
+  await page.getByRole('button', { name: `Edit ${name}`, exact: true }).click();
   await expect(page.getByRole('button', { name: 'Save client', exact: true })).toHaveCount(0);
   await page.getByRole('tab', { name: 'Setup guide', exact: true }).click();
-  await expect(page.getByLabel('Client name', { exact: true })).toBeDisabled();
+  await expect(page.getByRole('tabpanel').getByLabel('Client name', { exact: true })).toBeDisabled();
   await expect(page.getByRole('combobox', { name: 'Client authentication', exact: true })).toBeDisabled();
   await page.getByRole('tab', { name: 'Saved configuration', exact: true }).click();
-  await expect(page.getByRole('region', { name: 'Saved client configuration', exact: true })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: 'Saved configuration', exact: true }).locator('pre[aria-label="Saved client configuration"]')).toBeVisible();
 });
 
 test('tenant session policy saves, reloads and rejects invalid clocks', async ({ page }) => {

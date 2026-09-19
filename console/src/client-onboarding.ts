@@ -53,8 +53,9 @@ export function clientConfiguration(saved: ClientDocument, discovery: ClientDisc
 /** Map the validator's stable metadata field prefix to the responsible control. */
 export function clientFieldError(message: string | null, field: string): string | null {
   if (message === null) return null;
-  const reported = message.match(/\b([a-z][a-z0-9_]*)(?:\[\d+\])?(?::| is required)/)?.[1];
-  return reported === field || (field === 'redirect_uris' && reported === 'redirect_uri')
+  const reported = [...message.matchAll(/\b([a-z][a-z0-9_]*)(?:\[\d+\])?(?::| is required)/g)]
+    .map((match) => match[1]);
+  return reported.includes(field) || (field === 'redirect_uris' && reported.includes('redirect_uri'))
     ? message : null;
 }
 

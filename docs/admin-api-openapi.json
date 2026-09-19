@@ -117,6 +117,233 @@
           "next_cursor"
         ],
         "type": "object"
+      },
+      "SessionPolicy": {
+        "additionalProperties": false,
+        "description": "Idle must not exceed absolute. Omission preserves policy. Current policy constrains existing sessions; browser activity renews only idle time and never extends issuance absolute expiry. Session lookup reads committed policy on every replica.",
+        "properties": {
+          "absolute_seconds": {
+            "default": 43200,
+            "maximum": 43200,
+            "minimum": 60,
+            "type": "integer"
+          },
+          "idle_seconds": {
+            "default": 3600,
+            "maximum": 43200,
+            "minimum": 60,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "idle_seconds",
+          "absolute_seconds"
+        ],
+        "type": "object"
+      },
+      "TenantRateLimits": {
+        "additionalProperties": false,
+        "description": "Overrides may only lower enabled deployment maxima. Omission preserves stored overrides; an empty object resets inheritance. Windows stay deployment-owned. GET also exposes rate_limit_bounds and effective_rate_limits, mapping the same groups/buckets to max and window_seconds. Shared counters retain existing concurrent check/charge semantics.",
+        "properties": {
+          "access_evaluation": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "backchannel": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_subject": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "client_configuration": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "device_authorization": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "introspection": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "login": {
+            "additionalProperties": false,
+            "properties": {
+              "per_account": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "par": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "registration": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "revocation": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "ssf_subjects": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "token": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "userinfo": {
+            "additionalProperties": false,
+            "properties": {
+              "per_address": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "per_client": {
+                "maximum": 4294967295,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -4026,6 +4253,12 @@
                   "properties": {
                     "acr_policy": {
                       "$ref": "#/components/schemas/AcrPolicy"
+                    },
+                    "rate_limits": {
+                      "$ref": "#/components/schemas/TenantRateLimits"
+                    },
+                    "session_policy": {
+                      "$ref": "#/components/schemas/SessionPolicy"
                     }
                   },
                   "type": "object"
@@ -4105,7 +4338,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "description": "Omitting acr_policy preserves the stored policy. Updates are tenant-scoped, audited and visible on other replicas within 30 seconds.",
+                "description": "Omitted policies retain stored values. Updates are tenant-scoped and audited. Assurance replicas refresh within 30 seconds; session and rate-limit enforcement read committed settings directly.",
                 "properties": {
                   "access_token_lifetime_seconds": {
                     "maximum": 900,
@@ -4119,6 +4352,12 @@
                     "maximum": 60,
                     "minimum": 1,
                     "type": "integer"
+                  },
+                  "rate_limits": {
+                    "$ref": "#/components/schemas/TenantRateLimits"
+                  },
+                  "session_policy": {
+                    "$ref": "#/components/schemas/SessionPolicy"
                   }
                 },
                 "required": [

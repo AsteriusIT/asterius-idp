@@ -8,7 +8,7 @@ import { hrefOf } from './routes';
  * serves (`GET`/`POST /clients`, `GET`/`PUT /clients/{client_id}`), and this
  * screen is deliberately no wider than that.
  *
- * # This form has no rules of its own
+ * # The API validates metadata; private keys are stopped before upload
  *
  * Every constraint on a client — https callbacks, the closed algorithm list,
  * `jwks` xor `jwks_uri`, which grant types this deployment implements, the
@@ -19,7 +19,10 @@ import { hrefOf } from './routes';
  * and nothing else, and when the server refuses, what is shown is the server's
  * own sentence, which names the field and the clause.
  *
- * That is why the form submits with `noValidate` and why the grant-type list is
+ * A pre-submit public-key check also prevents uploading private or symmetric
+ * key material: a disclosure must be stopped before asking the API to refuse it.
+ *
+ * That is why the form otherwise submits with `noValidate` and why the grant-type list is
  * a display list rather than a claim: a console that pre-empted the validator
  * would eventually disagree with it, and the version that is wrong is always
  * the one nobody re-reads.
@@ -300,6 +303,15 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const save = useCallback(
     (current: Draft, where: Editing) => {
       if (!canWrite) return;
+      const keyComplaint = publicKeyError(current);
+      if (keyComplaint !== null) {
+        // Public key setup is also a confidentiality boundary: never send a
+        // pasted private key to registration, even to ask the API to refuse it.
+        setRefusal(`jwks: ${keyComplaint}`);
+        setNotice(null);
+        toast.error('The client was not sent', keyComplaint);
+        return;
+      }
       let document: Record<string, unknown>;
       try {
         document = documentFrom(current);

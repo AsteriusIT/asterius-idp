@@ -159,7 +159,10 @@ impl<'a> LoginThrottle<'a> {
 
     /// Uses this tenant's persisted maxima without changing deployment windows.
     #[must_use]
-    pub const fn with_tenant_settings(mut self, settings: Option<&'a crate::tenant_settings::SettingsDirectory>) -> Self {
+    pub const fn with_tenant_settings(
+        mut self,
+        settings: Option<&'a crate::tenant_settings::SettingsDirectory>,
+    ) -> Self {
         self.settings = settings;
         self
     }
@@ -377,7 +380,11 @@ mod tests {
         ) -> Result<u32, DomainError> {
             let counters = self.0.lock().expect("the test store is not poisoned");
             Ok(*counters
-                .get(&(tenant.as_str().to_owned(), bucket.as_str().to_owned(), window_start.unix_timestamp()))
+                .get(&(
+                    tenant.as_str().to_owned(),
+                    bucket.as_str().to_owned(),
+                    window_start.unix_timestamp(),
+                ))
                 .unwrap_or(&0))
         }
 
@@ -390,7 +397,11 @@ mod tests {
         ) -> Result<u32, DomainError> {
             let mut counters = self.0.lock().expect("the test store is not poisoned");
             let entry = counters
-                .entry((tenant.as_str().to_owned(), bucket.as_str().to_owned(), window_start.unix_timestamp()))
+                .entry((
+                    tenant.as_str().to_owned(),
+                    bucket.as_str().to_owned(),
+                    window_start.unix_timestamp(),
+                ))
                 .or_default();
             *entry += 1;
             Ok(*entry)
@@ -398,7 +409,8 @@ mod tests {
 
         async fn clear(&self, tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
             let mut counters = self.0.lock().expect("the test store is not poisoned");
-            counters.retain(|(owner, key, _), _| owner != tenant.as_str() || key != bucket.as_str());
+            counters
+                .retain(|(owner, key, _), _| owner != tenant.as_str() || key != bucket.as_str());
             Ok(())
         }
     }
@@ -694,20 +706,46 @@ mod tests {
     #[tokio::test]
     async fn tenant_rate_limits_enforce_login_failures_and_live_policy_without_resetting() {
         use asterius_domain::{TenantSettings, TenantSettingsRepository};
-        let repository = std::sync::Arc::new(crate::tenant_settings::RateLimitTestRepository::default());
+        let repository =
+            std::sync::Arc::new(crate::tenant_settings::RateLimitTestRepository::default());
         let directory = crate::tenant_settings::SettingsDirectory::new(repository.clone());
         let store = Counters::default();
-        let throttle = LoginThrottle::new(&store, limits(), Some(address())).with_tenant_settings(Some(&directory));
+        let throttle = LoginThrottle::new(&store, limits(), Some(address()))
+            .with_tenant_settings(Some(&directory));
         let attempt = throttle.attempt(Some("alice"));
         throttle.record_failure(&tenant(), &attempt, now()).await;
-        assert!(throttle.check(&tenant(), &attempt, now()).await.expect("check").is_none());
-        let settings = TenantSettings::from_json(Some(&serde_json::json!({"rate_limits":{"login":{"per_account":1}}}))).expect("settings");
+        assert!(
+            throttle
+                .check(&tenant(), &attempt, now())
+                .await
+                .expect("check")
+                .is_none()
+        );
+        let settings = TenantSettings::from_json(Some(
+            &serde_json::json!({"rate_limits":{"login":{"per_account":1}}}),
+        ))
+        .expect("settings");
         repository.save(&tenant(), &settings).await.expect("save");
-        assert_eq!(throttle.check(&tenant(), &attempt, now()).await.expect("check").expect("limited").scope, Scope::Account);
+        assert_eq!(
+            throttle
+                .check(&tenant(), &attempt, now())
+                .await
+                .expect("check")
+                .expect("limited")
+                .scope,
+            Scope::Account
+        );
         let other = TenantId::parse("other").expect("tenant");
-        assert!(throttle.check(&other, &attempt, now()).await.expect("check").is_none());
-        repository.fail_reads.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            throttle
+                .check(&other, &attempt, now())
+                .await
+                .expect("check")
+                .is_none()
+        );
+        repository
+            .fail_reads
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(throttle.check(&tenant(), &attempt, now()).await.is_err());
     }
-
 }

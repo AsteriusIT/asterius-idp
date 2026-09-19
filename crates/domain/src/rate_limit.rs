@@ -193,7 +193,9 @@ impl RateLimit {
         let elapsed = now.unix_timestamp().rem_euclid(seconds);
         // Counter keys must be identical across independent request clocks.
         // Subtracting whole seconds alone retained each request's nanoseconds.
-        now.replace_nanosecond(0).expect("zero is a valid nanosecond") - Duration::seconds(elapsed)
+        now.replace_nanosecond(0)
+            .expect("zero is a valid nanosecond")
+            - Duration::seconds(elapsed)
     }
 
     /// When the window `now` falls in ends, which is when the counter resets.
@@ -819,15 +821,24 @@ mod tests {
 
     #[test]
     fn tenant_rate_limits_share_window_keys_across_subsecond_request_clocks() {
-        let limit = RateLimit { max: 1, window: Duration::minutes(15) };
+        let limit = RateLimit {
+            max: 1,
+            window: Duration::minutes(15),
+        };
         let first = now() + Duration::milliseconds(123);
         let second = now() + Duration::milliseconds(987);
         assert_eq!(limit.window_start(first), limit.window_start(second));
         assert_eq!(limit.window_start(first).nanosecond(), 0);
         assert_eq!(limit.window_end(first).nanosecond(), 0);
         let before_epoch = OffsetDateTime::UNIX_EPOCH - Duration::milliseconds(100);
-        assert_eq!(limit.window_start(before_epoch), OffsetDateTime::UNIX_EPOCH - Duration::minutes(15));
-        assert_eq!(limit.window_start(before_epoch), limit.window_start(OffsetDateTime::UNIX_EPOCH - Duration::milliseconds(900)));
+        assert_eq!(
+            limit.window_start(before_epoch),
+            OffsetDateTime::UNIX_EPOCH - Duration::minutes(15)
+        );
+        assert_eq!(
+            limit.window_start(before_epoch),
+            limit.window_start(OffsetDateTime::UNIX_EPOCH - Duration::milliseconds(900))
+        );
     }
 
     #[test]
