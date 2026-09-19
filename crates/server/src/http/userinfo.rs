@@ -125,6 +125,16 @@ pub trait UserInfoSource: std::fmt::Debug + Send + Sync {
     /// holds is an authorization decision taken by an outage.
     async fn roles(&self, user: UserId) -> Result<asterius_domain::HeldRoles, DomainError>;
 
+    /// Stable managed-group references released for this client audience.
+    /// Empty is the safe default for sources and clients that do not opt in.
+    async fn managed_group_ids(
+        &self,
+        _user: UserId,
+        _client: &ClientId,
+    ) -> Result<Vec<String>, DomainError> {
+        Ok(Vec::new())
+    }
+
     /// Whether this `jti` was revoked before its own expiry.
     ///
     /// # Errors
@@ -344,6 +354,11 @@ async fn answer(
     })?;
     let held = context.source.roles(user).await?;
     let body = userinfo::with_roles(body, grant.client.as_str(), &held);
+    let groups = context
+        .source
+        .managed_group_ids(user, &grant.client)
+        .await?;
+    let body = userinfo::with_managed_groups(body, groups);
     render(context, &grant, body).await
 }
 

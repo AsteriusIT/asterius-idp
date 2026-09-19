@@ -9,30 +9,28 @@ They are labels only and must be rendered as text by future administration UIs.
 Names are unique per tenant; the database uses C collation for exact comparison.
 All listing ports require a limit of 1–200 and use exclusive UUID cursors.
 
-## Compatibility decision
+## Authority cutover and compatibility
 
-The existing `groups_of(user)` in `crates/server/src/http/protocol.rs` continues
-to read `user.claims["groups"].value`. It accepts string elements of an array,
-deduplicates them, and ignores non-string elements; a non-array means no groups.
-Those strings have historically allowed values outside the new name alphabet.
-This migration therefore **does not import, normalize, remove or rewrite them**.
-No managed group or membership is consulted by policy evaluation or token claims
-in this change. Existing authorization and claim release remain byte-for-byte
-unchanged by installing the schema. Creating a managed group named like a legacy
-group has no authority effect. This is a staged coexistence migration, not a
-claim-to-membership backfill, and no automatic dual-read union is allowed.
+Policy evaluation, AuthZEN search and the administration policy test bench now
+read only direct rows from `group_memberships`. A caller's `properties.groups`
+and the legacy `user.claims["groups"]` bag cannot assert authority. There is no
+automatic import, normalization or dual-read union: tenants must compare and
+populate managed memberships before deploying this cutover.
 
-The authority cutover belongs to `ast-6uqw.12`. Before enabling managed groups as
-policy input, that change must provide a tenant-reviewed comparison of every
-legacy string membership with the proposed managed membership; preserve a backup
-of the legacy values/provenance; obtain an explicit mapping for nonrepresentable
-names; and account for all existing policy group references and claim release
-contracts. A tenant with unresolved differences must retain legacy behavior.
-An automatic lowercase/trim import or union of both sources could grant access;
-simply switching reads to the initially empty tables could withdraw access.
-A rollback during coexistence only removes unused managed persistence and never
-requires changing the existing claims. After cutover, rollback needs its own
-reviewed authority reconciliation and must not re-enable stale claims blindly.
+Every policy membership contributes a stable `group:<uuid>` reference and its
+machine name. Policies should migrate to the stable reference. When a machine
+name changes, the old spelling is retained in `managed_group_aliases`, so an
+existing name condition keeps its meaning. Display names are never policy input.
+Deleting a group cascades aliases and memberships; recreating the same name
+creates a different UUID.
+
+Client claim release is separate from policy authority. `managed_groups_claim`
+is false by default and scoped to one client registration. Opted-in ID tokens
+and UserInfo responses resolve membership live and return at most 100 stable
+references in `group_ids`; they never return names, display labels, aliases or
+another tenant's directory. The server writes `group_ids` after stored claims,
+preventing claim shadowing. Membership edits affect the next decision or response.
+Signed tokens remain snapshots until `exp`, bounded by the token lifetime caps.
 
 ## Transactions and concurrency
 

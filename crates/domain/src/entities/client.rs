@@ -1086,6 +1086,10 @@ pub struct ClientMetadata {
     /// false: an ID token says who somebody is, and what they may do goes in
     /// the access token unless a client asks otherwise.
     pub roles_in_id_token: Option<bool>,
+    /// Whether this client receives the bounded `group_ids` claim in ID tokens
+    /// and at UserInfo. Absent is false; managed directory data is never
+    /// disclosed by default.
+    pub managed_groups_claim: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1212,6 +1216,8 @@ pub struct ClientRegistration {
     /// `ast-mqt`. Whether the application-role claims (`ast-095`) are issued
     /// in this client's ID tokens as well as in its access tokens.
     pub roles_in_id_token: RolesInIdToken,
+    /// Opt-in release of stable managed-group identifiers to this client.
+    pub managed_groups_claim: ManagedGroupsClaim,
 }
 
 /// Whether a client's ID tokens carry the application-role claims (`ast-mqt`).
@@ -1237,6 +1243,34 @@ pub enum RolesInIdToken {
     Omitted,
     /// They are issued in this client's ID tokens too.
     Issued,
+}
+
+/// Whether stable managed-group identifiers are released to this client.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ManagedGroupsClaim {
+    /// Directory membership is withheld.
+    #[default]
+    Omitted,
+    /// The client receives bounded stable identifiers.
+    Issued,
+}
+
+impl ManagedGroupsClaim {
+    /// Reads the registration extension; absence preserves privacy.
+    #[must_use]
+    pub const fn registered(asked: Option<bool>) -> Self {
+        if matches!(asked, Some(true)) {
+            Self::Issued
+        } else {
+            Self::Omitted
+        }
+    }
+
+    /// Whether release was explicitly enabled.
+    #[must_use]
+    pub const fn is_issued(self) -> bool {
+        matches!(self, Self::Issued)
+    }
 }
 
 impl RolesInIdToken {
@@ -1625,6 +1659,7 @@ impl ClientMetadata {
                 .backchannel_logout_session_required
                 .unwrap_or(false),
             roles_in_id_token: RolesInIdToken::registered(self.roles_in_id_token),
+            managed_groups_claim: ManagedGroupsClaim::registered(self.managed_groups_claim),
         })
     }
 

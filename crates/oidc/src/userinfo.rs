@@ -376,6 +376,30 @@ pub fn with_roles(
     body
 }
 
+/// Adds authoritative managed-group identifiers after user claims.
+///
+/// The caller has already applied the client opt-in and audience decision.
+/// Writing this after `released` means a stored claim cannot shadow directory
+/// membership. The bound limits both disclosure and response size.
+#[must_use]
+pub fn with_managed_groups(
+    mut claims: Map<String, Value>,
+    groups: impl IntoIterator<Item = String>,
+) -> Map<String, Value> {
+    const MAX_GROUPS: usize = 100;
+    let values: Vec<Value> = groups
+        .into_iter()
+        .take(MAX_GROUPS)
+        .map(Value::String)
+        .collect();
+    if values.is_empty() {
+        claims.remove("group_ids");
+    } else {
+        claims.insert("group_ids".to_owned(), Value::Array(values));
+    }
+    claims
+}
+
 /// The claims of a signed UserInfo response (OIDC Core §5.3.2).
 ///
 /// > If the UserInfo Response is signed and/or encrypted, then the Claims are
@@ -610,6 +634,33 @@ mod tests {
 
         assert_eq!(body["sub"], Value::String("SUBJECT-1".to_owned()));
         assert_eq!(body["email"], Value::String("a@example".to_owned()));
+    }
+
+    #[test]
+    fn managed_groups_are_bounded_and_cannot_be_shadowed() {
+        let mut released = Map::new();
+        released.insert(
+            "group_ids".to_owned(),
+            Value::Array(vec![Value::String("caller-supplied".to_owned())]),
+        );
+        let groups = (0..=100).map(|index| format!("group:{index}"));
+
+        let body = with_managed_groups(released, groups);
+
+        let values = body["group_ids"].as_array().expect("group id array");
+        assert_eq!(values.len(), 100);
+        assert_eq!(values[0], Value::String("group:0".to_owned()));
+        assert!(!values.contains(&Value::String("caller-supplied".to_owned())));
+    }
+
+    #[test]
+    fn no_authoritative_groups_removes_a_stored_shadow() {
+        let mut released = Map::new();
+        released.insert(
+            "group_ids".to_owned(),
+            Value::Array(vec![Value::String("caller-supplied".to_owned())]),
+        );
+        assert!(!with_managed_groups(released, Vec::new()).contains_key("group_ids"));
     }
 
     /// A signed response names its issuer and its audience, so it cannot be

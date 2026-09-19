@@ -185,6 +185,7 @@ pub fn document(client: &Client) -> Value {
         // form carries it as a checkbox: a member the form could not see would
         // be one it silently cleared on the next save.
         "roles_in_id_token": registration.roles_in_id_token.is_issued(),
+        "managed_groups_claim": registration.managed_groups_claim.is_issued(),
         // Not settable from a document (`ast-m9c.6` owns the per-client
         // audience allow-list); shown because an operator debugging an
         // `invalid_target` needs to see it.
@@ -504,6 +505,7 @@ mod tests {
             "grant_types": ["authorization_code", "refresh_token"],
             "scope": "openid profile",
             "jwks_uri": "https://app.example.test/jwks.json",
+            "managed_groups_claim": true,
         })
     }
 
@@ -542,7 +544,7 @@ mod tests {
     /// trip that matters is "the document re-validates to the same
     /// registration", not "the JSON has these bytes".
     #[test]
-    fn a_rendered_registration_validates_back_to_the_same_registration() {
+    fn a_managed_groups_opt_in_round_trips_through_the_client_api() {
         // Arrange
         let client = client_from(&valid_document(), ClientStatus::Active);
 

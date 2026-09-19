@@ -1447,6 +1447,7 @@ async fn userinfo_endpoint_inner(
         // deployment-wide, so the tenant travels beside it.
         tenant: tenant.id.clone(),
         roles: scope.application_roles(),
+        groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
     };
 
     userinfo::userinfo(
@@ -2327,6 +2328,7 @@ async fn access_search_dispatch(
     ));
     let subjects = StoredSubjects {
         users: scope.users(Arc::clone(&endpoints.kek)),
+        groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
         roles: scope.application_roles(),
         grants: scope.grants(),
     };
@@ -2439,6 +2441,7 @@ async fn access_evaluation_dispatch(
     ));
     let subjects = StoredSubjects {
         users: scope.users(Arc::clone(&endpoints.kek)),
+        groups: asterius_store_pg::PgGroups::new(endpoints.store.pool().clone()),
         roles: scope.application_roles(),
         grants: scope.grants(),
     };
@@ -2475,6 +2478,7 @@ async fn access_evaluation_dispatch(
 #[derive(Debug)]
 pub(crate) struct StoredSubjects {
     users: asterius_store_pg::PgUserRepository,
+    groups: asterius_store_pg::PgGroups,
     roles: asterius_store_pg::PgApplicationRoles,
     grants: asterius_store_pg::PgGrantRepository,
 }
@@ -2494,6 +2498,7 @@ impl StoredSubjects {
         let scope = store.scope(tenant.clone());
         Self {
             users: scope.users(kek),
+            groups: asterius_store_pg::PgGroups::new(store.pool().clone()),
             roles: scope.application_roles(),
             grants: scope.grants(),
         }
@@ -2530,43 +2535,21 @@ impl crate::http::access_evaluation::SubjectFacts for StoredSubjects {
         _kind: &str,
         id: &str,
     ) -> Result<crate::http::access_evaluation::ResolvedSubject, DomainError> {
-        use asterius_domain::ports::{ApplicationRoleDirectory, GrantRepository};
+        use asterius_domain::ports::{ApplicationRoleDirectory, GrantRepository, GroupDirectory};
 
         let subject = asterius_domain::SubjectId::new(id.to_owned());
         let Some(user) = self.users.find_by_subject(&subject).await? else {
             return Ok(crate::http::access_evaluation::ResolvedSubject::default());
         };
         Ok(crate::http::access_evaluation::ResolvedSubject {
-            groups: groups_of(&user),
+            groups: self
+                .groups
+                .authorization_references_for_user(tenant, user.id)
+                .await?,
             roles: self.roles.held_by(tenant, user.id).await?,
             grants: self.grants.for_subject(&subject).await?,
         })
     }
-}
-
-/// The groups an account is held in, as this server records them.
-///
-/// There is no group table: what a tenant's directory calls a group is the
-/// `groups` claim on the account (`ast-2vk.6`), which is what an administrator
-/// writes through the admin API and what a `groups` scope would release. A
-/// claim that is not an array of strings is no groups at all — it is a value an
-/// administrator wrote and this server will not guess at, and guessing here
-/// would be guessing about authority.
-fn groups_of(user: &asterius_domain::User) -> std::collections::BTreeSet<String> {
-    let Ok(name) = asterius_domain::ClaimName::parse("groups") else {
-        return std::collections::BTreeSet::new();
-    };
-    user.claims
-        .get(&name)
-        .and_then(|claim| claim.value().as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// Whether a PEP's access token still stands, over the same rows UserInfo and
@@ -3055,6 +3038,7 @@ struct StoredClaims {
     clients: asterius_store_pg::PgClientRepository,
     tenant: asterius_domain::TenantId,
     roles: asterius_store_pg::PgApplicationRoles,
+    groups: asterius_store_pg::PgGroups,
 }
 
 #[async_trait::async_trait]
@@ -3082,6 +3066,27 @@ impl userinfo::UserInfoSource for StoredClaims {
     ) -> Result<asterius_domain::HeldRoles, asterius_domain::DomainError> {
         use asterius_domain::ports::ApplicationRoleDirectory;
         self.roles.held_by(&self.tenant, user).await
+    }
+
+    async fn managed_group_ids(
+        &self,
+        user: asterius_domain::UserId,
+        client: &asterius_domain::ClientId,
+    ) -> Result<Vec<String>, asterius_domain::DomainError> {
+        use asterius_domain::GroupDirectory;
+        let Some(client) = self.clients.find(client).await? else {
+            return Ok(Vec::new());
+        };
+        if !client.registration.managed_groups_claim.is_issued() {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .groups
+            .groups_for_user(&self.tenant, user, None, 100)
+            .await?
+            .into_iter()
+            .map(|group| group.id.to_string())
+            .collect())
     }
 
     async fn user(
@@ -3272,6 +3277,10 @@ fn agent_policy<'a>(
 /// repositories beside them: they have to be built in the frame that
 /// dispatches, and that frame is better holding nothing else. Adding a grant
 /// is adding a value to the list at the bottom.
+#[expect(
+    clippy::too_many_lines,
+    reason = "all token grants share repositories and one request clock in this composition root"
+)]
 async fn dispatch_grants(
     endpoints: &ClientEndpoints,
     tenant: &Arc<Tenant>,
@@ -3312,6 +3321,7 @@ async fn dispatch_grants(
     // RFC 8707: what a `resource` may name and what an `aud` may hold.
     let resource_servers = scope.resource_servers();
     let application_roles = scope.application_roles();
+    let managed_groups = asterius_store_pg::PgGroups::new(endpoints.store.pool().clone());
     // One value for every grant: what this request proved possession of. The
     // registration decides which half binds the token (RFC 9449 §6, RFC 8705
     // §3), so no grant handler chooses for itself.
@@ -3322,6 +3332,7 @@ async fn dispatch_grants(
     let authorization_code = AuthorizationCode {
         acr_policy: &acr_policy,
         roles: &application_roles,
+        groups: &managed_groups,
         codes: &codes,
         grants: &grants,
         refresh_tokens: &refresh_tokens,

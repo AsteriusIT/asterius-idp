@@ -1228,6 +1228,7 @@ mod tests {
             backchannel_logout_uri: None,
             backchannel_logout_session_required: false,
             roles_in_id_token: crate::RolesInIdToken::Omitted,
+            managed_groups_claim: crate::ManagedGroupsClaim::Omitted,
         }
     }
 

@@ -115,6 +115,8 @@ pub struct RefreshToken<'a> {
     /// since the authorization is not asserted by the next token minted from
     /// it.
     pub roles: &'a asterius_store_pg::PgApplicationRoles,
+    /// Authoritative managed memberships resolved at issuance.
+    pub groups: &'a asterius_store_pg::PgGroups,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// The trail. Every refresh is recorded, successful or not.
@@ -169,6 +171,7 @@ impl<'a> RefreshToken<'a> {
             users: code.users,
             resource_servers: code.resource_servers,
             roles: code.roles,
+            groups: code.groups,
             signer: code.signer,
             acr_policy: code.acr_policy,
             audit,
@@ -464,7 +467,14 @@ impl RefreshToken<'_> {
                 access_token: access_token.as_str(),
                 // §12.2: no new `nonce`. See `IdTokenParts::nonce`.
                 nonce: None,
-                released: issuance::released_claims(self.users, &narrowed, client, &held).await?,
+                released: issuance::released_claims(
+                    self.users,
+                    self.groups,
+                    &narrowed,
+                    client,
+                    &held,
+                )
+                .await?,
             };
             Some(
                 issuance::sign_id_token(self.signer, tenant, client, parts, self.now)

@@ -97,6 +97,8 @@ pub struct DeviceCode<'a> {
     /// since the authorization is not asserted by the next token minted from
     /// it.
     pub roles: &'a asterius_store_pg::PgApplicationRoles,
+    /// Authoritative managed memberships resolved at issuance.
+    pub groups: &'a asterius_store_pg::PgGroups,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// Whether this tenant offers Grant Management, which is what makes the
@@ -147,6 +149,7 @@ impl<'a> DeviceCode<'a> {
             resource_servers: code.resource_servers,
             users: code.users,
             roles: code.roles,
+            groups: code.groups,
             signer: code.signer,
             acr_policy: code.acr_policy,
             grant_management: code.grant_management,
@@ -326,7 +329,8 @@ impl DeviceCode<'_> {
                 session: &session,
                 access_token: access_token.as_str(),
                 nonce: None,
-                released: issuance::released_claims(self.users, &grant, client, &held).await?,
+                released: issuance::released_claims(self.users, self.groups, &grant, client, &held)
+                    .await?,
             };
             Some(issuance::sign_id_token(self.signer, tenant, client, parts, self.now).await?)
         } else {

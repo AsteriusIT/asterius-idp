@@ -977,6 +977,10 @@ pub const fn path() -> &'static str {
 /// * **`resources`.** The per-client audience allow-list is policy and is not a
 ///   registration metadata field; it is not settable here and `ast-m9c.6` owns
 ///   it. Echoing it would advertise a field a client cannot set.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the explicit registration response prevents metadata fields from leaking implicitly"
+)]
 pub(crate) fn client_information(
     stored: &Client,
     tenant: &Tenant,
@@ -1151,6 +1155,9 @@ pub(crate) fn client_information(
     // when it is on, like every other member whose default is absence.
     if registration.roles_in_id_token.is_issued() {
         object.insert("roles_in_id_token".to_owned(), json!(true));
+    }
+    if registration.managed_groups_claim.is_issued() {
+        object.insert("managed_groups_claim".to_owned(), json!(true));
     }
 
     document

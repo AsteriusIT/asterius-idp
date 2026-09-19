@@ -635,6 +635,24 @@ function Editor({
           <p className="muted">
             A disabled client fails client authentication. Its grants and its audit trail stay.
           </p>
+          <p>
+            <label>
+              <input
+                type="checkbox"
+                name="managed_groups_claim"
+                checked={draft.managed_groups_claim}
+                onChange={(event) =>
+                  onChange({ ...draft, managed_groups_claim: event.target.checked })
+                }
+              />{' '}
+              Release stable managed group IDs to this client
+            </label>
+          </p>
+          <p className="muted">
+            Off by default. New ID tokens and UserInfo responses resolve at most 100 current
+            memberships for this client and return stable <code>group:&lt;uuid&gt;</code> references.
+            Names and directory membership for other clients are never disclosed.
+          </p>
         </fieldset></TabsContent>
 
         <TabsContent value="callbacks"><fieldset disabled={busy || !canWrite}>
