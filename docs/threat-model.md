@@ -1876,6 +1876,25 @@ human owes this table (see the verification note at the top of this file).
 | **Client impersonating the resource owner (§6.7)** | A1 | A `client_id` minted here carries `ClientId::MINTED_PREFIX` (`c.`, `crates/domain/src/ids.rs`), a prefix that cannot occur in either spelling of a `sub` this server issues; `act` names the actor separately from `sub`; the audit trail records the chain in the same order the token does | `crates/server/src/http/token_exchange.rs` (`the_audit_chain_holds_the_actors_the_token_does_in_the_same_order`), the `ClientId` tests in `crates/domain/src/ids.rs` | `ast-lh3.1`, `ast-lh3.9` (closed) | A resource server keying authorisation on `sub` alone still cannot see the agent (T-A1) |
 | **Key compromise** | A1, A2 | Private keys are sealed at rest under a KEK (`crates/store-pg/src/keys.rs`); rotation and purge are operator commands with audit records (`docs/runbooks/kek-rotation.md`); a purge destroys the private half, unpublishes the key and makes this server refuse its signatures; client keys come only from the source that client's own registration named; every grant is individually revocable | `crates/server/tests/rotation.rs`, `crates/server/tests/signing.rs`; `fuzz/fuzz_targets/kek_unwrap.rs` | `ast-7rq`, `ast-7kw` (closed) | A purge does not reach a token a third party has already accepted, and `LocalKek` keeps the KEK on the machine holding the database credentials — both rows in §5 |
 
+### Managed group persistence (`ast-6uqw.9`)
+
+Managed groups are tenant configuration with stable UUID identities. Composite
+foreign keys bind every direct membership to a group and user in the same tenant;
+deleting either parent cascades membership. Group edits and explicit membership
+changes serialize on a tenant/group row lock. Revisions prevent stale renames or
+deletions from overwriting an intervening change. Unique exact names, bounded
+metadata and paginated reads prevent ambiguous names and unbounded responses.
+Display labels reject control and bidi formatting characters and carry no authority.
+
+Migration 0090 deliberately leaves legacy `groups` claims and `groups_of(user)`
+policy evaluation intact. Managed rows grant no policy or token authority until
+`ast-6uqw.12` implements a reviewed cutover: automatically normalizing legacy names,
+unioning both sources, or replacing claims with initially empty memberships could
+silently grant or withdraw access. [The migration contract](groups-migration.md)
+documents reconciliation and rollback requirements. Administrative authorization
+and audit wiring belong to `ast-6uqw.10`; persistence alone does not expose an API.
+Group parser fuzzing and PostgreSQL race/isolation tests enforce these invariants.
+
 ## 5. Known residual risks
 
 A risk is here when somebody decided to accept it. A choice nobody has made yet

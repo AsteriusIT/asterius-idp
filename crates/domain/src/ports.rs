@@ -2070,3 +2070,6 @@ mod tests {
         assert!(clock.now() <= clock.now());
     }
 }
+
+// Managed groups have their own cohesive port and value types.
+pub use crate::groups::GroupDirectory;

@@ -8373,12 +8373,33 @@ mod retention {
         .expect("seed retired subject");
 
         seed_application_roles(pool, tenant, user).await;
+        seed_managed_groups(pool, tenant, user).await;
 
         seed_theme(pool, tenant).await;
         seed_policy(pool, tenant).await;
         seed_ssf_stream(pool, tenant).await;
         seed_ssf_poll_queue(pool, tenant).await;
         seed_ssf_stream_subjects(pool, tenant).await;
+    }
+
+    /// Managed identity configuration must survive retention with its members.
+    async fn seed_managed_groups(pool: &PgPool, tenant: &str, user: uuid::Uuid) {
+        let groups = asterius_store_pg::PgGroups::new(pool.clone());
+        let tenant = TenantId::new(tenant);
+        let metadata = asterius_domain::GroupMetadata::parse("engineering", "Engineering")
+            .expect("valid group metadata");
+        let group = asterius_domain::GroupDirectory::create(&groups, &tenant, &metadata, now())
+            .await
+            .expect("seed managed group");
+        asterius_domain::GroupDirectory::add_member(
+            &groups,
+            &tenant,
+            group.id,
+            asterius_domain::UserId::new(user),
+            now(),
+        )
+        .await
+        .expect("seed group membership");
     }
 
     /// One row in each of the four application-role tables (`ast-095`).
