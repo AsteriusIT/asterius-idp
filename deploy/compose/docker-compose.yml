@@ -104,6 +104,56 @@ services:
     cap_drop:
       - ALL
 
+  demo-a:
+    build:
+      context: ../../examples/sso-demo
+    depends_on:
+      asterius:
+        condition: service_started
+    restart: on-failure
+    environment:
+      APP_NAME: Demo application A
+      BIND: 0.0.0.0
+      PORT: 8080
+      EXTERNAL_URL: https://localhost/demo-a
+      ISSUER: https://localhost/t/admin
+      # Development only: the stack deliberately generates a self-signed
+      # certificate. A deployed BFF must trust its operator's real CA instead.
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    networks:
+      - asterius
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  demo-b:
+    build:
+      context: ../../examples/sso-demo
+    depends_on:
+      asterius:
+        condition: service_started
+    restart: on-failure
+    environment:
+      APP_NAME: Demo application B
+      BIND: 0.0.0.0
+      PORT: 8080
+      EXTERNAL_URL: https://localhost/demo-b
+      ISSUER: https://localhost/t/admin
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    networks:
+      - asterius
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   # The TLS terminator. Its configuration is §8 of
   # docs/deployment/tls-and-proxy.md, deployed unchanged except for the
   # hostnames and certificate paths; see deploy/nginx/nginx.conf.
@@ -115,6 +165,10 @@ services:
       certs:
         condition: service_completed_successfully
       asterius:
+        condition: service_started
+      demo-a:
+        condition: service_started
+      demo-b:
         condition: service_started
     ports:
       # The only two ports this stack publishes. 80 serves one 308 to https and

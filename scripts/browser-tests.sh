@@ -73,8 +73,16 @@ export ASTERIUS_KEK="YXN0ZXJpdXMtZGV2LWtlay1ub3QtYS1zZWNyZXQhISE="
 
 run_dir="$(mktemp -d)"
 server_pid=""
+demo_a_pid=""
+demo_b_pid=""
 
 cleanup() {
+  for demo_pid in "$demo_a_pid" "$demo_b_pid"; do
+    if [ -n "$demo_pid" ] && kill -0 "$demo_pid" 2>/dev/null; then
+      kill "$demo_pid" 2>/dev/null || true
+      wait "$demo_pid" 2>/dev/null || true
+    fi
+  done
   if [ -n "$server_pid" ] && kill -0 "$server_pid" 2>/dev/null; then
     kill "$server_pid" 2>/dev/null || true
     wait "$server_pid" 2>/dev/null || true
@@ -97,7 +105,7 @@ psql_run() {
 
 # --- 1. the database --------------------------------------------------------
 step "database"
-if ! psql_run -c 'select 1' >/dev/null 2>&1; then
+if ! PGCONNECT_TIMEOUT=2 psql_run -c 'select 1' >/dev/null 2>&1; then
   printf 'starting the compose database\n'
   docker compose up -d --wait db
 fi
@@ -206,7 +214,42 @@ psql_run --quiet --no-psqlrc \
   -f - < e2e/fixtures/seed.sql
 printf 'seeded tenant %s and user %s\n' "$WEBAUTHN_TENANT" "$USERNAME"
 
-# --- 6. the sweep -----------------------------------------------------------
+# --- 6. the two-client SSO demonstration -----------------------------------
+step "SSO demonstration"
+DEMO_A_URL="https://localhost:9551"
+DEMO_B_URL="https://localhost:9552"
+(
+  cd examples/sso-demo
+  npm ci --no-audit --no-fund
+)
+(
+  cd examples/sso-demo
+  NODE_TLS_REJECT_UNAUTHORIZED=0 APP_NAME="Demo application A" PORT=9551 \
+    BIND=127.0.0.1 EXTERNAL_URL="$DEMO_A_URL" ISSUER="$BASE_URL" \
+    TLS_CERT="$run_dir/cert.pem" TLS_KEY="$run_dir/key.pem" node demo.mjs
+) >"$run_dir/demo-a.log" 2>&1 &
+demo_a_pid=$!
+(
+  cd examples/sso-demo
+  NODE_TLS_REJECT_UNAUTHORIZED=0 APP_NAME="Demo application B" PORT=9552 \
+    BIND=127.0.0.1 EXTERNAL_URL="$DEMO_B_URL" ISSUER="$BASE_URL" \
+    TLS_CERT="$run_dir/cert.pem" TLS_KEY="$run_dir/key.pem" node demo.mjs
+) >"$run_dir/demo-b.log" 2>&1 &
+demo_b_pid=$!
+for demo_url in "$DEMO_A_URL" "$DEMO_B_URL"; do
+  deadline=$(($(date +%s) + TIMEOUT))
+  until [ "$(curl --silent --insecure --output /dev/null --write-out '%{http_code}' \
+               --max-time 5 "$demo_url/healthz" 2>/dev/null)" = "200" ]; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      printf '%s did not become ready:\n' "$demo_url" >&2
+      cat "$run_dir"/demo-*.log >&2
+      exit 1
+    fi
+    sleep 1
+  done
+done
+
+# --- 7. the sweep -----------------------------------------------------------
 step "playwright"
 cd "$root/e2e"
 npm ci --no-audit --no-fund
@@ -229,4 +272,6 @@ E2E_PASSWORD="$PASSWORD" \
 E2E_ADMIN_BASE_URL="$ADMIN_BASE_URL" \
 E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
 E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+E2E_DEMO_A_URL="$DEMO_A_URL" \
+E2E_DEMO_B_URL="$DEMO_B_URL" \
   npx playwright test "$@"
