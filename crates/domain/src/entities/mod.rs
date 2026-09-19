@@ -40,8 +40,8 @@ pub use authorization_details::{
 };
 pub use client::{
     ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
-    GrantType, JwksSource, RedirectUri, RedirectUriError, RolesInIdToken, SubjectType,
-    TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod,
+    GrantType, JwksSource, ManagedGroupsClaim, RedirectUri, RedirectUriError, RolesInIdToken,
+    SubjectType, TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod,
 };
 pub use email_verification::{
     EMAIL_VERIFICATION_LIFETIME, EMAIL_VERIFICATION_TOKEN_BITS, EmailVerificationToken,

@@ -2,7 +2,8 @@
 //! Persistence alone grants no policy or token authority. See
 //! `docs/groups-migration.md` for the staged compatibility contract.
 
-use std::fmt::Debug;
+use std::collections::BTreeSet;
+use std::fmt::{Debug, Display};
 
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -31,6 +32,12 @@ impl GroupId {
     #[must_use]
     pub const fn as_uuid(self) -> Uuid {
         self.0
+    }
+}
+
+impl Display for GroupId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "group:{}", self.0)
     }
 }
 
@@ -212,6 +219,36 @@ pub trait GroupDirectory: Debug + Send + Sync {
         after: Option<GroupId>,
         limit: u16,
     ) -> Result<Vec<Group>, DomainError>;
+
+    /// Stable and compatible references used for authorization decisions.
+    ///
+    /// Every membership contributes `group:<uuid>`, the current machine name,
+    /// and any previous machine names retained by the adapter. Display names
+    /// never appear here. The stable reference survives renames; aliases keep
+    /// an existing name-based policy working until an administrator migrates
+    /// it. Deleting the group removes every reference with the membership.
+    async fn authorization_references_for_user(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<BTreeSet<String>, DomainError> {
+        let mut after = None;
+        let mut references = BTreeSet::new();
+        loop {
+            let page = self.groups_for_user(tenant, user, after, 200).await?;
+            if page.is_empty() {
+                return Ok(references);
+            }
+            for group in &page {
+                references.insert(group.id.to_string());
+                references.insert(group.metadata.name().as_str().to_owned());
+            }
+            if page.len() < 200 {
+                return Ok(references);
+            }
+            after = page.last().map(|group| group.id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,5 +309,9 @@ mod tests {
         assert_ne!(GroupId::mint(), GroupId::mint());
         let uuid = Uuid::new_v4();
         assert_eq!(GroupId::from_uuid(uuid).as_uuid(), uuid);
+        assert_eq!(
+            GroupId::from_uuid(uuid).to_string(),
+            format!("group:{uuid}")
+        );
     }
 }

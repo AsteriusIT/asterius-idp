@@ -101,6 +101,8 @@ pub struct CibaGrant<'a> {
     pub users: &'a PgUserRepository,
     /// The application roles this token asserts (`ast-095`).
     pub roles: &'a asterius_store_pg::PgApplicationRoles,
+    /// Authoritative managed memberships resolved at issuance.
+    pub groups: &'a asterius_store_pg::PgGroups,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// Where issuances and refusals are recorded.
@@ -148,6 +150,7 @@ impl<'a> CibaGrant<'a> {
             resource_servers: code.resource_servers,
             users: code.users,
             roles: code.roles,
+            groups: code.groups,
             signer: code.signer,
             acr_policy: code.acr_policy,
             audit,
@@ -344,7 +347,8 @@ impl CibaGrant<'_> {
                 session: &session,
                 access_token: access_token.as_str(),
                 nonce: None,
-                released: issuance::released_claims(self.users, &grant, client, &held).await?,
+                released: issuance::released_claims(self.users, self.groups, &grant, client, &held)
+                    .await?,
             };
             Some(issuance::sign_id_token(self.signer, tenant, client, parts, self.now).await?)
         } else {

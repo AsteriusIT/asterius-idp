@@ -93,6 +93,8 @@ pub struct AuthorizationCode<'a> {
     /// since the authorization is not asserted by the next token minted from
     /// it.
     pub roles: &'a asterius_store_pg::PgApplicationRoles,
+    /// Authoritative managed memberships resolved at issuance.
+    pub groups: &'a asterius_store_pg::PgGroups,
     /// Signs both tokens.
     pub signer: &'a dyn Signer,
     /// Whether this tenant offers Grant Management, which is what makes the
@@ -354,7 +356,8 @@ impl AuthorizationCode<'_> {
                 nonce: binding.nonce.as_deref(),
                 // From the grant, never from the request. See
                 // `issuance::released_claims`.
-                released: issuance::released_claims(self.users, &grant, client, &held).await?,
+                released: issuance::released_claims(self.users, self.groups, &grant, client, &held)
+                    .await?,
             };
             Some(issuance::sign_id_token(self.signer, tenant, client, parts, self.now).await?)
         } else {

@@ -355,6 +355,7 @@ pub async fn remember_participant(
 /// the stored `claims` request no longer parses; a storage error otherwise.
 pub async fn released_claims(
     users: &PgUserRepository,
+    groups: &asterius_store_pg::PgGroups,
     grant: &Grant,
     client: &Client,
     held: &asterius_domain::HeldRoles,
@@ -376,6 +377,17 @@ pub async fn released_claims(
         claims: resolved.id_token,
         role_claims: role_claims(&requested, client),
         held: held.clone(),
+        managed_groups: if client.registration.managed_groups_claim.is_issued() {
+            use asterius_domain::GroupDirectory;
+            groups
+                .groups_for_user(&grant.tenant, id, None, 100)
+                .await?
+                .into_iter()
+                .map(|group| group.id.to_string())
+                .collect()
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -396,6 +408,8 @@ pub struct ReleasedToIdToken {
     /// response was minted from, so the two cannot disagree. The builder
     /// narrows it to this client.
     pub held: asterius_domain::HeldRoles,
+    /// Stable managed-group identities, already narrowed to this client.
+    pub managed_groups: Vec<String>,
 }
 
 /// Which role claims an ID token carries (`ast-mqt`).
@@ -846,6 +860,7 @@ pub async fn sign_id_token(
     // allowed to say. An empty set is the default and emits nothing; the
     // builder narrows what it is given to this token's own client.
     builder = builder.with_roles(&released.held, &released.role_claims);
+    builder = builder.with_managed_groups(released.managed_groups);
     let unsigned = builder
         .build()
         .map_err(|e| DomainError::invalid("id_token", e.to_string()))?;

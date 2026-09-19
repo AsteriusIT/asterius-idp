@@ -18,6 +18,7 @@ export interface ClientDocument {
   readonly authorization_details_types: readonly string[];
   /** `ast-mqt`: whether this client's ID tokens carry the role claims. */
   readonly roles_in_id_token: boolean;
+  readonly managed_groups_claim: boolean;
   readonly jwks?: unknown;
   readonly jwks_uri?: string;
   readonly sector_identifier_uri?: string;
@@ -65,6 +66,7 @@ export interface Draft {
   readonly jwks: string;
   readonly status: string;
   readonly roles_in_id_token: boolean;
+  readonly managed_groups_claim: boolean;
 }
 
 /** One URI per line, which is how the textareas hold a list. */
@@ -105,6 +107,7 @@ export function draftOf(document: ClientDocument): Draft {
     jwks: document.jwks === undefined ? '' : JSON.stringify(document.jwks, null, 2),
     status: document.status,
     roles_in_id_token: document.roles_in_id_token === true,
+    managed_groups_claim: document.managed_groups_claim === true,
   };
 }
 
@@ -132,6 +135,7 @@ export function emptyDraft(): Draft {
     jwks: '',
     status: 'active',
     roles_in_id_token: false,
+    managed_groups_claim: false,
   };
 }
 
@@ -164,6 +168,7 @@ export function documentFrom(draft: Draft): Record<string, unknown> {
     subject_type: draft.subject_type,
     status: draft.status,
     roles_in_id_token: draft.roles_in_id_token,
+    managed_groups_claim: draft.managed_groups_claim,
   };
   if (draft.dpop_bound_access_tokens !== null) {
     document.dpop_bound_access_tokens = draft.dpop_bound_access_tokens;

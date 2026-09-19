@@ -154,7 +154,7 @@ impl PgClientRepository {
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
                     backchannel_logout_uri, backchannel_logout_session_required,
-                    roles_in_id_token,
+                    roles_in_id_token, managed_groups_claim,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1 and client_id = $2",
@@ -189,7 +189,7 @@ impl PgClientRepository {
                     backchannel_user_code_parameter,
                     is_agent, agent_owner_user_id, agent_policy,
                     backchannel_logout_uri, backchannel_logout_session_required,
-                    roles_in_id_token,
+                    roles_in_id_token, managed_groups_claim,
                     status, created_at, updated_at
              from clients
              where tenant_id = $1
@@ -259,10 +259,10 @@ impl PgClientRepository {
                                   backchannel_user_code_parameter,
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
-                                  roles_in_id_token)
+                                  roles_in_id_token, managed_groups_claim)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35)
+                     $32, $33, $34, $35, $36)
              on conflict (tenant_id, client_id) do update
              set client_name = excluded.client_name,
                  token_endpoint_auth_method = excluded.token_endpoint_auth_method,
@@ -300,7 +300,8 @@ impl PgClientRepository {
                  backchannel_logout_uri = excluded.backchannel_logout_uri,
                  backchannel_logout_session_required =
                      excluded.backchannel_logout_session_required,
-                 roles_in_id_token = excluded.roles_in_id_token",
+                 roles_in_id_token = excluded.roles_in_id_token,
+                 managed_groups_claim = excluded.managed_groups_claim",
             self.tenant.as_str(),
             client.id.as_str(),
             registration.client_name,
@@ -340,6 +341,7 @@ impl PgClientRepository {
             backchannel_uri,
             backchannel_session_required,
             registration.roles_in_id_token.is_issued(),
+            registration.managed_groups_claim.is_issued(),
         )
         .execute(&self.pool)
         .await
@@ -463,10 +465,10 @@ impl PgClientRepository {
                                   backchannel_user_code_parameter,
                                   is_agent, agent_owner_user_id, agent_policy,
                                   backchannel_logout_uri, backchannel_logout_session_required,
-                                  roles_in_id_token)
+                                  roles_in_id_token, managed_groups_claim)
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
                      $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31,
-                     $32, $33, $34, $35, $36)
+                     $32, $33, $34, $35, $36, $37)
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
                        id_token_signed_response_alg, application_type, subject_type,
@@ -480,7 +482,7 @@ impl PgClientRepository {
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
                        backchannel_logout_uri, backchannel_logout_session_required,
-                       roles_in_id_token,
+                       roles_in_id_token, managed_groups_claim,
                        status, created_at, updated_at",
             tenant.as_str(),
             client.id.as_str(),
@@ -520,6 +522,7 @@ impl PgClientRepository {
             backchannel_uri,
             backchannel_session_required,
             registration.roles_in_id_token.is_issued(),
+            registration.managed_groups_claim.is_issued(),
         )
         .fetch_one(&mut *connection)
         .await
@@ -649,6 +652,10 @@ impl PgClientRepository {
     /// [`DomainError::NotFound`] if there is no such client in this tenant,
     /// [`DomainError::Invalid`] if the entity belongs to another tenant or the
     /// stored row does not validate, or a storage error.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "compile-time checked client metadata columns stay in one atomic update"
+    )]
     pub async fn replace(&self, client: &Client) -> Result<Client, DomainError> {
         if client.tenant != self.tenant {
             return Err(DomainError::invalid(
@@ -663,9 +670,8 @@ impl PgClientRepository {
         let (backchannel_uri, backchannel_session_required) =
             backchannel_logout_columns(registration);
         // `ast-lh3.1`. This statement does not write the agent columns — an
-        // agent profile is policy the tenant attached, exactly like
-        // `resources`, and RFC 7592 §2.2 is the *client* rewriting its own
-        // metadata — so the replacement has to be something the stored profile
+        // agent profile is policy the tenant attached, so the replacement has
+        // to be something the stored profile
         // still permits. Checked before the write and not after: the read-back
         // below applies the same rule, and by then the change would already be
         // committed.
@@ -701,7 +707,8 @@ impl PgClientRepository {
                  backchannel_user_code_parameter = $27,
                  backchannel_logout_uri = $28,
                  backchannel_logout_session_required = $29,
-                 roles_in_id_token = $30
+                 roles_in_id_token = $30,
+                 managed_groups_claim = $31
              where tenant_id = $1 and client_id = $2
              returning client_id, client_name, token_endpoint_auth_method, redirect_uris,
                        post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,
@@ -716,7 +723,7 @@ impl PgClientRepository {
                        backchannel_user_code_parameter,
                        is_agent, agent_owner_user_id, agent_policy,
                        backchannel_logout_uri, backchannel_logout_session_required,
-                       roles_in_id_token,
+                       roles_in_id_token, managed_groups_claim,
                        status, created_at, updated_at",
             self.tenant.as_str(),
             client.id.as_str(),
@@ -750,6 +757,7 @@ impl PgClientRepository {
             backchannel_uri,
             backchannel_session_required,
             registration.roles_in_id_token.is_issued(),
+            registration.managed_groups_claim.is_issued(),
         )
         .fetch_optional(&self.pool)
         .await
@@ -1197,6 +1205,7 @@ struct Row {
     backchannel_logout_uri: Option<String>,
     backchannel_logout_session_required: bool,
     roles_in_id_token: bool,
+    managed_groups_claim: bool,
     is_agent: bool,
     agent_owner_user_id: Option<uuid::Uuid>,
     agent_policy: serde_json::Value,
@@ -1262,6 +1271,7 @@ impl Row {
             backchannel_logout_uri: self.backchannel_logout_uri,
             backchannel_logout_session_required: Some(self.backchannel_logout_session_required),
             roles_in_id_token: Some(self.roles_in_id_token),
+            managed_groups_claim: Some(self.managed_groups_claim),
             ..ClientMetadata::default()
         };
         // RFC 8705 §2.1.2's subject, put back under the one member of the five

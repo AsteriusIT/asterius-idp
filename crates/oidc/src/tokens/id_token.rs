@@ -213,6 +213,7 @@ pub struct IdToken<'a> {
     released: Map<String, Value>,
     roles: HeldRoles,
     role_claims: BTreeSet<RoleClaim>,
+    managed_groups: Vec<String>,
 }
 
 impl<'a> IdToken<'a> {
@@ -273,6 +274,7 @@ impl<'a> IdToken<'a> {
             released: Map::new(),
             roles: HeldRoles::empty(),
             role_claims: BTreeSet::new(),
+            managed_groups: Vec::new(),
         }
     }
 
@@ -344,6 +346,12 @@ impl<'a> IdToken<'a> {
         self
     }
 
+    /// Stable managed groups released for this token's client audience.
+    pub fn with_managed_groups(mut self, groups: Vec<String>) -> Self {
+        self.managed_groups = groups.into_iter().take(100).collect();
+        self
+    }
+
     /// Assembles the claims set.
     ///
     /// # Errors
@@ -375,6 +383,12 @@ impl<'a> IdToken<'a> {
         // `sub` came from a user record.
         let mut claims = Map::new();
         for (name, value) in self.released {
+            // Directory membership is server-resolved. A user claim with the
+            // same spelling is never allowed to shadow it, even when release
+            // is disabled for this client.
+            if name == "group_ids" {
+                continue;
+            }
             if let Some(reserved) = ClaimName::SERVER_ISSUED
                 .iter()
                 .find(|reserved| **reserved == name.as_str())
@@ -393,6 +407,12 @@ impl<'a> IdToken<'a> {
                 return Err(IssuanceError::UnreleasableClaim);
             }
             claims.insert(name, value);
+        }
+        if !self.managed_groups.is_empty() {
+            claims.insert(
+                "group_ids".to_owned(),
+                Value::Array(self.managed_groups.into_iter().map(Value::String).collect()),
+            );
         }
 
         // OIDC Core §2, in the order that section lists them.
@@ -1016,6 +1036,33 @@ mod tests {
         assert_eq!(claims["email"], json!("ada@example.com"));
         // And the server's own claims are still the server's.
         assert_eq!(claims["sub"], json!("SUBJECT-1"));
+    }
+
+    #[test]
+    fn managed_group_ids_override_a_released_shadow_and_are_bounded() {
+        let grant = grant_with(Some(SubjectId::new("SUBJECT-1")));
+        let claimed = grant.claim(now()).expect("a live grant");
+        let mut released = Map::new();
+        released.insert("group_ids".to_owned(), json!(["caller-supplied"]));
+        let groups = (0..=100).map(|index| format!("group:{index}")).collect();
+        let claims = IdToken::new(
+            &issuer(),
+            &claimed,
+            SigningAlgorithm::Es256,
+            authentication(),
+            ACCESS_TOKEN,
+            now(),
+        )
+        .releasing(released)
+        .with_managed_groups(groups)
+        .build()
+        .expect("managed groups are server-issued")
+        .into_claims();
+
+        let values = claims["group_ids"].as_array().expect("group id array");
+        assert_eq!(values.len(), 100);
+        assert_eq!(values[0], json!("group:0"));
+        assert!(!values.contains(&json!("caller-supplied")));
     }
 
     // --- Lifetime and size -------------------------------------------------

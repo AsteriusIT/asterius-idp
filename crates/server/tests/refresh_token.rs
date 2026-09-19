@@ -288,9 +288,11 @@ impl Fixture {
             Arc::clone(&self.kek),
         );
         let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
+        let groups = asterius_store_pg::PgGroups::new(self.store.pool().clone());
         let handler = RefreshToken {
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
+            groups: &groups,
             tokens: &tokens,
             grants: &grants,
             sessions: &sessions,
@@ -476,9 +478,11 @@ impl Fixture {
             Arc::clone(&self.kek),
         );
         let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
+        let groups = asterius_store_pg::PgGroups::new(self.store.pool().clone());
         let handler = AuthorizationCode {
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
+            groups: &groups,
             codes: &codes,
             grants: &grants,
             refresh_tokens: &refresh_tokens,
@@ -530,9 +534,11 @@ impl Fixture {
             Arc::clone(&self.kek),
         );
         let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
+        let groups = asterius_store_pg::PgGroups::new(self.store.pool().clone());
         let handler = RefreshToken {
             acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
+            groups: &groups,
             tokens: &tokens,
             grants: &grants,
             sessions: &sessions,

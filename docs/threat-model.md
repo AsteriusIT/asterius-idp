@@ -1887,11 +1887,10 @@ metadata and paginated reads prevent ambiguous names and unbounded responses.
 Display labels reject control and bidi formatting characters and carry no authority.
 
 Migration 0090 deliberately leaves legacy `groups` claims and `groups_of(user)`
-policy evaluation intact. Managed rows grant no policy or token authority until
-`ast-6uqw.12` implements a reviewed cutover: automatically normalizing legacy names,
-unioning both sources, or replacing claims with initially empty memberships could
-silently grant or withdraw access. [The migration contract](groups-migration.md)
-documents reconciliation and rollback requirements. Administrative authorization
+policy evaluation intact until the reviewed `ast-6uqw.12` cutover. That cutover
+does not normalize or union legacy claims: managed memberships become the sole
+authority after tenant reconciliation. [The migration contract](groups-migration.md)
+documents compatibility and rollback requirements. Administrative authorization
 and audit wiring belong to `ast-6uqw.10`; persistence alone does not expose an API.
 Group parser fuzzing and PostgreSQL race/isolation tests enforce these invariants.
 
@@ -1916,6 +1915,20 @@ accepts the built-in `Role` type, so a group route cannot appoint a tenant or
 deployment administrator. Lists and literal name searches use bounded keyset
 pagination. The existing `group_metadata` fuzz target covers every metadata
 document the API admits.
+
+### Managed groups in policy and claims (`ast-6uqw.12`)
+
+AuthZEN evaluation, search and the console policy bench resolve membership from
+the tenant-scoped managed directory. Request properties and legacy user claims
+cannot add membership. Policies may use `group:<uuid>`; historical machine names
+remain aliases across renames, while display labels never decide access. Group
+deletion cascades aliases and memberships.
+
+Disclosure is an explicit per-client registration choice and is off for existing
+clients. ID tokens and UserInfo emit at most 100 stable identifiers, resolved for
+the grant's own client and current user. They write the server-owned value after
+user claims, preventing shadowing. Membership changes are immediate for new
+decisions and responses; signed tokens remain snapshots until expiry or revocation.
 
 ## 5. Known residual risks
 

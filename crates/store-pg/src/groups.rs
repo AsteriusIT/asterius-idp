@@ -1,5 +1,7 @@
 //! Atomic managed-group persistence. All SQL binds tenant identity explicitly.
 
+use std::collections::BTreeSet;
+
 use asterius_domain::{
     DomainError, Group, GroupDirectory, GroupId, GroupMetadata, TenantId, UserId,
 };
@@ -233,6 +235,14 @@ impl GroupDirectory for PgGroups {
     ) -> Result<Group, DomainError> {
         let mut tx = self.pool.begin().await.map_err(to_domain_error)?;
         lock_revision(&mut tx, tenant, id, Some(expected_revision)).await?;
+        let previous_name: String = sqlx::query_scalar(
+            "select name from managed_groups where tenant_id = $1 and group_id = $2",
+        )
+        .bind(tenant.as_str())
+        .bind(id.as_uuid())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(to_domain_error)?;
         let row = sqlx::query_as::<_, GroupRow>(
             "update managed_groups
             set name = $3, display_name = $4, revision = revision + 1, updated_at = $5
@@ -247,6 +257,19 @@ impl GroupDirectory for PgGroups {
         .fetch_one(&mut *tx)
         .await
         .map_err(to_domain_error)?;
+        if previous_name != metadata.name().as_str() {
+            sqlx::query(
+                "insert into managed_group_aliases (tenant_id, group_id, name, created_at)
+                 values ($1, $2, $3, $4) on conflict do nothing",
+            )
+            .bind(tenant.as_str())
+            .bind(id.as_uuid())
+            .bind(previous_name)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(to_domain_error)?;
+        }
         let group = row.try_into()?;
         tx.commit().await.map_err(to_domain_error)?;
         Ok(group)
@@ -329,6 +352,48 @@ impl GroupDirectory for PgGroups {
             order by g.group_id limit $4")
             .bind(tenant.as_str()).bind(user.as_uuid()).bind(after.map(GroupId::as_uuid)).bind(page_limit(limit)?)
             .fetch_all(&self.pool).await.map_err(to_domain_error)?.into_iter().map(TryInto::try_into).collect()
+    }
+
+    async fn authorization_references_for_user(
+        &self,
+        tenant: &TenantId,
+        user: UserId,
+    ) -> Result<BTreeSet<String>, DomainError> {
+        const MAX_AUTHORITY_GROUPS: usize = 200;
+        let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
+            "select g.group_id, g.name, a.name
+             from group_memberships m
+             join managed_groups g
+               on g.tenant_id = m.tenant_id and g.group_id = m.group_id
+             left join managed_group_aliases a
+               on a.tenant_id = g.tenant_id and a.group_id = g.group_id
+             where m.tenant_id = $1 and m.user_id = $2
+             order by g.group_id, a.name
+             limit $3",
+        )
+        .bind(tenant.as_str())
+        .bind(user.as_uuid())
+        .bind(i64::try_from(MAX_AUTHORITY_GROUPS * 16).unwrap_or(i64::MAX))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+        let mut references = BTreeSet::new();
+        let mut identities = BTreeSet::new();
+        for (id, name, alias) in rows {
+            identities.insert(id);
+            if identities.len() > MAX_AUTHORITY_GROUPS {
+                return Err(DomainError::invalid(
+                    "groups",
+                    "a subject may have at most 200 authorization groups",
+                ));
+            }
+            references.insert(GroupId::from_uuid(id).to_string());
+            references.insert(name);
+            if let Some(alias) = alias {
+                references.insert(alias);
+            }
+        }
+        Ok(references)
     }
 }
 

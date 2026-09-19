@@ -23,6 +23,7 @@ function client(overrides: Partial<ClientDocument> = {}): ClientDocument {
     resources: [],
     authorization_details_types: [],
     roles_in_id_token: false,
+    managed_groups_claim: false,
     ...overrides,
   };
 }
@@ -49,6 +50,13 @@ test('creates a safe new-client payload with optional algorithms unset', () => {
   assert.equal('userinfo_signed_response_alg' in payload, false);
   assert.equal('request_object_signing_alg' in payload, false);
   assert.equal(payload.tls_client_certificate_bound_access_tokens, false);
+  assert.equal(payload.managed_groups_claim, false);
+});
+
+test('round-trips the managed group release opt-in', () => {
+  const enabled = draftOf(client({ managed_groups_claim: true }));
+  assert.equal(enabled.managed_groups_claim, true);
+  assert.equal(documentFrom(enabled).managed_groups_claim, true);
 });
 
 test('editing an existing client round-trips known and unknown security metadata', () => {
