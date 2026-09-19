@@ -2422,13 +2422,22 @@ Track; token exchange (E11_02) would host it.
 
 *task · P4 · labels: track, spec:openid-provider-commands, spec:ipsie, status:draft*
 
-**Spec:** OpenID Provider Commands 1.0 (draft); IPSIE Common Requirements / SL1 profile (drafts); Enterprise Extensions (draft).
+**Spec:** OpenID Provider Commands 1.0 draft 02; IPSIE Common Requirements and
+SL1 OpenID Connect profiles (working documents predating an Implementer's Draft);
+OpenID Connect Enterprise Extensions 1.0 draft 01. Status checked 2026-09-19.
 
 Align where free (IPSIE SL1 ≈ OIDC + SSF/CAEP which we have); no dedicated implementation.
+
+The dated [IPSIE readiness snapshot](ipsie-readiness.md) records overlaps,
+intentional conflicts and compatibility seams. Provider Commands remains
+distinct from SSF/CAEP: the latter carries asynchronous security events and is
+not a command endpoint or an account-provisioning protocol.
 
 **Acceptance tests**
 
 - Gap list vs IPSIE SL1 maintained in docs once IPSIE is an Implementer's Draft.
+  Until then the readiness snapshot is provisional and no conformance is
+  claimed.
 
 **Depends on:** —
 
