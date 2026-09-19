@@ -154,6 +154,12 @@ pub struct LoginPage<'a> {
     pub text: &'a Catalog,
     /// The tenant's display name.
     pub tenant_name: &'a str,
+    /// Whether this authentication is strengthening an existing session.
+    ///
+    /// The same credential controls remain available, but the heading explains
+    /// why the person is being asked again and a no-script cancellation form
+    /// lets them return an `access_denied` response to the client.
+    pub step_up: bool,
     /// Where the form posts to, and where a passkey sign-in navigates on
     /// success — it is the same interaction, at whatever stage it has reached.
     pub action: &'a str,
@@ -1356,6 +1362,7 @@ mod tests {
             let page = LoginPage {
                 text: &ENGLISH,
                 tenant_name: hostile,
+                step_up: false,
                 action: "/interaction/x/login",
                 passkey_options_action: hostile,
                 passkey_finish_action: hostile,
@@ -1545,6 +1552,7 @@ mod tests {
         let html = LoginPage {
             text: &ENGLISH,
             tenant_name: "Demo",
+            step_up: false,
             action: "/interaction/abc",
             passkey_options_action: "/interaction/abc/passkey/options",
             passkey_finish_action: "/interaction/abc/passkey/finish",
@@ -1588,6 +1596,7 @@ mod tests {
         let html = LoginPage {
             text: &ENGLISH,
             tenant_name: "Demo",
+            step_up: false,
             action: "/interaction/abc",
             passkey_options_action: "/interaction/abc/passkey/options",
             passkey_finish_action: "/interaction/abc/passkey/finish",
@@ -1639,6 +1648,7 @@ mod tests {
         let html = LoginPage {
             text: &ENGLISH,
             tenant_name: "Demo",
+            step_up: false,
             action: "/interaction/abc",
             passkey_options_action: "/interaction/abc/passkey/options",
             passkey_finish_action: "/interaction/abc/passkey/finish",
@@ -1891,6 +1901,7 @@ mod tests {
             LoginPage {
                 text: &ENGLISH,
                 tenant_name: "Demo",
+                step_up: false,
                 action: "/x",
                 passkey_options_action: "/x/passkey/options",
                 passkey_finish_action: "/x/passkey/finish",
@@ -2620,6 +2631,7 @@ mod tests {
             render(&LoginPage {
                 text: &ENGLISH,
                 tenant_name: "Demo",
+                step_up: false,
                 action: "/interaction/abc/login",
                 passkey_options_action: "/interaction/abc/passkeys/options",
                 passkey_finish_action: "/interaction/abc/passkeys/finish",

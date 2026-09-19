@@ -144,6 +144,7 @@ fn login(text: &Catalog) -> String {
     render(&LoginPage {
         text,
         tenant_name: TENANT,
+        step_up: false,
         action: "/interaction/abc/login",
         passkey_options_action: "/interaction/abc/passkeys/options",
         passkey_finish_action: "/interaction/abc/passkeys/finish",

@@ -197,6 +197,18 @@ catalogue! {
             fr: "La connexion par clé d'accès nécessite JavaScript, car il s'agit d'une API du \
                  navigateur qu'une page doit appeler. JavaScript est désactivé ici : utilisez \
                  votre identifiant et votre mot de passe.";
+        StepUpTitle => step_up_title, "step-up.title",
+            en: "Verify it is you",
+            fr: "Confirmez votre identité";
+        StepUpExplanation => step_up_explanation, "step-up.explanation",
+            en: "This request needs stronger authentication. Sign in again to continue.",
+            fr: "Cette demande nécessite une authentification renforcée. Reconnectez-vous pour continuer.";
+        StepUpCancel => step_up_cancel, "step-up.cancel",
+            en: "Cancel and return",
+            fr: "Annuler et revenir";
+        StepUpInsufficient => step_up_insufficient, "step-up.insufficient",
+            en: "That sign-in method was not strong enough for this request. Use a passkey or cancel.",
+            fr: "Cette méthode de connexion n'est pas assez forte pour cette demande. Utilisez une clé d'accès ou annulez.";
 
         // ---- consent ------------------------------------------------------
         // Prefix rather than a filled sentence, because the host is the part of

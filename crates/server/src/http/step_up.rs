@@ -69,6 +69,21 @@ pub(crate) struct Established {
     pub id: SessionId,
     /// The digest, which is what the interaction records.
     pub digest: String,
+    /// Whether the resulting ACR is one of the essential values requested.
+    /// False only for an initial login that must continue into step-up.
+    pub essential_satisfied: bool,
+}
+
+/// Result of turning a verified credential into a session.
+///
+/// `Insufficient` is deliberately not an error: the credential was valid, but
+/// the methods proved by it did not reach any essential ACR the client asked
+/// for. Crucially, no session has been created or rotated in that case.
+pub(crate) enum Establishment {
+    /// The authentication met the request and was persisted.
+    Established(Established),
+    /// The authentication was valid but not strong enough for the request.
+    Insufficient,
 }
 
 /// Records an authentication: a new session, or a step-up onto the one the
@@ -94,7 +109,7 @@ pub(crate) async fn establish(
     proved: Vec<AuthenticationMethod>,
     requested: &Requirements,
     now: OffsetDateTime,
-) -> Result<Established, DomainError> {
+) -> Result<Establishment, DomainError> {
     if stage == Stage::StepUp
         && let Some(digest) = existing
         && let Some(session) = context.sessions.find(digest).await?
@@ -105,18 +120,29 @@ pub(crate) async fn establish(
         let acr = context
             .acr
             .assign(&methods, &requested.essential_acr, &requested.acr_values);
+        if !essential_satisfied(acr.as_deref(), requested) {
+            return Ok(Establishment::Insufficient);
+        }
         let id = SessionId::generate();
         context
             .sessions
             .rotate(digest, &id.digest(), &methods, acr.as_deref(), now)
             .await?;
         let digest = id.digest();
-        return Ok(Established { id, digest });
+        return Ok(Establishment::Established(Established {
+            id,
+            digest,
+            essential_satisfied: true,
+        }));
     }
 
     let acr = context
         .acr
         .assign(&proved, &requested.essential_acr, &requested.acr_values);
+    let essential_satisfied = essential_satisfied(acr.as_deref(), requested);
+    if stage == Stage::StepUp && !essential_satisfied {
+        return Ok(Establishment::Insufficient);
+    }
     let id = SessionId::generate();
     let mut session = Session::begin(
         context.tenant.clone(),
@@ -128,10 +154,18 @@ pub(crate) async fn establish(
     );
     session.acr = acr;
     context.sessions.begin(&session).await?;
-    Ok(Established {
+    Ok(Establishment::Established(Established {
         id,
         digest: session.id_digest,
-    })
+        essential_satisfied,
+    }))
+}
+
+/// OIDC Core §5.5.1.1: an essential ACR is complete only when the value that
+/// will be written into the ID token is one of the values the client named.
+fn essential_satisfied(acr: Option<&str>, requested: &Requirements) -> bool {
+    requested.essential_acr.is_empty()
+        || acr.is_some_and(|value| requested.essential_acr.iter().any(|asked| asked == value))
 }
 
 /// Everything the person has now done, in the order it first happened.

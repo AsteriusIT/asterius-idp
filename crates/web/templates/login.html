@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ text.login_title() }} — {{ tenant_name }}{% endblock %}
+{% block title %}{% if step_up %}{{ text.step_up_title() }}{% else %}{{ text.login_title() }}{% endif %} — {{ tenant_name }}{% endblock %}
 {% block content %}
 {# The second page in this tree that runs script, and the reason
    `crates/web/src/source_audit.rs` carries a named exemption for it:
@@ -24,7 +24,12 @@
    itself and take the focus. See `error_summary.html`. #}
 {% include "error_summary.html" %}
 
+{% if step_up %}
+<h2>{{ text.step_up_title() }}</h2>
+<p>{{ text.step_up_explanation() }}</p>
+{% else %}
 <h2>{{ text.login_title() }}</h2>
+{% endif %}
 
 {# The one accent-coloured control on the page, and it is the phishing-resistant
    one (ast-9li): a passkey is what this server would rather a person used, so
@@ -68,6 +73,16 @@
    here. #}
 <div class="actions"><button type="submit">{{ text.login_submit() }}</button></div>
 </form>
+
+{% if step_up %}
+{# Cancellation is an ordinary synchronised POST. It must work when scripts do
+   not: refusing stronger authentication is part of the protocol flow, not a
+   browser enhancement. #}
+<form method="post" action="{{ action }}">
+<input type="hidden" name="csrf" value="{{ csrf }}">
+<div class="actions"><button class="secondary" type="submit" name="decision" value="cancel">{{ text.step_up_cancel() }}</button></div>
+</form>
+{% endif %}
 
 {# ast-ndk.4, on the maquette the owner validated (ast-9li): the way back into
    an account, under the form that needs it. It sits outside the form so it is

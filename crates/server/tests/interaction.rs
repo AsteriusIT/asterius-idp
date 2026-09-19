@@ -208,13 +208,16 @@ impl InteractionRepository for FakeStore {
         &self,
         digest: &str,
         state: &Value,
-        _session: Option<&str>,
+        session: Option<&str>,
         _now: OffsetDateTime,
     ) -> Result<(), DomainError> {
         let mut held = self.record.lock().expect("lock");
         match held.as_mut() {
             Some((d, record)) if d == digest => {
                 record.state = state.clone();
+                if let Some(session) = session {
+                    record.session = Some(session.to_owned());
+                }
                 Ok(())
             }
             _ => Err(DomainError::NotFound),
@@ -293,12 +296,21 @@ impl SessionRepository for FakeSessions {
     }
     async fn rotate(
         &self,
-        _o: &str,
-        _n: &str,
-        _m: &[AuthenticationMethod],
-        _acr: Option<&str>,
-        _at: OffsetDateTime,
+        old: &str,
+        new: &str,
+        methods: &[AuthenticationMethod],
+        acr: Option<&str>,
+        authenticated_at: OffsetDateTime,
     ) -> Result<(), DomainError> {
+        let mut held = self.0.lock().expect("lock");
+        let session = held
+            .iter_mut()
+            .find(|session| session.id_digest == old)
+            .ok_or(DomainError::NotFound)?;
+        session.id_digest = new.to_owned();
+        session.amr = methods.to_vec();
+        session.acr = acr.map(ToOwned::to_owned);
+        session.authenticated_at = authenticated_at;
         Ok(())
     }
     async fn revoke(
@@ -927,6 +939,41 @@ async fn a_matching_path_and_cookie_render_the_login_page() {
     assert!(html.contains("Demo"), "{html}");
 }
 
+/// The step-up is its own understandable page, while retaining the ordinary
+/// password form and a synchronised cancellation form when scripts are off.
+#[tokio::test]
+async fn a_step_up_page_is_usable_without_javascript() {
+    let id = InteractionId::generate();
+    let store = FakeStore::with(&id.digest(), serde_json::json!({"stage": "step_up"}));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    let response = show(
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysSucceeds),
+            &sessions,
+            &issued,
+        ),
+        id.expose(),
+        None,
+        &cookie_header(id.expose()),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_of(response).await;
+    assert!(html.contains("Verify it is you"), "{html}");
+    assert!(html.contains(r#"name="password""#), "{html}");
+    assert!(html.contains(r#"name="decision" value="cancel""#), "{html}");
+    assert_eq!(html.matches(r#"name="csrf""#).count(), 2, "{html}");
+}
+
 #[tokio::test]
 async fn a_url_without_the_cookie_does_not_render_a_form() {
     let id = InteractionId::generate();
@@ -1054,6 +1101,272 @@ async fn a_submission_without_the_issued_token_is_forbidden() {
             "accepted a submission with body {body:?}"
         );
     }
+}
+
+/// Cancellation is state-changing too: knowing the interaction cookie is not
+/// enough to deny the client's authorization request.
+#[tokio::test]
+async fn a_step_up_cancellation_requires_its_csrf_token() {
+    let id = InteractionId::generate();
+    let mut state = StoredState {
+        stage: asterius_web::interaction::Stage::StepUp,
+        ..StoredState::default()
+    };
+    let _token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    let response = submit(
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysSucceeds),
+            &sessions,
+            &issued,
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from("csrf=forged&decision=cancel"),
+        OffsetDateTime::now_utc(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(!store.was_completed(&id.digest()));
+}
+
+/// Refusing stronger authentication returns control to the relying party and
+/// leaves the session being stepped up untouched.
+#[tokio::test]
+async fn cancelling_a_step_up_returns_access_denied_without_changing_the_session() {
+    let now = OffsetDateTime::now_utc();
+    let id = InteractionId::generate();
+    let mut state = StoredState {
+        stage: asterius_web::interaction::Stage::StepUp,
+        ..StoredState::default()
+    };
+    let token = state.issue_csrf();
+    let existing = "existing-session";
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"))
+        .signed_in(existing);
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::holding(existing, uuid::Uuid::from_u128(1), now);
+    let before = sessions.0.lock().expect("lock")[0].clone();
+    let issued = Issued::default();
+
+    let response = submit(
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysSucceeds),
+            &sessions,
+            &issued,
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!("csrf={}&decision=cancel", token.expose())),
+        now,
+    )
+    .await;
+
+    assert_eq!(response.status().as_u16(), SEE_OTHER);
+    assert!(
+        response.headers()[header::LOCATION]
+            .to_str()
+            .expect("location")
+            .contains("error=access_denied")
+    );
+    assert!(store.was_completed(&id.digest()));
+    assert_eq!(sessions.0.lock().expect("lock")[0], before);
+}
+
+/// A credential may be valid without meeting the client's essential ACR. It
+/// must not rotate or raise the session, and the interaction remains at the
+/// step-up so the person can choose a stronger method.
+#[tokio::test]
+async fn a_too_weak_password_does_not_raise_the_session_assurance() {
+    let now = OffsetDateTime::now_utc();
+    let id = InteractionId::generate();
+    let mut state = StoredState {
+        stage: asterius_web::interaction::Stage::StepUp,
+        ..StoredState::default()
+    };
+    let token = state.issue_csrf();
+    let existing = "existing-session";
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"))
+        .signed_in(existing);
+    store.with_parameters(|parameters| {
+        parameters["claims"] = essential_acr(asterius_domain::acr::PASSKEY_USER_VERIFIED);
+    });
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::holding(existing, uuid::Uuid::from_u128(1), now);
+    let before = sessions.0.lock().expect("lock")[0].clone();
+    let issued = Issued::default();
+
+    let response = submit(
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysSucceeds),
+            &sessions,
+            &issued,
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=hunter2",
+            token.expose()
+        )),
+        now,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(store.state().expect("present")["stage"], "step_up");
+    assert_eq!(sessions.0.lock().expect("lock")[0], before);
+    assert!(
+        !response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|value| {
+                value
+                    .to_str()
+                    .is_ok_and(|value| value.starts_with("__Host-asterius_session="))
+            })
+    );
+    assert!(body_of(response).await.contains("not strong enough"));
+}
+
+/// When the credential does meet the requested class, the same server-rendered
+/// form rotates the existing session and resumes at consent.
+#[tokio::test]
+async fn a_successful_password_step_up_rotates_and_resumes_the_interaction() {
+    let now = OffsetDateTime::now_utc();
+    let id = InteractionId::generate();
+    let mut state = StoredState {
+        stage: asterius_web::interaction::Stage::StepUp,
+        ..StoredState::default()
+    };
+    let token = state.issue_csrf();
+    let existing = "existing-session";
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"))
+        .signed_in(existing);
+    store.with_parameters(|parameters| {
+        parameters["claims"] = essential_acr(asterius_domain::acr::PASSWORD);
+    });
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::holding(existing, uuid::Uuid::from_u128(1), now);
+    let issued = Issued::default();
+
+    let response = submit(
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysSucceeds),
+            &sessions,
+            &issued,
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=hunter2",
+            token.expose()
+        )),
+        now,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(store.state().expect("present")["stage"], "consent");
+    let held = sessions.0.lock().expect("lock");
+    assert_eq!(held.len(), 1);
+    assert_ne!(held[0].id_digest, existing);
+    assert_eq!(held[0].acr.as_deref(), Some(asterius_domain::acr::PASSWORD));
+    let rotated = held[0].id_digest.clone();
+    drop(held);
+    let attached = store
+        .record
+        .lock()
+        .expect("lock")
+        .as_ref()
+        .and_then(|(_, record)| record.session.clone());
+    assert_eq!(attached.as_deref(), Some(rotated.as_str()));
+    assert!(
+        response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|value| {
+                value
+                    .to_str()
+                    .is_ok_and(|value| value.starts_with("__Host-asterius_session="))
+            })
+    );
+}
+
+/// A first authentication that is valid but below an essential ACR becomes
+/// the base session for a real step-up instead of being sent to consent.
+#[tokio::test]
+async fn an_initial_login_below_the_required_acr_continues_at_step_up() {
+    let now = OffsetDateTime::now_utc();
+    let id = InteractionId::generate();
+    let mut state = StoredState::default();
+    let token = state.issue_csrf();
+    let store = FakeStore::with(&id.digest(), serde_json::to_value(&state).expect("json"));
+    store.with_parameters(|parameters| {
+        parameters["claims"] = essential_acr(asterius_domain::acr::PASSKEY_USER_VERIFIED);
+    });
+    let tenant = tenant();
+    let nonce = Nonce::generate();
+    let sessions = FakeSessions::default();
+    let issued = Issued::default();
+
+    let response = submit(
+        context(
+            &tenant,
+            &store,
+            &nonce,
+            Some(&AlwaysSucceeds),
+            &sessions,
+            &issued,
+        ),
+        id.expose(),
+        &cookie_header(id.expose()),
+        &Bytes::from(format!(
+            "csrf={}&username=ada&password=hunter2",
+            token.expose()
+        )),
+        now,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(store.state().expect("present")["stage"], "step_up");
+    let html = body_of(response).await;
+    assert!(html.contains("Verify it is you"), "{html}");
+    assert!(!html.contains("Allow access?"), "{html}");
+    let held = sessions.0.lock().expect("lock");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].acr.as_deref(), Some(asterius_domain::acr::PASSWORD));
+}
+
+fn essential_acr(value: &str) -> Value {
+    asterius_oidc::claims::ClaimsRequest::parse(&format!(
+        r#"{{"id_token":{{"acr":{{"essential":true,"values":["{value}"]}}}}}}"#
+    ))
+    .expect("an essential ACR claim")
+    .to_json()
 }
 
 #[tokio::test]
