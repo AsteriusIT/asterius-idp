@@ -2394,7 +2394,7 @@ E06_06 stores each value with its source and verification time in a JSONB claim 
 
 *task · P4 · labels: track, spec:oid4vc, status:final*
 
-**Spec:** OpenID for Verifiable Credential Issuance 1.0 / Verifiable Presentations 1.0 (Final), HAIP.
+**Spec:** OpenID for Verifiable Credential Issuance 1.0, OpenID for Verifiable Presentations 1.0, and OpenID4VC High Assurance Interoperability Profile 1.0 (Final).
 
 No implementation; issuer-agnostic claims model is the only hook.
 
