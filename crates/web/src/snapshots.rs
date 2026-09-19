@@ -46,9 +46,9 @@ use crate::pages::{
     AccountPage, AccountPasswordPage, AccountSessionsPage, ApprovalLine, ApprovalsPage,
     ConsentPage, DelegationLine, DetailLine, DeviceConfirmationPage, DeviceOutcomePage, DevicePage,
     EmailVerificationPage, ErrorPage, FormPostPage, GrantLine, GrantsPage, LoggedOutPage,
-    LoginPage, LogoutConfirmationPage, NewPasswordPage, PasskeyLine, PasskeyPage, PasskeysPage,
-    NonceAttribute, PasswordResetRequestPage, PasswordResetSentPage, RegistrationPage,
-    ResponseField, ScopeLine, SessionLine, nonce_attribute, render,
+    LoginPage, LogoutConfirmationPage, NewPasswordPage, NonceAttribute, PasskeyLine, PasskeyPage,
+    PasskeysPage, PasswordResetRequestPage, PasswordResetSentPage, RegistrationPage, ResponseField,
+    ScopeLine, SessionLine, nonce_attribute, render,
 };
 use asterius_domain::Locale;
 use std::path::{Path, PathBuf};
