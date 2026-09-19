@@ -146,8 +146,8 @@ pub async fn authorize(
 
     // `peek`, not `consume`. FAPI 2.0 SP §5.3.2.2 Note 3 puts one-time use at
     // the *completion* of authorization, not at page load: a user who reloads
-    // before deciding has done nothing wrong. The interaction's own
-    // one-per-request guard is what stops this being reusable.
+    // before deciding has done nothing wrong. A later arrival replaces the
+    // unfinished browser interaction; completion is what spends the request.
     let stored = match context.requests.peek(&digest, now).await {
         Ok(Some(stored)) => stored,
         // Unknown, expired and consumed are one answer. A browser that could
@@ -238,9 +238,12 @@ pub async fn authorize(
         .begin_interaction(&digest, &id.digest(), now)
         .await
     {
-        // Either the request went away between the peek and here, or it
-        // already has an interaction — a second `/authorize` on one
-        // `request_uri` is a replay. Both render the same page.
+        // The request went away between the peek and here, was completed by a
+        // racing interaction, or the fresh interaction id collided. All three
+        // render the same page. A prior unfinished interaction is not an
+        // error: the store replaces it so URL preloaders cannot consume the
+        // `request_uri` before the real browser arrives (FAPI 2.0 SP
+        // §5.3.2.2 Note 3).
         tracing::warn!(%error, tenant = %context.tenant.id, "cannot begin an interaction");
         return error_page(&context, StatusCode::BAD_REQUEST);
     }
