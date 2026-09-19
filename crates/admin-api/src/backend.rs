@@ -23,7 +23,7 @@ use asterius_domain::ports::{
 };
 use asterius_domain::{
     AuditSink, Capabilities, DomainError, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role,
-    Session, Tenant, TenantId, UserId,
+    Session, Tenant, TenantId, TenantSettings, UserId,
 };
 use std::sync::Arc;
 
@@ -169,6 +169,14 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// The deployment's tenant repository: `ProvisionedTenants`, never the
     /// bare adapter. See the module documentation.
     fn tenants(&self) -> Arc<dyn TenantRepository>;
+
+    /// Every tenant's settings, fetched as one deployment-wide read.
+    ///
+    /// This is the list-side companion to [`Self::tenant_settings`].  Keeping
+    /// it on the deployment port lets `GET /tenants` include the feature
+    /// summary the console needs without issuing one repository call per row.
+    /// Implementations must return at most one entry per tenant.
+    async fn tenant_settings_list(&self) -> Result<Vec<(TenantId, TenantSettings)>, DomainError>;
 
     /// The per-tenant settings document: feature flags and lifetimes.
     ///

@@ -537,6 +537,14 @@ impl Handling<'_> {
             .list()
             .await
             .map_err(|error| AdminError::from_storage("tenants.list", &error))?;
+        let settings: std::collections::BTreeMap<_, _> = self
+            .state
+            .backend
+            .tenant_settings_list()
+            .await
+            .map_err(|error| AdminError::from_storage("tenants.list", &error))?
+            .into_iter()
+            .collect();
 
         // `TenantRepository::list` is ordered by id and returns every row:
         // tenants number in the tens (see `crate::tenancy`'s snapshot), so the
@@ -553,7 +561,14 @@ impl Handling<'_> {
                     .is_some_and(|cursor| tenant.id.as_str() <= cursor.key())
             })
             .take(request.limit + 1)
-            .map(summarise)
+            .map(|tenant| {
+                summarise_listing(
+                    tenant,
+                    settings
+                        .get(&tenant.id)
+                        .unwrap_or(&TenantSettings::default()),
+                )
+            })
             .collect();
 
         let page = Page::from_overfetched(rows, request.limit, |row| {
@@ -3503,6 +3518,21 @@ fn summarise(tenant: &Tenant) -> serde_json::Value {
     })
 }
 
+/// A tenant row in the deployment listing, including the settings fragment
+/// the directory renders. The full settings document keeps its separate route;
+/// this is only the small summary needed by every row.
+fn summarise_listing(tenant: &Tenant, settings: &TenantSettings) -> serde_json::Value {
+    let mut row = summarise(tenant);
+    row["disabled_features"] = serde_json::json!(
+        settings
+            .disabled_features()
+            .iter()
+            .map(|feature| feature.as_str())
+            .collect::<Vec<_>>()
+    );
+    row
+}
+
 /// The API's own origin, from the tenant's issuer.
 ///
 /// From the issuer and never from a `Host` header: a caller who can choose the
@@ -5188,6 +5218,25 @@ mod tests {
 
         fn tenants(&self) -> Arc<dyn TenantRepository> {
             Arc::new(self.clone())
+        }
+
+        async fn tenant_settings_list(
+            &self,
+        ) -> Result<Vec<(TenantId, TenantSettings)>, DomainError> {
+            let tenants = self.0.tenants.lock().expect("an uncontended lock");
+            let settings = self.0.settings.lock().expect("an uncontended lock");
+            Ok(tenants
+                .iter()
+                .map(|tenant| {
+                    (
+                        tenant.id.clone(),
+                        settings
+                            .get(tenant.id.as_str())
+                            .cloned()
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect())
         }
 
         fn tenant_settings(&self) -> Arc<dyn asterius_domain::ports::TenantSettingsRepository> {
@@ -8662,6 +8711,48 @@ mod tests {
         let second = body_of(second).await;
         assert_eq!(first["items"][0]["tenant_id"], "acme");
         assert_eq!(second["items"][0]["tenant_id"], "asterius-admin");
+    }
+
+    /// The directory row carries the small settings fragment its feature
+    /// column needs. This is one batch backend read for the listing, rather
+    /// than one settings request for every row the React screen receives.
+    #[tokio::test]
+    async fn a_listing_carries_each_tenants_disabled_features() {
+        // Arrange
+        let world = World::new().routed_at("asterius-admin");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+        let settings = TenantSettings::validated(
+            std::collections::BTreeSet::from([Feature::Mtls]),
+            time::Duration::seconds(60),
+            time::Duration::seconds(300),
+        )
+        .expect("profile-compliant settings");
+        world
+            .handle
+            .0
+            .settings
+            .lock()
+            .expect("an uncontended lock")
+            .insert("acme".to_owned(), settings);
+
+        // Act
+        let document = body_of(world.get(&crate::TENANTS_LIST, &cookie).await).await;
+
+        // Assert
+        let acme = document["items"]
+            .as_array()
+            .expect("a page")
+            .iter()
+            .find(|row| row["tenant_id"] == "acme")
+            .expect("the acme row");
+        assert_eq!(acme["disabled_features"], serde_json::json!(["mtls"]));
+        assert!(
+            document["items"]
+                .as_array()
+                .expect("a page")
+                .iter()
+                .all(|row| row.get("disabled_features").is_some(),)
+        );
     }
 
     #[tokio::test]

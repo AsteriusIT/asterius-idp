@@ -1516,6 +1516,14 @@ impl AdminBackend for Deployment {
         Arc::clone(&self.tenants)
     }
 
+    async fn tenant_settings_list(
+        &self,
+    ) -> Result<Vec<(TenantId, asterius_domain::TenantSettings)>, DomainError> {
+        PgTenantSettings::new(self.store.pool().clone())
+            .list()
+            .await
+    }
+
     fn tenant_settings(&self) -> Arc<dyn TenantSettingsRepository> {
         Arc::new(PgTenantSettings::new(self.store.pool().clone()))
     }
