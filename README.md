@@ -64,8 +64,10 @@ the workspace manifest and inherited with `[lints] workspace = true`.
 | Consent lifecycle | Grant Management for OAuth 2.0 | Implementer's Draft — behind a feature flag |
 | Tracked, not implemented | FAPI 2.0 Message Signing | Final |
 | Tracked, not implemented | OpenID for Verifiable Credential Issuance 1.0, OpenID for Verifiable Presentations 1.0, OpenID4VC High Assurance Interoperability Profile 1.0 | Final |
-| Tracked, not implemented | Client ID Metadata Documents, Identity Assertion Authorization Grant, Provider Commands, IPSIE | Drafts |
+| Tracked, not implemented | OpenID Connect Key Binding 1.0; Advanced Syntax for Claims 1.0 | Implementer's Draft |
 | Tracked, not implemented | Native SSO for Mobile Apps | Implementer's Draft 2 |
+| Tracked, not implemented | Client ID Metadata Documents, Identity Assertion Authorization Grant, Provider Commands, IPSIE | Drafts |
+| Tracked, not implemented | OpenID Connect Ephemeral Subject Identifier 1.0; Claims Aggregation 1.0 | Drafts |
 
 **Deliberately out of scope for v1:** SAML, LDAP, verifiable credentials (OID4VCI, OID4VP and HAIP), OpenID Federation, Identity Assurance. The claims model is issuer-agnostic so these can be added later without a schema rewrite; no credential issuer, wallet or verifier protocol surface is exposed in v1.
 

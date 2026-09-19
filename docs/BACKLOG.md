@@ -2466,9 +2466,16 @@ not a command endpoint or an account-provisioning protocol.
 
 *task · P4 · labels: track, status:draft*
 
-**Spec:** OpenID Connect drafts: Ephemeral Subject Identifier, Key Binding, Advanced Syntax for Claims, Claims Aggregation.
+**Spec:** OpenID Connect Ephemeral Subject Identifier 1.0 (Draft 03, in the
+Final Specification vote ending 30 September 2026); OpenID Connect Key Binding
+1.0 (Implementer's Draft 1); OpenID Connect Advanced Syntax for Claims 1.0
+(Implementer's Draft 1); OpenID Connect Claims Aggregation 1.0 (Draft 03).
 
-Keep `sub` generation and claims model pluggable; nothing else.
+Keep `sub` generation and claims storage pluggable; nothing else. The existing
+boundary is sufficient: callers resolve opaque `SubjectId` values through the
+`SubjectResolver` port, while `ClaimSet` stores arbitrary JSON claim values with
+their provenance. Do not add the drafts' metadata, registration parameters,
+request syntax, key-binding claims or aggregation flows in v1.
 
 **Acceptance tests**
 
