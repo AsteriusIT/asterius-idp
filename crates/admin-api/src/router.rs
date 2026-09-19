@@ -5791,7 +5791,9 @@ mod tests {
             // call.
             crate::CLIENT_CREATE_ID | crate::CLIENT_UPDATE_ID => valid_registration(),
             crate::RESOURCE_SERVER_UPDATE_ID => serde_json::json!({
-                "scopes": ["accounts:read", "accounts:write"]
+                "scopes": ["accounts:read", "accounts:write"],
+                "default_token_lifetime_seconds": 300,
+                "introspection_clients": [SEEDED_CLIENT_ID]
             }),
             // A label is the one thing an issuance requires: the quota is the
             // tenant's and the expiry is optional (`ast-cu3`).
@@ -7377,6 +7379,12 @@ mod tests {
             )
             .await;
         assert_eq!(update.status(), StatusCode::OK);
+        let updated = body_of(update).await;
+        assert_eq!(updated["default_token_lifetime_seconds"], 300);
+        assert_eq!(
+            updated["introspection_clients"],
+            serde_json::json!([SEEDED_CLIENT_ID])
+        );
 
         // Act: read the same identifier through the sibling tenant.
         world.api_tenant = Arc::new(tenant_named("other"));

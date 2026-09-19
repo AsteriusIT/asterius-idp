@@ -7,6 +7,13 @@ use time::Duration;
 
 use crate::AdminError;
 
+/// Resource-server callers are names, not credentials, but still arrive in an
+/// administrator-controlled JSON array. Bound each one before it becomes a
+/// value retained in the registry. The server-minted ids are much shorter;
+/// this ceiling leaves room for imported deployments without admitting an
+/// unbounded row.
+const MAX_INTROSPECTION_CLIENT_ID_LEN: usize = 512;
+
 /// The editable part of a resource server. Its identifier stays in the path,
 /// so a replacement cannot accidentally rename the row it was opened from.
 #[derive(Debug, Deserialize)]
@@ -52,8 +59,19 @@ pub fn parse(identifier: &str, document: Document) -> Result<ResourceServer, Adm
         introspection_clients: document
             .introspection_clients
             .into_iter()
-            .map(ClientId::new)
-            .collect(),
+            .map(|client| validate_introspection_client(&client).map(|()| ClientId::new(client)))
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn validate_introspection_client(client: &str) -> Result<(), AdminError> {
+    let valid = !client.is_empty()
+        && client.len() <= MAX_INTROSPECTION_CLIENT_ID_LEN
+        && !client.chars().any(char::is_control);
+    valid.then_some(()).ok_or_else(|| {
+        AdminError::Invalid(format!(
+            "introspection client ids must be 1 to {MAX_INTROSPECTION_CLIENT_ID_LEN} characters and contain no control characters"
+        ))
     })
 }
 
@@ -118,5 +136,62 @@ mod tests {
             },
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn the_complete_registration_round_trips_without_widening_it() {
+        let server = parse(
+            "https://api.example/accounts",
+            Document {
+                scopes: Some(vec![
+                    "accounts:write".to_owned(),
+                    "accounts:read".to_owned(),
+                ]),
+                default_token_lifetime_seconds: Some(300),
+                introspection_clients: vec![
+                    "c.reports".to_owned(),
+                    "c.gateway".to_owned(),
+                    "c.gateway".to_owned(),
+                ],
+            },
+        )
+        .expect("a complete resource server");
+
+        assert_eq!(
+            render(&server),
+            serde_json::json!({
+                "identifier": "https://api.example/accounts",
+                "scopes": ["accounts:read", "accounts:write"],
+                "default_token_lifetime_seconds": 300,
+                "introspection_clients": ["c.gateway", "c.reports"],
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_lifetimes_and_introspection_clients_are_refused() {
+        for lifetime in [0, 86_401] {
+            let result = parse(
+                "https://api.example/",
+                Document {
+                    scopes: None,
+                    default_token_lifetime_seconds: Some(lifetime),
+                    introspection_clients: vec![],
+                },
+            );
+            assert!(result.is_err());
+        }
+
+        for client in [String::new(), "line\nbreak".to_owned(), "x".repeat(513)] {
+            let result = parse(
+                "https://api.example/",
+                Document {
+                    scopes: None,
+                    default_token_lifetime_seconds: None,
+                    introspection_clients: vec![client],
+                },
+            );
+            assert!(result.is_err());
+        }
     }
 }
