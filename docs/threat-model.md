@@ -2219,3 +2219,17 @@ passkey names, and audit the change. Settings lookup failures fail closed; anoth
 replica may serve its previously cached policy for up to 30 seconds. Already
 issued tokens retain their original claims until expiry or explicit revocation.
 See [tenant assurance policy](tenant-assurance-policy.md) for operational behavior.
+
+### Tenant rate-limit overrides (`ast-6uqw.5`)
+
+A tenant administrator cannot relax deployment abuse controls by editing the
+settings API. Only positive maxima up to the current deployment ceiling are
+accepted; windows and bucket identities remain deployment-owned. Runtime
+resolution takes the minimum again if the deployment tightened since the save.
+Settings changes preserve counters and their whole-second epoch boundaries,
+including across replicas and request timestamps with different nanoseconds.
+Limiter policy is read without the general settings cache and a failed read
+refuses admission. Existing tenant-keyed PostgreSQL counters isolate tenants;
+updates remain scope-checked, atomic and audited. See
+[tenant rate limits](tenant-rate-limits.md) for coverage and the existing
+concurrent in-flight admission limitation.

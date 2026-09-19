@@ -251,6 +251,8 @@ pub struct TenantSettings {
     /// to reject it, including an authorization whose scopes were remembered.
     always_ask_consent: bool,
     session_policy: Option<crate::entities::session::SessionPolicy>,
+
+    rate_limits: crate::tenant_rate_limits::TenantRateLimits,
 }
 
 impl Default for TenantSettings {
@@ -274,6 +276,8 @@ impl Default for TenantSettings {
             require_verified_email: false,
             always_ask_consent: false,
             session_policy: None,
+
+            rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
         }
     }
 }
@@ -314,6 +318,20 @@ impl TenantSettings {
         Ok(self)
     }
 
+
+    /// This tenant's bounded rate-limit maxima; windows stay deployment-owned.
+    #[must_use]
+    pub const fn rate_limits(&self) -> &crate::tenant_rate_limits::TenantRateLimits {
+        &self.rate_limits
+    }
+
+    /// Attaches validated override metadata.
+    #[must_use]
+    pub fn with_rate_limits(mut self, limits: crate::tenant_rate_limits::TenantRateLimits) -> Self {
+        self.rate_limits = limits;
+        self
+    }
+
     /// Assembles settings, refusing any lifetime the profile does not allow.
     ///
     /// # Errors
@@ -340,6 +358,8 @@ impl TenantSettings {
             require_verified_email: false,
             always_ask_consent: false,
             session_policy: None,
+
+            rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
         })
     }
 
@@ -596,6 +616,8 @@ impl TenantSettings {
             "require_verified_email": self.require_verified_email,
             "always_ask_consent": self.always_ask_consent,
             "session_policy": self.session_policy.map(crate::entities::session::SessionPolicy::to_json),
+
+            "rate_limits": self.rate_limits.to_json(),
         })
     }
 
@@ -738,7 +760,8 @@ impl TenantSettings {
                 .with_session_policy(crate::entities::session::SessionPolicy::from_json(
                     object.get("session_policy"),
                 )?)
-                .with_acr_policy(acr_policy)?,
+                .with_acr_policy(acr_policy)?
+                .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(object.get("rate_limits"))?),
         )
     }
 }
@@ -772,6 +795,10 @@ pub enum TenantSettingsError {
     /// An invalid or unattainable authentication context.
     #[error("invalid authentication assurance policy: {0}")]
     AcrPolicy(#[from] crate::acr::AcrPolicyError),
+
+    /// Invalid tenant rate-limit override metadata.
+    #[error(transparent)]
+    RateLimits(#[from] crate::tenant_rate_limits::RateLimitOverrideError),
     /// Above the 60-second ceiling.
     #[error(
         "an authorization code lifetime of {requested_seconds} s exceeds the maximum of 60 s \

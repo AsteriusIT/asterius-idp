@@ -1822,3 +1822,39 @@ test('tenant session policy saves, reloads and rejects invalid clocks', async ({
     await expect(page.getByText('Saved.', { exact: true })).toBeVisible();
   }
 });
+
+test('tenant rate limits save reload reject weakening and restore inheritance', async ({ page }) => {
+  await signIn(page);
+  await openSettings(page);
+  await page.getByRole('tab', { name: 'Rate limits', exact: true }).click();
+  const input = page.getByLabel('Token requests per authenticated client', { exact: true });
+  await expect(input).toBeVisible();
+  const original = await input.inputValue();
+  try {
+    await input.fill('1');
+    await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('Saved.');
+    await page.reload();
+    await page.getByRole('tab', { name: 'Rate limits', exact: true }).click();
+    await expect(input).toHaveValue('1');
+    await expect(page.getByText(/Effective saved maximum: 1\./).first()).toBeVisible();
+    const maximum = Number(await input.getAttribute('max'));
+    await input.fill(String(maximum + 1));
+    await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+    await expect(page.getByRole('alert')).toContainText('rate_limits.token.per_client');
+    await expect(input).toHaveAttribute('aria-invalid', 'true');
+    await page.reload();
+    await page.getByRole('tab', { name: 'Rate limits', exact: true }).click();
+    await expect(input).toHaveValue('1');
+    await input.fill('');
+    await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('Saved.');
+    await page.reload();
+    await page.getByRole('tab', { name: 'Rate limits', exact: true }).click();
+    await expect(input).toHaveValue('');
+  } finally {
+    await input.fill(original);
+    await page.getByRole('button', { name: 'Save settings', exact: true }).click();
+    await expect(page.getByRole('status')).toContainText('Saved.');
+  }
+});

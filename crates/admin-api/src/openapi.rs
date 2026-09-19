@@ -112,6 +112,7 @@ pub fn value() -> Value {
                 "Page": page_schema(),
                 "AcrPolicy": acr_policy_schema(),
                 "SessionPolicy": session_policy_schema(),
+                "TenantRateLimits": rate_limits_schema(),
             },
             "parameters": {
                 "cursor": {
@@ -198,16 +199,18 @@ fn operation_object(operation: &Operation) -> Value {
                     "authorization_code_lifetime_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
                     "access_token_lifetime_seconds": {"type": "integer", "minimum": 1, "maximum": 900},
                     "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"},
-                    "session_policy": {"$ref": "#/components/schemas/SessionPolicy"}
+                    "session_policy": {"$ref": "#/components/schemas/SessionPolicy"},
+                    "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"}
                 },
-                "description": "Omitting acr_policy preserves the stored policy. Updates are tenant-scoped, audited and visible on other replicas within 30 seconds."
+                "description": "Omitted policies retain stored values. Updates are tenant-scoped and audited. Assurance replicas refresh within 30 seconds; session and rate-limit enforcement read committed settings directly."
             }}}
         });
     }
     if operation.id() == crate::TENANT_SETTINGS_READ_ID {
         object["responses"]["200"]["content"]["application/json"]["schema"] = json!({
             "type": "object", "properties": { "acr_policy": {"$ref": "#/components/schemas/AcrPolicy"},
-                    "session_policy": {"$ref": "#/components/schemas/SessionPolicy"} }
+                    "session_policy": {"$ref": "#/components/schemas/SessionPolicy"},
+                    "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"} }
         });
     }
 
@@ -232,6 +235,24 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+fn rate_limits_schema() -> Value {
+    let maximum = json!({"type": "integer", "minimum": 1, "maximum": u32::MAX});
+    let mut properties = Map::new();
+    properties.insert("login".to_owned(), json!({
+        "type": "object", "additionalProperties": false,
+        "properties": {"per_address": maximum, "per_account": maximum}
+    }));
+    for endpoint in asterius_domain::LimitedEndpoint::ALL {
+        let mut buckets = json!({"per_address": maximum, "per_client": maximum});
+        if endpoint.as_str() == "backchannel" { buckets["per_subject"] = maximum.clone(); }
+        properties.insert(endpoint.as_str().to_owned(), json!({
+            "type": "object", "additionalProperties": false, "properties": buckets
+        }));
+    }
+    json!({"type": "object", "additionalProperties": false, "properties": properties,
+        "description": "Overrides may only lower enabled deployment maxima. Omission preserves stored overrides; an empty object resets inheritance. Windows stay deployment-owned. GET also exposes rate_limit_bounds and effective_rate_limits, mapping the same groups/buckets to max and window_seconds. Shared counters retain existing concurrent check/charge semantics."})
 }
 
 fn session_policy_schema() -> Value {

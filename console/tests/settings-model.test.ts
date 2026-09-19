@@ -57,3 +57,11 @@ test('assurance settings hydrate, preserve unknown context names and detect chan
   assert.equal(isDirty(stored, { ...draft, acrPolicy: { ...acr_policy, amr_in_id_token: false } }), true);
   assert.equal(draftOf(settings()).acrPolicy, undefined);
 });
+
+test('stored rate overrides hydrate and editing marks settings dirty', () => {
+  const stored = settings({ rate_limits: { token: { per_client: 20 } } });
+  const draft = draftOf(stored);
+  assert.deepEqual(draft.rateLimits, { token: { per_client: '20' } });
+  assert.equal(isDirty(stored, draft), false);
+  assert.equal(isDirty(stored, { ...draft, rateLimits: { token: { per_client: '10' } } }), true);
+});

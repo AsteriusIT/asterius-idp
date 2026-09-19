@@ -347,6 +347,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// The shared fixed-window counters (`ast-2vk.9`).
     fn rate_limits(&self) -> Arc<dyn RateLimitStore>;
 
+    /// Deployment ceilings for tenant-configurable abuse controls.
+    /// Backends without protocol limiters cannot accept overrides.
+    fn rate_limit_policy(&self) -> Option<(asterius_domain::LoginLimits, asterius_domain::EndpointLimits)> {
+        None
+    }
+
     /// The atomic single-use store the `Idempotency-Key` is claimed in.
     fn replay(&self) -> Arc<dyn ReplayGuard>;
 

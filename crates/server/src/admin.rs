@@ -309,6 +309,7 @@ impl AutomationTokenStatus for PgAutomationTokenStatus {
 /// This deployment, as the admin API sees it.
 #[derive(Clone)]
 pub struct Deployment {
+    rate_limit_policy: Option<(asterius_domain::LoginLimits, asterius_domain::EndpointLimits)>,
     store: Store,
     tenants: Arc<dyn TenantRepository>,
     keys: Arc<dyn KeyAdministration>,
@@ -333,6 +334,13 @@ impl std::fmt::Debug for Deployment {
 }
 
 impl Deployment {
+    /// Publishes the same ceilings enforced by the protocol and sign-in limiters.
+    #[must_use]
+    pub const fn with_rate_limit_policy(mut self, login: asterius_domain::LoginLimits, endpoints: asterius_domain::EndpointLimits) -> Self {
+        self.rate_limit_policy = Some((login, endpoints));
+        self
+    }
+
     /// Binds the admin API to the handles the composition root already holds.
     ///
     /// `tenants` must be the process's `dyn TenantRepository` — the
@@ -358,6 +366,7 @@ impl Deployment {
     #[must_use]
     pub fn new(parts: DeploymentParts) -> Self {
         Self {
+            rate_limit_policy: None,
             store: parts.store,
             tenants: parts.tenants,
             keys: parts.keys,
@@ -1674,6 +1683,10 @@ impl AdminBackend for Deployment {
 
     fn audit(&self) -> Arc<dyn AuditSink> {
         Arc::new(PgAuditSink::new(self.store.pool().clone()))
+    }
+
+    fn rate_limit_policy(&self) -> Option<(asterius_domain::LoginLimits, asterius_domain::EndpointLimits)> {
+        self.rate_limit_policy
     }
 
     fn rate_limits(&self) -> Arc<dyn RateLimitStore> {

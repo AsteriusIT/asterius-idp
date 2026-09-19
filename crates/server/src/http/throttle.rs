@@ -100,6 +100,7 @@ pub struct LoginThrottle<'a> {
     store: &'a dyn RateLimitStore,
     limits: LoginLimits,
     address: Option<IpAddr>,
+    settings: Option<&'a crate::tenant_settings::SettingsDirectory>,
 }
 
 /// Why an attempt was refused, and for how long.
@@ -152,7 +153,15 @@ impl<'a> LoginThrottle<'a> {
             store,
             limits,
             address,
+            settings: None,
         }
+    }
+
+    /// Uses this tenant's persisted maxima without changing deployment windows.
+    #[must_use]
+    pub const fn with_tenant_settings(mut self, settings: Option<&'a crate::tenant_settings::SettingsDirectory>) -> Self {
+        self.settings = settings;
+        self
     }
 
     /// The attempt this request is: its address, and the identifier it names.
@@ -183,9 +192,13 @@ impl<'a> LoginThrottle<'a> {
         attempt: &Attempt,
         now: OffsetDateTime,
     ) -> Result<Option<Refused>, DomainError> {
+        let limits = match self.settings {
+            Some(settings) => settings.rate_limits_for(tenant).await?.login(self.limits),
+            None => self.limits,
+        };
         for (scope, bucket, limit) in [
-            (Scope::Address, &attempt.address, self.limits.per_address),
-            (Scope::Account, &attempt.account, self.limits.per_account),
+            (Scope::Address, &attempt.address, limits.per_address),
+            (Scope::Account, &attempt.account, limits.per_account),
         ] {
             let Some(bucket) = bucket.as_ref() else {
                 continue;
@@ -352,40 +365,40 @@ mod tests {
     /// deliberately not what the server runs, because a per-process counter
     /// limits nothing across replicas.
     #[derive(Debug, Default)]
-    struct Counters(Mutex<BTreeMap<(String, i64), u32>>);
+    struct Counters(Mutex<BTreeMap<(String, String, i64), u32>>);
 
     #[async_trait::async_trait]
     impl RateLimitStore for Counters {
         async fn count(
             &self,
-            _tenant: &TenantId,
+            tenant: &TenantId,
             bucket: &Bucket,
             window_start: OffsetDateTime,
         ) -> Result<u32, DomainError> {
             let counters = self.0.lock().expect("the test store is not poisoned");
             Ok(*counters
-                .get(&(bucket.as_str().to_owned(), window_start.unix_timestamp()))
+                .get(&(tenant.as_str().to_owned(), bucket.as_str().to_owned(), window_start.unix_timestamp()))
                 .unwrap_or(&0))
         }
 
         async fn record(
             &self,
-            _tenant: &TenantId,
+            tenant: &TenantId,
             bucket: &Bucket,
             window_start: OffsetDateTime,
             _expires_at: OffsetDateTime,
         ) -> Result<u32, DomainError> {
             let mut counters = self.0.lock().expect("the test store is not poisoned");
             let entry = counters
-                .entry((bucket.as_str().to_owned(), window_start.unix_timestamp()))
+                .entry((tenant.as_str().to_owned(), bucket.as_str().to_owned(), window_start.unix_timestamp()))
                 .or_default();
             *entry += 1;
             Ok(*entry)
         }
 
-        async fn clear(&self, _tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
+        async fn clear(&self, tenant: &TenantId, bucket: &Bucket) -> Result<(), DomainError> {
             let mut counters = self.0.lock().expect("the test store is not poisoned");
-            counters.retain(|(key, _), _| key != bucket.as_str());
+            counters.retain(|(owner, key, _), _| owner != tenant.as_str() || key != bucket.as_str());
             Ok(())
         }
     }
@@ -678,4 +691,23 @@ mod tests {
             .expect("the test store counts");
         assert_eq!(refused.map(|r| r.scope), Some(Scope::Address));
     }
+    #[tokio::test]
+    async fn tenant_rate_limits_enforce_login_failures_and_live_policy_without_resetting() {
+        use asterius_domain::{TenantSettings, TenantSettingsRepository};
+        let repository = std::sync::Arc::new(crate::tenant_settings::RateLimitTestRepository::default());
+        let directory = crate::tenant_settings::SettingsDirectory::new(repository.clone());
+        let store = Counters::default();
+        let throttle = LoginThrottle::new(&store, limits(), Some(address())).with_tenant_settings(Some(&directory));
+        let attempt = throttle.attempt(Some("alice"));
+        throttle.record_failure(&tenant(), &attempt, now()).await;
+        assert!(throttle.check(&tenant(), &attempt, now()).await.expect("check").is_none());
+        let settings = TenantSettings::from_json(Some(&serde_json::json!({"rate_limits":{"login":{"per_account":1}}}))).expect("settings");
+        repository.save(&tenant(), &settings).await.expect("save");
+        assert_eq!(throttle.check(&tenant(), &attempt, now()).await.expect("check").expect("limited").scope, Scope::Account);
+        let other = TenantId::parse("other").expect("tenant");
+        assert!(throttle.check(&other, &attempt, now()).await.expect("check").is_none());
+        repository.fail_reads.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(throttle.check(&tenant(), &attempt, now()).await.is_err());
+    }
+
 }
