@@ -2091,6 +2091,9 @@ pub trait PolicyStore: Debug + Send + Sync {
     async fn clear(&self, tenant: &TenantId) -> Result<bool, DomainError>;
 }
 
+// Managed groups have their own cohesive port and value types.
+pub use crate::groups::GroupDirectory;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2101,6 +2104,3 @@ mod tests {
         assert!(clock.now() <= clock.now());
     }
 }
-
-// Managed groups have their own cohesive port and value types.
-pub use crate::groups::GroupDirectory;
