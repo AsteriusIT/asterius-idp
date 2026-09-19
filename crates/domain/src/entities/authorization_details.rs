@@ -423,8 +423,9 @@ impl JsonType {
 /// unconstrained schema — `{}` — accepts every value, which is the JSON Schema
 /// meaning and the right default for a type whose operator has not described it
 /// yet.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
+    document: Value,
     types: Option<Vec<JsonType>>,
     required: Vec<String>,
     properties: BTreeMap<String, Schema>,
@@ -436,6 +437,22 @@ pub struct Schema {
     max_length: Option<usize>,
     items: Option<Box<Schema>>,
     max_items: Option<usize>,
+}
+
+impl Default for Schema {
+    fn default() -> Self {
+        Self {
+            document: Value::Object(Map::new()),
+            types: None,
+            required: Vec::new(),
+            properties: BTreeMap::new(),
+            additional_properties: true,
+            enumeration: None,
+            max_length: None,
+            items: None,
+            max_items: None,
+        }
+    }
 }
 
 impl Schema {
@@ -458,6 +475,7 @@ impl Schema {
             return Err(SchemaError::Malformed("schema"));
         };
         let mut schema = Self {
+            document: document.clone(),
             additional_properties: true,
             ..Self::default()
         };
@@ -505,6 +523,12 @@ impl Schema {
             }
         }
         Ok(schema)
+    }
+
+    /// The validated JSON Schema document, preserved for administration.
+    #[must_use]
+    pub fn document(&self) -> &Value {
+        &self.document
     }
 
     /// Whether `value` satisfies this schema.

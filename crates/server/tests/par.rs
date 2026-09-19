@@ -93,6 +93,20 @@ impl AuthorizationDetailsTypeRepository for FakeDetailTypes {
     async fn list(&self) -> Result<Vec<AuthorizationDetailsType>, DomainError> {
         Ok(self.0.clone())
     }
+
+    async fn register(&self, _kind: &AuthorizationDetailsType) -> Result<(), DomainError> {
+        Err(DomainError::invalid(
+            "authorization_details_types",
+            "read-only test registry",
+        ))
+    }
+
+    async fn withdraw(&self, _name: &str) -> Result<bool, DomainError> {
+        Err(DomainError::invalid(
+            "authorization_details_types",
+            "read-only test registry",
+        ))
+    }
 }
 
 /// The authorization details type registry every test here pushes against.
