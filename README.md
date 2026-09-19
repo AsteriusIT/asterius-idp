@@ -118,6 +118,11 @@ change before the shape is safe anywhere real, and
 key with its type, its default and where its secrets should come from. For MCP,
 [`docs/integrating-an-mcp-server.md`](docs/integrating-an-mcp-server.md) covers
 the confidential-client flow and the protected-resource checks.
+
+To see two confidential BFFs exercise browser SSO, independent consent,
+refresh, UserInfo, step-up and logout against the example deployment, run the
+[two-application SSO demonstration](docs/sso-demo.md).
+
 [`docs/performance.md`](docs/performance.md) is the measured baseline — token
 endpoint throughput and latency, the code flow, SSF poll — with the pool and
 lifetime sizing that follows from it, reproducible with `scripts/load/`.

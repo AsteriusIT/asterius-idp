@@ -597,8 +597,11 @@ fn context_with<'a>(
     issued: &'a Issued,
     limits: LoginLimits,
 ) -> InteractionContext<'a> {
+    static THEME: std::sync::LazyLock<asterius_domain::Theme> =
+        std::sync::LazyLock::new(asterius_domain::Theme::default);
     InteractionContext {
         tenant,
+        theme: &THEME,
         language: &ENGLISH,
         requests: store,
         credentials: auth,

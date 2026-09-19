@@ -50,7 +50,6 @@ use asterius_domain::{
     SessionRevocation, SessionSummary, UserId,
 };
 use asterius_store_pg::PgSessionRepository;
-use asterius_web::Brand;
 use asterius_web::Document;
 use asterius_web::pages::{self, AccountSessionsPage, SessionLine, nonce_attribute};
 use axum::body::Bytes;
@@ -471,6 +470,7 @@ async fn rendered(
     };
 
     let font_url = crate::http::font_url(&context.account.mount);
+    let presentation = crate::http::ThemeChrome::new(context.account.theme, &context.account.mount);
     let action = context.account.mount.absolute(PAGE_PATH);
     let sign_in_href = context.account.mount.absolute(SIGN_IN_PATH);
     let account_href = context.account.mount.absolute(account::PAGE_PATH);
@@ -487,8 +487,8 @@ async fn rendered(
             csrf: &csrf,
             message,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (status, no_store(), document).into_response()

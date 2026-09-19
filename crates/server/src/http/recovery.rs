@@ -76,7 +76,6 @@ use asterius_domain::{
     AcceptedPassword, IssuedRecovery, MailSender, Notification, RECOVERY_LIFETIME, RecoveryToken,
     RecoveryTokenStore, SessionRepository, SessionRevocation, Tenant, User, UserId, UserStatus,
 };
-use asterius_web::Brand;
 use asterius_web::pages::{
     self, ErrorPage, NewPasswordPage, PasswordResetRequestPage, PasswordResetSentPage,
     nonce_attribute,
@@ -107,6 +106,8 @@ const MINIMUM_PASSWORD_LENGTH: usize = asterius_domain::entities::password::MIN_
 pub struct RecoveryContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Validated branding selected for this tenant.
+    pub theme: &'a asterius_domain::Theme,
     /// This tenant's accounts, for resolving an address to one.
     pub users: &'a asterius_store_pg::PgUserRepository,
     /// How a new password is hashed and written.
@@ -785,6 +786,7 @@ fn request_page(
 ) -> Response {
     // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&PasswordResetRequestPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -794,8 +796,8 @@ fn request_page(
             sign_in_href: context.tenant.issuer.as_str(),
             message,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     })
     .into_response()
@@ -815,14 +817,15 @@ fn reissued_request_page(context: &RecoveryContext<'_>, message: Option<&str>) -
 fn sent_page(context: &RecoveryContext<'_>) -> Response {
     // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let mut response = Document::render(context.nonce, |nonce| {
         pages::render(&PasswordResetSentPage {
             text: &crate::http::i18n::UNTRANSLATED,
             tenant_name: &context.tenant.display_name,
             sign_in_href: context.tenant.issuer.as_str(),
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     })
     .into_response();
@@ -842,6 +845,7 @@ fn new_password_page(
 ) -> Response {
     // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&NewPasswordPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -853,8 +857,8 @@ fn new_password_page(
             minimum_password_length: MINIMUM_PASSWORD_LENGTH,
             message,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     })
     .into_response()
@@ -895,6 +899,7 @@ async fn retry_new_password(
 async fn refused(context: &RecoveryContext<'_>, reason: &str, now: OffsetDateTime) -> Response {
     // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     tracing::info!(tenant = %context.tenant.id, reason, "a recovery token was refused");
     record(
         context,
@@ -914,8 +919,8 @@ async fn refused(context: &RecoveryContext<'_>, reason: &str, now: OffsetDateTim
             message: crate::http::i18n::UNTRANSLATED.error_link_unusable(),
             correlation_id: &asterius_web::interaction::correlation_id(),
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     })
     .into_response();
@@ -944,6 +949,7 @@ fn done(context: &RecoveryContext<'_>) -> Response {
 fn error_page(context: &RecoveryContext<'_>, status: StatusCode) -> Response {
     // Where this page fetches its face, under the prefix routing removed (`ast-vn7`).
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let mut response = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
             text: &crate::http::i18n::UNTRANSLATED,
@@ -951,8 +957,8 @@ fn error_page(context: &RecoveryContext<'_>, status: StatusCode) -> Response {
             message: crate::http::i18n::UNTRANSLATED.error_try_again(),
             correlation_id: &asterius_web::interaction::correlation_id(),
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     })
     .into_response();

@@ -20,6 +20,7 @@ use asterius_domain::entities::session::SessionRevocation;
 use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::{
     ClientAdministration, InitialAccessTokenStore, TenantRepository, TenantSettingsRepository,
+    ThemeRepository,
 };
 use asterius_domain::{
     AuditSink, Capabilities, DomainError, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role,
@@ -207,6 +208,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// having passed the profile's ceilings.
     fn tenant_settings(&self) -> Arc<dyn TenantSettingsRepository>;
 
+    /// Tenant branding documents and their sanitised raster assets.
+    fn themes(&self) -> Arc<dyn ThemeRepository>;
+
+    /// Drops the runtime page cache after a branding write.
+    fn theme_changed(&self, tenant: &TenantId);
+
     /// The deployment's signing keys, for the console's key screen.
     ///
     /// A handle for the same reason [`Self::tenants`] is one: the object behind
@@ -235,6 +242,13 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// see [`asterius_domain::administration`] for why that is structural
     /// rather than a rule about what handlers render.
     fn users(&self) -> Arc<dyn asterius_domain::UserAdministration>;
+
+    /// The tenant-scoped managed-group catalogue and direct memberships.
+    ///
+    /// The port accepts a tenant on every operation and has no administrative
+    /// role method, so group management cannot become a route for assigning
+    /// built-in administrator roles.
+    fn groups(&self) -> Arc<dyn asterius_domain::GroupDirectory>;
 
     /// The application-role catalogues and their assignments (`ast-095`).
     ///

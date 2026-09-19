@@ -75,7 +75,6 @@ use asterius_domain::{
     entities::session,
 };
 use asterius_store_pg::PgGrantRepository;
-use asterius_web::Brand;
 use asterius_web::i18n::Catalog;
 use asterius_web::interaction::{self, InteractionId};
 use asterius_web::pages::{
@@ -298,6 +297,8 @@ pub fn standing(grants: Vec<Grant>, now: OffsetDateTime) -> Vec<Standing> {
 pub struct GrantsContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Validated branding selected for this tenant.
+    pub theme: &'a asterius_domain::Theme,
     /// This person's authorizations, and the one write this page makes.
     pub grants: &'a PgGrantRepository,
     /// Where the cookie's session is resolved.
@@ -522,6 +523,7 @@ async fn rendered(
     };
 
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let action = context.mount.absolute(REVOKE_PATH);
     let sign_in_href = context.mount.absolute(SIGN_IN_PATH);
     let csrf = csrf_for(session);
@@ -535,8 +537,8 @@ async fn rendered(
             csrf: &csrf,
             message,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (status, no_store(), document).into_response()
@@ -702,6 +704,7 @@ async fn gone(context: &GrantsContext<'_>, session: &Session, now: OffsetDateTim
 /// The page a failure of *this server* produces.
 fn error_page(context: &GrantsContext<'_>, status: StatusCode) -> Response {
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
             text: context.text,
@@ -709,8 +712,8 @@ fn error_page(context: &GrantsContext<'_>, status: StatusCode) -> Response {
             message: context.text.error_nothing_withdrawn(),
             correlation_id: "",
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (status, no_store(), document).into_response()

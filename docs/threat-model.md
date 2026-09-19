@@ -1559,6 +1559,9 @@ it and the risk that is left.
 | **A5** | **G1** | **Parameter pollution.** A request carries a parameter twice so that two intermediaries disagree about which copy counts, and it is validated as one request and executed as another. | RFC 6749 §3.1 is enforced literally: a repeated parameter is refused rather than resolved. The form is parsed into pairs, not a map, so the duplicate is still visible when the rule is applied. | `ast-gxh.1` |
 | **A5** | **G4** | **Client misidentification at consent.** A client registers as "Example Bank" and the user, seeing a familiar name, approves a request that sends their code somewhere else. | FAPI 2.0 SP §7 names this. The consent screen shows the *host* the user will be returned to alongside the name: the name is chosen by whoever registered, the host is not — it was validated at push time against the client's registered set, so it is one the client actually controls. | `ast-uwv.1` |
 | **A5** | **G4** | **Consent-screen tracking.** A client learns exactly when its consent screen was shown, and to whom by IP, by having the page fetch its logo. | No page loads anything from anywhere else — no `img`, `iframe`, `link` or remote `url()`, asserted by a test over the rendered output, and `img-src 'self' data:` in the policy behind it. A client logo would have to be uploaded to this server before it could be shown. | `ast-uwv.1`, `ast-ndk.3` |
+| **A2** | **G1**, **G4** | **Active content disguised as tenant branding.** A tenant administrator uploads SVG, HTML, or a decompression bomb and has it served on the password page under the identity provider's origin. | `/admin/api/v1/theme/logo` bounds the upload before decoding, accepts only PNG, JPEG, and WebP signatures, checks dimensions before allocating pixels, and re-encodes the result as a metadata-free PNG. The digest asset route serves only those stored bytes with their validated media type and `nosniff`; SVG is never an accepted theme format. | `ast-6uqw.6`, `ast-ndk.1` |
+| **A2** | **G4** | **Cross-tenant logo disclosure.** A digest learned from one tenant is put into another tenant's asset URL. | Assets are addressed by `(tenant_id, digest)`. The handler takes the tenant only from the verified tenancy middleware and binds it into the repository read, so the same digest path under another issuer is a 404. | `ast-6uqw.6` |
+| **A2** | **G1** | **Branding as CSS injection or unreadable authentication UI.** An administrator saves markup as a token or chooses foreground and background colours that hide security-sensitive text. | The theme schema accepts bounded scalar tokens only, has no custom CSS member, and validates all rendered colour pairs at WCAG AA 4.5:1 before persistence. Runtime CSS is generated only from typed colours, integers, and a closed font enumeration; the template still HTML-escapes it under the existing CSP nonce. | `ast-6uqw.6`, `ast-ndk.1`, `ast-ndk.3` |
 | **A3a** | **G1** | **Granting more than the user agreed to.** A forged or altered consent form claims scopes the user never saw. | The submitted form is checked against the offer this server rendered, not trusted: a scope that was not displayed is refused outright, and a required scope that was dropped is refused too. What the grant records is what was ticked, which may be less than the client asked for. | `ast-uwv.1` |
 | **A1** | **G4** | **Writing on this server's sign-in page through `login_hint`.** A client puts a line of prose, a line break or a bidirectional override in the parameter, and the user reads instructions — or an address at a domain they trust — that the server appears to be giving them. | The value is bounded to 128 bytes and refused outright if it carries a control character or a UAX #9 bidirectional formatting character, at the push, while the client is on the connection. Templates escape every interpolation on top of that, so the two defences are independent: escaping stops markup, this stops the value *being* a message. Same reasoning as the logout confirmation page, which refuses any field an unidentified relying party could fill. | `ast-gxh.8`, `ast-o4u.1` |
 | **A1** | **G1**, **G4** | **Driving an authorization with somebody else's ID token.** A client sends an `id_token_hint` it did not receive — one issued to another client, or one this server never signed — to make a decision be taken about a subject it has no relationship with. | The hint is verified at the push against this tenant's own keys, retired ones included, with `iss` pinned to the tenant. Unlike the logout endpoint, which reads the client *out* of the hint, `aud` is pinned to the authenticated client and `azp`, when present, must be that client. A hint that fails any of this makes the whole request `invalid_request`; it is never dropped and continued without, because that would answer a request about a named person using whoever happened to be signed in. Only the `sub` is stored, never the token. | `ast-gxh.8`, `ast-o4u.1` |
@@ -1894,6 +1897,28 @@ silently grant or withdraw access. [The migration contract](groups-migration.md)
 documents reconciliation and rollback requirements. Administrative authorization
 and audit wiring belong to `ast-6uqw.10`; persistence alone does not expose an API.
 Group parser fuzzing and PostgreSQL race/isolation tests enforce these invariants.
+
+### Managed group administration (`ast-6uqw.10`)
+
+The administration API exposes the managed catalogue with separate
+`admin.groups:read`, `admin.groups:write`, `admin.memberships:read` and
+`admin.memberships:write` authorities. Every lookup and mutation supplies the
+routed tenant to the group port; a UUID belonging to another tenant therefore
+has the same 404 response as an unknown UUID. Console mutations pass through
+the shared synchronizer-token and same-origin CSRF gate, while automation uses
+the existing DPoP-bound admin token gate and exact scopes.
+
+Metadata replacement and deletion require the revision returned by the last
+read. A stale concurrent edit answers 409, and database row locking serializes
+metadata, membership and deletion. Membership PUT and DELETE are idempotent:
+the response reports whether the set changed, and only a change is audited.
+Group creation, replacement, deletion and membership changes append an
+`admin.changed` record naming the operation and opaque UUIDs, never display
+names. The port accepts only `GroupMetadata` and `UserId`; it has no method that
+accepts the built-in `Role` type, so a group route cannot appoint a tenant or
+deployment administrator. Lists and literal name searches use bounded keyset
+pagination. The existing `group_metadata` fuzz target covers every metadata
+document the API admits.
 
 ## 5. Known residual risks
 

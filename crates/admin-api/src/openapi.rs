@@ -179,6 +179,15 @@ fn operation_object(operation: &Operation) -> Value {
             }));
         }
     }
+    if operation.id() == crate::GROUPS_LIST_ID {
+        parameters.push(json!({
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "description": "A literal case-insensitive substring of the machine or display name.",
+            "schema": {"type": "string", "maxLength": asterius_domain::GroupMetadata::MAX_DISPLAY_BYTES},
+        }));
+    }
 
     let mut object = json!({
         "operationId": operation.id(),
@@ -213,6 +222,10 @@ fn operation_object(operation: &Operation) -> Value {
                     "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"} }
         });
     }
+    theme_documentation(operation, &mut object);
+    if let Some(request_body) = group_request_body(operation) {
+        object["requestBody"] = request_body;
+    }
 
     if let Some(fields) = object.as_object_mut() {
         if !parameters.is_empty() {
@@ -235,6 +248,78 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+fn theme_documentation(operation: &Operation, object: &mut Value) {
+    if operation.id() == crate::THEME_UPDATE_ID {
+        object["requestBody"] = json!({
+            "required": true,
+            "content": {"application/json": {"schema": asterius_domain::Theme::schema_document()}},
+        });
+    }
+    if operation.id() == crate::THEME_READ_ID {
+        object["responses"]["200"]["content"]["application/json"]["schema"] = json!({
+            "type": "object",
+            "required": ["theme", "schema"],
+            "properties": {
+                "theme": asterius_domain::Theme::schema_document(),
+                "schema": {"type": "object"}
+            }
+        });
+    }
+    if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
+        let upload = json!({
+            "schema": {
+                "type": "string",
+                "format": "binary",
+                "maxLength": crate::theme_image::MAX_UPLOAD_BYTES,
+            }
+        });
+        object["requestBody"] = json!({
+            "required": true,
+            "description": "PNG, JPEG or WebP bytes. The server identifies the format from the bytes, bounds dimensions before decoding, and stores a metadata-free PNG.",
+            "content": {
+                "image/png": upload,
+                "image/jpeg": upload,
+                "image/webp": upload
+            }
+        });
+    }
+}
+
+fn group_request_body(operation: &Operation) -> Option<Value> {
+    if operation.id() == crate::GROUP_DELETE_ID {
+        return Some(json!({
+            "required": true,
+            "content": {"application/json": {"schema": {
+                "type": "object", "additionalProperties": false,
+                "required": ["revision"],
+                "properties": {"revision": {"type": "integer", "minimum": 1}},
+            }}},
+        }));
+    }
+    if !matches!(
+        operation.id(),
+        crate::GROUP_CREATE_ID | crate::GROUP_UPDATE_ID
+    ) {
+        return None;
+    }
+    let mut required = vec!["name", "display_name"];
+    let mut properties = json!({
+        "name": {"type": "string", "minLength": 1, "maxLength": asterius_domain::GroupName::MAX_LEN},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": asterius_domain::GroupMetadata::MAX_DISPLAY_BYTES},
+    });
+    if operation.id() == crate::GROUP_UPDATE_ID {
+        required.push("revision");
+        properties["revision"] = json!({"type": "integer", "minimum": 1});
+    }
+    Some(json!({
+        "required": true,
+        "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": false,
+            "required": required, "properties": properties,
+        }}},
+    }))
 }
 
 fn rate_limits_schema() -> Value {
@@ -368,6 +453,29 @@ fn responses(operation: &Operation) -> Value {
                 "The request conflicts with the current state, or its \
                  Idempotency-Key has already been used.",
             ),
+        );
+    }
+    if let Some(fields) = answers.as_object_mut()
+        && matches!(
+            operation.id(),
+            crate::GROUPS_LIST_ID
+                | crate::GROUP_CREATE_ID
+                | crate::GROUP_READ_ID
+                | crate::GROUP_UPDATE_ID
+                | crate::GROUP_DELETE_ID
+                | crate::GROUP_MEMBERS_LIST_ID
+                | crate::GROUP_MEMBER_ADD_ID
+                | crate::GROUP_MEMBER_REMOVE_ID
+                | crate::USER_GROUPS_LIST_ID
+        )
+    {
+        fields.insert(
+            "400".to_owned(),
+            error_response("The metadata, revision, limit or cursor is invalid."),
+        );
+        fields.insert(
+            "404".to_owned(),
+            error_response("The group or user does not exist in the routed tenant."),
         );
     }
 

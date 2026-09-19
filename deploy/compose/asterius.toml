@@ -35,6 +35,12 @@ kek_env = "ASTERIUS_KEK"
 url = "postgres://asterius:asterius@db:5432/asterius"
 max_connections = 8
 
+# The sample BFFs register their ephemeral public keys through RFC 7591 each
+# time the disposable demonstration stack starts. Production deployments
+# normally use `initial_access_token` or the authenticated console workflow.
+[registration]
+mode = "open"
+
 [features]
 # Everything off is the FAPI 2.0 baseline. Switch one on and it appears both in
 # the discovery document and on /readyz.

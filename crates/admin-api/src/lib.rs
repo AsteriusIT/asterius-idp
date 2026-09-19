@@ -50,6 +50,7 @@ pub mod clients;
 pub mod console;
 pub mod csrf;
 pub mod error;
+pub mod groups;
 pub mod idempotency;
 pub mod initial_access_tokens;
 pub mod keys;
@@ -110,6 +111,14 @@ pub const TENANT_STATUS_UPDATE_ID: &str = "tenants.status.update";
 pub const TENANT_SETTINGS_READ_ID: &str = "tenants.settings.read";
 /// The `operationId` of `PUT /tenants/{tenant_id}/settings`.
 pub const TENANT_SETTINGS_UPDATE_ID: &str = "tenants.settings.update";
+/// The `operationId` of `GET /theme`.
+pub const THEME_READ_ID: &str = "theme.read";
+/// The `operationId` of `PUT /theme`.
+pub const THEME_UPDATE_ID: &str = "theme.update";
+/// The `operationId` of `POST /theme/logo`.
+pub const THEME_LOGO_UPLOAD_ID: &str = "theme.logo.upload";
+/// The `operationId` of `DELETE /theme`.
+pub const THEME_RESET_ID: &str = "theme.reset";
 /// The `operationId` of `GET /clients`.
 pub const CLIENTS_LIST_ID: &str = "clients.list";
 /// The `operationId` of `GET /clients/{client_id}`.
@@ -193,6 +202,24 @@ pub const USER_GRANT_REVOKE_ID: &str = "users.grants.revoke";
 pub const USER_ROLES_READ_ID: &str = "users.roles.read";
 /// The `operationId` of `PUT /users/{user_id}/roles`.
 pub const USER_ROLES_UPDATE_ID: &str = "users.roles.update";
+/// The `operationId` of `GET /groups`.
+pub const GROUPS_LIST_ID: &str = "groups.list";
+/// The `operationId` of `POST /groups`.
+pub const GROUP_CREATE_ID: &str = "groups.create";
+/// The `operationId` of `GET /groups/{group_id}`.
+pub const GROUP_READ_ID: &str = "groups.read";
+/// The `operationId` of `PUT /groups/{group_id}`.
+pub const GROUP_UPDATE_ID: &str = "groups.update";
+/// The `operationId` of `DELETE /groups/{group_id}`.
+pub const GROUP_DELETE_ID: &str = "groups.delete";
+/// The `operationId` of `GET /groups/{group_id}/members`.
+pub const GROUP_MEMBERS_LIST_ID: &str = "groups.members.list";
+/// The `operationId` of `PUT /groups/{group_id}/members/{user_id}`.
+pub const GROUP_MEMBER_ADD_ID: &str = "groups.members.add";
+/// The `operationId` of `DELETE /groups/{group_id}/members/{user_id}`.
+pub const GROUP_MEMBER_REMOVE_ID: &str = "groups.members.remove";
+/// The `operationId` of `GET /users/{user_id}/groups`.
+pub const USER_GROUPS_LIST_ID: &str = "users.groups.list";
 
 /// Who the caller is, which tenant this console is acting on, and the CSRF
 /// token the console must send back.
@@ -375,6 +402,42 @@ pub const TENANT_SETTINGS_UPDATE: Operation = Operation::mutation(
     M::Put,
     A::new(R::Tenant, "admin.tenants:write"),
     "Replaces one tenant's feature flags and lifetimes",
+);
+
+/// Reads this tenant's effective branding document.
+pub const THEME_READ: Operation = Operation::read(
+    THEME_READ_ID,
+    "/theme",
+    S::Get,
+    A::new(R::Tenant, "admin.theme:read"),
+    "Reads the tenant branding document and its validation schema",
+);
+
+/// Replaces this tenant's validated branding document.
+pub const THEME_UPDATE: Operation = Operation::mutation(
+    THEME_UPDATE_ID,
+    "/theme",
+    M::Put,
+    A::new(R::Tenant, "admin.theme:write"),
+    "Replaces the tenant branding document after schema and contrast validation",
+);
+
+/// Uploads, sanitises and selects this tenant's logo.
+pub const THEME_LOGO_UPLOAD: Operation = Operation::mutation(
+    THEME_LOGO_UPLOAD_ID,
+    "/theme/logo",
+    M::Post,
+    A::new(R::Tenant, "admin.theme:write"),
+    "Uploads a bounded raster logo, re-encodes it and selects it for the tenant",
+);
+
+/// Restores the shipped theme.
+pub const THEME_RESET: Operation = Operation::mutation(
+    THEME_RESET_ID,
+    "/theme",
+    M::Delete,
+    A::new(R::Tenant, "admin.theme:write"),
+    "Resets tenant branding to the shipped defaults",
 );
 
 /// This tenant's clients, one cursor page at a time, optionally filtered.
@@ -993,6 +1056,90 @@ pub const USER_ROLES_UPDATE: Operation = Operation::mutation(
     "Replaces the administrative roles one account holds",
 );
 
+/// This tenant's managed group catalogue.
+pub const GROUPS_LIST: Operation = Operation::read(
+    GROUPS_LIST_ID,
+    "/groups",
+    S::Get,
+    A::new(R::Tenant, "admin.groups:read"),
+    "Lists and searches this tenant's managed groups",
+)
+.paginated();
+
+/// Creates one managed group. Duplicate names answer 409.
+pub const GROUP_CREATE: Operation = Operation::mutation(
+    GROUP_CREATE_ID,
+    "/groups",
+    M::Post,
+    A::new(R::Tenant, "admin.groups:write"),
+    "Creates a tenant-scoped managed group",
+);
+
+/// Reads one managed group by stable UUID.
+pub const GROUP_READ: Operation = Operation::read(
+    GROUP_READ_ID,
+    "/groups/{group_id}",
+    S::Get,
+    A::new(R::Tenant, "admin.groups:read"),
+    "Reads one tenant-scoped managed group",
+);
+
+/// Replaces group metadata when its revision still matches.
+pub const GROUP_UPDATE: Operation = Operation::mutation(
+    GROUP_UPDATE_ID,
+    "/groups/{group_id}",
+    M::Put,
+    A::new(R::Tenant, "admin.groups:write"),
+    "Replaces group metadata using optimistic concurrency",
+);
+
+/// Deletes a group and its memberships when its revision still matches.
+pub const GROUP_DELETE: Operation = Operation::mutation(
+    GROUP_DELETE_ID,
+    "/groups/{group_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.groups:write"),
+    "Deletes a group and its direct memberships using optimistic concurrency",
+);
+
+/// Lists one group's direct members.
+pub const GROUP_MEMBERS_LIST: Operation = Operation::read(
+    GROUP_MEMBERS_LIST_ID,
+    "/groups/{group_id}/members",
+    S::Get,
+    A::new(R::Tenant, "admin.memberships:read"),
+    "Lists the direct members of one managed group",
+)
+.paginated();
+
+/// Idempotently adds an existing same-tenant user to a group.
+pub const GROUP_MEMBER_ADD: Operation = Operation::mutation(
+    GROUP_MEMBER_ADD_ID,
+    "/groups/{group_id}/members/{user_id}",
+    M::Put,
+    A::new(R::Tenant, "admin.memberships:write"),
+    "Adds a same-tenant user to a managed group",
+);
+
+/// Idempotently removes a user from a group.
+pub const GROUP_MEMBER_REMOVE: Operation = Operation::mutation(
+    GROUP_MEMBER_REMOVE_ID,
+    "/groups/{group_id}/members/{user_id}",
+    M::Delete,
+    A::new(R::Tenant, "admin.memberships:write"),
+    "Removes a user from a managed group",
+);
+
+/// Lists the managed groups directly assigned to one user.
+pub const USER_GROUPS_LIST: Operation = Operation::read(
+    USER_GROUPS_LIST_ID,
+    "/users/{user_id}/groups",
+    S::Get,
+    A::new(R::Tenant, "admin.memberships:read"),
+    "Lists one user's direct managed-group memberships",
+)
+.paginated();
+
 // ---------------------------------------------------------------------------
 // Application roles (`ast-095`)
 // ---------------------------------------------------------------------------
@@ -1157,7 +1304,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 72] = [
+static REGISTRY: [Operation; 85] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1173,6 +1320,10 @@ static REGISTRY: [Operation; 72] = [
     TENANT_STATUS_UPDATE,
     TENANT_SETTINGS_READ,
     TENANT_SETTINGS_UPDATE,
+    THEME_READ,
+    THEME_UPDATE,
+    THEME_LOGO_UPLOAD,
+    THEME_RESET,
     CLIENTS_LIST,
     CLIENT_READ,
     CLIENT_CREATE,
@@ -1216,6 +1367,15 @@ static REGISTRY: [Operation; 72] = [
     USER_GRANT_REVOKE,
     USER_ROLES_READ,
     USER_ROLES_UPDATE,
+    GROUPS_LIST,
+    GROUP_CREATE,
+    GROUP_READ,
+    GROUP_UPDATE,
+    GROUP_MEMBERS_LIST,
+    GROUP_MEMBER_ADD,
+    GROUP_MEMBER_REMOVE,
+    USER_GROUPS_LIST,
+    GROUP_DELETE,
     APP_ROLES_LIST,
     APP_ROLE_CREATE,
     APP_ROLE_DELETE,
