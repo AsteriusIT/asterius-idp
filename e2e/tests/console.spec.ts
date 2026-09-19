@@ -1363,14 +1363,17 @@ test('the tenant selector lists the deployment and hands over to the chosen cons
   await expect(options.filter({ hasText: 'e2e-admin' })).toBeVisible();
   await expect(options.filter({ hasText: 'e2e-webauthn' })).toBeVisible();
 
-  // Act: choose another one.
-  await options.filter({ hasText: 'e2e-webauthn' }).first().click();
+  // Act: choose the ordinary path-based tenant on this origin. The reserved
+  // tenant's `__Host-` cookie is therefore sent on the navigation.
+  await page.getByRole('option', { name: /^e2e e2e$/ }).click();
 
-  // Assert: the browser is at *that tenant's* console, which — having no
-  // session there — is the login door `ast-wr4` put in front of it. Landing on
-  // a sign-in rather than on a shell is the correct outcome, and it is the
-  // proof that the hand-off is a navigation and not a swapped variable.
-  await page.waitForURL(/t\/e2e-webauthn\//);
+  // Assert: the complete hand-off works — entry guard, shell, `GET /session`,
+  // and then a tenant-scoped screen backed by that tenant's admin API.
+  await page.waitForURL(/\/t\/e2e\/admin\/#\/overview$/);
+  await expect(page.getByRole('heading', { name: 'Overview', exact: true })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: /Tenant: e2e\./ })).toBeVisible();
+  await page.getByRole('link', { name: 'Applications', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
 });
 
 /**

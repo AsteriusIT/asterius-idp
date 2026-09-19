@@ -35,12 +35,13 @@
  * mounted beneath the tenant it serves (`/t/{id}/admin/`, or the root of a
  * custom host), and every admin API call it makes is relative to *its own*
  * document URL. A selector that swapped a tenant id into the state of this page
- * would leave those calls pointing at the first tenant's API with the first
- * tenant's session, which is either a 403 per screen or — worse, if a route
- * ever took the tenant from the body — a cross-tenant read from a session that
- * was never authorised for it. Sending the browser to the other console makes
- * the tenant a property of the document again, and the session for it is
- * opened by the login flow that already exists (`ast-wr4`).
+ * would leave those calls pointing at the first tenant's API. Sending the
+ * browser to the other console makes the tenant a property of the document
+ * again. On a shared origin, the reserved tenant's `__Host-` cookie reaches
+ * the path-based tenant and the entry guard admits only its deployment-scoped
+ * role (`ast-w4g3`). A custom-host origin receives no such cookie and therefore
+ * opens the ordinary local login (`ast-wr4`); no credential is transferred
+ * between origins.
  *
  * The URL is built by `tenantConsoleUrl` from the **issuer** the API reports
  * and from nothing this page knows about itself, because a tenant reached

@@ -266,8 +266,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             })),
         });
 
+        let reserved_tenant = admin_context.reserved_tenant.clone();
         let admin = admin_routes(&store, &tenants, &keys, directory, settings, admin_context);
-        let routes = routes.merge(admin).merge(console_routes(&store));
+        let routes = routes
+            .merge(admin)
+            .merge(console_routes(&store, reserved_tenant));
         let routes = routes.fallback(not_found);
         let app = app(routes, tenant_state, Some(operations), &config.server);
 
@@ -460,8 +463,10 @@ fn admin_routes(
 ///
 /// Merged into the *tenanted* router beside the admin API, and for the same
 /// reason: the console's credential is a session, and a session belongs to a
-/// tenant, so the shell has to be reached at the issuer whose sessions it will
-/// use — `/t/{id}/admin/`, with no console at the root (ADR-0010).
+/// tenant, so the shell has to be reached at the issuer it administers —
+/// `/t/{id}/admin/`, with no console at the deployment root (ADR-0010). A
+/// path-based tenant may resolve the configured reserved tenant's session, but
+/// the guard admits it there only with deployment-scoped authority (`ast-w4g3`).
 ///
 /// It takes the store because the entry document is guarded (`ast-wr4`): a
 /// visitor with no session is not shown a shell that will discover its own
@@ -471,8 +476,15 @@ fn admin_routes(
 /// A build made without `console/dist` carries an empty bundle and answers 503
 /// with a sentence naming the missing step. The routes exist either way, so
 /// that a deployment's URL space does not depend on how the binary was built.
-fn console_routes(store: &Store) -> axum::Router {
-    asterius_server::http::console::routes(store.clone(), asterius_admin_api::Bundle::embedded())
+fn console_routes(
+    store: &Store,
+    reserved_tenant: Option<asterius_domain::TenantId>,
+) -> axum::Router {
+    asterius_server::http::console::routes(
+        store.clone(),
+        asterius_admin_api::Bundle::embedded(),
+        reserved_tenant,
+    )
 }
 
 /// The client key cache, with its negative half shared through the database.
