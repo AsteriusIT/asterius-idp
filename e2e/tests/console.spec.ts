@@ -1678,3 +1678,98 @@ test('role definitions are created in a dialog on the dedicated Roles page', asy
   await expect(row).toHaveCount(0);
   watcher.assertClean('role definition dialog');
 });
+
+// ast-6uqw.1: operator onboarding uses the same persisted registration the API serves.
+test('guided application onboarding creates, reloads and copies only saved configuration', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await signIn(page);
+  await openClients(page);
+  const name = `Guided application ${Date.now()}`;
+  await page.getByRole('button', { name: 'Register a client' }).click();
+  await expect(page.getByRole('tab', { name: 'Setup guide' })).toHaveAttribute('aria-selected', 'true');
+  await page.getByLabel('Client name', { exact: true }).fill(name);
+  await page.getByLabel('Redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/callback');
+  await page.getByLabel('Post-logout redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/signed-out');
+  await page.getByLabel('Inline JWK Set', { exact: true }).fill(JSON.stringify({ keys: [{
+    kty: 'OKP', crv: 'Ed25519', kid: 'onboarding-public-key',
+    x: '11qYAYdk9JpBAd0-1J1Py3aM5AEKFkxYUNprN9S9Dhs',
+  }] }));
+  const created = page.waitForResponse((response) => response.url().endsWith('/api/v1/clients') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: 'Register client', exact: true }).click();
+  const response = await created;
+  expect(response.status()).toBe(201);
+  const stored = await response.json();
+  await expect(page.getByRole('status')).toContainText(`Registered as ${stored.client_id}`);
+  await page.getByRole('tab', { name: 'Saved configuration', exact: true }).click();
+  const region = page.getByRole('region', { name: 'Saved client configuration', exact: true });
+  const configuration = JSON.parse(await region.innerText());
+  for (const key of ['client_id', 'client_name', 'redirect_uris', 'post_logout_redirect_uris', 'scope',
+    'token_endpoint_auth_method', 'dpop_bound_access_tokens', 'tls_client_certificate_bound_access_tokens',
+    'require_pushed_authorization_requests']) expect(configuration[key]).toEqual(stored[key]);
+  expect(configuration.issuer).toBe(BASE_URL);
+  expect(configuration.discovery_url).toBe(`${BASE_URL}/.well-known/openid-configuration`);
+  expect(configuration.code_challenge_method).toBe('S256');
+  expect(configuration).not.toHaveProperty('jwks');
+  expect(configuration).not.toHaveProperty('client_secret');
+  expect(configuration).not.toHaveProperty('registration_access_token');
+  await page.getByRole('button', { name: 'Copy Saved client configuration', exact: true }).click();
+  expect(JSON.parse(await page.evaluate(() => navigator.clipboard.readText()))).toEqual(configuration);
+  await page.getByRole('tab', { name: 'Setup guide' }).click();
+  await page.getByLabel('Client name', { exact: true }).fill('An unsaved name');
+  await page.getByRole('tab', { name: 'Saved configuration', exact: true }).click();
+  expect(JSON.parse(await region.innerText())).toEqual(configuration);
+  await page.reload();
+  await page.getByRole('button', { name: `Edit ${name}`, exact: true }).click();
+  await page.getByRole('tab', { name: 'Saved configuration', exact: true }).click();
+  expect(JSON.parse(await region.innerText())).toEqual(configuration);
+});
+
+test('guided application onboarding attaches callback key and security refusals to fields', async ({ page }) => {
+  await signIn(page);
+  await openClients(page);
+  await page.getByRole('button', { name: 'Register a client' }).click();
+  await page.getByLabel('Client name', { exact: true }).fill('Invalid guided application');
+  const callbacks = page.getByLabel('Redirect URIs (one per line)', { exact: true });
+  await callbacks.fill('http://app.example.test/callback');
+  await page.getByLabel('JWK Set URL', { exact: true }).fill('https://app.example.test/jwks');
+  await page.getByRole('button', { name: 'Register client', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText(/redirect_uri|https/);
+  await expect(callbacks).toHaveAttribute('aria-invalid', 'true');
+  await callbacks.fill('https://app.example.test/callback');
+  await page.getByLabel('JWK Set URL', { exact: true }).fill('');
+  const keys = page.getByLabel('Inline JWK Set', { exact: true });
+  await keys.fill('{"keys":[{"kty":"OKP","crv":"Ed25519","d":"private-material-must-be-refused"}]}');
+  await page.getByRole('button', { name: 'Register client', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText(/jwks|private/);
+  await expect(keys).toHaveAttribute('aria-invalid', 'true');
+  await keys.fill('');
+  await page.getByLabel('JWK Set URL', { exact: true }).fill('https://app.example.test/jwks');
+  // A stale or manipulated client cannot weaken the server's FAPI baseline.
+  await page.route('**/api/v1/clients', (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    return route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), dpop_bound_access_tokens: false }) });
+  });
+  await page.getByRole('button', { name: 'Register client', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('dpop_bound_access_tokens');
+  await expect(page.getByRole('combobox', { name: 'Sender constraint', exact: true })).toHaveAttribute('aria-invalid', 'true');
+  await expect(page.getByRole('tab', { name: 'Saved configuration', exact: true })).toHaveCount(0);
+});
+
+test('guided application onboarding hides writes for a read-only session and retains saved export', async ({ page }) => {
+  await signIn(page);
+  await page.route(`**${SESSION_ENDPOINT}`, async (route) => {
+    const response = await route.fetch();
+    const session = await response.json();
+    await route.fulfill({ response, json: { ...session, scopes: session.scopes.filter((scope: string) => scope !== 'admin.clients:write') } });
+  });
+  await page.reload();
+  await openClients(page);
+  await expect(page.getByRole('button', { name: 'Register a client', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: /^Edit / }).first().click();
+  await expect(page.getByRole('button', { name: 'Save client', exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Setup guide', exact: true }).click();
+  await expect(page.getByLabel('Client name', { exact: true })).toBeDisabled();
+  await expect(page.getByRole('combobox', { name: 'Client authentication', exact: true })).toBeDisabled();
+  await page.getByRole('tab', { name: 'Saved configuration', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Saved client configuration', exact: true })).toBeVisible();
+});

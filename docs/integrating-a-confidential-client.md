@@ -10,6 +10,33 @@ rather than from memory; the file that decides each rule is named beside it, so
 that a disagreement between this page and the server can be settled without
 guessing.
 
+## Register through the console
+
+Open **Applications → Register a client** in the application's tenant with
+`admin.clients:write`. The **Setup guide** collects the exact HTTPS callbacks,
+optional post-logout destinations, public key source, client authentication and
+sender constraint. Inline public JWKS work for local development; remote JWKS
+URLs must resolve to public addresses. Generate and retain private keys in the
+application, and use a separate DPoP proof key. For self-signed mutual TLS,
+register the certificate's public key in JWKS as described by RFC 8705; for
+PKI mutual TLS, select exactly one certificate subject DN or SAN identity.
+The console offers the authentication methods advertised by this tenant's
+discovery document; certificate binding requires its mutual TLS endpoints.
+
+The existing Settings, Callbacks, Grant types, Credentials and Token claims
+tabs remain available for advanced registration. The API validates every save;
+its field refusals appear in the guide beside the corresponding input. The
+profile always requires PAR, PKCE S256 and sender-constrained tokens.
+
+After registration, open **Saved configuration** and copy the JSON. It is built
+from the last successful API response, including the assigned client ID and
+registered callbacks, and uses the tenant's discovered issuer. Unsaved edits do
+not alter the export. It contains no JWK material, client secrets or registration
+access tokens: configure the application's private key separately. Reloading and
+opening the application produces the same configuration. An operator with only
+`admin.clients:read` can view and copy saved configuration but cannot register
+or save changes.
+
 ## 0. The three things that are not optional
 
 | | Why |
