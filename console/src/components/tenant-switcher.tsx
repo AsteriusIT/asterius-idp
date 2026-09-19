@@ -54,6 +54,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
+import { hrefOf } from '@/routes';
 import { sessionRoleLabel } from '@/session-label';
 import { BuildingIcon, CheckIcon, ChevronsUpDownIcon } from 'lucide-react';
 import { read, type Session } from '@/api';
@@ -153,7 +154,7 @@ export function TenantSwitcher({
           <BuildingIcon className="size-4 shrink-0" aria-hidden="true" />
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate text-sm font-medium">{session.tenant}</span>
-            <span className="truncate text-xs text-foreground">{sessionRoleLabel(session)}</span>
+            <span className="tenant-context-label">Workspace</span>
           </span>
           <ChevronsUpDownIcon
             className="size-4 shrink-0 opacity-60"
@@ -161,15 +162,14 @@ export function TenantSwitcher({
           />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-(--radix-popover-trigger-width) min-w-64 p-0">
+      <PopoverContent align="start" className="tenant-menu w-(--radix-popover-trigger-width) min-w-64 p-0">
+        <div className="tenant-menu-heading"><strong>{session.tenant}</strong><span>{sessionRoleLabel(session)}</span></div>
         <Command>
-          <CommandInput placeholder="Find a tenant…" />
+          {switchable && <CommandInput placeholder="Find a tenant…" />}
           <CommandList>
             {!switchable && (
               <div className="p-3 text-sm text-muted-foreground">
-                This session administers <strong className="text-foreground">{session.tenant}</strong>{' '}
-                and no other tenant, so there is nowhere else to go. A deployment
-                administrator sees the whole list here.
+                You have access to this tenant. Contact a deployment administrator to access another tenant.
               </div>
             )}
             {switchable && load.kind === 'loading' && (
@@ -219,6 +219,7 @@ export function TenantSwitcher({
             )}
           </CommandList>
         </Command>
+        {session.scopes.includes('admin.tenants:write') && <a className="tenant-menu-settings" href={hrefOf('settings')} onClick={() => setOpen(false)}>Tenant settings</a>}
       </PopoverContent>
     </Popover>
   );

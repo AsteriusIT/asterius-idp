@@ -72,13 +72,16 @@ export function PageHeader({
   title,
   description,
   actions,
+  identity,
 }: {
+  identity?: string | undefined;
   title: string;
   description?: ReactNode;
   actions?: ReactNode;
 }): JSX.Element {
   return (
-    <header className="screen-head">
+    <header className={identity ? "screen-head identity-heading" : "screen-head"}>
+      {identity && <span className="identity-avatar detail-avatar" aria-hidden="true">{identity.slice(0, 2).toUpperCase()}</span>}
       <div className="screen-title">
         <h2>{title}</h2>
         {description !== undefined && <p className="muted">{description}</p>}
@@ -89,19 +92,19 @@ export function PageHeader({
 }
 
 export function Screen({
-  title,
-  description,
-  actions,
-  children,
+  title, description, actions, children, back, identity,
 }: {
   title: string;
   description?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
+  back?: { label: string; onClick: () => void };
+  identity?: string | undefined;
 }): JSX.Element {
   return (
     <div className="screen">
-      <PageHeader title={title} description={description} actions={actions} />
+      {back && <button className="back-link" onClick={back.onClick}>← {back.label}</button>}
+      <PageHeader title={title} description={description} actions={actions} identity={identity} />
       {children}
     </div>
   );

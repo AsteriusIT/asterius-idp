@@ -34,11 +34,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { mutate, read, type Session } from './api';
-import {
-  RoleCatalogue,
-  TENANT_CATALOGUE,
-  mayRead as mayReadAppRoles,
-} from './appRoles';
+import { ShieldCheck, KeyRound, Smartphone, ArrowRightLeft, Radio, Fingerprint, Users, Settings2 } from 'lucide-react';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { toast } from './components/ui/toast';
 import { Actions, Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 
@@ -76,6 +73,17 @@ const KNOWN_FEATURES: readonly (readonly [string, string])[] = [
     'Clients sign a challenge this server hands out, so a captured proof cannot be reused',
   ],
 ];
+
+const FEATURE_PRESENTATION = {
+  mtls: { label: 'Certificate-bound access', icon: ShieldCheck, description: 'Authenticate applications with mutual TLS and bind tokens to their certificate.' },
+  grant_management: { label: 'Consent management', icon: Users, description: 'Let applications manage the access their users have granted.' },
+  ciba: { label: 'Decoupled authentication', icon: Smartphone, description: 'Approve a sign-in on a separate, trusted device.' },
+  device_flow: { label: 'Device sign-in', icon: KeyRound, description: 'Sign in on TVs and other devices using a code on another screen.' },
+  token_exchange: { label: 'Token exchange', icon: ArrowRightLeft, description: 'Allow services to exchange tokens to act on a user’s behalf.' },
+  ssf: { label: 'Security event sharing', icon: Radio, description: 'Share security events with connected services using SSF.' },
+  authzen: { label: 'Authorization decisions', icon: Settings2, description: 'Let applications request access decisions through AuthZEN.' },
+  dpop_nonce: { label: 'Proof replay protection', icon: Fingerprint, description: 'Require a fresh challenge for DPoP proofs to prevent reuse.' },
+};
 
 /** The ceilings the server sends with the document. */
 export interface Limits {
@@ -229,7 +237,7 @@ export function TenantSettings({
     [path, session],
   );
 
-  if (load.kind === 'loading' || draft === null) {
+  if (load.kind === 'loading') {
     return (
       <Screen title="Tenant settings">
         <Panel title="Reading">
@@ -248,6 +256,7 @@ export function TenantSettings({
     );
   }
 
+  if (draft === null) return <Skeleton rows={5} label="Reading the settings." />;
   const settings = load.settings;
   const refused = refusedField(refusal);
   const toggle = (name: string, enabled: boolean): void =>
@@ -263,8 +272,7 @@ export function TenantSettings({
       title="Tenant settings"
       description={
         <>
-          What <strong>{settings.tenant_id}</strong> is configured to do. Every value below is
-          checked again by the server when it is saved.
+          Manage sign-in capabilities and token security for <strong>{settings.tenant_id}</strong>.
         </>
       }
     >
@@ -290,7 +298,7 @@ export function TenantSettings({
         nothing is lost by letting the request be made and everything is gained
         by showing what came back.
       */}
-      <Panel title="Configuration">
+      <div className="tenant-configuration">
       <form
         noValidate
         onSubmit={(event) => {
@@ -298,35 +306,35 @@ export function TenantSettings({
           save(draft);
         }}
       >
-        <fieldset disabled={busy}>
-          <legend>Features</legend>
+        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger></TabsList>
+        <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
+          <legend>Sign-in and access capabilities</legend>
           <p className="muted">
-            A feature that is off is absent from this tenant&rsquo;s discovery document as well
-            as refused at its endpoints.
+            Choose which capabilities applications can use in this workspace. Changes take effect when you save.
           </p>
-          <ul className="switches">
-            {featureRows(draft.disabled).map(([name, description]) => (
-              <li key={name}>
-                <label>
-                  <input
-                    type="checkbox"
-                    name={name}
-                    checked={!draft.disabled.includes(name)}
-                    onChange={(event) => toggle(name, event.target.checked)}
-                  />{' '}
-                  <code>{name}</code>
-                </label>
-                <p className="muted">{description}</p>
-              </li>
-            ))}
-          </ul>
-        </fieldset>
+          <div className="capability-list">
+            {featureRows(draft.disabled).map(([name, description]) => {
+              const feature = FEATURE_PRESENTATION[name as keyof typeof FEATURE_PRESENTATION];
+              const Icon = feature?.icon ?? Settings2;
+              const enabled = !draft.disabled.includes(name);
+              return <label className="capability-row" key={name}>
+                <span className="capability-icon"><Icon aria-hidden="true" /></span>
+                <span className="capability-copy"><strong>{feature?.label ?? name}</strong><span>{feature?.description ?? description}</span></span>
+                <span className="capability-state" aria-hidden="true">{enabled ? 'Enabled' : 'Disabled'}</span>
+                <input className="capability-switch" type="checkbox" role="switch" name={name}
+                  aria-label={feature?.label ?? name} checked={enabled}
+                  onChange={(event) => toggle(name, event.target.checked)} />
+              </label>;
+            })}
+          </div>
+        </fieldset></TabsContent>
 
-        <fieldset disabled={busy}>
-          <legend>Lifetimes</legend>
+        <TabsContent value="tokens"><fieldset className="settings-section lifetime-settings" disabled={busy}>
+          <legend>Token lifetimes</legend>
+          <p className="muted">Control how long codes and access tokens remain valid. Shorter lifetimes reduce the window for misuse.</p>
           <Field
             label="Authorization code lifetime (seconds)"
-            hint={`This deployment refuses anything above ${settings.limits.max_authorization_code_lifetime_seconds} seconds.`}
+            hint={`Time to exchange a sign-in code for tokens. Maximum ${settings.limits.max_authorization_code_lifetime_seconds} seconds.`}
             error={refused === 'code' ? 'This is the value the server refused above.' : null}
           >
             {(props) => (
@@ -343,7 +351,7 @@ export function TenantSettings({
           </Field>
           <Field
             label="Access token lifetime (seconds)"
-            hint={`This deployment refuses anything above ${settings.limits.max_access_token_lifetime_seconds} seconds.`}
+            hint={`Time an access token can be used before renewal. Maximum ${settings.limits.max_access_token_lifetime_seconds} seconds.`}
             error={refused === 'token' ? 'This is the value the server refused above.' : null}
           >
             {(props) => (
@@ -358,7 +366,7 @@ export function TenantSettings({
               />
             )}
           </Field>
-        </fieldset>
+        </fieldset></TabsContent></Tabs>
 
         <Actions>
           <Button
@@ -372,33 +380,7 @@ export function TenantSettings({
           </Button>
         </Actions>
       </form>
-      </Panel>
-
-      {/*
-        The tenant's shared role catalogue (`ast-095`). Here rather than on a
-        screen of its own because it is a property of the tenant, like the
-        features above, and because the account screen that assigns these roles
-        needs somewhere to send an operator who has none to assign. Its own
-        scope, `admin.app_roles:read`, and not this screen's: whoever may edit
-        a tenant's settings is not automatically whoever names the roles its
-        applications authorise against.
-      */}
-      {!elsewhere && mayReadAppRoles(session) && (
-        <RoleCatalogue
-          session={session}
-          path={TENANT_CATALOGUE}
-          title="Application roles of this tenant"
-          explanation="Names every application of this tenant shares, issued in the roles claim of a token. Not the roles that administer this server — those are on an account, under admin.roles. Deleting one is refused while any account still holds it."
-        />
-      )}
-
-      <Panel id="not-here" title="Not configurable yet">
-        <p className="muted">
-          Theme tokens, the ACR policy, rate limits and session lifetimes are not served by this
-          release&rsquo;s admin API, so this screen does not offer them. A control that saved
-          nowhere would be worse than none.
-        </p>
-      </Panel>
+      </div>
     </Screen>
   );
 }

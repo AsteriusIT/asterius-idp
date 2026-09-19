@@ -36,13 +36,15 @@ import {
   Actions,
   Button,
   DataTable,
-  EmptyState,
   Field,
   LoadFailure,
   Message,
   Panel,
   Skeleton,
+  Screen,
 } from './ui';
+import { FormSelect } from './components/ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './components/ui/dialog';
 import { roleDescription, roleName } from './validation';
 
 /** The scope a catalogue is read with. */
@@ -168,6 +170,7 @@ export function RoleCatalogue({
   explanation: string;
 }): JSX.Element {
   const [load, setLoad] = useState<Load<Catalogue>>({ kind: 'loading' });
+  const [creating, setCreating] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -197,6 +200,7 @@ export function RoleCatalogue({
     mutate(path, 'POST', session, body).then(
       () => {
         setBusy(false);
+        setCreating(false);
         setName('');
         setDescription('');
         setNotice(`${body.name as string} is in the catalogue.`);
@@ -231,16 +235,14 @@ export function RoleCatalogue({
   };
 
   return (
-    <Panel id={`catalogue-${path}`} title={title} description={explanation}>
+    <section className="role-catalogue" aria-label={title}>
+      <div className="role-catalogue-toolbar"><p className="muted">{explanation}</p>{writable && <Button variant="primary" onClick={() => { setRefusal(null); setCreating(true); }}>+ New role</Button>}</div>
       {notice !== null && <Message tone="success">{notice}</Message>}
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading the catalogue." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && load.value.roles.length === 0 && (
-        <EmptyState
-          title="No role has been defined here yet."
-          body="A role defined here is a name this tenant's applications authorise against."
-        />
+        <div className="table-scroll"><table><thead><tr><th>Role name</th><th>Description</th></tr></thead><tbody><tr><td colSpan={2} className="empty-table">No roles defined yet. Create a role to start assigning access.</td></tr></tbody></table></div>
       )}
       {load.kind === 'ready' && load.value.roles.length > 0 && (
         <DataTable
@@ -256,11 +258,11 @@ export function RoleCatalogue({
               key: 'name',
               header: 'Role',
               sortBy: (role) => role.name,
-              cell: (role) => <code>{role.name}</code>,
+              cell: (role) => <strong>{role.name}</strong>,
             },
             {
               key: 'description',
-              header: 'What it is for',
+              header: 'Description',
               sortBy: (role) => role.description ?? '',
               cell: (role) => role.description ?? '',
             },
@@ -282,6 +284,9 @@ export function RoleCatalogue({
         />
       )}
       {writable && (
+        <Dialog open={creating} onOpenChange={(open) => { if (!busy) setCreating(open); }}><DialogContent>
+        <DialogHeader><DialogTitle>New role</DialogTitle><DialogDescription>Define an access role that you can assign to users.</DialogDescription></DialogHeader>
+        {refusal !== null && <Message tone="error">{refusal}</Message>}
         <form
           noValidate
           onSubmit={(event) => {
@@ -289,8 +294,7 @@ export function RoleCatalogue({
             create();
           }}
         >
-          <fieldset disabled={busy}>
-            <legend>Define a role</legend>
+          <fieldset className="role-dialog-fields" disabled={busy}>
             <Field
               label="Name"
               required
@@ -300,9 +304,7 @@ export function RoleCatalogue({
               error={roleName(name)}
               hint={
                 <>
-                  Lower case, digits and <code>-_.:</code>, up to 64 characters. The name is
-                  copied verbatim into tokens, so the server refuses anything a resource server
-                  could read as two roles.
+                  Use lowercase letters, numbers or <code>-_.:</code>. Maximum 64 characters.
                 </>
               }
             >
@@ -318,8 +320,8 @@ export function RoleCatalogue({
               )}
             </Field>
             <Field
-              label="What it is for"
-              hint="For whoever assigns it. It is never issued in a token."
+              label="Description"
+              hint="Help administrators understand when to assign this role."
               error={roleDescription(description)}
             >
               {(props) => (
@@ -333,14 +335,15 @@ export function RoleCatalogue({
               )}
             </Field>
             <Actions>
+              <Button onClick={() => setCreating(false)} disabled={busy}>Cancel</Button>
               <Button type="submit" variant="primary" disabled={busy || name.trim() === ''}>
-                Define role
+                Create role
               </Button>
             </Actions>
           </fieldset>
-        </form>
+        </form></DialogContent></Dialog>
       )}
-    </Panel>
+    </section>
   );
 }
 
@@ -372,6 +375,8 @@ export function UserAppRoles({
   const [chosen, setChosen] = useState('');
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+  const [search, setSearch] = useState('');
   const writable = mayWrite(session);
   const path = heldPath(userId);
 
@@ -428,6 +433,7 @@ export function UserAppRoles({
       () => {
         setSaving(false);
         setChosen('');
+        setAssigning(false);
         onChanged(`${chosen} was assigned.`);
         refresh();
       },
@@ -466,22 +472,17 @@ export function UserAppRoles({
   );
 
   return (
-    <Panel
+    <Panel className="flat-section"
       id="app-roles"
       title="Application roles"
-      description={
-        <>
-          What this account may do <em>in the tenant&rsquo;s applications</em>, issued in the{' '}
-          <code>roles</code> and <code>resource_access</code> claims. Administering this server is
-          the separate list above.
-        </>
-      }
+      description="Access assigned to this user across the tenant and its applications."
+      actions={writable ? <Button variant="primary" onClick={() => { setSearch(''); setAssigning(true); }}>Assign role</Button> : undefined}
     >
       {refusal !== null && <Message tone="error">{refusal}</Message>}
       {load.kind === 'loading' && <Skeleton rows={3} label="Reading the assignments." />}
       {load.kind === 'failed' && <LoadFailure message={load.message} onRetry={refresh} />}
       {load.kind === 'ready' && held.length === 0 && (
-        <EmptyState title="This account holds no application role." />
+        <div className="table-wrap"><table><thead><tr><th>Role name</th><th>Application</th><th>Assignment</th></tr></thead><tbody><tr><td colSpan={3} className="table-empty">No application roles assigned to this user.</td></tr></tbody></table></div>
       )}
       {load.kind === 'ready' && held.length > 0 && (
         <DataTable
@@ -501,7 +502,7 @@ export function UserAppRoles({
             },
             {
               key: 'catalogue',
-              header: 'Catalogue',
+              header: 'Application',
               sortBy: (assignment) => assignment.clientId ?? '',
               cell: (assignment) =>
                 assignment.clientId === null ? (
@@ -510,6 +511,7 @@ export function UserAppRoles({
                   <code>{assignment.clientId}</code>
                 ),
             },
+            { key: 'assignment', header: 'Assignment', cell: () => 'Direct' },
             ...(writable
               ? [
                   {
@@ -531,66 +533,55 @@ export function UserAppRoles({
           ]}
         />
       )}
-      {writable && (
-        <form
-          noValidate
-          onSubmit={(event) => {
-            event.preventDefault();
-            assign();
-          }}
-        >
-          <div className="toolbar">
-            <Field label="Catalogue">
-              {(props) => (
-                <select
-                  {...props}
-                  name="client_id"
-                  value={owner}
-                  disabled={busy || saving}
-                  onChange={(event) => {
-                    setOwner(event.target.value);
-                    setChosen('');
-                  }}
-                >
-                  <option value="">the tenant (every application)</option>
-                  {clients.map((clientId) => (
-                    <option key={clientId} value={clientId}>
-                      {clientId}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </Field>
-            <Field label="Role">
-              {(props) => (
-                <select
-                  {...props}
-                  name="name"
-                  value={chosen}
-                  disabled={busy || saving || offered.length === 0}
-                  onChange={(event) => setChosen(event.target.value)}
-                >
-                  <option value="">Choose a role</option>
-                  {offered.map((role) => (
-                    <option key={role.name} value={role.name}>
-                      {role.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </Field>
-            <Button type="submit" variant="primary" disabled={busy || saving || chosen === ''}>
-              Assign
-            </Button>
-          </div>
-          {offered.length === 0 && (
-            <p className="muted">
-              This catalogue has nothing left to give. A tenant role is defined on the tenant
-              settings screen and a client&rsquo;s own roles on the client screen.
-            </p>
-          )}
-        </form>
-      )}
+      <Dialog open={assigning} onOpenChange={setAssigning}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Assign application role</DialogTitle><DialogDescription>Choose a catalogue, then select the access to grant.</DialogDescription></DialogHeader>
+          {refusal !== null && <Message tone="error">{refusal}</Message>}
+          <form onSubmit={(event) => { event.preventDefault(); assign(); }}>
+            <Field label="Catalogue">{(props) => <FormSelect {...props} name="client_id" value={owner}
+              disabled={busy || saving} onValueChange={(value) => { setOwner(value); setChosen(''); }}
+              options={[{ value: '', label: 'Tenant · every application' }, ...clients.map((id) => ({ value: id, label: id }))]} />}</Field>
+            <Field label="Find a role">{(props) => <input {...props} type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search roles" />}</Field>
+            <div className="role-picker" role="radiogroup" aria-label="Available roles">
+              {offered.filter((role) => `${role.name} ${role.description ?? ''}`.toLowerCase().includes(search.toLowerCase())).map((role) => (
+                <label className="role-choice" key={role.name}>
+                  <input type="radio" name="role" value={role.name} checked={chosen === role.name} disabled={busy || saving} onChange={() => setChosen(role.name)} />
+                  <span><strong>{role.name}</strong><small>{role.description ?? 'No description provided.'}</small></span>
+                </label>
+              ))}
+              {offered.length === 0 && <p className="muted">No unassigned roles in this catalogue. Create roles in tenant or application settings.</p>}
+            </div>
+            <Actions end><Button onClick={() => setAssigning(false)}>Cancel</Button><Button type="submit" variant="primary" disabled={!writable || busy || saving || chosen === ''}>Assign role</Button></Actions>
+          </form>
+        </DialogContent>
+      </Dialog>
+
     </Panel>
   );
+}
+
+/** Dedicated home for workspace and application role definitions. */
+export function Roles({ session, client }: { session: Session; client?: string | null }): JSX.Element {
+  const [owner, setOwner] = useState(client ?? '');
+  const [clients, setClients] = useState<readonly { client_id: string; client_name?: string }[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setOwner(client ?? ''); }, [client]);
+  useEffect(() => {
+    if (!session.scopes.includes('admin.clients:read')) return;
+    let active = true;
+    read('clients').then(value => { if (active) setClients((value as { items: typeof clients }).items); },
+      reason => { if (active) setError(failure(reason, 'Applications could not be loaded')); });
+    return () => { active = false; };
+  }, [session.scopes]);
+  const options = [{ value: '', label: 'Workspace · shared across applications' },
+    ...clients.map(item => ({ value: item.client_id, label: item.client_name || item.client_id }))];
+  if (owner !== '' && !options.some(option => option.value === owner)) options.push({ value: owner, label: owner });
+  return <Screen title="Roles" description="Define access roles, then assign them to users from their profile.">
+    {error !== null && <Message tone="error">{error}</Message>}
+    <div className="role-scope"><Field label="Role scope" hint="Workspace roles are shared. Application roles apply to one application.">
+      {props => <FormSelect {...props} value={owner} onValueChange={setOwner} options={options} />}
+    </Field></div>
+    <RoleCatalogue key={owner} session={session} path={owner === '' ? TENANT_CATALOGUE : clientCatalogue(owner)} title="Role definitions"
+      explanation={owner === '' ? 'Roles available across this workspace.' : 'Roles available within the selected application.'} />
+  </Screen>;
 }

@@ -80,6 +80,6 @@ export async function signInAt(
  * exactly that.
  */
 export async function open(page: Page, link: string, heading: string): Promise<void> {
-  await page.getByRole('link', { name: link }).click();
+  await page.getByRole('link', { name: link, exact: true }).click();
   await expect(page.getByRole('heading', { name: heading })).toBeVisible();
 }

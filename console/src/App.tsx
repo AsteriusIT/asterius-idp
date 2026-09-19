@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, endSession, loadSession, type Session } from './api';
 import { AuditExplorer } from './audit';
+import { Roles } from './appRoles';
 import { Clients } from './clients';
 import { AppSidebar, NAVIGATION_ICONS } from './components/app-sidebar';
 import { AppTopbar } from './components/app-topbar';
@@ -115,21 +116,14 @@ export function App(): JSX.Element {
   const here = DESTINATIONS.find((destination) => destination.route === current);
 
   return (
-    <SidebarProvider open={false}>
-      <a
-        className="skip"
-        href={`${hrefOf(current)}`}
-        onClick={focusMain}
-      >
-        Skip to content
-      </a>
+    <SidebarProvider defaultOpen>
+      <AppTopbar
+        session={shell.session}
+        page={here?.label ?? 'Not found'}
+        onSignOut={() => signOut(shell.session)}
+      />
       <AppSidebar session={shell.session} current={current} />
       <SidebarInset>
-        <AppTopbar
-          session={shell.session}
-          page={here?.label ?? 'Not found'}
-          onSignOut={() => signOut(shell.session)}
-        />
         <main id="content" tabIndex={-1} className="content">
           <RouteScreen route={current} fragment={fragment} session={shell.session} />
         </main>
@@ -137,11 +131,6 @@ export function App(): JSX.Element {
       <Toaster />
     </SidebarProvider>
   );
-}
-
-/** Moves keyboard focus to the content, which a fragment link alone does not. */
-function focusMain(): void {
-  document.getElementById('content')?.focus();
 }
 
 /**
@@ -162,6 +151,7 @@ function RouteScreen({
   fragment: string;
   session: Session;
 }): JSX.Element {
+  if (route === 'roles') return <Roles session={session} client={paramsOf(fragment).get('client')} />;
   if (route === 'users') {
     return <Users session={session} />;
   }
@@ -221,7 +211,7 @@ function RouteScreen({
  * of its own.
  */
 function Overview({ session }: { session: Session }): JSX.Element {
-  const destinations = visibleTo(session).filter((destination) => destination.route !== 'overview');
+  const destinations = visibleTo(session).filter((destination) => destination.route !== 'overview' && !destination.menuOnly);
   return (
     <Screen
       title="Overview"
@@ -269,7 +259,7 @@ function Overview({ session }: { session: Session }): JSX.Element {
             {destinations.map((destination) => {
               const Icon = NAVIGATION_ICONS[destination.route];
               return (
-                <div className="workspace-card" key={destination.route}>
+                <a className="workspace-card" key={destination.route} href={hrefOf(destination.route)}>
                   <span className="workspace-icon" aria-hidden="true">
                     {Icon !== undefined && <Icon />}
                   </span>
@@ -277,7 +267,7 @@ function Overview({ session }: { session: Session }): JSX.Element {
                     <strong>{destination.label}</strong>
                     <small>{destination.group}</small>
                   </span>
-                </div>
+                </a>
               );
             })}
           </div>

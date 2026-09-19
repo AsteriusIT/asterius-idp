@@ -41,6 +41,7 @@ export const GROUPS: readonly Group[] = [
 export interface Destination {
   /** The fragment route, without the `#`. */
   readonly route: string;
+  readonly menuOnly?: boolean;
   /** What the link says. */
   readonly label: string;
   /** The authority needed to get anything out of it. */
@@ -91,6 +92,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'overview', label: 'Overview', reach: 'tenant', scope: 'admin.tenants:read', bead: 'ast-f7m.3', group: 'Overview' },
   { route: 'users', label: 'Users', reach: 'tenant', scope: 'admin.users:read', bead: 'ast-f7m.6', group: 'Directory' },
   { route: 'clients', label: 'Applications', reach: 'tenant', scope: 'admin.clients:read', bead: 'ast-f7m.5', group: 'Directory' },
+  { route: 'roles', label: 'Roles', reach: 'tenant', scope: 'admin.app_roles:read', bead: 'ast-7fvb', group: 'Directory' },
   // Built by `ast-l5bl`, so the tag is historical like the four around it.
   // The line kept the *epic* while it was a placeholder, because no child
   // ticket carried a tenants screen and a placeholder naming a closed or
@@ -119,10 +121,10 @@ export const DESTINATIONS: readonly Destination[] = [
   { route: 'policy', label: 'Access policy', reach: 'tenant', scope: 'admin.policies:read', bead: 'ast-f7m.9', group: 'Trust' },
   // A form nobody may save is worse than an absent link, so the settings
   // screen asks for the write scope its only button needs.
-  { route: 'settings', label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn', group: 'Deployment' },
+  { route: 'settings', menuOnly: true, label: 'Tenant settings', reach: 'tenant', scope: 'admin.tenants:write', bead: 'ast-bfn', group: 'Deployment' },
   // Local-only browser preferences. It makes no API call, so there is no
   // server scope to require and every signed-in console user can reach it.
-  { route: 'preferences', label: 'Settings', reach: 'tenant', scope: null, bead: 'ast-f7m.10', group: 'Deployment' },
+  { route: 'preferences', menuOnly: true, label: 'Preferences', reach: 'tenant', scope: null, bead: 'ast-f7m.10', group: 'Deployment' },
 ];
 
 /**
@@ -161,7 +163,7 @@ export interface Section {
  * an empty column is a promise of screens that are not there.
  */
 export function sectionsFor(held: HeldScopes): readonly Section[] {
-  const visible = visibleTo(held);
+  const visible = visibleTo(held).filter((destination) => !destination.menuOnly);
   return GROUPS.map((group) => ({
     group,
     destinations: visible.filter((destination) => destination.group === group),

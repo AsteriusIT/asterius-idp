@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
 import {
   ChevronDownIcon,
+  FingerprintIcon,
   CopyIcon,
   LogOutIcon,
   Settings2Icon,
@@ -26,22 +27,22 @@ export function AppTopbar({
 }): JSX.Element {
   return (
     <header className="app-topbar">
+      <a className="skip" href="#content" onClick={(event) => {
+        event.preventDefault();
+        document.getElementById('content')?.focus();
+      }}>Skip to content</a>
       <div className="topbar-context">
         <SidebarTrigger className="md:hidden" />
         <a className="topbar-product" href={hrefOf('overview')}>
-          <h1>Asterius console</h1>
+          <FingerprintIcon aria-hidden="true" /><span className="asterius-wordmark">asterius<span>Identity control</span></span><h1 className="visually-hidden">Asterius console</h1>
         </a>
         <span className="topbar-divider" aria-hidden="true" />
         <TenantSwitcher session={session} className="topbar-tenant" />
-        <span className="topbar-page" aria-current="page">{page}</span>
+
+        <span className="topbar-location" aria-current="page">{page}</span>
       </div>
 
       <div className="topbar-actions">
-        <Button asChild variant="ghost" size="icon" title="Display settings">
-          <a href={hrefOf('preferences')} aria-label="Display settings">
-            <Settings2Icon aria-hidden="true" />
-          </a>
-        </Button>
         <AccountMenu session={session} onSignOut={onSignOut} />
       </div>
     </header>
@@ -86,7 +87,7 @@ function AccountMenu({
           </DropdownMenu.Label>
           <DropdownMenu.Item asChild className="account-menu-item">
             <a href={hrefOf('preferences')}>
-              <Settings2Icon aria-hidden="true" />Settings
+              <Settings2Icon aria-hidden="true" />Preferences
             </a>
           </DropdownMenu.Item>
           <DropdownMenu.Item className="account-menu-item" onSelect={() => { void copyIdentifier(); }}>

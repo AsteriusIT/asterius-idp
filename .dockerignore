@@ -17,3 +17,7 @@
 .env
 *.pem
 *.key
+
+# Install dependencies and build the console inside the image.
+**/node_modules
+/console/dist/

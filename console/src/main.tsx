@@ -36,6 +36,7 @@ import './tokens.css';
 import './fonts.css';
 import './tailwind.css';
 import './styles.css';
+import './enterprise.css';
 
 /** The id the entry document puts on its one script element. */
 const ENTRY_SCRIPT_ID = 'console-entry';

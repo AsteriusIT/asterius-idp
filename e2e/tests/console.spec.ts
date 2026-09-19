@@ -53,7 +53,7 @@ import {
   signInAsDeploymentAdmin,
 } from '../src/console.js';
 import { CspWatcher } from '../src/csp.js';
-import { ADMIN_BASE_URL, BASE_URL } from '../src/environment.js';
+import { ADMIN_BASE_URL, BASE_URL, USERNAME } from '../src/environment.js';
 
 const ORIGIN = new URL(BASE_URL).origin;
 
@@ -261,7 +261,8 @@ const ASSEMBLED_SCREENS = [
   'Access policy',
   'Tenants',
   'Tenant settings',
-  'Settings',
+  'Preferences',
+  'Roles',
 ] as const;
 
 for (const theme of ['light', 'dark'] as const) {
@@ -277,7 +278,12 @@ for (const theme of ['light', 'dark'] as const) {
 
       const violations: { screen: string; violations: unknown[] }[] = [];
       for (const screen of ASSEMBLED_SCREENS) {
-        if (screen !== 'Overview') {
+        if (screen === 'Tenant settings') {
+          await openSettings(page);
+        } else if (screen === 'Preferences') {
+          await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+          await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
+        } else if (screen !== 'Overview') {
           if (width === 400) {
             await page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).click();
           }
@@ -314,10 +320,12 @@ for (const theme of ['light', 'dark'] as const) {
  * assert the router while skipping the thing that was missing.
  */
 async function openSettings(page: Page): Promise<void> {
-  await page.getByRole('link', { name: 'Tenant settings' }).click();
+  await page.getByRole('combobox', { name: /Switch tenant/ }).click();
+  await page.getByRole('link', { name: 'Tenant settings', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Tenant settings' })).toBeVisible();
   // The form is drawn from the document the API answered with, so a visible
   // field means the read succeeded rather than that a skeleton rendered.
+  await page.getByRole('tab', { name: 'Token lifetimes', exact: true }).click();
   await expect(page.getByLabel('Authorization code lifetime (seconds)')).toBeVisible();
 }
 
@@ -342,7 +350,8 @@ test('the tenant settings screen is reachable and reads the admin API', async ({
   // and what matters here is that both lifetimes arrived as numbers.
   await expect(page.getByLabel('Authorization code lifetime (seconds)')).not.toHaveValue('');
   await expect(page.getByLabel('Access token lifetime (seconds)')).not.toHaveValue('');
-  await expect(page.getByRole('checkbox', { name: 'device_flow' })).toBeVisible();
+  await page.getByRole('tab', { name: 'Capabilities', exact: true }).click();
+  await expect(page.getByRole('switch', { name: 'Device sign-in', exact: true })).toBeVisible();
   expect(offOrigin, 'the settings screen reached a third party').toEqual([]);
   watcher.assertClean('the tenant settings screen');
 });
@@ -404,7 +413,7 @@ test('the tenant settings screen has no accessibility violation', async ({ page 
  * criterion is that the screen is reachable through the navigation.
  */
 async function openClients(page: Page): Promise<void> {
-  await page.getByRole('link', { name: 'Applications' }).click();
+  await page.getByRole('link', { name: 'Applications', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Applications', exact: true })).toBeVisible();
   // Drawn from the document the API answered with, so a visible search box and
   // a settled table mean the read succeeded rather than that a skeleton
@@ -415,9 +424,11 @@ async function openClients(page: Page): Promise<void> {
 /** Opens the registration form and fills the fields every client needs. */
 async function fillNewClient(page: Page, name: string, callback: string): Promise<void> {
   await page.getByRole('button', { name: 'Register a client' }).click();
-  await expect(page.getByRole('heading', { name: 'New client' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Register an application' })).toBeVisible();
   await page.getByLabel('Client name').fill(name);
+  await page.getByRole('tab', { name: 'Callbacks', exact: true }).click();
   await page.getByLabel('Redirect URIs (one per line)', { exact: true }).fill(callback);
+  await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
   await page.getByLabel('JWK Set URL').fill('https://app.example.test/jwks.json');
 }
 
@@ -473,7 +484,9 @@ test('the console cannot register a client dynamic registration would refuse', a
 
   // Act: a client with no key source at all, which RFC 7591 §2 leaves this
   // server nothing to verify a `private_key_jwt` assertion with.
+  await page.getByRole('tab', { name: 'Callbacks', exact: true }).click();
   await page.getByLabel('Redirect URIs (one per line)', { exact: true }).fill('https://app.example.test/callback');
+  await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
   await page.getByLabel('JWK Set URL').fill('');
   await page.getByRole('button', { name: 'Register client' }).click();
 
@@ -535,7 +548,7 @@ test('the clients screen has no accessibility violation', async ({ page }, testI
   await signIn(page);
   await openClients(page);
   await page.getByRole('button', { name: 'Register a client' }).click();
-  await expect(page.getByRole('heading', { name: 'New client' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Register an application' })).toBeVisible();
 
   // Act
   const results = await new AxeBuilder({ page })
@@ -651,7 +664,7 @@ async function createAccount(page: Page): Promise<string> {
 async function openAccount(page: Page, username: string): Promise<void> {
   await page
     .getByRole('row', { name: new RegExp(username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) })
-    .getByRole('button', { name: 'Open' })
+    .getByRole('button', { name: username, exact: true })
     .click();
   await expect(page.getByRole('heading', { name: username })).toBeVisible();
 }
@@ -744,6 +757,7 @@ test('a session belonging to somebody else can be ended from the console', async
 
   // Act
   await openAccount(page, username);
+  await page.getByRole('tab', { name: 'Sessions', exact: true }).click();
   await expect(page.getByRole('cell', { name: 'live' })).toBeVisible();
   await page.getByRole('button', { name: 'End session' }).click();
 
@@ -770,7 +784,7 @@ test('a deployment administrator reaches the users screen', async ({ page }) => 
 
   // Assert: the shell is the deployment one — Tenants is a deployment-reach
   // destination and is hidden from a tenant admin.
-  await expect(page.getByRole('link', { name: 'Tenants' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Tenants', exact: true })).toBeVisible();
 
   // Act
   await openScreen(page, 'Users', 'Users');
@@ -817,7 +831,7 @@ test('the reserved tenant serves a console of its own', async ({ page }) => {
  * signs in as holds `admin.ssf:read`, which is what the link is gated on.
  */
 async function openSharedSignals(page: Page): Promise<void> {
-  await page.getByRole('link', { name: 'Shared signals' }).click();
+  await page.getByRole('link', { name: 'Shared signals', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Shared signals' })).toBeVisible();
   // Drawn from the two documents the API answered with: the streams table's
   // heading and the dead-letter table's, which the administrator may read.
@@ -854,7 +868,7 @@ test('the shared-signals screen is reachable and reads the admin API', async ({
  * Walks the navigation to the audit explorer (`ast-f7m.8`).
  */
 async function openAudit(page: Page): Promise<void> {
-  await page.getByRole('link', { name: 'Audit trail' }).click();
+  await page.getByRole('link', { name: 'Audit trail', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Audit trail' })).toBeVisible();
   await expect(page.getByLabel('Agent')).toBeVisible();
 }
@@ -932,9 +946,10 @@ test('the audit layout is compactable, collapsible and responsive', async ({ pag
   await expect(row.locator('time')).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   await expect(row.locator('details.audit-detail')).toBeVisible();
 
-  await page.getByRole('link', { name: 'Display settings' }).click();
-  const density = page.getByRole('group', { name: 'Table density' });
-  await density.getByRole('button', { name: 'Compact' }).click();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
+  const density = page.getByRole('radiogroup', { name: 'Table density' });
+  await density.getByRole('radio', { name: 'Compact' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-table-density', 'compact');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-table-density', 'compact');
@@ -954,7 +969,7 @@ test('the audit layout is compactable, collapsible and responsive', async ({ pag
 
 /** Walks the navigation to the policy editor (`ast-f7m.9`). */
 async function openPolicy(page: Page): Promise<void> {
-  await page.getByRole('link', { name: 'Access policy' }).click();
+  await page.getByRole('link', { name: 'Access policy', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Access policy', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Try a request' })).toBeVisible();
 }
@@ -1204,7 +1219,7 @@ test('a tenant admin is offered no tenants screen', async ({ page }) => {
   await expect(page.getByRole('navigation', { name: 'Console sections' })).toBeVisible();
 
   // Act / Assert
-  await expect(page.getByRole('link', { name: 'Tenants' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Tenants', exact: true })).toHaveCount(0);
 });
 
 /**
@@ -1229,15 +1244,16 @@ test('the console opens in the light theme and remembers the dark one', async ({
   await expect(page.locator('html')).not.toHaveClass(/dark/);
 
   // Act
-  await page.getByRole('link', { name: 'Display settings' }).click();
-  await page.getByRole('button', { name: /^Dark/ }).click();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
+  await page.getByRole('radio', { name: 'Dark', exact: true }).click();
 
   // Assert: applied…
   await expect(page.locator('html')).toHaveClass(/dark/);
   // …and remembered, which a reload is the only honest test of.
   await page.reload();
   await expect(page.locator('html')).toHaveClass(/dark/);
-  await expect(page.getByRole('button', { name: /^Light/ })).toBeVisible();
+  await expect(page.getByRole('radio', { name: 'Light', exact: true })).toBeVisible();
 });
 
 /**
@@ -1254,8 +1270,9 @@ test('the console opens in the light theme and remembers the dark one', async ({
 test('the dark theme has no accessibility violation either', async ({ page }, testInfo) => {
   // Arrange
   await signIn(page);
-  await page.getByRole('link', { name: 'Display settings' }).click();
-  await page.getByRole('button', { name: /^Dark/ }).click();
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
+  await page.getByRole('radio', { name: 'Dark', exact: true }).click();
   await expect(page.locator('html')).toHaveClass(/dark/);
 
   // Font loading and the theme's colour transitions can still be in flight
@@ -1324,13 +1341,17 @@ test('mobile navigation closes after choosing a screen and keeps account actions
   expect(results.violations).toEqual([]);
 });
 
-test('the desktop sidebar stays a fixed icon rail without a resize affordance', async ({ page }) => {
+test('the desktop sidebar opens labelled and can collapse without losing navigation', async ({ page }) => {
   // Arrange
   await signIn(page);
   const sidebar = page.locator('[data-slot="sidebar"]').first();
+  await expect(sidebar).toHaveAttribute('data-state', 'expanded');
+  await expect(page.getByRole('link', { name: 'Users', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).click();
   await expect(sidebar).toHaveAttribute('data-state', 'collapsed');
   await expect(page.getByRole('link', { name: 'Users', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Toggle Sidebar', exact: true })).toBeHidden();
+  await page.getByRole('button', { name: 'Toggle Sidebar', exact: true }).click();
+  await expect(sidebar).toHaveAttribute('data-state', 'expanded');
   await expect(page.locator('[data-slot="sidebar-rail"]')).toHaveCount(0);
   await page.getByRole('button', { name: 'Account menu', exact: true }).click();
   await expect(page.getByRole('menuitem', { name: 'Sign out', exact: true })).toBeVisible();
@@ -1387,7 +1408,7 @@ test('a tenant admin is offered no other tenant to switch to', async ({ page }) 
   await page.getByRole('combobox', { name: /Switch tenant/ }).click();
 
   // Assert
-  await expect(page.getByText('and no other tenant')).toBeVisible();
+  await expect(page.getByText('You have access to this tenant.', { exact: false })).toBeVisible();
   await expect(page.getByRole('option')).toHaveCount(0);
 });
 
@@ -1397,7 +1418,7 @@ test('a tenant admin is offered no other tenant to switch to', async ({ page }) 
 
 /** Walks the navigation to the signing keys, which is a hand-built table. */
 async function openSigningKeys(page: Page): Promise<void> {
-  await page.getByRole('link', { name: 'Signing keys' }).click();
+  await page.getByRole('link', { name: 'Signing keys', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Signing keys', exact: true })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Published JWK Set' })).toBeVisible();
 }
@@ -1485,7 +1506,7 @@ test('a key table filters, and says how many of how many are shown', async ({ pa
 test('a field says what the server would refuse, without refusing it', async ({ page }) => {
   // Arrange
   await signIn(page);
-  await page.getByRole('link', { name: 'Users' }).click();
+  await page.getByRole('link', { name: 'Users', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Add an account' })).toBeVisible();
   const email = page.getByLabel('Email');
 
@@ -1549,4 +1570,93 @@ test('registering a client raises a toast and keeps the record', async ({ page }
   // neither assertion can be satisfied — or broken — by the other's element.
   await expect(toastStrip(page)).toContainText('Client registered');
   await expect(page.getByRole('status')).toContainText(/Registered as c\./);
+});
+
+// Interaction regressions found during the reference-led console review.
+test('account tabs preserve drafts and fit narrow screens without a scrollbar', async ({ page }) => {
+  await signIn(page);
+  await openScreen(page, 'Users', 'Users');
+  const search = page.getByLabel('Search', { exact: true });
+  const searchButton = page.getByRole('button', { name: 'Search', exact: true });
+  expect((await search.boundingBox())?.height).toBe((await searchButton.boundingBox())?.height);
+  await expect(page.getByRole('button', { name: 'Open', exact: true })).toHaveCount(0);
+  await search.fill(USERNAME);
+  await searchButton.click();
+  await page.getByRole('button', { name: USERNAME, exact: true }).click();
+  await page.getByRole('tab', { name: 'Claims', exact: true }).click();
+  await page.getByLabel('Email', { exact: true }).fill('unsaved-draft@example.test');
+  await page.getByRole('tab', { name: 'Sessions', exact: true }).click();
+  await expect(page.getByLabel('Email', { exact: true })).toBeHidden();
+  await expect(page.getByRole('tabpanel')).toHaveCount(1);
+  await expect(page.getByRole('heading', { name: 'Sessions', exact: true })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Claims', exact: true }).click();
+  await expect(page.getByLabel('Email', { exact: true })).toHaveValue('unsaved-draft@example.test');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const dimensions = await page.getByRole('tablist').evaluate((element) => ({
+    width: element.clientWidth, scroll: element.scrollWidth,
+    page: document.documentElement.scrollWidth, viewport: innerWidth,
+  }));
+  expect(dimensions.scroll).toBe(dimensions.width);
+  expect(dimensions.page).toBe(dimensions.viewport);
+  await page.getByRole('tab', { name: 'Sessions', exact: true }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(page.getByRole('tab', { name: 'Authorizations', exact: true })).toHaveAttribute('aria-selected', 'true');
+});
+
+test('application tabs retain edits and selects support keyboard choice', async ({ page }) => {
+  await signIn(page);
+  await openClients(page);
+  await page.getByRole('button', { name: 'Register a client' }).click();
+  await page.getByLabel('Client name', { exact: true }).fill('Unsaved application draft');
+  await page.getByRole('tab', { name: 'Credentials', exact: true }).click();
+  const algorithm = page.getByRole('combobox', { name: 'ID token signing algorithm', exact: true });
+  await algorithm.focus();
+  await page.keyboard.press('Enter');
+  await page.getByRole('option', { name: 'PS256', exact: true }).click();
+  await expect(algorithm).toHaveText('PS256');
+  await page.getByRole('tab', { name: 'Grant types', exact: true }).click();
+  await page.getByRole('checkbox', { name: /Machine to machine/ }).check();
+  await page.getByRole('tab', { name: 'Settings', exact: true }).click();
+  await expect(page.getByLabel('Client name', { exact: true })).toHaveValue('Unsaved application draft');
+  await page.getByRole('tab', { name: 'Grant types', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: /Machine to machine/ })).toBeChecked();
+});
+
+
+test('workspace settings and personal preferences live in their context menus', async ({ page }) => {
+  await signIn(page);
+  const navigation = page.getByRole('navigation', { name: 'Console sections' });
+  await expect(navigation.getByRole('link', { name: /settings|preferences/i })).toHaveCount(0);
+  await openSettings(page);
+  await page.getByRole('tab', { name: 'Capabilities', exact: true }).click();
+  const device = page.getByRole('switch', { name: 'Device sign-in', exact: true });
+  const initial = await device.isChecked();
+  await device.setChecked(!initial);
+  await page.getByRole('tab', { name: 'Token lifetimes', exact: true }).click();
+  await page.getByRole('tab', { name: 'Capabilities', exact: true }).click();
+  await expect(device).toBeChecked({ checked: !initial });
+  await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
+  await expect(device).toBeChecked({ checked: initial });
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Preferences', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Preferences', exact: true })).toBeVisible();
+});
+
+test('role definitions are created in a dialog on the dedicated Roles page', async ({ page, context }) => {
+  const watcher = await CspWatcher.attach(context, true);
+  await signIn(page);
+  await openScreen(page, 'Roles', 'Roles');
+  const name = `ui-review-${Date.now()}`;
+  await expect(page.getByLabel('Name', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '+ New role', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Name', { exact: true }).fill(name);
+  await dialog.getByLabel('Description', { exact: true }).fill('Temporary browser verification role');
+  await dialog.getByRole('button', { name: 'Create role', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const row = page.getByRole('row').filter({ has: page.getByText(name, { exact: true }) });
+  await expect(row).toContainText('Temporary browser verification role');
+  await row.getByRole('button', { name: `Delete ${name}`, exact: true }).click();
+  await expect(row).toHaveCount(0);
+  watcher.assertClean('role definition dialog');
 });
