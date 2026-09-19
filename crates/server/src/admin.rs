@@ -1372,6 +1372,16 @@ impl AdminBackend for Deployment {
         ))
     }
 
+    fn authorization_details_types(
+        &self,
+        tenant: &TenantId,
+    ) -> Arc<dyn asterius_domain::ports::AuthorizationDetailsTypeRepository> {
+        Arc::new(asterius_store_pg::PgAuthorizationDetailsTypes::new(
+            self.store.pool().clone(),
+            tenant.clone(),
+        ))
+    }
+
     fn capabilities(&self) -> Capabilities {
         self.capabilities
     }

@@ -44,6 +44,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod authorization_details_types;
 pub mod backend;
 pub mod clients;
 pub mod console;
@@ -119,6 +120,9 @@ pub const RESOURCE_SERVER_READ_ID: &str = "resource_servers.read";
 pub const RESOURCE_SERVER_UPDATE_ID: &str = "resource_servers.update";
 /// The `operationId` of `DELETE /resource-servers/{identifier}`.
 pub const RESOURCE_SERVER_WITHDRAW_ID: &str = "resource_servers.withdraw";
+pub const AUTHORIZATION_DETAILS_TYPES_LIST_ID: &str = "authorization_details_types.list";
+pub const AUTHORIZATION_DETAILS_TYPE_UPDATE_ID: &str = "authorization_details_types.update";
+pub const AUTHORIZATION_DETAILS_TYPE_DELETE_ID: &str = "authorization_details_types.delete";
 /// The `operationId` of `GET /registration`.
 pub const REGISTRATION_READ_ID: &str = "registration.read";
 /// The `operationId` of `GET /initial-access-tokens`.
@@ -405,6 +409,33 @@ pub const RESOURCE_SERVER_WITHDRAW: Operation = Operation::mutation(
     M::Delete,
     A::new(R::Tenant, "admin.resource_servers:write"),
     "Withdraws one resource server from future token issuance",
+);
+
+/// The RFC 9396 detail types this tenant accepts.
+pub const AUTHORIZATION_DETAILS_TYPES_LIST: Operation = Operation::read(
+    AUTHORIZATION_DETAILS_TYPES_LIST_ID,
+    "/authorization-details-types",
+    S::Get,
+    A::new(R::Tenant, "admin.authorization_details_types:read"),
+    "Lists this tenant's registered authorization-details types",
+);
+
+/// Creates or replaces one registered detail type after schema validation.
+pub const AUTHORIZATION_DETAILS_TYPE_UPDATE: Operation = Operation::mutation(
+    AUTHORIZATION_DETAILS_TYPE_UPDATE_ID,
+    "/authorization-details-types/{type}",
+    M::Put,
+    A::new(R::Tenant, "admin.authorization_details_types:write"),
+    "Creates or replaces one authorization-details type",
+);
+
+/// Withdraws one detail type from future authorization requests.
+pub const AUTHORIZATION_DETAILS_TYPE_DELETE: Operation = Operation::mutation(
+    AUTHORIZATION_DETAILS_TYPE_DELETE_ID,
+    "/authorization-details-types/{type}",
+    M::Delete,
+    A::new(R::Tenant, "admin.authorization_details_types:write"),
+    "Withdraws one authorization-details type",
 );
 
 /// Whether dynamic client registration admits anybody, and on how many
@@ -1074,7 +1105,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 63] = [
+static REGISTRY: [Operation; 66] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -1092,6 +1123,9 @@ static REGISTRY: [Operation; 63] = [
     RESOURCE_SERVER_READ,
     RESOURCE_SERVER_UPDATE,
     RESOURCE_SERVER_WITHDRAW,
+    AUTHORIZATION_DETAILS_TYPES_LIST,
+    AUTHORIZATION_DETAILS_TYPE_UPDATE,
+    AUTHORIZATION_DETAILS_TYPE_DELETE,
     REGISTRATION_READ,
     INITIAL_ACCESS_TOKENS_LIST,
     INITIAL_ACCESS_TOKEN_CREATE,

@@ -85,7 +85,7 @@ impl PgAuthorizationDetailsTypes {
     /// # Errors
     ///
     /// [`DomainError::Storage`] if the delete fails.
-    pub async fn withdraw(&self, name: &str) -> Result<bool, DomainError> {
+    async fn remove(&self, name: &str) -> Result<bool, DomainError> {
         let affected = sqlx::query!(
             "delete from authorization_details_types
               where tenant_id = $1 and type_name = $2",
@@ -138,5 +138,13 @@ impl AuthorizationDetailsTypeRepository for PgAuthorizationDetailsTypes {
             });
         }
         Ok(types)
+    }
+
+    async fn register(&self, kind: &AuthorizationDetailsType) -> Result<(), DomainError> {
+        Self::register(self, kind, kind.schema.document()).await
+    }
+
+    async fn withdraw(&self, name: &str) -> Result<bool, DomainError> {
+        self.remove(name).await
     }
 }

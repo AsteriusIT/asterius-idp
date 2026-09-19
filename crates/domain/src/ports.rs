@@ -232,6 +232,12 @@ pub trait AuthorizationDetailsTypeRepository: Debug + Send + Sync {
     /// nothing": that would turn an outage into what looks like a deliberate
     /// withdrawal of every type, and admit nothing while advertising nothing.
     async fn list(&self) -> Result<Vec<AuthorizationDetailsType>, DomainError>;
+
+    /// Registers or replaces one type using its validated schema document.
+    async fn register(&self, kind: &AuthorizationDetailsType) -> Result<(), DomainError>;
+
+    /// Withdraws one type, returning whether it existed.
+    async fn withdraw(&self, name: &str) -> Result<bool, DomainError>;
 }
 
 /// Something that can only be reached through a tenant.

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { JSX } from 'react';
 import { ApiError, endSession, loadSession, type Session } from './api';
 import { AuditExplorer } from './audit';
+import { AuthorizationDetailsTypes } from './authorizationDetailsTypes';
 import { Roles } from './appRoles';
 import { Clients } from './clients';
 import { AppSidebar, NAVIGATION_ICONS } from './components/app-sidebar';
@@ -161,6 +162,9 @@ function RouteScreen({
   }
   if (route === 'resources') {
     return <ResourceServers session={session} />;
+  }
+  if (route === 'authorization-details') {
+    return <AuthorizationDetailsTypes session={session} />;
   }
   if (route === 'keys') {
     return <Keys session={session} />;

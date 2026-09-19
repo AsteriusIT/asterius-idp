@@ -234,6 +234,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
         tenant: &TenantId,
     ) -> Arc<dyn asterius_domain::ports::ResourceServerRepository>;
 
+    /// This tenant's RFC 9396 type registry, over the store request validation reads.
+    fn authorization_details_types(
+        &self,
+        tenant: &TenantId,
+    ) -> Arc<dyn asterius_domain::ports::AuthorizationDetailsTypeRepository>;
+
     /// The deployment's outbox, for the dead-letter screen (`ast-0ju.9`).
     ///
     /// A handle for the same reason [`Self::tenants`] is one: the object

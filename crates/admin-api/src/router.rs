@@ -40,8 +40,8 @@ use crate::idempotency::{self, IdempotencyKey};
 use crate::operations::{Method, Operation};
 use crate::pagination::{Cursor, Page, PageRequest};
 use crate::{
-    audit, clients, csrf, initial_access_tokens, keys, openapi, outbox, policies, resource_servers,
-    ssf, throttle, users,
+    audit, authorization_details_types, clients, csrf, initial_access_tokens, keys, openapi,
+    outbox, policies, resource_servers, ssf, throttle, users,
 };
 
 /// The client address, as this crate sees it.
@@ -292,6 +292,15 @@ async fn route(
         crate::RESOURCE_SERVER_READ_ID => context.read_resource_server().await,
         crate::RESOURCE_SERVER_UPDATE_ID => context.update_resource_server(body).await,
         crate::RESOURCE_SERVER_WITHDRAW_ID => context.withdraw_resource_server().await,
+        crate::AUTHORIZATION_DETAILS_TYPES_LIST_ID => {
+            context.list_authorization_details_types().await
+        }
+        crate::AUTHORIZATION_DETAILS_TYPE_UPDATE_ID => {
+            context.update_authorization_details_type(body).await
+        }
+        crate::AUTHORIZATION_DETAILS_TYPE_DELETE_ID => {
+            context.delete_authorization_details_type().await
+        }
         crate::REGISTRATION_READ_ID => Ok(context.read_registration_gate()),
         crate::INITIAL_ACCESS_TOKENS_LIST_ID => context.list_initial_access_tokens().await,
         crate::INITIAL_ACCESS_TOKEN_CREATE_ID => context.issue_initial_access_token(body).await,
@@ -1176,6 +1185,95 @@ impl Handling<'_> {
     /// Percent-decodes the one-segment representation emitted by
     /// `encodeURIComponent`; the decoded value is validated before a write.
     fn resource_identifier_in_path(&self) -> Result<String, AdminError> {
+        let segment = self
+            .path
+            .rsplit('/')
+            .next()
+            .filter(|value| !value.is_empty())
+            .ok_or(AdminError::NotFound)?;
+        let encoded = format!("value={}", segment.replace('+', "%2B"));
+        url::form_urlencoded::parse(encoded.as_bytes())
+            .next()
+            .map(|(_, value)| value.into_owned())
+            .ok_or(AdminError::NotFound)
+    }
+
+    async fn list_authorization_details_types(&self) -> Result<Response, AdminError> {
+        let kinds = self
+            .state
+            .backend
+            .authorization_details_types(&self.tenant.id)
+            .list()
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::AUTHORIZATION_DETAILS_TYPES_LIST_ID, &error)
+            })?;
+        let items = kinds
+            .iter()
+            .map(authorization_details_types::render)
+            .collect::<Vec<_>>();
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"items": items}),
+        ))
+    }
+
+    async fn update_authorization_details_type(
+        &self,
+        body: axum::body::Body,
+    ) -> Result<Response, AdminError> {
+        let name = self.last_decoded_path_segment()?;
+        let document: authorization_details_types::Document = self.parse_body(body).await?;
+        let kind = authorization_details_types::parse(&name, document)?;
+        self.state
+            .backend
+            .authorization_details_types(&self.tenant.id)
+            .register(&kind)
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::AUTHORIZATION_DETAILS_TYPE_UPDATE_ID, &error)
+            })?;
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::AUTHORIZATION_DETAILS_TYPE_UPDATE_ID)
+                .text("authorization_details_type", &kind.name),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &authorization_details_types::render(&kind),
+        ))
+    }
+
+    async fn delete_authorization_details_type(&self) -> Result<Response, AdminError> {
+        let name = self.last_decoded_path_segment()?;
+        let removed = self
+            .state
+            .backend
+            .authorization_details_types(&self.tenant.id)
+            .withdraw(&name)
+            .await
+            .map_err(|error| {
+                AdminError::from_storage(crate::AUTHORIZATION_DETAILS_TYPE_DELETE_ID, &error)
+            })?;
+        if !removed {
+            return Err(AdminError::NotFound);
+        }
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::AUTHORIZATION_DETAILS_TYPE_DELETE_ID)
+                .text("authorization_details_type", &name),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({"withdrawn": true}),
+        ))
+    }
+
+    fn last_decoded_path_segment(&self) -> Result<String, AdminError> {
         let segment = self
             .path
             .rsplit('/')
@@ -3516,6 +3614,8 @@ mod tests {
         minted: Mutex<u32>,
         clients: Mutex<Vec<Client>>,
         resource_servers: Mutex<Vec<(TenantId, asterius_domain::ResourceServer)>>,
+        authorization_details_types:
+            Mutex<Vec<(TenantId, asterius_domain::AuthorizationDetailsType)>>,
         capabilities: Mutex<asterius_domain::Capabilities>,
         /// Sectors this fake will confirm. A registration naming anything else
         /// is refused, which is how a test reaches OIDC Registration §5's
@@ -3622,6 +3722,65 @@ mod tests {
     struct FakeResourceServers {
         handle: Handle,
         tenant: TenantId,
+    }
+
+    #[derive(Debug, Clone)]
+    struct FakeAuthorizationDetailsTypes {
+        handle: Handle,
+        tenant: TenantId,
+    }
+
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::AuthorizationDetailsTypeRepository for FakeAuthorizationDetailsTypes {
+        async fn list(
+            &self,
+        ) -> Result<Vec<asterius_domain::AuthorizationDetailsType>, DomainError> {
+            let mut rows = self
+                .handle
+                .0
+                .authorization_details_types
+                .lock()
+                .expect("an uncontended lock")
+                .iter()
+                .filter(|(tenant, _)| tenant == &self.tenant)
+                .map(|(_, kind)| kind.clone())
+                .collect::<Vec<_>>();
+            rows.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(rows)
+        }
+
+        async fn register(
+            &self,
+            kind: &asterius_domain::AuthorizationDetailsType,
+        ) -> Result<(), DomainError> {
+            let mut rows = self
+                .handle
+                .0
+                .authorization_details_types
+                .lock()
+                .expect("an uncontended lock");
+            if let Some((_, held)) = rows
+                .iter_mut()
+                .find(|(tenant, held)| tenant == &self.tenant && held.name == kind.name)
+            {
+                *held = kind.clone();
+            } else {
+                rows.push((self.tenant.clone(), kind.clone()));
+            }
+            Ok(())
+        }
+
+        async fn withdraw(&self, name: &str) -> Result<bool, DomainError> {
+            let mut rows = self
+                .handle
+                .0
+                .authorization_details_types
+                .lock()
+                .expect("an uncontended lock");
+            let before = rows.len();
+            rows.retain(|(tenant, kind)| tenant != &self.tenant || kind.name != name);
+            Ok(rows.len() < before)
+        }
     }
 
     #[async_trait::async_trait]
@@ -5084,6 +5243,16 @@ mod tests {
             })
         }
 
+        fn authorization_details_types(
+            &self,
+            tenant: &TenantId,
+        ) -> Arc<dyn asterius_domain::ports::AuthorizationDetailsTypeRepository> {
+            Arc::new(FakeAuthorizationDetailsTypes {
+                handle: self.clone(),
+                tenant: tenant.clone(),
+            })
+        }
+
         fn application_roles(&self) -> Arc<dyn asterius_domain::ApplicationRoleDirectory> {
             Arc::new(self.clone())
         }
@@ -5130,6 +5299,7 @@ mod tests {
     const SEEDED_CLIENT_ID: &str = "c.SeededClientSeededClien";
     const SEEDED_RESOURCE: &str = "https://api.example/";
     const SEEDED_RESOURCE_PATH: &str = "https%3A%2F%2Fapi.example%2F";
+    const SEEDED_DETAIL_TYPE: &str = "payment_initiation";
 
     /// The account every tenant in the fixture holds, and the value
     /// `{user_id}` is replaced with when a test walks the registry.
@@ -5732,6 +5902,7 @@ mod tests {
             .replace("{kid}", SEEDED_KID)
             .replace("{client_id}", SEEDED_CLIENT_ID)
             .replace("{identifier}", SEEDED_RESOURCE_PATH)
+            .replace("{type}", SEEDED_DETAIL_TYPE)
             .replace("{user_id}", SEEDED_USER_ID)
             .replace("{sid}", SEEDED_SID)
             .replace("{credential_id}", SEEDED_CREDENTIAL_ID)
@@ -5794,6 +5965,15 @@ mod tests {
                 "scopes": ["accounts:read", "accounts:write"],
                 "default_token_lifetime_seconds": 300,
                 "introspection_clients": [SEEDED_CLIENT_ID]
+            }),
+            crate::AUTHORIZATION_DETAILS_TYPE_UPDATE_ID => serde_json::json!({
+                "schema": {
+                    "type": "object",
+                    "required": ["type", "amount"],
+                    "properties": {"amount": {"type": "string", "maxLength": 32}},
+                    "additionalProperties": false
+                },
+                "consent_template": "Initiate the described payment"
             }),
             // A label is the one thing an issuance requires: the quota is the
             // tenant's and the expiry is optional (`ast-cu3`).
@@ -7393,6 +7573,113 @@ mod tests {
         // Assert: the sibling retained its unrestricted registration.
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(body_of(response).await["scopes"], serde_json::Value::Null);
+    }
+
+    async fn edit_authorization_details_type(
+        world: &World,
+        cookie: &str,
+        body: serde_json::Value,
+    ) -> Response {
+        world
+            .send(
+                request_for(&crate::AUTHORIZATION_DETAILS_TYPE_UPDATE)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(cookie))
+                    .body(Body::from(body.to_string()))
+                    .expect("a request"),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn authorization_details_type_upserts_are_validated_scoped_and_audited() {
+        let mut world = World::new().routed_at("acme");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        let malformed = edit_authorization_details_type(
+            &world,
+            &cookie,
+            serde_json::json!({"schema": {"pattern": "not-supported"}, "consent_template": null}),
+        )
+        .await;
+        assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            world
+                .handle
+                .0
+                .authorization_details_types
+                .lock()
+                .expect("a lock")
+                .is_empty()
+        );
+
+        let stored = edit_authorization_details_type(
+            &world,
+            &cookie,
+            serde_json::from_slice(
+                &axum::body::to_bytes(body_for(&crate::AUTHORIZATION_DETAILS_TYPE_UPDATE), 1 << 20)
+                    .await
+                    .expect("body bytes"),
+            )
+            .expect("valid body"),
+        )
+        .await;
+        assert_eq!(stored.status(), StatusCode::OK);
+        {
+            let events = world.handle.0.events.lock().expect("a lock");
+            let recorded = events.last().expect("an audit record");
+            assert_eq!(recorded.event_type, EventType::ADMIN_CHANGED);
+            assert_eq!(
+                rendered(detail_value(&recorded.detail, "operation").expect("an operation"))
+                    .as_deref(),
+                Some(crate::AUTHORIZATION_DETAILS_TYPE_UPDATE_ID),
+            );
+        }
+
+        world.api_tenant = Arc::new(tenant_named("other"));
+        let sibling = world
+            .get(&crate::AUTHORIZATION_DETAILS_TYPES_LIST, &cookie)
+            .await;
+        assert_eq!(body_of(sibling).await["items"], serde_json::json!([]));
+
+        world.api_tenant = Arc::new(tenant_named("acme"));
+        let removed = world
+            .send(
+                request_for(&crate::AUTHORIZATION_DETAILS_TYPE_DELETE)
+                    .header(
+                        "cookie",
+                        format!(
+                            "{}={cookie}",
+                            asterius_domain::entities::session::COOKIE_NAME
+                        ),
+                    )
+                    .header(csrf::HEADER, csrf::token(&cookie))
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
+            .await;
+        assert_eq!(removed.status(), StatusCode::OK);
+        assert!(
+            world
+                .handle
+                .0
+                .authorization_details_types
+                .lock()
+                .expect("a lock")
+                .is_empty()
+        );
+        let events = world.handle.0.events.lock().expect("a lock");
+        let recorded = events.last().expect("a deletion audit record");
+        assert_eq!(
+            rendered(detail_value(&recorded.detail, "operation").expect("an operation")).as_deref(),
+            Some(crate::AUTHORIZATION_DETAILS_TYPE_DELETE_ID),
+        );
     }
 
     // ---- the authenticator a deployment admin must have used (`ast-895`) ---
