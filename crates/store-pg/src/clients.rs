@@ -37,7 +37,9 @@ use asterius_domain::{
     JwksSource, ManagedClient, PreviousRegistrationAccessToken, TenantId, TokenDeliveryMode,
 };
 use sqlx::Acquire as _;
+use sqlx::Row as _;
 use sqlx::postgres::PgPool;
+use std::collections::BTreeSet;
 use time::OffsetDateTime;
 
 /// The client repository for one tenant.
@@ -765,6 +767,60 @@ impl PgClientRepository {
         .ok_or(DomainError::NotFound)?;
 
         row.into_entity(&self.tenant, self.capabilities)
+    }
+
+    /// Replaces the administrator-owned resource allow-list atomically.
+    ///
+    /// The selected registry rows are locked until the client update commits,
+    /// so a concurrent resource-server withdrawal cannot slip between the
+    /// membership check and the write. A later withdrawal is still allowed;
+    /// request-time registry validation then makes that audience unusable.
+    pub async fn replace_resources(
+        &self,
+        client_id: &ClientId,
+        resources: &BTreeSet<String>,
+    ) -> Result<Client, DomainError> {
+        let mut transaction = self.pool.begin().await.map_err(to_domain_error)?;
+        let requested: Vec<String> = resources.iter().cloned().collect();
+
+        let registered = sqlx::query(
+            "select identifier
+             from resource_servers
+             where tenant_id = $1 and identifier = any($2)
+             for key share",
+        )
+        .bind(self.tenant.as_str())
+        .bind(&requested)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?;
+
+        if registered.len() != requested.len() {
+            return Err(DomainError::invalid(
+                "resources",
+                "every resource must be registered in this tenant",
+            ));
+        }
+
+        let updated = sqlx::query(
+            "update clients
+             set resources = $3
+             where tenant_id = $1 and client_id = $2
+             returning client_id",
+        )
+        .bind(self.tenant.as_str())
+        .bind(client_id.as_str())
+        .bind(&requested)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(to_domain_error)?
+        .ok_or(DomainError::NotFound)?;
+
+        let updated: String = updated.try_get("client_id").map_err(to_domain_error)?;
+        transaction.commit().await.map_err(to_domain_error)?;
+        self.find(&ClientId::new(updated))
+            .await?
+            .ok_or(DomainError::NotFound)
     }
 
     /// Whether `registration` is admissible under the agent profile the stored

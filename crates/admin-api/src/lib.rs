@@ -127,6 +127,8 @@ pub const CLIENT_READ_ID: &str = "clients.read";
 pub const CLIENT_CREATE_ID: &str = "clients.create";
 /// The `operationId` of `PUT /clients/{client_id}`.
 pub const CLIENT_UPDATE_ID: &str = "clients.update";
+/// The `operationId` of `PUT /clients/{client_id}/resources`.
+pub const CLIENT_RESOURCES_UPDATE_ID: &str = "clients.resources.update";
 /// The `operationId` of `GET /resource-servers`.
 pub const RESOURCE_SERVERS_LIST_ID: &str = "resource_servers.list";
 /// The `operationId` of `GET /resource-servers/{identifier}`.
@@ -488,6 +490,19 @@ pub const CLIENT_UPDATE: Operation = Operation::mutation(
     M::Put,
     A::new(R::Tenant, "admin.clients:write"),
     "Replaces one client's registration",
+);
+
+/// Replaces one client's administrator-owned resource allow-list.
+///
+/// This is not part of [`CLIENT_UPDATE`]'s registration document: dynamic
+/// registration and RFC 7592 updates must not let a client grant itself access
+/// to a resource server.
+pub const CLIENT_RESOURCES_UPDATE: Operation = Operation::mutation(
+    CLIENT_RESOURCES_UPDATE_ID,
+    "/clients/{client_id}/resources",
+    M::Put,
+    A::new(R::Tenant, "admin.clients:write"),
+    "Replaces one client's authorized resource-server audiences",
 );
 
 /// The audiences this tenant issues access tokens for.
@@ -1304,7 +1319,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 85] = [
+static REGISTRY: [Operation; 86] = [
     SESSION_READ,
     SESSION_END,
     OVERVIEW_USERS,
@@ -1328,6 +1343,7 @@ static REGISTRY: [Operation; 85] = [
     CLIENT_READ,
     CLIENT_CREATE,
     CLIENT_UPDATE,
+    CLIENT_RESOURCES_UPDATE,
     RESOURCE_SERVERS_LIST,
     RESOURCE_SERVER_READ,
     RESOURCE_SERVER_UPDATE,

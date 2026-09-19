@@ -46,10 +46,28 @@ Content-Type: application/json
 }
 ```
 
-After registration, an administrator adds the canonical MCP URI to the
-client's resource allow-list. That allow-list is authorization policy, not
-client-controlled RFC 7591 metadata; a DCR request cannot grant itself a new
-audience.
+After registration, an administrator first registers the canonical MCP URI on
+the **Resource servers** screen, then opens the client on the **Applications**
+screen and selects that audience under **Authorized resources**. These are two
+different controls: the registry says which audiences exist for the tenant;
+the client allow-list says which of them this client may request.
+
+Automation can perform the second step with the tenant-scoped admin API:
+
+```http
+PUT /t/acme/admin/api/v1/clients/c.example/resources HTTP/1.1
+Authorization: DPoP <admin-access-token>
+DPoP: <proof>
+Content-Type: application/json
+
+{"resources":["https://mcp.example.com/mcp"]}
+```
+
+The operation is an explicit replacement. An empty array authorizes no
+resource, and an unknown or other-tenant audience is refused. The allow-list
+is authorization policy, not client-controlled RFC 7591 metadata: DCR POST
+and RFC 7592 PUT ignore a `resources` member and preserve the administrator's
+stored value.
 
 Read discovery rather than constructing endpoint URLs. MCP clients may probe
 the path-inserted RFC 8414 form, the path-inserted OIDC form, or the

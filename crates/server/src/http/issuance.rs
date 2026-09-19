@@ -521,22 +521,21 @@ impl From<DomainError> for TargetingError {
 /// the rules and this function holds the two inputs it cannot know: what this
 /// tenant registered, and what this client's default audiences are.
 ///
-/// # The default audience, and why it is the client's before it is the
-/// tenant's
+/// # The default audience is the client's authorized set
 ///
 /// A client that names no `resource` still gets an audience-bound token,
 /// because RFC 9068 §2.2 makes `aud` REQUIRED and §3 asks the AS for "a default
 /// resource indicator". This server takes the narrowest default available: the
-/// client's own registered allow-list when it has one — a client allowed one
-/// API gets tokens for that API and nothing else — and the tenant's
-/// `default_resource` only for a client with no allow-list at all, which is the
-/// audience such a client's tokens have always carried.
+/// client's own registered allow-list — a client allowed one API gets tokens
+/// for that API and nothing else. A tenant default does not confer permission:
+/// it still has to be assigned to the client by an administrator.
 ///
-/// Either way the default is filtered through the registry, so a resource
-/// server an operator has withdrawn stops being a default audience rather than
-/// quietly continuing to receive tokens. A client with no allow-list under a
-/// tenant whose default resource is not registered has no audience at all, and
-/// gets `invalid_target` instead of a token nobody can safely accept.
+/// The client's allow-list is filtered through the registry, so a resource
+/// server an operator has withdrawn stops being an audience rather than
+/// quietly continuing to receive tokens. An empty allow-list authorizes no
+/// audience at all and gets `invalid_target`; creating a resource-server row
+/// and authorizing a client for it are deliberately separate administrator
+/// decisions.
 ///
 /// # Errors
 ///
@@ -558,11 +557,7 @@ pub async fn targeting(
             .chain(resource_servers.list().await?),
     );
 
-    let defaults: std::collections::BTreeSet<String> = if client.registration.resources.is_empty() {
-        [tenant.default_resource.clone()].into_iter().collect()
-    } else {
-        client.registration.resources.clone()
-    };
+    let defaults = client.registration.resources.clone();
 
     let targets = registry
         .targets(requested, &grant.resources, &defaults)
@@ -922,6 +917,95 @@ mod tests {
             created_at: epoch(),
             updated_at: epoch(),
         }
+    }
+
+    #[derive(Debug)]
+    struct RegisteredResources(Vec<asterius_domain::ResourceServer>);
+
+    #[async_trait::async_trait]
+    impl asterius_domain::ResourceServerRepository for RegisteredResources {
+        async fn list(&self) -> Result<Vec<asterius_domain::ResourceServer>, DomainError> {
+            Ok(self.0.clone())
+        }
+
+        async fn register(
+            &self,
+            _server: &asterius_domain::ResourceServer,
+        ) -> Result<(), DomainError> {
+            unimplemented!("not reached by targeting")
+        }
+
+        async fn withdraw(&self, _identifier: &str) -> Result<bool, DomainError> {
+            unimplemented!("not reached by targeting")
+        }
+    }
+
+    fn targeting_client(resources: &[&str]) -> Client {
+        let mut registration = ClientRegistration::from_json(
+            serde_json::json!({
+                "client_name": "Billing",
+                "redirect_uris": ["https://app.example/callback"],
+                "grant_types": ["authorization_code"],
+                "jwks_uri": "https://app.example/jwks.json"
+            })
+            .to_string()
+            .as_bytes(),
+            Capabilities::default(),
+        )
+        .expect("a valid registration");
+        registration.resources = resources.iter().map(ToString::to_string).collect();
+        Client {
+            tenant: TenantId::new("demo"),
+            id: ClientId::new("billing"),
+            registration,
+            status: ClientStatus::Active,
+            created_at: epoch(),
+            updated_at: epoch(),
+        }
+    }
+
+    /// Registering an audience does not authorize every client for it. The
+    /// admin-assigned allow-list is the permission issuance consumes.
+    #[tokio::test]
+    async fn targeting_requires_the_resource_to_be_assigned_to_the_client() {
+        let resource = "https://api.example/accounts";
+        let registry = RegisteredResources(vec![asterius_domain::ResourceServer {
+            identifier: asterius_domain::ResourceIdentifier::parse(resource)
+                .expect("a fixed resource identifier"),
+            scopes: None,
+            default_token_lifetime: None,
+            introspection_clients: std::collections::BTreeSet::new(),
+        }]);
+        let tenant = ssf_tenant();
+        let grant = Grant::new(TenantId::new("demo"), ClientId::new("billing"), epoch());
+        let requested = [resource.to_owned()].into_iter().collect();
+        let implicit = ImplicitResources {
+            grant_management: false,
+            ssf: false,
+        };
+
+        let refused = targeting(
+            &registry,
+            &tenant,
+            &targeting_client(&[]),
+            &grant,
+            &requested,
+            implicit,
+        )
+        .await;
+        assert!(matches!(refused, Err(TargetingError::InvalidTarget)));
+
+        let accepted = targeting(
+            &registry,
+            &tenant,
+            &targeting_client(&[resource]),
+            &grant,
+            &requested,
+            implicit,
+        )
+        .await
+        .expect("the assigned audience is accepted");
+        assert_eq!(accepted.audience.values().collect::<Vec<_>>(), [resource]);
     }
 
     /// §7.1.1: the polling endpoint is protected, so a receiver must be able

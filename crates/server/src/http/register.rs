@@ -523,10 +523,17 @@ async fn registered(
         return refusal;
     }
 
-    let registration = match under_agent_policy(context, now, registration).await {
+    let mut registration = match under_agent_policy(context, now, registration).await {
         Ok(registration) => registration,
         Err(refusal) => return *refusal,
     };
+    // Before `ast-m9c.14`, an empty allow-list inherited this value at token
+    // issuance. Materialise the same server-owned policy at onboarding so an
+    // administrator can later replace it with an explicitly empty list. The
+    // request document still cannot choose an audience for itself.
+    registration
+        .resources
+        .insert(context.tenant.default_resource.clone());
 
     // Minted after validation, so a rejected document consumes no identifier
     // and no entropy.

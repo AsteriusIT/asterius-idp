@@ -889,6 +889,28 @@ pub trait ClientAdministration: Debug + Send + Sync {
     /// tenant, or a storage failure.
     async fn replace(&self, client: &Client) -> Result<Client, DomainError>;
 
+    /// Replaces the administrator-owned RFC 8707 resource allow-list.
+    ///
+    /// This is deliberately separate from [`Self::replace`]. Registration
+    /// metadata belongs to the client and may be replaced through RFC 7592;
+    /// resource authorization belongs to the tenant administrator and must
+    /// never become writable through a client-controlled document.
+    ///
+    /// Every value must name a resource server registered in `tenant`. An
+    /// empty set is an explicit policy that permits no resource.
+    ///
+    /// # Errors
+    ///
+    /// [`DomainError::NotFound`] if the client does not exist in `tenant`,
+    /// [`DomainError::Invalid`] if any resource is not registered in that
+    /// tenant, or a storage failure.
+    async fn replace_resources(
+        &self,
+        tenant: &TenantId,
+        client_id: &ClientId,
+        resources: &std::collections::BTreeSet<String>,
+    ) -> Result<Client, DomainError>;
+
     /// Verifies a `sector_identifier_uri` (OIDC Registration §5), through the
     /// deployment's one outbound path.
     ///

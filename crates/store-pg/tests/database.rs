@@ -7643,6 +7643,67 @@ mod client_configuration {
     }
 
     db_test! {
+        /// The admin-only resource command validates registry membership in
+        /// the same tenant and applies explicit replacement semantics.
+        async fn replacing_client_resources_is_tenant_scoped_and_rejects_unknown_audiences(db) {
+            seed_tenant(&db.pool, "demo").await;
+            seed_tenant(&db.pool, "other").await;
+            let repo = repo(&db.pool, "demo");
+            register(&db.pool, "demo", "c.abc", "the-token").await;
+            sqlx::query(
+                "insert into resource_servers (tenant_id, identifier)
+                 values ('demo', 'https://api.example/accounts'),
+                        ('other', 'https://other.example/private')",
+            )
+            .execute(&db.pool)
+            .await
+            .expect("seed resource servers");
+
+            let allowed = ["https://api.example/accounts".to_owned()]
+                .into_iter()
+                .collect();
+            let stored = repo
+                .replace_resources(&ClientId::new("c.abc"), &allowed)
+                .await
+                .expect("assign the registered resource");
+            assert_eq!(stored.registration.resources, allowed);
+
+            for refused in [
+                "https://unknown.example/api",
+                "https://other.example/private",
+            ] {
+                let resources = [refused.to_owned()].into_iter().collect();
+                assert!(
+                    matches!(
+                        repo.replace_resources(&ClientId::new("c.abc"), &resources)
+                            .await,
+                        Err(DomainError::Invalid { field: "resources", .. })
+                    ),
+                    "accepted {refused}"
+                );
+            }
+
+            assert_eq!(
+                repo.find(&ClientId::new("c.abc"))
+                    .await
+                    .expect("find")
+                    .expect("present")
+                    .registration
+                    .resources,
+                allowed,
+                "a refused replacement changed the stored allow-list"
+            );
+
+            let empty = std::collections::BTreeSet::new();
+            let stored = repo
+                .replace_resources(&ClientId::new("c.abc"), &empty)
+                .await
+                .expect("remove every authorized resource");
+            assert!(stored.registration.resources.is_empty());
+        }
+    }
+
+    db_test! {
         /// RFC 7592 §2.2, against the row: an update replaces the document and
         /// leaves everything that is not in it alone.
         ///

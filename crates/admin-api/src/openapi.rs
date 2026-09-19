@@ -222,6 +222,7 @@ fn operation_object(operation: &Operation) -> Value {
                     "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"} }
         });
     }
+    client_resources_documentation(operation, &mut object);
     theme_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
         object["requestBody"] = request_body;
@@ -248,6 +249,27 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+fn client_resources_documentation(operation: &Operation, object: &mut Value) {
+    if operation.id() != crate::CLIENT_RESOURCES_UPDATE_ID {
+        return;
+    }
+    object["requestBody"] = json!({
+        "required": true,
+        "content": { "application/json": { "schema": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["resources"],
+            "properties": {
+                "resources": {
+                    "type": "array",
+                    "items": {"type": "string", "format": "uri"},
+                    "description": "The exact RFC 8707 resource indicators this client may request. Every value must already be registered in this tenant; an empty array authorizes no resource."
+                }
+            }
+        }}}
+    });
 }
 
 fn theme_documentation(operation: &Operation, object: &mut Value) {

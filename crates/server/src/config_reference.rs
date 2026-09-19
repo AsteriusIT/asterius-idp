@@ -1004,10 +1004,11 @@ fn tenant() -> Section {
                 "default_resource",
                 "https URL, no fragment",
                 "the tenant's `issuer`".to_owned(),
-                "The `aud` an access token carries when the authorization request named \
-                 no `resource` of its own (RFC 8707 §2, RFC 9068 §3). The default means \
-                 \"a token for this server's own protected resources\"; a deployment \
-                 fronting a separate API names that API here.",
+                "The initial resource allow-list assigned by the server to each newly \
+                 registered client (RFC 8707 §2, RFC 9068 §3). The default means \
+                 \"this server's own protected resources\"; a deployment fronting a \
+                 separate API names that API here. An administrator may later replace \
+                 or clear that client's list; an empty list authorizes no resource.",
             ),
         ],
     }

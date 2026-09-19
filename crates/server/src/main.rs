@@ -1144,10 +1144,9 @@ async fn bootstrap_tenants(repository: &ProvisionedTenants, config: &Config) -> 
                 .as_ref()
                 .map_or_else(|| declared.id.to_string(), |t| t.display_name.clone()),
             // Config wins, because it is the thing an operator edits. The
-            // stored value is not preserved the way `display_name` is: an
-            // audience that silently outlived the configuration that set it is
-            // how a tenant keeps minting tokens for a resource server that was
-            // decommissioned.
+            // stored value is not preserved the way `display_name` is. This is
+            // the initial allow-list for clients registered after the change;
+            // existing clients keep their administrator-owned lists.
             default_resource: declared.default_resource.clone(),
             status: existing.as_ref().map_or(TenantStatus::Active, |t| t.status),
             // Config wins here too, and for the same reason `default_resource`

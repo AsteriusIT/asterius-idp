@@ -39,12 +39,10 @@
 //!
 //! # What is deliberately absent
 //!
-//! * **`resources` and `authorization_details_types` editing.** RFC 8707
-//!   resource indicators and the per-client RAR allow-list are policy, not
-//!   registration metadata: `ClientRegistration::resources` says so, and
-//!   `ast-m9c.6` owns the per-tenant policy model. `authorization_details_types`
-//!   is rendered because the validator accepts it in a document, and
-//!   `resources` is rendered read-only because it is not settable at all.
+//! * **`resources` in registration metadata.** RFC 8707 resource indicators
+//!   are policy, not client-controlled registration metadata. They are
+//!   rendered in [`document`] and replaced only by the dedicated admin
+//!   operation; [`ClientRegistration::from_json`] continues to ignore them.
 //! * **The agent profile.** `ast-lh3.1` has landed — the columns, the type and
 //!   the rules all exist — but no console screen edits it, and none is required
 //!   by that story. An agent is created by `POST /register` under a tenant
@@ -61,8 +59,11 @@
 use asterius_domain::keys::{PublicKeyRecord, signs_with};
 use asterius_domain::{
     Client, ClientMetadataError, ClientRegistration, ClientStatus, JwksSource, RedirectUri,
+    ResourceIdentifier,
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 use crate::error::AdminError;
 
@@ -132,9 +133,9 @@ fn jwks_source(source: &JwksSource) -> &'static str {
 ///
 /// Two members here are not RFC 7591 metadata and are marked as such by being
 /// documented rather than by being hidden: `status`, which only an
-/// administrator may set, and `resources`, which nobody may set from a document
-/// yet (`ast-m9c.6`) and which is rendered so that an operator can see what a
-/// client is allowed to ask for.
+/// administrator may set, and `resources`, which the dedicated admin policy
+/// operation may replace and which is rendered so that an operator can see
+/// what a client is allowed to ask for.
 #[must_use]
 pub fn document(client: &Client) -> Value {
     let registration = &client.registration;
@@ -186,9 +187,9 @@ pub fn document(client: &Client) -> Value {
         // be one it silently cleared on the next save.
         "roles_in_id_token": registration.roles_in_id_token.is_issued(),
         "managed_groups_claim": registration.managed_groups_claim.is_issued(),
-        // Not settable from a document (`ast-m9c.6` owns the per-client
-        // audience allow-list); shown because an operator debugging an
-        // `invalid_target` needs to see it.
+        // Not settable from a registration document; shown because an
+        // operator debugging an `invalid_target` needs to see it and because
+        // the dedicated admin policy operation returns this same document.
         "resources": registration
             .resources
             .iter()
@@ -249,6 +250,40 @@ pub fn document(client: &Client) -> Value {
     }
 
     rendered
+}
+
+/// The administrator-owned half of a client registration.
+///
+/// Kept out of [`ClientRegistration`] so neither RFC 7591 nor RFC 7592 can
+/// acquire the ability to self-authorize an audience by deserialising the same
+/// document as this admin-only operation.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceAllowListDocument {
+    resources: Vec<String>,
+}
+
+/// Parses an explicit replacement of a client's RFC 8707 resource allow-list.
+///
+/// Shape and URI syntax are checked here for a useful 400 response. Registry
+/// membership is checked atomically by the repository, where tenant scoping
+/// and concurrent resource-server withdrawal can be enforced.
+pub fn resource_allow_list(body: &[u8]) -> Result<BTreeSet<String>, AdminError> {
+    let document: ResourceAllowListDocument = serde_json::from_slice(body).map_err(|_| {
+        AdminError::Invalid(
+            "the request body must be an object containing only a resources array".to_owned(),
+        )
+    })?;
+
+    for resource in &document.resources {
+        ResourceIdentifier::parse(resource).map_err(|_| {
+            AdminError::Invalid(
+                "resources: every value must be an absolute URI without a fragment".to_owned(),
+            )
+        })?;
+    }
+
+    Ok(document.resources.into_iter().collect())
 }
 
 /// The search term in `q`, as the operator typed it.
@@ -641,6 +676,38 @@ mod tests {
     fn a_body_that_is_not_a_json_object_is_refused() {
         for body in [&b""[..], b"[]", b"null", b"{", b"\xff\xfe"] {
             assert!(requested_status(body).is_err(), "accepted {body:?}");
+        }
+    }
+
+    #[test]
+    fn a_resource_allow_list_is_an_explicit_deduplicated_replacement() {
+        let parsed = resource_allow_list(
+            br#"{"resources":["https://api.example/accounts","https://api.example/accounts"]}"#,
+        )
+        .expect("a resource allow-list");
+        assert_eq!(
+            parsed,
+            ["https://api.example/accounts".to_owned()]
+                .into_iter()
+                .collect()
+        );
+        assert!(
+            resource_allow_list(br#"{"resources":[]}"#)
+                .expect("an explicit empty list")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_resource_allow_list_refuses_bad_shape_and_bad_indicators() {
+        for body in [
+            br"{}".as_slice(),
+            br#"{"resources":"https://api.example"}"#,
+            br#"{"resources":[],"client_secret":"not accepted here"}"#,
+            br#"{"resources":["relative"]}"#,
+            br#"{"resources":["https://api.example/#fragment"]}"#,
+        ] {
+            assert!(resource_allow_list(body).is_err(), "accepted {body:?}");
         }
     }
 

@@ -410,11 +410,11 @@ impl ClientCredentials<'_> {
     /// (RFC 8707 §2.2, RFC 9068 §3).
     ///
     /// The same resolution the authorization-code grant uses, reached through
-    /// the same [`issuance::targeting`]: the client's own allow-list, else the
-    /// tenant's `default_resource`, filtered by the registry either way. The
-    /// grant handed to it is this request's own and authorizes no resource of
-    /// its own, which is what makes the defaults apply — there is no earlier
-    /// authorization for a client-only token to have narrowed.
+    /// the same [`issuance::targeting`]: the client's administrator-owned
+    /// allow-list, filtered by the registry. The grant handed to it is this
+    /// request's own and authorizes no resource of its own, which is what makes
+    /// that allow-list the default set — there is no earlier authorization for
+    /// a client-only token to have narrowed.
     async fn targeting(
         &self,
         tenant: &Tenant,

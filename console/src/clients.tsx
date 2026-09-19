@@ -4,9 +4,8 @@ import { hrefOf } from './routes';
  *
  * What a tenant's administrators can do to the clients registered against
  * them: find one, read its registration, register a new one, edit an existing
- * one, and take one out of service. That is the whole of what the admin API
- * serves (`GET`/`POST /clients`, `GET`/`PUT /clients/{client_id}`), and this
- * screen is deliberately no wider than that.
+ * one, take one out of service, and replace its administrator-owned resource
+ * allow-list.
  *
  * # The API validates metadata; private keys are stopped before upload
  *
@@ -39,9 +38,9 @@ import { hrefOf } from './routes';
  *   report the gate — see {@link RegistrationGate} — because "can anybody
  *   register, and on how many credentials" is a question an operator has to be
  *   able to answer.
- * * **`resources` and RAR types.** Not settable from a registration document
- *   (the per-client audience allow-list is policy, `ast-m9c.6`), so they are
- *   shown read-only where the server sends them and never posted back.
+ * * **`resources` in registration metadata.** They are never posted in the
+ *   registration document. The dedicated policy operation below replaces
+ *   them only from resource servers already registered in this tenant.
  *
  * # No third-party anything
  *
@@ -74,6 +73,7 @@ import {
 import { redirectUris } from './validation';
 import { ClientSetup, ClientSecurity } from './client-setup';
 import { clientConfiguration, clientFieldError, publicKeyError, readClientDiscovery, type ClientDiscovery } from './client-onboarding';
+import { resourceChoices, type ResourceServerSummary } from './client-resources';
 import {
   documentFrom,
   draftOf,
@@ -207,6 +207,12 @@ type Load =
   | { readonly kind: 'ready'; readonly rows: readonly ClientRow[] }
   | { readonly kind: 'failed'; readonly message: string };
 
+type ResourceLoad =
+  | { readonly kind: 'idle' }
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'ready'; readonly rows: readonly ResourceServerSummary[] }
+  | { readonly kind: 'failed'; readonly message: string };
+
 /** Which client the editor is on, if any. */
 type Editing =
   | { readonly kind: 'none' }
@@ -225,7 +231,10 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const [busy, setBusy] = useState(false);
   const [discovery, setDiscovery] = useState<ClientDiscovery | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const [resourceLoad, setResourceLoad] = useState<ResourceLoad>({ kind: 'idle' });
+  const [selectedResources, setSelectedResources] = useState<readonly string[]>([]);
   const canWrite = session.scopes.includes('admin.clients:write');
+  const canReadResources = session.scopes.includes('admin.resource_servers:read');
   useEffect(() => {
     let active = true;
     readClientDiscovery().then(
@@ -251,6 +260,27 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   );
 
   useEffect(() => refresh(''), [refresh]);
+
+  const loadResourceServers = useCallback(() => {
+    if (!canReadResources) {
+      setResourceLoad({
+        kind: 'failed',
+        message: 'Reading registered resource servers requires admin.resource_servers:read.',
+      });
+      return;
+    }
+    setResourceLoad({ kind: 'loading' });
+    read('resource-servers').then(
+      (body) => setResourceLoad({
+        kind: 'ready',
+        rows: (body as { items: readonly ResourceServerSummary[] }).items,
+      }),
+      (error: unknown) => setResourceLoad({
+        kind: 'failed',
+        message: error instanceof Error ? error.message : 'The resource servers could not be read.',
+      }),
+    );
+  }, [canReadResources]);
 
   useEffect(() => {
     // The gate is deployment-scoped, so a tenant administrator is answered 403.
@@ -285,6 +315,8 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         setTab('settings');
         setEditing({ kind: 'existing', document });
         setDraft(draftOf(document));
+        setSelectedResources(document.resources);
+        loadResourceServers();
         setBusy(false);
       },
       (error: unknown) => {
@@ -292,13 +324,44 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         setBusy(false);
       },
     );
-  }, []);
+  }, [loadResourceServers]);
 
   const close = useCallback(() => {
     setTab('settings');
     setEditing({ kind: 'none' });
     setDraft(null);
+    setResourceLoad({ kind: 'idle' });
+    setSelectedResources([]);
   }, []);
+
+  const saveResources = useCallback(
+    (clientId: string) => {
+      if (!canWrite) return;
+      setBusy(true);
+      setNotice(null);
+      setRefusal(null);
+      mutate(`${clientPath(clientId)}/resources`, 'PUT', session, {
+        resources: [...selectedResources],
+      }).then(
+        (body) => {
+          const stored = body as ClientDocument;
+          setEditing({ kind: 'existing', document: stored });
+          setDraft(draftOf(stored));
+          setSelectedResources(stored.resources);
+          setNotice('Authorized resources saved.');
+          toast.success('Resource access saved', stored.client_id);
+          setBusy(false);
+        },
+        (error: unknown) => {
+          const said = error instanceof Error ? error.message : 'the resource policy was refused';
+          setRefusal(said);
+          toast.error('Resource access was not saved', said);
+          setBusy(false);
+        },
+      );
+    },
+    [canWrite, selectedResources, session],
+  );
 
   const save = useCallback(
     (current: Draft, where: Editing) => {
@@ -339,6 +402,8 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           const stored = body as ClientDocument;
           setEditing({ kind: 'existing', document: stored });
           setDraft(draftOf(stored));
+          setSelectedResources(stored.resources);
+          if (where.kind === 'new') loadResourceServers();
           const said =
             where.kind === 'existing' ? 'Saved.' : `Registered as ${stored.client_id}.`;
           setNotice(said);
@@ -364,7 +429,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         },
       );
     },
-    [canWrite, query, refresh, session],
+    [canWrite, loadResourceServers, query, refresh, session],
   );
 
   if (draft !== null && editing.kind !== 'none') {
@@ -388,6 +453,15 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         </Panel>}
         {discoveryError !== null && <Message tone="error">{discoveryError}</Message>}
         {!canWrite && <Message tone="info">Read-only access. Registering and saving applications requires admin.clients:write.</Message>}
+        {editing.kind === 'existing' && <ResourceAllowList
+          load={resourceLoad}
+          selected={selectedResources}
+          busy={busy}
+          canWrite={canWrite}
+          onRetry={loadResourceServers}
+          onChange={setSelectedResources}
+          onSave={() => saveResources(editing.document.client_id)}
+        />}
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList aria-label="Application sections">
             <TabsTrigger value="guide">Setup guide</TabsTrigger>
@@ -471,13 +545,70 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
       <Panel id="clients-not-here" title="Not editable yet">
         <p className="muted">
           The per-tenant registration policy (<code>ast-m9c.6</code>), the agent profile{' '}
-          (<code>ast-lh3.1</code>) and the per-client resource allow-list are not served by this
-          release&rsquo;s admin API, so this screen does not offer them. A control that saved
-          nowhere would be worse than none.
+          (<code>ast-lh3.1</code>) and RAR type policy are not edited on this screen.
         </p>
       </Panel>
     </Screen>
   );
+}
+
+function ResourceAllowList({
+  load,
+  selected,
+  busy,
+  canWrite,
+  onRetry,
+  onChange,
+  onSave,
+}: Readonly<{
+  load: ResourceLoad;
+  selected: readonly string[];
+  busy: boolean;
+  canWrite: boolean;
+  onRetry: () => void;
+  onChange: (resources: readonly string[]) => void;
+  onSave: () => void;
+}>): JSX.Element {
+  const toggle = (identifier: string, checked: boolean): void => {
+    const next = checked
+      ? [...new Set([...selected, identifier])]
+      : selected.filter((resource) => resource !== identifier);
+    onChange(next.sort((left, right) => left.localeCompare(right)));
+  };
+
+  return <Panel title="Authorized resources">
+    <p>
+      Registering a resource server makes its audience known to the tenant. Selecting it here is
+      the separate authorization that lets this client request tokens for that audience.
+    </p>
+    {load.kind === 'idle' || load.kind === 'loading'
+      ? <Skeleton rows={2} label="Reading registered resource servers." />
+      : load.kind === 'failed'
+        ? <LoadFailure message={load.message} onRetry={onRetry} />
+        : resourceChoices(load.rows, selected).length === 0
+          ? <EmptyState title="No resource servers are available." body="Register an audience on the Resource servers screen before authorizing this client." />
+          : <ul className="grant-options">
+            {resourceChoices(load.rows, selected).map((choice) => <li key={choice.identifier}>
+              <label className={selected.includes(choice.identifier) ? 'grant-option selected' : 'grant-option'}>
+                <ServerIcon aria-hidden="true" />
+                <span>
+                  <strong>{choice.identifier}</strong>
+                  <small>{choice.registered ? 'Registered in this tenant' : 'No longer registered; remove this stale assignment'}</small>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={selected.includes(choice.identifier)}
+                  disabled={busy || !canWrite || (!choice.registered && !selected.includes(choice.identifier))}
+                  onChange={(event) => toggle(choice.identifier, event.target.checked)}
+                />
+              </label>
+            </li>)}
+          </ul>}
+    <p className="muted">An empty selection authorizes no resource. Dynamic registration cannot change this list.</p>
+    {canWrite && <Button type="button" variant="primary" disabled={busy || load.kind !== 'ready'} onClick={onSave}>
+      {busy ? 'Saving…' : 'Save authorized resources'}
+    </Button>}
+  </Panel>;
 }
 
 function Inventory({
