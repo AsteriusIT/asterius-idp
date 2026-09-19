@@ -231,7 +231,7 @@ export function AuditExplorer({ session }: { session: Session }): JSX.Element {
       title="Audit trail"
       description={
         <>
-          What happened in <strong>{session.tenant}</strong>, newest first. Filter by the agent
+          What happened in <strong>{session.workspace}</strong>, newest first. Filter by the agent
           that acted, the person it acted for, the person concerned, an authorization, an event
           type or a time window; each row shows the delegation chain the record carries.
         </>

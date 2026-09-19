@@ -501,7 +501,7 @@ export function Clients({ session }: { session: Session }): JSX.Element {
       title="Applications"
       description={
         <>
-          Manage applications, authentication methods, and callback URLs for <strong>{session.tenant}</strong>.
+          Manage applications, authentication methods, and callback URLs for <strong>{session.workspace}</strong>.
         </>
       }
       actions={

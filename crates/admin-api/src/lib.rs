@@ -175,7 +175,8 @@ pub const USER_ROLES_READ_ID: &str = "users.roles.read";
 /// The `operationId` of `PUT /users/{user_id}/roles`.
 pub const USER_ROLES_UPDATE_ID: &str = "users.roles.update";
 
-/// Who the caller is, and the CSRF token the console must send back.
+/// Who the caller is, which tenant this console is acting on, and the CSRF
+/// token the console must send back.
 ///
 /// [`Reach::Authenticated`], because its entire content is about the caller —
 /// but still authenticated, so an anonymous request is a 401 rather than a
@@ -185,7 +186,7 @@ pub const SESSION_READ: Operation = Operation::read(
     "/session",
     S::Get,
     A::new(R::Authenticated, "admin.session:read"),
-    "The signed-in administrator, their roles, and this session's CSRF token",
+    "The signed-in administrator, active workspace, roles, and this session's CSRF token",
 );
 
 /// Ends the caller's own session: the console's "Sign out".

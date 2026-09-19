@@ -370,7 +370,8 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
-    /// `GET /session` — who the console is, and the token it must send back.
+    /// `GET /session` — who the console is, where it is acting, and the token
+    /// it must send back.
     ///
     /// This is where a console obtains its synchroniser token. It is a `GET`,
     /// so a cross-site page could cause the request — and would not be able to
@@ -409,12 +410,18 @@ impl Handling<'_> {
         // its own tenant and by a deployment admin over every tenant, and a
         // console that could not tell them apart would offer the tenant list
         // to somebody who is about to be refused it.
-        let (scopes, deployment_scopes) = Self::held_scopes(held, tenant);
+        let (scopes, deployment_scopes) = Self::held_scopes(held, &self.tenant.id);
 
         Ok(json_no_store(
             StatusCode::OK,
             &serde_json::json!({
+                // `tenant` is where the account and session live. `workspace`
+                // is where this request is acting. They differ when the
+                // reserved tenant's deployment administrator opens another
+                // path-based tenant console (`ast-w4g3`). Keeping both avoids
+                // making the UI call the identity's home the active tenant.
                 "tenant": tenant.as_str(),
+                "workspace": self.tenant.id.as_str(),
                 "user": user.as_uuid().to_string(),
                 "roles": roles,
                 "scopes": scopes,
@@ -8257,6 +8264,23 @@ mod tests {
 
         // Assert
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// The two tenant identities a cross-tenant console needs stay distinct:
+    /// the account and session live in the reserved tenant, while relative API
+    /// calls and the workspace selector act on the routed tenant.
+    #[tokio::test]
+    async fn a_cross_tenant_session_document_names_its_active_workspace() {
+        // Arrange
+        let world = World::new().routed_at("acme");
+        let cookie = world.sign_in("asterius-admin", &[Role::DeploymentAdmin]);
+
+        // Act
+        let document = body_of(world.get(&crate::SESSION_READ, &cookie).await).await;
+
+        // Assert
+        assert_eq!(document["tenant"], "asterius-admin");
+        assert_eq!(document["workspace"], "acme");
     }
 
     /// The other half of the same rule: resolving a reserved-tenant session

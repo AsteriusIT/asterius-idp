@@ -273,6 +273,14 @@ only when the account holds deployment-scoped authority (`ast-w4g3`). The API
 behind the shell applies the same rule (`ast-8gm`). An ordinary tenant session
 is never a cross-tenant credential.
 
+`GET /session` keeps the two tenant identities separate: `tenant` is the home
+of the account and session, while `workspace` is the tenant that served the
+current console and whose relative admin API is being used. Navigation and
+tenant-scoped screen copy use `workspace`; account identity and sign-out still
+belong to `tenant`. This distinction matters after a deployment administrator
+switches away from the reserved tenant—their credential still lives there,
+but the selected workspace does not.
+
 A custom-host tenant is deliberately different: its origin receives no
 `__Host-` cookie set by the reserved tenant's origin. It therefore meets the
 ordinary local sign-in page (`ast-wr4`). No session token is put in the URL or

@@ -175,7 +175,7 @@ export function TenantSettings({
   tenant,
 }: {
   session: Session;
-  /** The tenant to configure. The session's own when absent. */
+  /** The tenant to configure. The active workspace when absent. */
   tenant?: string | null;
 }): JSX.Element {
   const [load, setLoad] = useState<Load>({ kind: 'loading' });
@@ -183,8 +183,8 @@ export function TenantSettings({
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const subject = tenant ?? session.tenant;
-  const elsewhere = subject !== session.tenant;
+  const subject = tenant ?? session.workspace;
+  const elsewhere = subject !== session.workspace;
   const path = settingsPath(subject);
 
   const refresh = useCallback(() => {
