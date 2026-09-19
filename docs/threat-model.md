@@ -1895,6 +1895,28 @@ documents reconciliation and rollback requirements. Administrative authorization
 and audit wiring belong to `ast-6uqw.10`; persistence alone does not expose an API.
 Group parser fuzzing and PostgreSQL race/isolation tests enforce these invariants.
 
+### Managed group administration (`ast-6uqw.10`)
+
+The administration API exposes the managed catalogue with separate
+`admin.groups:read`, `admin.groups:write`, `admin.memberships:read` and
+`admin.memberships:write` authorities. Every lookup and mutation supplies the
+routed tenant to the group port; a UUID belonging to another tenant therefore
+has the same 404 response as an unknown UUID. Console mutations pass through
+the shared synchronizer-token and same-origin CSRF gate, while automation uses
+the existing DPoP-bound admin token gate and exact scopes.
+
+Metadata replacement and deletion require the revision returned by the last
+read. A stale concurrent edit answers 409, and database row locking serializes
+metadata, membership and deletion. Membership PUT and DELETE are idempotent:
+the response reports whether the set changed, and only a change is audited.
+Group creation, replacement, deletion and membership changes append an
+`admin.changed` record naming the operation and opaque UUIDs, never display
+names. The port accepts only `GroupMetadata` and `UserId`; it has no method that
+accepts the built-in `Role` type, so a group route cannot appoint a tenant or
+deployment administrator. Lists and literal name searches use bounded keyset
+pagination. The existing `group_metadata` fuzz target covers every metadata
+document the API admits.
+
 ## 5. Known residual risks
 
 A risk is here when somebody decided to accept it. A choice nobody has made yet

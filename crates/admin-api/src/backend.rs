@@ -215,6 +215,13 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// rather than a rule about what handlers render.
     fn users(&self) -> Arc<dyn asterius_domain::UserAdministration>;
 
+    /// The tenant-scoped managed-group catalogue and direct memberships.
+    ///
+    /// The port accepts a tenant on every operation and has no administrative
+    /// role method, so group management cannot become a route for assigning
+    /// built-in administrator roles.
+    fn groups(&self) -> Arc<dyn asterius_domain::GroupDirectory>;
+
     /// The application-role catalogues and their assignments (`ast-095`).
     ///
     /// A handle for the same reason [`Self::tenants`] is one: the object

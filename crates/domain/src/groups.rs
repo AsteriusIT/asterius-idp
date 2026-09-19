@@ -154,6 +154,16 @@ pub trait GroupDirectory: Debug + Send + Sync {
         after: Option<GroupId>,
         limit: u16,
     ) -> Result<Vec<Group>, DomainError>;
+    /// Searches machine and display names with bounded keyset pagination.
+    /// The term is a literal, case-insensitive substring rather than a SQL
+    /// pattern. An empty term has the same result as [`Self::list`].
+    async fn search(
+        &self,
+        tenant: &TenantId,
+        term: &str,
+        after: Option<GroupId>,
+        limit: u16,
+    ) -> Result<Vec<Group>, DomainError>;
     /// Changes metadata only if the current revision matches.
     async fn update(
         &self,
