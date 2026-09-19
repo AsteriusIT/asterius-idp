@@ -1,0 +1,17 @@
+meta {
+  name: BFF accounts (browser session)
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/accounts
+  body: none
+  auth: none
+}
+
+docs {
+  This endpoint uses the financial API's HTTP-only browser session cookie.
+  Authenticate through the React webapp first; Bruno OAuth tokens are not
+  accepted by this BFF route.
+}

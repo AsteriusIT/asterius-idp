@@ -1,0 +1,17 @@
+services:
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+      GF_AUTH_GENERIC_OAUTH_NAME: "asterius"
+      GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "true"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_ID: "grafana-local"
+      GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: "change-me"
+      GF_AUTH_GENERIC_OAUTH_SCOPES: "openid profile email"
+      GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://host.docker.internal/t/demo/authorize"
+      GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://host.docker.internal/t/demo/token"
+      GF_AUTH_GENERIC_OAUTH_API_URL: "https://host.docker.internal/t/demo/userinfo"
+      GF_AUTH_GENERIC_OAUTH_USE_PKCE: "true"
+      GF_AUTH_GENERIC_OAUTH_VALIDATE_ID_TOKEN: "true"

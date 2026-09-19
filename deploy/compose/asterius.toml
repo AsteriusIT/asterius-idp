@@ -53,6 +53,7 @@ mode = "open"
 [[tenant]]
 id = "demo"
 issuer = "https://localhost/t/demo"
+default_resource = "https://localhost/financial-api"
 
 # The deployment admin (ADR-0010): a user of the reserved tenant `admin`,
 # holding a deployment-scoped role. Without this table `docker compose up`

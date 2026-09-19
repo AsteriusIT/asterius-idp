@@ -1,0 +1,16 @@
+meta {
+  name: Transfers (DPoP)
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/transfers
+  body: none
+  auth: none
+}
+
+docs {
+  This endpoint uses the financial API's HTTP-only browser session cookie.
+  Use the React webapp session, or add a session cookie manually in Bruno.
+}

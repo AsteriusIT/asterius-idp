@@ -45,16 +45,31 @@ async function responseJson(response, operation) {
 }
 
 export class OidcClient {
-  constructor({ issuer, externalUrl, name, fetchImpl = fetch }) {
+  constructor({ issuer, internalIssuer = issuer, externalUrl, name, fetchImpl = fetch }) {
     this.issuer = issuer.replace(/\/$/, '');
+    this.internalIssuer = internalIssuer.replace(/\/$/, '');
     this.externalUrl = externalUrl.replace(/\/$/, '');
     this.name = name;
-    this.fetch = fetchImpl;
+    this.fetch = (url, options) => this.fetchInternal(url, options, fetchImpl);
+  }
+
+  async fetchInternal(url, options = {}, fetchImpl) {
+    const publicUrl = new URL(this.issuer);
+    const internalUrl = new URL(this.internalIssuer);
+    let target = new URL(url);
+    if (target.origin === publicUrl.origin) target = new URL(target.pathname + target.search, internalUrl);
+    const headers = new Headers(options.headers);
+    // Preserve the public authority while reaching the cleartext listener on
+    // the trusted Compose network.
+    headers.set('host', publicUrl.host);
+    headers.set('x-forwarded-host', publicUrl.host);
+    headers.set('x-forwarded-proto', publicUrl.protocol.slice(0, -1));
+    return retryFetch(() => fetchImpl(target, { ...options, headers }));
   }
 
   async initialise() {
     this.discovery = await responseJson(
-      await this.fetch(`${this.issuer}/.well-known/openid-configuration`),
+      await this.fetch(`${this.internalIssuer}/.well-known/openid-configuration`),
       'discovery',
     );
     if (!this.discovery.registration_endpoint) {
@@ -239,7 +254,7 @@ export async function startDemo(config = process.env) {
   const name = config.APP_NAME ?? 'Asterius demo';
   const cookieName = config.COOKIE_NAME ?? `asterius_demo_${createHash('sha256').update(externalUrl).digest('hex').slice(0, 10)}`;
   const cookiePath = new URL(externalUrl).pathname.replace(/\/$/, '') || '/';
-  const client = new OidcClient({ issuer: config.ISSUER, externalUrl, name });
+  const client = new OidcClient({ issuer: config.ISSUER, internalIssuer: config.OIDC_INTERNAL_ISSUER, externalUrl, name });
   await client.initialise();
   const pending = new Map();
   const sessions = new Map();
@@ -332,6 +347,19 @@ export async function startDemo(config = process.env) {
   await new Promise((resolve) => server.listen(port, config.BIND ?? '0.0.0.0', resolve));
   console.log(`${name} listening on ${externalUrl}; client ${client.clientId}`);
   return server;
+}
+
+async function retryFetch(operation, attempts = 30) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+  throw lastError;
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {

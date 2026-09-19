@@ -117,6 +117,7 @@ services:
       PORT: 8080
       EXTERNAL_URL: https://localhost/demo-a
       ISSUER: https://localhost/t/admin
+      OIDC_INTERNAL_ISSUER: http://asterius:9443/t/admin
       # Development only: the stack deliberately generates a self-signed
       # certificate. A deployed BFF must trust its operator's real CA instead.
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -143,7 +144,62 @@ services:
       PORT: 8080
       EXTERNAL_URL: https://localhost/demo-b
       ISSUER: https://localhost/t/admin
+      OIDC_INTERNAL_ISSUER: http://asterius:9443/t/admin
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    networks:
+      - asterius
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Optional protected financial API. Register a client and the
+  # `https://localhost/financial-api` resource in the admin console first,
+  # then provide FINANCIAL_CLIENT_ID and FINANCIAL_CLIENT_PRIVATE_KEY_JWK.
+  # It is profiled so the base deployment remains runnable without application
+  # credentials.
+  financial-api:
+    profiles: [financial]
+    build:
+      context: ../../examples/api
+    depends_on:
+      asterius:
+        condition: service_started
+    environment:
+      PORT: 4000
+      API_URL: https://localhost/financial-api
+      WEBAPP_URL: https://localhost/financial/
+      ISSUER: https://localhost/t/demo
+      OIDC_INTERNAL_ISSUER: http://asterius:9443/t/demo
+      CLIENT_ID: ${FINANCIAL_CLIENT_ID:-financial-example}
+      CLIENT_KEY_ID: ${FINANCIAL_CLIENT_KEY_ID:-financial-example-key}
+      CLIENT_PRIVATE_KEY_JWK: ${FINANCIAL_CLIENT_PRIVATE_KEY_JWK:-}
+      RESOURCE: https://localhost/financial-api
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    expose:
+      - "4000"
+    networks:
+      - asterius
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # Static React client for the financial example. Its Vite build uses
+  # /financial/ as both the asset base and React Router basename; the public
+  # nginx below is the only process that exposes it to the host.
+  financial-webapp:
+    profiles: [financial]
+    build:
+      context: ../../examples/webapp
+    expose:
+      - "8080"
     networks:
       - asterius
     read_only: true

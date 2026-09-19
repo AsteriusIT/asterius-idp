@@ -1,0 +1,14 @@
+{
+  "name": "asterius-financial-example-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.mjs",
+    "start": "node src/server.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "jose": "^6.2.12"
+  }
+}

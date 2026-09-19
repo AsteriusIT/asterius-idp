@@ -1,0 +1,32 @@
+meta {
+  name: Resource accounts (DPoP)
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/resource/accounts
+  body: none
+  auth: oauth2
+}
+
+headers {
+  DPoP: {{dpopProof}}
+}
+
+auth:oauth2 {
+  grant_type: authorization_code
+  callback_url: {{redirectUri}}
+  authorization_url: {{authorizationUrl}}
+  access_token_url: {{tokenUrl}}
+  client_id: {{clientId}}
+  client_secret: {{clientSecret}}
+  scope: {{scope}}
+  pkce: true
+  credentials_placement: body
+  credentials_id: financial
+  token_placement: header
+  token_header_prefix: DPoP
+  auto_fetch_token: true
+  auto_refresh_token: false
+}

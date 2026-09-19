@@ -40,6 +40,24 @@ The password is exported rather than written into the compose file on purpose:
 it seeds the deployment admin, and a literal in a file everybody clones is a
 credential everybody has. The stack refuses to start without it.
 
+The optional `financial` profile runs the Node financial API behind nginx at
+`https://localhost/financial-api` and its React webapp at
+`https://localhost/financial/`. It
+uses `OIDC_INTERNAL_ISSUER=http://asterius:9443/t/demo` for container-to-
+container discovery while preserving the public issuer `https://localhost/t/demo`.
+Register a confidential client for the `https://localhost/financial-api`
+resource, then start it with:
+
+```sh
+export FINANCIAL_CLIENT_ID=...
+export FINANCIAL_CLIENT_PRIVATE_KEY_JWK='{"kty":"EC","crv":"P-256",...}'
+docker compose -f deploy/compose/docker-compose.yml --profile financial up --build -d
+```
+
+The API and webapp containers listen only on the Compose network; nginx is the
+only public entry point. The API's state is in memory and is lost when the
+container restarts.
+
 The smoke test asserts what an operator would check by hand: the process is
 alive, it is ready (which means the database answered *and* every migration
 compiled into the binary is recorded applied), the `demo` tenant answers on both
