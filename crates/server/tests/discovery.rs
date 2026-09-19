@@ -827,6 +827,53 @@ async fn a_flag_switched_off_leaves_the_discovery_document_at_once() {
     );
 }
 
+#[tokio::test]
+async fn assurance_policy_changes_are_published_and_isolated_between_tenants() {
+    let policy = asterius_domain::AcrPolicy::new(vec![
+        asterius_domain::AcrLevel::new(
+            "tenant:verified",
+            [
+                asterius_domain::AuthenticationMethod::Passkey,
+                asterius_domain::AuthenticationMethod::UserVerified,
+            ],
+        )
+        .unwrap(),
+    ])
+    .unwrap();
+    let settings = asterius_domain::TenantSettings::default()
+        .with_acr_policy(policy.clone())
+        .unwrap();
+    let router = two_tenant_server(settings.clone());
+    let (_, _, body) = get(router.clone(), "/t/demo/.well-known/openid-configuration").await;
+    let document: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        document["acr_values_supported"],
+        serde_json::json!(["tenant:verified"])
+    );
+    let (_, _, body) = get(router, "/t/other/.well-known/openid-configuration").await;
+    let document: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        document["acr_values_supported"],
+        serde_json::json!(asterius_domain::AcrPolicy::default().supported_values())
+    );
+
+    let repository = Arc::new(EditableSettings::default());
+    let directory = SettingsDirectory::new(repository.clone());
+    let router = server_with(ALL_ON, Some(directory.clone()));
+    get(router.clone(), "/t/demo/.well-known/openid-configuration").await;
+    repository
+        .save(&TenantId::parse("demo").unwrap(), &settings)
+        .await
+        .unwrap();
+    directory.invalidate();
+    let (_, _, body) = get(router, "/t/demo/.well-known/openid-configuration").await;
+    let document: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        document["acr_values_supported"],
+        serde_json::json!(policy.supported_values())
+    );
+}
+
 /// The subtraction rule at the edge: a tenant cannot advertise a feature the
 /// deployment does not run, whatever its settings say.
 #[tokio::test]

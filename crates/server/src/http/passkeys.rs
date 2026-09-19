@@ -1120,7 +1120,7 @@ async fn signed_in(
         SessionId::from_presented(interaction::cookie_value(&cookies, COOKIE_NAME)?.to_owned());
     let digest = presented.digest();
 
-    let session = match context.sessions.find(&digest).await {
+    let session = match context.sessions.find_for_browser(&digest, now).await {
         Ok(Some(session)) if session.status(now).is_usable() => session,
         Ok(_) => return None,
         Err(error) => {

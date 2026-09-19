@@ -797,7 +797,11 @@ impl Handling<'_> {
 
         Ok(json_no_store(
             StatusCode::OK,
-            &render_settings(&named, &settings),
+            &render_settings_with_rate_limits(
+                &named,
+                &settings,
+                self.state.backend.rate_limit_policy().as_ref(),
+            ),
         ))
     }
 
@@ -833,9 +837,14 @@ impl Handling<'_> {
             .await
             .map_err(|error| AdminError::from_storage("tenants.settings.read", &error))?;
 
-        // Read before the new settings are assembled, because an absent
-        // `registration_policy` means "keep the stored one": `TenantSettings`
-        // is replaced wholesale here, so anything not carried over is deleted.
+        // Older consoles omit newer policies; omission preserves the stored
+        // value instead of silently changing another security control.
+        let acr_policy = match &requested.acr_policy {
+            None => previous.acr_policy().clone(),
+            Some(document) => asterius_domain::AcrPolicy::from_json(document)
+                .map_err(|error| AdminError::Invalid(error.to_string()))?,
+        };
+
         let registration = match &requested.registration_policy {
             None => previous.registration().clone(),
             Some(document) => asterius_domain::RegistrationPolicy::from_json(Some(document))
@@ -873,22 +882,39 @@ impl Handling<'_> {
             }
         };
 
-        // The one line this whole operation exists for. `TenantSettings` has
-        // private fields and one constructor, so there is no way past it.
-        let settings = TenantSettings::validated(
-            disabled,
-            time::Duration::seconds(requested.authorization_code_lifetime_seconds),
-            time::Duration::seconds(requested.access_token_lifetime_seconds),
-        )
-        .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?
-        .with_registration(registration)
-        .with_default_locale(default_locale)
-        .with_messages(messages)
-        .with_always_ask_consent(
-            requested
-                .always_ask_consent
-                .unwrap_or(previous.always_ask_consent()),
-        );
+        let rate_limits =
+            requested_rate_limits(&requested, &previous, self.state.backend.as_ref())?;
+
+        let session_policy = match &requested.session_policy {
+            None => previous.session_policy(),
+            Some(document) => {
+                asterius_domain::entities::session::SessionPolicy::from_json(Some(document))
+                    .map_err(|error| AdminError::Invalid(error.to_string()))?
+            }
+        };
+
+        // Start from the stored settings so unrelated policies survive older
+        // clients. Every changed field still crosses its domain validator.
+        let settings = previous
+            .clone()
+            .with_protocol_settings(
+                disabled,
+                time::Duration::seconds(requested.authorization_code_lifetime_seconds),
+                time::Duration::seconds(requested.access_token_lifetime_seconds),
+            )
+            .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?
+            .with_acr_policy(acr_policy)
+            .map_err(|error| AdminError::Invalid(error.to_string()))?
+            .with_rate_limits(rate_limits)
+            .with_session_policy(session_policy)
+            .with_registration(registration)
+            .with_default_locale(default_locale)
+            .with_messages(messages)
+            .with_always_ask_consent(
+                requested
+                    .always_ask_consent
+                    .unwrap_or(previous.always_ask_consent()),
+            );
 
         repository
             .save(&named, &settings)
@@ -908,7 +934,11 @@ impl Handling<'_> {
 
         Ok(json_no_store(
             StatusCode::OK,
-            &render_settings(&named, &settings),
+            &render_settings_with_rate_limits(
+                &named,
+                &settings,
+                self.state.backend.rate_limit_policy().as_ref(),
+            ),
         ))
     }
 
@@ -3383,6 +3413,9 @@ struct RequestedTenantStatus {
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestedSettings {
+    /// Omitted by older consoles: preserve the current policy.
+    #[serde(default)]
+    acr_policy: Option<serde_json::Value>,
     #[serde(default)]
     disabled_features: Vec<String>,
     authorization_code_lifetime_seconds: i64,
@@ -3415,6 +3448,12 @@ struct RequestedSettings {
     /// settings must preserve a value configured by a newer one.
     #[serde(default)]
     always_ask_consent: Option<bool>,
+    #[serde(default)]
+    session_policy: Option<serde_json::Value>,
+
+    /// Absent preserves stored overrides; an empty object restores inheritance.
+    #[serde(default)]
+    rate_limits: Option<serde_json::Value>,
 }
 
 /// A settings document as this API renders it.
@@ -3442,19 +3481,73 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         // so a console shows the rules that are in force — including the ones
         // a preset expanded into.
         "registration_policy": settings.registration().to_json(),
+        "acr_policy": settings.acr_policy().to_json(),
         // OIDC Core §3.1.2.1's last layer, and the wording this tenant has
         // substituted. Rendered from the stored settings rather than echoed
         // from a request, like the policy above.
         "default_locale": settings.default_locale().as_tag(),
         "messages": settings.messages().to_json(),
         "always_ask_consent": settings.always_ask_consent(),
+        "session_policy": settings.session_policy().unwrap_or_default().to_json(),
+
+        "rate_limits": settings.rate_limits().to_json(),
         "supported_locales": asterius_domain::Locale::SUPPORTED_TAGS,
         "limits": {
             "max_authorization_code_lifetime_seconds":
                 MAX_AUTHORIZATION_CODE_LIFETIME.whole_seconds(),
             "max_access_token_lifetime_seconds": MAX_ACCESS_TOKEN_LIFETIME.whole_seconds(),
+            "min_session_lifetime_seconds": 60,
+            "max_session_lifetime_seconds": asterius_domain::entities::session::SessionPolicy::MAX_SECONDS,
         },
     })
+}
+
+fn requested_rate_limits(
+    requested: &RequestedSettings,
+    previous: &TenantSettings,
+    backend: &dyn AdminBackend,
+) -> Result<asterius_domain::tenant_rate_limits::TenantRateLimits, AdminError> {
+    match &requested.rate_limits {
+        None => Ok(previous.rate_limits().clone()),
+        Some(document) => {
+            let limits =
+                asterius_domain::tenant_rate_limits::TenantRateLimits::from_json(Some(document))
+                    .map_err(|error| AdminError::Invalid(error.to_string()))?;
+            match backend.rate_limit_policy() {
+                Some((login, endpoints)) => limits
+                    .validate_against(login, endpoints)
+                    .map_err(|error| AdminError::Invalid(error.to_string()))?,
+                None if limits
+                    != asterius_domain::tenant_rate_limits::TenantRateLimits::default() =>
+                {
+                    return Err(AdminError::Invalid(
+                        "rate_limits: deployment ceilings are unavailable".to_owned(),
+                    ));
+                }
+                None => {}
+            }
+            Ok(limits)
+        }
+    }
+}
+
+/// Rate-limit values are deployment data, not constants copied into the console.
+fn render_settings_with_rate_limits(
+    tenant: &TenantId,
+    settings: &TenantSettings,
+    deployment: Option<&(
+        asterius_domain::LoginLimits,
+        asterius_domain::EndpointLimits,
+    )>,
+) -> serde_json::Value {
+    let mut document = render_settings(tenant, settings);
+    if let Some((login, endpoints)) = deployment {
+        document["rate_limit_bounds"] =
+            asterius_domain::tenant_rate_limits::TenantRateLimits::default()
+                .describe(*login, *endpoints);
+        document["effective_rate_limits"] = settings.rate_limits().describe(*login, *endpoints);
+    }
+    document
 }
 
 /// The before-and-after of a settings change, as the audit trail records it.
@@ -3494,6 +3587,46 @@ fn settings_diff(tenant: &TenantId, before: &TenantSettings, after: &TenantSetti
             .number(
                 "access_token_lifetime_seconds.after",
                 after.lifetimes().access_token().whole_seconds(),
+            );
+    }
+    if before.session_policy() != after.session_policy() {
+        let old = before.session_policy().unwrap_or_default().lifetimes();
+        let new = after.session_policy().unwrap_or_default().lifetimes();
+        detail = detail
+            .number(
+                "session_policy.idle_seconds.before",
+                old.idle.whole_seconds(),
+            )
+            .number(
+                "session_policy.idle_seconds.after",
+                new.idle.whole_seconds(),
+            )
+            .number(
+                "session_policy.absolute_seconds.before",
+                old.absolute.whole_seconds(),
+            )
+            .number(
+                "session_policy.absolute_seconds.after",
+                new.absolute.whole_seconds(),
+            );
+    }
+    if before.acr_policy() != after.acr_policy() {
+        detail = detail
+            .text(
+                "acr_policy.before",
+                before.acr_policy().to_json().to_string(),
+            )
+            .text("acr_policy.after", after.acr_policy().to_json().to_string());
+    }
+    if before.rate_limits() != after.rate_limits() {
+        detail = detail
+            .text(
+                "rate_limits.before",
+                before.rate_limits().to_json().to_string(),
+            )
+            .text(
+                "rate_limits.after",
+                after.rate_limits().to_json().to_string(),
             );
     }
     if before.always_ask_consent() != after.always_ask_consent() {
@@ -5339,6 +5472,48 @@ mod tests {
 
         fn audit(&self) -> Arc<dyn AuditSink> {
             Arc::new(self.clone())
+        }
+
+        fn rate_limit_policy(
+            &self,
+        ) -> Option<(
+            asterius_domain::LoginLimits,
+            asterius_domain::EndpointLimits,
+        )> {
+            let rate = RateLimit {
+                max: 10,
+                window: time::Duration::seconds(60),
+            };
+            let plain = asterius_domain::EndpointLimit {
+                per_address: rate,
+                per_client: Some(rate),
+                per_subject: None,
+            };
+            Some((
+                asterius_domain::LoginLimits {
+                    per_address: rate,
+                    per_account: rate,
+                },
+                asterius_domain::EndpointLimits {
+                    registration: asterius_domain::EndpointLimit {
+                        per_client: None,
+                        ..plain
+                    },
+                    client_configuration: plain,
+                    par: plain,
+                    token: plain,
+                    device_authorization: plain,
+                    userinfo: plain,
+                    introspection: plain,
+                    revocation: plain,
+                    ssf_subjects: plain,
+                    backchannel: asterius_domain::EndpointLimit {
+                        per_subject: Some(rate),
+                        ..plain
+                    },
+                    access_evaluation: plain,
+                },
+            ))
         }
 
         fn rate_limits(&self) -> Arc<dyn RateLimitStore> {
@@ -10541,6 +10716,101 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn tenant_rate_limits_persist_effective_values_and_audit_changes() {
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["rate_limits"] =
+            serde_json::json!({"login":{"per_account":2},"token":{"per_client":3}});
+        let response = put_settings(&world, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let saved = body_of(response).await;
+        assert_eq!(saved["rate_limits"]["token"]["per_client"], 3);
+        assert_eq!(
+            saved["effective_rate_limits"]["token"]["per_client"]["max"],
+            3
+        );
+        assert_eq!(saved["rate_limit_bounds"]["token"]["per_client"]["max"], 10);
+        assert_eq!(
+            saved["effective_rate_limits"]["token"]["per_client"]["window_seconds"],
+            60
+        );
+        let events = world.handle.0.events.lock().expect("uncontended lock");
+        assert!(events.iter().any(|event| {
+            event
+                .detail
+                .iter()
+                .any(|(key, _)| key == "rate_limits.after")
+        }));
+        let settings = world.handle.0.settings.lock().expect("uncontended lock");
+        assert_eq!(
+            settings["acme"].rate_limits().to_json(),
+            saved["rate_limits"]
+        );
+        assert!(
+            settings
+                .get("other")
+                .is_none_or(|settings| settings.rate_limits().to_json() == serde_json::json!({}))
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_rate_limits_refuse_weakening_and_invalid_changes_atomically() {
+        let world = World::new();
+        for policy in [
+            serde_json::json!({"token":{"per_client":11}}),
+            serde_json::json!({"login":{"per_account":0}}),
+            serde_json::json!({"token":{"window_seconds":1}}),
+            serde_json::json!({"registration":{"per_client":1}}),
+        ] {
+            let mut body = settings_body(30, 100);
+            body["rate_limits"] = policy;
+            let response = put_settings(&world, body).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(
+                world
+                    .handle
+                    .0
+                    .settings
+                    .lock()
+                    .expect("uncontended lock")
+                    .get("acme")
+                    .is_none()
+            );
+            assert!(
+                !world
+                    .handle
+                    .0
+                    .events
+                    .lock()
+                    .expect("uncontended lock")
+                    .iter()
+                    .any(|event| event
+                        .detail
+                        .iter()
+                        .any(|(key, _)| key == "rate_limits.after"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn tenant_rate_limits_omission_preserves_and_empty_object_restores_inheritance() {
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["rate_limits"] = serde_json::json!({"token":{"per_address":1}});
+        assert_eq!(put_settings(&world, body).await.status(), StatusCode::OK);
+        let preserved = body_of(put_settings(&world, settings_body(30, 200)).await).await;
+        assert_eq!(preserved["rate_limits"]["token"]["per_address"], 1);
+        let mut body = settings_body(30, 200);
+        body["rate_limits"] = serde_json::json!({});
+        let inherited = body_of(put_settings(&world, body).await).await;
+        assert_eq!(inherited["rate_limits"], serde_json::json!({}));
+        assert_eq!(
+            inherited["effective_rate_limits"],
+            inherited["rate_limit_bounds"]
+        );
+    }
+
     fn settings_body(code_seconds: i64, access_token_seconds: i64) -> serde_json::Value {
         serde_json::json!({
             "disabled_features": [],
@@ -10622,6 +10892,82 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn assurance_policy_is_scoped_audited_and_preserved_when_omitted() {
+        let world = World::new();
+        let policy = serde_json::json!({"amr_in_id_token": false, "levels": [
+            {"value": "tenant:verified", "amr": ["swk", "user"]}
+        ]});
+        let mut body = settings_body(60, 300);
+        body["acr_policy"] = policy.clone();
+        let response = put_settings(&world, body).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await["acr_policy"], policy);
+        let stored = body_of(put_settings(&world, settings_body(45, 300)).await).await;
+        assert_eq!(stored["acr_policy"], policy);
+        let settings = world.handle.0.settings.lock().unwrap();
+        assert_eq!(settings["acme"].acr_policy().to_json(), policy);
+        assert!(!settings.contains_key("sibling"));
+        let events = world.handle.0.events.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event
+                .detail
+                .iter()
+                .any(|(key, _)| key == "acr_policy.after")
+        }));
+    }
+
+    #[tokio::test]
+    async fn assurance_policy_update_preserves_unrelated_security_settings() {
+        let world = World::new();
+        let previous = TenantSettings::from_json(Some(&serde_json::json!({
+            "disabled_features": ["grant_management"],
+            "grant_management_action_required": true,
+            "grant_id_in_access_token": false,
+            "require_verified_email": true,
+            "revoke_refresh_on_logout": true
+        })))
+        .unwrap();
+        world
+            .handle
+            .0
+            .settings
+            .lock()
+            .unwrap()
+            .insert("acme".to_owned(), previous.clone());
+        let mut body = settings_body(60, 300);
+        body["acr_policy"] = serde_json::json!({"levels": []});
+        assert_eq!(put_settings(&world, body).await.status(), StatusCode::OK);
+        let all = world.handle.0.settings.lock().unwrap();
+        let stored = all["acme"].to_json();
+        for field in [
+            "grant_management_action_required",
+            "grant_id_in_access_token",
+            "require_verified_email",
+            "revoke_refresh_on_logout",
+        ] {
+            assert_eq!(stored[field], previous.to_json()[field], "changed {field}");
+        }
+    }
+
+    #[tokio::test]
+    async fn assurance_policy_api_refuses_unattainable_or_weakened_admin_contexts() {
+        for (name, methods) in [
+            ("custom", vec!["otp"]),
+            ("phr", vec!["pwd"]),
+            (asterius_domain::acr::PASSKEY_USER_VERIFIED, vec!["swk"]),
+        ] {
+            let world = World::new();
+            let mut body = settings_body(60, 300);
+            body["acr_policy"] = serde_json::json!({"levels": [{"value": name, "amr": methods}]});
+            assert_eq!(
+                put_settings(&world, body).await.status(),
+                StatusCode::BAD_REQUEST
+            );
+            assert!(world.handle.0.settings.lock().unwrap().is_empty());
+        }
+    }
+
     /// The consent switch is part of the public settings document, and an
     /// older console that omits it cannot turn it off while saving a lifetime.
     #[tokio::test]
@@ -10637,6 +10983,33 @@ mod tests {
         assert_eq!(
             unrelated["always_ask_consent"], true,
             "a save that omitted the consent switch deleted it: {unrelated}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_policy_is_persisted_and_preserved_when_omitted() {
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["session_policy"] = serde_json::json!({"idle_seconds": 120, "absolute_seconds": 600});
+        let stored = body_of(put_settings(&world, body).await).await;
+        assert_eq!(stored["session_policy"]["idle_seconds"], 120);
+        let later = body_of(put_settings(&world, settings_body(45, 300)).await).await;
+        assert_eq!(later["session_policy"], stored["session_policy"]);
+    }
+
+    #[tokio::test]
+    async fn invalid_session_policy_is_refused_atomically() {
+        let world = World::new();
+        let mut body = settings_body(45, 300);
+        body["session_policy"] = serde_json::json!({"idle_seconds": 601, "absolute_seconds": 600});
+        let response = put_settings(&world, body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let refused = body_of(response).await;
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("session_policy.idle_seconds")
         );
     }
 

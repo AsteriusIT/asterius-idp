@@ -12,6 +12,7 @@ pub mod capabilities;
 pub mod credentials;
 pub mod entities;
 pub mod error;
+pub mod groups;
 pub mod ids;
 pub mod issuance;
 pub mod issuer;
@@ -27,6 +28,7 @@ pub mod ports;
 pub mod rate_limit;
 pub mod secret;
 mod secret_audit;
+pub mod tenant_rate_limits;
 
 pub use administration::{
     CredentialSummary, NewAccount, PasskeySummary, PasswordReset, SessionSummary, Terminated,
@@ -107,3 +109,5 @@ pub use rate_limit::{
     endpoint_client_bucket, endpoint_subject_bucket, ip_bucket,
 };
 pub use secret::{Secret, ct_eq};
+
+pub use groups::{Group, GroupDirectory, GroupId, GroupMetadata, GroupMetadataError, GroupName};

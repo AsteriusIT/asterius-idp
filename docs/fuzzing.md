@@ -68,7 +68,7 @@ cargo +nightly fuzz run --target x86_64-unknown-linux-gnu <target> path/to/crash
 
 ## Coverage
 
-The 99 targets below cover 120 declared entry points. Generated from the
+The 100 targets below cover 123 declared entry points. Generated from the
 `// fuzz-target:` markers in `crates/`.
 
 | Fuzz target | Entry point | Source |
@@ -139,6 +139,8 @@ The 99 targets below cover 120 declared entry points. Generated from the
 | `grant_record` | `GrantRecord::validate` | `crates/domain/src/entities/grant.rs` |
 | `grant_record` | `LiveAccessToken::new` | `crates/domain/src/entities/grant.rs` |
 | `grant_withdrawal_form` | `withdrawal` | `crates/server/src/http/account_grants.rs` |
+| `group_metadata` | `GroupMetadata::parse` | `crates/domain/src/groups.rs` |
+| `group_metadata` | `GroupName::parse` | `crates/domain/src/groups.rs` |
 | `id_token_claims` | `IdToken::build` | `crates/oidc/src/tokens/id_token.rs` |
 | `initial_access_token` | `RegistrationPolicy::admit` | `crates/server/src/http/register.rs` |
 | `interaction_cookie` | `id_from_cookie_header` | `crates/web/src/interaction.rs` |
@@ -185,6 +187,7 @@ The 99 targets below cover 120 declared entry points. Generated from the
 | `ssf_verification_state` | `VerificationState::parse` | `crates/ssf/src/verification.rs` |
 | `tenant_message_overrides` | `MessageOverrides::from_json` | `crates/domain/src/messages.rs` |
 | `tenant_route` | `route` | `crates/oidc/src/tenancy.rs` |
+| `tenant_settings` | `SessionPolicy::from_json` | `crates/domain/src/entities/session.rs` |
 | `tenant_settings` | `TenantSettings::from_json` | `crates/domain/src/entities/tenant_settings.rs` |
 | `theme_document` | `Theme::parse` | `crates/domain/src/entities/theme.rs` |
 | `theme_image` | `accept` | `crates/admin-api/src/theme_image.rs` |

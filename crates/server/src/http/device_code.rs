@@ -75,6 +75,8 @@ const INVALID_GRANT: &str = "the device code cannot be redeemed";
 /// are facts about *this* request: the instant it arrived and the key it
 /// proved possession of.
 pub struct DeviceCode<'a> {
+    /// Current tenant assurance policy, resolved once for this issuance.
+    pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Device authorizations for this tenant.
     pub device_codes: &'a PgDeviceCodeRepository,
     /// Grants for this tenant.
@@ -146,6 +148,7 @@ impl<'a> DeviceCode<'a> {
             users: code.users,
             roles: code.roles,
             signer: code.signer,
+            acr_policy: code.acr_policy,
             grant_management: code.grant_management,
             grant_id_claim: code.grant_id_claim,
             lifetimes: code.lifetimes,
@@ -254,7 +257,8 @@ impl DeviceCode<'_> {
         }
         let claimed = self.grants.claim(&redeemed.grant_id, self.now).await?;
 
-        let session = issuance::session_facts(self.sessions, &grant).await?;
+        let mut session = issuance::session_facts(self.sessions, &grant).await?;
+        session.revalidate_acr(self.acr_policy);
         // OIDC Back-Channel Logout 1.0 §2.3, as in `authorization_code`: a
         // device that obtained an ID token in this person's session is a
         // relying party that has to be told when it ends.
@@ -317,6 +321,7 @@ impl DeviceCode<'_> {
         // carried one — the device never spoke to a browser.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                acr_policy: self.acr_policy,
                 claimed: &claimed,
                 session: &session,
                 access_token: access_token.as_str(),

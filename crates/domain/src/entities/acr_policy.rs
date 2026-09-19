@@ -165,6 +165,42 @@ pub struct AcrPolicy {
 }
 
 impl AcrPolicy {
+    /// Validate that every advertised level can be reached by the implemented ceremonies.
+    ///
+    /// # Errors
+    /// Rejects unsupported proof methods, bare user verification and reserved names
+    /// whose meaning would contradict administrator passkey requirements.
+    pub fn validate_attainable(&self) -> Result<(), AcrPolicyError> {
+        use AuthenticationMethod::{ExistingSession, OneTimeCode, Passkey, UserVerified};
+        for level in &self.levels {
+            let methods = level.methods();
+            if methods.contains(&OneTimeCode)
+                || methods.contains(&ExistingSession)
+                || (methods.contains(&UserVerified) && !methods.contains(&Passkey))
+            {
+                return Err(AcrPolicyError::Malformed(
+                    "a level requires an unavailable authentication ceremony",
+                ));
+            }
+            if level.value() == "phrh" {
+                return Err(AcrPolicyError::Malformed(
+                    "hardware-protected authentication cannot be attested",
+                ));
+            }
+            if matches!(
+                level.value(),
+                PHISHING_RESISTANT | PASSKEY | PASSKEY_USER_VERIFIED
+            ) && (!methods.contains(&Passkey)
+                || (level.value() == PASSKEY_USER_VERIFIED && !methods.contains(&UserVerified)))
+            {
+                return Err(AcrPolicyError::Malformed(
+                    "a reserved passkey context cannot be weakened",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// A policy over `levels`, weakest first.
     ///
     /// # Errors
@@ -344,6 +380,12 @@ impl AcrPolicy {
         let object = document
             .as_object()
             .ok_or(AcrPolicyError::Malformed("not an object"))?;
+        if object
+            .keys()
+            .any(|key| key != "levels" && key != "amr_in_id_token")
+        {
+            return Err(AcrPolicyError::Malformed("an unknown policy member"));
+        }
         let amr_in_id_token = match object.get("amr_in_id_token") {
             None => true,
             Some(Value::Bool(flag)) => *flag,
@@ -366,6 +408,9 @@ impl AcrPolicy {
             let entry = entry
                 .as_object()
                 .ok_or(AcrPolicyError::Malformed("a level is not an object"))?;
+            if entry.keys().any(|key| key != "value" && key != "amr") {
+                return Err(AcrPolicyError::Malformed("an unknown level member"));
+            }
             let value = entry
                 .get("value")
                 .and_then(Value::as_str)
@@ -388,6 +433,11 @@ impl AcrPolicy {
                     AuthenticationMethod::parse(name)
                         .ok_or(AcrPolicyError::Malformed("an amr value is not recognised"))?,
                 );
+            }
+            if parsed.iter().collect::<BTreeSet<_>>().len() != parsed.len() {
+                return Err(AcrPolicyError::Malformed(
+                    "a level repeats an authentication method",
+                ));
             }
             levels.push(AcrLevel::new(value, parsed)?);
         }

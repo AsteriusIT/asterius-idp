@@ -54,6 +54,45 @@ fuzz_target!(|data: &[u8]| {
         "a stored document produced an access token lifetime outside the cap: {value}"
     );
 
+    if let Some(policy) = settings.session_policy() {
+        let clocks = policy.lifetimes();
+        assert!(clocks.idle.whole_seconds() >= 60);
+        assert!(clocks.idle <= clocks.absolute);
+        assert!(clocks.absolute.whole_seconds() <= 43_200);
+    }
+
+    let rate = asterius_domain::RateLimit {
+        max: 20,
+        window: time::Duration::seconds(60),
+    };
+    let login = asterius_domain::LoginLimits {
+        per_address: rate,
+        per_account: rate,
+    };
+    let effective = settings.rate_limits().login(login);
+    assert!(effective.per_address.max <= rate.max && effective.per_account.max <= rate.max);
+    assert_eq!(effective.per_address.window, rate.window);
+    assert_eq!(effective.per_account.window, rate.window);
+    for endpoint in asterius_domain::LimitedEndpoint::ALL {
+        let deployment = asterius_domain::EndpointLimit {
+            per_address: rate,
+            per_client: Some(rate),
+            per_subject: Some(rate),
+        };
+        let effective = settings.rate_limits().endpoint(endpoint, deployment);
+        for limit in [
+            Some(effective.per_address),
+            effective.per_client,
+            effective.per_subject,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(limit.max <= rate.max);
+            assert_eq!(limit.window, rate.window);
+        }
+    }
+
     let round_tripped =
         TenantSettings::from_json(Some(&settings.to_json())).expect("what was written parses");
     assert_eq!(round_tripped, settings, "settings did not round-trip");

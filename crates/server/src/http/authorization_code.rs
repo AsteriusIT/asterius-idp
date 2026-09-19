@@ -70,6 +70,8 @@ const INVALID_GRANT: &str = "the authorization code cannot be redeemed";
 /// with it. [`crate::http::protocol`] constructs it inside the token endpoint,
 /// where both are already in hand.
 pub struct AuthorizationCode<'a> {
+    /// Current tenant assurance policy, resolved once for this issuance.
+    pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Codes for this tenant.
     pub codes: &'a PgCodeRepository,
     /// Grants for this tenant.
@@ -253,24 +255,7 @@ impl AuthorizationCode<'_> {
 
         Self::check_redirect_uri(client, params, &binding.redirect_uri)?;
 
-        // RFC 7636 §4.6. `pkce::redeem` parses the verifier and compares in
-        // constant time; a malformed verifier and a wrong one are one answer.
-        let challenge = asterius_oidc::pkce::CodeChallenge::parse(
-            Some(&binding.code_challenge),
-            Some(pkce::S256),
-        )
-        .map_err(|_| {
-            // The challenge was validated at PAR, so a stored one that
-            // no longer parses is a corrupted row, not a bad request.
-            Failure::Server(DomainError::invalid(
-                "code_challenge",
-                "the stored code challenge is not a valid S256 challenge",
-            ))
-        })?;
-        let verifier = params.get("code_verifier").map_err(|_| {
-            Failure::Client("invalid_request", "code_verifier was sent more than once")
-        })?;
-        pkce::redeem(&challenge, verifier).map_err(|_| invalid_grant())?;
+        Self::check_pkce(params, &binding.code_challenge)?;
 
         // RFC 9449 §10.1: a code pushed with a `dpop_jkt` is redeemable only
         // with a proof for that key. Checked for every client, including a
@@ -299,7 +284,8 @@ impl AuthorizationCode<'_> {
         }
         let claimed = self.grants.claim(&binding.grant_id, self.now).await?;
 
-        let session = issuance::session_facts(self.sessions, &grant).await?;
+        let mut session = issuance::session_facts(self.sessions, &grant).await?;
+        session.revalidate_acr(self.acr_policy);
         // OIDC Back-Channel Logout 1.0 §2.3: the set of logged-in RPs, which
         // the end-session endpoint reads to decide who is sent a logout token.
         // Recorded where the ID token is minted, because that is what makes a
@@ -361,6 +347,7 @@ impl AuthorizationCode<'_> {
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                acr_policy: self.acr_policy,
                 claimed: &claimed,
                 session: &session,
                 access_token: access_token.as_str(),
@@ -449,6 +436,25 @@ impl AuthorizationCode<'_> {
             .await?;
 
         Ok(minted.expose().to_owned())
+    }
+
+    fn check_pkce(params: &Parameters, stored_challenge: &str) -> Result<(), Failure> {
+        // RFC 7636 §4.6. `pkce::redeem` parses the verifier and compares in
+        // constant time; a malformed verifier and a wrong one are one answer.
+        let challenge =
+            asterius_oidc::pkce::CodeChallenge::parse(Some(stored_challenge), Some(pkce::S256))
+                .map_err(|_| {
+                    // The challenge was validated at PAR, so a stored one that
+                    // no longer parses is a corrupted row, not a bad request.
+                    Failure::Server(DomainError::invalid(
+                        "code_challenge",
+                        "the stored code challenge is not a valid S256 challenge",
+                    ))
+                })?;
+        let verifier = params.get("code_verifier").map_err(|_| {
+            Failure::Client("invalid_request", "code_verifier was sent more than once")
+        })?;
+        pkce::redeem(&challenge, verifier).map_err(|_| invalid_grant())
     }
 
     /// OIDC Core §3.1.3.2 and threat model A1/G1 on `ast-a05.2`.

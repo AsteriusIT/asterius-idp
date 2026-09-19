@@ -194,6 +194,23 @@ pub struct SessionFacts {
     pub sid: Option<String>,
 }
 
+impl SessionFacts {
+    /// A policy change cannot upgrade the meaning of an old proof in a new token.
+    pub fn revalidate_acr(&mut self, policy: &asterius_domain::AcrPolicy) {
+        let methods: Vec<_> = self
+            .authentication
+            .amr
+            .iter()
+            .filter_map(|value| asterius_domain::AuthenticationMethod::parse(value))
+            .collect();
+        self.authentication.acr = self.authentication.acr.take().filter(|value| {
+            policy
+                .level(value)
+                .is_some_and(|level| level.is_met_by(&methods))
+        });
+    }
+}
+
 /// `auth_time`, `acr` and `amr` — from the session while it exists, and from
 /// the grant's own copy once it does not.
 ///
@@ -718,6 +735,8 @@ fn grant_management_resource(
 /// which the request's claims could be passed instead.
 #[derive(Debug)]
 pub struct IdTokenParts<'a> {
+    /// Current policy, including whether methods may be released.
+    pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// The authority the tokens are minted from.
     pub claimed: &'a asterius_domain::ClaimedGrant,
     /// `auth_time`, `acr`, `amr` and `sid`.
@@ -735,6 +754,29 @@ pub struct IdTokenParts<'a> {
     pub nonce: Option<&'a str>,
     /// The claims the grant covers, from [`released_claims`].
     pub released: ReleasedToIdToken,
+}
+
+/// A previously named context remains valid only if its current definition is
+/// still met. Historical proofs are retained, but never relabelled as stronger.
+fn authentication_under(
+    authentication: &Authentication,
+    policy: &asterius_domain::AcrPolicy,
+) -> Authentication {
+    let mut current = authentication.clone();
+    let methods: Vec<_> = current
+        .amr
+        .iter()
+        .filter_map(|value| asterius_domain::AuthenticationMethod::parse(value))
+        .collect();
+    current.acr = current.acr.filter(|value| {
+        policy
+            .level(value)
+            .is_some_and(|level| level.is_met_by(&methods))
+    });
+    if !policy.releases_amr() {
+        current.amr.clear();
+    }
+    current
 }
 
 /// Builds and signs an ID token.
@@ -764,17 +806,19 @@ pub async fn sign_id_token(
     now: time::OffsetDateTime,
 ) -> Result<String, DomainError> {
     let IdTokenParts {
+        acr_policy,
         claimed,
         session,
         access_token,
         nonce,
         released,
     } = parts;
+    let authentication = authentication_under(&session.authentication, acr_policy);
     let mut builder = IdToken::new(
         &tenant.issuer,
         claimed,
         client.registration.id_token_signed_response_alg,
-        session.authentication.clone(),
+        authentication,
         access_token,
         now,
     );
@@ -820,6 +864,22 @@ pub async fn sign_id_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assurance_policy_removes_stale_acr_and_withholds_id_token_methods() {
+        let facts = Authentication {
+            authenticated_at: time::OffsetDateTime::UNIX_EPOCH,
+            acr: Some(asterius_domain::acr::PASSKEY_USER_VERIFIED.to_owned()),
+            amr: vec!["pwd".to_owned()],
+        };
+        let policy = asterius_domain::AcrPolicy::default().releasing_amr(false);
+        let emitted = authentication_under(&facts, &policy);
+        assert_eq!(emitted.acr, None);
+        assert!(emitted.amr.is_empty());
+        assert_eq!(emitted.authenticated_at, facts.authenticated_at);
+        assert_eq!(facts.amr, vec!["pwd"]);
+    }
+
     use asterius_domain::entities::session::AuthenticationMethod;
     use asterius_domain::{
         Capabilities, ClientId, ClientRegistration, ClientStatus, GrantAuthentication, Participant,

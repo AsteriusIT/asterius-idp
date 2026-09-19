@@ -489,6 +489,7 @@ impl Fixture {
         );
         let roles = asterius_store_pg::PgApplicationRoles::new(self.store.pool().clone());
         let handler = AuthorizationCode {
+            acr_policy: &asterius_domain::AcrPolicy::default(),
             roles: &roles,
             codes: &codes,
             grants: &grants,

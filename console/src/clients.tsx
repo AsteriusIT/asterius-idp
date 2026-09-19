@@ -8,7 +8,7 @@ import { hrefOf } from './routes';
  * serves (`GET`/`POST /clients`, `GET`/`PUT /clients/{client_id}`), and this
  * screen is deliberately no wider than that.
  *
- * # This form has no rules of its own
+ * # The API validates metadata; private keys are stopped before upload
  *
  * Every constraint on a client — https callbacks, the closed algorithm list,
  * `jwks` xor `jwks_uri`, which grant types this deployment implements, the
@@ -19,7 +19,10 @@ import { hrefOf } from './routes';
  * and nothing else, and when the server refuses, what is shown is the server's
  * own sentence, which names the field and the clause.
  *
- * That is why the form submits with `noValidate` and why the grant-type list is
+ * A pre-submit public-key check also prevents uploading private or symmetric
+ * key material: a disclosure must be stopped before asking the API to refuse it.
+ *
+ * That is why the form otherwise submits with `noValidate` and why the grant-type list is
  * a display list rather than a claim: a console that pre-empted the validator
  * would eventually disagree with it, and the version that is wrong is always
  * the one nobody re-reads.
@@ -68,7 +71,9 @@ import {
   Screen,
   Skeleton,
 } from './ui';
-import { jsonDocument, redirectUris } from './validation';
+import { redirectUris } from './validation';
+import { ClientSetup, ClientSecurity } from './client-setup';
+import { clientConfiguration, clientFieldError, publicKeyError, readClientDiscovery, type ClientDiscovery } from './client-onboarding';
 import {
   documentFrom,
   draftOf,
@@ -218,6 +223,17 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const [notice, setNotice] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [discovery, setDiscovery] = useState<ClientDiscovery | null>(null);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const canWrite = session.scopes.includes('admin.clients:write');
+  useEffect(() => {
+    let active = true;
+    readClientDiscovery().then(
+      (value) => { if (active) setDiscovery(value); },
+      (error: unknown) => { if (active) setDiscoveryError(error instanceof Error ? error.message : 'Discovery could not be read.'); },
+    );
+    return () => { active = false; };
+  }, []);
 
   const refresh = useCallback(
     (term: string) => {
@@ -254,6 +270,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
     setNotice(null);
     setRefusal(null);
     setTab('settings');
+    setTab('guide');
     setEditing({ kind: 'new' });
     setDraft(emptyDraft());
   }, []);
@@ -285,6 +302,16 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
 
   const save = useCallback(
     (current: Draft, where: Editing) => {
+      if (!canWrite) return;
+      const keyComplaint = publicKeyError(current);
+      if (keyComplaint !== null) {
+        // Public key setup is also a confidentiality boundary: never send a
+        // pasted private key to registration, even to ask the API to refuse it.
+        setRefusal(`jwks: ${keyComplaint}`);
+        setNotice(null);
+        toast.error('The client was not sent', keyComplaint);
+        return;
+      }
       let document: Record<string, unknown>;
       try {
         document = documentFrom(current);
@@ -337,7 +364,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         },
       );
     },
-    [query, refresh, session],
+    [canWrite, query, refresh, session],
   );
 
   if (draft !== null && editing.kind !== 'none') {
@@ -354,23 +381,42 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         {editing.kind === 'existing' && mayReadAppRoles(session) && <a className="application-roles-link" href={hrefOf('roles', { client: editing.document.client_id })}>Manage application roles →</a>}
         {notice !== null && <Message tone="success">{notice}</Message>}
         {refusal !== null && <Message tone="error">{refusal}</Message>}
+        {discovery !== null && <Panel title="Connection details">
+          <dl><dt>Issuer</dt><dd><code>{discovery.issuer}</code></dd>
+            <dt>Discovery</dt><dd><code>{discovery.issuer.replace(/\/$/, '')}/.well-known/openid-configuration</code></dd></dl>
+          <p>For private_key_jwt assertions, use the issuer as the audience, your client ID as iss and sub, and a fresh jti for every PAR and token request.</p>
+        </Panel>}
+        {discoveryError !== null && <Message tone="error">{discoveryError}</Message>}
+        {!canWrite && <Message tone="info">Read-only access. Registering and saving applications requires admin.clients:write.</Message>}
         <Tabs value={tab} onValueChange={setTab}>
           <TabsList aria-label="Application sections">
+            <TabsTrigger value="guide">Setup guide</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
             <TabsTrigger value="callbacks">Callbacks</TabsTrigger>
             <TabsTrigger value="grants">Grant types</TabsTrigger>
             <TabsTrigger value="credentials">Credentials</TabsTrigger>
             <TabsTrigger value="tokens">Token claims</TabsTrigger>
+            {editing.kind === 'existing' && <TabsTrigger value="configuration">Saved configuration</TabsTrigger>}
 
           </TabsList>
         <div><Editor
           draft={draft}
           editing={editing}
           busy={busy}
+          canWrite={canWrite}
+          discovery={discovery}
+          refusal={refusal}
           onChange={setDraft}
           onSubmit={() => save(draft, editing)}
           onClose={close}
         /></div>
+        {editing.kind === 'existing' && <TabsContent value="configuration">
+          <Panel title="Saved client configuration">
+            <p>This configuration reflects the last saved registration. Save changes before copying. Keep private signing and DPoP keys in your backend’s key store; they are not included here.</p>
+            {discovery !== null ? <JsonView value={clientConfiguration(editing.document, discovery)} label="Saved client configuration" />
+              : <p>Discovery must load before a connection configuration can be exported.</p>}
+          </Panel>
+        </TabsContent>}
         </Tabs>
       </Screen>
     );
@@ -385,9 +431,9 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         </>
       }
       actions={
-        <Button variant="primary" onClick={openNew}>
+        canWrite ? <Button variant="primary" onClick={openNew}>
           Register a client
-        </Button>
+        </Button> : undefined
       }
     >
       {notice !== null && <Message tone="success">{notice}</Message>}
@@ -510,6 +556,9 @@ function Editor({
   draft,
   editing,
   busy,
+  canWrite,
+  discovery,
+  refusal,
   onChange,
   onSubmit,
   onClose,
@@ -517,6 +566,9 @@ function Editor({
   draft: Draft;
   editing: Editing;
   busy: boolean;
+  canWrite: boolean;
+  discovery: ClientDiscovery | null;
+  refusal: string | null;
   onChange: (draft: Draft) => void;
   onSubmit: () => void;
   onClose: () => void;
@@ -546,7 +598,10 @@ function Editor({
           onSubmit();
         }}
       >
-        <TabsContent value="settings"><fieldset disabled={busy}>
+        <TabsContent value="guide"><fieldset disabled={busy || !canWrite}>
+          <ClientSetup draft={draft} discovery={discovery} refusal={refusal} busy={busy || !canWrite} onChange={onChange} />
+        </fieldset></TabsContent>
+        <TabsContent value="settings"><fieldset disabled={busy || !canWrite}>
           <legend id="client-identity">Identity</legend>
           <Field label="Client name" required>
             {(props) => (
@@ -566,7 +621,7 @@ function Editor({
               name="application_type"
               value={draft.application_type}
               onValueChange={(value) => onChange({ ...draft, application_type: value })}
-             disabled={busy} options={[{"value": "web", "label": "Web application"}, {"value": "native", "label": "Native application"}]} />
+             disabled={busy || !canWrite} options={[{"value": "web", "label": "Web application"}, {"value": "native", "label": "Native application"}]} />
           </p>
           <p>
             <label htmlFor="client-status">Status</label>
@@ -575,14 +630,14 @@ function Editor({
               name="status"
               value={draft.status}
               onValueChange={(value) => onChange({ ...draft, status: value })}
-             disabled={busy} options={[{"value": "active", "label": "Active"}, {"value": "disabled", "label": "Disabled"}]} />
+             disabled={busy || !canWrite} options={[{"value": "active", "label": "Active"}, {"value": "disabled", "label": "Disabled"}]} />
           </p>
           <p className="muted">
             A disabled client fails client authentication. Its grants and its audit trail stay.
           </p>
         </fieldset></TabsContent>
 
-        <TabsContent value="callbacks"><fieldset disabled={busy}>
+        <TabsContent value="callbacks"><fieldset disabled={busy || !canWrite}>
           <legend id="client-callbacks">Callbacks</legend>
           {/*
             The complaint is an echo of `RedirectUri::parse` and never a rule of
@@ -593,7 +648,7 @@ function Editor({
           <Field
             label="Redirect URIs (one per line)"
             hint="Compared byte for byte at the authorization endpoint (ADR-0005), so a trailing slash is a different URI."
-            error={redirectUris(draft.redirect_uris, draft.application_type)}
+            error={clientFieldError(refusal, 'redirect_uris') ?? redirectUris(draft.redirect_uris, draft.application_type)}
           >
             {(props) => (
               <textarea
@@ -607,7 +662,7 @@ function Editor({
           </Field>
           <Field
             label="Post-logout redirect URIs (one per line)"
-            error={redirectUris(draft.post_logout_redirect_uris, draft.application_type)}
+            error={clientFieldError(refusal, 'post_logout_redirect_uris') ?? redirectUris(draft.post_logout_redirect_uris, draft.application_type)}
           >
             {(props) => (
               <textarea
@@ -623,7 +678,7 @@ function Editor({
           </Field>
         </fieldset></TabsContent>
 
-        <TabsContent value="grants"><fieldset disabled={busy}>
+        <TabsContent value="grants"><fieldset disabled={busy || !canWrite}>
           <legend id="client-grant-types">Grant types</legend>
           <ul className="grant-options">
             {grantRows(draft.grant_types).map(([name, description]) => {
@@ -651,8 +706,9 @@ function Editor({
           <p className="muted">The scope names this client may ask for, separated by spaces.</p>
         </fieldset></TabsContent>
 
-        <TabsContent value="credentials"><fieldset disabled={busy}>
+        <TabsContent value="credentials"><fieldset disabled={busy || !canWrite}>
           <legend id="client-keys-subjects">Keys and subjects</legend>
+          <ClientSecurity draft={draft} discovery={discovery} refusal={refusal} busy={busy || !canWrite} onChange={onChange} />
           {editing.kind === 'existing' && editing.document.jwks !== undefined && (
             <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
           )}
@@ -666,7 +722,7 @@ function Editor({
               onChange={(event) => onChange({ ...draft, jwks_uri: event.target.value })}
             />
           </p>
-          <Field label="Inline JWK Set" error={jsonDocument(draft.jwks, 'The JWK Set')}>
+          <Field label="Inline JWK Set" error={clientFieldError(refusal, 'jwks') ?? publicKeyError(draft)}>
             {(props) => (
               <textarea
                 {...props}
@@ -687,7 +743,7 @@ function Editor({
               id="id-token-alg"
               name="id_token_signed_response_alg"
               value={draft.id_token_signed_response_alg}
-              onValueChange={(value) => onChange({ ...draft, id_token_signed_response_alg: value })} disabled={busy} options={ALGORITHMS.map((alg) => ({ value: alg, label: alg }))} />
+              onValueChange={(value) => onChange({ ...draft, id_token_signed_response_alg: value })} disabled={busy || !canWrite} options={ALGORITHMS.map((alg) => ({ value: alg, label: alg }))} />
           </p>
           <p className="muted">
             This tenant must hold an active key for it, or the client could never be issued an ID
@@ -702,7 +758,7 @@ function Editor({
               onValueChange={(value) =>
                 onChange({ ...draft, userinfo_signed_response_alg: value })
               }
-              disabled={busy}
+              disabled={busy || !canWrite}
               options={algorithmOptions(draft.userinfo_signed_response_alg)}
             />
           </p>
@@ -719,7 +775,7 @@ function Editor({
               onValueChange={(value) =>
                 onChange({ ...draft, request_object_signing_alg: value })
               }
-              disabled={busy}
+              disabled={busy || !canWrite}
               options={algorithmOptions(draft.request_object_signing_alg)}
             />
           </p>
@@ -728,34 +784,13 @@ function Editor({
             request object must use this algorithm and a registered client key.
           </p>
           <p>
-            <label>
-              <input
-                type="checkbox"
-                name="tls_client_certificate_bound_access_tokens"
-                checked={draft.tls_client_certificate_bound_access_tokens === true}
-                onChange={(event) =>
-                  onChange({
-                    ...draft,
-                    tls_client_certificate_bound_access_tokens: event.target.checked,
-                  })
-                }
-              />{' '}
-              Bind access tokens to this client&rsquo;s TLS certificate
-            </label>
-          </p>
-          <p className="muted">
-            Access and refresh tokens can then be used only with the certificate presented at the
-            token endpoint. Leave this off for DPoP-bound tokens; enabling it requires the
-            deployment&rsquo;s mutual-TLS endpoints and a registered client certificate identity.
-          </p>
-          <p>
             <label htmlFor="subject-type">Subject type</label>
             <FormSelect
               id="subject-type"
               name="subject_type"
               value={draft.subject_type}
               onValueChange={(value) => onChange({ ...draft, subject_type: value })}
-             disabled={busy} options={[{"value": "public", "label": "Public"}, {"value": "pairwise", "label": "Pairwise"}]} />
+             disabled={busy || !canWrite} options={[{"value": "public", "label": "Public"}, {"value": "pairwise", "label": "Pairwise"}]} />
           </p>
           <p>
             <label htmlFor="sector-identifier-uri">Sector identifier URL</label>
@@ -775,7 +810,7 @@ function Editor({
           </p>
         </fieldset></TabsContent>
 
-        <TabsContent value="tokens"><fieldset disabled={busy}>
+        <TabsContent value="tokens"><fieldset disabled={busy || !canWrite}>
           <legend id="client-token-roles">Application roles in tokens</legend>
           <p>
             <label>
@@ -805,9 +840,9 @@ function Editor({
           <Button type="button" disabled={busy} onClick={onClose}>
             Close
           </Button>
-          <Button type="submit" variant="primary" disabled={busy}>
+          {canWrite && <Button type="submit" variant="primary" disabled={busy}>
             {editing.kind === 'existing' ? 'Save client' : 'Register client'}
-          </Button>
+          </Button>}
         </Actions>
       </form>
     </Panel>

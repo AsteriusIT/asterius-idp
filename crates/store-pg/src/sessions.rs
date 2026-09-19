@@ -9,6 +9,8 @@
 //! later sweep overwriting it with `expired` would lose the interesting fact.
 
 use crate::error::to_domain_error;
+use asterius_domain::entities::session::SessionPolicy;
+use asterius_domain::ports::TenantSettingsRepository as _;
 use asterius_domain::{
     AuthenticationMethod, ClientId, DomainError, Participant, Session, SessionRepository,
     SessionRevocation, TenantId,
@@ -28,6 +30,13 @@ impl PgSessionRepository {
     #[must_use]
     pub const fn new(pool: PgPool, tenant: TenantId) -> Self {
         Self { pool, tenant }
+    }
+
+    async fn policy(&self) -> Result<Option<SessionPolicy>, DomainError> {
+        Ok(crate::PgTenantSettings::new(self.pool.clone())
+            .settings(&self.tenant)
+            .await?
+            .session_policy())
     }
 
     /// Drops this tenant's sessions that are past their absolute deadline.
@@ -175,6 +184,15 @@ impl PgSessionRepository {
 #[async_trait::async_trait]
 impl SessionRepository for PgSessionRepository {
     async fn begin(&self, session: &Session) -> Result<(), DomainError> {
+        if session.tenant != self.tenant {
+            return Err(DomainError::NotFound);
+        }
+        let mut session = session.clone();
+        if let Some(policy) = self.policy().await? {
+            session.expires_at = session.created_at + policy.lifetimes().absolute;
+            session.idle_expires_at =
+                (session.last_seen_at + policy.lifetimes().idle).min(session.expires_at);
+        }
         let amr: Vec<String> = session.amr.iter().map(|m| m.as_str().to_owned()).collect();
         sqlx::query!(
             "insert into sessions
@@ -219,7 +237,10 @@ impl SessionRepository for PgSessionRepository {
         .await
         .map_err(to_domain_error)?;
 
-        Ok(row.map(|row| Session {
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let mut session = Session {
             tenant: self.tenant.clone(),
             id_digest: row.session_id,
             public_sid: row.public_sid,
@@ -243,7 +264,11 @@ impl SessionRepository for PgSessionRepository {
                         .unwrap_or(SessionRevocation::Administrative),
                 )
             }),
-        }))
+        };
+        if let Some(policy) = self.policy().await? {
+            policy.constrain(&mut session);
+        }
+        Ok(Some(session))
     }
 
     async fn touch(
@@ -252,32 +277,16 @@ impl SessionRepository for PgSessionRepository {
         now: OffsetDateTime,
         idle: Duration,
     ) -> Result<(), DomainError> {
-        // The new deadline is computed here rather than as `$3 + interval`,
-        // so the arithmetic is the same one `Session::status` does and there
-        // is no chance of PostgreSQL and Rust disagreeing about it.
-        let idle_expires_at = now + idle;
-        let updated = sqlx::query!(
-            "update sessions
-                set last_seen_at = $3, idle_expires_at = $4
-              where tenant_id = $1
-                and session_id = $2
-                and revoked_at is null
-                and expires_at > $3
-                and idle_expires_at > $3",
-            self.tenant.as_str(),
-            id_digest,
-            now,
-            idle_expires_at,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(to_domain_error)?;
-
-        if updated.rows_affected() == 1 {
-            Ok(())
-        } else {
-            Err(DomainError::NotFound)
+        let session = self.find(id_digest).await?.ok_or(DomainError::NotFound)?;
+        if !session.status(now).is_usable() {
+            return Err(DomainError::NotFound);
         }
+        let idle = self
+            .policy()
+            .await?
+            .map_or(idle, |policy| policy.lifetimes().idle);
+        self.touch_stored(id_digest, now, (now + idle).min(session.expires_at))
+            .await
     }
 
     async fn rotate(
@@ -288,6 +297,10 @@ impl SessionRepository for PgSessionRepository {
         acr: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<(), DomainError> {
+        let session = self.find(old_digest).await?.ok_or(DomainError::NotFound)?;
+        if !session.status(now).is_usable() {
+            return Err(DomainError::NotFound);
+        }
         let amr: Vec<String> = methods.iter().map(|m| m.as_str().to_owned()).collect();
 
         // One statement. The old id stops resolving at the same instant the new
@@ -298,13 +311,14 @@ impl SessionRepository for PgSessionRepository {
             "update sessions
                 set session_id = $3,
                     authenticated_at = $4,
-                    last_seen_at = $4,
+                    last_seen_at = greatest(last_seen_at, $4),
                     amr = $5,
                     acr = $6
               where tenant_id = $1
                 and session_id = $2
                 and revoked_at is null
-                and expires_at > $4",
+                and expires_at > $4
+                and idle_expires_at > $4",
             self.tenant.as_str(),
             old_digest,
             new_digest,
@@ -413,5 +427,38 @@ impl SessionRepository for PgSessionRepository {
                 last_seen_at: row.last_seen_at,
             })
             .collect())
+    }
+}
+
+impl PgSessionRepository {
+    async fn touch_stored(
+        &self,
+        id_digest: &str,
+        now: OffsetDateTime,
+        idle_expires_at: OffsetDateTime,
+    ) -> Result<(), DomainError> {
+        let updated = sqlx::query!(
+            "update sessions
+                set last_seen_at = greatest(last_seen_at, $3),
+                    idle_expires_at = least(expires_at, greatest(idle_expires_at, $4))
+              where tenant_id = $1
+                and session_id = $2
+                and revoked_at is null
+                and expires_at > $3
+                and idle_expires_at > $3",
+            self.tenant.as_str(),
+            id_digest,
+            now,
+            idle_expires_at,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(to_domain_error)?;
+
+        if updated.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(DomainError::NotFound)
+        }
     }
 }

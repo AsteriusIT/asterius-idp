@@ -2120,10 +2120,9 @@ impl ClientMetadata {
             // `clients_exactly_one_key_source`.
             (None, None) => Err(ClientMetadataError::Missing { field: "jwks_uri" }),
             (Some(jwks), None) => {
-                // Shape only. Whether the keys are usable — `kty`, `use`, the
-                // RSA ≥ 2048 and EC ≥ 224 floors of FAPI 2.0 SP §5.4.1 — is
-                // `ast-mxc.5`, which is also where they are turned into
-                // verifiers.
+                // Reject secret material before registration can persist or echo
+                // it. Cryptographic usability and strength are checked when
+                // these public keys are turned into verifiers.
                 let keys = jwks
                     .get("keys")
                     .and_then(serde_json::Value::as_array)
@@ -2137,6 +2136,17 @@ impl ClientMetadata {
                     return Err(ClientMetadataError::rejected(
                         "jwks",
                         "`keys` must be a non-empty array of JWK objects (RFC 7517 §5)",
+                    ));
+                }
+                if keys.iter().any(|key| {
+                    key.get("kty").and_then(serde_json::Value::as_str) == Some("oct")
+                        || ["d", "p", "q", "dp", "dq", "qi", "oth", "k"]
+                            .iter()
+                            .any(|member| key.get(*member).is_some())
+                }) {
+                    return Err(ClientMetadataError::rejected(
+                        "jwks",
+                        "inline keys must contain public keys only; private or symmetric key material is not accepted",
                     ));
                 }
                 Ok(JwksSource::Inline(jwks.clone()))
@@ -3865,6 +3875,51 @@ mod tests {
             let error = rejection(&document);
             assert_eq!(error.field(), "jwks_uri", "accepted {uri}");
         }
+    }
+
+    #[test]
+    fn inline_client_jwks_reject_private_members_without_echoing_material() {
+        for member in ["d", "p", "q", "dp", "dq", "qi", "oth", "k"] {
+            for value in [json!("private-material-must-not-appear"), json!(null)] {
+                let mut key = json!({"kty": "RSA", "n": "public-modulus", "e": "AQAB"});
+                key[member] = value;
+                let error = rejection(&with(
+                    "jwks",
+                    json!({"keys": [
+                        {"kty": "OKP", "crv": "Ed25519", "x": "public-coordinate"}, key
+                    ]}),
+                ));
+                assert_eq!(error.field(), "jwks", "accepted member {member}");
+                assert_eq!(error.code(), "invalid_client_metadata");
+                assert!(error.to_string().contains("public keys only"));
+                assert!(
+                    !error
+                        .to_string()
+                        .contains("private-material-must-not-appear")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inline_client_jwks_reject_symmetric_key_type_even_without_key_bytes() {
+        for key in [json!({"kty": "oct"}), json!({"kty": "oct", "k": "secret"})] {
+            let error = rejection(&with("jwks", json!({"keys": [key]})));
+            assert_eq!(error.field(), "jwks");
+            assert_eq!(error.code(), "invalid_client_metadata");
+        }
+    }
+
+    #[test]
+    fn inline_client_jwks_preserve_public_asymmetric_keys() {
+        let keys = json!({"keys": [
+            {"kty": "RSA", "kid": "rsa", "n": "public-modulus", "e": "AQAB"},
+            {"kty": "EC", "crv": "P-256", "x": "public-x", "y": "public-y"},
+            {"kty": "OKP", "crv": "Ed25519", "x": "public-coordinate"}
+        ]});
+        let registration =
+            validate(&with("jwks", keys.clone())).expect("public metadata remains valid");
+        assert_eq!(registration.jwks, JwksSource::Inline(keys));
     }
 
     #[test]

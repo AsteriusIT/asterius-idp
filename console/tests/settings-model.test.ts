@@ -33,3 +33,35 @@ test('the consent switch hydrates and participates in dirty state', () => {
   assert.equal(isDirty(stored, draft), false);
   assert.equal(isDirty(stored, { ...draft, alwaysAskConsent: false }), true);
 });
+
+
+test('session clocks hydrate, retain defaults and participate in dirty state', () => {
+  const legacy = draftOf(settings());
+  assert.equal(legacy.sessionIdle, '3600');
+  assert.equal(legacy.sessionAbsolute, '43200');
+  const stored = settings({session_policy: {idle_seconds: 120, absolute_seconds: 600}});
+  const draft = draftOf(stored);
+  assert.equal(draft.sessionIdle, '120');
+  assert.equal(draft.sessionAbsolute, '600');
+  assert.equal(isDirty(stored, draft), false);
+  assert.equal(isDirty(stored, {...draft, sessionIdle: '180'}), true);
+  assert.equal(isDirty(stored, {...draft, sessionAbsolute: '900'}), true);
+});
+
+test('assurance settings hydrate, preserve unknown context names and detect changes', () => {
+  const acr_policy = { amr_in_id_token: true, levels: [{ value: 'tenant:custom', amr: ['swk', 'user'] }] };
+  const stored = settings({ acr_policy });
+  const draft = draftOf(stored);
+  assert.deepEqual(draft.acrPolicy, acr_policy);
+  assert.equal(isDirty(stored, draft), false);
+  assert.equal(isDirty(stored, { ...draft, acrPolicy: { ...acr_policy, amr_in_id_token: false } }), true);
+  assert.equal(draftOf(settings()).acrPolicy, undefined);
+});
+
+test('stored rate overrides hydrate and editing marks settings dirty', () => {
+  const stored = settings({ rate_limits: { token: { per_client: 20 } } });
+  const draft = draftOf(stored);
+  assert.deepEqual(draft.rateLimits, { token: { per_client: '20' } });
+  assert.equal(isDirty(stored, draft), false);
+  assert.equal(isDirty(stored, { ...draft, rateLimits: { token: { per_client: '10' } } }), true);
+});

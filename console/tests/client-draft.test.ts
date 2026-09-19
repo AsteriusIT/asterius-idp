@@ -76,3 +76,24 @@ test('saving an older client preserves absent security metadata', () => {
   assert.equal('request_object_signing_alg' in payload, false);
   assert.equal('tls_client_certificate_bound_access_tokens' in payload, false);
 });
+
+test('preserves authentication, sender binding and every certificate identity variant', () => {
+  for (const subject of ['tls_client_auth_subject_dn', 'tls_client_auth_san_dns', 'tls_client_auth_san_uri', 'tls_client_auth_san_ip', 'tls_client_auth_san_email']) {
+    const saved = client({ token_endpoint_auth_method: 'tls_client_auth',
+      dpop_bound_access_tokens: false, tls_client_certificate_bound_access_tokens: true,
+      use_mtls_endpoint_aliases: true, [subject]: 'certificate identity' });
+    const payload = documentFrom(draftOf(saved));
+    assert.equal(payload.token_endpoint_auth_method, 'tls_client_auth');
+    assert.equal(payload.dpop_bound_access_tokens, false);
+    assert.equal(payload.tls_client_certificate_bound_access_tokens, true);
+    assert.equal(payload.use_mtls_endpoint_aliases, true);
+    assert.equal(payload[subject], 'certificate identity');
+    assert.equal(payload.require_pushed_authorization_requests, true);
+  }
+});
+
+test('does not silently drop conflicting key sources before server validation', () => {
+  const payload = documentFrom({ ...emptyDraft(), jwks: '{"keys":[{"kty":"EC"}]}', jwks_uri: 'https://app.example/keys' });
+  assert.deepEqual(payload.jwks, { keys: [{ kty: 'EC' }] });
+  assert.equal(payload.jwks_uri, 'https://app.example/keys');
+});

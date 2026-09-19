@@ -165,6 +165,7 @@ impl TokenLifetimes {
               names are the JSON keys an operator writes."
 )]
 pub struct TenantSettings {
+    acr_policy: crate::AcrPolicy,
     disabled_features: BTreeSet<Feature>,
     lifetimes: TokenLifetimes,
     registration: RegistrationPolicy,
@@ -249,6 +250,9 @@ pub struct TenantSettings {
     /// on when every authorization must give the person a fresh opportunity
     /// to reject it, including an authorization whose scopes were remembered.
     always_ask_consent: bool,
+    session_policy: Option<crate::entities::session::SessionPolicy>,
+
+    rate_limits: crate::tenant_rate_limits::TenantRateLimits,
 }
 
 impl Default for TenantSettings {
@@ -260,6 +264,7 @@ impl Default for TenantSettings {
     /// heard of the setting — and with it UserInfo's way of resolving a grant.
     fn default() -> Self {
         Self {
+            acr_policy: crate::AcrPolicy::default(),
             disabled_features: BTreeSet::new(),
             lifetimes: TokenLifetimes::default(),
             registration: RegistrationPolicy::default(),
@@ -270,11 +275,62 @@ impl Default for TenantSettings {
             revoke_refresh_on_logout: false,
             require_verified_email: false,
             always_ask_consent: false,
+            session_policy: None,
+
+            rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
         }
     }
 }
 
 impl TenantSettings {
+    /// This tenant's session policy; absence preserves the issuance defaults.
+    #[must_use]
+    pub const fn session_policy(&self) -> Option<crate::entities::session::SessionPolicy> {
+        self.session_policy
+    }
+
+    /// Sets an already validated session policy.
+    #[must_use]
+    pub const fn with_session_policy(
+        mut self,
+        policy: Option<crate::entities::session::SessionPolicy>,
+    ) -> Self {
+        self.session_policy = policy;
+        self
+    }
+
+    /// The authentication contexts this tenant can actually prove.
+    #[must_use]
+    pub const fn acr_policy(&self) -> &crate::AcrPolicy {
+        &self.acr_policy
+    }
+
+    /// Set an attainable authentication policy; administrator guards remain independent.
+    ///
+    /// # Errors
+    /// Refuses methods this server cannot prove or user verification without a passkey.
+    pub fn with_acr_policy(
+        mut self,
+        policy: crate::AcrPolicy,
+    ) -> Result<Self, TenantSettingsError> {
+        policy.validate_attainable()?;
+        self.acr_policy = policy;
+        Ok(self)
+    }
+
+    /// This tenant's bounded rate-limit maxima; windows stay deployment-owned.
+    #[must_use]
+    pub const fn rate_limits(&self) -> &crate::tenant_rate_limits::TenantRateLimits {
+        &self.rate_limits
+    }
+
+    /// Attaches validated override metadata.
+    #[must_use]
+    pub fn with_rate_limits(mut self, limits: crate::tenant_rate_limits::TenantRateLimits) -> Self {
+        self.rate_limits = limits;
+        self
+    }
+
     /// Assembles settings, refusing any lifetime the profile does not allow.
     ///
     /// # Errors
@@ -286,6 +342,7 @@ impl TenantSettings {
         access_token_lifetime: Duration,
     ) -> Result<Self, TenantSettingsError> {
         Ok(Self {
+            acr_policy: crate::AcrPolicy::default(),
             disabled_features,
             lifetimes: TokenLifetimes::validated(
                 authorization_code_lifetime,
@@ -299,7 +356,26 @@ impl TenantSettings {
             revoke_refresh_on_logout: false,
             require_verified_email: false,
             always_ask_consent: false,
+            session_policy: None,
+
+            rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
         })
+    }
+
+    /// Replace protocol flags and token lifetimes while preserving other policies.
+    ///
+    /// # Errors
+    /// Rejects lifetimes outside the same bounds as [`Self::validated`].
+    pub fn with_protocol_settings(
+        mut self,
+        disabled_features: BTreeSet<Feature>,
+        authorization_code_lifetime: Duration,
+        access_token_lifetime: Duration,
+    ) -> Result<Self, TenantSettingsError> {
+        self.lifetimes =
+            TokenLifetimes::validated(authorization_code_lifetime, access_token_lifetime)?;
+        self.disabled_features = disabled_features;
+        Ok(self)
     }
 
     /// The same settings with a registration policy attached.
@@ -526,6 +602,7 @@ impl TenantSettings {
                 self.lifetimes.authorization_code.whole_seconds(),
             "access_token_lifetime_seconds": self.lifetimes.access_token.whole_seconds(),
             "registration_policy": self.registration.to_json(),
+            "acr_policy": self.acr_policy.to_json(),
             "grant_management_action_required": self.grant_management_action_required,
             // OIDC Core §3.1.2.1's last resort. Written as the tag rather than
             // as an index into an enum, because the row outlives the build that
@@ -537,6 +614,9 @@ impl TenantSettings {
             "revoke_refresh_on_logout": self.revoke_refresh_on_logout,
             "require_verified_email": self.require_verified_email,
             "always_ask_consent": self.always_ask_consent,
+            "session_policy": self.session_policy.map(crate::entities::session::SessionPolicy::to_json),
+
+            "rate_limits": self.rate_limits.to_json(),
         })
     }
 
@@ -614,6 +694,10 @@ impl TenantSettings {
             Some(_) => return Err(TenantSettingsError::UnsupportedLocale(String::new())),
         };
 
+        let acr_policy = match object.get("acr_policy") {
+            None | Some(serde_json::Value::Null) => crate::AcrPolicy::default(),
+            Some(document) => crate::AcrPolicy::from_json(document)?,
+        };
         let messages = MessageOverrides::from_json(object.get("messages"))?;
 
         // RFC 9068 §2.2.3.1's private claim. Absent is *not* `false` here: a
@@ -662,17 +746,22 @@ impl TenantSettings {
             Some(_) => return Err(TenantSettingsError::NotABoolean("always_ask_consent")),
         };
 
-        Ok(
-            Self::validated(disabled_features, authorization_code, access_token)?
-                .with_registration(registration)
-                .requiring_a_grant_management_action(grant_management_action_required)
-                .with_default_locale(default_locale)
-                .with_messages(messages)
-                .with_grant_id_in_access_token(grant_id_in_access_token)
-                .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
-                .requiring_a_verified_email(require_verified_email)
-                .with_always_ask_consent(always_ask_consent),
-        )
+        Self::validated(disabled_features, authorization_code, access_token)?
+            .with_registration(registration)
+            .requiring_a_grant_management_action(grant_management_action_required)
+            .with_default_locale(default_locale)
+            .with_messages(messages)
+            .with_grant_id_in_access_token(grant_id_in_access_token)
+            .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
+            .requiring_a_verified_email(require_verified_email)
+            .with_always_ask_consent(always_ask_consent)
+            .with_session_policy(crate::entities::session::SessionPolicy::from_json(
+                object.get("session_policy"),
+            )?)
+            .with_rate_limits(crate::tenant_rate_limits::TenantRateLimits::from_json(
+                object.get("rate_limits"),
+            )?)
+            .with_acr_policy(acr_policy)
     }
 }
 
@@ -698,6 +787,17 @@ fn seconds(value: Option<&serde_json::Value>) -> Result<Option<Duration>, Tenant
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TenantSettingsError {
+    /// Invalid tenant session deadlines.
+    #[error(transparent)]
+    SessionPolicy(#[from] crate::entities::session::SessionPolicyError),
+
+    /// An invalid or unattainable authentication context.
+    #[error("invalid authentication assurance policy: {0}")]
+    AcrPolicy(#[from] crate::acr::AcrPolicyError),
+
+    /// Invalid tenant rate-limit override metadata.
+    #[error(transparent)]
+    RateLimits(#[from] crate::tenant_rate_limits::RateLimitOverrideError),
     /// Above the 60-second ceiling.
     #[error(
         "an authorization code lifetime of {requested_seconds} s exceeds the maximum of 60 s \
@@ -756,10 +856,72 @@ pub enum TenantSettingsError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn assurance_policy_defaults_preserve_existing_tenants_and_null_migration() {
+        for stored in [
+            serde_json::json!({}),
+            serde_json::json!({"acr_policy": null}),
+        ] {
+            assert_eq!(
+                TenantSettings::from_json(Some(&stored))
+                    .unwrap()
+                    .acr_policy(),
+                &crate::AcrPolicy::default()
+            );
+        }
+    }
+
+    #[test]
+    fn assurance_policy_round_trips_without_changing_other_settings() {
+        let policy = crate::AcrPolicy::empty().releasing_amr(false);
+        let settings = TenantSettings::default()
+            .requiring_a_verified_email(true)
+            .with_acr_policy(policy.clone())
+            .unwrap();
+        let restored = TenantSettings::from_json(Some(&settings.to_json())).unwrap();
+        assert_eq!(restored.acr_policy(), &policy);
+        assert!(restored.require_verified_email());
+    }
+
+    #[test]
+    fn assurance_policy_rejects_unattainable_and_weakened_reserved_contexts() {
+        for (value, amr) in [
+            ("custom", vec!["otp"]),
+            ("custom", vec!["user"]),
+            ("custom", vec!["existing_session"]),
+            ("phrh", vec!["swk", "user"]),
+            (crate::acr::PHISHING_RESISTANT, vec!["pwd"]),
+            (crate::acr::PASSKEY_USER_VERIFIED, vec!["swk"]),
+        ] {
+            let stored =
+                serde_json::json!({"acr_policy": {"levels": [{"value": value, "amr": amr}]}});
+            assert!(
+                TenantSettings::from_json(Some(&stored)).is_err(),
+                "accepted {value}"
+            );
+        }
+    }
+
     /// A row written before the setting existed still carries `grant_id`.
     ///
     /// The one default that cannot flip: UserInfo resolves a grant through the
     /// claim, so silence has to keep meaning what it has always meant.
+    #[test]
+    fn session_policy_roundtrips_and_old_rows_preserve_defaults() {
+        assert_eq!(
+            TenantSettings::from_json(Some(&serde_json::json!({})))
+                .expect("old row")
+                .session_policy(),
+            None
+        );
+        let policy = crate::entities::session::SessionPolicy::validated(120, 600).expect("bounded");
+        let settings = TenantSettings::default().with_session_policy(Some(policy));
+        assert_eq!(
+            TenantSettings::from_json(Some(&settings.to_json())).expect("roundtrip"),
+            settings
+        );
+    }
+
     #[test]
     fn a_tenant_that_never_mentioned_the_grant_id_claim_still_carries_it() {
         // Arrange
