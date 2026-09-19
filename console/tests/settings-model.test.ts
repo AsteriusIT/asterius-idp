@@ -33,3 +33,17 @@ test('the consent switch hydrates and participates in dirty state', () => {
   assert.equal(isDirty(stored, draft), false);
   assert.equal(isDirty(stored, { ...draft, alwaysAskConsent: false }), true);
 });
+
+
+test('session clocks hydrate, retain defaults and participate in dirty state', () => {
+  const legacy = draftOf(settings());
+  assert.equal(legacy.sessionIdle, '3600');
+  assert.equal(legacy.sessionAbsolute, '43200');
+  const stored = settings({session_policy: {idle_seconds: 120, absolute_seconds: 600}});
+  const draft = draftOf(stored);
+  assert.equal(draft.sessionIdle, '120');
+  assert.equal(draft.sessionAbsolute, '600');
+  assert.equal(isDirty(stored, draft), false);
+  assert.equal(isDirty(stored, {...draft, sessionIdle: '180'}), true);
+  assert.equal(isDirty(stored, {...draft, sessionAbsolute: '900'}), true);
+});

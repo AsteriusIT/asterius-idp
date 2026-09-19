@@ -1229,7 +1229,11 @@ async fn subject_of_record(
     now: OffsetDateTime,
 ) -> Option<asterius_domain::SubjectId> {
     let digest = record.session.as_deref()?;
-    let session = context.sessions.find(digest).await.ok()??;
+    let session = context
+        .sessions
+        .find_for_browser(digest, now)
+        .await
+        .ok()??;
     if !session.status(now).is_usable() {
         return None;
     }
@@ -1515,7 +1519,7 @@ async fn mint(
         tracing::error!(tenant = %context.tenant.id, "consent was recorded with no session");
         return Err("server_error");
     };
-    let session = match context.sessions.find(digest).await {
+    let session = match context.sessions.find_for_browser(digest, now).await {
         Ok(Some(session)) if session.status(now).is_usable() => session,
         Ok(_) => {
             tracing::info!(tenant = %context.tenant.id, "the session ended before consent completed");

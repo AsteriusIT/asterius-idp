@@ -249,6 +249,7 @@ pub struct TenantSettings {
     /// on when every authorization must give the person a fresh opportunity
     /// to reject it, including an authorization whose scopes were remembered.
     always_ask_consent: bool,
+    session_policy: Option<crate::entities::session::SessionPolicy>,
 }
 
 impl Default for TenantSettings {
@@ -270,11 +271,28 @@ impl Default for TenantSettings {
             revoke_refresh_on_logout: false,
             require_verified_email: false,
             always_ask_consent: false,
+            session_policy: None,
         }
     }
 }
 
 impl TenantSettings {
+    /// This tenant's session policy; absence preserves the issuance defaults.
+    #[must_use]
+    pub const fn session_policy(&self) -> Option<crate::entities::session::SessionPolicy> {
+        self.session_policy
+    }
+
+    /// Sets an already validated session policy.
+    #[must_use]
+    pub const fn with_session_policy(
+        mut self,
+        policy: Option<crate::entities::session::SessionPolicy>,
+    ) -> Self {
+        self.session_policy = policy;
+        self
+    }
+
     /// Assembles settings, refusing any lifetime the profile does not allow.
     ///
     /// # Errors
@@ -299,6 +317,7 @@ impl TenantSettings {
             revoke_refresh_on_logout: false,
             require_verified_email: false,
             always_ask_consent: false,
+            session_policy: None,
         })
     }
 
@@ -537,6 +556,7 @@ impl TenantSettings {
             "revoke_refresh_on_logout": self.revoke_refresh_on_logout,
             "require_verified_email": self.require_verified_email,
             "always_ask_consent": self.always_ask_consent,
+            "session_policy": self.session_policy.map(crate::entities::session::SessionPolicy::to_json),
         })
     }
 
@@ -671,7 +691,10 @@ impl TenantSettings {
                 .with_grant_id_in_access_token(grant_id_in_access_token)
                 .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
                 .requiring_a_verified_email(require_verified_email)
-                .with_always_ask_consent(always_ask_consent),
+                .with_always_ask_consent(always_ask_consent)
+                .with_session_policy(crate::entities::session::SessionPolicy::from_json(
+                    object.get("session_policy"),
+                )?),
         )
     }
 }
@@ -698,6 +721,9 @@ fn seconds(value: Option<&serde_json::Value>) -> Result<Option<Duration>, Tenant
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum TenantSettingsError {
+    /// Invalid tenant session deadlines.
+    #[error(transparent)]
+    SessionPolicy(#[from] crate::entities::session::SessionPolicyError),
     /// Above the 60-second ceiling.
     #[error(
         "an authorization code lifetime of {requested_seconds} s exceeds the maximum of 60 s \
@@ -760,6 +786,22 @@ mod tests {
     ///
     /// The one default that cannot flip: UserInfo resolves a grant through the
     /// claim, so silence has to keep meaning what it has always meant.
+    #[test]
+    fn session_policy_roundtrips_and_old_rows_preserve_defaults() {
+        assert_eq!(
+            TenantSettings::from_json(Some(&serde_json::json!({})))
+                .expect("old row")
+                .session_policy(),
+            None
+        );
+        let policy = crate::entities::session::SessionPolicy::validated(120, 600).expect("bounded");
+        let settings = TenantSettings::default().with_session_policy(Some(policy));
+        assert_eq!(
+            TenantSettings::from_json(Some(&settings.to_json())).expect("roundtrip"),
+            settings
+        );
+    }
+
     #[test]
     fn a_tenant_that_never_mentioned_the_grant_id_claim_still_carries_it() {
         // Arrange

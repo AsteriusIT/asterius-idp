@@ -3765,7 +3765,9 @@ async fn run_authorize(
     ) {
         Some(presented) => {
             let digest = asterius_domain::sha256_hex(presented.as_bytes());
-            match asterius_domain::SessionRepository::find(&sessions, &digest).await {
+            match asterius_domain::SessionRepository::find_for_browser(&sessions, &digest, now)
+                .await
+            {
                 Ok(session) => session,
                 Err(error) => {
                     // Not fatal: a request whose session cannot be read is one

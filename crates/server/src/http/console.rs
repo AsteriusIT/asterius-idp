@@ -444,7 +444,7 @@ async fn signed_in(
     let cookies = crate::http::cookies(headers);
     let value = interaction::cookie_value(&cookies, session::COOKIE_NAME)?;
     let digest = asterius_domain::sha256_hex(value.as_bytes());
-    let mut session = match context.sessions.find(&digest).await {
+    let mut session = match context.sessions.find_for_browser(&digest, now).await {
         Ok(session) => session,
         Err(error) => {
             // A session that cannot be read is not a session. The visitor
@@ -460,7 +460,7 @@ async fn signed_in(
             (context.reserved_tenant, context.reserved_sessions)
         && reserved != &context.tenant.id
     {
-        session = match reserved_sessions.find(&digest).await {
+        session = match reserved_sessions.find_for_browser(&digest, now).await {
             Ok(session) => session,
             Err(error) => {
                 tracing::error!(

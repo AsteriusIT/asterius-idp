@@ -12,6 +12,7 @@ export interface Settings {
   readonly access_token_lifetime_seconds: number;
   /** Optional while an older server may still be present during an upgrade. */
   readonly always_ask_consent?: boolean;
+  readonly session_policy?: { readonly idle_seconds: number; readonly absolute_seconds: number };
   readonly limits: Limits;
 }
 
@@ -21,6 +22,8 @@ export interface Draft {
   readonly code: string;
   readonly token: string;
   readonly alwaysAskConsent: boolean;
+  readonly sessionIdle: string;
+  readonly sessionAbsolute: string;
 }
 
 /** The draft a freshly read document starts as. */
@@ -30,6 +33,8 @@ export function draftOf(settings: Settings): Draft {
     code: String(settings.authorization_code_lifetime_seconds),
     token: String(settings.access_token_lifetime_seconds),
     alwaysAskConsent: settings.always_ask_consent ?? false,
+    sessionIdle: String(settings.session_policy?.idle_seconds ?? 3600),
+    sessionAbsolute: String(settings.session_policy?.absolute_seconds ?? 43200),
   };
 }
 
@@ -39,6 +44,8 @@ export function isDirty(settings: Settings, draft: Draft): boolean {
     draft.disabled.length === settings.disabled_features.length &&
     draft.disabled.every((name) => settings.disabled_features.includes(name));
   return (
+    draft.sessionIdle !== String(settings.session_policy?.idle_seconds ?? 3600) ||
+    draft.sessionAbsolute !== String(settings.session_policy?.absolute_seconds ?? 43200) ||
     !sameFeatures ||
     draft.code !== String(settings.authorization_code_lifetime_seconds) ||
     draft.token !== String(settings.access_token_lifetime_seconds) ||

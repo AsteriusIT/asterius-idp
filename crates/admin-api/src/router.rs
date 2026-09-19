@@ -873,6 +873,14 @@ impl Handling<'_> {
             }
         };
 
+        let session_policy = match &requested.session_policy {
+            None => previous.session_policy(),
+            Some(document) => {
+                asterius_domain::entities::session::SessionPolicy::from_json(Some(document))
+                    .map_err(|error| AdminError::Invalid(error.to_string()))?
+            }
+        };
+
         // The one line this whole operation exists for. `TenantSettings` has
         // private fields and one constructor, so there is no way past it.
         let settings = TenantSettings::validated(
@@ -881,6 +889,7 @@ impl Handling<'_> {
             time::Duration::seconds(requested.access_token_lifetime_seconds),
         )
         .map_err(|refusal| AdminError::Invalid(refusal.to_string()))?
+        .with_session_policy(session_policy)
         .with_registration(registration)
         .with_default_locale(default_locale)
         .with_messages(messages)
@@ -3415,6 +3424,8 @@ struct RequestedSettings {
     /// settings must preserve a value configured by a newer one.
     #[serde(default)]
     always_ask_consent: Option<bool>,
+    #[serde(default)]
+    session_policy: Option<serde_json::Value>,
 }
 
 /// A settings document as this API renders it.
@@ -3448,11 +3459,14 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         "default_locale": settings.default_locale().as_tag(),
         "messages": settings.messages().to_json(),
         "always_ask_consent": settings.always_ask_consent(),
+        "session_policy": settings.session_policy().unwrap_or_default().to_json(),
         "supported_locales": asterius_domain::Locale::SUPPORTED_TAGS,
         "limits": {
             "max_authorization_code_lifetime_seconds":
                 MAX_AUTHORIZATION_CODE_LIFETIME.whole_seconds(),
             "max_access_token_lifetime_seconds": MAX_ACCESS_TOKEN_LIFETIME.whole_seconds(),
+            "min_session_lifetime_seconds": 60,
+            "max_session_lifetime_seconds": asterius_domain::entities::session::SessionPolicy::MAX_SECONDS,
         },
     })
 }
@@ -3494,6 +3508,27 @@ fn settings_diff(tenant: &TenantId, before: &TenantSettings, after: &TenantSetti
             .number(
                 "access_token_lifetime_seconds.after",
                 after.lifetimes().access_token().whole_seconds(),
+            );
+    }
+    if before.session_policy() != after.session_policy() {
+        let old = before.session_policy().unwrap_or_default().lifetimes();
+        let new = after.session_policy().unwrap_or_default().lifetimes();
+        detail = detail
+            .number(
+                "session_policy.idle_seconds.before",
+                old.idle.whole_seconds(),
+            )
+            .number(
+                "session_policy.idle_seconds.after",
+                new.idle.whole_seconds(),
+            )
+            .number(
+                "session_policy.absolute_seconds.before",
+                old.absolute.whole_seconds(),
+            )
+            .number(
+                "session_policy.absolute_seconds.after",
+                new.absolute.whole_seconds(),
             );
     }
     if before.always_ask_consent() != after.always_ask_consent() {
@@ -10637,6 +10672,33 @@ mod tests {
         assert_eq!(
             unrelated["always_ask_consent"], true,
             "a save that omitted the consent switch deleted it: {unrelated}"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_policy_is_persisted_and_preserved_when_omitted() {
+        let world = World::new();
+        let mut body = settings_body(60, 300);
+        body["session_policy"] = serde_json::json!({"idle_seconds": 120, "absolute_seconds": 600});
+        let stored = body_of(put_settings(&world, body).await).await;
+        assert_eq!(stored["session_policy"]["idle_seconds"], 120);
+        let later = body_of(put_settings(&world, settings_body(45, 300)).await).await;
+        assert_eq!(later["session_policy"], stored["session_policy"]);
+    }
+
+    #[tokio::test]
+    async fn invalid_session_policy_is_refused_atomically() {
+        let world = World::new();
+        let mut body = settings_body(45, 300);
+        body["session_policy"] = serde_json::json!({"idle_seconds": 601, "absolute_seconds": 600});
+        let response = put_settings(&world, body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let refused = body_of(response).await;
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .expect("message")
+                .contains("session_policy.idle_seconds")
         );
     }
 

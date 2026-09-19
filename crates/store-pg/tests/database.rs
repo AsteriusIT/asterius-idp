@@ -6765,6 +6765,127 @@ mod sessions {
     }
 
     db_test! {
+        #[ignore = "requires PostgreSQL: tenant session policy enforcement"]
+        async fn session_policy_controls_issuance_expiry_rotation_and_tenant_isolation(db) {
+            use asterius_domain::ports::TenantSettingsRepository as _;
+            use asterius_domain::{TenantSettings, entities::session::SessionPolicy};
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            seed_user(&db.pool, "other", user).await;
+            let settings = asterius_store_pg::PgTenantSettings::new(db.pool.clone());
+            settings.save(&TenantId::new("demo"), &TenantSettings::default().with_session_policy(Some(SessionPolicy::validated(120, 600).expect("bounded")))).await.expect("save policy");
+            let id = SessionId::generate();
+            let original = session_for("demo", &id, user);
+            let demo = repo(&db.pool, "demo");
+            demo.begin(&original).await.expect("begin");
+            let stored = demo.find(&id.digest()).await.expect("find").expect("session");
+            assert_eq!(stored.expires_at.unix_timestamp(), (original.created_at + time::Duration::seconds(600)).unix_timestamp());
+            let absolute = stored.expires_at;
+            let fresh = SessionId::generate();
+            demo.rotate(&id.digest(), &fresh.digest(), &[AuthenticationMethod::Passkey], None, original.created_at + time::Duration::seconds(30)).await.expect("rotate");
+            let rotated = demo.find(&fresh.digest()).await.expect("find").expect("rotated");
+            assert_eq!(rotated.expires_at, absolute);
+            assert!(demo.touch(&fresh.digest(), absolute, time::Duration::hours(12)).await.is_err());
+            assert!(demo.rotate(&fresh.digest(), &SessionId::generate().digest(), &[], None, absolute).await.is_err());
+            let other_id = SessionId::generate();
+            let other_session = session_for("other", &other_id, user);
+            let other = repo(&db.pool, "other");
+            other.begin(&other_session).await.expect("other begin");
+            assert_eq!(other.find(&other_id.digest()).await.expect("find").expect("other").expires_at.unix_timestamp(), other_session.expires_at.unix_timestamp());
+            assert!(other.find(&fresh.digest()).await.expect("isolation").is_none());
+        }
+    }
+
+    db_test! {
+        #[ignore = "requires PostgreSQL: existing-session policy changes"]
+        async fn session_policy_shortening_rejects_existing_idle_sessions(db) {
+            use asterius_domain::ports::TenantSettingsRepository as _;
+            use asterius_domain::{TenantSettings, entities::session::SessionPolicy};
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let id = SessionId::generate();
+            let mut original = session_for("demo", &id, user);
+            original.last_seen_at -= time::Duration::minutes(5);
+            let demo = repo(&db.pool, "demo");
+            demo.begin(&original).await.expect("begin under old defaults");
+            asterius_store_pg::PgTenantSettings::new(db.pool.clone()).save(&TenantId::new("demo"), &TenantSettings::default().with_session_policy(Some(SessionPolicy::validated(60, 600).expect("bounded")))).await.expect("tighten");
+            let found = demo.find(&id.digest()).await.expect("find").expect("existing");
+            assert_eq!(found.status(OffsetDateTime::now_utc()), SessionStatus::Idle);
+            assert!(demo.touch(&id.digest(), OffsetDateTime::now_utc(), time::Duration::hours(12)).await.is_err());
+            assert!(demo.rotate(&id.digest(), &SessionId::generate().digest(), &[], None, OffsetDateTime::now_utc()).await.is_err());
+        }
+    }
+
+    db_test! {
+        #[ignore = "requires PostgreSQL: browser renewal and read-only token lookup"]
+        async fn session_policy_raw_reads_do_not_renew_but_browser_activity_does(db) {
+            use asterius_domain::ports::TenantSettingsRepository as _;
+            use asterius_domain::{TenantSettings, entities::session::SessionPolicy};
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let id = SessionId::generate();
+            let sessions = repo(&db.pool, "demo");
+            asterius_store_pg::PgTenantSettings::new(db.pool.clone())
+                .save(&TenantId::new("demo"), &TenantSettings::default()
+                    .with_session_policy(Some(SessionPolicy::validated(120, 600).expect("bounded"))))
+                .await.expect("policy");
+            sessions.begin(&session_for("demo", &id, user)).await.expect("begin");
+            let before = sessions.find(&id.digest()).await.expect("raw read").expect("session");
+            let repeated = sessions.find(&id.digest()).await.expect("token lookup").expect("session");
+            assert_eq!(repeated.last_seen_at, before.last_seen_at);
+            assert_eq!(repeated.idle_expires_at, before.idle_expires_at);
+            let activity = before.last_seen_at + time::Duration::seconds(60);
+            assert!(sessions.find_for_browser(&id.digest(), activity).await.expect("browser").is_some());
+            let renewed = sessions.find(&id.digest()).await.expect("raw read").expect("session");
+            assert_eq!(renewed.last_seen_at, activity);
+            assert_eq!(renewed.idle_expires_at, activity + time::Duration::seconds(120));
+            assert_eq!(renewed.expires_at, before.expires_at);
+            assert!(sessions.find_for_browser(&id.digest(), renewed.idle_expires_at)
+                .await.expect("expired browser").is_none());
+            let expired = sessions.find(&id.digest()).await.expect("raw read").expect("session");
+            assert_eq!(expired.last_seen_at, renewed.last_seen_at);
+            sessions.revoke(&id.digest(), SessionRevocation::Administrative, activity)
+                .await.expect("revoke");
+            assert!(sessions.find_for_browser(&id.digest(), activity).await.expect("revoked browser").is_none());
+        }
+    }
+
+    db_test! {
+        #[ignore = "requires PostgreSQL: monotonic session activity"]
+        async fn session_policy_delayed_touches_do_not_regress_activity_or_extend_absolute_expiry(db) {
+            use asterius_domain::ports::TenantSettingsRepository as _;
+            use asterius_domain::{TenantSettings, entities::session::SessionPolicy};
+            let user = uuid::Uuid::new_v4();
+            seed_user(&db.pool, "demo", user).await;
+            let id = SessionId::generate();
+            let sessions = repo(&db.pool, "demo");
+            asterius_store_pg::PgTenantSettings::new(db.pool.clone())
+                .save(&TenantId::new("demo"), &TenantSettings::default()
+                    .with_session_policy(Some(SessionPolicy::validated(120, 600).expect("bounded"))))
+                .await.expect("policy");
+            sessions.begin(&session_for("demo", &id, user)).await.expect("begin");
+            let original = sessions.find(&id.digest()).await.expect("find").expect("session");
+            let recent = original.last_seen_at + time::Duration::seconds(60);
+            sessions.touch(&id.digest(), recent, time::Duration::days(1)).await.expect("recent touch");
+            let first = sessions.find(&id.digest()).await.expect("find").expect("session");
+            sessions.touch(&id.digest(), recent - time::Duration::seconds(30), time::Duration::days(1))
+                .await.expect("delayed touch");
+            let after = sessions.find(&id.digest()).await.expect("find").expect("session");
+            assert_eq!(after.last_seen_at, first.last_seen_at);
+            assert_eq!(after.idle_expires_at, first.idle_expires_at);
+            for seconds in [120, 180, 240, 300, 360, 420, 480, 540, 599] {
+                sessions.touch(&id.digest(), original.created_at + time::Duration::seconds(seconds), time::Duration::days(1))
+                    .await.expect("activity before deadline");
+            }
+            let capped = sessions.find(&id.digest()).await.expect("find").expect("session");
+            assert_eq!(capped.idle_expires_at, original.expires_at);
+            assert_eq!(capped.expires_at, original.expires_at);
+            assert!(sessions.touch(&id.digest(), original.expires_at, time::Duration::days(1)).await.is_err());
+            assert!(sessions.rotate(&id.digest(), &SessionId::generate().digest(), &[], None, original.expires_at).await.is_err());
+        }
+    }
+
+    db_test! {
         /// A session round-trips, and is active.
         async fn a_session_survives_the_round_trip(db) {
             let user = uuid::Uuid::new_v4();
