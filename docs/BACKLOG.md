@@ -2522,12 +2522,21 @@ FAPI 2.0 already implies both; our private_key_jwt `aud` rule (E03_02) matches 7
 
 *task · P4 · labels: track, post-v1*
 
-**Spec:** RFC 7643/7644 (SCIM 2.0); RFC 6238 (TOTP); SAML 2.0 (never in v1; XML-based); LDAP (out of scope).
+**Spec:** RFC 7643/7644 (SCIM 2.0), as updated by RFC 9865 and RFC
+9967; RFC 6238 (TOTP); the OASIS SAML 2.0 specification set (never in v1;
+XML-based); RFC 4510 (LDAP technical specification roadmap; out of scope).
 
-Common asks explicitly deferred. SCIM is the most likely first addition (fits the user/claims model). SAML/LDAP remain out of scope unless a product decision re-opens them.
+Common asks explicitly deferred. SCIM is the most likely first addition (fits
+the user/claims model). TOTP is a constrained compatibility/recovery candidate,
+not a replacement for phishing-resistant WebAuthn. SAML/LDAP remain out of
+scope unless a product decision re-opens them. The dated
+[post-v1 enterprise identity roadmap](post-v1-enterprise-roadmap.md) records
+the ordering, compatibility boundaries and recurring release-planning review.
 
 **Acceptance tests**
 
-- Product owner reviews this bead at each release planning.
+- Product owner reviews this bead and updates the dated roadmap outcome at each
+  release planning. Initial review recorded 2026-09-19; all four capabilities
+  remain outside v1.
 
 **Depends on:** —
