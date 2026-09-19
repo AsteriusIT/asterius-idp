@@ -283,6 +283,14 @@ async fn route(
     if is_group_route(id) {
         return route_groups(id, context, body).await;
     }
+    route_standard(id, context, body).await
+}
+
+async fn route_standard(
+    id: &str,
+    context: &Handling<'_>,
+    body: axum::body::Body,
+) -> Result<Response, AdminError> {
     match id {
         crate::SESSION_READ_ID => context.session_document(),
         crate::SESSION_END_ID => context.end_session().await,
