@@ -1,7 +1,14 @@
 import type { JSX } from 'react';
 import { Field } from './ui';
 import { FormSelect } from './components/ui/select';
-import { TLS_SUBJECT_FIELDS, type Draft, type TlsSubjectField } from './client-draft';
+import {
+  TLS_SUBJECT_FIELDS,
+  changeClientAuthentication,
+  changeComplianceProfile,
+  changeSenderConstraint,
+  type Draft,
+  type TlsSubjectField,
+} from './client-draft';
 import { clientFieldError, publicKeyError, type ClientDiscovery } from './client-onboarding';
 import { redirectUris } from './validation';
 
@@ -28,13 +35,10 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
           { value: 'fapi', label: 'FAPI 2.0 Security Profile' },
           { value: 'oidc', label: 'Standard OIDC (non-FAPI)' },
         ]}
-        onValueChange={(value) => onChange({
-          ...draft,
-          compliance_profile: value as Draft['compliance_profile'],
-          token_endpoint_auth_method: value === 'oidc' ? 'client_secret_basic' : 'private_key_jwt',
-          jwks: value === 'oidc' ? '' : draft.jwks,
-          jwks_uri: value === 'oidc' ? '' : draft.jwks_uri,
-        })} />}
+        onValueChange={(value) => onChange(changeComplianceProfile(
+          draft,
+          value as Draft['compliance_profile'],
+        ))} />}
     </Field>
     <Field label="Client authentication" error={clientFieldError(refusal, 'token_endpoint_auth_method')}
       hint={draft.token_endpoint_auth_method === 'client_secret_basic'
@@ -42,9 +46,7 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
         : 'Use private_key_jwt for a backend that signs assertions. Mutual TLS methods require this deployment’s certificate endpoints.'}>
       {(props) => <FormSelect {...props} disabled={busy} value={draft.token_endpoint_auth_method}
         options={methods.map((value) => ({ value, label: value }))}
-        onValueChange={(value) => onChange({ ...draft, token_endpoint_auth_method: value,
-          tls_subject_value: value === 'tls_client_auth' ? draft.tls_subject_value : '',
-          use_mtls_endpoint_aliases: value !== 'private_key_jwt' || draft.tls_client_certificate_bound_access_tokens === true })} />}
+        onValueChange={(value) => onChange(changeClientAuthentication(draft, value))} />}
     </Field>
     {draft.token_endpoint_auth_method === 'tls_client_auth' && <>
       <Field label="Certificate identity field">
@@ -68,9 +70,10 @@ export function ClientSecurity({ draft, discovery, refusal, busy, onChange }: Se
           ...((discovery?.mtls_endpoint_aliases || draft.tls_client_certificate_bound_access_tokens === true)
             ? [{ value: 'mtls', label: 'Certificate-bound tokens (mTLS)' }] : []),
         ]}
-        onValueChange={(value) => onChange({ ...draft, dpop_bound_access_tokens: value === 'dpop',
-          tls_client_certificate_bound_access_tokens: value === 'mtls',
-          use_mtls_endpoint_aliases: value === 'mtls' || draft.token_endpoint_auth_method !== 'private_key_jwt' })} />}
+        onValueChange={(value) => onChange(changeSenderConstraint(
+          draft,
+          value as 'dpop' | 'mtls',
+        ))} />}
     </Field>
   </>;
 }
