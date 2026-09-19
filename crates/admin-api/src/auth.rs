@@ -211,14 +211,14 @@ pub async fn authenticate(
         Presented::Nothing => Err(AdminError::Unauthenticated),
         Presented::Cookie(id) => console(backend, tenant, reserved, id).await,
         Presented::Token { token, proof } => {
-            // Not yet buildable: `ast-a05.8` mints the tokens this would
-            // resolve. Refusing is the honest answer — accepting a token
-            // nothing verified would be the opposite of what the mode is for.
+            // A build that omits the verifier fails closed. Accepting a token
+            // nothing verified would be the opposite of what this mode is for.
             let Some(tokens) = tokens else {
                 return Err(AdminError::InvalidToken);
             };
             automation(
                 tokens,
+                tenant,
                 &PresentedToken {
                     token,
                     proof,
@@ -357,10 +357,11 @@ async fn admit(
 
 async fn automation(
     tokens: &dyn AdminTokens,
+    tenant: &Tenant,
     presented: &PresentedToken<'_>,
 ) -> Result<Principal, AdminError> {
     let resolved = tokens
-        .resolve(presented)
+        .resolve(tenant, presented)
         .await
         .map_err(|error| AdminError::from_storage("admin.token", &error))?
         .ok_or(AdminError::InvalidToken)?;

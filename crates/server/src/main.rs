@@ -250,7 +250,7 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
                 // (`ast-p2l.3`). Validated at load, like the login limits.
                 endpoint_limits: config.limits,
                 signer: prepare_signer(&keys),
-                dpop,
+                dpop: Arc::clone(&dpop),
                 // The same `PgOutbox` the delivery worker claims through, so a
                 // back-channel logout token queued at the end-session endpoint
                 // is picked up by the worker in this process under the
@@ -267,7 +267,15 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         });
 
         let reserved_tenant = admin_context.reserved_tenant.clone();
-        let admin = admin_routes(&store, &tenants, &keys, directory, settings, admin_context);
+        let admin = admin_routes(
+            &store,
+            &tenants,
+            &keys,
+            directory,
+            settings,
+            dpop,
+            admin_context,
+        );
         let routes = routes
             .merge(admin)
             .merge(console_routes(&store, reserved_tenant));
@@ -424,8 +432,16 @@ fn admin_routes(
     keys: &Arc<TenantKeyStore>,
     directory: TenantDirectory,
     settings: SettingsDirectory,
+    dpop: Arc<DpopEndpoint>,
     context: AdminContext,
 ) -> axum::Router {
+    let tokens = Arc::new(asterius_server::admin::AutomationTokens::new(
+        store.clone(),
+        Arc::clone(keys) as Arc<dyn asterius_domain::KeyStore>,
+        dpop,
+        directory.clone(),
+        context.reserved_tenant.clone(),
+    ));
     asterius_admin_api::AdminApi::new(&asterius_admin_api::AdminState {
         backend: Arc::new(asterius_server::admin::Deployment::new(
             asterius_server::admin::DeploymentParts {
@@ -446,10 +462,7 @@ fn admin_routes(
                 issuance: context.issuance,
             },
         )),
-        // `ast-a05.8` mints the tokens an automation caller would present.
-        // Until it lands the mode answers 401 rather than accepting something
-        // nothing verified.
-        tokens: None,
+        tokens: Some(tokens),
         rate_limit: asterius_admin_api::throttle::DEFAULT_LIMIT,
         reserved_tenant: context.reserved_tenant,
     })
