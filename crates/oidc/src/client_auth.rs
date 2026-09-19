@@ -1,9 +1,10 @@
 //! Client authentication: which method a request offered, and what a
 //! `private_key_jwt` assertion must say.
 //!
-//! FAPI 2.0 SP §5.3.2.1 item 6 leaves exactly two ways for a client to
-//! authenticate — mTLS (RFC 8705 §2) or `private_key_jwt` (OIDC Core §9). No
-//! shared secret, in any spelling. This module owns the second one's *rules*:
+//! FAPI 2.0 SP §5.3.2.1 item 6 leaves exactly two ways for a FAPI client to
+//! authenticate — mTLS (RFC 8705 §2) or `private_key_jwt` (OIDC Core §9).
+//! ADR-0014 additionally permits `client_secret_basic` for an explicitly gated
+//! standard OIDC client. This module owns method selection and assertion rules:
 //! which claims must be present, what they must say, and which OAuth error a
 //! violation maps to.
 //!
@@ -31,6 +32,8 @@
 //! too.
 
 use crate::mtls::ClientCertificate;
+use asterius_domain::Secret;
+use base64::Engine as _;
 use serde_json::Value;
 use time::{Duration, OffsetDateTime};
 
@@ -54,6 +57,38 @@ pub const DEFAULT_MAX_ASSERTION_LIFETIME: Duration = Duration::minutes(10);
 /// so its length is pure cost. It is hashed before storage, which bounds the
 /// row — but not the bytes parsed to get there.
 pub const MAX_JTI_LEN: usize = 255;
+
+/// Parses RFC 6749 §2.3.1's Basic credential without formatting or exposing
+/// either component in an error. Both components use HTML form decoding before
+/// Base64 encoding, as §2.3.1 requires by reference to Appendix B.
+// fuzz-target: client_basic
+#[must_use]
+pub fn parse_basic_credentials(header: &str) -> Option<(String, Secret<String>)> {
+    if header.len() > 2048 {
+        return None;
+    }
+    let (scheme, encoded) = header.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("basic") || encoded.is_empty() {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let text = std::str::from_utf8(&decoded).ok()?;
+    let (encoded_id, encoded_secret) = text.split_once(':')?;
+    let decode = |name: &str, value: &str| {
+        let pair = format!("{name}={value}");
+        url::form_urlencoded::parse(pair.as_bytes())
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+    };
+    let client_id = decode("client_id", encoded_id)?;
+    let secret = decode("client_secret", encoded_secret)?;
+    if client_id.is_empty() || secret.is_empty() {
+        return None;
+    }
+    Some((client_id, Secret::new(secret)))
+}
 
 /// Why client authentication failed.
 ///
@@ -132,6 +167,9 @@ pub enum ClientAuthError {
     /// The client's keys could not be resolved.
     #[error("the client's keys are unavailable")]
     KeysUnavailable,
+    /// The HTTP Basic credential was not syntactically valid.
+    #[error("malformed client_secret_basic credential")]
+    MalformedBasic,
 }
 
 impl ClientAuthError {
@@ -154,10 +192,10 @@ impl ClientAuthError {
     /// The HTTP status this failure is reported with.
     ///
     /// RFC 6749 §5.2: `invalid_client` MAY be 401, and everything else is 400.
-    /// The `WWW-Authenticate` header that section requires alongside a 401
-    /// applies only when the client "attempted to authenticate via the
-    /// Authorization request header field" — `private_key_jwt` is carried in
-    /// the form body, so this server never has one to send.
+    /// The HTTP layer adds the matching `WWW-Authenticate` challenge when this
+    /// error follows a Basic attempt in the Authorization request header.
+    /// Body-carried `private_key_jwt` and certificate authentication have no
+    /// HTTP authentication scheme to advertise.
     #[must_use]
     pub const fn status(&self) -> u16 {
         match self.code().as_bytes() {
@@ -180,12 +218,11 @@ pub struct Attempt<'a> {
     /// The `client_id` form parameter, which RFC 7521 §4.2 permits alongside
     /// an assertion.
     pub client_id: Option<&'a str>,
-    /// Whether the request carried an `Authorization` header of any kind.
-    ///
-    /// This server accepts none — there is no `client_secret_basic` here — but
-    /// a header *plus* an assertion is still two attempts, and RFC 6749 §2.3
-    /// makes that the client's error rather than something to silently ignore.
-    pub authorization_header: bool,
+    /// The request's `Authorization` header, if any. The composed authenticator
+    /// accepts only a well-formed Basic credential from a registered OIDC
+    /// `client_secret_basic` client. A header plus another method is still two
+    /// attempts and is refused before either credential is examined.
+    pub authorization_header: Option<&'a str>,
     /// The client certificate this request arrived with, if any.
     ///
     /// `Some` means a certificate reached this server from a source it trusts
@@ -199,12 +236,14 @@ pub struct Attempt<'a> {
 
 /// The authentication method a request is actually making a play for.
 ///
-/// Closed, and deliberately not `#[non_exhaustive]`: FAPI 2.0 SP §5.3.2.1
-/// item 6 permits exactly these two. If a third is ever added, every place
+/// Closed, and deliberately not `#[non_exhaustive]`: if a method is added, every place
 /// that dispatches on a method should stop compiling until it has an answer
 /// for it — that is the point of a closed enum here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
+    /// A client id and server-issued shared secret in HTTP Basic (RFC 6749
+    /// §2.3.1). Whether the registered client may use it is checked later.
+    ClientSecretBasic,
     /// A signed assertion (OIDC Core §9, RFC 7523 §2.2).
     PrivateKeyJwt,
     /// A client certificate at the TLS layer (RFC 8705 §2).
@@ -227,7 +266,7 @@ impl Attempt<'_> {
         let assertion_offered = self.assertion.is_some() || self.assertion_type.is_some();
         let offered = usize::from(assertion_offered)
             + usize::from(self.certificate.is_some())
-            + usize::from(self.authorization_header);
+            + usize::from(self.authorization_header.is_some());
         if offered > 1 {
             return Err(ClientAuthError::MultipleMethods);
         }
@@ -248,9 +287,10 @@ impl Attempt<'_> {
             return Ok(Method::Mtls);
         }
 
-        // An `Authorization` header on its own is a method this server does
-        // not implement, which is a failed authentication rather than a
-        // malformed request.
+        if self.authorization_header.is_some() {
+            return Ok(Method::ClientSecretBasic);
+        }
+
         Err(ClientAuthError::NoMethod)
     }
 }
@@ -778,14 +818,14 @@ mod tests {
         );
 
         let with_header = Attempt {
-            authorization_header: true,
+            authorization_header: Some("Basic credential"),
             ..assertion_attempt()
         };
         assert_eq!(with_header.method(), Err(ClientAuthError::MultipleMethods));
 
         let cert_and_header = Attempt {
             certificate: Some(&certificate),
-            authorization_header: true,
+            authorization_header: Some("Basic credential"),
             ..Attempt::default()
         };
         assert_eq!(
@@ -838,13 +878,13 @@ mod tests {
     fn a_request_with_no_credential_fails_authentication() {
         assert_eq!(Attempt::default().method(), Err(ClientAuthError::NoMethod));
 
-        // A bare `Authorization` header is a method this server does not
-        // implement — a failed authentication, not a malformed request.
+        // Method selection recognizes Basic; registration and digest checks
+        // happen in the composed authenticator.
         let header_only = Attempt {
-            authorization_header: true,
+            authorization_header: Some("Basic credential"),
             ..Attempt::default()
         };
-        assert_eq!(header_only.method(), Err(ClientAuthError::NoMethod));
+        assert_eq!(header_only.method(), Ok(Method::ClientSecretBasic));
     }
 
     // ---- error mapping (RFC 6749 §5.2) -----------------------------------

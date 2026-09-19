@@ -21,9 +21,10 @@
 
 use asterius_domain::entities::session::{SessionId, SessionRevocation};
 use asterius_domain::{
-    Activation, Actor, AuditEvent, Client, ClientRegistration, ClientStatus, Detail, DomainError,
-    EventType, Kid, NewInitialAccessToken, OpaqueToken, Outcome, RefreshPolicy, RoleOwner, Tenant,
-    TenantId, TenantSettings, TenantStatus,
+    Activation, Actor, AuditEvent, Client, ClientComplianceProfile, ClientRegistration,
+    ClientSecretUpdate, ClientStatus, Detail, DomainError, EventType, Kid, NewInitialAccessToken,
+    OpaqueToken, Outcome, RefreshPolicy, RoleOwner, Tenant, TenantId, TenantSettings, TenantStatus,
+    TokenEndpointAuthMethod, sha256,
 };
 use axum::Router;
 use axum::extract::Request;
@@ -1052,6 +1053,10 @@ impl Handling<'_> {
     /// request with `curl`. A body asking for a code lifetime past FAPI 2.0
     /// SP's sixty seconds is refused with the clause named, which is
     /// `ast-f7m.4`'s acceptance criterion.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "tenant settings are parsed, merged field-by-field with newer-server values, persisted, and audited as one atomic operation"
+    )]
     async fn update_settings(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         let named = self.settings_subject(crate::TENANT_SETTINGS_UPDATE.authority())?;
 
@@ -1153,6 +1158,11 @@ impl Handling<'_> {
                 requested
                     .always_ask_consent
                     .unwrap_or(previous.always_ask_consent()),
+            )
+            .with_non_fapi_clients(
+                requested
+                    .allow_non_fapi_clients
+                    .unwrap_or(previous.allows_non_fapi_clients()),
             );
 
         repository
@@ -1281,9 +1291,15 @@ impl Handling<'_> {
     async fn create_client(&self, body: axum::body::Body) -> Result<Response, AdminError> {
         let bytes = self.body_bytes(body).await?;
         let status = clients::requested_status(&bytes)?.unwrap_or(ClientStatus::Active);
-        let mut registration =
-            ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
-                .map_err(|failure| clients::refusal(&failure))?;
+        let profile = clients::requested_compliance_profile(&bytes)?.unwrap_or_default();
+        self.ensure_client_profile_allowed(profile, crate::CLIENT_CREATE_ID)
+            .await?;
+        let mut registration = ClientRegistration::from_json_with_profile(
+            &bytes,
+            self.state.backend.capabilities(),
+            profile,
+        )
+        .map_err(|failure| clients::refusal(&failure))?;
 
         self.check_client_is_serviceable(&registration, crate::CLIENT_CREATE_ID)
             .await?;
@@ -1310,16 +1326,23 @@ impl Handling<'_> {
             updated_at: self.now,
         };
 
-        let stored =
-            self.state
-                .backend
-                .clients()
-                .create(&client)
-                .await
-                .map_err(|error| match error {
-                    DomainError::Conflict(message) => AdminError::Conflict(message),
-                    other => AdminError::from_storage(crate::CLIENT_CREATE_ID, &other),
-                })?;
+        let secret = (client.registration.token_endpoint_auth_method
+            == TokenEndpointAuthMethod::ClientSecretBasic)
+            .then(OpaqueToken::generate);
+        let secret_digest = secret
+            .as_ref()
+            .map(|secret| sha256(secret.expose().as_bytes()));
+
+        let stored = self
+            .state
+            .backend
+            .clients()
+            .create(&client, secret_digest.as_ref())
+            .await
+            .map_err(|error| match error {
+                DomainError::Conflict(message) => AdminError::Conflict(message),
+                other => AdminError::from_storage(crate::CLIENT_CREATE_ID, &other),
+            })?;
 
         self.record(
             EventType::ADMIN_CHANGED,
@@ -1330,10 +1353,12 @@ impl Handling<'_> {
         )
         .await;
 
-        Ok(json_no_store(
-            StatusCode::CREATED,
-            &clients::document(&stored),
-        ))
+        let mut response = clients::document(&stored);
+        if let Some(secret) = secret.as_ref() {
+            response["client_secret"] = serde_json::json!(secret.expose());
+            response["client_secret_expires_at"] = serde_json::json!(0);
+        }
+        Ok(json_no_store(StatusCode::CREATED, &response))
     }
 
     /// `PUT /clients/{client_id}` — replaces one client's registration.
@@ -1355,9 +1380,16 @@ impl Handling<'_> {
         // Absent means unchanged, which is what stops a console built against
         // an older server from reactivating a client somebody suspended.
         let status = clients::requested_status(&bytes)?.unwrap_or(existing.status);
-        let mut registration =
-            ClientRegistration::from_json(&bytes, self.state.backend.capabilities())
-                .map_err(|failure| clients::refusal(&failure))?;
+        let profile = clients::requested_compliance_profile(&bytes)?
+            .unwrap_or(existing.registration.compliance_profile);
+        self.ensure_client_profile_allowed(profile, crate::CLIENT_UPDATE_ID)
+            .await?;
+        let mut registration = ClientRegistration::from_json_with_profile(
+            &bytes,
+            self.state.backend.capabilities(),
+            profile,
+        )
+        .map_err(|failure| clients::refusal(&failure))?;
         // The parser intentionally ignores `resources`: it is not RFC 7591
         // metadata. Preserve the administrator-owned policy explicitly so a
         // fake or future store cannot accidentally rely on PostgreSQL's
@@ -1374,11 +1406,32 @@ impl Handling<'_> {
             ..existing.clone()
         };
 
+        let command = clients::requested_secret_command(&bytes)?;
+        let uses_secret = updated.registration.token_endpoint_auth_method
+            == TokenEndpointAuthMethod::ClientSecretBasic;
+        if !uses_secret && command.is_some() {
+            return Err(AdminError::Invalid(
+                "client secret commands require client_secret_basic authentication".to_owned(),
+            ));
+        }
+        let issue_secret = uses_secret
+            && (command == Some(clients::SecretCommand::Rotate)
+                || existing.registration.token_endpoint_auth_method
+                    != TokenEndpointAuthMethod::ClientSecretBasic);
+        let secret = issue_secret.then(OpaqueToken::generate);
+        let secret_update = match (secret.as_ref(), command, uses_secret) {
+            (Some(secret), _, _) => ClientSecretUpdate::Set(sha256(secret.expose().as_bytes())),
+            (None, Some(clients::SecretCommand::Revoke), _) | (None, _, false) => {
+                ClientSecretUpdate::Revoke
+            }
+            _ => ClientSecretUpdate::Keep,
+        };
+
         let stored = self
             .state
             .backend
             .clients()
-            .replace(&updated)
+            .replace(&updated, secret_update)
             .await
             .map_err(|error| match error {
                 DomainError::NotFound => AdminError::NotFound,
@@ -1395,7 +1448,37 @@ impl Handling<'_> {
         )
         .await;
 
-        Ok(json_no_store(StatusCode::OK, &clients::document(&stored)))
+        let mut response = clients::document(&stored);
+        if let Some(secret) = secret.as_ref() {
+            response["client_secret"] = serde_json::json!(secret.expose());
+            response["client_secret_expires_at"] = serde_json::json!(0);
+        }
+        Ok(json_no_store(StatusCode::OK, &response))
+    }
+
+    /// Enforces the tenant-level permission before a per-client opt-in.
+    async fn ensure_client_profile_allowed(
+        &self,
+        profile: ClientComplianceProfile,
+        operation: &'static str,
+    ) -> Result<(), AdminError> {
+        if profile == ClientComplianceProfile::Fapi {
+            return Ok(());
+        }
+        let settings = self
+            .state
+            .backend
+            .tenant_settings()
+            .settings(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage(operation, &error))?;
+        if settings.allows_non_fapi_clients() {
+            Ok(())
+        } else {
+            Err(AdminError::Invalid(
+                "compliance_profile: this tenant does not permit non-FAPI clients".to_owned(),
+            ))
+        }
     }
 
     /// `PUT /clients/{client_id}/resources` — replaces the administrator-owned
@@ -4012,6 +4095,9 @@ struct RequestedSettings {
     /// settings must preserve a value configured by a newer one.
     #[serde(default)]
     always_ask_consent: Option<bool>,
+    /// Tenant-level permission for explicit per-client OIDC profile opt-ins.
+    #[serde(default)]
+    allow_non_fapi_clients: Option<bool>,
     #[serde(default)]
     session_policy: Option<serde_json::Value>,
 
@@ -4052,6 +4138,7 @@ fn render_settings(tenant: &TenantId, settings: &TenantSettings) -> serde_json::
         "default_locale": settings.default_locale().as_tag(),
         "messages": settings.messages().to_json(),
         "always_ask_consent": settings.always_ask_consent(),
+        "allow_non_fapi_clients": settings.allows_non_fapi_clients(),
         "session_policy": settings.session_policy().unwrap_or_default().to_json(),
 
         "rate_limits": settings.rate_limits().to_json(),
@@ -4197,6 +4284,17 @@ fn settings_diff(tenant: &TenantId, before: &TenantSettings, after: &TenantSetti
         detail = detail
             .flag("always_ask_consent.before", before.always_ask_consent())
             .flag("always_ask_consent.after", after.always_ask_consent());
+    }
+    if before.allows_non_fapi_clients() != after.allows_non_fapi_clients() {
+        detail = detail
+            .flag(
+                "allow_non_fapi_clients.before",
+                before.allows_non_fapi_clients(),
+            )
+            .flag(
+                "allow_non_fapi_clients.after",
+                after.allows_non_fapi_clients(),
+            );
     }
     detail
 }
@@ -5585,7 +5683,11 @@ mod tests {
                 .cloned())
         }
 
-        async fn create(&self, client: &Client) -> Result<Client, DomainError> {
+        async fn create(
+            &self,
+            client: &Client,
+            _client_secret_digest: Option<&[u8; 32]>,
+        ) -> Result<Client, DomainError> {
             let mut clients = self.0.clients.lock().expect("an uncontended lock");
             if clients
                 .iter()
@@ -5597,7 +5699,11 @@ mod tests {
             Ok(client.clone())
         }
 
-        async fn replace(&self, client: &Client) -> Result<Client, DomainError> {
+        async fn replace(
+            &self,
+            client: &Client,
+            _client_secret: asterius_domain::ClientSecretUpdate,
+        ) -> Result<Client, DomainError> {
             let mut clients = self.0.clients.lock().expect("an uncontended lock");
             let Some(held) = clients
                 .iter_mut()
@@ -10952,6 +11058,80 @@ mod tests {
                 "the console handed out a {credential}: {rendered}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn non_fapi_client_creation_is_tenant_gated_and_issues_a_secret_once() {
+        let (world, cookie) = console_in_a_signing_tenant();
+        let registration = serde_json::json!({
+            "compliance_profile": "oidc",
+            "client_name": "Conventional application",
+            "redirect_uris": ["https://app.example.test/callback"],
+            "token_endpoint_auth_method": "client_secret_basic",
+            "require_pushed_authorization_requests": false,
+        });
+
+        let denied = post_client(&world, &cookie, &registration).await;
+        assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            body_of(denied).await["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("does not permit non-FAPI"))
+        );
+
+        world
+            .handle
+            .0
+            .settings
+            .lock()
+            .expect("an uncontended lock")
+            .insert(
+                "asterius-admin".to_owned(),
+                TenantSettings::default().with_non_fapi_clients(true),
+            );
+        let created = post_client(&world, &cookie, &registration).await;
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created = body_of(created).await;
+        assert_eq!(created["compliance_profile"], serde_json::json!("oidc"));
+        assert_eq!(
+            created["require_pushed_authorization_requests"],
+            serde_json::json!(false)
+        );
+        let first_secret = created["client_secret"]
+            .as_str()
+            .expect("a generated secret")
+            .to_owned();
+        assert!(first_secret.len() >= 43);
+
+        let id = created["client_id"].as_str().expect("client id");
+        let read = body_of(
+            world
+                .send(
+                    as_console(&crate::CLIENT_READ, &cookie)
+                        .uri(crate::CLIENT_READ.full_path().replace("{client_id}", id))
+                        .body(Body::empty())
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        assert!(read.get("client_secret").is_none(), "{read}");
+
+        let mut rotation = read;
+        rotation["rotate_client_secret"] = serde_json::json!(true);
+        let rotated = body_of(
+            world
+                .send(
+                    as_console(&crate::CLIENT_UPDATE, &cookie)
+                        .uri(crate::CLIENT_UPDATE.full_path().replace("{client_id}", id))
+                        .body(Body::from(rotation.to_string()))
+                        .expect("a request"),
+                )
+                .await,
+        )
+        .await;
+        let second_secret = rotated["client_secret"].as_str().expect("a rotated secret");
+        assert_ne!(second_secret, first_secret);
     }
 
     /// OIDC Registration §5: a pairwise client's `sector_identifier_uri` is a

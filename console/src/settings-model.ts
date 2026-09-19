@@ -16,6 +16,8 @@ export interface Settings {
   readonly access_token_lifetime_seconds: number;
   /** Optional while an older server may still be present during an upgrade. */
   readonly always_ask_consent?: boolean;
+  /** Whether administrators may opt individual applications out of FAPI. */
+  readonly allow_non_fapi_clients?: boolean;
   readonly session_policy?: { readonly idle_seconds: number; readonly absolute_seconds: number };
   readonly limits: Limits;
   readonly rate_limits?: RateOverrides;
@@ -30,6 +32,7 @@ export interface Draft {
   readonly code: string;
   readonly token: string;
   readonly alwaysAskConsent: boolean;
+  readonly allowNonFapiClients: boolean;
   readonly sessionIdle: string;
   readonly sessionAbsolute: string;
 
@@ -44,6 +47,7 @@ export function draftOf(settings: Settings): Draft {
     code: String(settings.authorization_code_lifetime_seconds),
     token: String(settings.access_token_lifetime_seconds),
     alwaysAskConsent: settings.always_ask_consent ?? false,
+    allowNonFapiClients: settings.allow_non_fapi_clients ?? false,
     sessionIdle: String(settings.session_policy?.idle_seconds ?? 3600),
     sessionAbsolute: String(settings.session_policy?.absolute_seconds ?? 43200),
 
@@ -66,6 +70,7 @@ export function isDirty(settings: Settings, draft: Draft): boolean {
     JSON.stringify(draft.rateLimits) !== JSON.stringify(draftOf(settings).rateLimits) ||
     draft.code !== String(settings.authorization_code_lifetime_seconds) ||
     draft.token !== String(settings.access_token_lifetime_seconds) ||
-    draft.alwaysAskConsent !== (settings.always_ask_consent ?? false)
+    draft.alwaysAskConsent !== (settings.always_ask_consent ?? false) ||
+    draft.allowNonFapiClients !== (settings.allow_non_fapi_clients ?? false)
   );
 }

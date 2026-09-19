@@ -4,12 +4,14 @@ import {
   documentFrom,
   draftOf,
   emptyDraft,
+  profilePresentation,
   type ClientDocument,
 } from '../src/client-draft.ts';
 
 function client(overrides: Partial<ClientDocument> = {}): ClientDocument {
   return {
     client_id: 'console-test',
+    compliance_profile: 'fapi',
     status: 'active',
     client_name: 'Console test',
     application_type: 'web',
@@ -51,6 +53,27 @@ test('creates a safe new-client payload with optional algorithms unset', () => {
   assert.equal('request_object_signing_alg' in payload, false);
   assert.equal(payload.tls_client_certificate_bound_access_tokens, false);
   assert.equal(payload.managed_groups_claim, false);
+  assert.equal(payload.compliance_profile, 'fapi');
+  assert.equal(payload.require_pushed_authorization_requests, true);
+});
+
+test('standard OIDC payloads omit key metadata and never earn the FAPI badge', () => {
+  const payload = documentFrom({
+    ...emptyDraft(),
+    compliance_profile: 'oidc',
+    token_endpoint_auth_method: 'client_secret_basic',
+    jwks: '{"keys":[{"kty":"EC"}]}',
+    jwks_uri: 'https://app.example/keys',
+  });
+
+  assert.equal(payload.require_pushed_authorization_requests, false);
+  assert.equal('jwks' in payload, false);
+  assert.equal('jwks_uri' in payload, false);
+  assert.deepEqual(profilePresentation('oidc'), {
+    label: 'Standard OIDC',
+    fapiBadge: false,
+  });
+  assert.equal(profilePresentation('fapi').fapiBadge, true);
 });
 
 test('round-trips the managed group release opt-in', () => {

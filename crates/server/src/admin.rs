@@ -30,8 +30,8 @@ use asterius_domain::ports::{
 };
 use asterius_domain::{
     AuditSink, Capabilities, Client, ClientId, ClientMetadataError, ClientRegistration,
-    DomainError, GrantId, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role, Session,
-    SessionRepository as _, Tenant, TenantId, UserId,
+    ClientSecretUpdate, DomainError, GrantId, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role,
+    Session, SessionRepository as _, Tenant, TenantId, UserId,
 };
 
 use crate::http::register::RegistrationPolicy;
@@ -759,7 +759,11 @@ impl ClientAdministration for DeploymentClients {
             .await
     }
 
-    async fn create(&self, client: &Client) -> Result<Client, DomainError> {
+    async fn create(
+        &self,
+        client: &Client,
+        client_secret_digest: Option<&[u8; 32]>,
+    ) -> Result<Client, DomainError> {
         let clients = self
             .store
             .scope(client.tenant.clone())
@@ -776,7 +780,9 @@ impl ClientAdministration for DeploymentClients {
                 "a client already exists under this client_id".to_owned(),
             ));
         }
-        clients.upsert(client).await?;
+        clients
+            .upsert_with_secret(client, client_secret_digest)
+            .await?;
 
         // Read back rather than returned: RFC 7591 §3.2.1's "all registered
         // metadata about this client" is what the row holds after defaults and
@@ -784,11 +790,15 @@ impl ClientAdministration for DeploymentClients {
         clients.find(&client.id).await?.ok_or(DomainError::NotFound)
     }
 
-    async fn replace(&self, client: &Client) -> Result<Client, DomainError> {
+    async fn replace(
+        &self,
+        client: &Client,
+        client_secret: ClientSecretUpdate,
+    ) -> Result<Client, DomainError> {
         self.store
             .scope(client.tenant.clone())
             .clients(self.capabilities)
-            .replace(client)
+            .replace_with_secret(client, client_secret)
             .await
     }
 

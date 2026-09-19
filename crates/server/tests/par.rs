@@ -7,14 +7,15 @@
 
 use asterius_domain::{
     AuthRequestRepository, AuthorizationDetailsType, AuthorizationDetailsTypeRepository,
-    Capabilities, Client, ClientId, ClientRegistration, ClientRepository, ClientStatus, Consumed,
-    DomainError, Issuer, JsonSchema, KeyStore, Kid, PublicKeyRecord, PushedRequest,
-    ResourceIdentifier, ResourceServer, ResourceServerRepository, Tenant, TenantId, TenantStatus,
+    Capabilities, Client, ClientComplianceProfile, ClientId, ClientRegistration, ClientRepository,
+    ClientStatus, Consumed, DomainError, Issuer, JsonSchema, KeyStore, Kid, PublicKeyRecord,
+    PushedRequest, ResourceIdentifier, ResourceServer, ResourceServerRepository, Tenant, TenantId,
+    TenantStatus,
 };
 use asterius_oidc::authorize::AuthorizationPolicy;
 use asterius_oidc::client_auth::{AssertionRules, Attempt, ClientAuthError};
 use asterius_oidc::par::{MAX_LIFETIME, REQUEST_URI_PREFIX, digest_of};
-use asterius_server::http::par::{MAX_BODY_BYTES, PushContext, push};
+use asterius_server::http::par::{MAX_BODY_BYTES, PushContext, direct, push};
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode, header};
 use serde_json::{Value, json};
@@ -245,6 +246,25 @@ fn client() -> Client {
     }
 }
 
+fn oidc_client() -> Client {
+    let mut client = client();
+    client.registration = ClientRegistration::from_json_with_profile(
+        &serde_json::to_vec(&json!({
+            "client_name": "Conventional OIDC client",
+            "redirect_uris": [REDIRECT],
+            "grant_types": ["authorization_code"],
+            "scope": "openid profile",
+            "token_endpoint_auth_method": "client_secret_basic",
+            "require_pushed_authorization_requests": false,
+        }))
+        .expect("serialise"),
+        Capabilities::default(),
+        ClientComplianceProfile::Oidc,
+    )
+    .expect("a valid OIDC registration");
+    client
+}
+
 fn form(pairs: &[(&str, &str)]) -> Bytes {
     let mut encoder = url::form_urlencoded::Serializer::new(String::new());
     for (k, v) in pairs {
@@ -351,6 +371,65 @@ async fn a_conforming_push_returns_a_request_uri() {
     assert_eq!(stored[0].expires_at, now() + Duration::seconds(90));
 }
 
+#[tokio::test]
+async fn only_an_explicit_oidc_client_can_store_a_direct_authorization_request() {
+    let tenant = tenant();
+    let requests = FakeRequests::default();
+    let resources = registry();
+    let details = detail_types();
+    let conventional = oidc_client();
+    let clients = FakeClients(Some(conventional));
+    let mut pairs: Vec<(String, String)> = valid_pairs()
+        .into_iter()
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect();
+    pairs.push(("client_id".to_owned(), CLIENT.to_owned()));
+
+    let result = direct(
+        PushContext {
+            tenant: &tenant,
+            clients: &clients,
+            requests: &requests,
+            resource_servers: &resources,
+            authorization_details_types: &details,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
+            lifetime: Duration::seconds(90),
+            certificate: None,
+            request_objects: None,
+            grants: None,
+        },
+        &pairs,
+        now(),
+    )
+    .await
+    .expect("the OIDC client may start without PAR");
+    assert_eq!(result.0, CLIENT);
+    assert!(result.1.starts_with(REQUEST_URI_PREFIX));
+    assert_eq!(requests.0.lock().expect("lock").len(), 1);
+
+    let fapi_clients = FakeClients(Some(client()));
+    let refused = direct(
+        PushContext {
+            tenant: &tenant,
+            clients: &fapi_clients,
+            requests: &requests,
+            resource_servers: &resources,
+            authorization_details_types: &details,
+            keys: &NoKeys,
+            policy: AuthorizationPolicy::default(),
+            lifetime: Duration::seconds(90),
+            certificate: None,
+            request_objects: None,
+            grants: None,
+        },
+        &pairs,
+        now(),
+    )
+    .await;
+    assert!(refused.is_err(), "a FAPI client bypassed PAR");
+}
+
 /// OIDC Core §5.5 and §5.2 both reach the stored request, because the grant is
 /// built from that row and `claims::resolve_for_grant` reads it from nowhere
 /// else (`ast-1sk.6`).
@@ -413,8 +492,8 @@ async fn an_unauthenticated_push_is_refused() {
 
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"], "invalid_client");
-    // This server accepts no header-based scheme, so RFC 6749 §5.2's
-    // `WWW-Authenticate` requirement does not apply and none is sent.
+    // This request made no header-based attempt, so RFC 6749 §5.2's
+    // `WWW-Authenticate` requirement does not apply.
     assert!(!headers.contains_key(header::WWW_AUTHENTICATE));
     // Nothing was stored for a request that never authenticated.
     assert!(requests.0.lock().expect("lock").is_empty());

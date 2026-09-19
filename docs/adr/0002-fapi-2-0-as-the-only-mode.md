@@ -1,6 +1,6 @@
 # ADR-0002: FAPI 2.0 is the baseline, not a mode
 
-- **Status:** Accepted (clause table corrected 2026-09-08; see *Corrections*)
+- **Status:** Superseded by [ADR-0014](0014-explicitly-gated-standard-oidc-clients.md)
 - **Date:** 2026-09-08
 - **Bead:** ast-83p.9
 - **Deciders:** Quentin RODIC

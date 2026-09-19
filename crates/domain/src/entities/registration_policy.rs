@@ -182,7 +182,8 @@ impl JwksRequirement {
             (Self::Any, _)
             | (Self::Inline, JwksSource::Inline(_))
             | (Self::Uri, JwksSource::Uri(_)) => true,
-            (Self::Inline, JwksSource::Uri(_)) | (Self::Uri, JwksSource::Inline(_)) => false,
+            (Self::Inline, JwksSource::Uri(_) | JwksSource::None)
+            | (Self::Uri, JwksSource::Inline(_) | JwksSource::None) => false,
         }
     }
 }
@@ -1199,6 +1200,7 @@ mod tests {
     /// spoils in exactly one way.
     fn registration() -> ClientRegistration {
         ClientRegistration {
+            compliance_profile: crate::ClientComplianceProfile::Fapi,
             client_name: "test".to_owned(),
             application_type: ApplicationType::Web,
             token_endpoint_auth_method: TokenEndpointAuthMethod::PrivateKeyJwt,

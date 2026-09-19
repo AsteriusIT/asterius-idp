@@ -28,6 +28,7 @@ export function clientConfiguration(saved: ClientDocument, discovery: ClientDisc
     discovery_url: `${discovery.issuer.replace(/\/$/, '')}/.well-known/openid-configuration`,
     client_id: saved.client_id,
     client_name: saved.client_name,
+    compliance_profile: saved.compliance_profile,
     application_type: saved.application_type,
     token_endpoint_auth_method: saved.token_endpoint_auth_method,
     redirect_uris: [...saved.redirect_uris],
@@ -61,6 +62,7 @@ export function clientFieldError(message: string | null, field: string): string 
 
 /** Early public-material hints; the domain validator remains authoritative. */
 export function publicKeyError(draft: Draft): string | null {
+  if (draft.token_endpoint_auth_method === 'client_secret_basic') return null;
   if (draft.jwks.trim() && draft.jwks_uri.trim()) return 'Choose inline public keys or a JWK Set URL, never both.';
   if (!draft.jwks.trim()) return null;
   let value: unknown;

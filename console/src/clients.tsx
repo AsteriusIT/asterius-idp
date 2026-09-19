@@ -78,6 +78,7 @@ import {
   documentFrom,
   draftOf,
   emptyDraft,
+  profilePresentation,
   type ClientDocument,
   type Draft,
 } from './client-draft';
@@ -150,6 +151,7 @@ export interface ClientRow {
   readonly client_name: string;
   readonly application_type: string;
   readonly status: string;
+  readonly compliance_profile: 'fapi' | 'oidc';
   readonly token_endpoint_auth_method: string;
   readonly grant_types: readonly string[];
   readonly redirect_uris: readonly string[];
@@ -227,6 +229,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const [draft, setDraft] = useState<Draft | null>(null);
   const [gate, setGate] = useState<RegistrationGate | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [discovery, setDiscovery] = useState<ClientDiscovery | null>(null);
@@ -299,6 +302,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const openNew = useCallback(() => {
     setNotice(null);
     setRefusal(null);
+    setIssuedSecret(null);
     setTab('settings');
     setTab('guide');
     setEditing({ kind: 'new' });
@@ -308,6 +312,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   const openExisting = useCallback((clientId: string) => {
     setNotice(null);
     setRefusal(null);
+    setIssuedSecret(null);
     setBusy(true);
     read(clientPath(clientId)).then(
       (body) => {
@@ -332,6 +337,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
     setDraft(null);
     setResourceLoad({ kind: 'idle' });
     setSelectedResources([]);
+    setIssuedSecret(null);
   }, []);
 
   const saveResources = useCallback(
@@ -364,7 +370,7 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
   );
 
   const save = useCallback(
-    (current: Draft, where: Editing) => {
+    (current: Draft, where: Editing, secretCommand?: 'rotate' | 'revoke') => {
       if (!canWrite) return;
       const keyComplaint = publicKeyError(current);
       if (keyComplaint !== null) {
@@ -378,6 +384,8 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
       let document: Record<string, unknown>;
       try {
         document = documentFrom(current);
+        if (secretCommand === 'rotate') document.rotate_client_secret = true;
+        if (secretCommand === 'revoke') document.revoke_client_secret = true;
       } catch {
         const said =
           'The JWK Set box does not hold JSON. Paste the whole document, braces and all.';
@@ -399,13 +407,20 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
           // Re-read from the answer rather than from the form: the server's
           // document is the client that exists, including the members it
           // provisioned itself.
-          const stored = body as ClientDocument;
+          const response = body as ClientDocument;
+          const { client_secret: issuedSecret, ...stored } = response;
+          setIssuedSecret(issuedSecret ?? null);
+          // Keep the one-time plaintext only in the dedicated panel state. The
+          // editable registration and saved-configuration state never need it.
           setEditing({ kind: 'existing', document: stored });
           setDraft(draftOf(stored));
           setSelectedResources(stored.resources);
           if (where.kind === 'new') loadResourceServers();
-          const said =
-            where.kind === 'existing' ? 'Saved.' : `Registered as ${stored.client_id}.`;
+          const said = issuedSecret !== undefined
+            ? 'Saved. Copy the new client secret now; it will not be shown again.'
+            : secretCommand === 'revoke'
+              ? 'Saved. The client secret was revoked.'
+              : where.kind === 'existing' ? 'Saved.' : `Registered as ${stored.client_id}.`;
           setNotice(said);
           // The toast announces and the `Message` at the top records
           // (`ast-f9j5` (3)). The editor is longer than a window, so an
@@ -446,6 +461,10 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         {editing.kind === 'existing' && mayReadAppRoles(session) && <a className="application-roles-link" href={hrefOf('roles', { client: editing.document.client_id })}>Manage application roles →</a>}
         {notice !== null && <Message tone="success">{notice}</Message>}
         {refusal !== null && <Message tone="error">{refusal}</Message>}
+        {issuedSecret !== null && <Panel title="New client secret — shown once">
+          <Message tone="info">Copy this value into the application&rsquo;s secret manager now. Asterius stores only its SHA-256 digest and cannot show it again.</Message>
+          <p><code>{issuedSecret}</code></p>
+        </Panel>}
         {discovery !== null && <Panel title="Connection details">
           <dl><dt>Issuer</dt><dd><code>{discovery.issuer}</code></dd>
             <dt>Discovery</dt><dd><code>{discovery.issuer.replace(/\/$/, '')}/.well-known/openid-configuration</code></dd></dl>
@@ -453,6 +472,13 @@ export function Clients({ session }: Readonly<{ session: Session }>): JSX.Elemen
         </Panel>}
         {discoveryError !== null && <Message tone="error">{discoveryError}</Message>}
         {!canWrite && <Message tone="info">Read-only access. Registering and saving applications requires admin.clients:write.</Message>}
+        {editing.kind === 'existing' && draft.token_endpoint_auth_method === 'client_secret_basic' && canWrite && <Panel title="Client secret">
+          <p>Rotate to issue a replacement once, or revoke to stop shared-secret authentication until a new secret is issued.</p>
+          <Actions>
+            <Button type="button" disabled={busy} onClick={() => save(draft, editing, 'rotate')}>Rotate secret</Button>
+            <Button type="button" disabled={busy} onClick={() => save(draft, editing, 'revoke')}>Revoke secret</Button>
+          </Actions>
+        </Panel>}
         {editing.kind === 'existing' && <ResourceAllowList
           load={resourceLoad}
           selected={selectedResources}
@@ -662,6 +688,17 @@ function Inventory({
           ),
         },
         {
+          key: 'profile',
+          header: 'Profile',
+          sortBy: (row) => row.compliance_profile,
+          cell: (row) => {
+            const profile = profilePresentation(row.compliance_profile);
+            return profile.fapiBadge
+              ? <Badge tone="ok">{profile.label}</Badge>
+              : <span>{profile.label}</span>;
+          },
+        },
+        {
           key: 'auth',
           header: 'Authentication',
           cell: (row) => <code>{row.token_endpoint_auth_method}</code>,
@@ -858,10 +895,10 @@ function Editor({
         <TabsContent value="credentials"><fieldset disabled={busy || !canWrite}>
           <legend id="client-keys-subjects">Keys and subjects</legend>
           <ClientSecurity draft={draft} discovery={discovery} refusal={refusal} busy={busy || !canWrite} onChange={onChange} />
-          {editing.kind === 'existing' && editing.document.jwks !== undefined && (
+          {draft.token_endpoint_auth_method !== 'client_secret_basic' && editing.kind === 'existing' && editing.document.jwks !== undefined && (
             <JsonView value={editing.document.jwks} label="Registered inline JWK Set JSON" />
           )}
-          <p>
+          {draft.token_endpoint_auth_method !== 'client_secret_basic' && <><p>
             <label htmlFor="jwks-uri">JWK Set URL</label>
             <input
               id="jwks-uri"
@@ -885,7 +922,7 @@ function Editor({
           <p className="muted">
             One or the other, never both. A URL is re-fetched when the client rotates its keys;
             an inline set is changed here.
-          </p>
+          </p></>}
           <p>
             <label htmlFor="id-token-alg">ID token signing algorithm</label>
             <FormSelect

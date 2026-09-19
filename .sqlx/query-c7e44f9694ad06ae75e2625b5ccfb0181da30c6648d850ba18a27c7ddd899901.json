@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select client_id, client_name, token_endpoint_auth_method, redirect_uris,\n                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    tls_client_auth_field, tls_client_auth_value,\n                    userinfo_signed_response_alg,\n                    backchannel_token_delivery_mode, backchannel_client_notification_endpoint,\n                    backchannel_user_code_parameter,\n                    is_agent, agent_owner_user_id, agent_policy,\n                    backchannel_logout_uri, backchannel_logout_session_required,\n                    roles_in_id_token, managed_groups_claim,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1\n             order by client_id",
+  "query": "select client_id, client_name, compliance_profile, token_endpoint_auth_method, redirect_uris,\n                    post_logout_redirect_uris, grant_types, response_types, scopes, resources, jwks, jwks_uri,\n                    id_token_signed_response_alg, application_type, subject_type, sector_identifier_uri,\n                    request_object_signing_alg, backchannel_authentication_request_signing_alg,\n                    dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens,\n                    authorization_details_types, use_mtls_endpoint_aliases,\n                    tls_client_auth_field, tls_client_auth_value,\n                    userinfo_signed_response_alg,\n                    backchannel_token_delivery_mode, backchannel_client_notification_endpoint,\n                    backchannel_user_code_parameter,\n                    is_agent, agent_owner_user_id, agent_policy,\n                    backchannel_logout_uri, backchannel_logout_session_required,\n                    roles_in_id_token, managed_groups_claim,\n                    status, created_at, updated_at\n             from clients\n             where tenant_id = $1 and client_id = $2",
   "describe": {
     "columns": [
       {
@@ -15,186 +15,193 @@
       },
       {
         "ordinal": 2,
-        "name": "token_endpoint_auth_method",
+        "name": "compliance_profile",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
+        "name": "token_endpoint_auth_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
         "name": "redirect_uris",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "post_logout_redirect_uris",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "grant_types",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "response_types",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "scopes",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "resources",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "jwks",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "jwks_uri",
         "type_info": "Text"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "id_token_signed_response_alg",
         "type_info": "Text"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "application_type",
         "type_info": "Text"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "subject_type",
         "type_info": "Text"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "sector_identifier_uri",
         "type_info": "Text"
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "request_object_signing_alg",
         "type_info": "Text"
       },
       {
-        "ordinal": 16,
+        "ordinal": 17,
         "name": "backchannel_authentication_request_signing_alg",
         "type_info": "Text"
       },
       {
-        "ordinal": 17,
+        "ordinal": 18,
         "name": "dpop_bound_access_tokens",
         "type_info": "Bool"
       },
       {
-        "ordinal": 18,
+        "ordinal": 19,
         "name": "tls_client_certificate_bound_access_tokens",
         "type_info": "Bool"
       },
       {
-        "ordinal": 19,
+        "ordinal": 20,
         "name": "authorization_details_types",
         "type_info": "TextArray"
       },
       {
-        "ordinal": 20,
+        "ordinal": 21,
         "name": "use_mtls_endpoint_aliases",
         "type_info": "Bool"
       },
       {
-        "ordinal": 21,
+        "ordinal": 22,
         "name": "tls_client_auth_field",
         "type_info": "Text"
       },
       {
-        "ordinal": 22,
+        "ordinal": 23,
         "name": "tls_client_auth_value",
         "type_info": "Text"
       },
       {
-        "ordinal": 23,
+        "ordinal": 24,
         "name": "userinfo_signed_response_alg",
         "type_info": "Text"
       },
       {
-        "ordinal": 24,
+        "ordinal": 25,
         "name": "backchannel_token_delivery_mode",
         "type_info": "Text"
       },
       {
-        "ordinal": 25,
+        "ordinal": 26,
         "name": "backchannel_client_notification_endpoint",
         "type_info": "Text"
       },
       {
-        "ordinal": 26,
+        "ordinal": 27,
         "name": "backchannel_user_code_parameter",
         "type_info": "Bool"
       },
       {
-        "ordinal": 27,
+        "ordinal": 28,
         "name": "is_agent",
         "type_info": "Bool"
       },
       {
-        "ordinal": 28,
+        "ordinal": 29,
         "name": "agent_owner_user_id",
         "type_info": "Uuid"
       },
       {
-        "ordinal": 29,
+        "ordinal": 30,
         "name": "agent_policy",
         "type_info": "Jsonb"
       },
       {
-        "ordinal": 30,
+        "ordinal": 31,
         "name": "backchannel_logout_uri",
         "type_info": "Text"
       },
       {
-        "ordinal": 31,
+        "ordinal": 32,
         "name": "backchannel_logout_session_required",
         "type_info": "Bool"
       },
       {
-        "ordinal": 32,
+        "ordinal": 33,
         "name": "roles_in_id_token",
         "type_info": "Bool"
       },
       {
-        "ordinal": 33,
+        "ordinal": 34,
         "name": "managed_groups_claim",
         "type_info": "Bool"
       },
       {
-        "ordinal": 34,
+        "ordinal": 35,
         "name": "status",
         "type_info": "Text"
       },
       {
-        "ordinal": 35,
+        "ordinal": 36,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 36,
+        "ordinal": 37,
         "name": "updated_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
+        "Text",
         "Text"
       ]
     },
     "nullable": [
+      false,
       false,
       false,
       false,
@@ -234,5 +241,5 @@
       false
     ]
   },
-  "hash": "4a9807251616cdced3ad9912041280d0e24cc117bb415374a77700bc7f092797"
+  "hash": "c7e44f9694ad06ae75e2625b5ccfb0181da30c6648d850ba18a27c7ddd899901"
 }

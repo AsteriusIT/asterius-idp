@@ -1,8 +1,8 @@
 # Integrating a confidential client (BFF, service, daemon)
 
-This server is FAPI 2.0 only. That is one design decision with a long tail of
-consequences for a client, and every one of them shows up as the same four
-words if you get it wrong: `401 invalid_client`.
+This server defaults every application to FAPI 2.0. A tenant may explicitly
+permit individual applications to use the standard OIDC profile described
+below; no application is downgraded by implication.
 
 This page is the list of what a confidential client — a back-end-for-frontend,
 a service, anything holding a key — has to send. It is written against the code
@@ -25,28 +25,32 @@ discovery document; certificate binding requires its mutual TLS endpoints.
 
 The existing Settings, Callbacks, Grant types, Credentials and Token claims
 tabs remain available for advanced registration. The API validates every save;
-its field refusals appear in the guide beside the corresponding input. The
-profile always requires PAR, PKCE S256 and sender-constrained tokens.
+its field refusals appear in the guide beside the corresponding input. FAPI
+requires PAR, PKCE S256 and sender-constrained tokens. Standard OIDC exempts
+PAR and asymmetric client authentication only.
 
 After registration, open **Saved configuration** and copy the JSON. It is built
 from the last successful API response, including the assigned client ID and
 registered callbacks, and uses the tenant's discovered issuer. Unsaved edits do
 not alter the export. It contains no JWK material, client secrets or registration
-access tokens: configure the application's private key separately. Reloading and
-opening the application produces the same configuration. An operator with only
+access tokens. A standard OIDC client's generated secret appears only on creation
+or rotation; copy it into the application's secret manager before leaving the
+page. Reloading and opening the application produces the same public
+configuration. An operator with only
 `admin.clients:read` can view and copy saved configuration but cannot register
 or save changes.
 
-## 0. The three things that are not optional
+## 0. Choose the profile explicitly
 
 | | Why |
 | --- | --- |
-| **PAR for every authorization request** | ADR-0002. `/authorize` accepts a `request_uri` and nothing else. `require_pushed_authorization_requests: false` in a registration is *refused*, not downgraded. |
-| **`private_key_jwt` or mTLS for client authentication** | FAPI 2.0 SP §5.3.2.1 item 6. There is no `client_secret_basic` and no `client_secret_post`. A client with a shared secret cannot authenticate here at all. |
+| **PAR for every FAPI authorization request** | ADR-0014. A FAPI application cannot opt out. An explicitly tenant-permitted standard OIDC application may send the same code + PKCE request directly to `/authorize`. |
+| **Explicit confidential-client authentication** | FAPI clients use `private_key_jwt` or mTLS. A standard OIDC client may use the server-generated `client_secret_basic`; `client_secret_post`, public clients and caller-chosen secrets remain unsupported. |
 | **A sender-constrained access token** | FAPI 2.0 SP §5.3.2.1. `dpop_bound_access_tokens` defaults to `true` for a registration that says nothing, so a DPoP proof is required at the token endpoint. |
 
-If your client library was configured for a plain OIDC provider, all three of
-these are things it is probably not doing.
+If your client library lacks PAR or asymmetric client authentication, an
+administrator must first enable the tenant permission and then select Standard
+OIDC on that application. PKCE S256 and sender constraint still apply.
 
 ## 1. Where the endpoints are, and what `aud` must say
 

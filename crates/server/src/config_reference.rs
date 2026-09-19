@@ -678,7 +678,7 @@ Both quota members are enforced since `ast-cu3`:
 
 ### Rotating the registration access token
 
-`rotate_registration_access_token` takes RFC 7592 §5's "MAY be rotated when the developer or client does a read or update operation", for updates only and only where a tenant asks. **It is `false` unless the tenant sets it**, and that default is a decision: this server issues no client secret (FAPI 2.0 SP §5.3.2.1), so the registration access token is a client's only credential and there is no re-issue path. A rotation whose `200` is lost in transit would otherwise strand the client for good — the state §5 tells implementers to avoid.
+`rotate_registration_access_token` takes RFC 7592 §5's "MAY be rotated when the developer or client does a read or update operation", for updates only and only where a tenant asks. **It is `false` unless the tenant sets it**, and that default is a decision: dynamic registration creates FAPI clients and issues no client secret, so the registration access token is that management API's only credential and there is no re-issue path. A rotation whose `200` is lost in transit would otherwise strand the client for good — the state §5 tells implementers to avoid.
 
 * **A `PUT /register/{client_id}` rotates.** The response carries the new `registration_access_token`, which is the only time the client will see it; the server keeps a digest.
 * **A `GET` never rotates**, whatever the policy says. OIDC Registration §4.3: "since Read operations are intended to be idempotent, the Client Read Request itself SHOULD NOT cause changes."

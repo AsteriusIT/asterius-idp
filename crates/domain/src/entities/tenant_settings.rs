@@ -250,6 +250,12 @@ pub struct TenantSettings {
     /// on when every authorization must give the person a fresh opportunity
     /// to reject it, including an authorization whose scopes were remembered.
     always_ask_consent: bool,
+    /// Whether administrators may explicitly create conventional OIDC clients.
+    ///
+    /// False by default so an upgrade cannot silently weaken an existing
+    /// tenant. This is only the tenant-level permission; every application
+    /// must still opt in independently.
+    allow_non_fapi_clients: bool,
     session_policy: Option<crate::entities::session::SessionPolicy>,
 
     rate_limits: crate::tenant_rate_limits::TenantRateLimits,
@@ -275,6 +281,7 @@ impl Default for TenantSettings {
             revoke_refresh_on_logout: false,
             require_verified_email: false,
             always_ask_consent: false,
+            allow_non_fapi_clients: false,
             session_policy: None,
 
             rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
@@ -356,6 +363,7 @@ impl TenantSettings {
             revoke_refresh_on_logout: false,
             require_verified_email: false,
             always_ask_consent: false,
+            allow_non_fapi_clients: false,
             session_policy: None,
 
             rate_limits: crate::tenant_rate_limits::TenantRateLimits::default(),
@@ -503,6 +511,19 @@ impl TenantSettings {
         self.always_ask_consent
     }
 
+    /// The same settings with conventional OIDC clients permitted or denied.
+    #[must_use]
+    pub const fn with_non_fapi_clients(mut self, allowed: bool) -> Self {
+        self.allow_non_fapi_clients = allowed;
+        self
+    }
+
+    /// Whether an administrator may opt an application out of FAPI.
+    #[must_use]
+    pub const fn allows_non_fapi_clients(&self) -> bool {
+        self.allow_non_fapi_clients
+    }
+
     /// Whether ending a session here also revokes the refresh tokens issued
     /// under it (`ast-o4u.2`).
     ///
@@ -614,6 +635,7 @@ impl TenantSettings {
             "revoke_refresh_on_logout": self.revoke_refresh_on_logout,
             "require_verified_email": self.require_verified_email,
             "always_ask_consent": self.always_ask_consent,
+            "allow_non_fapi_clients": self.allow_non_fapi_clients,
             "session_policy": self.session_policy.map(crate::entities::session::SessionPolicy::to_json),
 
             "rate_limits": self.rate_limits.to_json(),
@@ -746,6 +768,13 @@ impl TenantSettings {
             Some(_) => return Err(TenantSettingsError::NotABoolean("always_ask_consent")),
         };
 
+        // Opt-in. A row written before this feature existed remains FAPI-only.
+        let allow_non_fapi_clients = match object.get("allow_non_fapi_clients") {
+            None | Some(serde_json::Value::Null) => false,
+            Some(serde_json::Value::Bool(allowed)) => *allowed,
+            Some(_) => return Err(TenantSettingsError::NotABoolean("allow_non_fapi_clients")),
+        };
+
         Self::validated(disabled_features, authorization_code, access_token)?
             .with_registration(registration)
             .requiring_a_grant_management_action(grant_management_action_required)
@@ -755,6 +784,7 @@ impl TenantSettings {
             .with_revoke_refresh_on_logout(revoke_refresh_on_logout)
             .requiring_a_verified_email(require_verified_email)
             .with_always_ask_consent(always_ask_consent)
+            .with_non_fapi_clients(allow_non_fapi_clients)
             .with_session_policy(crate::entities::session::SessionPolicy::from_json(
                 object.get("session_policy"),
             )?)
@@ -1083,6 +1113,26 @@ mod tests {
             ),
             "{error}"
         );
+    }
+
+    #[test]
+    fn non_fapi_clients_are_opt_in_and_the_permission_round_trips() {
+        let old = TenantSettings::from_json(Some(&serde_json::json!({}))).expect("an older row");
+        assert!(!old.allows_non_fapi_clients());
+
+        let enabled = TenantSettings::default().with_non_fapi_clients(true);
+        let restored =
+            TenantSettings::from_json(Some(&enabled.to_json())).expect("this server wrote it");
+        assert!(restored.allows_non_fapi_clients());
+
+        let error = TenantSettings::from_json(Some(&serde_json::json!({
+            "allow_non_fapi_clients": "yes"
+        })))
+        .expect_err("not a boolean");
+        assert!(matches!(
+            error,
+            TenantSettingsError::NotABoolean("allow_non_fapi_clients")
+        ));
     }
 
     /// The tenant default is the last layer of OIDC Core §3.1.2.1 negotiation,

@@ -748,6 +748,9 @@ impl ClientKeyCache {
         now: OffsetDateTime,
     ) -> Result<ClientKeySet, ClientKeyError> {
         match source {
+            JwksSource::None => Err(ClientKeyError::Malformed(
+                "client authentication method has no JWK Set",
+            )),
             // Nothing to cache and nothing to rate-limit: the document is
             // already in memory, having come from the client's registration.
             // Parsing it every time is a few hundred microseconds and keeps one

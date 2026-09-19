@@ -39,9 +39,10 @@ pub use authorization_details::{
     SchemaError as JsonSchemaError, SchemaViolation as JsonSchemaViolation,
 };
 pub use client::{
-    ApplicationType, Client, ClientMetadata, ClientMetadataError, ClientRegistration, ClientStatus,
-    GrantType, JwksSource, ManagedGroupsClaim, RedirectUri, RedirectUriError, RolesInIdToken,
-    SubjectType, TlsClientAuthSubject, TokenBinding, TokenDeliveryMode, TokenEndpointAuthMethod,
+    ApplicationType, Client, ClientComplianceProfile, ClientMetadata, ClientMetadataError,
+    ClientRegistration, ClientStatus, GrantType, JwksSource, ManagedGroupsClaim, RedirectUri,
+    RedirectUriError, RolesInIdToken, SubjectType, TlsClientAuthSubject, TokenBinding,
+    TokenDeliveryMode, TokenEndpointAuthMethod,
 };
 pub use email_verification::{
     EMAIL_VERIFICATION_LIFETIME, EMAIL_VERIFICATION_TOKEN_BITS, EmailVerificationToken,

@@ -364,11 +364,19 @@ pub fn grant_types(capabilities: &Capabilities) -> Vec<&'static str> {
 /// The client authentication methods this deployment accepts.
 ///
 /// `private_key_jwt` always; the mTLS methods only behind the flag. There is no
-/// `client_secret_*` and no `none` (ADR-0002), so the shortest this list gets
-/// is one entry.
+/// FAPI advertises only asymmetric methods. A tenant that permits explicitly
+/// selected standard OIDC clients additionally advertises
+/// `client_secret_basic`; `client_secret_post`, `client_secret_jwt` and `none`
+/// remain absent (ADR-0014).
 #[must_use]
-pub fn token_endpoint_auth_methods(capabilities: &Capabilities) -> Vec<&'static str> {
+pub fn token_endpoint_auth_methods(
+    capabilities: &Capabilities,
+    allow_non_fapi_clients: bool,
+) -> Vec<&'static str> {
     let mut methods = vec!["private_key_jwt"];
+    if allow_non_fapi_clients {
+        methods.push("client_secret_basic");
+    }
     if capabilities.mtls {
         methods.push("tls_client_auth");
         methods.push("self_signed_tls_client_auth");
@@ -493,6 +501,7 @@ pub fn provider_metadata(
     acr: &asterius_domain::AcrPolicy,
     authorization_details_types: &[String],
     grant_management: crate::grant_management::Policy,
+    allow_non_fapi_clients: bool,
 ) -> Value {
     let mut document = json!({
         // OIDC Discovery §4.3: a client checks that this is identical to the
@@ -520,18 +529,19 @@ pub fn provider_metadata(
         "userinfo_signing_alg_values_supported": algorithms(),
         "dpop_signing_alg_values_supported": algorithms(),
 
-        "token_endpoint_auth_methods_supported": token_endpoint_auth_methods(capabilities),
+        "token_endpoint_auth_methods_supported": token_endpoint_auth_methods(capabilities, allow_non_fapi_clients),
         "introspection_endpoint_auth_methods_supported":
-            token_endpoint_auth_methods(capabilities),
-        "revocation_endpoint_auth_methods_supported": token_endpoint_auth_methods(capabilities),
+            token_endpoint_auth_methods(capabilities, allow_non_fapi_clients),
+        "revocation_endpoint_auth_methods_supported": token_endpoint_auth_methods(capabilities, allow_non_fapi_clients),
 
         // RFC 7636 §4.2 and FAPI 2.0 SP §5.3.2.1: S256 only. `plain` is not a
         // value this server accepts, so it is not a value it advertises.
         // MCP Authorization requires this member to be present.
         "code_challenge_methods_supported": ["S256"],
 
-        // RFC 9126 §5. Always true: PAR is the only way in (ADR-0002).
-        "require_pushed_authorization_requests": true,
+        // RFC 9126 §5. False only when this tenant permits explicitly selected
+        // standard OIDC clients to use the direct path (ADR-0014).
+        "require_pushed_authorization_requests": !allow_non_fapi_clients,
         // RFC 9207 §3.
         "authorization_response_iss_parameter_supported": true,
 
@@ -751,6 +761,7 @@ mod tests {
             acr,
             authorization_details_types,
             crate::grant_management::Policy::new(capabilities.grant_management, false),
+            false,
         )
     }
 
@@ -786,6 +797,7 @@ mod tests {
             &AcrPolicy::default(),
             &[],
             crate::grant_management::Policy::new(true, true),
+            false,
         );
         assert_eq!(required["grant_management_action_required"], json!(true));
     }
@@ -801,6 +813,7 @@ mod tests {
             &AcrPolicy::default(),
             &[],
             crate::grant_management::Policy::new(false, true),
+            false,
         );
         assert!(document.get("grant_management_action_required").is_none());
     }
@@ -1509,11 +1522,12 @@ mod tests {
         }
     }
 
-    /// ADR-0002: no `client_secret_*` method, and never `none`.
+    /// The default FAPI posture advertises no `client_secret_*` method, and
+    /// never `none`.
     #[test]
-    fn no_client_secret_authentication_method_is_ever_advertised() {
+    fn a_fapi_only_tenant_advertises_no_client_secret_method() {
         for capabilities in [Capabilities::default(), all_features()] {
-            let methods = token_endpoint_auth_methods(&capabilities);
+            let methods = token_endpoint_auth_methods(&capabilities, false);
             for forbidden in [
                 "client_secret_basic",
                 "client_secret_post",
@@ -1527,9 +1541,28 @@ mod tests {
     }
 
     #[test]
+    fn a_tenant_permitting_oidc_advertises_only_client_secret_basic() {
+        let methods = token_endpoint_auth_methods(&Capabilities::default(), true);
+        assert_eq!(methods, ["private_key_jwt", "client_secret_basic"]);
+
+        let document = provider_metadata(
+            &issuer(),
+            &Capabilities::default(),
+            &AcrPolicy::default(),
+            &[],
+            crate::grant_management::Policy::new(false, false),
+            true,
+        );
+        assert_eq!(
+            document["require_pushed_authorization_requests"],
+            json!(false)
+        );
+    }
+
+    #[test]
     fn mtls_methods_appear_only_behind_the_flag() {
         assert_eq!(
-            token_endpoint_auth_methods(&Capabilities::default()),
+            token_endpoint_auth_methods(&Capabilities::default(), false),
             ["private_key_jwt"]
         );
         let mtls = Capabilities {
@@ -1537,7 +1570,7 @@ mod tests {
             ..Capabilities::default()
         };
         assert_eq!(
-            token_endpoint_auth_methods(&mtls),
+            token_endpoint_auth_methods(&mtls, false),
             [
                 "private_key_jwt",
                 "tls_client_auth",

@@ -22,7 +22,17 @@ test('an older settings response defaults always-ask consent off', () => {
   const draft = draftOf(stored);
 
   assert.equal(draft.alwaysAskConsent, false);
+  assert.equal(draft.allowNonFapiClients, false);
   assert.equal(isDirty(stored, draft), false);
+});
+
+test('the non-FAPI permission hydrates and participates in dirty state', () => {
+  const stored = settings({ allow_non_fapi_clients: true });
+  const draft = draftOf(stored);
+
+  assert.equal(draft.allowNonFapiClients, true);
+  assert.equal(isDirty(stored, draft), false);
+  assert.equal(isDirty(stored, { ...draft, allowNonFapiClients: false }), true);
 });
 
 test('the consent switch hydrates and participates in dirty state', () => {

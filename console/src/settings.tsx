@@ -180,6 +180,7 @@ export function TenantSettings({
         authorization_code_lifetime_seconds: Number(current.code),
         access_token_lifetime_seconds: Number(current.token),
         always_ask_consent: current.alwaysAskConsent,
+        allow_non_fapi_clients: current.allowNonFapiClients,
         session_policy: { idle_seconds: Number(current.sessionIdle), absolute_seconds: Number(current.sessionAbsolute) },
 
         ...(load.kind === 'ready' && load.settings.rate_limit_bounds !== undefined ? { rate_limits: rateDocument(current.rateLimits) } : {}),
@@ -279,6 +280,18 @@ export function TenantSettings({
             Choose which capabilities applications can use in this workspace. Changes take effect when you save.
           </p>
           <div className="capability-list">
+            <label className="capability-row">
+              <span className="capability-icon"><ShieldCheck aria-hidden="true" /></span>
+              <span className="capability-copy">
+                <strong>Allow standard OIDC applications</strong>
+                <span>Permit administrators to opt individual applications out of FAPI. Applications remain FAPI unless explicitly changed.</span>
+              </span>
+              <span className="capability-state" aria-hidden="true">{draft.allowNonFapiClients ? 'Enabled' : 'Disabled'}</span>
+              <input className="capability-switch" type="checkbox" role="switch"
+                name="allow_non_fapi_clients" aria-label="Allow standard OIDC applications"
+                checked={draft.allowNonFapiClients}
+                onChange={(event) => setDraft({ ...draft, allowNonFapiClients: event.target.checked })} />
+            </label>
             {featureRows(draft.disabled).map(([name, description]) => {
               const feature = FEATURE_PRESENTATION[name as keyof typeof FEATURE_PRESENTATION];
               const Icon = feature?.icon ?? Settings2;
