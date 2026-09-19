@@ -373,6 +373,8 @@ pub enum LimitedEndpoint {
     PushedAuthorizationRequest,
     /// `POST /token` — RFC 6749 §3.2.
     Token,
+    /// `POST /device_authorization` — RFC 8628 §3.1.
+    DeviceAuthorization,
     /// `GET`/`POST /userinfo` — OIDC Core §5.3.
     UserInfo,
     /// `POST` at the SSF add-subject and remove-subject endpoints — SSF 1.0
@@ -425,11 +427,12 @@ pub enum LimitedEndpoint {
 impl LimitedEndpoint {
     /// Every endpoint that has limits, so a caller can iterate over them
     /// without writing the list a second time.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Registration,
         Self::ClientConfiguration,
         Self::PushedAuthorizationRequest,
         Self::Token,
+        Self::DeviceAuthorization,
         Self::UserInfo,
         Self::Introspection,
         Self::Revocation,
@@ -446,6 +449,7 @@ impl LimitedEndpoint {
             Self::ClientConfiguration => "client_configuration",
             Self::PushedAuthorizationRequest => "par",
             Self::Token => "token",
+            Self::DeviceAuthorization => "device_authorization",
             Self::UserInfo => "userinfo",
             Self::Introspection => "introspection",
             Self::Revocation => "revocation",
@@ -600,6 +604,8 @@ pub struct EndpointLimits {
     pub par: EndpointLimit,
     /// `POST /token`.
     pub token: EndpointLimit,
+    /// `POST /device_authorization`.
+    pub device_authorization: EndpointLimit,
     /// UserInfo.
     pub userinfo: EndpointLimit,
     /// `POST /introspect`.
@@ -623,6 +629,7 @@ impl EndpointLimits {
             LimitedEndpoint::ClientConfiguration => self.client_configuration,
             LimitedEndpoint::PushedAuthorizationRequest => self.par,
             LimitedEndpoint::Token => self.token,
+            LimitedEndpoint::DeviceAuthorization => self.device_authorization,
             LimitedEndpoint::UserInfo => self.userinfo,
             LimitedEndpoint::Introspection => self.introspection,
             LimitedEndpoint::Revocation => self.revocation,
@@ -749,6 +756,7 @@ mod tests {
             client_configuration: plain,
             par: plain,
             token: plain,
+            device_authorization: plain,
             userinfo: plain,
             introspection: plain,
             revocation: plain,
@@ -768,6 +776,39 @@ mod tests {
                 "{endpoint}"
             );
         }
+    }
+
+    /// Every enum variant maps to its own configuration field. Distinct
+    /// maxima make a copied match arm visible instead of merely type-correct.
+    #[test]
+    fn every_limited_endpoint_maps_to_its_configured_limit() {
+        // Arrange
+        let window = Duration::seconds(60);
+        let configured = |max| EndpointLimit {
+            per_address: RateLimit { max, window },
+            per_client: None,
+            per_subject: None,
+        };
+        let limits = EndpointLimits {
+            registration: configured(1),
+            client_configuration: configured(2),
+            par: configured(3),
+            token: configured(4),
+            device_authorization: configured(5),
+            userinfo: configured(6),
+            introspection: configured(7),
+            revocation: configured(8),
+            ssf_subjects: configured(9),
+            backchannel: configured(10),
+            access_evaluation: configured(11),
+        };
+
+        // Act
+        let maxima =
+            LimitedEndpoint::ALL.map(|endpoint| limits.for_endpoint(endpoint).per_address.max);
+
+        // Assert
+        assert_eq!(maxima, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     }
 
     fn now() -> OffsetDateTime {

@@ -352,6 +352,7 @@ fn limits(max: u32) -> EndpointLimits {
         client_configuration: plain,
         par: plain,
         token: plain,
+        device_authorization: plain,
         userinfo: plain,
         introspection: plain,
         revocation: plain,

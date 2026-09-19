@@ -627,6 +627,11 @@ mod tests {
                 per_client: Some(limit(5)),
                 per_subject: None,
             },
+            device_authorization: asterius_domain::EndpointLimit {
+                per_address: limit(2),
+                per_client: Some(limit(5)),
+                per_subject: None,
+            },
             userinfo: plain,
             ssf_subjects: plain,
             access_evaluation: plain,
@@ -847,6 +852,86 @@ mod tests {
 
         // Assert
         assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// Invalid device requests still pay for signature and form processing,
+    /// so they fill the address bucket and the refusal tells the device when
+    /// its retry can be useful.
+    #[tokio::test]
+    async fn failed_device_authorizations_are_address_limited_with_a_retry_hint() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+        for _ in 0..2 {
+            guard(
+                &context,
+                LimitedEndpoint::DeviceAuthorization,
+                Some("claimed-client"),
+                bad_request,
+            )
+            .await;
+        }
+
+        // Act
+        let refused = guard(
+            &context,
+            LimitedEndpoint::DeviceAuthorization,
+            Some("claimed-client"),
+            bad_request,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(refused.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    /// A successful device flow is charged to the client that authenticated,
+    /// not to its neighbours or to another endpoint's namespace.
+    #[tokio::test]
+    async fn device_authorization_client_budgets_are_isolated() {
+        // Arrange
+        let store = Counters::default();
+        let trail = Trail::default();
+        let context = context(&store, &trail);
+        for _ in 0..5 {
+            guard(
+                &context,
+                LimitedEndpoint::DeviceAuthorization,
+                Some("busy-device-client"),
+                ok,
+            )
+            .await;
+        }
+
+        // Act
+        let busy = guard(
+            &context,
+            LimitedEndpoint::DeviceAuthorization,
+            Some("busy-device-client"),
+            ok,
+        )
+        .await;
+        let neighbour = guard(
+            &context,
+            LimitedEndpoint::DeviceAuthorization,
+            Some("another-device-client"),
+            ok,
+        )
+        .await;
+        let token = guard(
+            &context,
+            LimitedEndpoint::Token,
+            Some("busy-device-client"),
+            ok,
+        )
+        .await;
+
+        // Assert
+        assert_eq!(busy.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(neighbour.status(), StatusCode::OK);
+        assert_eq!(token.status(), StatusCode::OK);
     }
 
     /// A trail that grows with the flood is a way to bury everything else in

@@ -478,6 +478,7 @@ fn generous_endpoint_limits() -> EndpointLimits {
         client_configuration: limit,
         par: limit,
         token: limit,
+        device_authorization: limit,
         userinfo: limit,
         introspection: limit,
         revocation: limit,

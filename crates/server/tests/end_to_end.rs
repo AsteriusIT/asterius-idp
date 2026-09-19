@@ -343,6 +343,15 @@ impl Flow {
     /// pushed-request endpoint — and a test that set it in one would be
     /// asserting against a server no operator can configure.
     async fn with_capabilities(capabilities: Capabilities) -> Option<Self> {
+        let endpoint_limits = generous_endpoint_limits();
+        Self::with_capabilities_and_limits(capabilities, &endpoint_limits).await
+    }
+
+    /// The same assembled application with endpoint limits chosen by a test.
+    async fn with_capabilities_and_limits(
+        capabilities: Capabilities,
+        endpoint_limits: &EndpointLimits,
+    ) -> Option<Self> {
         let url = std::env::var("DATABASE_URL").ok()?;
         let store = Store::connect(&url, 4)
             .await
@@ -394,6 +403,7 @@ impl Flow {
                 Arc::clone(&audit),
                 settings.clone(),
                 capabilities,
+                endpoint_limits,
             ),
             store,
             kek,
@@ -1296,6 +1306,7 @@ fn assemble(
     audit: Arc<PgAuditSink>,
     settings: SettingsDirectory,
     capabilities: Capabilities,
+    endpoint_limits: &EndpointLimits,
 ) -> Router {
     let config = ServerConfig {
         bind: "127.0.0.1:0".parse().expect("a literal address"),
@@ -1360,7 +1371,7 @@ fn assemble(
             session_lifetimes: Lifetimes::default().clamped(),
             argon2: Some(Argon2Parameters::default()),
             login_limits: generous_login_limits(),
-            endpoint_limits: generous_endpoint_limits(),
+            endpoint_limits: *endpoint_limits,
             signer,
             dpop,
             // The real outbox, on the same pool: a back-channel logout token
@@ -1416,6 +1427,7 @@ fn generous_endpoint_limits() -> EndpointLimits {
         client_configuration: limit,
         par: limit,
         token: limit,
+        device_authorization: limit,
         userinfo: limit,
         introspection: limit,
         revocation: limit,
@@ -5399,6 +5411,52 @@ async fn a_device_flow_is_approved_in_a_browser_and_redeemed_by_the_device() {
     // second says nothing about the code having been real.
     assert_eq!(again.status, StatusCode::BAD_REQUEST, "{}", again.text());
     assert_eq!(again.json()["error"], "invalid_grant");
+
+    flow.tear_down().await;
+}
+
+/// The assembled RFC 8628 endpoint is behind its dedicated client bucket, and
+/// its refusal carries the retry instruction protocol clients need.
+#[tokio::test]
+async fn device_authorization_is_rate_limited_with_retry_after() {
+    let capabilities = Capabilities {
+        device_flow: true,
+        ..Capabilities::default()
+    };
+    let mut endpoint_limits = generous_endpoint_limits();
+    endpoint_limits.device_authorization = EndpointLimit {
+        per_address: RateLimit {
+            max: 1,
+            window: time::Duration::minutes(15),
+        },
+        per_client: Some(RateLimit {
+            max: 1,
+            window: time::Duration::minutes(15),
+        }),
+        per_subject: None,
+    };
+    let Some(mut flow) = Flow::with_capabilities_and_limits(capabilities, &endpoint_limits).await
+    else {
+        eprintln!("skipping: DATABASE_URL is not set");
+        return;
+    };
+    let device_key = flow.register_device_client().await;
+
+    // Act: one authorization spends this client's one-token budget.
+    let accepted = flow
+        .device_authorization(&device_key, "assertion-limited-device-1")
+        .await;
+    let refused = flow
+        .device_authorization(&device_key, "assertion-limited-device-2")
+        .await;
+
+    // Assert
+    assert_eq!(accepted.status, StatusCode::OK, "{}", accepted.text());
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        refused.headers.contains_key(header::RETRY_AFTER),
+        "a throttled device was not told when to retry"
+    );
 
     flow.tear_down().await;
 }
