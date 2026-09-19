@@ -47,3 +47,13 @@ test('session clocks hydrate, retain defaults and participate in dirty state', (
   assert.equal(isDirty(stored, {...draft, sessionIdle: '180'}), true);
   assert.equal(isDirty(stored, {...draft, sessionAbsolute: '900'}), true);
 });
+
+test('assurance settings hydrate, preserve unknown context names and detect changes', () => {
+  const acr_policy = { amr_in_id_token: true, levels: [{ value: 'tenant:custom', amr: ['swk', 'user'] }] };
+  const stored = settings({ acr_policy });
+  const draft = draftOf(stored);
+  assert.deepEqual(draft.acrPolicy, acr_policy);
+  assert.equal(isDirty(stored, draft), false);
+  assert.equal(isDirty(stored, { ...draft, acrPolicy: { ...acr_policy, amr_in_id_token: false } }), true);
+  assert.equal(draftOf(settings()).acrPolicy, undefined);
+});

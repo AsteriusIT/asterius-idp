@@ -70,6 +70,8 @@ const INVALID_GRANT: &str = "the authorization code cannot be redeemed";
 /// with it. [`crate::http::protocol`] constructs it inside the token endpoint,
 /// where both are already in hand.
 pub struct AuthorizationCode<'a> {
+    /// Current tenant assurance policy, resolved once for this issuance.
+    pub acr_policy: &'a asterius_domain::AcrPolicy,
     /// Codes for this tenant.
     pub codes: &'a PgCodeRepository,
     /// Grants for this tenant.
@@ -299,7 +301,8 @@ impl AuthorizationCode<'_> {
         }
         let claimed = self.grants.claim(&binding.grant_id, self.now).await?;
 
-        let session = issuance::session_facts(self.sessions, &grant).await?;
+        let mut session = issuance::session_facts(self.sessions, &grant).await?;
+        session.revalidate_acr(self.acr_policy);
         // OIDC Back-Channel Logout 1.0 §2.3: the set of logged-in RPs, which
         // the end-session endpoint reads to decide who is sent a logout token.
         // Recorded where the ID token is minted, because that is what makes a
@@ -361,6 +364,7 @@ impl AuthorizationCode<'_> {
         // than on the request, because the scope was settled at consent.
         let id_token = if grant.scopes.contains("openid") {
             let parts = issuance::IdTokenParts {
+                acr_policy: self.acr_policy,
                 claimed: &claimed,
                 session: &session,
                 access_token: access_token.as_str(),

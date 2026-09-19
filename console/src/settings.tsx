@@ -8,7 +8,7 @@
  * deliberately no wider than that — a form whose `PUT` goes nowhere is worse
  * than an absent one, because it tells an operator a change was saved.
  *
- * Theming tokens, the ACR policy editor, rate limits and session lifetimes are
+ * Theming tokens, rate limits and session lifetimes are
  * named by `ast-bfn` and are *not* here: none of them exists below the API
  * yet, so each needs a domain type, a route and a migration before a control
  * for it can mean anything.
@@ -39,6 +39,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from './components/ui/tabs';
 import { toast } from './components/ui/toast';
 import { Actions, Button, Field, LoadFailure, Message, Panel, Screen, Skeleton } from './ui';
 import { SessionPolicyFields } from './session-policy';
+
+import { AssuranceEditor } from './assurance-policy';
 import { draftOf, isDirty, type Draft, type Settings } from './settings-model';
 
 /**
@@ -170,6 +172,7 @@ export function TenantSettings({
       setNotice(null);
       setRefusal(null);
       mutate(path, 'PUT', session, {
+        acr_policy: current.acrPolicy,
         disabled_features: current.disabled,
         // `Number` and not `parseInt`: an entry of `60abc` must be refused
         // rather than quietly become 60. `NaN` fails the server's parse, which
@@ -267,7 +270,7 @@ export function TenantSettings({
           save(draft);
         }}
       >
-        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger></TabsList>
+        <Tabs defaultValue="features"><TabsList aria-label="Tenant configuration"><TabsTrigger value="features">Capabilities</TabsTrigger><TabsTrigger value="tokens">Token lifetimes</TabsTrigger><TabsTrigger value="consent">Consent</TabsTrigger><TabsTrigger value="sessions">Sessions</TabsTrigger>{draft.acrPolicy && <TabsTrigger value="assurance">Authentication</TabsTrigger>}</TabsList>
         <TabsContent value="features"><fieldset className="settings-section" disabled={busy}>
           <legend>Sign-in and access capabilities</legend>
           <p className="muted">
@@ -354,7 +357,11 @@ export function TenantSettings({
               />
             </label>
           </div>
-        </fieldset></TabsContent></Tabs>
+        </fieldset></TabsContent>
+        {draft.acrPolicy && <TabsContent value="assurance"><AssuranceEditor
+          policy={draft.acrPolicy} disabled={busy}
+          onChange={(acrPolicy) => setDraft({ ...draft, acrPolicy })} /></TabsContent>}
+        </Tabs>
 
         <Actions>
           <Button

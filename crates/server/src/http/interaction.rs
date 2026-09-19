@@ -1531,6 +1531,17 @@ async fn mint(
         }
     };
 
+    let requirements = asterius_oidc::decision::Requirements::from_parameters(&request.parameters);
+    if !requirements.essential_acr.is_empty()
+        && !asterius_oidc::decision::AcrPolicy::session_satisfies(
+            context.acr,
+            &session,
+            &requirements.essential_acr,
+        )
+    {
+        return Err("unmet_authentication_requirements");
+    }
+
     // OIDC Core §8.1. A pairwise client sees its own sector's `sub`; a public
     // one sees the sector every public subject shares.
     let Ok(sector) = SectorIdentifier::of_client(&client) else {
@@ -1588,7 +1599,12 @@ async fn mint(
     // not a pointer, and why a later step-up does not rewrite it.
     grant.authentication = Some(asterius_domain::GrantAuthentication {
         authenticated_at: session.authenticated_at,
-        acr: session.acr.clone(),
+        acr: session.acr.clone().filter(|value| {
+            context
+                .acr
+                .level(value)
+                .is_some_and(|level| level.is_met_by(&session.amr))
+        }),
         amr: session.amr.clone(),
     });
     // `claimed_at` stays `None`: Grant Management ID1 §5.6 makes a grant

@@ -465,6 +465,7 @@ impl std::fmt::Debug for DeploymentParts {
 /// [`asterius_domain::ports::PolicyStore`].
 #[derive(Clone)]
 struct DeploymentPolicyTrial {
+    settings: crate::tenant_settings::SettingsDirectory,
     store: Store,
     kek: Arc<dyn asterius_jose::Kek>,
 }
@@ -498,7 +499,7 @@ impl asterius_admin_api::backend::PolicyTrial for DeploymentPolicyTrial {
         crate::http::access_evaluation::decide_without_enforcing(
             &engine,
             &subjects,
-            crate::http::protocol::deployment_acr_policy(),
+            self.settings.for_tenant(tenant).await?.acr_policy(),
             tenant,
             request,
             time::OffsetDateTime::now_utc(),
@@ -1611,6 +1612,7 @@ impl AdminBackend for Deployment {
     /// about the subject a relying party would be asking about.
     fn policy_trial(&self) -> Arc<dyn asterius_admin_api::backend::PolicyTrial> {
         Arc::new(DeploymentPolicyTrial {
+            settings: self.settings.clone(),
             store: self.store.clone(),
             kek: Arc::clone(&self.kek),
         })

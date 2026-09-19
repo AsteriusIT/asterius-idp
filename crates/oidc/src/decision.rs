@@ -235,6 +235,11 @@ pub trait AcrPolicy {
     /// `achieved` is `None` for a session with no recorded `acr`, which is
     /// every session this server issues today.
     fn satisfied_by(&self, achieved: Option<&str>, requested: &[String]) -> bool;
+
+    /// Validate recorded proof against the current meaning of the stored ACR.
+    fn session_satisfies(&self, session: &Session, requested: &[String]) -> bool {
+        self.satisfied_by(session.acr.as_deref(), requested)
+    }
 }
 
 /// A tenant's configured ladder, answering the two questions [`decide`] asks.
@@ -257,6 +262,16 @@ pub trait AcrPolicy {
 /// (`asterius_domain::AcrPolicy::assign`), so the second attempt is exact
 /// rather than nearly right.
 impl AcrPolicy for asterius_domain::AcrPolicy {
+    fn session_satisfies(&self, session: &Session, requested: &[String]) -> bool {
+        requested.is_empty()
+            || (self.satisfied_by(session.acr.as_deref(), requested)
+                && session
+                    .acr
+                    .as_deref()
+                    .and_then(|value| self.level(value))
+                    .is_some_and(|level| level.is_met_by(&session.amr)))
+    }
+
     fn can_satisfy(&self, requested: &[String]) -> bool {
         Self::can_satisfy(self, requested)
     }
@@ -516,9 +531,9 @@ pub fn decide(
         requirements.prompts.contains(&Prompt::Login)
             || active.needs_reauthentication(requirements.max_age, now)
     });
-    let acr_met = acr.satisfied_by(
-        session.and_then(|session| session.acr.as_deref()),
-        &requirements.essential_acr,
+    let acr_met = session.map_or_else(
+        || acr.satisfied_by(None, &requirements.essential_acr),
+        |session| acr.session_satisfies(session, &requirements.essential_acr),
     );
 
     if requirements.is_silent() {
@@ -672,6 +687,55 @@ mod tests {
 
     const SUBJECT: &str = "sub-1";
 
+    #[test]
+    fn assurance_policy_change_requires_new_proof_for_an_existing_session() {
+        let mut session = session(Duration::minutes(1));
+        session.acr = Some("custom".to_owned());
+        let old = asterius_domain::AcrPolicy::new(vec![
+            asterius_domain::AcrLevel::new(
+                "custom",
+                [asterius_domain::AuthenticationMethod::Password],
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        let tightened = asterius_domain::AcrPolicy::new(vec![
+            asterius_domain::AcrLevel::new(
+                "custom",
+                [
+                    asterius_domain::AuthenticationMethod::Passkey,
+                    asterius_domain::AuthenticationMethod::UserVerified,
+                ],
+            )
+            .unwrap(),
+        ])
+        .unwrap();
+        let requirements = Requirements {
+            essential_acr: values(&["custom"]),
+            ..Requirements::default()
+        };
+        assert_eq!(
+            decide_under(&requirements, &active(&session, Consent::Granted), &old),
+            Interaction::Silent
+        );
+        assert_eq!(
+            decide_under(
+                &requirements,
+                &active(&session, Consent::Granted),
+                &tightened
+            ),
+            Interaction::StepUp
+        );
+        let silent = Requirements {
+            prompts: [Prompt::None].into_iter().collect(),
+            ..requirements
+        };
+        assert_eq!(
+            decide_under(&silent, &active(&session, Consent::Granted), &tightened),
+            Interaction::Refuse(Unmet::InteractionRequired)
+        );
+    }
+
     fn now() -> OffsetDateTime {
         OffsetDateTime::UNIX_EPOCH + Duration::days(20_000)
     }
@@ -814,6 +878,10 @@ mod tests {
     fn an_essential_acr_the_session_already_carries_asks_for_nothing() {
         let mut session = session(Duration::minutes(1));
         session.acr = Some(asterius_domain::acr::PASSKEY_USER_VERIFIED.to_owned());
+        session.amr = vec![
+            asterius_domain::AuthenticationMethod::Passkey,
+            asterius_domain::AuthenticationMethod::UserVerified,
+        ];
         let requirements = Requirements {
             essential_acr: values(&[asterius_domain::acr::PASSKEY_USER_VERIFIED]),
             ..Requirements::default()

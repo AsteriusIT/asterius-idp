@@ -146,6 +146,91 @@ mod tests {
         TenantId::parse("demo").expect("a valid tenant id")
     }
 
+    #[derive(Debug, Default)]
+    struct ScopedSettings(RwLock<HashMap<String, TenantSettings>>);
+
+    #[async_trait::async_trait]
+    impl TenantSettingsRepository for ScopedSettings {
+        async fn settings(&self, tenant: &TenantId) -> Result<TenantSettings, DomainError> {
+            Ok(self
+                .0
+                .read()
+                .unwrap()
+                .get(tenant.as_str())
+                .cloned()
+                .unwrap_or_default())
+        }
+        async fn save(
+            &self,
+            tenant: &TenantId,
+            settings: &TenantSettings,
+        ) -> Result<(), DomainError> {
+            self.0
+                .write()
+                .unwrap()
+                .insert(tenant.as_str().to_owned(), settings.clone());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn assurance_policy_isolated_in_cache_and_reloaded_on_other_replica_after_ttl() {
+        let repository = Arc::new(ScopedSettings::default());
+        let local = SettingsDirectory::new(repository.clone());
+        let replica = SettingsDirectory::new(repository.clone());
+        let other = TenantId::parse("other").unwrap();
+        local.for_tenant(&other).await.unwrap();
+        replica.for_tenant(&tenant()).await.unwrap();
+        let narrowed = TenantSettings::default()
+            .with_acr_policy(asterius_domain::AcrPolicy::empty())
+            .unwrap();
+        repository.save(&tenant(), &narrowed).await.unwrap();
+        local.invalidate();
+        assert!(
+            local
+                .for_tenant(&tenant())
+                .await
+                .unwrap()
+                .acr_policy()
+                .levels()
+                .is_empty()
+        );
+        assert!(
+            !local
+                .for_tenant(&other)
+                .await
+                .unwrap()
+                .acr_policy()
+                .levels()
+                .is_empty()
+        );
+        assert!(
+            !replica
+                .for_tenant(&tenant())
+                .await
+                .unwrap()
+                .acr_policy()
+                .levels()
+                .is_empty()
+        );
+        replica
+            .cached
+            .write()
+            .unwrap()
+            .get_mut(tenant().as_str())
+            .unwrap()
+            .1 = Instant::now() - CACHE_TTL;
+        assert!(
+            replica
+                .for_tenant(&tenant())
+                .await
+                .unwrap()
+                .acr_policy()
+                .levels()
+                .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn repeated_reads_are_served_from_the_cache() {
         // Arrange

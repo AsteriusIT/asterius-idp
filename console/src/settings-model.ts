@@ -1,3 +1,4 @@
+import type { AssurancePolicy } from './assurance-policy';
 /** The ceilings the server sends with a tenant settings document. */
 export interface Limits {
   readonly max_authorization_code_lifetime_seconds: number;
@@ -6,6 +7,7 @@ export interface Limits {
 
 /** One tenant's settings, as the admin API describes them. */
 export interface Settings {
+  readonly acr_policy?: AssurancePolicy;
   readonly tenant_id: string;
   readonly disabled_features: readonly string[];
   readonly authorization_code_lifetime_seconds: number;
@@ -18,6 +20,7 @@ export interface Settings {
 
 /** What the settings form holds while it is being edited. */
 export interface Draft {
+  readonly acrPolicy: AssurancePolicy | undefined;
   readonly disabled: readonly string[];
   readonly code: string;
   readonly token: string;
@@ -29,6 +32,7 @@ export interface Draft {
 /** The draft a freshly read document starts as. */
 export function draftOf(settings: Settings): Draft {
   return {
+    acrPolicy: settings.acr_policy,
     disabled: [...settings.disabled_features],
     code: String(settings.authorization_code_lifetime_seconds),
     token: String(settings.access_token_lifetime_seconds),
@@ -46,6 +50,8 @@ export function isDirty(settings: Settings, draft: Draft): boolean {
   return (
     draft.sessionIdle !== String(settings.session_policy?.idle_seconds ?? 3600) ||
     draft.sessionAbsolute !== String(settings.session_policy?.absolute_seconds ?? 43200) ||
+
+    JSON.stringify(draft.acrPolicy) !== JSON.stringify(settings.acr_policy) ||
     !sameFeatures ||
     draft.code !== String(settings.authorization_code_lifetime_seconds) ||
     draft.token !== String(settings.access_token_lifetime_seconds) ||

@@ -977,18 +977,14 @@ async fn discovery(
     // the document advertises — and it is read through a cache the admin API
     // drops on write, which is what makes a flag change visible to the next
     // request rather than to the one five minutes later (`ast-f7m.4`).
-    let capabilities = match &state.tenant_settings {
-        None => state.capabilities,
-        Some(directory) => match directory.for_tenant(&tenant.id).await {
-            Ok(settings) => settings.effective_capabilities(state.capabilities),
-            // Fails closed: advertising the deployment's capabilities here
-            // would republish exactly the features a tenant switched off.
-            Err(error) => {
-                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
-                return unavailable();
-            }
-        },
+    let settings = match settings_for_directory(state.tenant_settings.as_ref(), &tenant.id).await {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
     };
+    let capabilities = settings.effective_capabilities(state.capabilities);
 
     // `acr_values_supported` comes from the same ladder `/authorize` consults,
     // for the reason RFC 8414 §2 gives: a document that advertised a class this
@@ -1040,7 +1036,7 @@ async fn discovery(
     let document = metadata::provider_metadata(
         &tenant.issuer,
         &capabilities,
-        acr_policy(),
+        settings.acr_policy(),
         &authorization_details_types,
         grant_management,
     );
@@ -2312,6 +2308,15 @@ async fn access_search_dispatch(
     headers: &axum::http::HeaderMap,
     body: &[u8],
 ) -> Response {
+    let settings =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
+
     let now = time::OffsetDateTime::now_utc();
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let scope = endpoints.store.scope(tenant.id.clone());
@@ -2341,7 +2346,7 @@ async fn access_search_dispatch(
             dpop: endpoints.dpop.as_ref(),
             audit: endpoints.audit.as_ref(),
             certificate: certificate.map(|presented| &presented.leaf),
-            acr: acr_policy(),
+            acr: settings.acr_policy(),
             limits: endpoint_limits(endpoints, tenant, &limiter, client, now),
             now,
         },
@@ -2416,6 +2421,15 @@ async fn access_evaluation_dispatch(
     body: &[u8],
     boxcar: bool,
 ) -> Response {
+    let settings =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
+
     let now = time::OffsetDateTime::now_utc();
     let limiter = asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone());
     let scope = endpoints.store.scope(tenant.id.clone());
@@ -2440,7 +2454,7 @@ async fn access_evaluation_dispatch(
         dpop: endpoints.dpop.as_ref(),
         audit: endpoints.audit.as_ref(),
         certificate: certificate.map(|presented| &presented.leaf),
-        acr: acr_policy(),
+        acr: settings.acr_policy(),
         limits: endpoint_limits(endpoints, tenant, &limiter, client, now),
         now,
     };
@@ -2490,6 +2504,7 @@ impl StoredSubjects {
 /// The admin bench reads `acr_at_least` against the same rungs the
 /// authorization endpoints and the discovery document do; a second ladder
 /// would make the bench disagree with the PDP about a step-up.
+#[cfg(test)]
 pub(crate) fn deployment_acr_policy() -> &'static asterius_domain::AcrPolicy {
     acr_policy()
 }
@@ -3213,6 +3228,7 @@ struct Dispatching<'a> {
 /// is stopped by the document an administrator can test at the bench.
 fn agent_policy<'a>(
     endpoints: &'a ClientEndpoints,
+    acr: &asterius_domain::AcrPolicy,
     tenant: &asterius_domain::TenantId,
     now: time::OffsetDateTime,
 ) -> crate::http::agent_issuance::AgentPolicy<'a> {
@@ -3224,7 +3240,7 @@ fn agent_policy<'a>(
         Arc::new(crate::http::agent_issuance::PdpIssuance::new(
             Box::new(engine),
             Box::new(subjects),
-            acr_policy(),
+            acr,
             Arc::clone(guard),
             now,
         )) as Arc<dyn asterius_domain::issuance::IssuancePolicy>
@@ -3258,6 +3274,7 @@ async fn dispatch_grants(
         certificate, now, ..
     } = request;
     let Issuing {
+        acr_policy,
         lifetimes,
         grant_id_claim,
         grant_management,
@@ -3292,6 +3309,7 @@ async fn dispatch_grants(
         certificate,
     };
     let authorization_code = AuthorizationCode {
+        acr_policy: &acr_policy,
         roles: &application_roles,
         codes: &codes,
         grants: &grants,
@@ -3316,7 +3334,7 @@ async fn dispatch_grants(
     // mint, and the posture to take when it cannot answer. Absent —
     // `[features] authzen` off — every handler below carries a policy of
     // `None` and behaves exactly as it did.
-    let agent_policy = agent_policy(endpoints, &tenant.id, now);
+    let agent_policy = agent_policy(endpoints, &acr_policy, &tenant.id, now);
     let client_credentials = ClientCredentials {
         grants: &grants,
         resource_servers: &resource_servers,
@@ -3742,6 +3760,15 @@ async fn run_authorize(
     headers: &axum::http::HeaderMap,
     pairs: &[(String, String)],
 ) -> Response {
+    let settings =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
+
     let now = time::OffsetDateTime::now_utc();
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
@@ -3796,7 +3823,7 @@ async fn run_authorize(
             // sign-in has to display (`ast-k7f`, `ast-bo5`).
             users: &subjects,
             policy: decision_policy(),
-            acr: acr_policy(),
+            acr: settings.acr_policy(),
             memory,
             nonce,
             mount,
@@ -3830,6 +3857,18 @@ const fn decision_policy() -> asterius_oidc::decision::DecisionPolicy {
     asterius_oidc::decision::DecisionPolicy::new(false)
 }
 
+/// One resolution path for discovery and authentication. Storage failures never
+/// silently restore a less restrictive deployment policy.
+async fn settings_for_directory(
+    directory: Option<&SettingsDirectory>,
+    tenant: &asterius_domain::TenantId,
+) -> Result<asterius_domain::TenantSettings, DomainError> {
+    match directory {
+        Some(directory) => directory.for_tenant(tenant).await,
+        None => Ok(asterius_domain::TenantSettings::default()),
+    }
+}
+
 /// Which authentication contexts this deployment can produce (`ast-2vk.7`).
 ///
 /// `asterius_domain::AcrPolicy::default()`: the three rungs this server can
@@ -3841,9 +3880,7 @@ const fn decision_policy() -> asterius_oidc::decision::DecisionPolicy {
 /// A function rather than a literal at each call site, and for the reason
 /// [`decision_policy`] is one: the discovery document, the authorization
 /// decision and the session an authentication writes must all be reading the
-/// same ladder. Per-tenant ladders are the obvious next step and are not this
-/// one — they need a store, and `crates/domain/src/entities/acr_policy.rs`
-/// already carries the round-trip (`AcrPolicy::from_json`) a column would use.
+/// same ladder. This is the default for deployments without persisted overrides.
 fn acr_policy() -> &'static asterius_domain::AcrPolicy {
     // Built once. It is immutable, it is read on every authorization and every
     // discovery request, and a fresh copy per request would be an allocation
@@ -3980,8 +4017,9 @@ async fn token_endpoint_proof(
 /// [`token_endpoint_inner`], because all three must describe the *same*
 /// tenant at the same moment: a token whose lifetime came from one reading and
 /// whose claims came from another is a token no setting explains.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Issuing {
+    acr_policy: asterius_domain::AcrPolicy,
     /// How long the access token lives (`ast-5c6`).
     lifetimes: TokenLifetimes,
     /// Whether it carries `grant_id` (RFC 9068 §2.2.3.1).
@@ -4016,6 +4054,7 @@ async fn issuing_policy(
 ) -> Result<Issuing, DomainError> {
     let Some(directory) = &endpoints.tenant_settings else {
         return Ok(Issuing {
+            acr_policy: acr_policy().clone(),
             lifetimes: endpoints.lifetimes,
             grant_id_claim: asterius_domain::TenantSettings::default().grant_id_in_access_token(),
             grant_management: endpoints
@@ -4028,6 +4067,7 @@ async fn issuing_policy(
     };
     let settings = directory.for_tenant(&tenant.id).await?;
     Ok(Issuing {
+        acr_policy: settings.acr_policy().clone(),
         lifetimes: settings.lifetimes(),
         grant_id_claim: settings.grant_id_in_access_token(),
         grant_management: settings
@@ -4370,6 +4410,15 @@ async fn interaction_show(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let settings =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
+
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
@@ -4430,7 +4479,7 @@ async fn interaction_show(
                 .map(|v| v as &dyn asterius_domain::CredentialVerifier),
             sessions: &sessions,
             lifetimes: endpoints.session_lifetimes,
-            acr: acr_policy(),
+            acr: settings.acr_policy(),
             clients: &clients,
             grants: &grants,
             grant_amendments,
@@ -4480,6 +4529,15 @@ async fn interaction_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let settings =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
+
     let scope = endpoints.store.scope(tenant.id.clone());
     let requests = scope.auth_requests();
     let sessions = scope.sessions();
@@ -4540,7 +4598,7 @@ async fn interaction_submit(
                 .map(|v| v as &dyn asterius_domain::CredentialVerifier),
             sessions: &sessions,
             lifetimes: endpoints.session_lifetimes,
-            acr: acr_policy(),
+            acr: settings.acr_policy(),
             clients: &clients,
             grants: &grants,
             grant_amendments,
@@ -5003,6 +5061,15 @@ async fn passkey_login_options(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let settings =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
+
     let scope = endpoints.store.scope(tenant.id.clone());
     let passkeys = scope.passkeys();
     let requests = scope.auth_requests();
@@ -5017,7 +5084,7 @@ async fn passkey_login_options(
             sessions: &sessions,
             users: &users,
             lifetimes: endpoints.session_lifetimes,
-            acr: acr_policy(),
+            acr: settings.acr_policy(),
             audit: endpoints.audit.as_ref(),
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
         },
@@ -5038,6 +5105,15 @@ async fn passkey_login_finish(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let settings =
+        match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+                return unavailable();
+            }
+        };
+
     let scope = endpoints.store.scope(tenant.id.clone());
     let passkeys = scope.passkeys();
     let requests = scope.auth_requests();
@@ -5052,7 +5128,7 @@ async fn passkey_login_finish(
             sessions: &sessions,
             users: &users,
             lifetimes: endpoints.session_lifetimes,
-            acr: acr_policy(),
+            acr: settings.acr_policy(),
             audit: endpoints.audit.as_ref(),
             throttle: throttle(&endpoints, &limiter, client.as_deref()),
         },
@@ -5289,7 +5365,13 @@ async fn device_page(
     axum::extract::Query(query): axum::extract::Query<UserCodeQuery>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = device_parts(&endpoints, &tenant);
+    let parts = match device_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     device::page(
         &device_context(
             &endpoints,
@@ -5317,7 +5399,13 @@ async fn device_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = device_parts(&endpoints, &tenant);
+    let parts = match device_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     device::submit(
         &device_context(
             &endpoints,
@@ -5346,7 +5434,13 @@ async fn device_confirm(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = device_parts(&endpoints, &tenant);
+    let parts = match device_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     device::confirm(
         &device_context(
             &endpoints,
@@ -5375,6 +5469,7 @@ async fn device_confirm(
 /// repository is per-tenant and therefore per-request, and a context of
 /// references needs something to reference.
 struct ApprovalsParts {
+    settings: asterius_domain::TenantSettings,
     ciba_requests: asterius_store_pg::PgCibaRequestRepository,
     sessions: asterius_store_pg::PgSessionRepository,
     interactions: asterius_store_pg::PgAuthRequestRepository,
@@ -5386,9 +5481,13 @@ struct ApprovalsParts {
     limits: asterius_store_pg::PgRateLimitStore,
 }
 
-fn approvals_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> ApprovalsParts {
+async fn approvals_parts(
+    endpoints: &Arc<ClientEndpoints>,
+    tenant: &Arc<Tenant>,
+) -> Result<ApprovalsParts, DomainError> {
     let scope = endpoints.store.scope(tenant.id.clone());
-    ApprovalsParts {
+    Ok(ApprovalsParts {
+        settings: settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await?,
         ciba_requests: scope.ciba_requests(Arc::clone(&endpoints.kek)),
         sessions: scope.sessions(),
         interactions: scope.auth_requests(),
@@ -5396,7 +5495,7 @@ fn approvals_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> Ap
         grants: scope.grants(),
         users: scope.users(Arc::clone(&endpoints.kek)),
         limits: asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone()),
-    }
+    })
 }
 
 fn approvals_context<'a>(
@@ -5415,7 +5514,7 @@ fn approvals_context<'a>(
         clients: &parts.clients,
         grants: &parts.grants,
         subjects: &parts.users,
-        acr: acr_policy(),
+        acr: parts.settings.acr_policy(),
         text,
         nonce,
         audit,
@@ -5432,7 +5531,13 @@ async fn approvals_page(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = approvals_parts(&endpoints, &tenant);
+    let parts = match approvals_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     approvals::page(
@@ -5459,7 +5564,13 @@ async fn approvals_decide(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = approvals_parts(&endpoints, &tenant);
+    let parts = match approvals_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     approvals::decide(
@@ -5486,7 +5597,13 @@ async fn approvals_sign_in(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = approvals_parts(&endpoints, &tenant);
+    let parts = match approvals_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     approvals::sign_in(
@@ -5509,6 +5626,7 @@ async fn approvals_sign_in(
 /// touches a backchannel request, and it does reach the user directory, to
 /// turn an agent's owner into a name the person reading recognises.
 struct GrantsParts {
+    settings: asterius_domain::TenantSettings,
     grants: asterius_store_pg::PgGrantRepository,
     sessions: asterius_store_pg::PgSessionRepository,
     interactions: asterius_store_pg::PgAuthRequestRepository,
@@ -5516,15 +5634,19 @@ struct GrantsParts {
     users: asterius_store_pg::PgUserRepository,
 }
 
-fn grants_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> GrantsParts {
+async fn grants_parts(
+    endpoints: &Arc<ClientEndpoints>,
+    tenant: &Arc<Tenant>,
+) -> Result<GrantsParts, DomainError> {
     let scope = endpoints.store.scope(tenant.id.clone());
-    GrantsParts {
+    Ok(GrantsParts {
+        settings: settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await?,
         grants: scope.grants(),
         sessions: scope.sessions(),
         interactions: scope.auth_requests(),
         clients: scope.clients(endpoints.capabilities),
         users: scope.users(Arc::clone(&endpoints.kek)),
-    }
+    })
 }
 
 fn grants_context<'a>(
@@ -5542,7 +5664,7 @@ fn grants_context<'a>(
         interactions: &parts.interactions,
         clients: &parts.clients,
         users: &parts.users,
-        acr: acr_policy(),
+        acr: parts.settings.acr_policy(),
         text,
         nonce,
         audit,
@@ -5558,7 +5680,13 @@ async fn grants_page(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = grants_parts(&endpoints, &tenant);
+    let parts = match grants_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_grants::page(
@@ -5585,7 +5713,13 @@ async fn grants_revoke(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = grants_parts(&endpoints, &tenant);
+    let parts = match grants_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_grants::revoke(
@@ -5612,7 +5746,13 @@ async fn grants_sign_in(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = grants_parts(&endpoints, &tenant);
+    let parts = match grants_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_grants::sign_in(
@@ -5637,6 +5777,7 @@ async fn grants_sign_in(
 /// built from one `scope` so that no two of them can end up scoped to
 /// different tenants.
 struct AccountParts {
+    settings: asterius_domain::TenantSettings,
     sessions: asterius_store_pg::PgSessionRepository,
     interactions: asterius_store_pg::PgAuthRequestRepository,
     clients: asterius_store_pg::PgClientRepository,
@@ -5649,9 +5790,13 @@ struct AccountParts {
     queues: crate::outbox::PgSsfQueues,
 }
 
-fn account_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> AccountParts {
+async fn account_parts(
+    endpoints: &Arc<ClientEndpoints>,
+    tenant: &Arc<Tenant>,
+) -> Result<AccountParts, DomainError> {
     let scope = endpoints.store.scope(tenant.id.clone());
-    AccountParts {
+    Ok(AccountParts {
+        settings: settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await?,
         sessions: scope.sessions(),
         interactions: scope.auth_requests(),
         clients: scope.clients(endpoints.capabilities),
@@ -5664,7 +5809,7 @@ fn account_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> Acco
             tenant.id.clone(),
             Arc::clone(&endpoints.kek),
         ),
-    }
+    })
 }
 
 fn account_context<'a>(
@@ -5678,7 +5823,7 @@ fn account_context<'a>(
         tenant,
         sessions: &parts.sessions,
         interactions: &parts.interactions,
-        acr: acr_policy(),
+        acr: parts.settings.acr_policy(),
         text,
         nonce,
         mount: mount_of(mount),
@@ -5767,7 +5912,13 @@ async fn account_home(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     crate::http::account::page(
@@ -5787,7 +5938,13 @@ async fn account_passkeys_page(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_passkeys::page(
@@ -5807,7 +5964,13 @@ async fn account_passkeys_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_passkeys::submit(
@@ -5827,7 +5990,13 @@ async fn account_passkeys_sign_in(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_passkeys::sign_in(
@@ -5845,7 +6014,13 @@ async fn account_password_page(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_password::page(
@@ -5865,7 +6040,13 @@ async fn account_password_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_password::submit(
@@ -5885,7 +6066,13 @@ async fn account_password_sign_in(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_password::sign_in(
@@ -5903,7 +6090,13 @@ async fn account_sessions_page(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_sessions::page(
@@ -5923,7 +6116,13 @@ async fn account_sessions_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_sessions::submit(
@@ -5943,7 +6142,13 @@ async fn account_sessions_sign_in(
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let parts = account_parts(&endpoints, &tenant);
+    let parts = match account_parts(&endpoints, &tenant).await {
+        Ok(parts) => parts,
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot read the tenant's settings");
+            return unavailable();
+        }
+    };
     let language = page_language(&endpoints, &tenant, &headers).await;
     let text = language.for_request(&asterius_domain::locale::UiLocales::default());
     account_sessions::sign_in(
@@ -5954,6 +6159,7 @@ async fn account_sessions_sign_in(
 }
 
 struct DeviceParts {
+    settings: asterius_domain::TenantSettings,
     device_codes: asterius_store_pg::PgDeviceCodeRepository,
     sessions: asterius_store_pg::PgSessionRepository,
     interactions: asterius_store_pg::PgAuthRequestRepository,
@@ -5963,9 +6169,13 @@ struct DeviceParts {
     limiter: asterius_store_pg::PgRateLimitStore,
 }
 
-fn device_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> DeviceParts {
+async fn device_parts(
+    endpoints: &Arc<ClientEndpoints>,
+    tenant: &Arc<Tenant>,
+) -> Result<DeviceParts, DomainError> {
     let scope = endpoints.store.scope(tenant.id.clone());
-    DeviceParts {
+    Ok(DeviceParts {
+        settings: settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await?,
         device_codes: scope.device_codes(),
         sessions: scope.sessions(),
         interactions: scope.auth_requests(),
@@ -5973,7 +6183,7 @@ fn device_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> Devic
         grants: scope.grants(),
         users: scope.users(Arc::clone(&endpoints.kek)),
         limiter: asterius_store_pg::PgRateLimitStore::new(endpoints.store.pool().clone()),
-    }
+    })
 }
 
 fn device_context<'a>(
@@ -5992,7 +6202,7 @@ fn device_context<'a>(
         clients: &parts.clients,
         grants: &parts.grants,
         subjects: &parts.users,
-        acr: acr_policy(),
+        acr: parts.settings.acr_policy(),
         limits: &parts.limiter,
         address: client.map(|client| client.ip),
         nonce,
