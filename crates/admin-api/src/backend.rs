@@ -20,6 +20,7 @@ use asterius_domain::entities::session::SessionRevocation;
 use asterius_domain::keys::KeyAdministration;
 use asterius_domain::ports::{
     ClientAdministration, InitialAccessTokenStore, TenantRepository, TenantSettingsRepository,
+    ThemeRepository,
 };
 use asterius_domain::{
     AuditSink, Capabilities, DomainError, PasskeyEnrolment, RateLimitStore, ReplayGuard, Role,
@@ -185,6 +186,12 @@ pub trait AdminBackend: std::fmt::Debug + Send + Sync {
     /// [`asterius_domain::TenantSettings`], which cannot be built without
     /// having passed the profile's ceilings.
     fn tenant_settings(&self) -> Arc<dyn TenantSettingsRepository>;
+
+    /// Tenant branding documents and their sanitised raster assets.
+    fn themes(&self) -> Arc<dyn ThemeRepository>;
+
+    /// Drops the runtime page cache after a branding write.
+    fn theme_changed(&self, tenant: &TenantId);
 
     /// The deployment's signing keys, for the console's key screen.
     ///

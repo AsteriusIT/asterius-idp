@@ -62,7 +62,6 @@ use asterius_domain::{
     FirstPartyDestination, PasskeySummary, Session, SessionId as DomainSessionId, UserId,
 };
 use asterius_store_pg::{PgPasskeyRepository, PgPasswordVerifier};
-use asterius_web::Brand;
 use asterius_web::Document;
 use asterius_web::pages::{self, PasskeyLine, PasskeysPage, nonce_attribute};
 use axum::body::Bytes;
@@ -652,6 +651,7 @@ async fn rendered(
     };
 
     let font_url = crate::http::font_url(&context.account.mount);
+    let presentation = crate::http::ThemeChrome::new(context.account.theme, &context.account.mount);
     let action = context.account.mount.absolute(PAGE_PATH);
     let sign_in_href = context.account.mount.absolute(SIGN_IN_PATH);
     let account_href = context.account.mount.absolute(account::PAGE_PATH);
@@ -673,8 +673,8 @@ async fn rendered(
             maximum_label_length: MAX_LABEL_CHARS,
             message,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (status, no_store(), document).into_response()

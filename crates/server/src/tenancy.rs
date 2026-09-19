@@ -231,6 +231,9 @@ impl MountPrefix {
 pub struct TenantState {
     /// Where tenants come from.
     pub directory: TenantDirectory,
+    /// Validated tenant themes for page rendering. Optional for small routers
+    /// in tests; the assembled deployment always supplies it.
+    pub themes: Option<crate::themes::ThemeDirectory>,
     /// Peers whose forwarding headers are believed.
     pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
     /// Where a client certificate comes from, when the `mtls` flag is on.
@@ -247,9 +250,17 @@ impl TenantState {
     pub fn new(directory: TenantDirectory, config: &ServerConfig) -> Self {
         Self {
             directory,
+            themes: None,
             trusted_proxies: Arc::new(config.trusted_proxies.clone()),
             mtls: None,
         }
+    }
+
+    /// Adds the shared runtime theme cache.
+    #[must_use]
+    pub fn with_themes(mut self, themes: crate::themes::ThemeDirectory) -> Self {
+        self.themes = Some(themes);
+        self
     }
 
     /// Switches on RFC 8705 §2 certificate collection.
@@ -355,6 +366,18 @@ pub async fn layer(State(state): State<TenantState>, mut request: Request, next:
     request
         .extensions_mut()
         .insert(Arc::clone(&resolved.tenant));
+    if let Some(themes) = &state.themes {
+        match themes.for_tenant(&resolved.tenant.id).await {
+            Ok(theme) => {
+                request.extensions_mut().insert(theme);
+            }
+            Err(error) => {
+                tracing::error!(%error, tenant = %resolved.tenant.id, "cannot load the tenant theme");
+                return Rejection::Unavailable.into_response();
+            }
+        }
+        request.extensions_mut().insert(themes.clone());
+    }
     // The prefix routing just removed, so a handler can put it back on a URL
     // it hands to the browser (`ast-295`).
     request.extensions_mut().insert(resolved.prefix);
@@ -534,6 +557,7 @@ mod tests {
     fn state(repository: Arc<FakeRepository>) -> TenantState {
         TenantState {
             directory: TenantDirectory::new(repository),
+            themes: None,
             trusted_proxies: Arc::new(Vec::new()),
             mtls: None,
         }

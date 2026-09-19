@@ -78,7 +78,6 @@ use asterius_domain::{
     SessionRepository, SubjectResolver, Tenant, UserId, entities::session,
 };
 use asterius_store_pg::{PendingApproval, PgCibaRequestRepository};
-use asterius_web::Brand;
 use asterius_web::i18n::Catalog;
 use asterius_web::interaction::{self, InteractionId};
 use asterius_web::pages::{
@@ -247,6 +246,8 @@ pub fn decision(body: &[u8]) -> Option<Decision> {
 pub struct ApprovalsContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Validated branding selected for this tenant.
+    pub theme: &'a asterius_domain::Theme,
     /// The backchannel requests waiting for this person.
     pub ciba_requests: &'a PgCibaRequestRepository,
     /// Where the cookie's session is resolved.
@@ -655,6 +656,7 @@ async fn rendered(
     };
 
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let action = context.mount.absolute(DECIDE_PATH);
     let device_action = context.mount.absolute(crate::http::device::PAGE_PATH);
     let sign_in_href = context.mount.absolute(SIGN_IN_PATH);
@@ -672,8 +674,8 @@ async fn rendered(
             device_csrf: &device_csrf,
             message,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (status, no_store(), document).into_response()
@@ -903,6 +905,7 @@ async fn gone(context: &ApprovalsContext<'_>, session: &Session, now: OffsetDate
 /// The page a failure of *this server* produces.
 fn error_page(context: &ApprovalsContext<'_>, status: StatusCode) -> Response {
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
             text: context.text,
@@ -910,8 +913,8 @@ fn error_page(context: &ApprovalsContext<'_>, status: StatusCode) -> Response {
             message: context.text.error_nothing_decided(),
             correlation_id: "",
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (status, no_store(), document).into_response()

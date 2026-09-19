@@ -47,7 +47,6 @@ use asterius_oidc::code::{AuthorizationResponse, MintedCode};
 use asterius_oidc::consent::{ConsentRequest, Decision, DetailRequest};
 use asterius_oidc::consent_memory::{Asked, MemoryPolicy, Remembered};
 use asterius_oidc::decision::Requirements;
-use asterius_web::Brand;
 use asterius_web::i18n::Catalog;
 use asterius_web::interaction::{
     self, CsrfToken, InteractionError, InteractionId, Stage, StoredDecision, StoredState,
@@ -74,6 +73,8 @@ pub const SIGN_IN_QUERY: &str = "signin";
 pub struct InteractionContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Validated branding selected for this tenant.
+    pub theme: &'a asterius_domain::Theme,
     /// The three layers a page's language is chosen from (OIDC Core §3.1.2.1).
     ///
     /// Not a `Catalog`, because the top layer of the negotiation is on the
@@ -2449,6 +2450,7 @@ fn consent_page(
     chrome: &ConsentChrome<'_>,
 ) -> Response {
     let request = &offer.request;
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ConsentPage {
             text: chrome.text,
@@ -2481,8 +2483,8 @@ fn consent_page(
             action: chrome.action,
             csrf: chrome.csrf.expose(),
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(chrome.font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(chrome.font_url),
         })
     });
     match offer.form_action.clone() {
@@ -2519,6 +2521,7 @@ struct SignInPage<'a> {
 
 /// Draws the sign-in page, which is also the step-up page.
 fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Response {
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&LoginPage {
             text: page.text,
@@ -2537,8 +2540,8 @@ fn sign_in_page(context: &InteractionContext<'_>, page: &SignInPage<'_>) -> Resp
             // refuses everybody is worse than no link.
             recovery_href: context.credentials.is_some().then_some(page.recovery_href),
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(page.font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(page.font_url),
         })
     })
     .into_response()
@@ -2576,6 +2579,7 @@ struct SignUpPage<'a> {
 /// account?" link is that same URL with the query
 /// [`SIGN_IN_QUERY`] on it.
 fn sign_up_page(context: &InteractionContext<'_>, page: &SignUpPage<'_>) -> Response {
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     Document::render(context.nonce, |nonce| {
         pages::render(&pages::RegistrationPage {
             text: page.text,
@@ -2593,8 +2597,8 @@ fn sign_up_page(context: &InteractionContext<'_>, page: &SignUpPage<'_>) -> Resp
             sign_in_href: page.sign_in_href,
             message: page.message,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(page.font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(page.font_url),
         })
     })
     .into_response()
@@ -2719,6 +2723,7 @@ fn error_page(
     // tenant's default.
     let text = &context.language.for_request(&UiLocales::default());
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
             text,
@@ -2726,8 +2731,8 @@ fn error_page(
             message: text.error_cannot_continue(),
             correlation_id: &correlation,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (status, document).into_response()

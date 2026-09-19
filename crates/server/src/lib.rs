@@ -24,6 +24,8 @@ pub mod tenant_settings;
 
 pub use config::{Config, ConfigError};
 pub use tenancy::{TenantDirectory, TenantState};
+pub mod themes;
+pub use themes::ThemeDirectory;
 
 /// The version of the running server, as reported by metadata and `/healthz`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
