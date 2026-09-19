@@ -222,6 +222,7 @@ fn operation_object(operation: &Operation) -> Value {
                     "rate_limits": {"$ref": "#/components/schemas/TenantRateLimits"} }
         });
     }
+    theme_documentation(operation, &mut object);
     if let Some(request_body) = group_request_body(operation) {
         object["requestBody"] = request_body;
     }
@@ -247,6 +248,43 @@ fn operation_object(operation: &Operation) -> Value {
     }
 
     object
+}
+
+fn theme_documentation(operation: &Operation, object: &mut Value) {
+    if operation.id() == crate::THEME_UPDATE_ID {
+        object["requestBody"] = json!({
+            "required": true,
+            "content": {"application/json": {"schema": asterius_domain::Theme::schema_document()}},
+        });
+    }
+    if operation.id() == crate::THEME_READ_ID {
+        object["responses"]["200"]["content"]["application/json"]["schema"] = json!({
+            "type": "object",
+            "required": ["theme", "schema"],
+            "properties": {
+                "theme": asterius_domain::Theme::schema_document(),
+                "schema": {"type": "object"}
+            }
+        });
+    }
+    if operation.id() == crate::THEME_LOGO_UPLOAD_ID {
+        let upload = json!({
+            "schema": {
+                "type": "string",
+                "format": "binary",
+                "maxLength": crate::theme_image::MAX_UPLOAD_BYTES,
+            }
+        });
+        object["requestBody"] = json!({
+            "required": true,
+            "description": "PNG, JPEG or WebP bytes. The server identifies the format from the bytes, bounds dimensions before decoding, and stores a metadata-free PNG.",
+            "content": {
+                "image/png": upload,
+                "image/jpeg": upload,
+                "image/webp": upload
+            }
+        });
+    }
 }
 
 fn group_request_body(operation: &Operation) -> Option<Value> {

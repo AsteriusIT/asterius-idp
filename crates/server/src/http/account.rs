@@ -52,7 +52,6 @@ use asterius_domain::{
     AcrPolicy, FirstPartyDestination, InteractionRepository, Session, SessionRepository, Tenant,
     entities::session,
 };
-use asterius_web::Brand;
 use asterius_web::i18n::Catalog;
 use asterius_web::interaction::{self, InteractionId};
 use asterius_web::pages::{self, AccountPage, ErrorPage, nonce_attribute};
@@ -101,6 +100,8 @@ pub const MAX_CSRF_CHARS: usize = 256;
 pub struct AccountContext<'a> {
     /// The tenant the request arrived at.
     pub tenant: &'a Tenant,
+    /// Validated branding selected for this tenant.
+    pub theme: &'a asterius_domain::Theme,
     /// Where the cookie's session is resolved.
     pub sessions: &'a dyn SessionRepository,
     /// Where a sign-in is opened for a session that is missing or too old.
@@ -237,6 +238,7 @@ pub async fn begin(
 #[must_use]
 pub fn error_page(context: &AccountContext<'_>, status: StatusCode) -> Response {
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let document = Document::render(context.nonce, |nonce| {
         pages::render(&ErrorPage {
             text: context.text,
@@ -244,8 +246,8 @@ pub fn error_page(context: &AccountContext<'_>, status: StatusCode) -> Response 
             message: context.text.error_nothing_changed(),
             correlation_id: "",
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (status, no_store(), document).into_response()
@@ -375,6 +377,7 @@ pub async fn page(
     };
 
     let font_url = crate::http::font_url(&context.mount);
+    let presentation = crate::http::ThemeChrome::new(context.theme, &context.mount);
     let passkeys_href = context
         .mount
         .absolute(crate::http::account_passkeys::PAGE_PATH);
@@ -399,8 +402,8 @@ pub async fn page(
             approvals_href: &approvals_href,
             grants_href: &grants_href,
             nonce_attribute: nonce_attribute(nonce),
-            theme_css: "",
-            brand: Brand::new(&font_url),
+            theme_css: &presentation.css,
+            brand: presentation.brand(&font_url),
         })
     });
     (StatusCode::OK, no_store(), document).into_response()

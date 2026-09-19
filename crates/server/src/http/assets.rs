@@ -25,7 +25,8 @@
 //! reason.
 
 use axum::Router;
-use axum::http::{HeaderValue, header};
+use axum::extract::{Extension, Path};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
@@ -38,7 +39,50 @@ pub fn routes<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    Router::new().route(asterius_web::brand::font_path(), get(font))
+    Router::new()
+        .route(asterius_web::brand::font_path(), get(font))
+        .route("/assets/theme/{digest}", get(theme_asset))
+}
+
+/// Serves only a sanitised asset stored for the resolved tenant.
+async fn theme_asset(
+    Path(digest): Path<String>,
+    Extension(tenant): Extension<std::sync::Arc<asterius_domain::Tenant>>,
+    Extension(themes): Extension<crate::themes::ThemeDirectory>,
+) -> Response {
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let asset = match themes.repository().asset(&tenant.id, &digest).await {
+        Ok(Some(asset)) => asset,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            tracing::error!(%error, tenant = %tenant.id, "cannot load a theme asset");
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    };
+    let Ok(content_type) = HeaderValue::from_str(asset.format.content_type()) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_static("inline"),
+            ),
+        ],
+        asset.bytes,
+    )
+        .into_response()
 }
 
 /// Answers with the face itself.

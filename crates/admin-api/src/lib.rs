@@ -105,6 +105,14 @@ pub const TENANT_STATUS_UPDATE_ID: &str = "tenants.status.update";
 pub const TENANT_SETTINGS_READ_ID: &str = "tenants.settings.read";
 /// The `operationId` of `PUT /tenants/{tenant_id}/settings`.
 pub const TENANT_SETTINGS_UPDATE_ID: &str = "tenants.settings.update";
+/// The `operationId` of `GET /theme`.
+pub const THEME_READ_ID: &str = "theme.read";
+/// The `operationId` of `PUT /theme`.
+pub const THEME_UPDATE_ID: &str = "theme.update";
+/// The `operationId` of `POST /theme/logo`.
+pub const THEME_LOGO_UPLOAD_ID: &str = "theme.logo.upload";
+/// The `operationId` of `DELETE /theme`.
+pub const THEME_RESET_ID: &str = "theme.reset";
 /// The `operationId` of `GET /clients`.
 pub const CLIENTS_LIST_ID: &str = "clients.list";
 /// The `operationId` of `GET /clients/{client_id}`.
@@ -342,6 +350,42 @@ pub const TENANT_SETTINGS_UPDATE: Operation = Operation::mutation(
     M::Put,
     A::new(R::Tenant, "admin.tenants:write"),
     "Replaces one tenant's feature flags and lifetimes",
+);
+
+/// Reads this tenant's effective branding document.
+pub const THEME_READ: Operation = Operation::read(
+    THEME_READ_ID,
+    "/theme",
+    S::Get,
+    A::new(R::Tenant, "admin.theme:read"),
+    "Reads the tenant branding document and its validation schema",
+);
+
+/// Replaces this tenant's validated branding document.
+pub const THEME_UPDATE: Operation = Operation::mutation(
+    THEME_UPDATE_ID,
+    "/theme",
+    M::Put,
+    A::new(R::Tenant, "admin.theme:write"),
+    "Replaces the tenant branding document after schema and contrast validation",
+);
+
+/// Uploads, sanitises and selects this tenant's logo.
+pub const THEME_LOGO_UPLOAD: Operation = Operation::mutation(
+    THEME_LOGO_UPLOAD_ID,
+    "/theme/logo",
+    M::Post,
+    A::new(R::Tenant, "admin.theme:write"),
+    "Uploads a bounded raster logo, re-encodes it and selects it for the tenant",
+);
+
+/// Restores the shipped theme.
+pub const THEME_RESET: Operation = Operation::mutation(
+    THEME_RESET_ID,
+    "/theme",
+    M::Delete,
+    A::new(R::Tenant, "admin.theme:write"),
+    "Resets tenant branding to the shipped defaults",
 );
 
 /// This tenant's clients, one cursor page at a time, optionally filtered.
@@ -1208,7 +1252,7 @@ pub const USER_CLIENT_APP_ROLE_WITHDRAW: Operation = Operation::mutation(
 /// A `static` rather than a function building a `Vec`, so that the router, the
 /// document and the tests are looking at one object and cannot be handed
 /// different copies of it.
-static REGISTRY: [Operation; 75] = [
+static REGISTRY: [Operation; 79] = [
     SESSION_READ,
     SESSION_END,
     OPENAPI_READ,
@@ -1218,6 +1262,10 @@ static REGISTRY: [Operation; 75] = [
     TENANT_STATUS_UPDATE,
     TENANT_SETTINGS_READ,
     TENANT_SETTINGS_UPDATE,
+    THEME_READ,
+    THEME_UPDATE,
+    THEME_LOGO_UPLOAD,
+    THEME_RESET,
     CLIENTS_LIST,
     CLIENT_READ,
     CLIENT_CREATE,

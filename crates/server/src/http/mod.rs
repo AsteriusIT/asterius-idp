@@ -2,6 +2,50 @@
 
 use asterius_web::FormActionOrigin;
 use axum::http::{HeaderMap, header};
+use std::sync::LazyLock;
+
+/// The theme carried by tenancy middleware, or the shipped default in unit
+/// routers that deliberately do not assemble persistence.
+#[must_use]
+pub fn theme_of(
+    theme: Option<&axum::extract::Extension<std::sync::Arc<asterius_domain::Theme>>>,
+) -> &asterius_domain::Theme {
+    static DEFAULT: LazyLock<asterius_domain::Theme> =
+        LazyLock::new(asterius_domain::Theme::default);
+    theme.map_or(&DEFAULT, |axum::extract::Extension(theme)| theme.as_ref())
+}
+
+/// Runtime page chrome derived only from validated theme values.
+#[derive(Debug)]
+pub struct ThemeChrome {
+    pub css: String,
+    pub logo_url: String,
+    pub icon: asterius_domain::TenantIcon,
+}
+
+impl ThemeChrome {
+    #[must_use]
+    pub fn new(theme: &asterius_domain::Theme, mount: &crate::tenancy::MountPrefix) -> Self {
+        let logo_url = theme.logo().map_or_else(String::new, |asset| {
+            mount.absolute(&format!("/assets/theme/{}", asset.digest()))
+        });
+        Self {
+            css: asterius_web::theme::custom_properties(theme),
+            logo_url,
+            icon: theme.icon(),
+        }
+    }
+
+    #[must_use]
+    pub fn brand<'a>(&'a self, font_url: &'a str) -> asterius_web::Brand<'a> {
+        let brand = asterius_web::Brand::new(font_url).with_icon(self.icon);
+        if self.logo_url.is_empty() {
+            brand
+        } else {
+            brand.with_logo(&self.logo_url)
+        }
+    }
+}
 
 /// Where a page fetches the typeface, under the prefix routing removed.
 ///
@@ -163,5 +207,24 @@ mod tests {
 
         // Assert
         assert_eq!(joined, "");
+    }
+
+    #[test]
+    fn theme_chrome_keeps_logo_urls_inside_the_resolved_tenant() {
+        let digest = "a".repeat(64);
+        let document = serde_json::json!({
+            "palette": {
+                "background": "#ffffff", "text": "#111111", "muted_text": "#555555",
+                "accent": "#005fcc", "accent_text": "#ffffff", "danger": "#b00020"
+            },
+            "font": "geist", "radius_px": 8, "spacing_px": 8,
+            "logo": {"digest": digest, "content_type": "image/png"}
+        });
+        let theme = asterius_domain::Theme::from_json(&document).expect("valid theme");
+        let tenant = asterius_domain::TenantId::parse("alpha").expect("tenant id");
+        let chrome = ThemeChrome::new(&theme, &crate::tenancy::MountPrefix::for_tenant(&tenant));
+
+        assert_eq!(chrome.logo_url, format!("/t/alpha/assets/theme/{digest}"));
+        assert!(chrome.css.contains("--accent:#005fcc"));
     }
 }

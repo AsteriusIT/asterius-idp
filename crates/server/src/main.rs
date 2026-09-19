@@ -178,8 +178,13 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
         // their own copy and the invalidation would reach neither.
         let settings =
             SettingsDirectory::new(Arc::new(PgTenantSettings::new(store.pool().clone())));
-        let (tenant_state, trust_anchors) =
-            mtls(TenantState::new(directory.clone(), &config.server), &config)?;
+        let themes = asterius_server::ThemeDirectory::new(Arc::new(
+            asterius_store_pg::PgThemes::new(store.pool().clone()),
+        ));
+        let (tenant_state, trust_anchors) = mtls(
+            TenantState::new(directory.clone(), &config.server).with_themes(themes.clone()),
+            &config,
+        )?;
         let operations = operational_routes(&store, &config, metrics);
 
         // Client-facing endpoints: the ones that need an authenticated client
@@ -271,8 +276,11 @@ fn serve_forever(path: &std::path::Path) -> Result<(), String> {
             &store,
             &tenants,
             &keys,
-            directory,
-            settings,
+            AdminDirectories {
+                tenants: directory,
+                settings,
+                themes,
+            },
             dpop,
             admin_context,
         );
@@ -431,15 +439,25 @@ impl AdminContext {
 /// The client-address layer is applied to these routes only. It copies the
 /// address this crate resolved into the extension the admin API's limiter
 /// reads, and nothing else needs it.
+struct AdminDirectories {
+    tenants: TenantDirectory,
+    settings: SettingsDirectory,
+    themes: asterius_server::ThemeDirectory,
+}
+
 fn admin_routes(
     store: &Store,
     tenants: &Arc<dyn asterius_domain::ports::TenantRepository>,
     keys: &Arc<TenantKeyStore>,
-    directory: TenantDirectory,
-    settings: SettingsDirectory,
+    directories: AdminDirectories,
     dpop: Arc<DpopEndpoint>,
     context: AdminContext,
 ) -> axum::Router {
+    let AdminDirectories {
+        tenants: directory,
+        settings,
+        themes,
+    } = directories;
     let tokens = Arc::new(asterius_server::admin::AutomationTokens::new(
         store.clone(),
         Arc::clone(keys) as Arc<dyn asterius_domain::KeyStore>,
@@ -454,6 +472,7 @@ fn admin_routes(
                 tenants: Arc::clone(tenants),
                 keys: Arc::clone(keys) as Arc<dyn asterius_domain::KeyAdministration>,
                 directory,
+                themes,
                 settings,
                 capabilities: context.capabilities,
                 registration: context.registration,

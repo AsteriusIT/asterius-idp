@@ -209,6 +209,7 @@ async fn the_home_page_sends_an_unauthenticated_visitor_into_this_tenants_intera
     let nonce = Nonce::generate();
     let context = AccountContext {
         tenant: &tenant,
+        theme: &asterius_domain::Theme::default(),
         sessions: &sessions,
         interactions: &interactions,
         acr: &acr,
@@ -242,6 +243,7 @@ async fn every_account_page_keeps_the_tenant_segment() {
     let nonce = Nonce::generate();
     let context = AccountContext {
         tenant: &tenant,
+        theme: &asterius_domain::Theme::default(),
         sessions: &sessions,
         interactions: &interactions,
         acr: &acr,
@@ -299,6 +301,7 @@ async fn a_tenant_without_a_prefix_is_sent_to_the_root_interaction() {
     let nonce = Nonce::generate();
     let context = AccountContext {
         tenant: &tenant,
+        theme: &asterius_domain::Theme::default(),
         sessions: &sessions,
         interactions: &interactions,
         acr: &acr,

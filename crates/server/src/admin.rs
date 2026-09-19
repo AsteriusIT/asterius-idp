@@ -47,6 +47,7 @@ use std::sync::Arc;
 
 use crate::tenancy::TenantDirectory;
 use crate::tenant_settings::SettingsDirectory;
+use crate::themes::ThemeDirectory;
 
 /// Resolves the access tokens used by non-browser admin API clients.
 ///
@@ -318,6 +319,7 @@ pub struct Deployment {
     keys: Arc<dyn KeyAdministration>,
     directory: TenantDirectory,
     settings: SettingsDirectory,
+    themes: ThemeDirectory,
     capabilities: Capabilities,
     registration: RegistrationPolicy,
     outbound: Arc<dyn ClientUrlFetcher>,
@@ -379,6 +381,7 @@ impl Deployment {
             keys: parts.keys,
             directory: parts.directory,
             settings: parts.settings,
+            themes: parts.themes,
             capabilities: parts.capabilities,
             registration: parts.registration,
             outbound: parts.outbound,
@@ -405,6 +408,8 @@ pub struct DeploymentParts {
     pub directory: TenantDirectory,
     /// The settings cache, invalidated when a flag changes.
     pub settings: SettingsDirectory,
+    /// Shared cache and repository for tenant branding.
+    pub themes: ThemeDirectory,
     /// What this build offers, as the protocol endpoints see it. The same
     /// value, so that the console and `POST /register` validate a registration
     /// document against the same set.
@@ -1543,6 +1548,14 @@ impl AdminBackend for Deployment {
 
     fn tenant_settings(&self) -> Arc<dyn TenantSettingsRepository> {
         Arc::new(PgTenantSettings::new(self.store.pool().clone()))
+    }
+
+    fn themes(&self) -> Arc<dyn asterius_domain::ports::ThemeRepository> {
+        self.themes.repository()
+    }
+
+    fn theme_changed(&self, tenant: &TenantId) {
+        self.themes.invalidate(tenant);
     }
 
     /// This tenant's initial access tokens (`ast-cu3`).

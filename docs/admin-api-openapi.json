@@ -5492,6 +5492,717 @@
         "x-asterius-scope": "admin.tenants:write"
       }
     },
+    "/admin/api/v1/theme": {
+      "delete": {
+        "operationId": "theme.reset",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.theme:write"
+            ]
+          }
+        ],
+        "summary": "Resets tenant branding to the shipped defaults",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.theme:write"
+      },
+      "get": {
+        "operationId": "theme.read",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "schema": {
+                      "type": "object"
+                    },
+                    "theme": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "favicon": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "content_type": {
+                              "maxLength": 32,
+                              "type": "string"
+                            },
+                            "digest": {
+                              "maxLength": 64,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "digest",
+                            "content_type"
+                          ],
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        },
+                        "font": {
+                          "enum": [
+                            "geist",
+                            "system-sans",
+                            "system-serif",
+                            "system-mono"
+                          ],
+                          "type": "string"
+                        },
+                        "icon": {
+                          "enum": [
+                            "shield",
+                            "shield-check",
+                            "lock",
+                            "key-round",
+                            "id-card",
+                            "user",
+                            "users",
+                            "building-2",
+                            "briefcase",
+                            "landmark",
+                            "graduation-cap",
+                            "stethoscope",
+                            "store",
+                            "wallet",
+                            "globe",
+                            "cloud",
+                            "server",
+                            "database",
+                            "cpu",
+                            "terminal",
+                            "rocket",
+                            "zap",
+                            "sparkles",
+                            "leaf",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "logo": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "content_type": {
+                              "maxLength": 32,
+                              "type": "string"
+                            },
+                            "digest": {
+                              "maxLength": 64,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "digest",
+                            "content_type"
+                          ],
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        },
+                        "palette": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "accent": {
+                              "maxLength": 7,
+                              "type": "string"
+                            },
+                            "accent_text": {
+                              "maxLength": 7,
+                              "type": "string"
+                            },
+                            "background": {
+                              "maxLength": 7,
+                              "type": "string"
+                            },
+                            "danger": {
+                              "maxLength": 7,
+                              "type": "string"
+                            },
+                            "muted_text": {
+                              "maxLength": 7,
+                              "type": "string"
+                            },
+                            "text": {
+                              "maxLength": 7,
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "background",
+                            "text",
+                            "muted_text",
+                            "accent",
+                            "accent_text",
+                            "danger"
+                          ],
+                          "type": "object"
+                        },
+                        "product_name": {
+                          "maxLength": 64,
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "radius_px": {
+                          "type": "integer"
+                        },
+                        "spacing_px": {
+                          "type": "integer"
+                        },
+                        "support": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "help_url": {
+                              "maxLength": 256,
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "privacy_url": {
+                              "maxLength": 256,
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "terms_url": {
+                              "maxLength": 256,
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "palette",
+                        "font",
+                        "radius_px",
+                        "spacing_px"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "theme",
+                    "schema"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.theme:read"
+            ]
+          }
+        ],
+        "summary": "Reads the tenant branding document and its validation schema",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.theme:read"
+      },
+      "put": {
+        "operationId": "theme.update",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "favicon": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "content_type": {
+                        "maxLength": 32,
+                        "type": "string"
+                      },
+                      "digest": {
+                        "maxLength": 64,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "digest",
+                      "content_type"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "font": {
+                    "enum": [
+                      "geist",
+                      "system-sans",
+                      "system-serif",
+                      "system-mono"
+                    ],
+                    "type": "string"
+                  },
+                  "icon": {
+                    "enum": [
+                      "shield",
+                      "shield-check",
+                      "lock",
+                      "key-round",
+                      "id-card",
+                      "user",
+                      "users",
+                      "building-2",
+                      "briefcase",
+                      "landmark",
+                      "graduation-cap",
+                      "stethoscope",
+                      "store",
+                      "wallet",
+                      "globe",
+                      "cloud",
+                      "server",
+                      "database",
+                      "cpu",
+                      "terminal",
+                      "rocket",
+                      "zap",
+                      "sparkles",
+                      "leaf",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "logo": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "content_type": {
+                        "maxLength": 32,
+                        "type": "string"
+                      },
+                      "digest": {
+                        "maxLength": 64,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "digest",
+                      "content_type"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "palette": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "accent": {
+                        "maxLength": 7,
+                        "type": "string"
+                      },
+                      "accent_text": {
+                        "maxLength": 7,
+                        "type": "string"
+                      },
+                      "background": {
+                        "maxLength": 7,
+                        "type": "string"
+                      },
+                      "danger": {
+                        "maxLength": 7,
+                        "type": "string"
+                      },
+                      "muted_text": {
+                        "maxLength": 7,
+                        "type": "string"
+                      },
+                      "text": {
+                        "maxLength": 7,
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "background",
+                      "text",
+                      "muted_text",
+                      "accent",
+                      "accent_text",
+                      "danger"
+                    ],
+                    "type": "object"
+                  },
+                  "product_name": {
+                    "maxLength": 64,
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "radius_px": {
+                    "type": "integer"
+                  },
+                  "spacing_px": {
+                    "type": "integer"
+                  },
+                  "support": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "help_url": {
+                        "maxLength": 256,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "privacy_url": {
+                        "maxLength": 256,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "terms_url": {
+                        "maxLength": 256,
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "required": [
+                  "palette",
+                  "font",
+                  "radius_px",
+                  "spacing_px"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.theme:write"
+            ]
+          }
+        ],
+        "summary": "Replaces the tenant branding document after schema and contrast validation",
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.theme:write"
+      }
+    },
+    "/admin/api/v1/theme/logo": {
+      "post": {
+        "operationId": "theme.logo.upload",
+        "parameters": [
+          {
+            "description": "A caller-chosen key, unique per creation. A repeat is refused with 409 rather than executed a second time.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "maxLength": 255,
+              "minLength": 8,
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "image/jpeg": {
+              "schema": {
+                "format": "binary",
+                "maxLength": 204800,
+                "type": "string"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "format": "binary",
+                "maxLength": 204800,
+                "type": "string"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "format": "binary",
+                "maxLength": 204800,
+                "type": "string"
+              }
+            }
+          },
+          "description": "PNG, JPEG or WebP bytes. The server identifies the format from the bytes, bounds dimensions before decoding, and stores a metadata-free PNG.",
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The operation succeeded."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No credential, or one that no longer resolves."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Authenticated, without the declared authority — or, for the console, without this session's X-CSRF-Token."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The request conflicts with the current state, or its Idempotency-Key has already been used."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A rate limit was reached. Retry-After says when."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Something below the API failed."
+          }
+        },
+        "security": [
+          {
+            "consoleSession": []
+          },
+          {
+            "adminToken": [
+              "admin.theme:write"
+            ]
+          }
+        ],
+        "summary": "Uploads a bounded raster logo, re-encodes it and selects it for the tenant",
+        "x-asterius-idempotent": true,
+        "x-asterius-reach": "tenant",
+        "x-asterius-scope": "admin.theme:write"
+      }
+    },
     "/admin/api/v1/users": {
       "get": {
         "operationId": "users.list",

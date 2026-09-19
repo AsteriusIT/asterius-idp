@@ -290,6 +290,10 @@ async fn route(
         crate::TENANT_STATUS_UPDATE_ID => context.update_tenant_status(body).await,
         crate::TENANT_SETTINGS_READ_ID => context.read_settings().await,
         crate::TENANT_SETTINGS_UPDATE_ID => context.update_settings(body).await,
+        crate::THEME_READ_ID => context.read_theme().await,
+        crate::THEME_UPDATE_ID => context.update_theme(body).await,
+        crate::THEME_LOGO_UPLOAD_ID => context.upload_logo(body).await,
+        crate::THEME_RESET_ID => context.reset_theme().await,
         crate::CLIENTS_LIST_ID => context.list_clients().await,
         crate::CLIENT_READ_ID => context.read_client().await,
         crate::CLIENT_CREATE_ID => context.create_client(body).await,
@@ -423,6 +427,118 @@ struct Handling<'a> {
 }
 
 impl Handling<'_> {
+    async fn read_theme(&self) -> Result<Response, AdminError> {
+        let theme = self
+            .state
+            .backend
+            .themes()
+            .theme(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage("theme.read", &error))?;
+        Ok(json_no_store(
+            StatusCode::OK,
+            &serde_json::json!({
+                "theme": theme.to_json(),
+                "schema": asterius_domain::Theme::schema_document(),
+            }),
+        ))
+    }
+
+    async fn update_theme(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes =
+            axum::body::to_bytes(body, asterius_domain::entities::theme::MAX_DOCUMENT_BYTES)
+                .await
+                .map_err(|_| AdminError::Invalid("the theme document is too large".to_owned()))?;
+        let raw = std::str::from_utf8(&bytes)
+            .map_err(|_| AdminError::Invalid("the theme document is not UTF-8 JSON".to_owned()))?;
+        let theme = asterius_domain::Theme::parse(raw)
+            .map_err(|error| AdminError::Invalid(error.to_string()))?;
+        self.state
+            .backend
+            .themes()
+            .save_theme(&self.tenant.id, &theme)
+            .await
+            .map_err(|error| AdminError::from_storage("theme.update", &error))?;
+        self.state.backend.theme_changed(&self.tenant.id);
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new().label("operation", crate::THEME_UPDATE_ID),
+        )
+        .await;
+        Ok(json_no_store(StatusCode::OK, &theme.to_json()))
+    }
+
+    async fn upload_logo(&self, body: axum::body::Body) -> Result<Response, AdminError> {
+        let bytes = axum::body::to_bytes(body, crate::theme_image::MAX_UPLOAD_BYTES)
+            .await
+            .map_err(|_| AdminError::Invalid("the logo upload is too large".to_owned()))?;
+        let image = crate::theme_image::accept(&bytes).map_err(|error| {
+            AdminError::Invalid(format!(
+                "logo upload refused (HTTP {}): {error}",
+                error.status_code()
+            ))
+        })?;
+        let repository = self.state.backend.themes();
+        let asset = asterius_domain::ports::StoredAsset {
+            digest: image.digest().to_owned(),
+            format: image.format(),
+            bytes: image.bytes().to_vec(),
+        };
+        repository
+            .store_asset(&self.tenant.id, &asset)
+            .await
+            .map_err(|error| AdminError::from_storage("theme.logo.store", &error))?;
+        let reference = asterius_domain::entities::theme::AssetRef::new(
+            image.digest(),
+            image.format(),
+            "/logo",
+        )
+        .map_err(|error| AdminError::Invalid(error.to_string()))?;
+        let theme = repository
+            .theme(&self.tenant.id)
+            .await
+            .map_err(|error| AdminError::from_storage("theme.read", &error))?
+            .with_logo(Some(reference));
+        repository
+            .save_theme(&self.tenant.id, &theme)
+            .await
+            .map_err(|error| AdminError::from_storage("theme.logo.select", &error))?;
+        self.state.backend.theme_changed(&self.tenant.id);
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new()
+                .label("operation", crate::THEME_LOGO_UPLOAD_ID)
+                .raw_fingerprint("digest", image.digest()),
+        )
+        .await;
+        Ok(json_no_store(
+            StatusCode::CREATED,
+            &serde_json::json!({
+                "digest": image.digest(),
+                "content_type": image.format().content_type(),
+                "width": image.width(),
+                "height": image.height(),
+            }),
+        ))
+    }
+
+    async fn reset_theme(&self) -> Result<Response, AdminError> {
+        let theme = asterius_domain::Theme::default();
+        self.state
+            .backend
+            .themes()
+            .save_theme(&self.tenant.id, &theme)
+            .await
+            .map_err(|error| AdminError::from_storage("theme.reset", &error))?;
+        self.state.backend.theme_changed(&self.tenant.id);
+        self.record(
+            EventType::ADMIN_CHANGED,
+            Detail::new().label("operation", crate::THEME_RESET_ID),
+        )
+        .await;
+        Ok(json_no_store(StatusCode::OK, &theme.to_json()))
+    }
+
     /// `GET /session` — who the console is, where it is acting, and the token
     /// it must send back.
     ///
@@ -4882,6 +4998,37 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
+    impl asterius_domain::ports::ThemeRepository for Handle {
+        async fn theme(&self, _tenant: &TenantId) -> Result<asterius_domain::Theme, DomainError> {
+            Ok(asterius_domain::Theme::default())
+        }
+
+        async fn save_theme(
+            &self,
+            _tenant: &TenantId,
+            _theme: &asterius_domain::Theme,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        async fn store_asset(
+            &self,
+            _tenant: &TenantId,
+            _asset: &asterius_domain::ports::StoredAsset,
+        ) -> Result<(), DomainError> {
+            Ok(())
+        }
+
+        async fn asset(
+            &self,
+            _tenant: &TenantId,
+            _digest: &str,
+        ) -> Result<Option<asterius_domain::ports::StoredAsset>, DomainError> {
+            Ok(None)
+        }
+    }
+
     /// The trail read back: the recorded events, newest first, through the
     /// reference semantics of the filter, with ids that are their position
     /// in the recording order — which is what the database's ids are.
@@ -5981,6 +6128,12 @@ mod tests {
         fn tenant_settings(&self) -> Arc<dyn asterius_domain::ports::TenantSettingsRepository> {
             Arc::new(self.clone())
         }
+
+        fn themes(&self) -> Arc<dyn asterius_domain::ports::ThemeRepository> {
+            Arc::new(self.clone())
+        }
+
+        fn theme_changed(&self, _tenant: &TenantId) {}
 
         fn keys(&self) -> Arc<dyn KeyAdministration> {
             Arc::new(self.clone())

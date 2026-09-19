@@ -45,6 +45,7 @@ use crate::http::verify_email;
 use crate::http::{account_passkeys, account_password, account_sessions};
 use crate::tenancy::MountPrefix;
 use crate::tenant_settings::SettingsDirectory;
+use asterius_domain::ports::ThemeRepository as _;
 use asterius_domain::{Capabilities, DomainError, KeyStore, Tenant, TokenLifetimes};
 use asterius_oidc::client_auth::{AssertionRules, Attempt};
 use asterius_oidc::metadata::{self, Endpoint};
@@ -4410,10 +4411,12 @@ async fn interaction_show(
     Path(id): Path<String>,
     axum::extract::RawQuery(query): axum::extract::RawQuery,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
 ) -> Response {
+    let theme = crate::http::theme_of(theme.as_ref());
     let settings =
         match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
             Ok(settings) => settings,
@@ -4476,6 +4479,7 @@ async fn interaction_show(
     interaction::show(
         InteractionContext {
             tenant: &tenant,
+            theme,
             language: &language,
             requests: &requests,
             credentials: passwords
@@ -4524,6 +4528,7 @@ async fn interaction_submit(
     Extension(tenant): Extension<Arc<Tenant>>,
     Path(id): Path<String>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
     // `Option`, because the extension is the tenancy layer's doing and a
     // request that reached here without it is a wiring fault rather than a
     // reason to answer 500. A limiter with no address still counts the
@@ -4533,6 +4538,7 @@ async fn interaction_submit(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let theme = crate::http::theme_of(theme.as_ref());
     let settings =
         match settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await {
             Ok(settings) => settings,
@@ -4595,6 +4601,7 @@ async fn interaction_submit(
     interaction::submit(
         InteractionContext {
             tenant: &tenant,
+            theme,
             language: &language,
             requests: &requests,
             credentials: passwords
@@ -4718,6 +4725,7 @@ fn recovery_parts(endpoints: &Arc<ClientEndpoints>, tenant: &Arc<Tenant>) -> Rec
 fn recovery_context<'a>(
     endpoints: &'a ClientEndpoints,
     tenant: &'a Tenant,
+    theme: &'a asterius_domain::Theme,
     parts: &'a RecoveryParts,
     client: Option<&crate::http::forwarded::ClientAddr>,
     nonce: &'a asterius_web::csp::Nonce,
@@ -4725,6 +4733,7 @@ fn recovery_context<'a>(
 ) -> recovery::RecoveryContext<'a> {
     recovery::RecoveryContext {
         tenant,
+        theme,
         users: &parts.users,
         passwords: parts.passwords.as_ref(),
         tokens: &parts.tokens,
@@ -4756,13 +4765,16 @@ async fn recovery_request_page(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
 ) -> Response {
+    let theme = crate::http::theme_of(theme.as_ref());
     let parts = recovery_parts(&endpoints, &tenant);
     recovery::show_request(&recovery_context(
         &endpoints,
         &tenant,
+        theme,
         &parts,
         client.as_deref(),
         &nonce,
@@ -4776,16 +4788,19 @@ async fn recovery_request_submit(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let theme = crate::http::theme_of(theme.as_ref());
     let parts = recovery_parts(&endpoints, &tenant);
     recovery::submit_request(
         &recovery_context(
             &endpoints,
             &tenant,
+            theme,
             &parts,
             client.as_deref(),
             &nonce,
@@ -4804,15 +4819,18 @@ async fn recovery_new_password_page(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     uri: axum::http::Uri,
 ) -> Response {
+    let theme = crate::http::theme_of(theme.as_ref());
     let parts = recovery_parts(&endpoints, &tenant);
     recovery::show_new_password(
         &recovery_context(
             &endpoints,
             &tenant,
+            theme,
             &parts,
             client.as_deref(),
             &nonce,
@@ -4830,16 +4848,19 @@ async fn recovery_new_password_submit(
     State(endpoints): State<Arc<ClientEndpoints>>,
     Extension(tenant): Extension<Arc<Tenant>>,
     Extension(nonce): Extension<asterius_web::csp::Nonce>,
+    theme: Option<Extension<Arc<asterius_domain::Theme>>>,
     client: Option<Extension<crate::http::forwarded::ClientAddr>>,
     mount: Option<Extension<MountPrefix>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    let theme = crate::http::theme_of(theme.as_ref());
     let parts = recovery_parts(&endpoints, &tenant);
     recovery::submit_new_password(
         &recovery_context(
             &endpoints,
             &tenant,
+            theme,
             &parts,
             client.as_deref(),
             &nonce,
@@ -5476,6 +5497,7 @@ async fn device_confirm(
 /// references needs something to reference.
 struct ApprovalsParts {
     settings: asterius_domain::TenantSettings,
+    theme: asterius_domain::Theme,
     ciba_requests: asterius_store_pg::PgCibaRequestRepository,
     sessions: asterius_store_pg::PgSessionRepository,
     interactions: asterius_store_pg::PgAuthRequestRepository,
@@ -5494,6 +5516,9 @@ async fn approvals_parts(
     let scope = endpoints.store.scope(tenant.id.clone());
     Ok(ApprovalsParts {
         settings: settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await?,
+        theme: asterius_store_pg::PgThemes::new(endpoints.store.pool().clone())
+            .theme(&tenant.id)
+            .await?,
         ciba_requests: scope.ciba_requests(Arc::clone(&endpoints.kek)),
         sessions: scope.sessions(),
         interactions: scope.auth_requests(),
@@ -5514,6 +5539,7 @@ fn approvals_context<'a>(
 ) -> ApprovalsContext<'a> {
     ApprovalsContext {
         tenant,
+        theme: &parts.theme,
         ciba_requests: &parts.ciba_requests,
         sessions: &parts.sessions,
         interactions: &parts.interactions,
@@ -5633,6 +5659,7 @@ async fn approvals_sign_in(
 /// turn an agent's owner into a name the person reading recognises.
 struct GrantsParts {
     settings: asterius_domain::TenantSettings,
+    theme: asterius_domain::Theme,
     grants: asterius_store_pg::PgGrantRepository,
     sessions: asterius_store_pg::PgSessionRepository,
     interactions: asterius_store_pg::PgAuthRequestRepository,
@@ -5647,6 +5674,9 @@ async fn grants_parts(
     let scope = endpoints.store.scope(tenant.id.clone());
     Ok(GrantsParts {
         settings: settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await?,
+        theme: asterius_store_pg::PgThemes::new(endpoints.store.pool().clone())
+            .theme(&tenant.id)
+            .await?,
         grants: scope.grants(),
         sessions: scope.sessions(),
         interactions: scope.auth_requests(),
@@ -5665,6 +5695,7 @@ fn grants_context<'a>(
 ) -> GrantsContext<'a> {
     GrantsContext {
         tenant,
+        theme: &parts.theme,
         grants: &parts.grants,
         sessions: &parts.sessions,
         interactions: &parts.interactions,
@@ -5784,6 +5815,7 @@ async fn grants_sign_in(
 /// different tenants.
 struct AccountParts {
     settings: asterius_domain::TenantSettings,
+    theme: asterius_domain::Theme,
     sessions: asterius_store_pg::PgSessionRepository,
     interactions: asterius_store_pg::PgAuthRequestRepository,
     clients: asterius_store_pg::PgClientRepository,
@@ -5803,6 +5835,9 @@ async fn account_parts(
     let scope = endpoints.store.scope(tenant.id.clone());
     Ok(AccountParts {
         settings: settings_for_directory(endpoints.tenant_settings.as_ref(), &tenant.id).await?,
+        theme: asterius_store_pg::PgThemes::new(endpoints.store.pool().clone())
+            .theme(&tenant.id)
+            .await?,
         sessions: scope.sessions(),
         interactions: scope.auth_requests(),
         clients: scope.clients(endpoints.capabilities),
@@ -5827,6 +5862,7 @@ fn account_context<'a>(
 ) -> crate::http::account::AccountContext<'a> {
     crate::http::account::AccountContext {
         tenant,
+        theme: &parts.theme,
         sessions: &parts.sessions,
         interactions: &parts.interactions,
         acr: parts.settings.acr_policy(),
