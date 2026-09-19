@@ -1568,6 +1568,10 @@ impl AdminBackend for Deployment {
         })
     }
 
+    fn groups(&self) -> Arc<dyn asterius_domain::GroupDirectory> {
+        Arc::new(asterius_store_pg::PgGroups::new(self.store.pool().clone()))
+    }
+
     fn keys(&self) -> Arc<dyn KeyAdministration> {
         Arc::clone(&self.keys)
     }
